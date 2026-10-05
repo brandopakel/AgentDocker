@@ -233,6 +233,82 @@ transcript capacity cannot turn missing evidence into delivery. The installed
 Codex receiver exposed both cases together: an uncertain hook offer blocked later
 messages, then transcript growth hid that original reason behind the 4 MiB error.
 
+The same read-only preview also exposes a separate `start_confirmation` when an
+original native queue entry is retained without a hook offer or provider receipt.
+Codex can intentionally hold that entry after interruption even while its public
+thread status is idle. An operator who wants to continue that reviewed message
+can use the launcher-owned shared server's explicit recovery path:
+
+```sh
+agentdocker codex-queue-resolve --agent <id> --message <message-id> \
+  --start-queued <start-confirmation-from-preview> --note 'Continue this reviewed queued message'
+```
+
+This starts the existing submission ID; it never adds a replacement input.
+The receiver checks the live generation, original content and queue head, absence
+of an existing receipt, and the daemon's ownership/provider-limit checks. It
+checks daemon admission and the current project's pause before persisting an
+intent and again after the journal write. Inbox visibility alone does not permit starting
+paused work: lifecycle notices must remain readable during a pause. A provider hold, ownership loss or pause
+observed after persistence retains the intent without sending to the provider.
+These are snapshots before transmission, not an atomic lock across daemon and
+provider; a later pause cannot retract an already transmitted start.
+The provider itself refuses a newly active or pending turn. A private version-7
+ledger persists one prepared start intent before the journal write. If journaling
+fails or a subsequent hold refuses the start, an explicit retry reuses that intent
+and repeats every live preflight check and the journal step. The preview keeps
+the same start confirmation available while transmission has not begun. Repeated
+journal notes identify the original intent and the current confirming operator.
+Immediately before the provider call, a second durable write marks transmission
+started. From that point repeating the same confirmation only reports the retained
+intent, including after a crash between the marker and the actual write. This
+conservative uncertainty never permits another provider start. The command prints
+only the intent ID to stdout; the full result goes to stderr.
+Once its ordinary receipt retires the pending entry, an old start
+request is refused because there is no retained input; the completed receipt
+remains delivery evidence. Lost replies, refused
+starts or interrupted journal writes leave it retained without an automatic
+retry or hook handoff. The ordinary exact provider receipt is still required
+before acknowledgement. A reply naming a turn is not a delivery receipt.
+Actual Codex 0.160 with a private model passed normal and discarded-local-client
+reply recovery on Mac ARM64 and Oracle Linux. Each positive trial held input for
+30 seconds, refused four invalid confirmation/action/order cases, then preserved
+two exact receipts and one new model request; the repeated confirmation reported
+the same intent. Corrected runtime `3cd4fd47` on Mac and final `a80697fd` Linux CI
+bytes also refused provider-rate holds and committed project pauses before intent,
+without changing the queued entry or blocking read-only preview. The earlier
+project-pause bypass remains a retained failed trial.
+The `a80697fd` extracted Windows archive passed separate normal-recovery and hold
+scenarios with nine checks each, after its 22 original launcher checks. Normal
+recovery preserved three original receipts (including the initial MCP identity
+turn and interrupted held turn), one new model input and the same-intent retry.
+Both holds refused before intent and retained the two prior receipts. All
+recorded fixture generations retired, configurations were unchanged and private
+capabilities/scratch were removed. Source, archive, executable and driver hashes
+were independently checked. Separate actual Mac journal-boundary trials at
+`3cd4fd47` retained the same intent, queue and original receipt without a new input
+when a committed journal response was discarded or a project pause arrived before
+that response. Retry after clearing the fault remained read-only. A provider-rate
+hold injected at that boundary exposed a missing admission recheck; the receiver
+now checks admission again after journaling. Corrected release `a810409e` passed
+all six private-model Mac and Oracle Linux cases: normal recovery, lost local
+response, existing holds, lost committed journal response, and post-journal
+pause/provider-limit refusal. All 58 Mac and 66 Linux recorded PIDs were
+independently absent; refused cases kept their original receipt and queue without
+a new input, and successful starts delivered one new input with two exact receipts. A
+Windows repeat reached recovery after its exact receipt had retired the attempt;
+the fixture now accepts that outcome only with the matching completed receipt,
+empty preview and no additional input. The corrected `a810409e` Windows archive
+passed 62 daemon/42 installer/22 launcher checks and both nine-check recovery
+scenarios. Its normal retry exercised that already-delivered refusal with three
+exact receipts and one new input; holds refused before intent. Source/archive/EXE
+and driver hashes and cleanup reports were independently verified. Original
+failed trials remain indexed.
+Full review, lost provider replies, broader concurrent pause/limit races, actual
+accounts and physical input remain. Windows discarded
+client replies are not covered, and these trials do not establish automatic
+crash/reopen recovery.
+
 `agentdocker codex-queue-resolve --agent <id>` asks the owning receiver for a
 read-only preview of its complete retained envelope and a confirmation digest.
 After actually reading that message, an operator can run:
@@ -252,9 +328,13 @@ an input still scheduled under its original client or queue ID, even if its text
 was edited. A missing project journal refuses before any disposition is written.
 The existing provider, receiver ownership and queue order remain intact.
 
-Ledger version 5 migrates versions 2/3/4 without changing their input or token.
-It adds the optional immutable remote-server descriptor and refuses a remote
-descriptor in an older record. The existing manual readback protocol
+Ledger version 7 migrates versions 2/3/4/5/6 without changing their input or token.
+Versions before 5 cannot contain the immutable remote-server descriptor; versions
+before 6 cannot contain a queued-start intent. Version-6 intents have no transmission
+marker, so migration treats every such intent as possibly transmitted and forbids
+another start. A version-6 record containing a fabricated marker, or a version-7
+intent missing its marker, is refused without modifying the retained file.
+The existing manual readback protocol
 persists the manual intent, journals its resolution ID, acknowledges that one ID
 through the existing token-bound inbox, then records completion. Loss of a journal
 reply can produce duplicate notes with the same resolution ID; lost ACK/reply or
