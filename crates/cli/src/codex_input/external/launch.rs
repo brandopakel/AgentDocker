@@ -455,9 +455,15 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
     // Own cleanup before the first fallible write/spawn. A startup failure must
     // not leave the capability behind before the normal shutdown path exists.
     let capability_path = tempfile::TempPath::try_from_path(directory.join("capability"))?;
+    #[cfg(unix)]
     let mut capability = dirs::create_private_file(&capability_path)?;
+    // Console closure can terminate both cleanup processes before Rust Drop.
+    // Retain a non-inheritable kernel deletion handle until this owner exits.
+    #[cfg(windows)]
+    let mut capability = dirs::create_private_delete_on_close_file(&capability_path)?;
     capability.write_all(token.as_bytes())?;
     capability.sync_all()?;
+    #[cfg(unix)]
     drop(capability);
     let port = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?
         .local_addr()?
@@ -540,7 +546,20 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
             .and_then(|r| r),
     );
     // Retain bounded private diagnostics/record; revoke the dead server capability.
-    cleanup = cleanup.and(capability_path.close().map_err(Into::into));
+    #[cfg(windows)]
+    drop(capability);
+    cleanup = cleanup.and(
+        capability_path
+            .close()
+            .or_else(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(Into::into),
+    );
     result.and(cleanup)
 }
 

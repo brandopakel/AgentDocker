@@ -31,10 +31,10 @@ use windows_sys::Win32::{
         BY_HANDLE_FILE_INFORMATION, CREATE_ALWAYS, CREATE_NEW, CreateDirectoryW, CreateFileW,
         DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA,
-        GetFileInformationByHandle, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
-        WRITE_OWNER,
+        FILE_FLAG_DELETE_ON_CLOSE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, GetFileInformationByHandle,
+        OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
@@ -477,10 +477,22 @@ fn open(
     create: bool,
     append: bool,
 ) -> io::Result<File> {
+    open_with_delete_on_close(path, protection, directory, create, append, false)
+}
+
+fn open_with_delete_on_close(
+    path: &Path,
+    protection: &Protection,
+    directory: bool,
+    create: bool,
+    append: bool,
+    delete_on_close: bool,
+) -> io::Result<File> {
     let raw = wide(path)?;
     let attributes = protection.attributes();
     let access = READ_CONTROL
         | WRITE_DAC
+        | if delete_on_close { DELETE } else { 0 }
         | if directory {
             FILE_READ_ATTRIBUTES
         } else if append {
@@ -489,6 +501,11 @@ fn open(
             GENERIC_READ | GENERIC_WRITE
         };
     let flags = FILE_FLAG_OPEN_REPARSE_POINT
+        | if delete_on_close {
+            FILE_FLAG_DELETE_ON_CLOSE
+        } else {
+            0
+        }
         | if directory {
             FILE_FLAG_BACKUP_SEMANTICS
         } else {
@@ -604,6 +621,15 @@ pub fn create_private_file(path: &Path) -> io::Result<File> {
     let protection = Protection::new()?;
     let _ancestors = guard_ancestors(path, &protection)?;
     open(path, &protection, false, true, false)
+}
+
+/// Create private state owned by this non-inheritable handle. Windows deletes
+/// it after its last handle closes, including when the owner is terminated.
+/// Readers must share deletion; the private read helpers above already do.
+pub fn create_private_delete_on_close_file(path: &Path) -> io::Result<File> {
+    let protection = Protection::new()?;
+    let _ancestors = guard_ancestors(path, &protection)?;
+    open_with_delete_on_close(path, &protection, false, true, false, true)
 }
 
 fn create_directory(
@@ -943,6 +969,58 @@ mod tests {
         assert_eq!(acl_bytes(file.as_raw_handle()), before);
         assert!(read_private_file(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"durable WAL contents");
+    }
+
+    #[test]
+    fn private_temporary_file_is_readable_and_deleted_when_handles_close() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = temporary.path().join("state");
+        secure_state_dir(&state).unwrap();
+        let path = state.join("capability");
+        let mut owner = create_private_delete_on_close_file(&path).unwrap();
+        owner.write_all(b"private token").unwrap();
+        owner.sync_all().unwrap();
+        let mut reader = read_private_file(&path).unwrap();
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "private token");
+        // Handles must not keep capabilities alive in provider children.
+        let mut flags = 0;
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::Foundation::GetHandleInformation(
+                    owner.as_raw_handle(),
+                    &mut flags,
+                )
+            },
+            0
+        );
+        assert_eq!(
+            flags & windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT,
+            0
+        );
+        drop(reader);
+        drop(owner);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn private_temporary_creation_never_deletes_an_existing_file() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = temporary.path().join("state");
+        secure_state_dir(&state).unwrap();
+        let path = state.join("existing");
+        create_private_file(&path)
+            .unwrap()
+            .write_all(b"preserved")
+            .unwrap();
+        assert_eq!(
+            create_private_delete_on_close_file(&path)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"preserved");
     }
 
     #[test]
