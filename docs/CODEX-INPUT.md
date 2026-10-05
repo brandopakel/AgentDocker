@@ -1235,7 +1235,9 @@ verification fail explicitly. Explicit `null` schema fields are invalid, includi
 constraints and defaults; only omission selects the documented fallback.
 Idle form and URL reviews require delivery-ledger version 14. Earlier records
 cannot introduce these receipts, and older bridges cannot read the new ledger.
-Preserve the matching prior delivery state before a binary downgrade. Pending
+The package uses state schema 26, so binary rollback to schema-25 beta.7 is
+refused before activation. Keep a compatible receiver for these conversations;
+never restore an older delivery ledger over already acknowledged input. Pending
 or uncertain reviews on restart still pause delivery; replies are never replayed.
 Requests are limited to 16 fields, 32 options,
 16,000-byte schemas/responses and 4,096-byte text fields. Schema text-length

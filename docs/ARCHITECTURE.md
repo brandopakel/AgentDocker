@@ -1949,6 +1949,11 @@ ledger version 14; pre-13 records cannot introduce form review receipts, and
 pre-14 records cannot introduce idle MCP reviews. A nullable stored turn is
 valid only for an idle form/URL review; its pending record cannot coexist with
 active or uncertain input. Older turn-scoped records retain their correlation
-and upgrade without replacing input. The
+and upgrade without replacing input. Schema 26 extends the installation's
+compatibility boundary to that version-14 delivery ledger: package rollback
+to schema 25 refuses before changing the selected binaries. An older receiver
+invoked outside the installer also refuses the newer ledger without rewriting
+it. Never restore an older delivery ledger over already acknowledged input.
+The
 response is stored before writing and acknowledged only after provider resolution,
 using the same exact human-answer and no-replay contract as other reviews.

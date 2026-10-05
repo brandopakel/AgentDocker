@@ -92,17 +92,25 @@ Original runtime and fixture failures remain indexed; later passes do not erase
 them or explain the intermittent daemon first-start failure.
 
 A follow-up to the beta.7 candidate adds owned-thread MCP form/URL review while
-idle, using ledger version 14. The actual Codex 0.160 refusal control reproduced
+idle, using ledger version 14. The next source uses state schema 26 to prevent
+package rollback to beta.7's older receivers; installer acceptance of that new
+boundary remains pending. Do not restore an older delivery ledger over already
+acknowledged input. The actual Codex 0.160 refusal control reproduced
 the previous no-active-turn rejection; Codex translates that client error into
 an MCP decline. Source `99a247b0` passed 137 focused Codex tests with zero retries. Corrected
 Mac ARM64/Codex 0.160 private-model acceptance then passed eight idle form/URL
 decision paths, nine exact input receipts and independently verified cleanup.
-The full local gate passed on `0de47a7b` (1,575 Rust/192 Python tests, zero
-retries). Windows CI now includes separate idle form and URL trials that arm
+The full local gate passed on `552272e4` (1,575 Rust/193 Python tests, zero
+retries). The same runtime passed eight pending-review daemon crashes on Mac,
+with the same provider, exact questions/receipts and no unapproved model calls.
+Oracle Ubuntu passed all eight decisions on actual Codex 0.160 and 0.155.1;
+source, archive, provider, helper and copied-evidence hashes match, and all
+recorded process generations independently retired. Windows CI now includes
+separate idle form and URL trials that arm
 the private MCP server, finish the model turn, trigger each later review,
 hold peer input and check the exact decision, wire reply and five input
-receipts per mode. That Windows fixture has not yet run on a native runner.
-Other platforms/versions, pending-review restarts, final CI/review and
+receipts per mode. That Windows trial is running; no acceptance is claimed yet.
+Further versions, provider/GUI restarts, final CI/review and
 integration remain pending. Active command/file/permission questions
 still require their exact turn; secret/device callbacks and longer waits remain
 open. This follow-up does not change PR #294's final release candidate.
