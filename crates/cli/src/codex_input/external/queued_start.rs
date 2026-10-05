@@ -1,8 +1,6 @@
 //! Explicitly start an existing native queue entry after a reviewed interruption.
 //! The provider owns scheduling; no timer or historical idle state enters here.
-use super::{
-    Client, Ledger, Provider, call, identity, ledger::Attempt, queue, receipts, verify_provider,
-};
+use super::{Client, Ledger, Provider, call, identity, ledger::Attempt, queue, receipts, remote};
 use agentdocker_core::{ProcessIdentity, Request, Response};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -77,7 +75,9 @@ pub(super) async fn start(
         current.project.is_some(),
         "queued start requires a project journal"
     );
-    verify_provider(provider, &binding).await?;
+    // This is the service's initialized connection, not a newly spawned
+    // observer. Recheck its ownership without another initialize request.
+    remote::reverify(binding.remote.as_ref().expect("checked remote"), &binding)?;
     ensure!(
         receipts::find(provider, &binding.provider.session, &attempt, &binding)
             .await?
@@ -98,6 +98,14 @@ pub(super) async fn start(
         )
         .await?;
     live_idle(&state, &binding.provider.session)?;
+    ensure!(
+        state["thread"]["cwd"]
+            .as_str()
+            .and_then(|p| std::path::Path::new(p).canonicalize().ok())
+            .as_ref()
+            == Some(&binding.cwd),
+        "native thread checkout changed; queued input is unchanged"
+    );
     let head = provider
         .request(
             "thread/queue/list",

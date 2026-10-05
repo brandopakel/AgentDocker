@@ -1,7 +1,6 @@
-//! Explicit recovery for an offered hook whose native receipt cannot be proven.
-//! Reading history never silently authorizes this. A caller reviews the retained
-//! input, then confirms its generation-bound digest; the sole receiver journals
-//! that manual disposition and acknowledges only that message, without a receipt.
+//! Explicit recovery of retained input, bound to a reviewed provider generation.
+//! Manual hook readback and starting an existing native queue entry use distinct
+//! confirmations. History or elapsed time never silently authorizes either.
 pub(super) use super::local::Listener;
 use super::{Client, Ledger, Provider, call, identity, local, receipts, verify_provider};
 use agentdocker_core::{ProcessIdentity, ProviderGeneration, Request, Response};
@@ -27,7 +26,7 @@ pub struct Args {
     /// Explicitly start the existing queued entry using its preview digest.
     #[arg(long, requires_all = ["message", "note"], conflicts_with = "confirm_read")]
     pub start_queued: Option<String>,
-    /// Why manual readback resolves this message (recorded in the journal).
+    /// Why this readback or queued start is requested (recorded in the journal).
     #[arg(long, requires = "message")]
     pub note: Option<String>,
 }
