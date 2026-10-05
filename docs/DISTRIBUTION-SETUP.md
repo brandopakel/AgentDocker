@@ -341,35 +341,36 @@ login/reboot acceptance remain separate gates.
 ## Coworker preview releases
 
 The failed immutable `v0.2.0-beta.1` tag remains at `d46db1f2`; it published no
-release. The current published preview is **0.2.0-beta.6**, immutable source
-`13461b52`; protected-tag run 37181510424 passed. All 31 hosted assets, nine
+release. The current published preview is **0.2.0-beta.7**, immutable source
+`372ba880`; protected-tag run 37376957744 passed. All 31 hosted assets, nine
 archives, five manifests and both preview feeds were verified. Explicit-version
-CLI installation and actual beta.5 → beta.6 desktop installation, default-feed
-update, rollback and reapplication passed on Mac ARM64 and independent Oracle
-Ubuntu x86_64. Both platforms also passed hosted startup, eight terminal and
-31 graphical workflow checks with synthetic providers. Oracle passed 17
-installed systemd checks, including retirement of all six service process
-generations and restoration of pre-existing links. The fixed preview channels
-advertise beta.6. Stable v0.1.0 and the Homebrew tap are unchanged. The next
-candidate is beta.7; source preparation does not publish it or advance a feed.
-Beta.7 raises the state schema from beta.6's 23 to 25. Binary rollback across
-that boundary deliberately refuses and preserves the selected installation;
-it cannot downgrade a database. Returning to beta.6 requires a matching
-pre-upgrade state backup while stopped. Hosted beta.7 acceptance must check
-upgrade, exact rollback refusal and the unchanged candidate, rather than claim
-the same-schema rollback/reapplication accepted for beta.5 → beta.6.
-Earlier releases retain their exact trial scopes in the verification index.
+CLI installation and actual beta.6 → beta.7 desktop installation/default-feed
+update passed on Mac ARM64 and independent Oracle Ubuntu x86_64. Both platforms
+also passed eight terminal and 31 graphical workflow checks with synthetic
+providers. Mac passed ten installed daemon lifecycle checks; automatic crash
+restart in its on-demand GUI domain and login/reboot remain open. Oracle passed
+17 installed systemd checks, including retirement of six process generations
+and restoration of pre-existing links. Both fixed preview channels advertise
+beta.7; stable v0.1.0 and the Homebrew tap are unchanged from the prepublication
+snapshot.
 
-Windows hosted run 37183769127 passed 15 lifecycle checks, including actual
-beta.5 → beta.6 update/rollback/reapplication, plus 13 installed daemon and
-24 installed connector checks. Exact hosted archive and executable bytes,
-driver source and cleanup were independently verified. The service trials used
-the retained beta.5 bootstrap forwarding to the verified beta.6 payload.
-Original trial failures remain recorded without inheriting later passes.
-Beta.6 includes the experimental native launcher but excludes subsequent owner
-cleanup and recovery changes; current native Codex, real accounts, physical
-input and login/reboot remain open. All published versioned releases remain
-immutable.
+Beta.7 raises the state schema from beta.6's 23 to 25. Actual hosted trials on
+all three platforms verified that binary rollback refuses and preserves the
+selected installation. This is distinct from the same-schema rollback and
+reapplication accepted for beta.5 → beta.6. The installer cannot downgrade a
+database. Never restore an older delivery ledger over already acknowledged
+input; use isolated state for an older-version trial. Earlier releases retain
+their exact trial scopes in the verification index.
+
+Windows hosted run 37379869386 passed 15 lifecycle checks, including actual
+beta.6 → beta.7 update and unchanged-installation rollback refusal, plus
+13 installed daemon and 24 installed connector checks. Exact hosted archive and
+executable bytes, driver source and cleanup were independently verified. Service
+trials used the retained beta.6 bootstrap forwarding to the verified beta.7
+payload. Original trial and verifier failures remain recorded separately.
+Native Codex launch and live replacement remain experimental. Real accounts,
+physical input, independent Mac and login/reboot remain open. All published
+versioned releases remain immutable.
 
 Before announcing the preview, download its actual hosted archives and sidecar
 checksums, verify package provenance, and exercise the explicit-version install
@@ -385,9 +386,9 @@ it does not complete the installer/service/update or native Codex input work.
    present at the September 9 check. Secret values/token validity were not audited.
 2. Open: configure Developer ID/notarization privately, reconcile the cask
    signing/installation contract, and validate final artifacts.
-3. Open: publish the next immutable preview through the protected-tag workflow
-   and exercise hosted update/rollback. Keep preview publication separate from
-   the stable feed and Homebrew; formula/cask publication belongs to stable release.
+3. Complete for beta.7: protected-tag publication and bounded hosted installation,
+   update and schema rollback refusal. Repeat for each later preview; stable
+   formula/cask publication remains separate and requires stable acceptance.
 4. Open: finish physical notification and independent-machine acceptance; retain
    results in the existing audit/verification records.
 

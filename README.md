@@ -33,7 +33,7 @@ It runs on the host: a native per-user daemon, CLI and desktop using local IPC �
 
 If you know [herdr](https://github.com/herdrdev/herdr), the two are complements rather than rivals: herdr owns the terminals agents live in, AgentDocker owns what they may touch, what they changed, and who else needs to know. See [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits). The same goes for [Dax](https://getdax.app/) (a macOS menu-bar companion whose Shepherd window embeds herdr) and [Paprika](https://paprika.ai/) (a hosted Kanban board where agents pull cards over MCP): they say what the work is and where it lives; AgentDocker helps agents coordinate their work, surfaces conflicts, and records what happened. What is shared today, what is designed and what is only an idea is in [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits) (the deeper focus/prompt bridge was measured and deferred; HERDR-BRIDGE.md in git history): a herdr, tmux, screen or zellij session is recognised and shown with the agent; a local board of cards with acceptance text, pulled once over a `task:<id>` lease, is in the app (the shape taken from Paprika); the herdr prompt/focus bridge and a Paprika card-to-lease bridge are proposals.
 
-> Status: **beta, single host.** The native desktop, messaging, agent terminals, reconnect, task board and usage collection are implemented. The published [v0.2.0-beta.6 preview](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.6) includes the macOS/Linux desktop and an unsigned Windows portable ZIP. The stable download and Homebrew formula remain v0.1.0. First-run and sustained acceptance remain open; the full Windows product is unfinished.
+> Status: **beta, single host.** The native desktop, messaging, agent terminals, reconnect, task board and usage collection are implemented. The published [v0.2.0-beta.7 preview](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.7) includes the macOS/Linux desktop and an unsigned Windows portable ZIP. The stable download and Homebrew formula remain v0.1.0. First-run and sustained acceptance remain open; the full Windows product is unfinished.
 
 The first coworker rollout targets **macOS, Linux and native Windows**. Each
 platform needs a downloadable candidate and its own first-run acceptance; the
@@ -70,21 +70,24 @@ Idle message delivery needs a provider input adapter as well. Managed Claude cha
 ## Install
 
 **Trying the desktop preview with coworkers:** download
-[v0.2.0-beta.6](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.6)
+[v0.2.0-beta.7](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.7)
 explicitly. The default installer and Homebrew commands below still select the
 stable v0.1.0 release. For a source trial, follow
 [the local build instructions](docs/LOCAL-BUILD.md) at an agreed commit. The
 release checklist is in [Remaining work](docs/REMAINING-WORK.md).
 
-Published **0.2.0-beta.6** corrects Linux service removal and adds public-client
-metadata validation for browser connections. Actual beta.5 → beta.6 installation,
-update, rollback and reapplication passed on Mac ARM64, Oracle Ubuntu x86-64 and
-Windows x64. Hosted Mac/Linux graphical checks and Linux/Windows installed service
-checks passed in private fixtures. Packages target macOS and Linux on ARM64/x86-64,
-plus an unsigned Windows x64 ZIP with per-user installation and Task Scheduler
-startup. The native Codex launcher remains experimental; its abrupt-exit lifetime
-limitation is documented in the release notes. Fresh-account, physical hardware,
-accessibility and sleep/reboot acceptance remain open; [the trial requirements](docs/LOCAL-TRIAL.md#stage-5--other-machines-and-systems)
+Published **0.2.0-beta.7** adds native Codex lifetime and recovery fixes, MCP
+website/nonsecret form review, and macOS daemon installation startup. Actual
+beta.6 → beta.7 installation and update passed on Mac ARM64, Oracle Ubuntu
+x86-64 and Windows x64. Beta.7 raises the state schema to 25: rollback to
+beta.6 deliberately refuses and preserves the installation. Never restore an
+older delivery ledger over already acknowledged input. Hosted Mac/Linux terminal
+and graphical checks, Mac daemon service checks, and Linux/Windows installed
+service checks passed in private fixtures. Packages target macOS and Linux on
+ARM64/x86-64, plus an unsigned Windows x64 ZIP with per-user installation and
+Task Scheduler startup. Native Codex launch and live daemon replacement remain
+experimental. Fresh-account, physical hardware, accessibility and sleep/reboot
+acceptance remain open; [the trial requirements](docs/LOCAL-TRIAL.md#stage-5--other-machines-and-systems)
 distinguish a preview from completed platform acceptance.
 
 End users download native executables; Rust build caches are development files.
@@ -142,7 +145,7 @@ The daemon keeps scanning for agent processes on its own and announces them as `
 
 - **One host.** Agents on two machines do not see each other; a hand-off bundle carries work across, a shared registry does not.
 - **Waking an idle Claude Code session.** A Claude session takes a message the moment it is next at a prompt, or live if it was launched with the AgentDocker channel (`agentdocker setup claude-code` writes the MCP entry; the session must start with `--dangerously-load-development-channels server:agentdocker` and accept the consent prompt, or be relaunched so — the app tells you when a recipient cannot be woken). **Reconnect here** now resumes an eligible ended Claude session in the app with its conversation and queue; Claude displays its own consent. **Wake terminal sessions** in Tools (or `agentdocker setup --shell`) previews the shell configuration for future Claude launches. Existing plain sessions need a normal exit/reconnect. Codex uses its separate [input adapter](docs/CODEX-INPUT.md), whose startup and version limits remain explicit.
-- **Linux:** the CLI and daemon are exercised in CI on x86-64 and ARM64 and the desktop app builds and packages there, but no release has been tried on a real distribution by a person yet. **Windows:** the merged daemon/CLI foundation answers over native named pipes. Merged #214 (superseding #210) adds managed sessions and ConPTY, with native coverage for owner lifetime, database crash recovery and fresh-home window startup. Merged #219 packages an unsigned portable ZIP; its recorded extracted-archive trial passed 284 native tests and 51 daemon/CLI/terminal/desktop steps. A later integrated candidate failed its first daemon-start check and remains under investigation. Hosted beta.5 → beta.6 installation, update, rollback and reapplication passed, along with isolated installed daemon/connector service checks. Real-provider, physical input and logon/reboot acceptance remain. See the [Windows port status](docs/WINDOWS-PORT.md).
+- **Linux:** the CLI and daemon are exercised in CI on x86-64 and ARM64 and the desktop app builds and packages there, but no release has been tried on a real distribution by a person yet. **Windows:** the merged daemon/CLI foundation answers over native named pipes. Merged #214 (superseding #210) adds managed sessions and ConPTY, with native coverage for owner lifetime, database crash recovery and fresh-home window startup. Merged #219 packages an unsigned portable ZIP; its recorded extracted-archive trial passed 284 native tests and 51 daemon/CLI/terminal/desktop steps. A later integrated candidate failed its first daemon-start check and remains under investigation. Hosted beta.6 → beta.7 installation, update and schema rollback refusal passed, along with isolated installed daemon/connector service checks. Real-provider, physical input and logon/reboot acceptance remain. See the [Windows port status](docs/WINDOWS-PORT.md).
 - **Accessibility and input:** external accessibility-tree inspection and More/Agents/Chat navigation passed on the installed macOS preview. Physical keyboard, VoiceOver and IME acceptance remain open.
 - **Provider limits and account resets** are detected and recovered in bounded trials, not over days of real use.
 
