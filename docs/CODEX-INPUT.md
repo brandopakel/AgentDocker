@@ -1119,7 +1119,8 @@ Forms support flat strings, numbers/integers, booleans and titled/untitled
 single/multiple selections, required fields, defaults and bounds. Email, URI,
 date and date-time formats are validated without fetching or changing values.
 Unknown constraints, nested schemas, secret/extended formats and device
-verification fail explicitly. Requests are limited to 16 fields, 32 options,
+verification fail explicitly. Explicit `null` schema fields are invalid, including
+constraints and defaults; only omission selects the documented fallback. Requests are limited to 16 fields, 32 options,
 16,000-byte schemas/responses and 4,096-byte text fields; numeric magnitudes may
 not exceed 2^53 − 1. The generated Codex 0.160 schema does not carry regex patterns,
 so such constraints are unsupported rather than ignored.

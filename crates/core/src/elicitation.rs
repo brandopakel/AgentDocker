@@ -57,6 +57,11 @@ fn object<'a>(value: &'a Value, allowed: &[&str]) -> Result<&'a Map<String, Valu
     if object.keys().any(|key| !allowed.contains(&key.as_str())) {
         return Err("Unsupported form schema field");
     }
+    // Every supported schema member has a non-null type. Missing members may
+    // use a fallback; explicit null must not silently erase a constraint.
+    if object.values().any(Value::is_null) {
+        return Err("Form schema fields cannot be null");
+    }
     Ok(object)
 }
 
@@ -490,6 +495,69 @@ mod tests {
         let mut schema = schema;
         schema["required"] = json!(["missing"]);
         assert!(McpForm::parse(&schema).is_err());
+    }
+
+    #[test]
+    fn mcp_form_explicit_null_constraints_and_defaults_are_not_omissions() {
+        for (mut schema, paths) in [
+            (
+                json!({"type":"object","properties":{"field":{"type":"string"}}}),
+                vec![
+                    "/required",
+                    "/$schema",
+                    "/properties/field/title",
+                    "/properties/field/description",
+                    "/properties/field/default",
+                    "/properties/field/minLength",
+                    "/properties/field/maxLength",
+                    "/properties/field/format",
+                ],
+            ),
+            (
+                json!({"type":"object","properties":{"field":{"type":"number"}}}),
+                vec![
+                    "/properties/field/minimum",
+                    "/properties/field/maximum",
+                    "/properties/field/default",
+                ],
+            ),
+            (
+                json!({"type":"object","properties":{"field":{"type":"boolean"}}}),
+                vec!["/properties/field/default"],
+            ),
+            (
+                json!({"type":"object","properties":{"field":{"type":"string","enum":["one"]}}}),
+                vec!["/properties/field/enumNames"],
+            ),
+            (
+                json!({"type":"object","properties":{"field":{"type":"array","items":{"type":"string","enum":["one"]}}}}),
+                vec![
+                    "/properties/field/minItems",
+                    "/properties/field/maxItems",
+                    "/properties/field/default",
+                ],
+            ),
+        ] {
+            // Each valid omission permits an empty response; adding null must
+            // reject the schema, rather than opening the same relaxed form.
+            assert!(
+                McpForm::parse(&schema)
+                    .unwrap()
+                    .validate(&json!({}))
+                    .is_ok()
+            );
+            for path in paths {
+                let (parent, key) = path.rsplit_once('/').unwrap();
+                schema.pointer_mut(parent).unwrap()[key] = Value::Null;
+                assert!(McpForm::parse(&schema).is_err(), "accepted null at {path}");
+                schema
+                    .pointer_mut(parent)
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(key);
+            }
+        }
     }
 
     #[test]
