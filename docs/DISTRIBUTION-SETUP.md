@@ -352,6 +352,12 @@ installed systemd checks, including retirement of all six service process
 generations and restoration of pre-existing links. The fixed preview channels
 advertise beta.6. Stable v0.1.0 and the Homebrew tap are unchanged. The next
 candidate is beta.7; source preparation does not publish it or advance a feed.
+Beta.7 raises the state schema from beta.6's 23 to 25. Binary rollback across
+that boundary deliberately refuses and preserves the selected installation;
+it cannot downgrade a database. Returning to beta.6 requires a matching
+pre-upgrade state backup while stopped. Hosted beta.7 acceptance must check
+upgrade, exact rollback refusal and the unchanged candidate, rather than claim
+the same-schema rollback/reapplication accepted for beta.5 → beta.6.
 Earlier releases retain their exact trial scopes in the verification index.
 
 Windows hosted run 37183769127 passed 15 lifecycle checks, including actual

@@ -5,6 +5,8 @@ Without --baseline-tag this proves first installation/default-feed discovery,
 not a two-release upgrade. A baseline must itself support native installation;
 portable-only releases are refused before execution. Service trials use private
 Task Scheduler registrations and do not change the runner's normal installation.
+Across a schema upgrade, acceptance requires rollback refusal with the active
+installation unchanged; it never treats that as a successful database downgrade.
 """
 import argparse
 import hashlib
@@ -61,6 +63,7 @@ def validate_manifest(manifest, tag, source):
     identity(tag, source)
     if (manifest.get('source_commit') != source or manifest.get('source_dirty') is not False
             or manifest.get('version') != tag[1:] or manifest.get('target') != TARGET
+            or type(manifest.get('state_schema')) is not int or manifest['state_schema'] <= 0
             or manifest.get('installation_lock') != 1 or manifest.get('launcher_redirect') != 2
             or set(manifest.get('artifacts', {})) != {ARCHIVE}):
         raise ValueError('hosted preview lacks the exact source/version/native installation contract')
@@ -124,6 +127,18 @@ def validate_installed_payload(store, installation, manifest, build_info):
         raise ValueError('installed executable bytes differ from the hosted candidate')
 
 
+def validate_schema_rollback_refusal(command, before, after):
+    current, previous = before.get('current', {}), before.get('previous') or {}
+    if (type(current.get('state_schema')) is not int
+            or type(previous.get('state_schema')) is not int
+            or not 0 < previous['state_schema'] < current['state_schema']
+            or command.get('exit_code') != 1 or command.get('stdout') != ''
+            or command.get('stderr', '').strip()
+            != 'Error: state schema differs; binary rollback cannot roll back the database'
+            or before != after):
+        raise ValueError('schema rollback must refuse exactly and preserve the entire installation')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tag', required=True)
@@ -146,7 +161,8 @@ def main():
     report = {'result': 'failed', 'tag': args.tag, 'source_commit': args.source,
               'baseline_tag': args.baseline_tag, 'baseline_source': args.baseline_source,
               'driver_sha256': digest(Path(__file__)), 'steps': [], 'commands': [],
-              'scope': 'Hosted native Windows private-prefix install and default feed. Optional actual published baseline proves update/rollback/reapply; without it no two-release lifecycle claim. Private installed daemon/connector service trials; no actual provider account, public tunnel, physical console, Start menu or logon/reboot claim.'}
+              'rollback_disposition': 'not_requested',
+              'scope': 'Hosted native Windows private-prefix install and default feed. With an actual baseline, equal schemas exercise update/rollback/reapply; a schema upgrade exercises update and exact rollback refusal without changing the installation. Neither restores an older database. Without a baseline no two-release lifecycle claim. Private installed daemon/connector service trials; no actual provider account, public tunnel, physical console, Start menu or logon/reboot claim.'}
     scratch = None
 
     def save():
@@ -177,7 +193,7 @@ def main():
         env.update(AGENTDOCKER_HOME=str(home), AGENTDOCKER_NO_AUTOSTART='1',
                    AGENTDOCKER_SOCKET=rf'\\.\pipe\agentdocker-hosted-{uuid.uuid4().hex}')
 
-        def command(*argv, executable=None):
+        def command(*argv, executable=None, record_only=False):
             selected = executable or launcher
             result = subprocess.run([str(selected), *map(str, argv)], cwd=scratch, env=env,
                                     capture_output=True, text=True, encoding='utf-8', timeout=180)
@@ -185,6 +201,8 @@ def main():
                                        'exit_code': result.returncode, 'stdout': result.stdout[-32768:],
                                        'stderr': result.stderr[-32768:]})
             save()
+            if record_only:
+                return report['commands'][-1]
             if result.returncode:
                 raise AssertionError(f'hosted command failed: {argv}: {result.stderr[-2048:]}')
             return json.loads(result.stdout)
@@ -225,14 +243,29 @@ def main():
             step('hosted update preserves the actual prior release',
                  active['current']['id'] == second and active['previous']['id'] == first
                  and installed_matches(manifest))
-            desktop('rollback', '--local-preview', '--expect-current', second, '--expect-release', first)
-            step('rollback restores the exact earlier hosted binaries',
-                 installed_matches(baseline)
-                 and desktop('status')['installation']['current']['id'] == first)
-            desktop('update', '--apply')
-            step('default feed reapplies the hosted candidate after rollback',
-                 installed_matches(manifest)
-                 and desktop('status')['installation']['current']['id'] == second)
+            if baseline['state_schema'] != manifest['state_schema']:
+                refused = desktop('rollback', '--local-preview', '--expect-current', second,
+                                  '--expect-release', first, record_only=True)
+                after = desktop('status')['installation']
+                validate_schema_rollback_refusal(refused, active, after)
+                report['rollback_disposition'] = 'refused_schema_change'
+                report['rollback_refusal'] = {'command': refused, 'before': active, 'after': after}
+                step('schema rollback refuses without changing the installed selection or bytes',
+                     installed_matches(manifest) and not home.exists())
+                unchanged = desktop('update', '--apply')
+                step('newer-schema candidate remains active after refused rollback',
+                     unchanged['update']['update_available'] is False
+                     and desktop('status')['installation'] == active and installed_matches(manifest))
+            else:
+                desktop('rollback', '--local-preview', '--expect-current', second, '--expect-release', first)
+                step('rollback restores the exact earlier hosted binaries',
+                     installed_matches(baseline)
+                     and desktop('status')['installation']['current']['id'] == first)
+                desktop('update', '--apply')
+                step('default feed reapplies the hosted candidate after rollback',
+                     installed_matches(manifest)
+                     and desktop('status')['installation']['current']['id'] == second)
+                report['rollback_disposition'] = 'restored'
         else:
             unchanged = desktop('update', '--apply')
             step('current hosted release stays unchanged when no update exists',
