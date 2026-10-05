@@ -173,16 +173,18 @@ def validate_queue_recovery_report(native, info, mode):
     require(len(rows) == (2 if mode == "holds" else 3) and rows[:2] == before["completed"])
     if mode == "normal":
         require(proof.get("response", {}).get("exit_code") == 0)
-        first = json.loads(proof["response"]["stdout"])
+        first = json.loads(proof["response"]["stderr"])
         require(first.get("already_attempted") is False
+                and proof["response"]["stdout"].strip() == first.get("queued_start")
                 and first.get("message") == proof.get("message") and bool(first.get("queued_start"))
                 and bool(first.get("turn"))
                 and rows[-1]["message"] == first["message"] and rows[-1]["receipt"]["turn"] == first["turn"]
                 and sum(bool(r.get("recovery")) and not r.get("title") for r in native.get("requests", [])) == 1)
         reply = proof.get("repeat", {})
         if reply.get("exit_code") == 0:
-            repeat = json.loads(reply["stdout"])
+            repeat = json.loads(reply["stderr"])
             require(repeat.get("already_attempted") is True
+                    and reply["stdout"].strip() == repeat.get("queued_start")
                     and all(first.get(k) == repeat.get(k) for k in ("message", "queued_start", "turn")))
         else:
             require(proof.get("repeat_disposition") == "already_delivered"

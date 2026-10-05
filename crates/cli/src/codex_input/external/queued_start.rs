@@ -81,11 +81,13 @@ pub(super) async fn start(
             start.confirmation == confirmation,
             "this entry already has another start intent"
         );
-        // A retry only reads the durable disposition, even if its journal or
-        // provider reply was lost. Ordinary receipt recovery remains in charge.
-        return Ok(json!({"queued_start":start.id,"message":message,
-            "turn":start.turn,"already_attempted":true,
-            "notice":"The original start intent is retained. This call did not start or acknowledge input again; await its exact provider receipt."}));
+        if start.may_have_transmitted() {
+            // Only the durable transmission marker makes retries read-only.
+            // A prepared intent must repeat every live check before proceeding.
+            return Ok(json!({"queued_start":start.id,"message":message,
+                "turn":start.turn,"already_attempted":true,
+                "notice":"The original start may have been transmitted. This call did not start or acknowledge input again; await its exact provider receipt."}));
+        }
     }
     ensure!(
         ledger.start_confirmation()? == confirmation,
@@ -145,12 +147,13 @@ pub(super) async fn start(
         .context("queued start requires a project journal")?
         .id();
     unpaused_project(call(client, Request::Pauses).await?, &project)?;
-    let start = ledger.begin_queued_start(message, confirmation, note, operator)?;
+    let start = ledger.begin_queued_start(message, confirmation, note, operator.clone())?;
     ensure!(matches!(call(client, Request::JournalAdd {
         agent: binding.agent.clone(),
-        summary: format!("Explicit native queue start {} requested: message {}, queued entry {}, provider pid {} born {} / thread {}, operator pid {} born {}. {}. Intent persisted before provider transmission; this is not a delivery receipt.",
+        summary: format!("Explicit native queue start {} requested: message {}, queued entry {}, provider pid {} born {} / thread {}, original operator pid {} born {}. {}. Current confirmation by operator pid {} born {}. Intent persisted before provider transmission; this is not a delivery receipt.",
             start.id, message, queued, binding.provider.process.pid, binding.provider.process.started_at,
-            binding.provider.session, start.operator.pid, start.operator.started_at, start.note),
+            binding.provider.session, start.operator.pid, start.operator.started_at, start.note,
+            operator.pid, operator.started_at),
     }).await?, Response::JournalEntry { .. }), "queued start journal write unconfirmed; intent retained without provider transmission");
     // Ownership, provider limits or a pause may change while the journal call
     // is pending. Recheck admission, retaining the persisted intent on refusal.
@@ -159,6 +162,9 @@ pub(super) async fn start(
     unpaused_project(call(client, Request::Pauses).await?, &project)?;
     // The provider atomically refuses a newly active/pending turn. Never add,
     // delete, reorder or repeat this queued submission to recover a lost reply.
+    // Persist immediately before transmission; even a crash before the actual
+    // write after this point is conservatively uncertain and cannot replay.
+    ledger.queued_start_transmitting(&start.id)?;
     let value = provider
         .request(
             "thread/queue/start",

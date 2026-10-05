@@ -218,8 +218,8 @@ class WindowsDesktopPackaging(unittest.TestCase):
                          pause={"pause": {"project": "project"}}, pauses_after={"pauses": [{"project": "project"}]})
         else:
             first = {"message": "2", "turn": "turn2", "queued_start": "intent", "already_attempted": False}
-            proof.update(response={"exit_code": 0, "stdout": json.dumps(first)},
-                         repeat={"exit_code": 0, "stdout": json.dumps(dict(first, already_attempted=True))})
+            proof.update(response={"exit_code": 0, "stdout": "intent\n", "stderr": json.dumps(first)},
+                         repeat={"exit_code": 0, "stdout": "intent\n", "stderr": json.dumps(dict(first, already_attempted=True))})
             native["requests"] = [{"recovery": True, "title": False}]
         proof["final_history"] = {"data": [{"turnId": row["receipt"]["turn"],
                                            "item": {"type": "userMessage", "clientId": row["message"],
@@ -233,7 +233,9 @@ class WindowsDesktopPackaging(unittest.TestCase):
         for change in (lambda r: r["requests"].append(dict(r["requests"][0])),
                        lambda r: r["queued_recovery"]["final_history"]["data"].pop(),
                        lambda r: r["queued_recovery"]["completed_after"][-1]["receipt"].update(turn="wrong"),
-                       lambda r: r["queued_recovery"]["repeat"].update(stdout=r["queued_recovery"]["response"]["stdout"]),
+                       lambda r: r["queued_recovery"]["repeat"].update(stderr=r["queued_recovery"]["response"]["stderr"]),
+                       lambda r: r["queued_recovery"]["response"].update(stdout="other-intent\n"),
+                       lambda r: r["queued_recovery"]["repeat"].update(stdout="intent\nextra-output\n"),
                        lambda r: r["queued_recovery"]["refusals"][0]["ledger_after"]["attempt"].update(start={"id": "unexpected"}),
                        lambda r: r["recovery_remaining"].append({"pid": 2, "birth": 20}),
                        lambda r: r.update(source_commit="wrong")):

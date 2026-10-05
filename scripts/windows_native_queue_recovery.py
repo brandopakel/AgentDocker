@@ -104,12 +104,14 @@ def exercise(mode, receiver, call, thread, held_text, recovery_text, held_model,
         assert call('thread/queue/delete', {'threadId': thread, 'queuedSubmissionId': foreign})['deleted'] is True
         proof['response'] = recover(command)
         assert proof['response']['exit_code'] == 0, proof['response']
-        first = json.loads(proof['response']['stdout'])
+        first = json.loads(proof['response']['stderr'])
+        assert proof['response']['stdout'].strip() == first['queued_start']
         assert first['message'] == message and first['queued_start'] and first['turn'] and not first['already_attempted']
         proof['repeat'] = recover(command)
         proof['ledger_after_repeat'] = receiver.ledger()
         if proof['repeat']['exit_code'] == 0:
-            again = json.loads(proof['repeat']['stdout'])
+            again = json.loads(proof['repeat']['stderr'])
+            assert proof['repeat']['stdout'].strip() == again['queued_start']
             assert again['already_attempted'] and all(again[k] == first[k] for k in ['message', 'queued_start', 'turn'])
             proof['repeat_disposition'] = 'pending_intent'
         else:

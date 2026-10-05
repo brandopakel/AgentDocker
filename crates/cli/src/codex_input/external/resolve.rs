@@ -90,7 +90,7 @@ fn preview(ledger: &Ledger) -> Result<Value> {
                 "native_receipt": attempt.receipt,
                 "manual_read": ledger.pending_manual_read(),
                 "queued_submission": attempt.queued,
-                "start_confirmation": if attempt.start.is_none() { ledger.start_confirmation().ok() } else { None },
+                "start_confirmation": if attempt.start.as_ref().is_none_or(|s| !s.may_have_transmitted()) { ledger.start_confirmation().ok() } else { None },
                 "start_intent": attempt.start,
             }))
         })
@@ -394,10 +394,14 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         }
         let value = response.get("ok").context("invalid recovery response")?;
         // A preview is a report and prints as one. A confirmation creates a
-        // resolution: its id alone goes to stdout, as every command that
+        // resolution or start intent: its id alone goes to stdout, as every command that
         // creates something prints its id, and the rest of the report goes
         // to stderr for the person reading.
-        match value.get("resolution").and_then(Value::as_str) {
+        match value
+            .get("resolution")
+            .or_else(|| value.get("queued_start"))
+            .and_then(Value::as_str)
+        {
             Some(resolution) => {
                 eprintln!("{}", serde_json::to_string_pretty(value)?);
                 println!("{resolution}");

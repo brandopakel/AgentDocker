@@ -253,10 +253,18 @@ paused work: lifecycle notices must remain readable during a pause. A provider h
 observed after persistence retains the intent without sending to the provider.
 These are snapshots before transmission, not an atomic lock across daemon and
 provider; a later pause cannot retract an already transmitted start.
-The provider itself refuses a newly active or pending turn. A private version-6
-ledger persists one start intent before the journal write and provider call;
-while the entry remains pending, repeating the same confirmation only reports
-that intent. Once its ordinary receipt retires the pending entry, an old start
+The provider itself refuses a newly active or pending turn. A private version-7
+ledger persists one prepared start intent before the journal write. If journaling
+fails or a subsequent hold refuses the start, an explicit retry reuses that intent
+and repeats every live preflight check and the journal step. The preview keeps
+the same start confirmation available while transmission has not begun. Repeated
+journal notes identify the original intent and the current confirming operator.
+Immediately before the provider call, a second durable write marks transmission
+started. From that point repeating the same confirmation only reports the retained
+intent, including after a crash between the marker and the actual write. This
+conservative uncertainty never permits another provider start. The command prints
+only the intent ID to stdout; the full result goes to stderr.
+Once its ordinary receipt retires the pending entry, an old start
 request is refused because there is no retained input; the completed receipt
 remains delivery evidence. Lost replies, refused
 starts or interrupted journal writes leave it retained without an automatic
@@ -320,9 +328,13 @@ an input still scheduled under its original client or queue ID, even if its text
 was edited. A missing project journal refuses before any disposition is written.
 The existing provider, receiver ownership and queue order remain intact.
 
-Ledger version 6 migrates versions 2/3/4/5 without changing their input or token.
+Ledger version 7 migrates versions 2/3/4/5/6 without changing their input or token.
 Versions before 5 cannot contain the immutable remote-server descriptor; versions
-before 6 cannot contain a queued-start intent. The existing manual readback protocol
+before 6 cannot contain a queued-start intent. Version-6 intents have no transmission
+marker, so migration treats every such intent as possibly transmitted and forbids
+another start. A version-6 record containing a fabricated marker, or a version-7
+intent missing its marker, is refused without modifying the retained file.
+The existing manual readback protocol
 persists the manual intent, journals its resolution ID, acknowledges that one ID
 through the existing token-bound inbox, then records completion. Loss of a journal
 reply can produce duplicate notes with the same resolution ID; lost ACK/reply or

@@ -87,7 +87,7 @@ Reads are served from memory; every mutation is written through to SQLite (`rusq
 
 An unresolved Codex hook offer may be settled only by exact provider evidence or
 explicit `codex-queue-resolve` readback. The latter is receiver-local administration,
-not a new daemon receipt kind: ledger version 6 retains the generation-bound input
+not a new daemon receipt kind: ledger version 7 retains the generation-bound input
 digest, hook nonce, operator process and resolution ID; existing `journal_add`
 records the manual disposition before token-bound `provider_inbox` ACK. It never
 emits `report_input(received)` for manual reading. Retries retain the same intent;
@@ -95,11 +95,16 @@ late hook requests are fenced, and matching scheduled input refuses the operatio
 Explicit queued-entry recovery is separate from manual readback: the operator's
 start digest binds the full input, original submission ID and current provider
 binding. Only the launcher-owned shared server can start it, after exact receipt,
-queue-head and daemon delivery checks. Native ledger version 6 stores a one-shot
-intent before the journal and `thread/queue/start`; old versions cannot contain
-that state. An intent fences duplicate starts and hook handoff through receiver
-restart, without manufacturing an acknowledgement. A lost or refused write stays
-for ordinary receipt reconciliation. There is no automatic start based on elapsed
+queue-head and daemon delivery checks. Native ledger version 7 stores a prepared
+intent before the journal. Explicit pre-transmission retries reuse its ID, repeat
+all live checks and journal the original intent/current operator. A second durable
+marker immediately before `thread/queue/start` makes further retries read-only,
+even if a crash happens before bytes are actually written. Version-6 intents are
+migrated as possibly transmitted; earlier versions cannot contain a start intent.
+Every intent fences hook handoff through receiver restart. A possibly transmitted
+write stays for ordinary receipt reconciliation without manufacturing an ACK.
+The CLI prints the intent ID alone to stdout and the report to stderr.
+There is no automatic start based on elapsed
 time, public idle status or historical interruption.
 The prior native receipt remains unchanged. See [recovery](CODEX-INPUT.md#retained-hook-recovery-september-21-candidate).
 
@@ -1844,10 +1849,12 @@ to numeric IPv4 loopback after validating a private immutable server record.
 That record binds both native TUI/server PID births, kernel executable paths,
 server checkout, thread/profile and capability file/digest. Both server and TUI
 arguments must select the same exact loopback endpoint without duplicate options.
-Ledger version 6
+Ledger version 7
 retains its absolute path and SHA-256. Migration preserves delivery state: versions
 2/3/4 cannot contain a preexisting remote descriptor, and version 5 cannot contain
-a queued-start intent. Reconnect
+a queued-start intent. Version-6 start intents migrate as possibly transmitted;
+unknown legacy transmission markers and missing version-7 markers refuse.
+Reconnect
 revalidates generations and capability before and after connection, and checks
 the initialized profile and thread. A maintained WebSocket implementation bounds
 frames to 4 MiB and connection/write/close to five seconds. Each 30-second RPC

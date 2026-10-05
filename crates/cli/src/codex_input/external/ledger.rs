@@ -55,8 +55,15 @@ pub(super) struct HookOffer {
     pub transcript: Option<super::hook_receipts::Snapshot>,
 }
 
-/// One explicit start of an existing provider queue entry. Persist before any
-/// provider write; a lost reply never permits another start or hook handoff.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum StartTransmission {
+    Prepared,
+    Started,
+}
+
+/// One explicit start of an existing provider queue entry. Intent preparation
+/// can be retried; a persisted transmission marker permanently fences replay.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct QueuedStart {
@@ -68,6 +75,14 @@ pub(super) struct QueuedStart {
     pub at: chrono::DateTime<chrono::Utc>,
     pub note: String,
     pub turn: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transmission: Option<StartTransmission>,
+}
+
+impl QueuedStart {
+    pub fn may_have_transmitted(&self) -> bool {
+        self.transmission != Some(StartTransmission::Prepared)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -200,7 +215,7 @@ impl Ledger {
                     "bound native input ledger is missing; retained input needs reconciliation"
                 );
                 Record {
-                    version: 6,
+                    version: 7,
                     binding: binding.clone(),
                     token: uuid::Uuid::new_v4().simple().to_string(),
                     attempt: None,
@@ -418,10 +433,6 @@ impl Ledger {
             .as_ref()
             .context("no retained input to start")?;
         ensure!(
-            attempt.start.is_none(),
-            "this queued entry already has a start intent; await its original receipt"
-        );
-        ensure!(
             attempt.message == message && self.start_confirmation()? == confirmation,
             "queued input or provider generation changed; review it again"
         );
@@ -429,6 +440,13 @@ impl Ledger {
             valid_note(note),
             "queued start requires a short nonempty audit note"
         );
+        if let Some(start) = &attempt.start {
+            ensure!(
+                start.confirmation == confirmation && !start.may_have_transmitted(),
+                "this queued start may have been transmitted; await its original receipt"
+            );
+            return Ok(start.clone());
+        }
         let start = QueuedStart {
             id: uuid::Uuid::new_v4().simple().to_string(),
             queued: attempt
@@ -441,11 +459,27 @@ impl Ledger {
             at: chrono::Utc::now(),
             note: note.into(),
             turn: None,
+            transmission: Some(StartTransmission::Prepared),
         };
         let mut next = self.record.clone();
         next.attempt.as_mut().expect("checked attempt").start = Some(start.clone());
         self.save(next)?;
         Ok(start)
+    }
+
+    pub fn queued_start_transmitting(&mut self, id: &str) -> Result<()> {
+        let mut next = self.record.clone();
+        let start = next
+            .attempt
+            .as_mut()
+            .and_then(|a| a.start.as_mut())
+            .context("no queued start intent")?;
+        ensure!(
+            start.id == id && !start.may_have_transmitted(),
+            "queued start transmission already began or its intent changed"
+        );
+        start.transmission = Some(StartTransmission::Started);
+        self.save(next)
     }
 
     pub fn queued_start_replied(&mut self, id: &str, turn: &str) -> Result<()> {
@@ -457,7 +491,9 @@ impl Ledger {
             .and_then(|a| a.start.as_mut())
             .context("no queued start intent")?;
         ensure!(
-            start.id == id && start.turn.as_deref().is_none_or(|old| old == turn),
+            start.id == id
+                && start.transmission == Some(StartTransmission::Started)
+                && start.turn.as_deref().is_none_or(|old| old == turn),
             "queued start reply differs from its original intent"
         );
         start.turn = Some(turn.into());
@@ -646,12 +682,24 @@ impl Record {
             );
             self.version = 6;
         }
+        if self.version == 6 {
+            if let Some(start) = self.attempt.as_mut().and_then(|a| a.start.as_mut()) {
+                ensure!(
+                    start.transmission.is_none(),
+                    "old native record contains a queued transmission marker"
+                );
+                // Version 6 did not distinguish preparation from transmission.
+                // Never reinterpret an old uncertain write as safe to retry.
+                start.transmission = Some(StartTransmission::Started);
+            }
+            self.version = 7;
+        }
         Ok(())
     }
 
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
-            self.version == 6 && &self.binding == binding,
+            self.version == 7 && &self.binding == binding,
             "native queue provider binding changed; reconcile retained input before reconnecting"
         );
         ensure!(
@@ -723,6 +771,8 @@ impl Record {
                         && start.operator.pid > 0
                         && start.operator.started_at <= start.at
                         && valid_note(&start.note)
+                        && start.transmission.is_some()
+                        && (start.turn.is_none() || start.may_have_transmitted())
                         && start.turn.as_deref().is_none_or(valid_id),
                     "invalid queued start intent"
                 );
@@ -803,7 +853,7 @@ mod tests {
     use agentdocker_core::{Destination, ProcessIdentity};
 
     #[test]
-    fn queued_start_is_durable_once_only_and_still_requires_a_provider_receipt() {
+    fn queued_start_preparation_can_retry_but_transmission_and_receipt_remain_once_only() {
         let home = tempfile::tempdir().unwrap();
         let bound = binding(home.path());
         let envelope = Envelope::new(
@@ -832,8 +882,9 @@ mod tests {
             )
             .unwrap();
         assert!(ledger.acknowledge().is_err());
-        drop(ledger); // The provider or CLI reply can be lost after this point.
-        let mut ledger = Ledger::open(home.path(), bound, None).unwrap();
+        assert!(!start.may_have_transmitted());
+        drop(ledger); // A journal failure must not strand this prepared intent.
+        let mut ledger = Ledger::open(home.path(), bound.clone(), None).unwrap();
         assert_eq!(
             ledger
                 .record
@@ -846,14 +897,44 @@ mod tests {
                 .id,
             start.id
         );
-        assert!(
-            ledger
-                .begin_queued_start(envelope.id.as_str(), &confirmation, "retry", operator)
-                .is_err()
-        );
+        let retried = ledger
+            .begin_queued_start(
+                envelope.id.as_str(),
+                &confirmation,
+                "retry",
+                operator.clone(),
+            )
+            .unwrap();
+        assert_eq!(retried.id, start.id);
+        assert_eq!(retried.note, start.note);
+        assert_eq!(retried.operator, start.operator);
+        assert_eq!(retried.at, start.at);
+        assert!(!retried.may_have_transmitted());
         assert!(
             ledger
                 .offer_hook("hook", input(&envelope).unwrap(), None)
+                .is_err()
+        );
+        assert!(ledger.queued_start_replied(&start.id, "turn").is_err());
+        assert!(ledger.queued_start_transmitting("wrong-intent").is_err());
+        ledger.queued_start_transmitting(&start.id).unwrap();
+        drop(ledger); // After this point, an absent reply cannot permit replay.
+        let mut ledger = Ledger::open(home.path(), bound, None).unwrap();
+        assert!(
+            ledger
+                .record
+                .attempt
+                .as_ref()
+                .unwrap()
+                .start
+                .as_ref()
+                .unwrap()
+                .may_have_transmitted()
+        );
+        assert!(ledger.queued_start_transmitting(&start.id).is_err());
+        assert!(
+            ledger
+                .begin_queued_start(envelope.id.as_str(), &confirmation, "retry", operator)
                 .is_err()
         );
         ledger.queued_start_replied(&start.id, "turn").unwrap();
@@ -934,8 +1015,96 @@ mod tests {
         record.attempt.as_mut().unwrap().start = None;
         std::fs::write(path, serde_json::to_vec(&record).unwrap()).unwrap();
         let ledger = Ledger::open(home.path(), bound, None).unwrap();
-        assert_eq!(ledger.record.version, 6);
+        assert_eq!(ledger.record.version, 7);
         assert!(ledger.record.attempt.as_ref().unwrap().start.is_none());
+    }
+
+    #[test]
+    fn queued_start_migration_never_invents_permission_to_retry_an_uncertain_write() {
+        let home = tempfile::tempdir().unwrap();
+        let bound = binding(home.path());
+        let envelope = Envelope::new(
+            "peer",
+            Destination::parse("agent"),
+            "chat",
+            serde_json::json!({"text":"retained"}),
+            None,
+            chrono::Utc::now(),
+        );
+        let mut ledger = Ledger::open(home.path(), bound.clone(), None).unwrap();
+        ledger.prepare(&envelope, None).unwrap();
+        ledger.queued("entry").unwrap();
+        let confirmation = ledger.start_confirmation().unwrap();
+        let operator = ProcessIdentity {
+            pid: 2,
+            started_at: chrono::Utc::now(),
+        };
+        let intent = ledger
+            .begin_queued_start(
+                envelope.id.as_str(),
+                &confirmation,
+                "review",
+                operator.clone(),
+            )
+            .unwrap();
+        let original = serde_json::to_value(&ledger.record).unwrap();
+        let path = ledger.path.clone();
+        drop(ledger);
+        let mut missing_marker = original.clone();
+        missing_marker["attempt"]["start"]
+            .as_object_mut()
+            .unwrap()
+            .remove("transmission");
+        let mut fabricated_legacy = original.clone();
+        fabricated_legacy["version"] = serde_json::json!(6);
+        let mut impossible_reply = original.clone();
+        impossible_reply["attempt"]["start"]["turn"] =
+            serde_json::json!("turn-before-transmission");
+        for invalid in [missing_marker.clone(), fabricated_legacy, impossible_reply] {
+            let bytes = serde_json::to_vec(&invalid).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(Ledger::open(home.path(), bound.clone(), None).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        missing_marker["version"] = serde_json::json!(6);
+        std::fs::write(&path, serde_json::to_vec(&missing_marker).unwrap()).unwrap();
+        let mut ledger = Ledger::open(home.path(), bound.clone(), None).unwrap();
+        assert_eq!(ledger.record.version, 7);
+        let migrated = ledger
+            .record
+            .attempt
+            .as_ref()
+            .unwrap()
+            .start
+            .as_ref()
+            .unwrap();
+        assert_eq!(migrated.id, intent.id);
+        assert!(migrated.may_have_transmitted());
+        assert!(ledger.queued_start_transmitting(&intent.id).is_err());
+        assert!(
+            ledger
+                .begin_queued_start(envelope.id.as_str(), &confirmation, "retry", operator)
+                .is_err()
+        );
+        assert!(
+            ledger
+                .offer_hook("hook", input(&envelope).unwrap(), None)
+                .is_err()
+        );
+        assert!(ledger.acknowledge().is_err());
+        drop(ledger);
+        let reopened = Ledger::open(home.path(), bound, None).unwrap();
+        assert!(
+            reopened
+                .record
+                .attempt
+                .as_ref()
+                .unwrap()
+                .start
+                .as_ref()
+                .unwrap()
+                .may_have_transmitted()
+        );
     }
 
     #[test]
@@ -1260,7 +1429,7 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let ledger = Ledger::open(home.path(), binding, None).unwrap();
         let mut upgraded = serde_json::to_value(&ledger.record).unwrap();
-        assert_eq!(upgraded["version"], 6);
+        assert_eq!(upgraded["version"], 7);
         upgraded["version"] = serde_json::json!(2);
         assert_eq!(upgraded, old);
     }
