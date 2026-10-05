@@ -14,8 +14,8 @@ The next source candidate is `0.2.0-beta.7`, still unpublished. It includes
 native Codex owner cleanup, stop-priority and explicit retained-input recovery,
 plus the stacked MCP website/form review changes and Windows managed-ledger
 publication fix. Final integration, review and CI must finish before tagging;
-then hosted downloads and beta.6 update need acceptance. Beta.7 raises schema23
-to25: verify exact rollback refusal and an unchanged installation, since binary
+then hosted downloads and beta.6 update need acceptance. Beta.7 raises schema 23
+to 25: verify exact rollback refusal and an unchanged installation, since binary
 rollback cannot restore the older database. Returning to beta.6 requires its
 matching pre-upgrade state backup while stopped. The hosted Windows fixture
 now distinguishes this refusal from a same-schema rollback/reapplication;

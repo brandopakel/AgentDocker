@@ -322,6 +322,11 @@ impl McpForm {
 
 impl FormField {
     pub fn validate(&self, value: &Value) -> Result<(), &'static str> {
+        if matches!(&self.kind, FormKind::Text { .. })
+            && value.as_str().is_some_and(|s| s.len() > MAX_FORM_TEXT)
+        {
+            return Err("Text exceeds the 4,096-byte limit");
+        }
         let valid = match &self.kind {
             FormKind::Text { min, max, format } => value.as_str().is_some_and(|s| {
                 visible(s, MAX_FORM_TEXT)
@@ -415,6 +420,25 @@ impl FormField {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_form_distinguishes_byte_cap_from_unicode_character_bounds() {
+        let form = McpForm::parse(&json!({"type":"object","properties":{
+            "text":{"type":"string","minLength":2,"maxLength":3000}
+        }}))
+        .unwrap();
+        assert!(form.validate(&json!({"text":"é".repeat(2048)})).is_ok());
+        assert_eq!(
+            form.validate(&json!({"text":"é".repeat(2049)})),
+            Err("Text exceeds the 4,096-byte limit")
+        );
+        for value in ["é".to_owned(), "a".repeat(3001)] {
+            assert_eq!(
+                form.validate(&json!({"text":value})),
+                Err("The value does not meet this field's type, format or bounds")
+            );
+        }
+    }
 
     #[test]
     fn mcp_form_validates_types_bounds_defaults_and_exact_selection_values() {
