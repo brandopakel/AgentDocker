@@ -283,8 +283,9 @@ with `agentdocker-ui.exe`, `agentdocker.exe` and `agentd.exe` together in the
 `AgentDocker` folder, build metadata, licenses and opening instructions. The
 packager checks native-build hashes again after copying and the PE x64 executable headers before
 publishing the directory. The manifest and sidecar checksum identify the exact
-archive; this preview is unsigned, without Authenticode or installer/update
-support. Prerelease tags attach this separately tested Windows portable ZIP;
+archive; this preview is unsigned, without Authenticode. Beta.5 and later also
+publish the separate installed-package manifest and Windows update feed after
+installer lifecycle acceptance. Prerelease tags attach this separately tested Windows portable ZIP;
 stable tags and the four-target update feeds remain macOS/Linux. Windows ARM64
 is not claimed. The beta.2 protected-tag publication passed its native Windows gate.
 
@@ -332,31 +333,37 @@ Windows promotion refusal and exact-byte retention have fixture coverage. The
 beta.2 protected-tag Windows job passed, and its hosted ZIP passed 61 native
 checks on AWBP. An actual Claude trial exposed a transcript ownership problem;
 the corrected CI package passed delivery and automatic receipt checks. Beta.5
-passed hosted installation and both installed service lifecycles. Native Codex
-input, hosted two-version Windows update/rollback, physical terminal
-attachment and service login/reboot remain separate open gates.
+passed hosted installation and both installed service lifecycles. Beta.6 passed
+the actual beta.5 → beta.6 hosted update/rollback/reapplication and both installed
+service trials. Current native Codex, physical terminal attachment and service
+login/reboot acceptance remain separate gates.
 
 ## Coworker preview releases
 
 The failed immutable `v0.2.0-beta.1` tag remains at `d46db1f2`; it published no
-release. The current published preview is **0.2.0-beta.5**, immutable source
-`fc54edc9`; protected-tag run 37170176926 passed. All 31 hosted assets were
-verified, and explicit-version installation, update, rollback and reapplication
-passed on Mac ARM64 and independent Oracle Ubuntu x86_64. Both platforms also
-passed hosted startup, terminal and graphical draft/reopen checks with synthetic
-providers; the retained Linux fixture lifetime failure and corrected driver are
-recorded separately. The fixed preview channels advertise beta.5. Stable v0.1.0
-and the Homebrew tap are unchanged.
+release. The current published preview is **0.2.0-beta.6**, immutable source
+`13461b52`; protected-tag run 37181510424 passed. All 31 hosted assets, nine
+archives, five manifests and both preview feeds were verified. Explicit-version
+CLI installation and actual beta.5 → beta.6 desktop installation, default-feed
+update, rollback and reapplication passed on Mac ARM64 and independent Oracle
+Ubuntu x86_64. Both platforms also passed hosted startup, eight terminal and
+31 graphical workflow checks with synthetic providers. Oracle passed 17
+installed systemd checks, including retirement of all six service process
+generations and restoration of pre-existing links. The fixed preview channels
+advertise beta.6. Stable v0.1.0 and the Homebrew tap are unchanged. The next
+candidate is beta.7; source preparation does not publish it or advance a feed.
 Earlier releases retain their exact trial scopes in the verification index.
 
-Windows hosted run 37172231392 passed 12 installation/feed/uninstall checks,
-13 installed daemon and 24 installed connector checks. Exact hosted archive and
-executable bytes, driver source and cleanup were independently verified. The
-first two runs retained test-driver metadata mistakes; neither is reported as a
-pass. Beta.5 is the first compatible Windows installed baseline, so its
-current-version no-op does not establish a two-release update/rollback. Native
-Codex #256 is excluded, and real accounts, physical input and login/reboot remain
-open. All previously published versioned releases remain immutable.
+Windows hosted run 37183769127 passed 15 lifecycle checks, including actual
+beta.5 → beta.6 update/rollback/reapplication, plus 13 installed daemon and
+24 installed connector checks. Exact hosted archive and executable bytes,
+driver source and cleanup were independently verified. The service trials used
+the retained beta.5 bootstrap forwarding to the verified beta.6 payload.
+Original trial failures remain recorded without inheriting later passes.
+Beta.6 includes the experimental native launcher but excludes subsequent owner
+cleanup and recovery changes; current native Codex, real accounts, physical
+input and login/reboot remain open. All published versioned releases remain
+immutable.
 
 Before announcing the preview, download its actual hosted archives and sidecar
 checksums, verify package provenance, and exercise the explicit-version install

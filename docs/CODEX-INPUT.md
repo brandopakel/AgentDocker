@@ -995,8 +995,10 @@ The Windows package harness also supports a separate URL-mode trial: four
 explicit decisions, the original destination/callback, held peer input, no form
 content and eight exact ordinary-input receipts. It shares the bounded snapshot
 reader with form trials and retains its own wire, ledger and cleanup report.
-Actual Windows URL acceptance remains pending; this private fixture does not
-open a browser or establish account consent. When a provider request omits its
+Source `8a249fde` passed all four paths/eight receipts on Windows Codex 0.160
+and 0.155.1, with exact wire/ledger/source/archive pins and clean recorded
+process retirement. This private fixture does not open a browser or establish
+account consent. When a provider request omits its
 turn ID, the review binds to the locally active turn. Its original turn cannot
 be independently established from that omission; late no-turn requests across
 interruption/restart remain a provider-contract acceptance question. Human
@@ -1241,7 +1243,8 @@ queue-recovery scenarios. A later Windows Codex 0.155.1 trial completed Submit
 and Decline but failed in the fixture observer: Python opened the live ledger
 without sharing deletion during atomic replacement. The observer now uses the
 existing bounded shared-file reader. The original failed trial is retained; a
-complete corrected older-version trial remains required. This does not prove account, physical interaction,
+complete corrected older-version trial passed in `8a249fde`, described below.
+This does not prove account, physical interaction,
 installed-service, restart or long-wait behavior.
 
 Defaults are editable suggestions. Optional fields can be omitted; submitting
@@ -1291,14 +1294,28 @@ archive has the identical CI source tree; all six recorded processes were
 independently absent. The Mac check independently confirmed five recorded PIDs
 and both signalled groups absent; other descendant cleanup uses its fixture
 report. These private-model trials require an explicit warmup/manual binding.
-Corrected full Windows native acceptance is pending. Neither original failed
-package job is full native acceptance. See the trial index.
+Corrected `8a249fde` passed full extracted Windows package acceptance on both
+Codex 0.160 and 0.155.1: 62 daemon/42 installer/22 native-launcher checks and
+three nine-check recovery scenarios. Both original-TUI MCP identities matched
+the exact provider generation before/after reopen, including the older nested
+metadata. Authoritative binding/ledger snapshots verified canonical reopen for
+frontend exit, owner exit and console close; draft and receiver replacement
+checks also passed. Birth-pinned cleanup reports have no forced cleanup,
+survivors or reader errors. Source/archive/EXE/provider/helper pins and all
+standalone reports/ledgers were independently checked. These private-model,
+synthetic-ConPTY trials do not establish account, physical or installed-service
+acceptance. Neither original failed package job inherits this pass. See the
+trial index.
 
 The first Windows URL harness run on `0d4f0ca5` failed its observer assertion on
 both pinned providers after the initial Accept and two exact input receipts.
 The app-server closure retained `content: null`, while Codex forwarded
 `content: {}` to the MCP server. This carries no form fields. The observer and
 package validator now require that exact empty object on URL Accept and omitted
-content on Decline/Cancel; nonempty content still fails. The remaining three
-paths and corrected full Windows package acceptance are pending, and both
-original failed reports remain indexed.
+content on Decline/Cancel; nonempty content still fails. Corrected `8a249fde`
+passed all four paths and eight distinct original input receipts on both
+providers. Form trials also passed four decisions/eight receipts on both.
+Invalid answers refused and peers stayed held until the exact review resolved;
+controller/configuration were unchanged. The CI reports record clean retirement
+of 58 form/54 URL process generations for 0.160 and 30 form/28 URL generations
+for 0.155.1. Both original failed URL reports remain indexed.
