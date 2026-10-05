@@ -106,11 +106,15 @@ form remained in the controller ledger and the original failed trial is retained
 The first extracted Windows managed-form trial (`8c3d7d0b`) failed before any
 input: the saved initial ledger was followed by a Unix-only directory flush,
 which returned Access is denied on Windows. The shared platform-aware private
-snapshot publisher now replaces that path; the original failure is retained and
-corrected Windows acceptance is pending. This is separate from the historical
-intermittent daemon first-start failure.
+snapshot publisher now replaces that path. Corrected `8d22f923` passed all four
+form decisions with actual Windows Codex 0.160 on the extracted package: four
+exact MCP replies, eight unique receipts, refused invalid answers, held peer
+input and clean retirement of 50 recorded process generations. Source/archive/
+executable/provider/helper hashes and wire/ledger evidence were independently
+matched; the original failure remains retained. This is separate from the
+historical intermittent daemon first-start failure.
 Final CI and independent review remain required. Account, final desktop
-packages, Windows, broader versions, physical interaction, provider/controller
+packages, broader versions, physical interaction, provider/controller
 crash and reopen, other pending-review/service handovers,
 waits beyond five minutes, extended forms/device verification and secret input remain open.
 No published preview includes this work yet.

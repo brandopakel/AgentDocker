@@ -702,7 +702,7 @@ Windows replaces the flushed record while preserving open readers; Unix also
 flushes the containing directory. A failed publication never advances the
 in-memory attempt. The initial Windows managed-form trial exposed the previous
 Unix-only directory flush (Access is denied before input); its failure is retained
-and corrected Windows acceptance remains pending.
+and corrected `8d22f923` passed the extracted-package Windows form trial below.
 
 Broader permission forms, extended MCP elicitation and secret input still require completion.
 Provider `requestUserInput` bundles reject `isSecret: true` before opening any
@@ -1216,8 +1216,14 @@ so such constraints are unsupported rather than ignored.
 The Windows package suite now includes a private managed-provider form trial
 (`--mcp-forms`): four decisions, invalid-answer refusal, held peer input and eight
 exact ordinary-input receipts, with birth-pinned cleanup and retained wire/ledger
-evidence. Actual runner acceptance is still pending; this fixture does not prove
-account, physical interaction or installed-service behavior.
+evidence. Source `8d22f923` passed on native Windows with actual Codex 0.160:
+four exact MCP replies, eight unique ordinary-input receipts, invalid answers
+refused and peer input held during review. Source/archive/executable/provider/
+helper hashes, original wire replies and retained ledger were independently
+matched. The CI report records clean retirement of all 50 process generations.
+It also passed 62 daemon, 42 installer, 22 native-launcher and three nine-check
+queue-recovery scenarios. This does not prove account, physical interaction,
+installed-service, restart or long-wait behavior.
 
 Defaults are editable suggestions. Optional fields can be omitted; submitting
 shares only included values with the named server. Unsubmitted edits remain in
@@ -1245,5 +1251,5 @@ corrected assertion are retained. A separate Linux/Codex 0.160 trial held an
 unanswered form to its five-minute expiry: 1,126 observations retained peer
 input, one exact cancellation shared no content, two ordinary-input receipts
 followed, and all private processes retired cleanly. These use private model/MCP fixtures and
-synthetic answers; account, final desktop packages, Windows, broader versions,
+synthetic answers; account, final desktop packages, broader versions,
 physical interaction, pending restart and waits beyond five minutes remain open.
