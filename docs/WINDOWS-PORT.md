@@ -858,7 +858,12 @@ intent, unchanged original receipts and a still-readable preview during pause.
 Both require native exit, unchanged configuration and recorded process-generation
 retirement. The original 22 launcher/lifetime checks remain separate and required.
 The report validator rejects duplicate inputs, invented retry results, missing
-pause evidence and incomplete cleanup. This fixture is prepared for CI; its
-presence alone does not establish Windows recovery acceptance. Actual accounts,
-physical input, discarded provider/journal replies and concurrent pause races
-remain outside its scope.
+pause evidence and incomplete cleanup. Source `a80697fd` passed both nine-check
+scenarios on its extracted archive, plus 62 daemon, 42 installer and the 22
+original launcher checks. CI merge `ff5b505f` has the identical source tree;
+archive/EXE/driver/helper hashes and retained reports were independently checked.
+Normal recovery preserved three exact receipts and one new model input; hold
+refusals preserved the two prior receipts and readable preview. Both retired all
+recorded process generations without forced cleanup. Actual accounts, physical
+input, discarded client/provider/journal replies and concurrent pause races
+remain outside this acceptance.
