@@ -109,6 +109,10 @@ registering it.
 For an on-demand or portable home without an ownership record, `daemon status`
 reports no owned service and checks the daemon directly. It does not start
 PowerShell to enumerate unrelated scheduled tasks.
+Task Scheduler operations allow up to 60 seconds per PowerShell invocation,
+including interpreter and module startup. A timeout stops that invocation and
+reports failure; it does not automatically retry a possibly completed change.
+Daemon readiness and stop deadlines remain separate.
 
 Then bring in the agents already on the machine:
 

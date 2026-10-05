@@ -228,8 +228,13 @@ pub(crate) fn evaluate_at(user_home: &Path, script: &str) -> Result<String> {
         loader,
     ];
     emit("rust-start");
+    // This allowance includes starting Windows PowerShell and loading its
+    // Scheduler module. A recorded cold invocation spent 17.7s before the
+    // first script statement; the old 20s bound then killed task lookup before
+    // any registration. Keep one bounded attempt, without retrying a possibly
+    // committed mutation. Daemon readiness and process-stop bounds are separate.
     let result =
-        agentdocker_host::command::run(user_home, &argv, std::time::Duration::from_secs(20));
+        agentdocker_host::command::run(user_home, &argv, std::time::Duration::from_secs(60));
     emit(if result.is_ok() {
         "rust-return"
     } else {
