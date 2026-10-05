@@ -196,6 +196,63 @@ class WindowsDesktopPackaging(unittest.TestCase):
             metadata = json.loads(bundle.read('AgentDocker/build.json'))
         self.assertEqual(metadata['launcher_redirect'], 2)
 
+    def queued_recovery_report(self, mode):
+        native = self.automatic_report()
+        native.update(steps=[{"passed": True} for _ in range(9)],
+                      descriptor={"provider": {"session": "thread"}},
+                      recovery_processes=[{"pid": n, "birth": n * 10} for n in range(1, 5)],
+                      recovery_remaining=[], requests=[])
+        rows = [{"message": str(n), "receipt": {"thread": "thread", "turn": "turn" + str(n),
+                                               "item": "item" + str(n)}} for n in range(3)]
+        before = {"completed": rows[:2], "attempt": {"message": "2", "queued": "entry", "receipt": None}}
+        preview = {"pending": {"message": "2", "start_confirmation": "digest", "start_intent": None}}
+        cases = (["provider_rate_hold", "project_pause"] if mode == "holds" else
+                 ["wrong_digest", "wrong_message", "manual_read_is_not_start", "foreign_head"])
+        proof = {"mode": mode, "hold_seconds": 30, "ledger_before": before,
+                 "message": "2", "preview": {"exit_code": 0, "stdout": json.dumps(preview)},
+                 "refusals": [{"case": case, "reply": {"exit_code": 1, "stderr": "daemon is holding this input; project is paused"},
+                               "ledger_after": copy.deepcopy(before)} for case in cases],
+                 "completed_after": rows[:2] if mode == "holds" else rows}
+        if mode == "holds":
+            proof.update(paused_preview=copy.deepcopy(proof["preview"]),
+                         pause={"pause": {"project": "project"}}, pauses_after={"pauses": [{"project": "project"}]})
+        else:
+            first = {"message": "2", "turn": "turn2", "queued_start": "intent", "already_attempted": False}
+            proof.update(response={"exit_code": 0, "stdout": json.dumps(first)},
+                         repeat={"exit_code": 0, "stdout": json.dumps(dict(first, already_attempted=True))})
+            native["requests"] = [{"recovery": True, "title": False}]
+        proof["final_history"] = {"data": [{"turnId": row["receipt"]["turn"],
+                                           "item": {"type": "userMessage", "clientId": row["message"],
+                                                    "id": row["receipt"]["item"]}} for row in proof["completed_after"]]}
+        native["queued_recovery"] = proof
+        return native
+
+    def test_queued_recovery_rejects_duplicate_input_and_invented_retry_or_cleanup(self):
+        native = self.queued_recovery_report("normal")
+        SMOKE.validate_queue_recovery_report(native, self.manifest, "normal")
+        for change in (lambda r: r["requests"].append(dict(r["requests"][0])),
+                       lambda r: r["queued_recovery"]["final_history"]["data"].pop(),
+                       lambda r: r["queued_recovery"]["completed_after"][-1]["receipt"].update(turn="wrong"),
+                       lambda r: r["queued_recovery"]["repeat"].update(stdout=r["queued_recovery"]["response"]["stdout"]),
+                       lambda r: r["queued_recovery"]["refusals"][0]["ledger_after"]["attempt"].update(start={"id": "unexpected"}),
+                       lambda r: r["recovery_remaining"].append({"pid": 2, "birth": 20}),
+                       lambda r: r.update(source_commit="wrong")):
+            invalid = copy.deepcopy(native); change(invalid)
+            with self.assertRaises(ValueError):
+                SMOKE.validate_queue_recovery_report(invalid, self.manifest, "normal")
+
+    def test_queued_recovery_hold_requires_real_refusal_and_preserved_preview(self):
+        native = self.queued_recovery_report("holds")
+        SMOKE.validate_queue_recovery_report(native, self.manifest, "holds")
+        for change in (lambda r: r["queued_recovery"]["refusals"][-1]["reply"].update(exit_code=0),
+                       lambda r: r["queued_recovery"]["refusals"][-1]["reply"].update(stderr="unrelated failure"),
+                       lambda r: r["queued_recovery"]["pauses_after"].update(pauses=[]),
+                       lambda r: r["queued_recovery"]["paused_preview"].update(stdout='{"pending":{"message":"2","start_confirmation":"changed","start_intent":null}}'),
+                       lambda r: r["requests"].append({"recovery": True, "title": False})):
+            invalid = copy.deepcopy(native); change(invalid)
+            with self.assertRaises(ValueError):
+                SMOKE.validate_queue_recovery_report(invalid, self.manifest, "holds")
+
     def build(self):
         info = PACKAGE.package(self.args)
         return info, self.output / next(iter(info["artifacts"]))
