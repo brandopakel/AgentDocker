@@ -60,6 +60,11 @@ fn command(program: &Path, cwd: &Path, profile: &Path, home: &Path, client: &Cli
         .env_remove("AGENTDOCKER_AGENT_ID")
         .env_remove(lifetime::ENV)
         .kill_on_drop(true);
+    // A provider's later MCP/hook reconnect must not start a shared daemon
+    // inside the Windows owner's job. Initial startup happens before admission;
+    // later daemon recovery belongs to its service or an outside client.
+    #[cfg(windows)]
+    command.env("AGENTDOCKER_NO_AUTOSTART", "1");
     command
 }
 

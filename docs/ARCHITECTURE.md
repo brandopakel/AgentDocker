@@ -1844,8 +1844,11 @@ On Windows the authenticated internal owner joins its own unnamed, non-inheritab
 job after daemon startup but before any provider/receiver spawn. No breakaway is
 enabled. One job handle lasts until owner process exit; Windows then closes it
 and terminates any surviving descendants, including after owner termination.
-The front end and shared daemon stay outside that job, so front-end death still
-allows the owner to revoke the capability through ordinary EOF cleanup. The front
+The front end and shared daemon stay outside that job. Windows provider descendants
+inherit disabled daemon autostart, so later MCP/hook reconnects cannot accidentally
+place a replacement shared daemon inside the provider job; recovery belongs to
+the daemon service or an outside client. Front-end death still allows the owner
+to revoke the capability through ordinary EOF cleanup. The front
 end also owns the capability path and revokes it if the owner dies first. The
 internal invitation is removed from provider and receiver environments. Existing birth records name the owner; v1/v2 record
 formats, provider history and receipt semantics are unchanged. An observed
