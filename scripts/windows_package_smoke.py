@@ -50,6 +50,82 @@ def extract_checked(archive, destination, manifest):
     return app
 
 
+def validate_mcp_form_report(observed, info):
+    """Require exact archive identity, four decisions, receipts and clean retirement."""
+    def require(ok):
+        if not ok:
+            raise ValueError("Windows MCP form acceptance lacks exact decisions, receipts or cleanup")
+
+    require(observed.get("result") == "passed"
+            and observed.get("source_commit") == info["source_commit"]
+            and observed.get("source_tree") == info["source_tree"]
+            and observed.get("source_dirty") is False
+            and observed.get("scratch_removed") is True
+            and observed.get("config_unchanged") is True
+            and observed.get("cleanup_errors") == []
+            and observed.get("remaining_processes") == []
+            and not observed.get("model_errors") and not observed.get("unexpected_get")
+            and all(observed.get("binary_sha256", {}).get(n) == info["binary_sha256"][n]
+                    for n in ("agentdocker.exe", "agentd.exe")))
+    processes = observed.get("watched_processes", [])
+    require(len(processes) >= 4 and all(isinstance(p.get("pid"), int) and p["pid"] > 0
+                                      and isinstance(p.get("birth"), (int, float)) and p["birth"] > 0
+                                      for p in processes))
+    require(len({(p["pid"], p["birth"]) for p in processes}) == len(processes))
+    initial, final = observed.get("initial_agent", {}), observed.get("final_agent", {})
+    require(bool(initial.get("process_started_at")) and initial.get("pid") == final.get("pid")
+            and isinstance(initial.get("pid"), int) and initial["pid"] > 0
+            and initial["process_started_at"] == final.get("process_started_at")
+            and initial.get("id") == final.get("id") == observed.get("agent")
+            and observed.get("initial_pid") == initial.get("pid"))
+    cases = observed.get("cases", [])
+    require([c.get("decision") for c in cases] == ["Submit", "Decline", "Cancel", "cancel-route"])
+    ledger = observed.get("final_ledger", {})
+    rows = ledger.get("completed", [])
+    require(len(rows) == 8 and ledger.get("attempt") is None and bool(ledger.get("thread")))
+    receipts = {row["message"]: row["receipt"] for row in rows}
+    require(len(receipts) == 8)
+    all_ids, mcp_ids = [], []
+    for case in cases:
+        require(case.get("result") == "passed")
+        ids = [case.get("input"), case.get("peer_input")]
+        require(all(isinstance(i, str) and i for i in ids) and len(set(ids)) == 2)
+        all_ids.extend(ids)
+        require(case.get("receipts") == {i: receipts.get(i) for i in ids}
+                and all(isinstance(receipts.get(i), dict) and receipts[i].get("thread") == ledger["thread"]
+                        and bool(receipts[i].get("turn")) and bool(receipts[i].get("item")) for i in ids)
+                and receipts[ids[0]]["item"] != receipts[ids[1]]["item"])
+        held = case.get("held_ledger", {})
+        require(held.get("attempt", {}).get("message") == ids[0]
+                and held["attempt"].get("acknowledged") is True
+                and not held.get("steering")
+                and ids[1] not in [r["message"] for r in held.get("completed", [])]
+                and len(held.get("reviews", [])) == 1
+                and held["reviews"][0].get("response") is None)
+        require(len(case.get("invalid_answers", [])) == 2
+                and all(a.get("code") == "invalid" for a in case["invalid_answers"]))
+        action = "accept" if case["decision"] == "Submit" else "decline" if case["decision"] == "Decline" else "cancel"
+        content = case.get("submitted_content")
+        require(isinstance(content, dict) if action == "accept" else content is None)
+        response = {"action": action, "content": content}
+        closed = case.get("closed_review", {})
+        request = closed.get("request", {})
+        question = case.get("question", {})
+        require(bool(question.get("id")) and question.get("presentation", {}).get("kind") == "mcp_form"
+                and len(request.get("questions", [])) == 1
+                and request["questions"][0].get("message") == question["id"]
+                and request["questions"][0].get("presentation") == question["presentation"])
+        require(closed.get("outcome") == "resolved" and closed.get("acknowledged") is True
+                and request.get("id") == case.get("provider_request") == held["reviews"][0].get("id")
+                and request.get("thread") == ledger["thread"]
+                and request.get("turn") == receipts[ids[0]]["turn"]
+                and request.get("response") == {"id": case["provider_request"], "result": response})
+        reply = case.get("mcp_reply", {})
+        require(reply.get("result") == response and bool(reply.get("id")))
+        mcp_ids.append(reply["id"])
+    require(len(set(all_ids)) == 8 and set(all_ids) == set(receipts) and len(set(mcp_ids)) == 4)
+
+
 def validate_native_report(native, info, scenario):
     """A passing process must still identify the exact extracted payload."""
     automatic = scenario == "automatic"
@@ -258,11 +334,15 @@ def main():
                         help="also test the private home's owned Task Scheduler lifecycle")
     parser.add_argument("--queue-recovery", action="store_true",
                         help="with automatic Codex acceptance, test explicit queued start and daemon holds")
+    parser.add_argument("--mcp-forms", action="store_true",
+                        help="also exercise managed Codex form decisions and exact receipts")
     args = parser.parse_args()
     if not 0 <= args.startup_samples <= 20:
         parser.error("--startup-samples must be between 0 and 20")
     if args.queue_recovery and (not args.codex or args.codex_scenario != "automatic"):
         parser.error("--queue-recovery requires --codex with --codex-scenario automatic")
+    if args.mcp_forms and not args.codex:
+        parser.error("--mcp-forms requires --codex")
     if os.name != "nt":
         parser.error("the archive acceptance trial requires native Windows")
     build = json.loads(args.native_manifest.read_text(encoding="utf-8"))
@@ -323,6 +403,14 @@ def main():
             report.update(result="passed", steps=len(observed["steps"]), desktop=observed.get("desktop"))
             if args.codex:
                 report["result"] = "failed"
+                if args.mcp_forms:
+                    destination = output / "mcp-forms"
+                    run_native_trial([sys.executable, str(ROOT / "scripts/windows_mcp_form_smoke.py"),
+                                      "--binary-dir", str(app), "--codex", str(args.codex.resolve(strict=True)),
+                                      "--output", str(destination)], scratch, report, "mcp_forms")
+                    forms = json.loads((destination / "result.json").read_text(encoding="utf-8"))
+                    validate_mcp_form_report(forms, info)
+                    report["mcp_forms"] = forms
                 automatic = args.codex_scenario == "automatic"
                 driver = "windows_native_launcher_smoke.py" if automatic else "windows_native_codex_smoke.py"
                 run_native_trial([sys.executable, str(ROOT / "scripts" / driver),

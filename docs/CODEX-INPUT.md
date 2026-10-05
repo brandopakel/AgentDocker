@@ -1200,10 +1200,17 @@ single/multiple selections, required fields, defaults and bounds. Email, URI,
 date and date-time formats are validated without fetching or changing values.
 Unknown constraints, nested schemas, secret/extended formats and device
 verification fail explicitly. Explicit `null` schema fields are invalid, including
-constraints and defaults; only omission selects the documented fallback. Requests are limited to 16 fields, 32 options,
+constraints and defaults; only omission selects the documented fallback.
+Requests are limited to 16 fields, 32 options,
 16,000-byte schemas/responses and 4,096-byte text fields; numeric magnitudes may
 not exceed 2^53 − 1. The generated Codex 0.160 schema does not carry regex patterns,
 so such constraints are unsupported rather than ignored.
+
+The Windows package suite now includes a private managed-provider form trial
+(`--mcp-forms`): four decisions, invalid-answer refusal, held peer input and eight
+exact ordinary-input receipts, with birth-pinned cleanup and retained wire/ledger
+evidence. Actual runner acceptance is still pending; this fixture does not prove
+account, physical interaction or installed-service behavior.
 
 Defaults are editable suggestions. Optional fields can be omitted; submitting
 shares only included values with the named server. Unsubmitted edits remain in
