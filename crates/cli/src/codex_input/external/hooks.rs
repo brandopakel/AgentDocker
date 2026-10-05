@@ -262,7 +262,7 @@ async fn offer(
     if let Some(attempt) = &ledger.record().attempt {
         // A previous uncertain hook must never be emitted again. The ordinary
         // receipt loop will reconcile it before another message is offered.
-        if attempt.hook.is_some() || attempt.receipt.is_some() {
+        if attempt.hook.is_some() || attempt.receipt.is_some() || attempt.start.is_some() {
             return Ok(None);
         }
     }

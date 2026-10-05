@@ -204,6 +204,19 @@ pub(super) async fn connect(descriptor: &Descriptor, binding: &Binding) -> Resul
     Ok(provider)
 }
 
+/// Recheck an already initialized service connection's immutable endpoint and
+/// kernel generations. Repeating initialize on that connection is invalid.
+pub(super) fn reverify(descriptor: &Descriptor, binding: &Binding) -> Result<()> {
+    ensure!(descriptor.valid(), "invalid native server descriptor");
+    let (record, digest) = read(&descriptor.record)?;
+    ensure!(
+        digest == descriptor.sha256,
+        "native server record changed after binding"
+    );
+    verify(&descriptor.record, &record, binding)?;
+    Ok(())
+}
+
 /// Establish an initial anchor from an owned birth receipt, without converting
 /// a rejected history request into empty history. Caller must prove its durable
 /// ledger has never attempted or disposed of input. Ordinary v1 records cannot

@@ -214,6 +214,7 @@ mod tests {
     #[test]
     fn hook_receipt_requires_exact_context_and_provider_ids() {
         let mut attempt = Attempt {
+            start: None,
             message: "message".into(),
             input: "native input".into(),
             queued: None,
@@ -260,6 +261,7 @@ mod tests {
     #[test]
     fn queue_acceptance_matches_the_entire_input_and_client_id() {
         let attempt = Attempt {
+            start: None,
             message: "original".into(),
             input: "full input".into(),
             queued: None,
