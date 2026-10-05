@@ -186,6 +186,7 @@ jobs:
             artifacts/windows-desktop-package/native-codex/
             artifacts/windows-desktop-package/queued-recovery-normal/
             artifacts/windows-desktop-package/queued-recovery-holds/
+            artifacts/windows-desktop-package/queued-recovery-client-reply-loss/
             artifacts/windows-established-package/package-acceptance.json
             artifacts/windows-established-package/smoke/
             artifacts/windows-established-package/native-codex/
