@@ -579,8 +579,7 @@ input allowed alongside it. Normal input remains queued until resolution.
 Threadless, device-verification and secret callbacks remain unsupported. Private
 ledger versions 12/13 gate URL/form receipts; version 14 additionally gates idle
 MCP reviews in both open and closed history. Other review kinds require an active
-input turn. Exact
-human and daemon answer receipts precede the response; `serverRequest/resolved`
+input turn. Exact human and daemon answer receipts precede the response; `serverRequest/resolved`
 precedes queue acknowledgement. Expiry/dismissal sends `cancel`, never consent.
 An uncertain response is retained without replay. `accept` means consent to the
 external interaction, not browser completion; there is no automatic tool retry.

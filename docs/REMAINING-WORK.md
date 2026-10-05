@@ -94,7 +94,10 @@ them or explain the intermittent daemon first-start failure.
 A follow-up to the beta.7 candidate adds owned-thread MCP form/URL review while
 idle, using ledger version 14. The actual Codex 0.160 refusal control reproduced
 the previous no-active-turn rejection; Codex translates that client error into
-an MCP decline. Source tests, corrected actual-provider/platform acceptance,
-review and integration remain pending. Active command/file/permission questions
+an MCP decline. Source `99a247b0` passed 137 focused Codex tests with zero retries. Corrected
+Mac ARM64/Codex 0.160 private-model acceptance then passed eight idle form/URL
+decision paths, nine exact input receipts and independently verified cleanup.
+Other platforms/versions, pending-review restarts, the full gate, review and
+integration remain pending. Active command/file/permission questions
 still require their exact turn; secret/device callbacks and longer waits remain
 open. This follow-up does not change PR #294's final release candidate.
