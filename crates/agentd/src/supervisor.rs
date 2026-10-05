@@ -919,6 +919,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_failed_reconnect_keeps_stop_owed_before_terminal_reattachment() {
+        use agentdocker_host::procinfo;
+        use nix::libc;
         use std::os::fd::AsRawFd;
         let dir = tempfile::tempdir().unwrap();
         let id = AgentId::from("stop-reconnect");
