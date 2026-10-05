@@ -877,6 +877,15 @@ checks and the same full gate. The final release-TUI legacy-reply trial at
 receiver restart and exact legacy human-answer consumption without another turn
 (nine model requests). Source and executable hashes stayed fixed.
 
+The `c6ee1d49` Linux CI archive also passed four URL decision paths with actual
+Codex 0.155.1 and a private model/MCP server: four exact replies, eight distinct
+input receipts and one controller generation. Post-review peer input may be
+steered into the existing provider turn, so distinct message/item receipts do
+not imply distinct turns. The earlier fixture that required different turns
+remains failed; its corrected repeat independently confirmed all 12 recorded
+processes had retired. This adds provider-version coverage, not browser/account
+consent or final-package acceptance.
+
 ## Active-turn steering acceptance (September 16)
 
 The owned bridge now retains one additional steering attempt independently of
