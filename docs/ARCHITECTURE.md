@@ -1851,7 +1851,12 @@ inherit disabled daemon autostart, so later MCP/hook reconnects cannot accidenta
 place a replacement shared daemon inside the provider job; recovery belongs to
 the daemon service or an outside client. Front-end death still allows the owner
 to revoke the capability through ordinary EOF cleanup. The front
-end also owns the capability path and revokes it if the owner dies first. The
+end also owns the capability path and revokes it if the owner dies first.
+On Windows the owner retains a private, non-inheritable delete-on-close file
+handle for the capability. Kernel handle closure revokes the file even when
+console shutdown terminates both cleanup processes; readers share deletion.
+Exclusive creation and the existing owner, ACL, ancestor and file-type checks
+still apply. The
 internal invitation is removed from provider and receiver environments. Existing birth records name the owner; v1/v2 record
 formats, provider history and receipt semantics are unchanged. An observed
 empty server and unique new root thread permit a private version-2 birth record,

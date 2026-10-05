@@ -987,6 +987,7 @@ mod tests {
         // Handles must not keep capabilities alive in provider children.
         let mut flags = 0;
         assert_ne!(
+            // SAFETY: owner retains a live file handle and flags is writable.
             unsafe {
                 windows_sys::Win32::Foundation::GetHandleInformation(
                     owner.as_raw_handle(),
