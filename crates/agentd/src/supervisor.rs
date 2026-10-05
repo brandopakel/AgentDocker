@@ -623,6 +623,13 @@ impl Spawned {
         let mut controller = Controller::connect(&socket, Duration::from_secs(10)).await?;
         let hello = controller.hello().await?;
         validate_identity(&hello, id, &self.owner, self.pid, self.process_started_at)?;
+        // Reconnection is incomplete until the owner's retained stop state is
+        // sent. On failure discard this connection and keep retrying, without
+        // returning to terminal traffic or consuming a new watch notification.
+        let pending = *self.stop.borrow();
+        if let Some(force) = pending {
+            controller.send(&OwnerCommand::Stop { force }).await?;
+        }
         if self.session.is_some() {
             controller
                 .send(&OwnerCommand::Attach {
@@ -755,11 +762,6 @@ async fn relay_until_exit(
             match spawned.reconnect(&daemon.home, id).await {
                 Ok(()) => {
                     tracing::info!(agent = %id, "reconnected to the session owner");
-                    // A stop asked for during the outage is still owed.
-                    let pending = *spawned.stop.borrow();
-                    if let Some(force) = pending {
-                        let _ = spawned.controller.send(&OwnerCommand::Stop { force }).await;
-                    }
                     break;
                 }
                 Err(error) => {
@@ -913,6 +915,136 @@ pub(crate) fn group_exists(group: u32) -> bool {
 mod tests {
     use super::*;
     use agentdocker_core::session::ChildIdentity;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_reconnect_keeps_stop_owed_before_terminal_reattachment() {
+        use std::os::fd::AsRawFd;
+        let dir = tempfile::tempdir().unwrap();
+        let id = AgentId::from("stop-reconnect");
+        let socket = endpoint(dir.path(), &id);
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = agentdocker_host::ipc::Listener::bind(&socket).unwrap();
+        let now = procinfo::start_time(std::process::id()).unwrap();
+        let owner = SessionOwner {
+            pid: std::process::id(),
+            started_at: now,
+        };
+        let hello = OwnerHello {
+            format: FORMAT,
+            agent: id.clone(),
+            owner_pid: owner.pid,
+            owner_started_at: now,
+            child: Some(ChildIdentity {
+                pid: owner.pid,
+                started_at: now,
+                tty: true,
+            }),
+            activated: true,
+            output_offset: 0,
+        };
+        let (original, _peer) = agentdocker_host::ipc::pair().await.unwrap();
+        let (reader, writer) = original.into_split();
+        let (control, stop) = watch::channel(None);
+        let mut spawned = Spawned {
+            pid: owner.pid,
+            process_started_at: now,
+            owner,
+            link: OwnerLink::Detached,
+            controller: Controller {
+                reader: BufReader::new(reader),
+                writer,
+                partial: Vec::new(),
+            },
+            launch_error: None,
+            activated: true,
+            control,
+            stop,
+            session: None,
+            keystrokes: None,
+            resizes: None,
+            output: None,
+            scrollback: None,
+            relayed: 0,
+        };
+        spawned.open_session();
+        spawned
+            .session
+            .as_ref()
+            .unwrap()
+            .input
+            .try_send(b"queued draft".to_vec())
+            .unwrap();
+        spawned.control.send(Some(true)).unwrap();
+        // The initial attempt already observed the watch update. Retries must
+        // retain its desired state even with no further notification.
+        assert_eq!(*spawned.stop.borrow_and_update(), Some(true));
+        for refuse in [true, true, false] {
+            let (finished, mut attempt_finished) = tokio::sync::oneshot::channel();
+            let peer = async {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                if refuse {
+                    // Refuse writes while still supplying the complete valid
+                    // handshake. The failure must be in stop dispatch.
+                    assert_eq!(
+                        unsafe { libc::shutdown(stream.as_raw_fd(), libc::SHUT_RD) },
+                        0
+                    );
+                }
+                let mut bytes = serde_json::to_vec(&hello).unwrap();
+                bytes.push(b'\n');
+                stream.write_all(&bytes).await.unwrap();
+                if refuse {
+                    let _ = (&mut attempt_finished).await;
+                    return Vec::new();
+                }
+                let mut reader = BufReader::new(stream);
+                let mut partial = Vec::new();
+                let mut commands = Vec::new();
+                for _ in 0..2 {
+                    let line = read_frame(&mut reader, &mut partial, 1024)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    commands.push(serde_json::from_str::<OwnerCommand>(&line).unwrap());
+                }
+                let _ = (&mut attempt_finished).await;
+                commands
+            };
+            let (result, commands) = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(
+                    async {
+                        let result = spawned.reconnect(dir.path(), &id).await;
+                        let _ = finished.send(());
+                        result
+                    },
+                    peer
+                )
+            })
+            .await
+            .unwrap();
+            if refuse {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("session owner connection closed")
+                );
+                assert!(commands.is_empty());
+            } else {
+                result.unwrap();
+                assert!(matches!(
+                    commands.as_slice(),
+                    [
+                        OwnerCommand::Stop { force: true },
+                        OwnerCommand::Attach { after: 0 }
+                    ]
+                ));
+            }
+            assert_eq!(*spawned.stop.borrow(), Some(true));
+            assert_eq!(spawned.keystrokes.as_ref().unwrap().len(), 1);
+        }
+    }
 
     /// A full terminal queue must not put an already-requested stop behind
     /// more input or output. Exercise the real relay with an owner wire peer,
