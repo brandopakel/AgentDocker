@@ -407,8 +407,10 @@ series does not erase earlier failures. Ordinary CI and release runs keep zero
 additional samples unless explicitly selected.
 Additional-sample dispatches have a 100-minute fixture-step budget and a
 180-minute job budget to cover all bounded commands, output capture and cleanup;
-ordinary runs retain their 10-minute step and 60-minute job budgets. The daemon's
-ten-second readiness deadline is unchanged.
+ordinary runs allow a 70-minute step and 120-minute job for all eight sequential
+native/MCP/recovery scenarios plus installation and cleanup. Optional service
+trials allow a 95-minute step and 150-minute job. These aggregate CI budgets do
+not change the daemon's ten-second readiness deadline or individual fixture bounds.
 
 The 40-sample native run on `0184e1d8` passed all 142 checks, with a slowest fresh
 start of 4.203 seconds and a schema phase of 2.991 seconds. An earlier traced
@@ -792,8 +794,23 @@ The temporary file is removed after the bounded command exits.
 With `AGENTDOCKER_STARTUP_TRACE=1`, service operations retain a private
 `windows-service-trace.log` with Rust/PowerShell entry/return and task lookup/
 ownership phases. It resets above 64 KiB before another operation, excludes
-arguments and credentials, creates no missing cold state home, and preserves
-the 20-second command bound. An earlier Scheduler timeout remains unexplained.
+arguments and credentials, and creates no missing cold state home.
+
+A `c3cf464f` native trial passed all 143 daemon checks, including forty fresh
+homes, then failed its first service installation. Its first PowerShell trace
+arrived 17.697 seconds after invocation; task lookup had only 2.329 seconds
+before the old 20-second command deadline. No registration stage was reached,
+and cleanup confirmed no installed task. The following cleanup lookup took
+12.5 seconds. This narrows the exhausted deadline to interpreter/module startup
+and Scheduler lookup; it does not explain why that Windows host was slow or
+diagnose the separate historical daemon-start failure.
+
+Each Scheduler script now allows 60 seconds, including PowerShell startup.
+The command still runs once, preserves ownership checks and private staging,
+and terminates its owned job on timeout. It never retries a possibly committed
+mutation. Daemon readiness and stop deadlines remain unchanged. Native service
+acceptance of this revised allowance is pending; the original failure remains
+indexed.
 
 Native review-correction source `30e78859` passed 17 portable and 21 installed connector checks, including
 relative-path startup/HTTP, repeated enable, stale/foreign ownership refusal,
