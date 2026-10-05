@@ -326,6 +326,10 @@ pub fn install_plan(layout: &Layout, macos: bool) -> Plan {
                     &layout.domain(),
                     &plist.to_string_lossy(),
                 ]),
+                // RunAtLoad may stay pending in an on-demand-only GUI domain.
+                // An explicit install must request the same immediate start
+                // as `daemon start`, rather than wait for an unstarted job.
+                cmd(&["launchctl", "kickstart", &layout.target()]),
             ],
             ..Plan::default()
         }
@@ -906,6 +910,11 @@ mod tests {
             ]
         );
         assert!(!plan.commands[1].tolerated);
+        assert_eq!(
+            plan.commands[2],
+            cmd(&["launchctl", "kickstart", "gui/501/dev.agentdocker.agentd"])
+        );
+        assert_eq!(plan.commands.len(), 3);
 
         let plan = install_plan(&layout(), false);
         assert_eq!(
