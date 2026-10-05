@@ -24,7 +24,7 @@ import time
 import traceback
 from types import SimpleNamespace
 
-from windows_native_codex_smoke import current_user_objects, remove_fixture, response_events, wait
+from windows_native_codex_smoke import current_user_objects, read_shared_file, remove_fixture, response_events, wait
 from windows_remote_receiver_fixture import Receiver, fixture_controller, process_birth
 
 
@@ -65,6 +65,7 @@ def main():
                                                        cwd=Path(__file__).resolve().parents[1], text=True).strip(),
               'driver_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'receiver_helper_sha256': hashlib.sha256(Path(__file__).with_name('windows_remote_receiver_fixture.py').read_bytes()).hexdigest(),
+              'native_helper_sha256': hashlib.sha256(Path(__file__).with_name('windows_native_codex_smoke.py').read_bytes()).hexdigest(),
               'provider_sha256': hashlib.sha256(args.codex.read_bytes()).hexdigest()}
     codex = args.codex.resolve(strict=True)
     receiver = channel = terminal = reader = server = None
@@ -199,7 +200,7 @@ def main():
         provider = SimpleNamespace(pid=descriptor['server']['pid'])
         step('server and native terminal remain direct children of the exact product owner',
              psutil.Process(native.pid).ppid() == owner.pid and psutil.Process(provider.pid).ppid() == owner.pid)
-        token = Path(descriptor['token_file']).read_text(encoding='utf-8')
+        token = read_shared_file(descriptor['token_file'], max_bytes=256).decode('ascii')
         channel = connect(f"ws://127.0.0.1:{descriptor['port']}", additional_headers={'Authorization': 'Bearer ' + token},
                           proxy=None, open_timeout=3, close_timeout=2, ping_interval=None, max_size=2 * 1024 * 1024)
         sequence = 0
@@ -280,7 +281,7 @@ def main():
         step('offline original input and actual MCP retain the canonical identity across reopen',
              receiver.ledger()['completed'] == [first, second] and
              any(r['reopen'] for r in report['requests']))
-        token = Path(descriptor['token_file']).read_text(encoding='utf-8')
+        token = read_shared_file(descriptor['token_file'], max_bytes=256).decode('ascii')
         channel = connect(f"ws://127.0.0.1:{descriptor['port']}", additional_headers={'Authorization': 'Bearer ' + token},
                           proxy=None, open_timeout=3, close_timeout=2, ping_interval=None, max_size=2 * 1024 * 1024)
         sequence = 0
