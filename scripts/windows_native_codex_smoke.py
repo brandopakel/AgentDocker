@@ -37,6 +37,12 @@ def wait(predicate, seconds=30):
 
 def read_snapshot(path):
     """Open a fixture snapshot without blocking its atomic replacement."""
+    return json.loads(read_shared_file(path))
+
+
+def read_shared_file(path, max_bytes=256 * 1024):
+    """Read an owned fixture file while sharing replacement and deletion."""
+    assert 1 <= max_bytes <= 256 * 1024
     import ctypes as c
     import msvcrt
     from ctypes import wintypes as w
@@ -56,9 +62,9 @@ def read_snapshot(path):
         kernel.CloseHandle(handle)
         raise
     with os.fdopen(descriptor, "rb") as snapshot:
-        raw = snapshot.read(256 * 1024 + 1)
-    assert len(raw) <= 256 * 1024, "fixture ledger exceeds its bound"
-    return json.loads(raw)
+        raw = snapshot.read(max_bytes + 1)
+    assert len(raw) <= max_bytes, "fixture file exceeds its bound"
+    return raw
 
 
 def current_user_objects():
