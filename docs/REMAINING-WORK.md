@@ -6,34 +6,30 @@ failed trials, subsequent corrections and raw evidence locations remain in
 publication and installed acceptance are separate: use `agentdocker desktop
 status` and `agentdocker daemon status` to identify what a machine runs.
 
-Published `0.2.0-beta.6` is reviewed source `13461b52`. Its 31 hosted assets,
-nine archives, five manifests and both preview feeds passed verification.
-Actual beta.5 → beta.6 installation/update/rollback/reapplication and bounded
-installed-service/graphical trials passed on Mac ARM64, Oracle Ubuntu and
-Windows x64. Their private state, synthetic providers and exact scopes are
-indexed; they do not establish fresh-account or physical acceptance.
-Stable `v0.1.0` and Homebrew remain unchanged.
+Published `0.2.0-beta.7` is reviewed, integrated source `372ba880`. Its 31 hosted
+assets, nine archives, five manifests and both preview feeds passed verification.
+Actual beta.6 → beta.7 installation/update and schema rollback refusal passed
+on Mac ARM64, Oracle Ubuntu and Windows x64. Hosted terminal/graphical and
+installed-service checks passed for the exact private scopes indexed below.
+Stable `v0.1.0` and Homebrew remain unchanged from the prepublication snapshot.
 
-The next candidate, `0.2.0-beta.7`, is **unpublished**. It adds native owner
-cleanup, stop-priority, explicit retained-input recovery, MCP website/nonsecret
-form review, Windows ledger publication and Mac daemon install-start fixes.
-Final integration, review and CI precede tagging and actual hosted acceptance.
-Beta.7 raises schema 23 to 25: binary rollback to beta.6 must refuse without
-changing the installation. Returning to beta.6 requires its matching
-pre-upgrade state backup while stopped. Hosted fixtures now distinguish that
-refusal from same-schema rollback/reapplication; beta.7 has not run them yet.
+Beta.7 includes native owner cleanup, stop-priority, explicit retained-input
+recovery, MCP website/nonsecret form review, Windows ledger publication and
+Mac daemon install-start fixes. Schema 25 prevents binary rollback to beta.6's
+schema 23 while preserving the installation. Never restore an older delivery
+ledger over acknowledged input; an older-version trial needs isolated state.
 
 **The rollout is incomplete.** Native Codex launch and live daemon replacement
-remain experimental. Published beta.6 excludes the newer native abrupt-exit
-fixes. Preview distribution does not establish stable signing, independent
-hardware, fresh accounts or physical accessibility.
+remain experimental. Preview distribution does not establish stable signing,
+independent hardware, fresh accounts or physical accessibility. The installed
+Oracle accounting preflight passed; its 48-hour trial is running, not accepted.
 
 ## Release and first run
 
 | Requirement | Current evidence | Remaining work |
 | --- | --- | --- |
-| Publish and verify the preview | Beta.6 is published after final local checks, CI and review. All 31 hosted assets and both preview feeds passed; actual beta.5 → beta.6 installation/update/rollback/reapply passed on Mac ARM64, Oracle Ubuntu and Windows x64. Windows service trials use the retained beta.5 bootstrap forwarding to the verified beta.6 payload. Stable and Homebrew are unchanged. | Keep `channel-preview-windows` separate from the four-target Mac/Linux feed, stable release and Homebrew. These bounded preview checks do not establish stable signing, fresh-account or independent-hardware acceptance. [Distribution contract](DISTRIBUTION-SETUP.md). |
-| First run on every supported platform | Hosted beta.6 passed Mac ARM64/Oracle installation, update/rollback, eight terminal and 31 graphical workflow checks; Windows passed actual two-release hosted update/rollback/default feed and both installed services. Actual-model Ubuntu Codex delivery and physical AWBP Claude idle/busy/draft receipts exist for their recorded older packages. | Test the actual final downloads with fresh configuration and provider authentication, trust and channel consent; idle/busy delivery, preserved drafts, restart and reopen. Existing-account reuse, synthetic providers and CI do not prove fresh-account acceptance. |
+| Publish and verify the preview | Beta.7 is published after final local checks, CI and review. All 31 hosted assets and both preview feeds passed; actual beta.6 → beta.7 installation/update and unchanged-installation schema rollback refusal passed on Mac ARM64, Oracle Ubuntu and Windows x64. Windows service trials use the retained beta.6 bootstrap forwarding to verified beta.7. Stable and Homebrew are unchanged. | Keep `channel-preview-windows` separate from the four-target Mac/Linux feed, stable release and Homebrew. Repeat hosted acceptance for later previews; stable signing, fresh accounts and independent hardware remain gates. [Distribution contract](DISTRIBUTION-SETUP.md). |
+| First run on every supported platform | Hosted beta.7 passed Mac ARM64/Oracle installation, update/schema rollback refusal, eight terminal and 31 graphical workflow checks; Windows passed its two-release lifecycle/default feed and both installed services. Actual-model Ubuntu Codex delivery and physical AWBP Claude idle/busy/draft receipts exist for their recorded packages. | Test final downloads with fresh configuration and provider authentication, trust and channel consent; idle/busy delivery, preserved drafts, restart and reopen. Existing-account reuse, synthetic providers and CI do not prove fresh-account acceptance. |
 | Independent machines and distributions | Oracle is Ubuntu 24.04.4 x86_64 with private graphical dependencies/Xvfb. AWBP is Windows 11 Home build 26200 x64. Local Mac, Intel/ARM CI and Rosetta evidence is separately pinned. | Independent second Mac, physical Intel, normal target Linux desktop prerequisites, physical Linux input and current-candidate Windows service/provider trials. AWBP testing is currently deferred at the user's request. [Trial procedure](LOCAL-TRIAL.md). |
 | Stable macOS signing | Previews are ad-hoc signed; Developer ID/notarization is not configured. | Configure private signing/notary credentials, sign/notarize/staple the final app and DMG, and test Gatekeeper on an independent Mac. |
 | Mac disk-image contention | Bounded recovery for the exact `hdiutil` resource-busy failure is implemented and reviewed. Subsequent ARM/Intel package runs passed image verification; the original failed run is retained. | Preserve attempt diagnostics and distinguish recovery from first-attempt success. The intermittent runner contention itself is unexplained. |
@@ -57,15 +53,15 @@ hardware, fresh accounts or physical accessibility.
 
 | Requirement | Current evidence | Remaining work |
 | --- | --- | --- |
-| Mac daemon service startup | Hosted beta.6 install timed out in an on-demand-only GUI domain; explicit start worked, automatic crash recovery stayed pending. The install now requests kickstart. Source-built ARM64 `ccf79be6` passed install/stop/start/restart/repeated service uninstall; three generations independently retired and production connector stayed unchanged. | Actual hosted beta.7, automatic crash recovery in that domain, login/reboot and independent Mac acceptance. The combined ccf fixture then failed at desktop-file uninstall because the unrelated connector registration correctly triggered the conservative guard; original report/private installation retained. Earlier socket-export failure was independently finalized, not relabeled a full pass. |
-| Native Windows installer and daemon | Reviewed per-user Task Scheduler startup, bounded crash supervision, protected storage, native pipes/ConPTY, terminal reattachment, installer/update/rollback and loaded-launcher retirement are implemented. Hosted beta.6 passed its two-release lifecycle and both installed service trials. | Start menu/PATH, physical console attachment, real provider shims, broader native daemon/CLI suites, logon/reboot and managed-provider survival. Portable acceptance does not prove installed behavior. [Windows contract](WINDOWS-PORT.md). |
-| Windows browser connector service | Reviewed service setup pins tunnel paths and guards delayed-start ownership under the mutation lock. Published beta.6 passed 24 installed connector and 13 daemon checks after actual beta.5 → beta.6 update/rollback; cleanup failures reject acceptance. | Actual tunnels/browser accounts, hosted current-candidate service acceptance and logon/reboot. Private fixtures do not replace production services. |
+| Mac daemon service startup | Hosted beta.7 passed ten install/stop/start/restart/repeated-uninstall checks after explicit kickstart fixed the on-demand GUI-domain startup timeout. All three generations independently retired, owned label removed and production connector unchanged. Desktop-file removal correctly refused while an unrelated connector registration exists; the private installation remains retained. | Automatic crash recovery in that GUI domain, login/reboot and independent Mac acceptance. Earlier beta.6 install/crash and socket-export failures remain indexed; later lifecycle passes do not establish crash recovery. |
+| Native Windows installer and daemon | Reviewed per-user Task Scheduler startup, bounded crash supervision, protected storage, native pipes/ConPTY, terminal reattachment, installer/update/rollback and loaded-launcher retirement are implemented. Hosted beta.7 passed its two-release update/schema-refusal lifecycle and both installed service trials. | Start menu/PATH, physical console attachment, real provider shims, broader native daemon/CLI suites, logon/reboot and managed-provider survival. Portable acceptance does not prove installed behavior. [Windows contract](WINDOWS-PORT.md). |
+| Windows browser connector service | Reviewed setup pins tunnel paths and guards delayed-start ownership under the mutation lock. Published beta.7 passed 24 installed connector and 13 daemon checks after actual beta.6 → beta.7 update/schema rollback refusal; cleanup failures reject acceptance. | Actual tunnels/browser accounts and logon/reboot. Private fixtures do not replace production services. |
 | Windows terminal stop and receiver recovery | Reviewed #295 prioritizes pending stop and retries failed writes before reattachment without consuming input. Corrected `c21b90c5` Windows package passed; child exit 2.094s and final state 2.438s in that trial. | Retain bounded in-flight/reconnect delay; no loaded-host wall-clock guarantee. Original slow stop and separate busy-named-pipe diagnostic remain unexplained despite the deterministic starvation regression and later passes. Exact failures, sources and cleanup are indexed. |
 | Native receiver exit during recovery | Windows `50efe320` left a daemon-started receiver after owner exit, despite provider exit/capability revocation and unchanged receipts. Source `c59b605a` checks exact provider generation once/second during paused recovery. The old-behavior regression failed; the fix passed with unchanged memory/disk ledgers. Corrected Windows Codex 0.160 package passed every exit probe with no survivors/forced cleanup; daemon-controller logs are now retained. | Broader races, versions and hosted-package acceptance. The original failed report omitted that receiver log, so the 30-second recovery wait is a candidate explanation rather than a demonstrated cause of that particular failure. Historical first-start failures remain separate. |
 | Intermittent Windows startup | Extracted first-start failures remain unexplained: retained diagnostics reached the coordinator lock but not store/listener readiness. Bounded phase logging, retained failed packages and 40-home sampling exist. Later schema-transaction changes passed separate 40-home trials. | Reproduce and isolate the historical first-start failure; later passes are not a demonstrated fix. Preserve the separate 20-second PowerShell/Task Scheduler timeout and cross-host differences. Receipt-free `daemon status` now skips unrelated service queries, but that correction does not explain either intermittent failure. |
-| Token accounting | Collection, resumable discovery, bounded batches and a 256 MiB logical tracking budget are implemented. Hosted beta.6 Mac/Oracle scanned a 303 MB synthetic Claude log with 4,608 exact counters and no restart gaps. The installed Mac capacity trial retained 449,638 records unchanged through restart, reported one coverage gap and kept messaging available. | Installed-current sustained accounting, historical-gap reconciliation, emitted-byte/index overhead and broader formats/large files. Logical tracking excludes SQLite indexes/pages/WAL; only observed versions are supported and gaps remain visible. Capacity fixtures and the separate 48-hour trial do not prove service/sleep/reboot or recover uncounted records. [Accounting contract](ARCHITECTURE.md#planned-protocol-and-event-additions). |
+| Token accounting | Collection, resumable discovery, bounded batches and a 256 MiB logical tracking budget are implemented. Hosted beta.6 Mac/Oracle scanned a 303 MB synthetic Claude log with 4,608 exact counters and no restart gaps. The installed Mac capacity trial retained 449,638 records unchanged through restart, reported one coverage gap and kept messaging available. | Installed beta.7 Oracle preflight passed three real Codex messages with exact provider-counter attribution; the 48h/48-message/three-provider/ten-project trial is running, not accepted. Complete it, historical-gap reconciliation, emitted-byte/index overhead and broader formats/large files. Logical tracking excludes SQLite indexes/pages/WAL; only observed versions are supported and gaps remain visible. Capacity fixtures and the separate 48-hour trial do not prove service/sleep/reboot or recover uncounted records. [Accounting contract](ARCHITECTURE.md#planned-protocol-and-event-additions). |
 | Browser accounts and service | Scoped OAuth/MCP messaging, multi-project consent, egress/CIMD validation and bounded startup/hourly vendor-list refresh exist. Hosted beta.6 admitted ChatGPT public metadata to pairing and refused an untrusted callback without granting access. Ubuntu passed an hourly refresh/restart/desktop-button tunnel launch; installed read-only identity passed. Service setup preserves differing settings. | Real-account CIMD, correlated reply/ACK, hosted Mac connector login-service and real-account service trials, and additional verified vendor identities. Earlier browser write refusal remains unaccepted; ordinary OAuth does not prove CIMD. Browser connected status requires a tool call within one hour; the connector cannot initiate hosted model turns. [Connector contract](REMOTE-CONNECTOR.md). |
-| Linux service removal | Reviewed #289 stops/disables before removal, preserves the definition on stop failure and reloads afterward. Hosted beta.6 passed all 17 Oracle systemd lifecycle checks; six generations independently retired and pre-existing links were restored. | Broader distributions, hosted current-candidate service checks and logon/reboot. The original beta.5 uninstall failure and fixture restoration correction remain indexed; earlier unrelated installation/graphical passes do not erase them. |
+| Linux service removal | Reviewed #289 stops/disables before removal, preserves the definition on stop failure and reloads afterward. Hosted beta.7 passed all 17 Oracle systemd lifecycle checks; six generations independently retired and pre-existing links were restored. | Broader distributions and logon/reboot. The original beta.5 uninstall failure and fixture restoration correction remain indexed; later passes do not erase them. |
 | Storage and sustained operation | Activation pruning preserves active/rollback/pinned and possibly service-referenced builds. Reviewed `fcaa22f9` completed 48h on Oracle with three actual Codex 0.155.1 sessions/ten projects, 48 exact receipts, matched counters, zero gaps and 110 watches; cleanup passed. Separate `8778a67f` ten-minute idle observation measured 1.113323% of one core with stable watches/records and six exact receipts. | Selective exact service-reference pruning; multi-day installed-current/accounting trials and CPU/watch/storage behavior through sleep/wake/reboot on all platforms. The 48h run overlapped other work and had provider transport retries without AgentDocker resubmission. Ten-second idle sampling adds load and establishes no CPU threshold. Earlier 24h gaps and controlled SHA benchmark results remain indexed; neither becomes production-idle acceptance. |
 | Terminal shutdown and retained failures | The Darwin blocked-receive cause was corrected by bounded poll/nonblocking receive; four 45-minute stress lanes passed and #273 shipped in beta.4. The separate Oracle graphical fixture lifetime error was corrected and rerun against identical hosted bytes. | Final-package/sustained acceptance. Unexplained retained failures: Linux managed-group/owned-child shutdown, controller-upgrade injected-storage assertion, Iced capture, benchmark socket timeout and Linux ARM transport refusal. Diagnostics and later passes do not establish their causes. |
 | Watcher limits | Removed-checkout recovery passed repeated regressions and installed recovery with providers unchanged. | Overnight/many-project acceptance of one FSEvents stream per checkout and resource behavior around removal/recreation. |
@@ -78,15 +74,44 @@ bridge, additional adapters, container log following and proposed CLI
 conveniences remain deferred. See [architecture](ARCHITECTURE.md#planned-protocol-and-event-additions),
 [containers](CONTAINER-ENGINES.md) and [local trial](LOCAL-TRIAL.md).
 
-MCP nonsecret form review remains in PR #294, with typed fields, bounded
-schema/value validation and explicit decisions. Indexed actual-provider
-Mac/Linux/Windows trials cover four decision paths/eight receipts, unanswered
-expiry, rendered Mac UI and spaced pending-form handovers; tested provider
-versions are Codex 0.160 and 0.155.1. Current `c59b605a` passed the full
-1,573-Rust/192-Python gate (8/1 skipped), zero retries, and the Windows
-Codex 0.160 package suite. Final CI/review/integration and hosted acceptance
-remain required. These private model/MCP fixtures and synthetic terminal/UI
-actions do not establish real accounts, physical input, pending-review crash
-recovery, other service handovers, extended/device forms or secret input.
-Original runtime and fixture failures remain indexed; later passes do not erase
-them or explain the intermittent daemon first-start failure.
+MCP nonsecret form review shipped in beta.7 after PR #294 review, integration
+and final CI. The exact final source passed 1,573 Rust/192 Python tests (8/1
+skipped), zero retries. Indexed Mac/Linux/Windows actual-provider trials cover
+four decision paths/eight receipts, unanswered expiry, rendered Mac UI, spaced
+pending-form handovers and private-daemon crash recovery. Provider versions
+0.160 and 0.155.1 were tested. Final hosted lifecycle/graphical/service checks
+passed in their private scopes. Real accounts, physical input, provider/GUI
+crashes, extended/device forms, secret input and broader service handovers remain
+open. Original runtime/fixture failures remain indexed; later passes do not
+erase them or explain the historical first-start failure.
+
+PR #299 adds owned-thread MCP form/URL review while idle, using ledger 14 and
+state schema 26. Local `b096554d` passed the full standard gate: 1,575 Rust/193
+Python tests, zero retries. Actual Mac package acceptance passed upgrade from
+hosted beta.7/schema25, refusal of rollback and refusal of older-package install,
+with unchanged selection and signed executable bytes. No daemon/database was
+started in that installer trial. Never restore an older delivery ledger over
+already acknowledged input.
+
+The actual Codex refusal control reproduced the previous no-active-turn
+rejection; Codex translates it into an MCP decline. Runtime `99a247b0` passed
+eight idle form/URL decisions, nine receipts and ten private-model requests on
+Mac ARM64/Codex 0.160, then eight pending-review daemon crashes with original
+questions, held input and the same provider. Oracle Ubuntu passed all eight
+decisions on actual Codex 0.160 and 0.155.1 at precursor `552272e4`, with source,
+archive, provider, helper, copied evidence and process retirement independently
+verified. Windows `552272e4` passed all eight active/idle/native/recovery scopes;
+each idle mode completed its initial turn before external callbacks, held peer
+input, and required four explicit decisions/five exact receipts with no early
+model call. Those precursor Windows/Linux trials do not prove schema 26. Review candidate `c3cf464f`
+Linux CI package acceptance separately passed actual hosted beta.7 → schema 26
+installation and unchanged rollback/older-package refusal on Oracle. The final
+full local gate also passed on `c3cf464f`. Windows CI aggregate budgets now
+cover the eight sequential native/MCP/recovery trials while retaining their
+individual deadlines; observed precursor steps took 5 min 53 s ordinarily and
+9 min 16 s with services/forty startups.
+
+Final PR CI/review/integration, broader versions and provider/GUI restarts remain
+pending. Command/file/permission questions still require their exact active
+turn; secret/device callbacks and longer waits remain open. This follow-up is
+not included in immutable beta.7.

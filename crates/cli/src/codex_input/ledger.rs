@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const VERSION: u32 = 13;
+const VERSION: u32 = 14;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const RETAINED_RECEIPTS: usize = 128;
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn legacy_delivery_state_upgrades_without_replacing_prepared_input() {
-        for version in 1..=12 {
+        for version in 1..=13 {
             let home = tempfile::tempdir().unwrap();
             let binding = binding(home.path());
             let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
@@ -580,6 +580,85 @@ mod tests {
             let reopened = Ledger::open(home.path(), binding).unwrap();
             assert_eq!(reopened.record().version, VERSION);
             assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn idle_mcp_reviews_block_input_and_require_version_fourteen_in_both_histories() {
+        for form in [false, true] {
+            for closed in [false, true] {
+                let home = tempfile::tempdir().unwrap();
+                let binding = binding(home.path());
+                let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+                ledger.bind_thread("thread".into()).unwrap();
+                let mut event = serde_json::json!({"id":"idle","method":"mcpServer/elicitation/request",
+                    "params":{"threadId":"thread","serverName":"fixture","mode":"url","message":"Review.",
+                    "elicitationId":"request","url":"https://example.com/consent"}});
+                if form {
+                    event["params"] = serde_json::json!({"threadId":"thread","serverName":"fixture","mode":"form",
+                        "message":"Choose.","requestedSchema":{"type":"object","properties":{"enabled":{"type":"boolean"}}}});
+                }
+                let pending =
+                    review::Pending::plan(&event, "thread", None, "human", chrono::Utc::now())
+                        .unwrap();
+                ledger
+                    .update_reviews(|reviews, history| {
+                        if closed {
+                            history.push_back(review::Closed {
+                                request: pending,
+                                outcome: review::Outcome::Cancelled,
+                                acknowledged: true,
+                            });
+                        } else {
+                            reviews.push(pending);
+                        }
+                        Ok(true)
+                    })
+                    .unwrap();
+                let path = ledger.path.clone();
+                let original = std::fs::read(&path).unwrap();
+                if !closed {
+                    assert!(ledger.prepare(&message()).is_err());
+                    assert_eq!(std::fs::read(&path).unwrap(), original);
+                    let mut overlapping = ledger.record().clone();
+                    overlapping.attempt = Some(Attempt {
+                        message: message().id.to_string(),
+                        input: serde_json::to_string(&message()).unwrap(),
+                        mcp_origin: None,
+                        receipt: None,
+                        acknowledged: false,
+                    });
+                    assert!(
+                        overlapping
+                            .validate(&binding)
+                            .unwrap_err()
+                            .to_string()
+                            .contains("idle MCP review cannot overlap")
+                    );
+                }
+                drop(ledger);
+                let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
+                legacy["version"] = serde_json::json!(13);
+                let bytes = serde_json::to_vec(&legacy).unwrap();
+                std::fs::write(&path, &bytes).unwrap();
+                assert!(
+                    Ledger::open(home.path(), binding.clone())
+                        .err()
+                        .unwrap()
+                        .to_string()
+                        .contains("legacy input cannot supply idle MCP review receipts")
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+                std::fs::write(&path, &original).unwrap();
+                let mut reopened = Ledger::open(home.path(), binding).unwrap();
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                assert_eq!(reopened.record().version, VERSION);
+                if closed {
+                    reopened.prepare(&message()).unwrap();
+                } else {
+                    assert!(reopened.prepare(&message()).is_err());
+                }
+            }
         }
     }
 
@@ -948,6 +1027,15 @@ fn valid_id(id: &str) -> bool {
 impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
+            self.version >= 14
+                || self
+                    .reviews
+                    .iter()
+                    .chain(self.closed_reviews.iter().map(|r| &r.request))
+                    .all(|r| !r.is_idle_mcp_review()),
+            "legacy input cannot supply idle MCP review receipts"
+        );
+        ensure!(
             self.version >= 13
                 || (self.reviews.iter().all(|r| !r.is_mcp_form_review())
                     && self
@@ -1022,7 +1110,7 @@ impl Record {
         );
         ensure!(
             self.version == VERSION
-                || matches!(self.version, 3..=12)
+                || matches!(self.version, 3..=13)
                 || (matches!(self.version, 1 | 2)
                     && self.reviews.is_empty()
                     && self.closed_reviews.is_empty()
@@ -1061,20 +1149,27 @@ impl Record {
                     <= review::MAX_QUESTIONS,
             "too many retained provider questions"
         );
-        ensure!(
-            self.reviews.is_empty() || self.attempt.is_some(),
-            "provider question has no active input"
-        );
         let mut requests = std::collections::HashSet::new();
         for request in &self.reviews {
             request.validate(self.thread.as_deref(), &self.binding.agent)?;
+            if request.is_idle_mcp_review() {
+                ensure!(
+                    self.attempt.is_none() && self.steering.is_none(),
+                    "idle MCP review cannot overlap active or uncertain input"
+                );
+            } else {
+                ensure!(
+                    self.attempt.is_some(),
+                    "provider question has no active input"
+                );
+            }
             ensure!(
                 requests.insert(request.key()),
                 "duplicate pending provider request"
             );
             if let Some(receipt) = self.attempt.as_ref().and_then(|a| a.receipt.as_ref()) {
                 ensure!(
-                    request.turn == receipt.turn,
+                    request.turn.as_deref() == Some(receipt.turn.as_str()),
                     "provider question belongs to another input turn"
                 );
             }

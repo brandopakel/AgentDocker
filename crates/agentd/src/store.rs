@@ -55,7 +55,10 @@ pub struct TaskTransition<'a> {
 
 // Schema 25 retains bounded MCP form questions and their typed response contract.
 // Older daemons must not discard the presentation on a question reload.
-pub(crate) const SCHEMA_VERSION: i64 = 25;
+// Schema 26 also gates the receiver's version-14 delivery ledger. Its idle MCP
+// reviews have no active turn; rolling the installed binaries back to schema 25
+// would leave those conversations with receivers that cannot read their state.
+pub(crate) const SCHEMA_VERSION: i64 = 26;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (

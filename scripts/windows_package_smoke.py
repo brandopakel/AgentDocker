@@ -50,13 +50,14 @@ def extract_checked(archive, destination, manifest):
     return app
 
 
-def validate_mcp_review_report(observed, info, mode="form"):
+def validate_mcp_review_report(observed, info, mode="form", idle=False):
     """Require exact archive identity, four decisions, receipts and clean retirement."""
     def require(ok):
         if not ok:
             raise ValueError("Windows MCP review acceptance lacks exact decisions, receipts or cleanup")
 
     require(mode in ("form", "url") and observed.get("review_mode") == mode)
+    require(observed.get("idle_review", False) is idle)
     accept = "Submit" if mode == "form" else "Accept"
     require(observed.get("result") == "passed"
             and observed.get("source_commit") == info["source_commit"]
@@ -84,26 +85,56 @@ def validate_mcp_review_report(observed, info, mode="form"):
     require([c.get("decision") for c in cases] == [accept, "Decline", "Cancel", "cancel-route"])
     ledger = observed.get("final_ledger", {})
     rows = ledger.get("completed", [])
-    require(len(rows) == 8 and ledger.get("attempt") is None and bool(ledger.get("thread")))
+    count = 5 if idle else 8
+    require(len(rows) == count and ledger.get("attempt") is None and bool(ledger.get("thread")))
     receipts = {row["message"]: row["receipt"] for row in rows}
-    require(len(receipts) == 8)
+    require(len(receipts) == count)
     all_ids, mcp_ids = [], []
+    if idle:
+        initial_input = observed.get("initial_input")
+        initial_ledger = observed.get("initial_completed_ledger", {})
+        require(isinstance(initial_input, str) and initial_input in receipts
+                and initial_ledger.get("attempt") is None and initial_ledger.get("reviews") == []
+                and [r["message"] for r in initial_ledger.get("completed", [])] == [initial_input]
+                and initial_ledger["completed"][0]["receipt"] == receipts[initial_input])
+        all_ids.append(initial_input)
     for number, case in enumerate(cases, 1):
         require(case.get("result") == "passed")
-        ids = [case.get("input"), case.get("peer_input")]
-        require(all(isinstance(i, str) and i for i in ids) and len(set(ids)) == 2)
+        ids = [case.get("peer_input")] if idle else [case.get("input"), case.get("peer_input")]
+        require(all(isinstance(i, str) and i for i in ids) and len(set(ids)) == len(ids))
+        prior_ids = all_ids.copy()
         all_ids.extend(ids)
         require(case.get("receipts") == {i: receipts.get(i) for i in ids}
                 and all(isinstance(receipts.get(i), dict) and receipts[i].get("thread") == ledger["thread"]
-                        and bool(receipts[i].get("turn")) and bool(receipts[i].get("item")) for i in ids)
-                and receipts[ids[0]]["item"] != receipts[ids[1]]["item"])
+                        and bool(receipts[i].get("turn")) and bool(receipts[i].get("item")) for i in ids))
+        if not idle:
+            require(receipts[ids[0]]["item"] != receipts[ids[1]]["item"])
         held = case.get("held_ledger", {})
-        require(held.get("attempt", {}).get("message") == ids[0]
-                and held["attempt"].get("acknowledged") is True
-                and not held.get("steering")
-                and ids[1] not in [r["message"] for r in held.get("completed", [])]
+        require(not held.get("steering")
+                and ids[-1] not in [r["message"] for r in held.get("completed", [])]
                 and len(held.get("reviews", [])) == 1
                 and held["reviews"][0].get("response") is None)
+        if idle:
+            before = case.get("before_trigger", {})
+            require(before.get("attempt") is None and before.get("reviews") == []
+                    and held.get("attempt") is None and held["reviews"][0].get("turn") is None
+                    and held.get("completed") == before.get("completed")
+                    and [r["message"] for r in before.get("completed", [])] == prior_ids
+                    and all(r["receipt"] == receipts[r["message"]] for r in before["completed"]))
+            wire = case.get("wire_reply", {})
+            require(wire.get("value") == case.get("mcp_reply")
+                    and isinstance(wire.get("at"), (int, float))
+                    and isinstance(case.get("decision_at"), (int, float))
+                    and wire["at"] >= case["decision_at"])
+            requests = observed.get("model_requests", [])
+            offset = case.get("model_requests_before")
+            require(offset == number + 1 and len(requests) == 6
+                    and all(not r.get("auxiliary") for r in requests)
+                    and requests[offset]["at"] >= case["decision_at"]
+                    and requests[offset]["case"] == case["decision"])
+        else:
+            require(held.get("attempt", {}).get("message") == ids[0]
+                    and held["attempt"].get("acknowledged") is True)
         require(len(case.get("invalid_answers", [])) == 2
                 and all(a.get("code") == "invalid" for a in case["invalid_answers"]))
         action = "accept" if case["decision"] == accept else "decline" if case["decision"] == "Decline" else "cancel"
@@ -120,12 +151,12 @@ def validate_mcp_review_report(observed, info, mode="form"):
                 and request["questions"][0].get("message") == question["id"]
                 and request["questions"][0].get("presentation") == question["presentation"])
         if mode == "url":
-            require(presentation.get("url") == "https://example.com/agentdocker-fixture?case=" + str(number)
+            require(presentation.get("url") == ("https://example.com/private-fixture" if idle else "https://example.com/agentdocker-fixture?case=" + str(number))
                     and presentation.get("elicitation_id") == "fixture-elicitation-" + str(number))
         require(closed.get("outcome") == "resolved" and closed.get("acknowledged") is True
                 and request.get("id") == case.get("provider_request") == held["reviews"][0].get("id")
                 and request.get("thread") == ledger["thread"]
-                and request.get("turn") == receipts[ids[0]]["turn"]
+                and request.get("turn") == (None if idle else receipts[ids[0]]["turn"])
                 and request.get("response") == {"id": case["provider_request"], "result": response})
         reply = case.get("mcp_reply", {})
         # The app-server response includes content:null. Codex forwards URL
@@ -134,7 +165,10 @@ def validate_mcp_review_report(observed, info, mode="form"):
                          if action == "accept" else {"action": action})
         require(reply.get("result") == wire_response and bool(reply.get("id")))
         mcp_ids.append(reply["id"])
-    require(len(set(all_ids)) == 8 and set(all_ids) == set(receipts) and len(set(mcp_ids)) == 4)
+    require(len(set(all_ids)) == count and set(all_ids) == set(receipts) and len(set(mcp_ids)) == 4)
+    if idle:
+        require([r["message"] for r in rows] == all_ids
+                and len({(r["receipt"]["turn"], r["receipt"]["item"]) for r in rows}) == count)
 
 
 def validate_native_report(native, info, scenario):
@@ -349,13 +383,15 @@ def main():
                         help="also exercise managed Codex form decisions and exact receipts")
     parser.add_argument("--mcp-urls", action="store_true",
                         help="also exercise managed Codex website decisions without opening a browser")
+    parser.add_argument("--mcp-idle", action="store_true",
+                        help="also exercise form and website decisions after the model turn ends")
     args = parser.parse_args()
     if not 0 <= args.startup_samples <= 20:
         parser.error("--startup-samples must be between 0 and 20")
     if args.queue_recovery and (not args.codex or args.codex_scenario != "automatic"):
         parser.error("--queue-recovery requires --codex with --codex-scenario automatic")
-    if (args.mcp_forms or args.mcp_urls) and not args.codex:
-        parser.error("--mcp-forms/--mcp-urls require --codex")
+    if (args.mcp_forms or args.mcp_urls or args.mcp_idle) and not args.codex:
+        parser.error("--mcp-forms/--mcp-urls/--mcp-idle require --codex")
     if os.name != "nt":
         parser.error("the archive acceptance trial requires native Windows")
     build = json.loads(args.native_manifest.read_text(encoding="utf-8"))
@@ -416,16 +452,18 @@ def main():
             report.update(result="passed", steps=len(observed["steps"]), desktop=observed.get("desktop"))
             if args.codex:
                 report["result"] = "failed"
-                for mode, enabled in [("form", args.mcp_forms), ("url", args.mcp_urls)]:
+                for mode, enabled, idle in [("form", args.mcp_forms, False), ("url", args.mcp_urls, False),
+                                            ("form", args.mcp_idle, True), ("url", args.mcp_idle, True)]:
                     if not enabled:
                         continue
-                    destination = output / ("mcp-" + mode + "s")
-                    key = "mcp_" + mode + "s"
+                    destination = output / ("mcp-" + ("idle-" if idle else "") + mode + "s")
+                    key = "mcp_" + ("idle_" if idle else "") + mode + "s"
                     run_native_trial([sys.executable, str(ROOT / "scripts/windows_mcp_form_smoke.py"),
                                       "--binary-dir", str(app), "--codex", str(args.codex.resolve(strict=True)),
-                                      "--mode", mode, "--output", str(destination)], scratch, report, key)
+                                      "--mode", mode, *(["--idle"] if idle else []),
+                                      "--output", str(destination)], scratch, report, key)
                     reviewed = json.loads((destination / "result.json").read_text(encoding="utf-8"))
-                    validate_mcp_review_report(reviewed, info, mode)
+                    validate_mcp_review_report(reviewed, info, mode, idle)
                     report[key] = reviewed
                 automatic = args.codex_scenario == "automatic"
                 driver = "windows_native_launcher_smoke.py" if automatic else "windows_native_codex_smoke.py"
