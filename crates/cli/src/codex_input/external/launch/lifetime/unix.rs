@@ -59,7 +59,18 @@ impl Process {
             }
             return Err(error.into());
         }
-        Ok(event.si_signo != 0)
+        // Darwin can return CLD_STOPPED even for WEXITED | WNOWAIT. A
+        // notification is not itself an exit: classify the reported event
+        // before retiring the group or its terminal.
+        Ok(event.si_signo == libc::SIGCHLD
+            && if options & libc::WEXITED != 0 {
+                matches!(
+                    event.si_code,
+                    libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED
+                )
+            } else {
+                matches!(event.si_code, libc::CLD_STOPPED | libc::CLD_TRAPPED)
+            })
     }
 
     pub(super) async fn exited(&mut self) -> Result<()> {
