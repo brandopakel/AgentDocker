@@ -58,12 +58,40 @@ class WindowsDesktopPackaging(unittest.TestCase):
         return {"result": "passed", "source_commit": self.manifest["source_commit"],
                 "receiver_binary_sha256": dict(self.manifest["binary_sha256"]),
                 "scratch_removed": True, "cleanup_errors": [], "reader_errors": [],
-                "forced_processes": [], "steps": [{"passed": True} for _ in range(16)],
-                "front_end_exit": {"pid": 4, "watched": [1, 2, 3], "remaining": [],
+                "forced_processes": [], "steps": [{"passed": True} for _ in range(19)],
+                "front_end_exit": {"pid": 4, "birth": 40, "frontend_exit_code": 15,
+                                   "target": {"pid": 4, "birth": 40},
+                                   "watched": [{"pid": n, "birth": n * 10} for n in (1, 2, 3)],
+                                   "remaining": [],
                                    "capability_revoked": True, "receipts_preserved": True,
                                    "console_host": {"pid": 5, "alive_after_cleanup": True,
                                                     "resize_after_cleanup": True},
-                                   "additional_model_requests": 0}}
+                                   "additional_model_requests": 0},
+                "owner_exit": {"pid": 7, "birth": 70, "frontend_exit_code": 1,
+                               "target": {"pid": 8, "birth": 80},
+                               "watched": [{"pid": n, "birth": n * 10} for n in (7, 8, 9)],
+                               "remaining": [], "capability_revoked": True,
+                               "receipts_preserved": True, "additional_model_requests": 0,
+                               "console_host": {"pid": 10, "alive_after_cleanup": True,
+                                                "resize_after_cleanup": True}}}
+
+    def test_native_owner_exit_report_requires_its_own_pinned_target_and_cleanup(self):
+        native = self.automatic_report()
+        for change in (lambda r: r.pop("owner_exit"),
+                       lambda r: r.update(owner_exit=copy.deepcopy(r["front_end_exit"])),
+                       lambda r: r["owner_exit"].update(remaining=[8]),
+                       lambda r: r["owner_exit"].update(capability_revoked=False),
+                       lambda r: r["owner_exit"].update(receipts_preserved=False),
+                       lambda r: r["owner_exit"].update(additional_model_requests=1),
+                       lambda r: r["owner_exit"].update(frontend_exit_code=0),
+                       lambda r: r["owner_exit"]["target"].update(birth=81),
+                       lambda r: r["owner_exit"]["watched"].pop(0),
+                       lambda r: r["owner_exit"]["console_host"].update(pid=8),
+                       lambda r: r["owner_exit"]["console_host"].update(alive_after_cleanup=False)):
+            invalid = copy.deepcopy(native)
+            change(invalid)
+            with self.assertRaises(ValueError):
+                SMOKE.validate_native_report(invalid, self.manifest, "automatic")
 
     def test_automatic_native_report_requires_extracted_binary_and_source_provenance(self):
         native = self.automatic_report()

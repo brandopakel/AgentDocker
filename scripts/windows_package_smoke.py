@@ -63,21 +63,33 @@ def validate_native_report(native, info, scenario):
         native.get("source_commit") != info["source_commit"]
         or native.get("scratch_removed") is not True
         or any(native.get(key) != [] for key in ("cleanup_errors", "reader_errors", "forced_processes"))
-        or len(native.get("steps", [])) != 16
+        or len(native.get("steps", [])) != 19
         or not all(step.get("passed") is True for step in native["steps"])
     ):
         raise ValueError("automatic native Codex acceptance has incomplete source, lifecycle or cleanup evidence")
-    if automatic:
-        exited = native.get("front_end_exit", {})
+    for probe in ("front_end_exit", "owner_exit") if automatic else ():
+        exited = native.get(probe, {})
         if (not isinstance(exited, dict) or len(exited.get("watched", [])) < 3
                 or exited.get("remaining") != []
                 or exited.get("capability_revoked") is not True
                 or exited.get("receipts_preserved") is not True
                 or exited.get("additional_model_requests") != 0):
-            raise ValueError("automatic native Codex acceptance lacks front-end exit evidence")
+            raise ValueError(f"automatic native Codex acceptance lacks {probe} evidence")
+        target = exited.get("target")
+        watched = exited.get("watched", [])
+        if (not isinstance(target, dict) or not isinstance(target.get("pid"), int)
+                or target["pid"] <= 0 or not isinstance(target.get("birth"), (int, float))
+                or not isinstance(exited.get("frontend_exit_code"), int)
+                or exited["frontend_exit_code"] == 0
+                or (probe == "front_end_exit" and
+                    (target["pid"] != exited.get("pid") or target["birth"] != exited.get("birth")))
+                or (probe == "owner_exit" and
+                    (target["pid"] == exited.get("pid") or target not in watched
+                     or {"pid": exited.get("pid"), "birth": exited.get("birth")} not in watched))):
+            raise ValueError("automatic native Codex acceptance lacks distinct pinned exit targets")
         host = exited.get("console_host")
         if (not isinstance(host, dict) or not isinstance(host.get("pid"), int)
-                or host["pid"] <= 0 or host["pid"] == exited.get("pid")
+                or host["pid"] <= 0 or host["pid"] in (exited.get("pid"), target["pid"])
                 or host.get("alive_after_cleanup") is not True
                 or host.get("resize_after_cleanup") is not True):
             raise ValueError("automatic native Codex exit acceptance did not keep its console open")
