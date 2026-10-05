@@ -7,8 +7,51 @@ import datetime
 import json
 import subprocess
 import time
+import uuid
 
 from windows_native_codex_smoke import wait
+
+
+def discard_start_reply(receiver, command):
+    """Close our private resolve client after intent persistence, without reading."""
+    from windows_remote_receiver_fixture import canonical
+    from windows_smoke_pipe import WindowsSmokePipe
+
+    directory = canonical(receiver.home / 'codex-queue' / receiver.agent)
+    endpoint = rf"\\.\pipe\agentdocker-codex-{uuid.uuid5(uuid.NAMESPACE_URL, directory).hex}-resolve"
+    wire = (json.dumps(command) + '\n').encode('utf-8')
+    pipe = WindowsSmokePipe(endpoint, timeout=5, write_timeout=5)
+    proof = {'endpoint_kind': 'private resolve named pipe', 'command': command,
+             'request_bytes': len(wire), 'response_read_calls': 0,
+             'client_closed_after_send': False, 'closed_after_durable_intent': False}
+    receiver.report['queued_recovery']['local_client_reply_loss'] = proof
+    try:
+        pipe.write(wire)
+
+        def persisted():
+            ledger = receiver.ledger()
+            attempt = ledger.get('attempt')
+            if attempt and attempt.get('start'):
+                assert attempt['message'] == command['message']
+                return attempt['start']
+            assert not any(c['message'] == command['message'] for c in ledger['completed']), 'receipt retired intent before fixture observation'
+            return None
+
+        # Poll only this fixture's ledger. Never read the named-pipe response,
+        # even if the reply has already reached the kernel buffer.
+        until = time.monotonic() + 15
+        intent = persisted()
+        while not intent and time.monotonic() < until:
+            time.sleep(0.005)
+            intent = persisted()
+        assert intent, 'lost-client request has no observed durable intent'
+        assert intent['confirmation'] == command['confirmation'] and intent['transmission'] in ('prepared', 'started')
+        proof['durable_intent_observed'] = intent
+        proof['closed_after_durable_intent'] = True
+    finally:
+        pipe.close()
+    proof['client_closed_after_send'] = True
+    return intent
 
 
 def exercise(mode, receiver, call, thread, held_text, recovery_text, held_model,
@@ -102,17 +145,31 @@ def exercise(mode, receiver, call, thread, held_text, recovery_text, held_model,
         call('thread/queue/reorder', {'threadId': thread, 'queuedSubmissionIds': [foreign, pending[0]['id']]})
         refused('foreign_head', command, 'another or edited input is ahead')
         assert call('thread/queue/delete', {'threadId': thread, 'queuedSubmissionId': foreign})['deleted'] is True
-        proof['response'] = recover(command)
-        assert proof['response']['exit_code'] == 0, proof['response']
-        first = json.loads(proof['response']['stderr'])
-        assert proof['response']['stdout'].strip() == first['queued_start']
-        assert first['message'] == message and first['queued_start'] and first['turn'] and not first['already_attempted']
+        first = None
+        if mode == 'client-reply-loss':
+            request = {'action': 'start_queued', 'agent': receiver.agent,
+                       'provider': receiver.binding()['provider'], 'socket': receiver.socket,
+                       'message': message, 'confirmation': choice,
+                       'note': 'Private Windows discarded local-client reply acceptance'}
+            intent = discard_start_reply(receiver, request)
+            assert intent['queued'] == before['queued'] and intent['provider'] == request['provider']
+        else:
+            proof['response'] = recover(command)
+            assert proof['response']['exit_code'] == 0, proof['response']
+            first = json.loads(proof['response']['stderr'])
+            assert proof['response']['stdout'].strip() == first['queued_start']
+            assert first['message'] == message and first['queued_start'] and first['turn'] and not first['already_attempted']
         proof['repeat'] = recover(command)
         proof['ledger_after_repeat'] = receiver.ledger()
         if proof['repeat']['exit_code'] == 0:
             again = json.loads(proof['repeat']['stderr'])
             assert proof['repeat']['stdout'].strip() == again['queued_start']
-            assert again['already_attempted'] and all(again[k] == first[k] for k in ['message', 'queued_start', 'turn'])
+            assert again['already_attempted'] and again['turn']
+            if first is None:
+                assert again['message'] == message and again['queued_start'] == intent['id']
+                first = again
+            else:
+                assert all(again[k] == first[k] for k in ['message', 'queued_start', 'turn'])
             proof['repeat_disposition'] = 'pending_intent'
         else:
             # Ordinary receipt reconciliation can retire the pending attempt
@@ -122,6 +179,11 @@ def exercise(mode, receiver, call, thread, held_text, recovery_text, held_model,
             assert not proof['repeat']['stdout'] and proof['ledger_after_repeat']['attempt'] is None
             delivered = proof['ledger_after_repeat']['completed']
             assert len(delivered) == 3 and delivered[:2] == completed
+            if first is None:
+                # This identity comes from the exact ordinary receipt, never
+                # an invented response from the client that read no bytes.
+                first = {'queued_start': intent['id'], 'message': message,
+                         'turn': delivered[-1]['receipt']['turn']}
             assert delivered[-1]['message'] == message and delivered[-1]['receipt']['turn'] == first['turn']
             proof['retired_preview'] = recover([])
             assert proof['retired_preview']['exit_code'] == 0

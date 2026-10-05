@@ -144,7 +144,7 @@ def validate_queue_recovery_report(native, info, mode):
         if not ok:
             raise ValueError("queued recovery acceptance lacks exact source, receipts, refusals or cleanup")
 
-    require(mode in ("normal", "holds") and native.get("result") == "passed"
+    require(mode in ("normal", "holds", "client-reply-loss") and native.get("result") == "passed"
             and native.get("source_commit") == info["source_commit"]
             and native.get("scratch_removed") is True
             and all(native.get(key) == [] for key in ("cleanup_errors", "reader_errors", "forced_processes"))
@@ -171,12 +171,39 @@ def validate_queue_recovery_report(native, info, mode):
                 and refusal.get("ledger_after", {}).get("completed") == before["completed"])
     rows = proof.get("completed_after", [])
     require(len(rows) == (2 if mode == "holds" else 3) and rows[:2] == before["completed"])
-    if mode == "normal":
-        require(proof.get("response", {}).get("exit_code") == 0)
-        first = json.loads(proof["response"]["stderr"])
-        require(first.get("already_attempted") is False
-                and proof["response"]["stdout"].strip() == first.get("queued_start")
-                and first.get("message") == proof.get("message") and bool(first.get("queued_start"))
+    if mode != "holds":
+        if mode == "normal":
+            require(proof.get("response", {}).get("exit_code") == 0)
+            first = json.loads(proof["response"]["stderr"])
+            require(first.get("already_attempted") is False
+                    and proof["response"]["stdout"].strip() == first.get("queued_start"))
+        else:
+            loss = proof.get("local_client_reply_loss", {})
+            intent = loss.get("durable_intent_observed", {})
+            request = loss.get("command", {})
+            require("response" not in proof and loss.get("response_read_calls") == 0
+                    and loss.get("client_closed_after_send") is True
+                    and loss.get("closed_after_durable_intent") is True
+                    and loss.get("endpoint_kind") == "private resolve named pipe"
+                    and loss.get("request_bytes") == len((json.dumps(request) + '\n').encode('utf-8'))
+                    and request.get("action") == "start_queued"
+                    and bool(request.get("agent"))
+                    and request.get("agent") == before.get("binding", {}).get("agent")
+                    and request.get("message") == proof["message"]
+                    and request.get("provider") == native["descriptor"]["provider"]
+                    and intent.get("provider") == request["provider"]
+                    and bool(intent.get("id")) and bool(intent.get("note"))
+                    and intent.get("note") == request.get("note")
+                    and intent.get("queued") == before["attempt"].get("queued")
+                    and intent.get("transmission") in ("prepared", "started")
+                    and intent.get("confirmation") == request.get("confirmation")
+                    and intent.get("confirmation") == json.loads(proof["preview"]["stdout"])["pending"]["start_confirmation"])
+            # Correlate the saved intent with the final ordinary receipt. The
+            # lost response is deliberately absent from the evidence.
+            first = {"queued_start": intent["id"], "message": proof["message"],
+                     "turn": rows[-1]["receipt"]["turn"]}
+            require(intent.get("turn") in (None, first["turn"]))
+        require(first.get("message") == proof.get("message") and bool(first.get("queued_start"))
                 and bool(first.get("turn"))
                 and rows[-1]["message"] == first["message"] and rows[-1]["receipt"]["turn"] == first["turn"]
                 and sum(bool(r.get("recovery")) and not r.get("title") for r in native.get("requests", [])) == 1)
@@ -306,7 +333,7 @@ def main():
                 validate_native_report(native, info, args.codex_scenario)
                 if args.queue_recovery:
                     report["queued_recovery"] = {}
-                    for mode in ("normal", "holds"):
+                    for mode in ("normal", "holds", "client-reply-loss"):
                         destination = output / ("queued-recovery-" + mode)
                         run_native_trial([sys.executable, str(ROOT / "scripts/windows_native_launcher_smoke.py"),
                                           "--binary-dir", str(app), "--codex", str(args.codex.resolve(strict=True)),

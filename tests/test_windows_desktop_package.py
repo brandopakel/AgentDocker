@@ -274,6 +274,59 @@ class WindowsDesktopPackaging(unittest.TestCase):
             with self.assertRaises(ValueError):
                 SMOKE.validate_queue_recovery_report(invalid, self.manifest, "normal")
 
+    def lost_client_recovery_report(self):
+        native = self.queued_recovery_report("client-reply-loss")
+        proof = native["queued_recovery"]
+        proof.pop("response")
+        proof["ledger_before"]["binding"] = {"agent": "agent"}
+        request = {"action": "start_queued", "agent": "agent", "message": "2",
+                   "provider": native["descriptor"]["provider"],
+                   "confirmation": "digest", "note": "Private loss trial"}
+        proof["local_client_reply_loss"] = {
+            "endpoint_kind": "private resolve named pipe", "command": request,
+            "request_bytes": len((json.dumps(request) + '\n').encode('utf-8')),
+            "response_read_calls": 0, "client_closed_after_send": True,
+            "closed_after_durable_intent": True,
+            "durable_intent_observed": {"id": "intent", "queued": "entry",
+                                        "confirmation": "digest", "note": request["note"],
+                                        "provider": request["provider"],
+                                        "transmission": "prepared", "turn": None}}
+        return native
+
+    def test_lost_client_recovery_requires_unread_reply_and_exact_original_intent(self):
+        native = self.lost_client_recovery_report()
+        SMOKE.validate_queue_recovery_report(native, self.manifest, "client-reply-loss")
+        for change in (lambda p: p.update(response={}),
+                       lambda p: p["local_client_reply_loss"].update(response_read_calls=1),
+                       lambda p: p["local_client_reply_loss"].update(client_closed_after_send=False),
+                       lambda p: p["local_client_reply_loss"].update(closed_after_durable_intent=False),
+                       lambda p: p["local_client_reply_loss"].update(request_bytes=0),
+                       lambda p: p["local_client_reply_loss"]["command"].update(agent="wrong"),
+                       lambda p: p["local_client_reply_loss"]["durable_intent_observed"].update(id="wrong"),
+                       lambda p: p["local_client_reply_loss"]["durable_intent_observed"].update(queued="other"),
+                       lambda p: p["local_client_reply_loss"]["durable_intent_observed"].update(confirmation="wrong"),
+                       lambda p: p["local_client_reply_loss"]["durable_intent_observed"].update(transmission="unknown"),
+                       lambda p: p["local_client_reply_loss"]["durable_intent_observed"].update(turn="other")):
+            invalid = copy.deepcopy(native); change(invalid["queued_recovery"])
+            with self.assertRaises(ValueError):
+                SMOKE.validate_queue_recovery_report(invalid, self.manifest, "client-reply-loss")
+
+    def test_lost_client_retry_after_retirement_requires_completed_receipt(self):
+        native = self.lost_client_recovery_report()
+        proof = native["queued_recovery"]
+        proof.update(repeat_disposition="already_delivered",
+                     repeat={"exit_code": 1, "stdout": "", "stderr": "Error: no retained native input to start\n"},
+                     ledger_after_repeat={"completed": copy.deepcopy(proof["completed_after"]), "attempt": None},
+                     retired_preview={"exit_code": 0, "stdout": '{"pending":null}'})
+        SMOKE.validate_queue_recovery_report(native, self.manifest, "client-reply-loss")
+        for change in (lambda p: p["repeat"].update(stderr="Error: daemon unavailable"),
+                       lambda p: p["ledger_after_repeat"]["completed"][-1].update(message="other"),
+                       lambda p: p["ledger_after_repeat"].update(attempt={"message": "2"}),
+                       lambda p: p["retired_preview"].update(stdout='{"pending":{"message":"2"}}')):
+            invalid = copy.deepcopy(native); change(invalid["queued_recovery"])
+            with self.assertRaises(ValueError):
+                SMOKE.validate_queue_recovery_report(invalid, self.manifest, "client-reply-loss")
+
     def build(self):
         info = PACKAGE.package(self.args)
         return info, self.output / next(iter(info["artifacts"]))

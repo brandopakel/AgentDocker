@@ -53,7 +53,7 @@ def main():
     parser.add_argument('--codex', type=Path, required=True)
     parser.add_argument('--binary-dir', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--queued-recovery', choices=['normal', 'holds'])
+    parser.add_argument('--queued-recovery', choices=['normal', 'holds', 'client-reply-loss'])
     args = parser.parse_args()
     if os.name != 'nt':
         parser.error('requires native Windows')
