@@ -301,63 +301,77 @@ def main():
         step('resumed terminal exits natively and revokes its capability',
              not terminal.isalive() and not Path(descriptor['token_file']).exists())
         close_console()
-        # A third, prompt-free reopen exercises Windows TerminateProcess on
-        # only the front end while an independent host keeps ConPTY open.
-        previous_records = set((receiver.home / 'codex-native').glob('*/server.json'))
-        output.clear(); closing.clear()
-        pid_file, release_file = root / 'front-end.pid', root / 'release-console'
-        terminal = PtyProcess.spawn([sys.executable, '-c', CONSOLE_HOST, str(pid_file), str(release_file),
-                    str(receiver.cli), '--socket', receiver.socket, 'codex-native',
-                    '--program', str(codex), '--profile', str(profile), '--cwd', str(repo),
-                    '--name', 'native-auto-exit-probe', '--resume', thread],
-                    cwd=str(repo), env=receiver.env, dimensions=(40, 160), backend=Backend.ConPTY)
-        console_host = psutil.Process(terminal.pid); owned.append(console_host)
-        reader = threading.Thread(target=drain, daemon=True); reader.start()
-        wait(lambda: pid_file.is_file() and pid_file.read_text(encoding='ascii').isdigit(), 10)
-        launcher = psutil.Process(int(pid_file.read_text(encoding='ascii'))); owned.append(launcher)
-        assert launcher.ppid() == console_host.pid
-        assert Path(launcher.exe()).resolve() == receiver.cli.resolve()
-        wait(ready, 65)
-        records = set((receiver.home / 'codex-native').glob('*/server.json')) - previous_records
-        assert len(records) == 1
-        descriptor = json.loads(records.pop().read_text(encoding='utf-8'))
-        generation = receiver.binding()
-        step('exit probe reopens the same canonical provider without input',
-             'AgentDocker native input ready: ' + receiver.agent in ''.join(output) and
-             descriptor['version'] == 1 and descriptor['provider']['session'] == thread and
-             generation['provider'] == descriptor['provider'] and receiver.ledger()['completed'] == [first, second])
-        descendants = launcher.children(recursive=True); owned.extend(descendants)
-        controller = fixture_controller(psutil, generation, receiver.cli)
-        receiver.owned.append(controller)
-        # The daemon may own the resumed receiver, so include it explicitly.
-        watched = [*descendants, controller]
-        requests_before_exit = len(report['requests'])
-        report['front_end_exit'] = {'pid': launcher.pid, 'birth': launcher.create_time(),
-                                   'watched': [{'pid': p.pid, 'birth': p.create_time()} for p in watched],
-                                   'descriptor': descriptor, 'binding': generation,
-                                   'console_host': {'pid': console_host.pid, 'birth': console_host.create_time(),
-                                                    'script_sha256': hashlib.sha256(CONSOLE_HOST.encode()).hexdigest()}}
-        assert launcher.is_running()
-        launcher.kill()
-        launcher.wait(timeout=10)
-        _, alive = psutil.wait_procs(watched, timeout=15)
-        # Save failure observations too, before an assertion or fixture cleanup.
-        report['front_end_exit']['remaining'] = [p.pid for p in alive]
-        report['front_end_exit']['capability_revoked'] = not Path(descriptor['token_file']).exists()
-        report['front_end_exit']['receipts_preserved'] = receiver.ledger()['completed'] == [first, second]
-        report['front_end_exit']['additional_model_requests'] = len(report['requests']) - requests_before_exit
-        report['front_end_exit']['console_host']['alive_after_cleanup'] = console_host.is_running() and terminal.isalive()
-        terminal.setwinsize(40, 160)
-        report['front_end_exit']['console_host']['resize_after_cleanup'] = True
-        step('front-end termination retires owner and provider generations before fixture cleanup',
-             not alive and not Path(descriptor['token_file']).exists()
-             and report['front_end_exit']['console_host']['alive_after_cleanup'])
-        step('front-end termination preserves receipts without another model request',
-             receiver.ledger()['completed'] == [first, second] and len(report['requests']) == requests_before_exit)
+        # Prompt-free reopens terminate each exact product participant while
+        # an independent host preserves ConPTY. Console teardown cannot mask
+        # either owner-death containment or frontend EOF cleanup.
+        for probe_key, target in [('front_end_exit', 'frontend'), ('owner_exit', 'owner')]:
+            previous_records = set((receiver.home / 'codex-native').glob('*/server.json'))
+            output.clear(); closing.clear()
+            pid_file, release_file = root / (probe_key + '.pid'), root / ('release-' + probe_key)
+            terminal = PtyProcess.spawn([sys.executable, '-c', CONSOLE_HOST, str(pid_file), str(release_file),
+                        str(receiver.cli), '--socket', receiver.socket, 'codex-native',
+                        '--program', str(codex), '--profile', str(profile), '--cwd', str(repo),
+                        '--name', 'native-auto-' + probe_key, '--resume', thread],
+                        cwd=str(repo), env=receiver.env, dimensions=(40, 160), backend=Backend.ConPTY)
+            console_host = psutil.Process(terminal.pid); owned.append(console_host)
+            reader = threading.Thread(target=drain, daemon=True); reader.start()
+            wait(lambda: pid_file.is_file() and pid_file.read_text(encoding='ascii').isdigit(), 10)
+            launcher = psutil.Process(int(pid_file.read_text(encoding='ascii'))); owned.append(launcher)
+            assert launcher.ppid() == console_host.pid
+            assert Path(launcher.exe()).resolve() == receiver.cli.resolve()
+            wait(ready, 65)
+            records = set((receiver.home / 'codex-native').glob('*/server.json')) - previous_records
+            assert len(records) == 1
+            descriptor = json.loads(records.pop().read_text(encoding='utf-8'))
+            generation = receiver.binding()
+            step(target + ' exit probe reopens the same canonical provider without input',
+                 'AgentDocker native input ready: ' + receiver.agent in ''.join(output) and
+                 descriptor['version'] == 1 and descriptor['provider']['session'] == thread and
+                 generation['provider'] == descriptor['provider'] and receiver.ledger()['completed'] == [first, second])
+            descendants = launcher.children(recursive=True); owned.extend(descendants)
+            controller = fixture_controller(psutil, generation, receiver.cli)
+            receiver.owned.append(controller)
+            # The daemon may own the resumed receiver, so include it explicitly.
+            watched = [*descendants, controller]
+            target_process = launcher
+            if target == 'owner':
+                native_process = psutil.Process(descriptor['provider']['process']['pid'])
+                target_process = psutil.Process(native_process.ppid())
+                assert target_process.ppid() == launcher.pid
+                assert Path(target_process.exe()).resolve() == receiver.cli.resolve()
+                assert psutil.Process(descriptor['server']['pid']).ppid() == target_process.pid
+                assert any(p == target_process for p in descendants)
+                watched.append(launcher)
+            requests_before_exit = len(report['requests'])
+            report[probe_key] = {'pid': launcher.pid, 'birth': launcher.create_time(),
+                                       'target': {'pid': target_process.pid, 'birth': target_process.create_time()},
+                                       'watched': [{'pid': p.pid, 'birth': p.create_time()} for p in watched],
+                                       'descriptor': descriptor, 'binding': generation,
+                                       'console_host': {'pid': console_host.pid, 'birth': console_host.create_time(),
+                                                        'script_sha256': hashlib.sha256(CONSOLE_HOST.encode()).hexdigest()}}
+            assert launcher.is_running() and target_process.is_running()
+            target_process.kill()
+            report[probe_key]['frontend_exit_code'] = launcher.wait(timeout=10)
+            _, alive = psutil.wait_procs(watched, timeout=15)
+            # Save failure observations too, before an assertion or fixture cleanup.
+            report[probe_key]['remaining'] = [p.pid for p in alive]
+            report[probe_key]['capability_revoked'] = not Path(descriptor['token_file']).exists()
+            report[probe_key]['receipts_preserved'] = receiver.ledger()['completed'] == [first, second]
+            report[probe_key]['additional_model_requests'] = len(report['requests']) - requests_before_exit
+            report[probe_key]['console_host']['alive_after_cleanup'] = console_host.is_running() and terminal.isalive()
+            terminal.setwinsize(40, 160)
+            report[probe_key]['console_host']['resize_after_cleanup'] = True
+            step(target + ' termination retires owner and provider generations before fixture cleanup',
+                 not alive and not Path(descriptor['token_file']).exists()
+                 and report[probe_key]['console_host']['alive_after_cleanup'])
+            step(target + ' termination preserves receipts without another model request',
+                 receiver.ledger()['completed'] == [first, second] and len(report['requests']) == requests_before_exit)
+            release_file.touch()
+            wait(lambda: not terminal.isalive(), 10)
+            assert console_host.wait(timeout=10) == 0
+            close_console()
+            (out / (probe_key + '-terminal.txt')).write_text(''.join(output), encoding='utf-8')
         step('private provider configuration is unchanged', (profile / 'config.toml').read_text(encoding='utf-8') == config)
-        release_file.touch()
-        wait(lambda: not terminal.isalive(), 10)
-        assert console_host.wait(timeout=10) == 0
         report['result'] = 'passed'
     except Exception:
         report['error'] = traceback.format_exc()

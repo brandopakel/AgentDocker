@@ -6,6 +6,8 @@
 //! until its children are retired, including when the owner itself crashes.
 #[cfg(unix)]
 mod unix;
+#[cfg(windows)]
+mod windows;
 use agentdocker_core::ProcessIdentity;
 use agentdocker_host::{dirs, procinfo};
 use anyhow::{Context, Result, ensure};
@@ -18,6 +20,8 @@ use tokio::{
     task::JoinSet,
     time::timeout,
 };
+#[cfg(windows)]
+pub(super) use windows::contain_owner_until_process_exit;
 
 pub(super) const ENV: &str = "AGENTDOCKER_NATIVE_LIFETIME";
 

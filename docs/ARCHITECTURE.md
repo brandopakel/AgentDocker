@@ -1837,8 +1837,17 @@ concurrently with at most 64 pending peers, a one-second per-peer deadline and
 a ten-second overall startup deadline; accepting the owner closes the remaining
 unauthenticated sockets. EOF retires those
 children using the ordinary bounded cleanup and revokes the capability, even
-after front-end SIGKILL. The internal invitation is removed from provider and
-receiver environments. Existing birth records name the owner; v1/v2 record
+after front-end SIGKILL. On Unix the front end reserves a dedicated owner
+process group until cleanup, even after the owner exits, and restores inherited
+controlling-terminal foreground and modes across stop/continue and cleanup.
+On Windows the authenticated internal owner joins its own unnamed, non-inheritable
+job after daemon startup but before any provider/receiver spawn. No breakaway is
+enabled. One job handle lasts until owner process exit; Windows then closes it
+and terminates any surviving descendants, including after owner termination.
+The front end and shared daemon stay outside that job, so front-end death still
+allows the owner to revoke the capability through ordinary EOF cleanup. The front
+end also owns the capability path and revokes it if the owner dies first. The
+internal invitation is removed from provider and receiver environments. Existing birth records name the owner; v1/v2 record
 formats, provider history and receipt semantics are unchanged. An observed
 empty server and unique new root thread permit a private version-2 birth record,
 usable only with a pristine ledger before the first durable input attempt.

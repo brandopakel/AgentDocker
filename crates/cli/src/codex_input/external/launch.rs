@@ -439,6 +439,11 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         .canonicalize()?;
     let options = provider_input::codex_arguments(&args.arguments)?;
     crate::codex_input::call(&client, Request::Ping).await?;
+    // Any daemon autostart must precede Windows job admission: the shared
+    // daemon belongs to the desktop session, not this native provider owner.
+    #[cfg(windows)]
+    lifetime::contain_owner_until_process_exit()
+        .context("cannot contain native lifetime owner processes")?;
     let home = dirs::home();
     let directory = owner.directory.clone();
     let token = uuid::Uuid::new_v4().simple().to_string();
