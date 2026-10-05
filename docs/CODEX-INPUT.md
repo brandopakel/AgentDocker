@@ -618,6 +618,9 @@ navigation and reopening. These bounded trials use the upstream experimental
 provider policy or establish physical input/accessibility acceptance. The clean
 candidate passed 1,430 Rust tests and 155 Python checks with zero retries.
 Broader permission forms, extended MCP elicitation and secret input still require completion.
+Provider `requestUserInput` bundles reject `isSecret: true` before opening any
+ordinary question route. A supplied flag must be a boolean; malformed values,
+including strings and null, cannot fall back to persisted ordinary answers.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.

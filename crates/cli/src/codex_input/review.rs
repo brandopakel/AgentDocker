@@ -548,8 +548,13 @@ impl Pending {
                 );
                 let mut fields = HashSet::new();
                 for value in values {
+                    let secret = value
+                        .get("isSecret")
+                        .map(|flag| flag.as_bool().context("isSecret must be a boolean"))
+                        .transpose()?
+                        .unwrap_or(false);
                     ensure!(
-                        value["isSecret"] != true,
+                        !secret,
                         "secret input cannot be stored in AgentDocker questions"
                     );
                     let field = value["id"].as_str().context("Codex question has no ID")?;
@@ -2032,6 +2037,28 @@ mod tests {
             .is_err()
         );
         assert!(Pending::plan(&event(), "thread", None, "human", Utc::now()).is_err());
+    }
+
+    #[test]
+    fn malformed_secret_flags_cannot_fall_back_to_ordinary_question_storage() {
+        let mut input = json!({"id":"ask","method":"item/tool/requestUserInput","params":{"threadId":"thread","turnId":"turn","questions":[{"id":"first","question":"Choose?"},{"id":"second","question":"Provide a value?"}]}});
+        assert!(Pending::plan(&input, "thread", Some("turn"), "human", Utc::now()).is_ok());
+        input["params"]["questions"][1]["isSecret"] = json!(false);
+        assert!(Pending::plan(&input, "thread", Some("turn"), "human", Utc::now()).is_ok());
+        for flag in [
+            Value::Null,
+            json!("true"),
+            json!("false"),
+            json!(0),
+            json!(1),
+            json!([]),
+            json!({}),
+        ] {
+            input["params"]["questions"][1]["isSecret"] = flag;
+            let error =
+                Pending::plan(&input, "thread", Some("turn"), "human", Utc::now()).unwrap_err();
+            assert!(error.to_string().contains("isSecret must be a boolean"));
+        }
     }
     #[test]
     fn an_expired_incomplete_bundle_returns_an_error_and_never_infers_approval() {
