@@ -571,11 +571,15 @@ canonical loopback HTTP addresses are supported; credentials, display controls,
 encoded/ambiguous authorities and non-web schemes are rejected. Punycode domains
 are shown with a caution, and the entire original URL remains visible.
 
-Managed Codex accepts `mcpServer/elicitation/request` URL mode only during an
-active input turn on its bound thread. A supplied `turnId` must match; an absent
-one uses the local active turn only as a lifetime boundary. Idle/threadless,
-form, device-verification and secret-input callbacks remain unsupported. Private
-ledger version 12 gates URL review semantics in open and closed history. Exact
+Managed Codex accepts `mcpServer/elicitation/request` URL and bounded nonsecret
+form modes on its bound thread. A supplied `turnId` must match an active input;
+an absent one uses that turn when present. An idle request without turn
+correlation is retained against the owned thread, with no active or uncertain
+input allowed alongside it. Normal input remains queued until resolution.
+Threadless, device-verification and secret callbacks remain unsupported. Private
+ledger versions 12/13 gate URL/form receipts; version 14 additionally gates idle
+MCP reviews in both open and closed history. Other review kinds require an active
+input turn. Exact
 human and daemon answer receipts precede the response; `serverRequest/resolved`
 precedes queue acknowledgement. Expiry/dismissal sends `cancel`, never consent.
 An uncertain response is retained without replay. `accept` means consent to the
@@ -1942,6 +1946,10 @@ Schema 25 retains `mcp_form` presentations with the requesting server, message a
 complete bounded flat schema. Form answers are nonsecret JSON objects, or exact
 Decline/Cancel choices. The shared publish route validates every correlated
 answer before persistence, including generic send replies. Managed Codex uses
-ledger version 13; earlier records cannot introduce form review receipts. The
+ledger version 14; pre-13 records cannot introduce form review receipts, and
+pre-14 records cannot introduce idle MCP reviews. A nullable stored turn is
+valid only for an idle form/URL review; its pending record cannot coexist with
+active or uncertain input. Older turn-scoped records retain their correlation
+and upgrade without replacing input. The
 response is stored before writing and acknowledged only after provider resolution,
 using the same exact human-answer and no-replay contract as other reviews.

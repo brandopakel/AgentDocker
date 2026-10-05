@@ -866,9 +866,11 @@ actual source inspection of `1d76a88`; its parent integration gate passed
 814 Rust tests and 65 Python checks.
 
 MCP URL elicitation (`mcpServer/elicitation/request`, `mode: "url"`) now has a
-bounded human route. The request must name the bound thread during an active
-input turn; a supplied turn must match, while absent/null turn correlation uses
-the current local turn as the request's lifetime boundary. The server, message
+bounded human route. The request must name the bound thread. A supplied turn
+must match an active input; absent/null turn correlation uses the local active
+turn when present. While idle, an uncorrelated request instead belongs to the
+owned conversation and holds ordinary queued input until provider resolution.
+An outstanding uncertain input prevents this idle route. The server, message
 and full original destination are reviewed before choosing **Accept**,
 **Decline** or **Cancel**. Copy the link and open it in your own browser only if
 you consent; AgentDocker neither fetches the page nor sees its input. Terminal
@@ -1222,14 +1224,19 @@ ordinary `codex` and the current managed bridge are unchanged.
 ## Nonsecret MCP form review
 
 Managed `mcpServer/elicitation/request` form requests use typed desktop fields
-with explicit Submit, Decline and Cancel controls. Only the bound active thread
-can ask; absent provider turn correlation stays bounded by the local active turn.
+with explicit Submit, Decline and Cancel controls. Only the bound thread can
+ask. Absent provider turn correlation uses the local active turn when present;
+while idle it uses the owned-conversation route described above.
 Forms support flat strings, numbers/integers, booleans and titled/untitled
 single/multiple selections, required fields, defaults and bounds. Email, URI,
 date and date-time formats are validated without fetching or changing values.
 Unknown constraints, nested schemas, secret/extended formats and device
 verification fail explicitly. Explicit `null` schema fields are invalid, including
 constraints and defaults; only omission selects the documented fallback.
+Idle form and URL reviews require delivery-ledger version 14. Earlier records
+cannot introduce these receipts, and older bridges cannot read the new ledger.
+Preserve the matching prior delivery state before a binary downgrade. Pending
+or uncertain reviews on restart still pause delivery; replies are never replayed.
 Requests are limited to 16 fields, 32 options,
 16,000-byte schemas/responses and 4,096-byte text fields. Schema text-length
 bounds count Unicode characters; exceeding the separate byte cap reports its

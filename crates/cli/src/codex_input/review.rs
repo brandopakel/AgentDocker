@@ -79,7 +79,9 @@ pub(super) struct Question {
 pub(super) struct Pending {
     pub id: Value,
     pub thread: String,
-    pub turn: String,
+    // None is a standalone MCP request received while the owned thread is idle.
+    // Other review kinds always require the controller's active input turn.
+    pub turn: Option<String>,
     pub human: String,
     kind: Kind,
     #[serde(default, skip_serializing_if = "CommandDenial::is_decline")]
@@ -395,13 +397,13 @@ impl Pending {
         let mcp = method == "mcpServer/elicitation/request"
             && (matches!(params["mode"].as_str(), Some("url" | "form"))
                 || params["mode"].is_null());
-        // MCP's turnId is optional correlation, not its request identity. This
-        // controller accepts these requests only during its own active turn;
-        // a supplied turn must still match. The local turn bounds their life.
-        let turn = turn.context("provider request has no active input turn")?;
+        // MCP's turnId is optional correlation, not its request identity. With
+        // no active turn, only an uncorrelated MCP request can use this thread.
+        // A correlated request must still match the controller's active input.
         ensure!(
             params["threadId"].as_str() == Some(thread)
-                && (params["turnId"].as_str() == Some(turn) || (mcp && params["turnId"].is_null())),
+                && (turn.is_some_and(|turn| params["turnId"].as_str() == Some(turn))
+                    || (mcp && params["turnId"].is_null())),
             "provider request does not belong to the active input turn"
         );
         let mut questions = Vec::new();
@@ -607,7 +609,7 @@ impl Pending {
         Ok(Self {
             id: event["id"].clone(),
             thread: thread.into(),
-            turn: turn.into(),
+            turn: turn.map(str::to_owned),
             human: human.into(),
             kind,
             command_denial,
@@ -620,6 +622,10 @@ impl Pending {
 
     pub fn key(&self) -> String {
         self.id.to_string()
+    }
+
+    pub fn is_idle_mcp_review(&self) -> bool {
+        self.turn.is_none() && matches!(self.kind, Kind::McpUrl | Kind::McpForm)
     }
 
     pub fn has_command_cancellation(&self) -> bool {
@@ -862,7 +868,7 @@ impl Pending {
         ensure!(
             valid_request_id(&self.id)
                 && thread == Some(self.thread.as_str())
-                && valid_id(&self.turn)
+                && (self.turn.as_deref().is_some_and(valid_id) || self.is_idle_mcp_review())
                 && valid_id(&self.human),
             "invalid retained provider question identity"
         );
@@ -1037,7 +1043,9 @@ mod tests {
             "requestedSchema":{"type":"object","required":["count"],"properties":{"count":{"type":"integer","minimum":1,"maximum":3}}}
         }});
         let now = Utc::now();
-        assert!(Pending::plan(&event, "thread", None, "human", now).is_err());
+        let idle = Pending::plan(&event, "thread", None, "human", now).unwrap();
+        assert!(idle.is_idle_mcp_review());
+        idle.validate(Some("thread"), "owner").unwrap();
         for (value, result) in [
             (
                 "{\"count\":2}",
@@ -1159,14 +1167,19 @@ mod tests {
     }
 
     #[test]
-    fn mcp_url_optional_turn_stays_scoped_to_the_controllers_active_input() {
+    fn mcp_url_optional_turn_preserves_active_correlation_and_allows_idle_requests() {
         let mut event = mcp_url_event();
         for value in [Value::Null, json!("turn")] {
-            event["params"]["turnId"] = value;
+            event["params"]["turnId"] = value.clone();
             let request =
                 Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
-            assert_eq!(request.turn, "turn");
-            assert!(Pending::plan(&event, "thread", None, "human", Utc::now()).is_err());
+            assert_eq!(request.turn.as_deref(), Some("turn"));
+            let idle = Pending::plan(&event, "thread", None, "human", Utc::now());
+            if value.is_null() {
+                assert!(idle.unwrap().is_idle_mcp_review());
+            } else {
+                assert!(idle.is_err());
+            }
         }
         event["params"].as_object_mut().unwrap().remove("turnId");
         assert!(Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_ok());
@@ -1189,6 +1202,80 @@ mod tests {
                 Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_err(),
                 "{field}"
             );
+        }
+    }
+
+    #[test]
+    fn idle_mcp_reviews_require_exact_human_receipts_and_do_not_replay_after_restore() {
+        for form in [false, true] {
+            let mut event = mcp_url_event();
+            event["params"].as_object_mut().unwrap().remove("turnId");
+            if form {
+                event["params"] = json!({"threadId":"thread","serverName":"fixture","mode":"form",
+                    "message":"Choose a count.","requestedSchema":{"type":"object","required":["count"],
+                    "properties":{"count":{"type":"integer","minimum":1,"maximum":3}}}});
+            }
+            for (answer_text, expected) in if form {
+                vec![
+                    (
+                        "{\"count\":2}",
+                        json!({"action":"accept","content":{"count":2}}),
+                    ),
+                    ("Decline", json!({"action":"decline","content":null})),
+                    ("Cancel", json!({"action":"cancel","content":null})),
+                ]
+            } else {
+                vec![
+                    ("Accept", json!({"action":"accept","content":null})),
+                    ("Decline", json!({"action":"decline","content":null})),
+                    ("Cancel", json!({"action":"cancel","content":null})),
+                ]
+            } {
+                let mut pending =
+                    Pending::plan(&event, "thread", None, "human", Utc::now()).unwrap();
+                assert!(pending.is_idle_mcp_review());
+                pending.questions[0].message = Some("question".to_owned().into());
+                assert!(
+                    !pending
+                        .capture(&[answer("peer", answer_text)], "owner", false)
+                        .unwrap()
+                );
+                let response = answer("human", answer_text);
+                assert!(
+                    !pending
+                        .capture(std::slice::from_ref(&response), "owner", false)
+                        .unwrap()
+                );
+                assert!(pending.reply(Utc::now()).unwrap().is_none());
+                pending
+                    .observe(
+                        &EventKind::QuestionClosed {
+                            question: "question".to_owned().into(),
+                            answer: Some(response.id.clone()),
+                        },
+                        "owner",
+                    )
+                    .unwrap();
+                pending.capture(&[response], "owner", false).unwrap();
+                let reply = pending.reply(Utc::now()).unwrap().unwrap();
+                assert_eq!(reply, json!({"id":event["id"],"result":expected}));
+                pending.response = Some(reply);
+                let restored: Pending =
+                    serde_json::from_value(serde_json::to_value(&pending).unwrap()).unwrap();
+                restored.validate(Some("thread"), "owner").unwrap();
+                assert!(restored.reply(Utc::now()).unwrap().is_none());
+                assert!(restored.validate(Some("another-thread"), "owner").is_err());
+                let mut wrong_kind = restored;
+                wrong_kind.kind = Kind::Command;
+                assert!(wrong_kind.validate(Some("thread"), "owner").is_err());
+            }
+            let pending = Pending::plan(&event, "thread", None, "human", Utc::now()).unwrap();
+            assert_eq!(
+                pending.reply(pending.expires_at).unwrap().unwrap()["result"],
+                json!({"action":"cancel","content":null})
+            );
+            event["params"]["threadId"] = json!("another-thread");
+            assert!(Pending::plan(&event, "thread", None, "human", Utc::now()).is_err());
         }
     }
 
