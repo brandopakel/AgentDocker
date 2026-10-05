@@ -13,6 +13,10 @@ on Mac ARM64, Oracle Ubuntu and Windows x64. Hosted terminal/graphical and
 installed-service checks passed for the exact private scopes indexed below.
 Stable `v0.1.0` and Homebrew remain unchanged from the prepublication snapshot.
 
+The working candidate is `0.2.0-beta.8`, with idle MCP review/schema 26 and a
+60-second Windows Scheduler script allowance. Review, final checks, protected
+publication and hosted beta.7 → beta.8 acceptance remain pending.
+
 Beta.7 includes native owner cleanup, stop-priority, explicit retained-input
 recovery, MCP website/nonsecret form review, Windows ledger publication and
 Mac daemon install-start fixes. Schema 25 prevents binary rollback to beta.6's
@@ -53,7 +57,7 @@ Oracle accounting preflight passed; its 48-hour trial is running, not accepted.
 
 | Requirement | Current evidence | Remaining work |
 | --- | --- | --- |
-| Mac daemon service startup | Hosted beta.7 passed ten install/stop/start/restart/repeated-uninstall checks after explicit kickstart fixed the on-demand GUI-domain startup timeout. All three generations independently retired, owned label removed and production connector unchanged. Desktop-file removal correctly refused while an unrelated connector registration exists; the private installation remains retained. | Automatic crash recovery in that GUI domain, login/reboot and independent Mac acceptance. Earlier beta.6 install/crash and socket-export failures remain indexed; later lifecycle passes do not establish crash recovery. |
+| Mac daemon service startup | Hosted beta.7 passed ten install/stop/start/restart/repeated-uninstall checks after explicit kickstart fixed the on-demand GUI-domain startup timeout. All three generations independently retired, owned label removed and production connector unchanged. Desktop-file removal correctly refused while an unrelated connector registration exists; the private installation remains retained. | Automatic crash recovery in that GUI domain, login/reboot and independent Mac acceptance. Minimal shell controls also remained pending after nonzero exit and SIGKILL for 40 s, so the behavior is not specific to AgentDocker; no unconstrained-domain control establishes the sole cause. Earlier product failures and the separately refused user-domain control remain indexed. |
 | Native Windows installer and daemon | Reviewed per-user Task Scheduler startup, bounded crash supervision, protected storage, native pipes/ConPTY, terminal reattachment, installer/update/rollback and loaded-launcher retirement are implemented. Hosted beta.7 passed its two-release update/schema-refusal lifecycle and both installed service trials. | Start menu/PATH, physical console attachment, real provider shims, broader native daemon/CLI suites, logon/reboot and managed-provider survival. Portable acceptance does not prove installed behavior. [Windows contract](WINDOWS-PORT.md). |
 | Windows browser connector service | Reviewed setup pins tunnel paths and guards delayed-start ownership under the mutation lock. Published beta.7 passed 24 installed connector and 13 daemon checks after actual beta.6 → beta.7 update/schema rollback refusal; cleanup failures reject acceptance. | Actual tunnels/browser accounts and logon/reboot. Private fixtures do not replace production services. |
 | Windows terminal stop and receiver recovery | Reviewed #295 prioritizes pending stop and retries failed writes before reattachment without consuming input. Corrected `c21b90c5` Windows package passed; child exit 2.094s and final state 2.438s in that trial. | Retain bounded in-flight/reconnect delay; no loaded-host wall-clock guarantee. Original slow stop and separate busy-named-pipe diagnostic remain unexplained despite the deterministic starvation regression and later passes. Exact failures, sources and cleanup are indexed. |

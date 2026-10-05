@@ -9,7 +9,9 @@ release acceptance. Other engineering and platform work is tracked in
 
 A protected `v*` tag triggers `.github/workflows/release.yml`; editing the
 workflow does not publish anything. The tag version must match `Cargo.toml`
-and the recorded build must have clean source. Tags exclude `+build` metadata.
+and the recorded build must have clean source. The current working version is
+`0.2.0-beta.8`; it is not a published or accepted release until the protected
+workflow and hosted checks pass. Tags exclude `+build` metadata.
 The workflow builds CLI archives and four native desktop targets: Apple
 Silicon, Intel Mac, Linux x86_64 and Linux ARM64. The graphical Linux packages
 use GNU libc; the separate CLI-only Linux archives use musl.
