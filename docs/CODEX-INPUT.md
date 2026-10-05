@@ -1222,7 +1222,11 @@ refused and peer input held during review. Source/archive/executable/provider/
 helper hashes, original wire replies and retained ledger were independently
 matched. The CI report records clean retirement of all 50 process generations.
 It also passed 62 daemon, 42 installer, 22 native-launcher and three nine-check
-queue-recovery scenarios. This does not prove account, physical interaction,
+queue-recovery scenarios. A later Windows Codex 0.155.1 trial completed Submit
+and Decline but failed in the fixture observer: Python opened the live ledger
+without sharing deletion during atomic replacement. The observer now uses the
+existing bounded shared-file reader. The original failed trial is retained; a
+complete corrected older-version trial remains required. This does not prove account, physical interaction,
 installed-service, restart or long-wait behavior.
 
 Defaults are editable suggestions. Optional fields can be omitted; submitting

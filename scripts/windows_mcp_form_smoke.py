@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from windows_remote_receiver_fixture import Receiver
 from windows_smoke_pipe import WindowsSmokePipe
-from windows_native_codex_smoke import current_user_objects, remove_fixture, response_events
+from windows_native_codex_smoke import current_user_objects, read_shared_file, read_snapshot, remove_fixture, response_events
 
 parser=argparse.ArgumentParser();parser.add_argument('--binary-dir',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--codex',type=Path,required=True)
@@ -143,7 +143,9 @@ try:
                 if process not in receiver.owned:receiver.owned.append(process)
             capture_owned();return value
         def ledger():
-            inspect();return json.loads(ledger_path.read_text(encoding='utf-8')) if ledger_path.exists() else {}
+            # Match the product's atomic snapshot contract: a Windows reader
+            # must share deletion while the writer replaces the prior record.
+            inspect();return read_snapshot(ledger_path) if ledger_path.exists() else {}
         wait(lambda:inspect().get('input_delivery',{}).get('reported_at'),30)
         initial=inspect();report['initial_agent']=initial;assert not initial['input_delivery']['paused'],initial['input_delivery'];report['initial_pid']=initial['pid']
         def questions():return [q for q in rpc(endpoint,{'op':'questions','agent':'user'})['questions'] if q['from']==agent]
@@ -220,7 +222,7 @@ try:
                     if logpath.is_file():
                         (out / ('retained-'+str(logpath.relative_to(state)).replace('\\','_').replace('/','_'))).write_bytes(logpath.read_bytes()[-1048576:])
                 if 'ledger_path' in locals() and ledger_path.exists():
-                    (out/'retained-ledger.json').write_bytes(ledger_path.read_bytes())
+                    (out/'retained-ledger.json').write_bytes(read_shared_file(ledger_path))
             except BaseException:report['cleanup_errors'].append('retaining diagnostics: '+traceback.format_exc())
             try:capture_owned()
             except BaseException:report['cleanup_errors'].append('capturing process identities: '+traceback.format_exc())

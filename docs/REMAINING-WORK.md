@@ -120,7 +120,11 @@ exact MCP replies, eight unique receipts, refused invalid answers, held peer
 input and clean retirement of 50 recorded process generations. Source/archive/
 executable/provider/helper hashes and wire/ledger evidence were independently
 matched; the original failure remains retained. This is separate from the
-historical intermittent daemon first-start failure.
+historical intermittent daemon first-start failure. A later Windows Codex
+0.155.1 run failed in the fixture ledger reader after Submit/Decline and four
+receipts; it did not finish the four-case series. The observer now shares
+deletion during atomic snapshot replacement, and corrected acceptance is pending.
+The original failure remains retained.
 Final CI and independent review remain required. Account, final desktop
 packages, broader versions, physical interaction, provider/controller
 crash and reopen, other pending-review/service handovers,
