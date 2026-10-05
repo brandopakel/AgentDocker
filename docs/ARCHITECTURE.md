@@ -1831,16 +1831,20 @@ frames remain limited to 4 MiB. Errors after partial pagination, absent/partial
 items, limits and missing receipts retain delivery for recovery; they never
 cause a resubmission or resume the TUI.
 
-Explicit native queued-entry recovery persists one version-6 start intent before
-journaling and starting the existing submission ID. Only an ordinary exact
-provider receipt acknowledges input; a start response does not. Recovery checks
+Explicit native queued-entry recovery persists one version-7 prepared start intent
+before journaling and starting the existing submission ID. Before transmission,
+explicit retries reuse that intent ID and repeat live checks and journaling. A
+durable transmission marker immediately before `thread/queue/start` makes later
+retries read-only. Only an ordinary exact provider receipt acknowledges input;
+a start response does not. Recovery checks
 daemon ownership, uncertainty and provider limits before persistence and again
 after journaling. It separately checks project pause at both boundaries because
 `provider_inbox` intentionally keeps lifecycle messages visible during pause. A
-new hold or loss of admission observed after persistence leaves the intent retained without provider
-transmission or automatic retry. These cross-process checks are snapshots, not
-an atomic pause lock on the provider. Read-only retries can report an existing
-intent while paused, but cannot start it again. Once the ordinary receipt retires
+new hold or loss of admission observed after persistence leaves the prepared
+intent retained without provider transmission or automatic retry. These
+cross-process checks are snapshots, not an atomic pause lock on the provider.
+After the transmission marker, read-only retries can report an existing intent
+while paused, but cannot start it again. Once the ordinary receipt retires
 the pending attempt, a repeated start is refused; the retained completed receipt
 is its delivery evidence.
 
