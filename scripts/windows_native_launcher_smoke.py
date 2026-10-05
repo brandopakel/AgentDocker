@@ -475,6 +475,16 @@ def main():
         if receiver is not None:
             try: receiver.close()
             except Exception as error: report['cleanup_errors'].append(str(error))
+            try:
+                # Resumed receivers belong to the daemon, so their failures
+                # are absent from the original launcher's receiver.log.
+                for path in (receiver.home / 'logs').glob('*.controller.log'):
+                    if path.is_file() and not path.is_symlink():
+                        with path.open('rb') as log:
+                            log.seek(max(0, path.stat().st_size - 2 * 1024 * 1024))
+                            (out / path.name).write_bytes(log.read(2 * 1024 * 1024))
+            except Exception as error:
+                report['cleanup_errors'].append('controller log retention: ' + str(error))
         if args.queued_recovery and 'recovery_processes' in report:
             remaining = []
             for entry in report['recovery_processes']:

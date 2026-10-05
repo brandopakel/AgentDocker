@@ -1131,6 +1131,11 @@ A separate invocation of the same loaded CLI owns those children. The front end
 keeps an authenticated private loopback connection open; its closure, including
 front-end SIGKILL, requests bounded child cleanup and capability revocation. The
 owner verifies its exact parent generation/image before starting a provider.
+A resumed receiver may be started by the daemon outside that owner's process
+tree. Its paused recovery endpoint checks the exact provider generation once
+per second, interrupting the 30-second reconnect delay or an outstanding
+recovery client when that generation disappears. Cancellation preserves the
+durable input disposition and never acknowledges or retries an uncertain write.
 Stalled local handshakes are read concurrently within fixed connection/time
 bounds so they do not serialize the owner’s startup. The TUI still inherits the terminal directly. Mac ARM64 `8dc1e614` passed front-end
 SIGKILL after a receipt and during pre-binding provider startup, SIGTERM and
