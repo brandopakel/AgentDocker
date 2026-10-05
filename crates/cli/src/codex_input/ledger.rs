@@ -10,7 +10,6 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
-    fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
 };
@@ -215,6 +214,31 @@ mod tests {
             assert!(Ledger::open(home.path(), binding).is_err());
             assert_eq!(std::fs::read(&target).unwrap(), b"private");
         }
+    }
+
+    #[test]
+    fn prepared_input_replaces_an_open_snapshot_and_reopens_without_replay() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        let before = std::fs::read(&ledger.path).unwrap();
+        let mut reader = agentdocker_host::files::open_regular(&ledger.path).unwrap();
+        let message = message();
+        let input = ledger.prepare(&message).unwrap();
+        let after = dirs::read_private_file(&ledger.path).unwrap();
+        assert_ne!(after, before);
+        let mut retained = Vec::new();
+        reader.read_to_end(&mut retained).unwrap();
+        assert_eq!(retained, before);
+        drop(reader);
+        drop(ledger);
+        let mut reopened = Ledger::open(home.path(), binding).unwrap();
+        let attempt = reopened.record().attempt.as_ref().unwrap();
+        assert_eq!(attempt.message, message.id.as_str());
+        assert_eq!(attempt.input, input);
+        assert!(reopened.prepare(&message).is_err());
+        assert_eq!(dirs::read_private_file(&reopened.path).unwrap(), after);
     }
 
     #[test]
@@ -1361,11 +1385,14 @@ impl Ledger {
             .path
             .parent()
             .context("delivery record has no directory")?;
-        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+        let mut temporary =
+            tempfile::Builder::new().make_in(directory, dirs::create_private_file)?;
         temporary.write_all(&bytes)?;
         temporary.as_file().sync_all()?;
-        temporary.persist(&self.path)?;
-        File::open(directory)?.sync_all()?;
+        // Windows cannot open a directory as an ordinary file to sync it.
+        // The shared snapshot publisher also preserves concurrent readers of
+        // the prior ledger while replacing the flushed private record.
+        agentdocker_host::files::publish_snapshot(&temporary.into_temp_path(), &self.path)?;
         // Failed persistence never advances the in-memory submission state.
         self.record = next;
         Ok(())

@@ -103,6 +103,12 @@ processes passed. Linux used the identical-tree musl CI archive. Replacements ha
 32 stable seconds between them. An earlier rapid burst exhausted the documented
 three-reconnect allowance after six successful handovers; its unanswered fourth
 form remained in the controller ledger and the original failed trial is retained.
+The first extracted Windows managed-form trial (`8c3d7d0b`) failed before any
+input: the saved initial ledger was followed by a Unix-only directory flush,
+which returned Access is denied on Windows. The shared platform-aware private
+snapshot publisher now replaces that path; the original failure is retained and
+corrected Windows acceptance is pending. This is separate from the historical
+intermittent daemon first-start failure.
 Final CI and independent review remain required. Account, final desktop
 packages, Windows, broader versions, physical interaction, provider/controller
 crash and reopen, other pending-review/service handovers,

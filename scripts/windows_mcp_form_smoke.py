@@ -135,8 +135,11 @@ try:
         ledger_path=state/'codex-input'/agent/'delivery.json'
         def inspect():
             value=rpc(endpoint,{'op':'inspect','agent':agent})['agent']
+            report['last_observed_agent']=value
             if value.get('pid'):
-                process=psutil.Process(value['pid'])
+                try:process=psutil.Process(value['pid'])
+                except psutil.NoSuchProcess as error:
+                    raise AssertionError('managed controller exited before acceptance; inspect last_observed_agent and retained controller log') from error
                 if process not in receiver.owned:receiver.owned.append(process)
             capture_owned();return value
         def ledger():

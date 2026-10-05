@@ -697,6 +697,13 @@ navigation and reopening. These bounded trials use the upstream experimental
 `write_stdin_approval` feature for that launch only; they do not change saved
 provider policy or establish physical input/accessibility acceptance. The clean
 candidate passed 1,430 Rust tests and 155 Python checks with zero retries.
+Managed delivery-ledger writes use the shared private atomic snapshot publisher.
+Windows replaces the flushed record while preserving open readers; Unix also
+flushes the containing directory. A failed publication never advances the
+in-memory attempt. The initial Windows managed-form trial exposed the previous
+Unix-only directory flush (Access is denied before input); its failure is retained
+and corrected Windows acceptance remains pending.
+
 Broader permission forms, extended MCP elicitation and secret input still require completion.
 Provider `requestUserInput` bundles reject `isSecret: true` before opening any
 ordinary question route. A supplied flag must be a boolean; malformed values,
