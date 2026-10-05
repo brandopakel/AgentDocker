@@ -58,7 +58,7 @@ class WindowsDesktopPackaging(unittest.TestCase):
         return {"result": "passed", "source_commit": self.manifest["source_commit"],
                 "receiver_binary_sha256": dict(self.manifest["binary_sha256"]),
                 "scratch_removed": True, "cleanup_errors": [], "reader_errors": [],
-                "forced_processes": [], "steps": [{"passed": True} for _ in range(19)],
+                "forced_processes": [], "steps": [{"passed": True} for _ in range(22)],
                 "front_end_exit": {"pid": 4, "birth": 40, "frontend_exit_code": 15,
                                    "target": {"pid": 4, "birth": 40},
                                    "watched": [{"pid": n, "birth": n * 10} for n in (1, 2, 3)],
@@ -73,7 +73,38 @@ class WindowsDesktopPackaging(unittest.TestCase):
                                "remaining": [], "capability_revoked": True,
                                "receipts_preserved": True, "additional_model_requests": 0,
                                "console_host": {"pid": 10, "alive_after_cleanup": True,
-                                                "resize_after_cleanup": True}}}
+                                                "resize_after_cleanup": True}},
+                "console_close": {"pid": 11, "birth": 110,
+                                  "trigger": "drop_final_conpty_owner",
+                                  "pty_references_before_release": 2,
+                                  "participants_alive_before_release": True,
+                                  "conpty_owner_released": True,
+                                  "watched": [{"pid": n, "birth": n * 10} for n in range(11, 17)],
+                                  "remaining": [], "capability_revoked": True,
+                                  "receipts_preserved": True, "additional_model_requests": 0,
+                                  "console_host": {"pid": 12, "birth": 120,
+                                                   "alive_after_cleanup": False}}}
+
+    def test_native_console_close_requires_actual_release_and_complete_retirement(self):
+        native = self.automatic_report()
+        for change in (lambda r: r.pop("console_close"),
+                       lambda r: r.update(console_close=None),
+                       lambda r: r["console_close"].update(trigger="kill_frontend"),
+                       lambda r: r["console_close"].update(pty_references_before_release=3),
+                       lambda r: r["console_close"].update(participants_alive_before_release=False),
+                       lambda r: r["console_close"].update(conpty_owner_released=False),
+                       lambda r: r["console_close"].update(remaining=[13]),
+                       lambda r: r["console_close"].update(capability_revoked=False),
+                       lambda r: r["console_close"].update(receipts_preserved=False),
+                       lambda r: r["console_close"].update(additional_model_requests=1),
+                       lambda r: r["console_close"].update(watched=None),
+                       lambda r: r["console_close"]["watched"].pop(0),
+                       lambda r: r["console_close"]["console_host"].update(birth=121),
+                       lambda r: r["console_close"]["console_host"].update(alive_after_cleanup=True)):
+            invalid = copy.deepcopy(native)
+            change(invalid)
+            with self.assertRaises(ValueError):
+                SMOKE.validate_native_report(invalid, self.manifest, "automatic")
 
     def test_native_owner_exit_report_requires_its_own_pinned_target_and_cleanup(self):
         native = self.automatic_report()

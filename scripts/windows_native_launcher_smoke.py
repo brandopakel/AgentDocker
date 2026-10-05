@@ -304,7 +304,8 @@ def main():
         # Prompt-free reopens terminate each exact product participant while
         # an independent host preserves ConPTY. Console teardown cannot mask
         # either owner-death containment or frontend EOF cleanup.
-        for probe_key, target in [('front_end_exit', 'frontend'), ('owner_exit', 'owner')]:
+        for probe_key, target in [('front_end_exit', 'frontend'), ('owner_exit', 'owner'),
+                                  ('console_close', 'console')]:
             previous_records = set((receiver.home / 'codex-native').glob('*/server.json'))
             output.clear(); closing.clear()
             pid_file, release_file = root / (probe_key + '.pid'), root / ('release-' + probe_key)
@@ -342,6 +343,8 @@ def main():
                 assert psutil.Process(descriptor['server']['pid']).ppid() == target_process.pid
                 assert any(p == target_process for p in descendants)
                 watched.append(launcher)
+            if target == 'console':
+                watched.extend([launcher, console_host])
             requests_before_exit = len(report['requests'])
             report[probe_key] = {'pid': launcher.pid, 'birth': launcher.create_time(),
                                        'target': {'pid': target_process.pid, 'birth': target_process.create_time()},
@@ -350,7 +353,23 @@ def main():
                                        'console_host': {'pid': console_host.pid, 'birth': console_host.create_time(),
                                                         'script_sha256': hashlib.sha256(CONSOLE_HOST.encode()).hexdigest()}}
             assert launcher.is_running() and target_process.is_running()
-            target_process.kill()
+            if target == 'console':
+                # PtyProcess.close() first signals its root process. Instead
+                # release the last PyPTY reference: pinned pywinpty3.0.5 /
+                # winpty-rs1.0.6 Drop calls ClosePseudoConsole. Stop the read
+                # workers first so they cannot retain the console owner.
+                close_console()
+                assert all(p.is_running() for p in watched)
+                references = sys.getrefcount(terminal.pty)
+                assert references == 2, 'an extra Python reference retains ConPTY'
+                report[probe_key]['trigger'] = 'drop_final_conpty_owner'
+                report[probe_key]['pty_references_before_release'] = references
+                report[probe_key]['participants_alive_before_release'] = True
+                terminal.closed = True  # suppress PtyProcess.__del__ signalling
+                terminal.pty = None
+                report[probe_key]['conpty_owner_released'] = True
+            else:
+                target_process.kill()
             report[probe_key]['frontend_exit_code'] = launcher.wait(timeout=10)
             _, alive = psutil.wait_procs(watched, timeout=15)
             # Save failure observations too, before an assertion or fixture cleanup.
@@ -358,17 +377,20 @@ def main():
             report[probe_key]['capability_revoked'] = not Path(descriptor['token_file']).exists()
             report[probe_key]['receipts_preserved'] = receiver.ledger()['completed'] == [first, second]
             report[probe_key]['additional_model_requests'] = len(report['requests']) - requests_before_exit
-            report[probe_key]['console_host']['alive_after_cleanup'] = console_host.is_running() and terminal.isalive()
-            terminal.setwinsize(40, 160)
-            report[probe_key]['console_host']['resize_after_cleanup'] = True
+            report[probe_key]['console_host']['alive_after_cleanup'] = console_host.is_running()
+            if target != 'console':
+                assert terminal.isalive()
+                terminal.setwinsize(40, 160)
+                report[probe_key]['console_host']['resize_after_cleanup'] = True
             step(target + ' termination retires owner and provider generations before fixture cleanup',
                  not alive and not Path(descriptor['token_file']).exists()
-                 and report[probe_key]['console_host']['alive_after_cleanup'])
+                 and report[probe_key]['console_host']['alive_after_cleanup'] == (target != 'console'))
             step(target + ' termination preserves receipts without another model request',
                  receiver.ledger()['completed'] == [first, second] and len(report['requests']) == requests_before_exit)
-            release_file.touch()
-            wait(lambda: not terminal.isalive(), 10)
-            assert console_host.wait(timeout=10) == 0
+            if target != 'console':
+                release_file.touch()
+                wait(lambda: not terminal.isalive(), 10)
+                assert console_host.wait(timeout=10) == 0
             close_console()
             (out / (probe_key + '-terminal.txt')).write_text(''.join(output), encoding='utf-8')
         step('private provider configuration is unchanged', (profile / 'config.toml').read_text(encoding='utf-8') == config)

@@ -63,7 +63,7 @@ def validate_native_report(native, info, scenario):
         native.get("source_commit") != info["source_commit"]
         or native.get("scratch_removed") is not True
         or any(native.get(key) != [] for key in ("cleanup_errors", "reader_errors", "forced_processes"))
-        or len(native.get("steps", [])) != 19
+        or len(native.get("steps", [])) != 22
         or not all(step.get("passed") is True for step in native["steps"])
     ):
         raise ValueError("automatic native Codex acceptance has incomplete source, lifecycle or cleanup evidence")
@@ -93,6 +93,28 @@ def validate_native_report(native, info, scenario):
                 or host.get("alive_after_cleanup") is not True
                 or host.get("resize_after_cleanup") is not True):
             raise ValueError("automatic native Codex exit acceptance did not keep its console open")
+    if automatic:
+        closed = native.get("console_close", {})
+        host = closed.get("console_host", {}) if isinstance(closed, dict) else {}
+        watched = closed.get("watched") if isinstance(closed, dict) else None
+        if (not isinstance(closed, dict)
+                or closed.get("trigger") != "drop_final_conpty_owner"
+                or closed.get("pty_references_before_release") != 2
+                or closed.get("participants_alive_before_release") is not True
+                or closed.get("conpty_owner_released") is not True
+                or closed.get("remaining") != []
+                or closed.get("capability_revoked") is not True
+                or closed.get("receipts_preserved") is not True
+                or closed.get("additional_model_requests") != 0
+                or not isinstance(host, dict)
+                or not isinstance(watched, list) or len(watched) < 5
+                or host.get("alive_after_cleanup") is not False
+                or not isinstance(closed.get("pid"), int)
+                or not isinstance(host.get("pid"), int)
+                or closed["pid"] <= 0 or host["pid"] <= 0 or closed["pid"] == host["pid"]
+                or {"pid": closed["pid"], "birth": closed.get("birth")} not in watched
+                or {"pid": host["pid"], "birth": host.get("birth")} not in watched):
+            raise ValueError("automatic native Codex acceptance lacks whole-console closure evidence")
 
 
 def main():
