@@ -1,8 +1,8 @@
 //! Explicitly start an existing native queue entry after a reviewed interruption.
 //! The provider owns scheduling; no timer or historical idle state enters here.
 use super::{Client, Ledger, Provider, call, identity, ledger::Attempt, queue, receipts, remote};
-use agentdocker_core::{ProcessIdentity, Request, Response};
-use anyhow::{Context, Result, ensure};
+use agentdocker_core::{ProcessIdentity, ProjectId, Request, Response};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
 fn live_idle(value: &Value, thread: &str) -> Result<()> {
@@ -30,6 +30,17 @@ fn exact_head(value: &Value, attempt: &Attempt) -> Result<String> {
         "native queue identity changed; review it again"
     );
     Ok(id)
+}
+
+fn unpaused_project(response: Response, project: &ProjectId) -> Result<()> {
+    let Response::Pauses { pauses } = response else {
+        bail!("project pause state is unavailable; queued start refused");
+    };
+    ensure!(
+        !pauses.iter().any(|pause| &pause.project == project),
+        "the project is paused; queued start refused"
+    );
+    Ok(())
 }
 
 pub(super) async fn start(
@@ -113,15 +124,22 @@ pub(super) async fn start(
         )
         .await?;
     let queued = exact_head(&head, &attempt)?;
-    // The daemon checks exact receiver ownership, project pause and shared
-    // provider blocks here. A provider-side interruption is a separate fence.
+    // The daemon checks exact receiver ownership and shared provider blocks.
+    // Its inbox remains readable during a project pause so lifecycle notices
+    // can arrive; queue visibility is not permission to start paused work.
     let (messages, uncertain, _) = queue(client, ledger, Vec::new()).await?;
     ensure!(
         messages.first().is_some_and(|m| m.id.as_str() == message)
             && !uncertain.iter().any(|id| id.as_str() == message),
         "the daemon is holding this input or its delivery is uncertain; start refused"
     );
-    identity(client, &binding).await?;
+    let current = identity(client, &binding).await?;
+    let project = current
+        .project
+        .as_ref()
+        .context("queued start requires a project journal")?
+        .id();
+    unpaused_project(call(client, Request::Pauses).await?, &project)?;
     let start = ledger.begin_queued_start(message, confirmation, note, operator)?;
     ensure!(matches!(call(client, Request::JournalAdd {
         agent: binding.agent.clone(),
@@ -129,6 +147,10 @@ pub(super) async fn start(
             start.id, message, queued, binding.provider.process.pid, binding.provider.process.started_at,
             binding.provider.session, start.operator.pid, start.operator.started_at, start.note),
     }).await?, Response::JournalEntry { .. }), "queued start journal write unconfirmed; intent retained without provider transmission");
+    // A pause may have arrived while the journal call was pending. Refuse it
+    // here too, retaining the already persisted intent without blind retries.
+    // This is a snapshot before transmission, not an atomic provider lock.
+    unpaused_project(call(client, Request::Pauses).await?, &project)?;
     // The provider atomically refuses a newly active/pending turn. Never add,
     // delete, reorder or repeat this queued submission to recover a lost reply.
     let value = provider
@@ -153,6 +175,43 @@ pub(super) async fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn queued_start_requires_known_unpaused_project_even_with_visible_inbox() {
+        let project = ProjectId::from("owned-project");
+        let unrelated = agentdocker_core::Pause {
+            project: ProjectId::from("other-project"),
+            by: "user".into(),
+            reason: "finish the current step".into(),
+            at: chrono::Utc::now(),
+        };
+        assert!(unpaused_project(Response::Pauses { pauses: vec![] }, &project).is_ok());
+        assert!(
+            unpaused_project(
+                Response::Pauses {
+                    pauses: vec![unrelated.clone()],
+                },
+                &project,
+            )
+            .is_ok()
+        );
+        let held = agentdocker_core::Pause {
+            project: project.clone(),
+            ..unrelated.clone()
+        };
+        assert!(
+            unpaused_project(
+                Response::Pauses {
+                    pauses: vec![unrelated, held],
+                },
+                &project,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("project is paused")
+        );
+        assert!(unpaused_project(Response::Ok, &project).is_err());
+    }
+
     #[test]
     fn explicit_start_requires_the_exact_unedited_queue_head_and_live_thread() {
         let attempt = Attempt {

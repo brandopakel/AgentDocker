@@ -246,7 +246,13 @@ agentdocker codex-queue-resolve --agent <id> --message <message-id> \
 
 This starts the existing submission ID; it never adds a replacement input.
 The receiver checks the live generation, original content and queue head, absence
-of an existing receipt, and the daemon's ownership/pause/provider-limit checks.
+of an existing receipt, and the daemon's ownership/provider-limit checks. It
+separately checks the current project's pause before persisting an intent and
+again after the journal write. Inbox visibility alone does not permit starting
+paused work: lifecycle notices must remain readable during a pause. A pause
+observed after persistence retains the intent without sending to the provider.
+These are snapshots before transmission, not an atomic lock across daemon and
+provider; a later pause cannot retract an already transmitted start.
 The provider itself refuses a newly active or pending turn. A private version-6
 ledger persists one start intent before the journal write and provider call;
 repeating the same confirmation only reports that intent. Lost replies, refused
@@ -257,9 +263,16 @@ Actual Codex 0.160 on Mac with a private model passed this command after a
 deliberate interruption: 30 seconds of retained input, four distinct refusals,
 one explicit start, a repeated confirmation returning the same intent, two exact
 receipts and one new model request. All ten recorded processes retired. Original
-connection and fixture failures remain indexed. Full review, lost-provider-reply
-and pause/limit races, Linux/Windows and real-account acceptance remain; this does
-not establish automatic crash/reopen recovery.
+connection and fixture failures remain indexed. Separate Mac and Oracle Linux
+CI-archive trials passed discarded local-client replies: a durable intent was
+observed before its turn reply, the client read no response, and the actual CLI
+retry returned that same intent/turn with one new input and two exact receipts.
+The Linux normal-reply trial also passed. These do not cover lost provider or
+journal replies. A private Mac trial refused a provider-rate hold but exposed
+project-pause bypass in the earlier candidate; the separate pause checks above
+correct its admission path and still require actual acceptance. Full review,
+pause/limit races, Windows and real-account acceptance remain; this does not
+establish automatic crash/reopen recovery.
 
 `agentdocker codex-queue-resolve --agent <id>` asks the owning receiver for a
 read-only preview of its complete retained envelope and a confirmation digest.

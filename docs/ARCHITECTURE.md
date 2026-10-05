@@ -1826,6 +1826,16 @@ frames remain limited to 4 MiB. Errors after partial pagination, absent/partial
 items, limits and missing receipts retain delivery for recovery; they never
 cause a resubmission or resume the TUI.
 
+Explicit native queued-entry recovery persists one version-6 start intent before
+journaling and starting the existing submission ID. Only an ordinary exact
+provider receipt acknowledges input; a start response does not. Recovery checks
+project pause separately before persistence and again after journaling because
+`provider_inbox` intentionally keeps lifecycle messages visible during pause. A
+new pause observed after persistence leaves the intent retained without provider
+transmission or automatic retry. These cross-process checks are snapshots, not
+an atomic pause lock on the provider. Read-only retries can report an existing
+intent while paused, but cannot start it again.
+
 The native receiver's optional authenticated WebSocket transport attaches only
 to numeric IPv4 loopback after validating a private immutable server record.
 That record binds both native TUI/server PID births, kernel executable paths,
