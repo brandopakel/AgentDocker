@@ -16,8 +16,10 @@ from windows_native_codex_smoke import current_user_objects, read_shared_file, r
 parser=argparse.ArgumentParser();parser.add_argument('--binary-dir',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--codex',type=Path,required=True)
 parser.add_argument('--mode',choices=('form','url'),default='form')
+parser.add_argument('--idle',action='store_true',help='elicit only after the initial tool and model turn have completed')
 a=parser.parse_args()
-tool_name='review_with_'+a.mode
+tool_name='arm_late_review' if a.idle else 'review_with_'+a.mode
+mcp_driver='mcp_idle_fixture_server.py' if a.idle else 'mcp_form_fixture_server.py'
 if os.name != 'nt':parser.error('requires native Windows')
 import psutil
 current_user_objects()
@@ -33,7 +35,7 @@ report={'result':'failed','scope':__doc__,'started_at':datetime.datetime.now(dat
  'provider_version':subprocess.check_output([str(codex),'--version'],text=True,timeout=10).strip(),
  'provider_sha256':hashlib.sha256(codex.read_bytes()).hexdigest(),
  'driver_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
- 'mcp_driver_sha256':hashlib.sha256((evidence/'mcp_form_fixture_server.py').read_bytes()).hexdigest(),'review_mode':a.mode,'cases':[],'model_requests':[]}
+ 'mcp_driver_sha256':hashlib.sha256((evidence/mcp_driver).read_bytes()).hexdigest(),'review_mode':a.mode,'idle_review':a.idle,'cases':[],'model_requests':[]}
 assert all(provenance['binary_sha256'][k]==v for k,v in report['binary_sha256'].items())
 report['helper_sha256']={name:hashlib.sha256((evidence/name).read_bytes()).hexdigest() for name in ['windows_smoke_pipe.py','windows_remote_receiver_fixture.py','windows_native_codex_smoke.py']}
 report['cleanup_errors']=[]
@@ -120,7 +122,8 @@ try:
         project.mkdir();profile.mkdir()
         subprocess.run(['git','init','-q',str(project)],check=True,timeout=5)
         mcp_log=out/'mcp-wire.jsonl'
-        config='model = "fixture-model"\nmodel_provider = "fixture"\napproval_policy = "on-request"\nsandbox_mode = "danger-full-access"\ncheck_for_update_on_startup = false\n[features]\napps = false\n[analytics]\nenabled = false\n[model_providers.fixture]\nname = "Private form review fixture"\nbase_url = '+json.dumps(f'http://127.0.0.1:{server.server_port}/v1')+'\nwire_api = "responses"\nenv_key = "AGENTDOCKER_FIXTURE_KEY"\nrequest_max_retries = 0\nstream_max_retries = 0\nsupports_websockets = false\n[projects.'+json.dumps(str(project))+']\ntrust_level = "trusted"\n[mcp_servers.review_fixture]\ncommand = '+json.dumps(sys.executable)+'\nargs = '+json.dumps([str(evidence/'mcp_form_fixture_server.py'),str(mcp_log),a.mode])+'\nrequired = true\ntool_timeout_sec = 90\n[mcp_servers.review_fixture.tools.'+tool_name+']\napproval_mode = "approve"\n'
+        mcp_args=[str(evidence/mcp_driver),str(mcp_log),str(root/'trigger.json') if a.idle else a.mode]
+        config='model = "fixture-model"\nmodel_provider = "fixture"\napproval_policy = "on-request"\nsandbox_mode = "danger-full-access"\ncheck_for_update_on_startup = false\n[features]\napps = false\n[analytics]\nenabled = false\n[model_providers.fixture]\nname = "Private form review fixture"\nbase_url = '+json.dumps(f'http://127.0.0.1:{server.server_port}/v1')+'\nwire_api = "responses"\nenv_key = "AGENTDOCKER_FIXTURE_KEY"\nrequest_max_retries = 0\nstream_max_retries = 0\nsupports_websockets = false\n[projects.'+json.dumps(str(project))+']\ntrust_level = "trusted"\n[mcp_servers.review_fixture]\ncommand = '+json.dumps(sys.executable)+'\nargs = '+json.dumps(mcp_args)+'\nrequired = true\ntool_timeout_sec = 90\n[mcp_servers.review_fixture.tools.'+tool_name+']\napproval_mode = "approve"\n'
         (profile/'config.toml').write_text(config,encoding='utf-8')
         report['config_sha256']=hashlib.sha256((profile/'config.toml').read_bytes()).hexdigest()
         env={k:v for k,v in os.environ.items() if k.upper() in ['PATH','SYSTEMROOT','WINDIR','USERPROFILE','TEMP','TMP','LOCALAPPDATA','APPDATA','COMSPEC','PATHEXT','PROGRAMFILES','PROGRAMFILES(X86)','LANG','LC_ALL','PYTHONUTF8']}
@@ -152,35 +155,60 @@ try:
         initial=inspect();report['initial_agent']=initial;assert not initial['input_delivery']['paused'],initial['input_delivery'];report['initial_pid']=initial['pid']
         def questions():return [q for q in rpc(endpoint,{'op':'questions','agent':'user'})['questions'] if q['from']==agent]
         def send(sender,text):return rpc(endpoint,{'op':'send','from':sender,'to':agent,'kind':'chat','payload':{'text':text}})['message']
+        if a.idle:
+            first=send(human,'MCP_IDLE_ARM_'+uuid.uuid4().hex);report['initial_input']=first
+            def armed():
+                value=ledger()
+                return value if value.get('attempt') is None and [v['message'] for v in value.get('completed',[])]==[first] else None
+            report['initial_completed_ledger']=wait(armed,45)
+            assert not report['initial_completed_ledger']['reviews'] and not questions()
         for decision in ['Submit' if a.mode=='form' else 'Accept','Decline','Cancel','cancel-route']:
-            context.update(case=decision,tool_sent=False)
+            context['case']=decision
+            if not a.idle:context['tool_sent']=False
             entry={'decision':decision};report['cases'].append(entry)
             nonce='MCP_'+a.mode.upper()+'_'+decision+'_'+uuid.uuid4().hex
-            first=send(human,nonce);entry['input']=first
+            if a.idle:
+                before_trigger=ledger();entry['before_trigger']=before_trigger
+                assert before_trigger['attempt'] is None and not before_trigger['reviews']
+                entry['model_requests_before']=len(report['model_requests'])
+                entry['trigger_id']='fixture-elicitation-'+str(len(report['cases']))
+                trigger=root/'trigger.json';staging=root/'trigger.staging'
+                staging.write_text(json.dumps({'mode':a.mode,'id':entry['trigger_id']}),encoding='utf-8')
+                staging.replace(trigger)
+            else:first=send(human,nonce);entry['input']=first
             question=wait(lambda:next(iter(questions()),None),45);entry['question']=question
             presentation=question['presentation'];assert presentation['kind']=='mcp_'+a.mode and presentation['server']=='review_fixture',presentation
             if a.mode=='form':
-                assert presentation['schema']['type']=='object' and set(presentation['schema']['properties'])=={'name','count','enabled','color','tags','email','date','time','uri','optional'}
+                assert presentation['schema']['type']=='object' and set(presentation['schema']['properties'])==({'count'} if a.idle else {'name','count','enabled','color','tags','email','date','time','uri','optional'})
             else:
-                assert presentation['url']=='https://example.com/agentdocker-fixture?case='+str(len(report['cases']))
+                assert presentation['url']==('https://example.com/private-fixture' if a.idle else 'https://example.com/agentdocker-fixture?case='+str(len(report['cases'])))
                 assert presentation['elicitation_id']=='fixture-elicitation-'+str(len(report['cases']))
             peer_message=send(peer,'PEER_'+nonce);entry['peer_input']=peer_message
             before=ledger();assert len(before['reviews'])==1 and before['reviews'][0]['response'] is None
-            assert before['attempt']['message']==first and before['attempt']['acknowledged']
+            if a.idle:
+                assert before['attempt'] is None and before['reviews'][0]['turn'] is None
+                assert before['reviews'][0]['thread']==before_trigger['thread']
+            else:assert before['attempt']['message']==first and before['attempt']['acknowledged']
             callback=before['reviews'][0]['id'];entry['provider_request']=callback
             time.sleep(1)
             during=ledger();assert during['reviews'][0]['response'] is None and not during.get('steering')
             assert peer_message not in [v['message'] for v in during['completed']]
             entry['held_ledger']=during;entry['held_at']=time.monotonic()
+            if a.idle:
+                assert during['attempt'] is None and during['completed']==before_trigger['completed']
+                assert len(report['model_requests'])==entry['model_requests_before']
+                assert not any(v['direction']=='in' and v['value'].get('id')==entry['trigger_id'] and 'method' not in v['value'] for v in map(json.loads,mcp_log.read_text(encoding='utf-8').splitlines()))
             invalid=rpc(endpoint,{'op':'answer','from':'user','message':question['id'],'text':'not-a-decision'},True)
             assert invalid.get('code')=='invalid' and any(q['id']==question['id'] for q in questions())
             entry['invalid_answers']=[invalid]
             content={'name':'Ada','count':3,'enabled':False,'color':'green','tags':['a','b'],'email':'fixture@example.com','date':'2024-02-29','time':'2026-10-04T12:00:00Z','uri':'urn:example:private-fixture'}
+            if a.idle:content={'count':2}
             entry['submitted_content']=content if decision=='Submit' else None
             invalid_content=dict(content,count=4) if a.mode=='form' else {'accept':True}
             invalid=rpc(endpoint,{'op':'answer','from':'user','message':question['id'],'text':json.dumps(invalid_content)},True)
             assert invalid.get('code')=='invalid' and any(q['id']==question['id'] for q in questions())
             entry['invalid_answers'].append(invalid)
+            entry['decision_at']=time.monotonic()
             if decision=='cancel-route':
                 answer=rpc(endpoint,{'op':'cancel_question','agent':agent,'message':question['id']})
             else:answer=rpc(endpoint,{'op':'answer','from':'user','message':question['id'],'text':json.dumps(content) if decision=='Submit' else decision})
@@ -193,8 +221,10 @@ try:
             assert closure['outcome']=='resolved' and closure['acknowledged']
             expected='accept' if decision in ('Submit','Accept') else decision.lower() if decision!='cancel-route' else 'cancel'
             assert closure['request']['response']=={'id':callback,'result':{'action':expected,'content':content if decision=='Submit' else None}}
-            receipt={v['message']:v['receipt'] for v in done['completed'] if v['message'] in [first,peer_message]};entry['receipts']=receipt
-            assert len(receipt)==2 and receipt[first]['item']!=receipt[peer_message]['item']
+            ids=[peer_message] if a.idle else [first,peer_message]
+            receipt={v['message']:v['receipt'] for v in done['completed'] if v['message'] in ids};entry['receipts']=receipt
+            assert len(receipt)==len(ids)
+            if not a.idle:assert receipt[first]['item']!=receipt[peer_message]['item']
             # Ordinary input resumes after review resolution; it can steer the
             # original still-active turn or start the next turn, per CODEX-INPUT.
             assert all(v['thread']==done['thread'] for v in receipt.values())
@@ -203,14 +233,20 @@ try:
             # provider response, closure and MCP-side receipt are independent
             # witnesses; no instrumentation wrapper changes process ownership.
             assert closure['request']['thread']==done['thread']
-            assert closure['request']['turn']==receipt[first]['turn']
-            assert len(done['completed'])==len(report['cases'])*2
+            assert closure['request']['turn']==(None if a.idle else receipt[first]['turn'])
+            assert len(done['completed'])==(1+len(report['cases']) if a.idle else len(report['cases'])*2)
+            if a.idle:
+                assert [r['message'] for r in done['completed']]==[report['initial_input'],*[c['peer_input'] for c in report['cases']]]
+                assert len(report['model_requests'])==entry['model_requests_before']+1
             replies=[v['value'] for v in map(json.loads,mcp_log.read_text(encoding='utf-8').splitlines()) if v['direction']=='in' and 'method' not in v['value'] and str(v['value'].get('id','')).startswith('fixture-elicitation-')]
             assert replies[-1]['result']['action']==expected
             # Codex forwards URL Accept as an empty MCP object, while the
             # app-server closure above retains content:null. No fields are sent.
             wire_content=content if decision=='Submit' else {} if decision=='Accept' else None
             assert replies[-1]['result'].get('content')==wire_content
+            if a.idle:
+                wire=next(v for v in map(json.loads,mcp_log.read_text(encoding='utf-8').splitlines()) if v['direction']=='in' and v['value'].get('id')==entry['trigger_id'] and 'method' not in v['value'])
+                assert wire['at']>=entry['decision_at'];entry['wire_reply']=wire
             entry['mcp_reply']=replies[-1];entry['result']='passed'
         assert len(replies)==4 and len({v['id'] for v in replies})==4
         report['final_ledger']=ledger();report['final_agent']=inspect()

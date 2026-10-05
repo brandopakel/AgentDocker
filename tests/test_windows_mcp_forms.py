@@ -98,6 +98,52 @@ class WindowsMcpForms(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     SMOKE.validate_mcp_review_report(report, info, "url")
 
+    def idle_fixture(self, mode):
+        report, info = self.url_fixture() if mode == "url" else self.fixture()
+        report.update(idle_review=True, initial_input="arm", model_requests=[
+            {"at": 1, "case": None}, {"at": 2, "case": None}])
+        rows = [{"message": "arm", "receipt": {"thread": "thread", "turn": "arm-turn", "item": "arm-item"}}]
+        report["initial_completed_ledger"] = {"attempt": None, "reviews": [], "completed": copy.deepcopy(rows)}
+        for number, case in enumerate(report["cases"], 1):
+            case.pop("input")
+            case["receipts"] = {case["peer_input"]: case["receipts"][case["peer_input"]]}
+            case["before_trigger"] = {"attempt": None, "reviews": [], "completed": copy.deepcopy(rows)}
+            case["held_ledger"].update(attempt=None, completed=copy.deepcopy(rows))
+            case["held_ledger"]["reviews"][0]["turn"] = None
+            case["closed_review"]["request"]["turn"] = None
+            if mode == "url":
+                case["question"]["presentation"]["url"] = "https://example.com/private-fixture"
+                case["closed_review"]["request"]["questions"][0]["presentation"]["url"] = "https://example.com/private-fixture"
+            case.update(model_requests_before=number+1, decision_at=number*10)
+            case["wire_reply"] = {"value": copy.deepcopy(case["mcp_reply"]), "at": number*10+1}
+            report["model_requests"].append({"at": number*10+2, "case": case["decision"]})
+            rows.append({"message": case["peer_input"], "receipt": case["receipts"][case["peer_input"]]})
+        report["final_ledger"]["completed"] = rows
+        return report, info
+
+    def test_idle_decisions_require_completed_arm_and_hold_peer_until_human_action(self):
+        mutations = [
+            lambda r: r.update(idle_review=False),
+            lambda r: r["initial_completed_ledger"].update(attempt={"message": "arm"}),
+            lambda r: r["cases"][0]["held_ledger"].update(attempt={"message": "arm"}),
+            lambda r: r["cases"][0]["held_ledger"]["reviews"][0].update(turn="arm-turn"),
+            lambda r: r["cases"][0]["closed_review"]["request"].update(turn="arm-turn"),
+            lambda r: r["cases"][0]["wire_reply"].update(at=0),
+            lambda r: r["cases"][1]["before_trigger"]["completed"].clear(),
+            lambda r: r["model_requests"][2].update(at=0),
+            lambda r: r["model_requests"].append({"at": 60, "case": "extra"}),
+            lambda r: r["final_ledger"]["completed"].reverse(),
+        ]
+        for mode in ("form", "url"):
+            report, info = self.idle_fixture(mode)
+            SMOKE.validate_mcp_review_report(report, info, mode, idle=True)
+            for number, mutate in enumerate(mutations):
+                with self.subTest(mode=mode, mutation=number):
+                    report, info = self.idle_fixture(mode)
+                    mutate(report)
+                    with self.assertRaises(ValueError):
+                        SMOKE.validate_mcp_review_report(report, info, mode, idle=True)
+
     def test_stdio_fixture_emits_only_the_selected_review_and_correlates_its_reply(self):
         for mode in ("form", "url"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="MCP fixture ü ") as root:

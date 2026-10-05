@@ -97,7 +97,12 @@ the previous no-active-turn rejection; Codex translates that client error into
 an MCP decline. Source `99a247b0` passed 137 focused Codex tests with zero retries. Corrected
 Mac ARM64/Codex 0.160 private-model acceptance then passed eight idle form/URL
 decision paths, nine exact input receipts and independently verified cleanup.
-Other platforms/versions, pending-review restarts, the full gate, review and
+The full local gate passed on `0de47a7b` (1,575 Rust/192 Python tests, zero
+retries). Windows CI now includes separate idle form and URL trials that arm
+the private MCP server, finish the model turn, trigger each later review,
+hold peer input and check the exact decision, wire reply and five input
+receipts per mode. That Windows fixture has not yet run on a native runner.
+Other platforms/versions, pending-review restarts, final CI/review and
 integration remain pending. Active command/file/permission questions
 still require their exact turn; secret/device callbacks and longer waits remain
 open. This follow-up does not change PR #294's final release candidate.
