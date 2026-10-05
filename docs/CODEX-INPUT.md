@@ -41,7 +41,11 @@ A local loopback trial exposed questions attributed to that server's separate
 agent, leaving the native conversation without asynchronous answer delivery.
 The candidate resolves each detached-host tool call using Codex's `threadId`
 and `sessionId` metadata against one existing live native binding in the same
-canonical provider profile and checkout. It verifies the app-server process
+canonical provider profile and checkout. Codex 0.155.1 instead supplies the root
+session as `x-codex-turn-metadata.session_id`; when top-level `sessionId` is
+absent, both nested `session_id` and `thread_id` must exactly match `threadId`.
+All supplied identity fields must agree; null, malformed or conflicting newer
+fields cannot fall back to the older representation. It verifies the app-server process
 birth and executable. The canonical package-cache path supplies the host profile
 when Codex filters `CODEX_HOME` from the MCP environment; an explicitly supplied
 profile must agree. It requires the root thread/session to agree and refuses
@@ -697,7 +701,17 @@ navigation and reopening. These bounded trials use the upstream experimental
 `write_stdin_approval` feature for that launch only; they do not change saved
 provider policy or establish physical input/accessibility acceptance. The clean
 candidate passed 1,430 Rust tests and 155 Python checks with zero retries.
-Broader permission forms, MCP form elicitation and secret input still require completion.
+Managed delivery-ledger writes use the shared private atomic snapshot publisher.
+Windows replaces the flushed record while preserving open readers; Unix also
+flushes the containing directory. A failed publication never advances the
+in-memory attempt. The initial Windows managed-form trial exposed the previous
+Unix-only directory flush (Access is denied before input); its failure is retained
+and corrected `8d22f923` passed the extracted-package Windows form trial below.
+
+Broader permission forms, extended MCP elicitation and secret input still require completion.
+Provider `requestUserInput` bundles reject `isSecret: true` before opening any
+ordinary question route. A supplied flag must be a boolean; malformed values,
+including strings and null, cannot fall back to persisted ordinary answers.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
@@ -788,6 +802,18 @@ missing history and buffer overflow pause immediately; no fresh subscription
 replaces a lost cursor. The existing five-second connection/replay/frame bounds
 apply to each attempt, and shutdown cancels the worker and its socket.
 
+Actual Mac and Oracle Linux Codex 0.160 with private model/MCP fixtures and source
+`8778a67f` each preserved four pending forms through eight experimental same-binary
+daemon handovers, with 32 stable seconds between replacements. Each form retained its
+original question and provider request; its explicit decision reached MCP once,
+and queued peer input waited for that decision. An earlier rapid burst exhausted
+the documented reconnect allowance after six successful handovers: the controller
+paused and exited with the fourth form unanswered in its ledger. That trial
+remains failed; the sustained result does not establish rapid-burst recovery,
+provider/controller crash recovery, account consent or installed service upgrades.
+The daemon reload gate remains experimental. See the
+[verification index](verification/INDEX.md).
+
 Read-only `provider_inbox` calls with an empty acknowledgement list now also
 retry up to three times after transient I/O failures or the existing five-second
 request timeout, with 100 ms between attempts. Retries cannot start a replacement
@@ -858,8 +884,7 @@ Cancellation and five-minute expiry return `action: "cancel"`; an exact human
 Accept returns `action: "accept"` with no form content. Provider resolution
 acknowledges the decision, not completion of the external website action. There
 is no page polling, completion inference or automatic tool retry. Existing
-uncertain-write and no-replay recovery rules apply; ledger version 12 rejects
-URL reviews fabricated in older records. Source tests cover the route. Actual Codex 0.160 with Mac ARM64
+uncertain-write and no-replay recovery rules apply; URL reviews require ledger version 12 or later and cannot be fabricated in older records. Source tests cover the route. Actual Codex 0.160 with Mac ARM64
 release binaries and private model/MCP fixtures passed Accept, Decline, Cancel
 and route cancellation, eight distinct ordinary input receipts, exact server-side
 decisions and independently verified cleanup. The fixture preserves normal
@@ -876,7 +901,7 @@ provider trial. Browser interaction, final packages, Windows/other versions,
 pending restart and real-account waits remain open.
 
 Unknown callbacks,
-session-wide file grants, unsupported permission selectors, MCP form/device-verification elicitation, secret inputs
+session-wide file grants, unsupported permission selectors, extended MCP forms/device-verification elicitation, secret inputs
 and oversized requests currently return an explicit provider error. Complete
 those review surfaces before treating the adapter as a general replacement for
 the provider terminal. Automatic provider review and configured approval policy
@@ -965,6 +990,19 @@ not imply distinct turns. The earlier fixture that required different turns
 remains failed; its corrected repeat independently confirmed all 12 recorded
 processes had retired. This adds provider-version coverage, not browser/account
 consent or final-package acceptance.
+
+The Windows package harness also supports a separate URL-mode trial: four
+explicit decisions, the original destination/callback, held peer input, no form
+content and eight exact ordinary-input receipts. It shares the bounded snapshot
+reader with form trials and retains its own wire, ledger and cleanup report.
+Source `8a249fde` passed all four paths/eight receipts on Windows Codex 0.160
+and 0.155.1, with exact wire/ledger/source/archive pins and clean recorded
+process retirement. This private fixture does not open a browser or establish
+account consent. When a provider request omits its
+turn ID, the review binds to the locally active turn. Its original turn cannot
+be independently established from that omission; late no-turn requests across
+interruption/restart remain a provider-contract acceptance question. Human
+review is still required for every acceptance.
 
 ## Active-turn steering acceptance (September 16)
 
@@ -1093,6 +1131,11 @@ A separate invocation of the same loaded CLI owns those children. The front end
 keeps an authenticated private loopback connection open; its closure, including
 front-end SIGKILL, requests bounded child cleanup and capability revocation. The
 owner verifies its exact parent generation/image before starting a provider.
+A resumed receiver may be started by the daemon outside that owner's process
+tree. Its paused recovery endpoint checks the exact provider generation once
+per second, interrupting the 30-second reconnect delay or an outstanding
+recovery client when that generation disappears. Cancellation preserves the
+durable input disposition and never acknowledges or retries an uncertain write.
 Stalled local handshakes are read concurrently within fixed connection/time
 bounds so they do not serialize the owner’s startup. The TUI still inherits the terminal directly. Mac ARM64 `8dc1e614` passed front-end
 SIGKILL after a receipt and during pre-binding provider startup, SIGTERM and
@@ -1175,3 +1218,111 @@ first-receipt/replacement/draft/exit acceptance with complete unforced cleanup. 
 stopped after binding on a fixture process-group assumption, before model input;
 that failure is retained. Broader adoption and desktop/default launch remain open;
 ordinary `codex` and the current managed bridge are unchanged.
+
+## Nonsecret MCP form review
+
+Managed `mcpServer/elicitation/request` form requests use typed desktop fields
+with explicit Submit, Decline and Cancel controls. Only the bound active thread
+can ask; absent provider turn correlation stays bounded by the local active turn.
+Forms support flat strings, numbers/integers, booleans and titled/untitled
+single/multiple selections, required fields, defaults and bounds. Email, URI,
+date and date-time formats are validated without fetching or changing values.
+Unknown constraints, nested schemas, secret/extended formats and device
+verification fail explicitly. Explicit `null` schema fields are invalid, including
+constraints and defaults; only omission selects the documented fallback.
+Requests are limited to 16 fields, 32 options,
+16,000-byte schemas/responses and 4,096-byte text fields. Schema text-length
+bounds count Unicode characters; exceeding the separate byte cap reports its
+own error. Numeric magnitudes may
+not exceed 2^53 − 1. The generated Codex 0.160 schema does not carry regex patterns,
+so such constraints are unsupported rather than ignored.
+
+The Windows package suite now includes a private managed-provider form trial
+(`--mcp-forms`): four decisions, invalid-answer refusal, held peer input and eight
+exact ordinary-input receipts, with birth-pinned cleanup and retained wire/ledger
+evidence. Source `8d22f923` passed on native Windows with actual Codex 0.160:
+four exact MCP replies, eight unique ordinary-input receipts, invalid answers
+refused and peer input held during review. Source/archive/executable/provider/
+helper hashes, original wire replies and retained ledger were independently
+matched. The CI report records clean retirement of all 50 process generations.
+It also passed 62 daemon, 42 installer, 22 native-launcher and three nine-check
+queue-recovery scenarios. A later Windows Codex 0.155.1 trial completed Submit
+and Decline but failed in the fixture observer: Python opened the live ledger
+without sharing deletion during atomic replacement. The observer now uses the
+existing bounded shared-file reader. The original failed trial is retained; a
+complete corrected older-version trial passed in `8a249fde`, described below.
+This does not prove account, physical interaction,
+installed-service, restart or long-wait behavior.
+
+Defaults are editable suggestions. Optional fields can be omitted; submitting
+shares only included values with the named server. Unsubmitted edits remain in
+window memory and disappear when it closes. Existing ordinary drafts are kept
+separate. Submitted answers are retained in the conversation; passwords, tokens,
+API keys and payment credentials belong in URL elicitation, never these forms.
+Terminal users can answer with a JSON object: `agentdocker answer <id>
+'{"count":2}'`, or with `Decline` or `Cancel`. Cancel/expiry sends no form content.
+An accepted answer requires the original question's exact daemon receipt, and an
+uncertain provider write is retained without replay. Source `5bda72d0` passed the full 1,558-Rust/179-Python gate (8/1 skipped),
+zero retries, and an actual Codex 0.160 Mac ARM64 release-binary trial. Four
+form decision/cancellation paths preserved exact schemas and values, refused
+invalid answers while pending, delivered eight unique ordinary-input receipts
+and left no private processes or scratch. Final `4737ed1a` passed the same full
+gate, including stale-schema submission and oversized-edit refusal. Its native
+Mac UI passed 39 rendered-control steps for Submit/Decline/Cancel, invalid input,
+exact typed values and omitted optional input; native accessibility extraction,
+screenshots, six ordinary-input receipts and clean process retirement passed.
+The identical-tree Linux CI archive passed all four decision/cancellation paths
+with both actual Codex 0.160 and 0.155.1, eight unique input receipts per version
+and independently verified cleanup. Peer input stayed queued during review and
+resumed only after the exact MCP answer, either in the active turn or a new one.
+An initial fixture incorrectly required separate turns; that failure and its
+corrected assertion are retained. A separate Linux/Codex 0.160 trial held an
+unanswered form to its five-minute expiry: 1,126 observations retained peer
+input, one exact cancellation shared no content, two ordinary-input receipts
+followed, and all private processes retired cleanly. These use private model/MCP fixtures and
+synthetic answers; account, final desktop packages, broader versions,
+physical interaction, pending restart and waits beyond five minutes remain open.
+
+Windows source `58d652a9` passed the managed four-form/eight-receipt trial with
+both pinned Codex 0.160 and 0.155.1 after fixing deletion sharing in the observer.
+Their subsequent native-launcher checks failed independently. The 0.160 terminal
+interleaved the ready prefix and agent ID with provider redraw output; reopen
+acceptance now reads the exact daemon binding, provider generation and durable
+ledger, and retains those observations before asserting. A displayed banner
+alone cannot establish identity. Windows 0.155.1's native MCP identity call was
+refused because its metadata did not satisfy the root-conversation contract;
+the retained managed wire and pinned upstream source show the older nested
+session/thread identity shape. Source now accepts that complete shape while
+refusing conflicting fields and preserving host/generation/child checks.
+Source `0d4f0ca5` passed separate 11-check established-session native MCP
+trials on Mac Codex 0.160 and Oracle Linux Codex 0.155.1: original-TUI identity,
+two exact input receipts, preserved draft and receiver replacement. The Linux
+archive has the identical CI source tree; all six recorded processes were
+independently absent. The Mac check independently confirmed five recorded PIDs
+and both signalled groups absent; other descendant cleanup uses its fixture
+report. These private-model trials require an explicit warmup/manual binding.
+Corrected `8a249fde` passed full extracted Windows package acceptance on both
+Codex 0.160 and 0.155.1: 62 daemon/42 installer/22 native-launcher checks and
+three nine-check recovery scenarios. Both original-TUI MCP identities matched
+the exact provider generation before/after reopen, including the older nested
+metadata. Authoritative binding/ledger snapshots verified canonical reopen for
+frontend exit, owner exit and console close; draft and receiver replacement
+checks also passed. Birth-pinned cleanup reports have no forced cleanup,
+survivors or reader errors. Source/archive/EXE/provider/helper pins and all
+standalone reports/ledgers were independently checked. These private-model,
+synthetic-ConPTY trials do not establish account, physical or installed-service
+acceptance. Neither original failed package job inherits this pass. See the
+trial index.
+
+The first Windows URL harness run on `0d4f0ca5` failed its observer assertion on
+both pinned providers after the initial Accept and two exact input receipts.
+The app-server closure retained `content: null`, while Codex forwarded
+`content: {}` to the MCP server. This carries no form fields. The observer and
+package validator now require that exact empty object on URL Accept and omitted
+content on Decline/Cancel; nonempty content still fails. Corrected `8a249fde`
+passed all four paths and eight distinct original input receipts on both
+providers. Form trials also passed four decisions/eight receipts on both.
+Invalid answers refused and peers stayed held until the exact review resolved;
+controller/configuration were unchanged. The CI reports record clean retirement
+of 58 form/54 URL process generations for 0.160 and 30 form/28 URL generations
+for 0.155.1. Both original failed URL reports remain indexed.

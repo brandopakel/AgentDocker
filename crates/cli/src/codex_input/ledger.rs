@@ -10,12 +10,11 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
-    fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
 };
 
-const VERSION: u32 = 12;
+const VERSION: u32 = 13;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const RETAINED_RECEIPTS: usize = 128;
@@ -218,6 +217,35 @@ mod tests {
     }
 
     #[test]
+    fn prepared_input_replaces_an_open_snapshot_and_reopens_without_replay() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        let before = std::fs::read(&ledger.path).unwrap();
+        let mut reader = agentdocker_host::files::open_regular(&ledger.path).unwrap();
+        let message = message();
+        let input = ledger.prepare(&message).unwrap();
+        let mut after = Vec::new();
+        dirs::read_private_file(&ledger.path)
+            .unwrap()
+            .read_to_end(&mut after)
+            .unwrap();
+        assert_ne!(after, before);
+        let mut retained = Vec::new();
+        reader.read_to_end(&mut retained).unwrap();
+        assert_eq!(retained, before);
+        drop(reader);
+        drop(ledger);
+        let mut reopened = Ledger::open(home.path(), binding).unwrap();
+        let attempt = reopened.record().attempt.as_ref().unwrap();
+        assert_eq!(attempt.message, message.id.as_str());
+        assert_eq!(attempt.input, input);
+        assert!(reopened.prepare(&message).is_err());
+        assert_eq!(std::fs::read(&reopened.path).unwrap(), after);
+    }
+
+    #[test]
     fn only_a_never_used_conversation_can_be_replaced_after_restart() {
         let home = tempfile::tempdir().unwrap();
         let mut ledger = Ledger::open(home.path(), binding(home.path())).unwrap();
@@ -266,7 +294,7 @@ mod tests {
 
     #[test]
     fn legacy_delivery_state_upgrades_without_replacing_prepared_input() {
-        for version in 1..=11 {
+        for version in 1..=12 {
             let home = tempfile::tempdir().unwrap();
             let binding = binding(home.path());
             let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
@@ -546,6 +574,57 @@ mod tests {
                     .unwrap()
                     .to_string()
                     .contains("legacy input cannot supply MCP URL review receipts")
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            std::fs::write(&path, &original).unwrap();
+            let reopened = Ledger::open(home.path(), binding).unwrap();
+            assert_eq!(reopened.record().version, VERSION);
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn mcp_form_reviews_require_version_thirteen_in_open_and_closed_history() {
+        for closed in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            let binding = binding(home.path());
+            let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+            ledger.bind_thread("thread".into()).unwrap();
+            ledger.prepare(&message()).unwrap();
+            let event = serde_json::json!({"id":"form","method":"mcpServer/elicitation/request","params":{
+                "threadId":"thread","turnId":null,"serverName":"fixture","mode":"form","message":"Choose.",
+                "requestedSchema":{"type":"object","properties":{"value":{"type":"boolean"}}}
+            }});
+            let pending =
+                review::Pending::plan(&event, "thread", Some("turn"), "human", chrono::Utc::now())
+                    .unwrap();
+            ledger
+                .update_reviews(|reviews, history| {
+                    if closed {
+                        history.push_back(review::Closed {
+                            request: pending,
+                            outcome: review::Outcome::Cancelled,
+                            acknowledged: true,
+                        });
+                    } else {
+                        reviews.push(pending);
+                    }
+                    Ok(true)
+                })
+                .unwrap();
+            let path = ledger.path.clone();
+            drop(ledger);
+            let original = std::fs::read(&path).unwrap();
+            let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            legacy["version"] = serde_json::json!(12);
+            let bytes = serde_json::to_vec(&legacy).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(
+                Ledger::open(home.path(), binding.clone())
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("legacy input cannot supply MCP form review receipts")
             );
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
             std::fs::write(&path, &original).unwrap();
@@ -869,6 +948,15 @@ fn valid_id(id: &str) -> bool {
 impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
+            self.version >= 13
+                || (self.reviews.iter().all(|r| !r.is_mcp_form_review())
+                    && self
+                        .closed_reviews
+                        .iter()
+                        .all(|r| !r.request.is_mcp_form_review())),
+            "legacy input cannot supply MCP form review receipts"
+        );
+        ensure!(
             self.version >= 12
                 || (self.reviews.iter().all(|r| !r.is_mcp_url_review())
                     && self
@@ -934,7 +1022,7 @@ impl Record {
         );
         ensure!(
             self.version == VERSION
-                || matches!(self.version, 3..=11)
+                || matches!(self.version, 3..=12)
                 || (matches!(self.version, 1 | 2)
                     && self.reviews.is_empty()
                     && self.closed_reviews.is_empty()
@@ -1301,11 +1389,14 @@ impl Ledger {
             .path
             .parent()
             .context("delivery record has no directory")?;
-        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+        let mut temporary =
+            tempfile::Builder::new().make_in(directory, dirs::create_private_file)?;
         temporary.write_all(&bytes)?;
         temporary.as_file().sync_all()?;
-        temporary.persist(&self.path)?;
-        File::open(directory)?.sync_all()?;
+        // Windows cannot open a directory as an ordinary file to sync it.
+        // The shared snapshot publisher also preserves concurrent readers of
+        // the prior ledger while replacing the flushed private record.
+        agentdocker_host::files::publish_snapshot(&temporary.into_temp_path(), &self.path)?;
         // Failed persistence never advances the in-memory submission state.
         self.record = next;
         Ok(())

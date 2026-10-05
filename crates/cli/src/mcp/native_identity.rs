@@ -159,17 +159,29 @@ impl Context {
         alive: impl Fn(&ProcessIdentity) -> bool,
         dedicated: impl Fn(&AgentRecord) -> Result<()>,
     ) -> Result<AgentRecord> {
-        // Codex 0.160 supplies these outside model-controlled tool arguments.
+        // Codex supplies these outside model-controlled tool arguments.
+        // 0.155.1 carries the root session in x-codex-turn-metadata, while
+        // 0.160 also supplies sessionId. Require all supplied identities to
+        // agree; a malformed newer field cannot fall back to the older one.
         // A child's thread differs from its root session; never route it into
         // that root's queue or silently fall back to the app-server identity.
         let thread = meta["threadId"]
             .as_str()
             .context("Codex tool call lacks threadId metadata")?;
+        let turn_metadata = meta.get("x-codex-turn-metadata");
+        let session = match meta.get("sessionId") {
+            Some(value) => value.as_str(),
+            None => turn_metadata.and_then(|value| value["session_id"].as_str()),
+        };
         ensure!(
             !thread.is_empty()
                 && thread.len() <= 256
                 && !thread.chars().any(char::is_control)
-                && meta["sessionId"].as_str() == Some(thread),
+                && session == Some(thread)
+                && turn_metadata.is_none_or(|value| {
+                    value["thread_id"].as_str() == Some(thread)
+                        && value["session_id"].as_str() == Some(thread)
+                }),
             "Codex tool call must identify its own root conversation"
         );
         let mut matches = agents.into_iter().filter(|agent| {
@@ -305,6 +317,90 @@ mod tests {
                 .select(vec![agent.clone(), agent], &meta, |_| true, |_| Ok(()))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn native_identity_accepts_legacy_root_metadata_without_ignoring_conflicts() {
+        let (mut context, agent, _) = fixture();
+        let legacy = json!({"threadId":"root-thread", "x-codex-turn-metadata":{
+            "thread_id":"root-thread", "session_id":"root-thread"}});
+        for profile in [Some(PathBuf::from("/profile")), None] {
+            context.profile = profile;
+            let calls = std::cell::Cell::new(0);
+            let proof = |_: &AgentRecord| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            };
+            assert_eq!(
+                context
+                    .select(vec![agent.clone()], &legacy, |_| true, proof)
+                    .unwrap()
+                    .id,
+                agent.id
+            );
+            assert_eq!(calls.get(), usize::from(context.profile.is_none()));
+            let mut modern = legacy.clone();
+            modern["sessionId"] = json!("root-thread");
+            assert!(
+                context
+                    .select(vec![agent.clone()], &modern, |_| true, proof)
+                    .is_ok()
+            );
+            for invalid in [
+                json!({"threadId":"root-thread", "x-codex-turn-metadata":null}),
+                json!({"threadId":"root-thread", "x-codex-turn-metadata":{}}),
+                json!({"threadId":"root-thread", "x-codex-turn-metadata":{"session_id":"root-thread"}}),
+                json!({"threadId":"root-thread", "x-codex-turn-metadata":{"thread_id":"root-thread"}}),
+                json!({"threadId":"child", "x-codex-turn-metadata":{"thread_id":"child", "session_id":"root-thread"}}),
+                json!({"threadId":"root-thread", "sessionId":"root-thread", "x-codex-turn-metadata":{"thread_id":"other", "session_id":"root-thread"}}),
+                json!({"threadId":"root-thread", "sessionId":"root-thread", "x-codex-turn-metadata":{"thread_id":"root-thread", "session_id":"other"}}),
+            ] {
+                assert!(
+                    context
+                        .select(vec![agent.clone()], &invalid, |_| true, proof)
+                        .is_err(),
+                    "{invalid}"
+                );
+            }
+            for malformed in [
+                Value::Null,
+                json!(false),
+                json!(42),
+                json!({}),
+                json!([]),
+                json!("other"),
+            ] {
+                let mut invalid = legacy.clone();
+                invalid["sessionId"] = malformed;
+                assert!(
+                    context
+                        .select(vec![agent.clone()], &invalid, |_| true, proof)
+                        .is_err()
+                );
+            }
+            assert!(
+                context
+                    .select(vec![agent.clone()], &legacy, |_| false, proof)
+                    .is_err()
+            );
+            assert!(
+                context
+                    .select(vec![agent.clone(), agent.clone()], &legacy, |_| true, proof)
+                    .is_err()
+            );
+            if context.profile.is_none() {
+                assert!(
+                    context
+                        .select(
+                            vec![agent.clone()],
+                            &legacy,
+                            |_| true,
+                            |_| anyhow::bail!("dedicated host proof failed")
+                        )
+                        .is_err()
+                );
+            }
+        }
     }
 
     #[test]

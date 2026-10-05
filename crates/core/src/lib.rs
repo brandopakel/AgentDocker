@@ -11,7 +11,9 @@ pub mod conversation;
 pub use conversation::{
     ArchivedMessage, ConversationId, ConversationKind, ConversationSummary, ReadCursor,
 };
+pub mod elicitation;
 pub mod event;
+pub use elicitation::{FormField, FormKind, McpForm};
 pub mod identity;
 pub mod input;
 pub use input::{

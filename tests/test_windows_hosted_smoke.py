@@ -23,7 +23,7 @@ class HostedWindowsAcceptance(unittest.TestCase):
         self.tag, self.source = 'v0.2.0-beta.5', 'a' * 40
         self.manifest = {'source_commit': self.source, 'source_dirty': False,
                          'version': self.tag[1:], 'target': HOSTED.TARGET,
-                         'installation_lock': 1, 'launcher_redirect': 2,
+                         'installation_lock': 1, 'launcher_redirect': 2, 'state_schema': 23,
                          'artifacts': {HOSTED.ARCHIVE: 'b' * 64}}
         self.update = {'feed': HOSTED.PREVIEW_FEED, 'target': HOSTED.TARGET,
                        'channel': 'preview', 'update_available': False,
@@ -36,11 +36,33 @@ class HostedWindowsAcceptance(unittest.TestCase):
         HOSTED.validate_manifest(self.manifest, self.tag, self.source)
         for key, value in [('launcher_redirect', 1), ('installation_lock', 0),
                            ('source_commit', 'c' * 40), ('source_dirty', True),
-                           ('version', '0.2.0-beta.4'), ('target', 'x86_64-unknown-linux-musl')]:
+                           ('version', '0.2.0-beta.4'), ('target', 'x86_64-unknown-linux-musl'),
+                           ('state_schema', None), ('state_schema', True), ('state_schema', 0)]:
             with self.subTest(key=key):
                 changed = dict(self.manifest, **{key: value})
                 with self.assertRaises(ValueError):
                     HOSTED.validate_manifest(changed, self.tag, self.source)
+
+    def test_schema_rollback_refusal_rejects_unrelated_failures_and_any_selection_change(self):
+        command = {'exit_code': 1, 'stdout': '', 'stderr':
+                   'Error: state schema differs; binary rollback cannot roll back the database\n'}
+        before = {'current': {'id': 'new', 'source_commit': 'a' * 40, 'state_schema': 25},
+                  'previous': {'id': 'old', 'source_commit': 'b' * 40, 'state_schema': 23}}
+        HOSTED.validate_schema_rollback_refusal(command, before, copy.deepcopy(before))
+        for changed in [dict(command, exit_code=0), dict(command, exit_code=6),
+                        dict(command, stdout='changed'), dict(command, stderr='Error: file busy')]:
+            with self.subTest(command=changed), self.assertRaises(ValueError):
+                HOSTED.validate_schema_rollback_refusal(changed, before, before)
+        for field in ['current', 'previous']:
+            after = copy.deepcopy(before)
+            after[field]['id'] = 'different'
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                HOSTED.validate_schema_rollback_refusal(command, before, after)
+        for schema in [None, True, 0, 25, 26]:
+            changed = copy.deepcopy(before)
+            changed['previous']['state_schema'] = schema
+            with self.subTest(schema=schema), self.assertRaises(ValueError):
+                HOSTED.validate_schema_rollback_refusal(command, changed, changed)
 
     def test_tag_mismatch_refuses_before_downloading_or_extracting_executables(self):
         with tempfile.TemporaryDirectory() as root:

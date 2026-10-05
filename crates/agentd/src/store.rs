@@ -53,9 +53,9 @@ pub struct TaskTransition<'a> {
     pub events: &'a [Event],
 }
 
-// Schema 24 retains MCP URL questions with explicit consent-only controls.
+// Schema 25 retains bounded MCP form questions and their typed response contract.
 // Older daemons must not discard the presentation on a question reload.
-pub(crate) const SCHEMA_VERSION: i64 = 24;
+pub(crate) const SCHEMA_VERSION: i64 = 25;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (

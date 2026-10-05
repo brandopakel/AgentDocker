@@ -316,19 +316,36 @@ pub(super) async fn while_paused(
     client: &Client,
     ledger: &mut Ledger,
 ) -> Result<()> {
-    tokio::select! {
-        stream = listener.accept() => {
-            let stream = stream?;
-            let binding = ledger.record().binding.clone();
-            let mut provider = super::connect_provider(&binding).await?;
-            let result = async {
-                verify_provider(&mut provider, &binding).await?;
-                serve(stream, client, &mut provider, ledger).await
-            }.await;
-            let shutdown = provider.shutdown().await;
-            result.and(shutdown)
+    let process = ledger.record().binding.provider.process.clone();
+    let provider_exit = async {
+        while procinfo::start_time(process.pid) == Some(process.started_at) {
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        _ = tokio::time::sleep(Duration::from_secs(30)) => Ok(()),
+    };
+    let recovery = async {
+        tokio::select! {
+            stream = listener.accept() => {
+                let stream = stream?;
+                let binding = ledger.record().binding.clone();
+                let mut provider = super::connect_provider(&binding).await?;
+                let result = async {
+                    verify_provider(&mut provider, &binding).await?;
+                    serve(stream, client, &mut provider, ledger).await
+                }.await;
+                let shutdown = provider.shutdown().await;
+                result.and(shutdown)
+            }
+            _ = tokio::time::sleep(Duration::from_secs(30)) => Ok(()),
+        }
+    };
+    // A daemon-restarted receiver is outside the native launcher's process
+    // tree. Provider death must interrupt both the reconnect delay and any
+    // recovery client wait. Durable intents already fence uncertain writes;
+    // dropping this observer never acknowledges or retries retained input.
+    tokio::select! {
+        biased;
+        _ = provider_exit => Ok(()),
+        result = recovery => result,
     }
 }
 
@@ -419,6 +436,80 @@ mod tests {
     use super::super::ledger;
     use super::*;
     use agentdocker_core::{Destination, Envelope};
+
+    #[tokio::test]
+    async fn provider_exit_interrupts_paused_recovery_without_changing_retained_input() {
+        #[cfg(unix)]
+        let mut command = tokio::process::Command::new("/bin/sleep");
+        #[cfg(unix)]
+        command.arg("60");
+        #[cfg(windows)]
+        let mut command = tokio::process::Command::new("powershell.exe");
+        #[cfg(windows)]
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep -Seconds 60",
+        ]);
+        let mut child = command.kill_on_drop(true).spawn().unwrap();
+        let pid = child.id().unwrap();
+        #[cfg(unix)]
+        let root = tempfile::tempdir_in("/tmp").unwrap();
+        #[cfg(windows)]
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().canonicalize().unwrap();
+        let binding = ledger::Binding {
+            agent: "paused-exit".into(),
+            provider: ProviderGeneration {
+                process: ProcessIdentity {
+                    pid,
+                    started_at: procinfo::start_time(pid).unwrap(),
+                },
+                session: "thread".into(),
+                profile: home.to_string_lossy().into(),
+            },
+            socket: home.join("unused-daemon"),
+            cwd: home.clone(),
+            executable: home.join("codex"),
+            remote: None,
+        };
+        let mut ledger = Ledger::open(&home, binding.clone(), None).unwrap();
+        let message = Envelope::new(
+            "peer",
+            Destination::parse("paused-exit"),
+            "chat",
+            json!({"text":"retain this uncertain input"}),
+            None,
+            chrono::Utc::now(),
+        );
+        ledger.prepare(&message, None).unwrap();
+        ledger.queued("existing-queue-entry").unwrap();
+        let before = serde_json::to_vec(ledger.record()).unwrap();
+        let path = ledger::directory(&home, "paused-exit")
+            .unwrap()
+            .join("delivery.json");
+        let persisted = std::fs::read(&path).unwrap();
+        let listener = Listener::bind(&home, "paused-exit", "resolve").unwrap();
+        let client = Client::new(Some(binding.socket)).with_start_timeout(None);
+        {
+            let recovery = while_paused(&listener, &client, &mut ledger);
+            tokio::pin!(recovery);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut recovery)
+                    .await
+                    .is_err()
+            );
+            child.kill().await.unwrap();
+            child.wait().await.unwrap();
+            tokio::time::timeout(Duration::from_secs(3), &mut recovery)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(serde_json::to_vec(ledger.record()).unwrap(), before);
+        assert_eq!(std::fs::read(path).unwrap(), persisted);
+    }
 
     #[tokio::test]
     async fn lost_journal_and_ack_replies_reconcile_the_same_manual_disposition() {

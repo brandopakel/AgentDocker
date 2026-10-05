@@ -26,6 +26,7 @@ enum Kind {
     Permissions,
     UserInput,
     McpUrl,
+    McpForm,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -391,24 +392,51 @@ impl Pending {
         let method = event["method"]
             .as_str()
             .context("Codex request has no method")?;
-        let mcp_url = method == "mcpServer/elicitation/request" && params["mode"] == "url";
+        let mcp = method == "mcpServer/elicitation/request"
+            && (matches!(params["mode"].as_str(), Some("url" | "form"))
+                || params["mode"].is_null());
         // MCP's turnId is optional correlation, not its request identity. This
         // controller accepts these requests only during its own active turn;
         // a supplied turn must still match. The local turn bounds their life.
         let turn = turn.context("provider request has no active input turn")?;
         ensure!(
             params["threadId"].as_str() == Some(thread)
-                && (params["turnId"].as_str() == Some(turn)
-                    || (mcp_url && params["turnId"].is_null())),
+                && (params["turnId"].as_str() == Some(turn) || (mcp && params["turnId"].is_null())),
             "provider request does not belong to the active input turn"
         );
         let mut questions = Vec::new();
         let mut command_denial = CommandDenial::Decline;
         let kind = match method {
+            "mcpServer/elicitation/request"
+                if params["mode"] == "form" || params["mode"].is_null() =>
+            {
+                ensure!(
+                    params["url"].is_null() && params["elicitationId"].is_null(),
+                    "form elicitation cannot include a website request"
+                );
+                let presentation = QuestionPresentation::McpForm {
+                    server: text(&params["serverName"])?.into(),
+                    message: text(&params["message"])?.into(),
+                    schema: params["requestedSchema"].clone(),
+                };
+                ensure!(
+                    presentation.valid_for(&presentation.text()),
+                    "MCP form cannot be completely reviewed"
+                );
+                questions.push(Question {
+                    field: "elicitation".into(),
+                    text: presentation.text(),
+                    presentation: Some(presentation),
+                    message: None,
+                    answer: None,
+                    closure: Closure::Open,
+                });
+                Kind::McpForm
+            }
             "mcpServer/elicitation/request" => {
                 ensure!(
                     params["mode"] == "url",
-                    "MCP forms and device verification need a separate review flow"
+                    "Extended forms and device verification need a separate review flow"
                 );
                 ensure!(
                     params["requestedSchema"].is_null(),
@@ -520,8 +548,13 @@ impl Pending {
                 );
                 let mut fields = HashSet::new();
                 for value in values {
+                    let secret = value
+                        .get("isSecret")
+                        .map(|flag| flag.as_bool().context("isSecret must be a boolean"))
+                        .transpose()?
+                        .unwrap_or(false);
                     ensure!(
-                        value["isSecret"] != true,
+                        !secret,
                         "secret input cannot be stored in AgentDocker questions"
                     );
                     let field = value["id"].as_str().context("Codex question has no ID")?;
@@ -599,6 +632,14 @@ impl Pending {
 
     pub fn is_stdin_review(&self) -> bool {
         matches!(self.kind, Kind::Stdin)
+    }
+
+    pub fn is_mcp_form_review(&self) -> bool {
+        matches!(self.kind, Kind::McpForm)
+            || self
+                .questions
+                .iter()
+                .any(|q| matches!(q.presentation, Some(QuestionPresentation::McpForm { .. })))
     }
 
     pub fn is_mcp_url_review(&self) -> bool {
@@ -725,7 +766,7 @@ impl Pending {
             .iter()
             .any(|q| q.closure == Closure::Cancelled)
         {
-            if self.is_mcp_url_review() {
+            if self.is_mcp_url_review() || self.is_mcp_form_review() {
                 return Ok(Some(
                     json!({"id":self.id,"result":{"action":"cancel","content":null}}),
                 ));
@@ -735,7 +776,7 @@ impl Pending {
             ));
         }
         if self.questions.iter().any(|q| q.answer.is_none()) {
-            if self.is_mcp_url_review() {
+            if self.is_mcp_url_review() || self.is_mcp_form_review() {
                 return Ok((now >= self.expires_at)
                     .then(|| json!({"id":self.id,"result":{"action":"cancel","content":null}})));
             }
@@ -743,6 +784,19 @@ impl Pending {
         }
         ensure!(self.questions.iter().all(|q| matches!(&q.closure, Closure::Answered { message } if q.answer.as_ref().is_some_and(|a| &a.id == message))), "provider response has no exact daemon answer receipt");
         let result = match self.kind {
+            Kind::McpForm => {
+                let question = &self.questions[0];
+                let Some(QuestionPresentation::McpForm { schema, .. }) = &question.presentation
+                else {
+                    bail!("MCP form has no complete presentation");
+                };
+                agentdocker_core::McpForm::parse(schema)
+                    .map_err(anyhow::Error::msg)?
+                    .response(answer_text(
+                        question.answer.as_ref().context("MCP form has no answer")?,
+                    )?)
+                    .context("MCP form answer does not match the reviewed schema")?
+            }
             Kind::McpUrl => {
                 let answer = answer_text(
                     self.questions[0]
@@ -827,12 +881,21 @@ impl Pending {
                     | Kind::Files
                     | Kind::Permissions
                     | Kind::McpUrl
+                    | Kind::McpForm
             ) || self.questions.len() == 1,
             "approval review has multiple questions"
         );
         let mut fields = HashSet::new();
         let mut routes = HashSet::new();
         for question in &self.questions {
+            ensure!(
+                matches!(self.kind, Kind::McpForm)
+                    == matches!(
+                        question.presentation,
+                        Some(QuestionPresentation::McpForm { .. })
+                    ),
+                "MCP form review kind and presentation disagree"
+            );
             ensure!(
                 matches!(self.kind, Kind::McpUrl)
                     == matches!(
@@ -905,6 +968,15 @@ impl Pending {
                 );
             }
             if let Some(answer) = &question.answer {
+                if let Some(presentation @ QuestionPresentation::McpForm { .. }) =
+                    &question.presentation
+                {
+                    ensure!(
+                        answer.payload.as_object().is_some_and(|p| p.len() == 1)
+                            && presentation.permits_answer(answer_text(answer)?),
+                        "stored form answer differs from its reviewed schema"
+                    );
+                }
                 ensure!(
                     question.message.as_ref() == answer.reply_to.as_ref(),
                     "answer has another review route"
@@ -935,6 +1007,14 @@ impl Pending {
             answer_text(answer)?;
         }
         if let Some(response) = &self.response {
+            if self.is_mcp_form_review() {
+                let mut original = self.clone();
+                original.response = None;
+                ensure!(
+                    original.reply(self.expires_at)?.as_ref() == Some(response),
+                    "stored form response differs from the original human decision"
+                );
+            }
             ensure!(
                 response["id"] == self.id
                     && (response.get("result").is_some() ^ response.get("error").is_some())
@@ -949,6 +1029,71 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_form_submit_has_exact_receipts_and_does_not_replay_after_restore() {
+        let event = json!({"id":"form-callback","method":"mcpServer/elicitation/request","params":{
+            "threadId":"thread","serverName":"fixture","mode":"form","message":"Choose a count.",
+            "requestedSchema":{"type":"object","required":["count"],"properties":{"count":{"type":"integer","minimum":1,"maximum":3}}}
+        }});
+        let now = Utc::now();
+        assert!(Pending::plan(&event, "thread", None, "human", now).is_err());
+        for (value, result) in [
+            (
+                "{\"count\":2}",
+                json!({"action":"accept","content":{"count":2}}),
+            ),
+            ("Decline", json!({"action":"decline","content":null})),
+            ("Cancel", json!({"action":"cancel","content":null})),
+        ] {
+            let mut request = Pending::plan(&event, "thread", Some("turn"), "human", now).unwrap();
+            request.questions[0].message = Some("question".to_owned().into());
+            assert!(
+                !request
+                    .capture(&[answer("peer", value)], "owner", false)
+                    .unwrap()
+            );
+            let response = answer("human", value);
+            assert!(
+                !request
+                    .capture(std::slice::from_ref(&response), "owner", false)
+                    .unwrap()
+            );
+            assert!(request.reply(now).unwrap().is_none());
+            request
+                .observe(
+                    &EventKind::QuestionClosed {
+                        question: "question".to_owned().into(),
+                        answer: Some(response.id.clone()),
+                    },
+                    "owner",
+                )
+                .unwrap();
+            request.capture(&[response], "owner", false).unwrap();
+            let reply = request.reply(now).unwrap().unwrap();
+            assert_eq!(reply, json!({"id":"form-callback","result":result}));
+            request.response = Some(reply);
+            let restored: Pending =
+                serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
+            restored.validate(Some("thread"), "owner").unwrap();
+            assert!(restored.reply(now).unwrap().is_none());
+            let mut altered = restored.clone();
+            altered.response.as_mut().unwrap()["result"] =
+                json!({"action":"accept","content":{"count":99}});
+            assert!(altered.validate(Some("thread"), "owner").is_err());
+            let mut altered = restored;
+            altered.questions[0].answer.as_mut().unwrap().payload["extra"] = json!(true);
+            assert!(altered.validate(Some("thread"), "owner").is_err());
+        }
+        let request = Pending::plan(&event, "thread", Some("turn"), "human", now).unwrap();
+        assert_eq!(
+            request.reply(now + Duration::minutes(6)).unwrap().unwrap()["result"],
+            json!({"action":"cancel","content":null})
+        );
+        let mut wrong = event;
+        wrong["params"]["turnId"] = json!("other");
+        assert!(Pending::plan(&wrong, "thread", Some("turn"), "human", now).is_err());
+    }
 
     fn mcp_url_event() -> Value {
         json!({"id":"url-callback","method":"mcpServer/elicitation/request","params":{
@@ -1892,6 +2037,28 @@ mod tests {
             .is_err()
         );
         assert!(Pending::plan(&event(), "thread", None, "human", Utc::now()).is_err());
+    }
+
+    #[test]
+    fn malformed_secret_flags_cannot_fall_back_to_ordinary_question_storage() {
+        let mut input = json!({"id":"ask","method":"item/tool/requestUserInput","params":{"threadId":"thread","turnId":"turn","questions":[{"id":"first","question":"Choose?"},{"id":"second","question":"Provide a value?"}]}});
+        assert!(Pending::plan(&input, "thread", Some("turn"), "human", Utc::now()).is_ok());
+        input["params"]["questions"][1]["isSecret"] = json!(false);
+        assert!(Pending::plan(&input, "thread", Some("turn"), "human", Utc::now()).is_ok());
+        for flag in [
+            Value::Null,
+            json!("true"),
+            json!("false"),
+            json!(0),
+            json!(1),
+            json!([]),
+            json!({}),
+        ] {
+            input["params"]["questions"][1]["isSecret"] = flag;
+            let error =
+                Pending::plan(&input, "thread", Some("turn"), "human", Utc::now()).unwrap_err();
+            assert!(error.to_string().contains("isSecret must be a boolean"));
+        }
     }
     #[test]
     fn an_expired_incomplete_bundle_returns_an_error_and_never_infers_approval() {

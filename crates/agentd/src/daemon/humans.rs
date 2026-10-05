@@ -942,6 +942,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_form_questions_validate_complete_content_before_storage_and_after_restart() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let recipient = register(&daemon, "recipient").await;
+        let presentation = QuestionPresentation::McpForm {
+            server: "fixture".into(),
+            message: "Choose a number.".into(),
+            schema: json!({"type":"object","required":["n"],"properties":{"n":{"type":"integer","minimum":1,"maximum":3}}}),
+        };
+        let Response::Sent { message, .. } = daemon
+            .post_question(
+                "asker".into(),
+                "recipient".into(),
+                presentation.text(),
+                Some(presentation.clone()),
+                300,
+            )
+            .await
+        else {
+            panic!("not posted");
+        };
+        drop(daemon);
+        let daemon = state(&dir);
+        assert_eq!(
+            lock(&daemon.state).questions[&message]
+                .presentation
+                .as_ref(),
+            Some(&presentation)
+        );
+        for payload in [
+            json!({"text":"{\"n\":4}"}),
+            json!({"text":"{\"n\":2,\"extra\":true}"}),
+            json!({"text":"{}"}),
+            json!({"text":"Accept","secret":"private input"}),
+        ] {
+            let mut state = lock(&daemon.state);
+            let before = state.next_seq;
+            let response = state.send(
+                recipient.id.to_string(),
+                Destination::Agent(asker.id.clone()),
+                "chat".into(),
+                payload,
+                Some(message.clone()),
+            );
+            assert!(matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ));
+            assert_eq!(state.next_seq, before);
+            assert!(state.questions.contains_key(&message));
+            assert!(state.inboxes.get(&asker.id).is_none_or(|q| q.is_empty()));
+        }
+        let Response::Sent {
+            message: answer, ..
+        } = daemon
+            .handle(Request::Answer {
+                from: Some("recipient".into()),
+                message: message.clone(),
+                text: "{\"n\":2}".into(),
+            })
+            .await
+        else {
+            panic!("not answered");
+        };
+        drop(daemon);
+        let daemon = state(&dir);
+        let state = lock(&daemon.state);
+        assert!(!state.questions.contains_key(&message));
+        let queued = state.inboxes[&asker.id]
+            .iter()
+            .find(|m| m.id == answer)
+            .unwrap();
+        assert_eq!(queued.payload, json!({"text":"{\"n\":2}"}));
+        assert_eq!(queued.reply_to, Some(message));
+    }
+
+    #[tokio::test]
     async fn an_empty_question_does_not_register_a_human_or_publish_state() {
         for wait in [false, true] {
             let dir = TempDir::new().unwrap();

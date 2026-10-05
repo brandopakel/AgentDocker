@@ -6667,7 +6667,10 @@ impl State {
             .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
             .filter(|pending| pending.addressed_to(&AgentId::from(envelope.from.as_str())))
             .map(|pending| pending.id.clone());
-        if let Some(presentation @ agentdocker_core::QuestionPresentation::McpUrl { .. }) = closed
+        if let Some(
+            presentation @ (agentdocker_core::QuestionPresentation::McpUrl { .. }
+            | agentdocker_core::QuestionPresentation::McpForm { .. }),
+        ) = closed
             .as_ref()
             .and_then(|id| self.questions.get(id))
             .and_then(|q| q.presentation.as_ref())
@@ -6676,12 +6679,12 @@ impl State {
                     && payload
                         .get("text")
                         .and_then(serde_json::Value::as_str)
-                        .is_some_and(|value| presentation.permits_choice(value))
+                        .is_some_and(|value| presentation.permits_answer(value))
             })
         {
             return Response::error(
                 ErrorCode::Invalid,
-                "a website request accepts only Accept, Decline or Cancel; enter private information on the website",
+                "answer does not match the reviewed MCP request; use the displayed choices or valid form values",
             );
         }
         let mut envelope = envelope;
