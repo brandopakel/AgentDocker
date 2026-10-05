@@ -623,6 +623,13 @@ impl Spawned {
         let mut controller = Controller::connect(&socket, Duration::from_secs(10)).await?;
         let hello = controller.hello().await?;
         validate_identity(&hello, id, &self.owner, self.pid, self.process_started_at)?;
+        // Reconnection is incomplete until the owner's retained stop state is
+        // sent. On failure discard this connection and keep retrying, without
+        // returning to terminal traffic or consuming a new watch notification.
+        let pending = *self.stop.borrow();
+        if let Some(force) = pending {
+            controller.send(&OwnerCommand::Stop { force }).await?;
+        }
         if self.session.is_some() {
             controller
                 .send(&OwnerCommand::Attach {
@@ -665,6 +672,18 @@ async fn relay_until_exit(
         let dropped = loop {
             tokio::select! {
                 biased;
+                // A chatty terminal or full keyboard can keep the other
+                // branches ready indefinitely. A pending stop goes first;
+                // its owner's grace period starts only after it is sent.
+                Ok(()) = spawned.stop.changed() => {
+                    let pending = *spawned.stop.borrow_and_update();
+                    if let Some(force) = pending
+                        && let Err(error) = spawned.controller.send(&OwnerCommand::Stop { force }).await
+                    {
+                        // The reconnect path retains the desired stop state.
+                        break Some(error);
+                    }
+                }
                 report = spawned.controller.next() => match report {
                     Ok(Some(OwnerReport::Output { offset, bytes })) => spawned.relay(offset, &bytes),
                     Ok(Some(OwnerReport::Gap { from, to })) => {
@@ -712,12 +731,6 @@ async fn relay_until_exit(
                         break Some(error);
                     }
                 }
-                Ok(()) = spawned.stop.changed() => {
-                    let pending = *spawned.stop.borrow_and_update();
-                    if let Some(force) = pending {
-                        let _ = spawned.controller.send(&OwnerCommand::Stop { force }).await;
-                    }
-                }
             }
         };
         // The transport went away. The exit file, if any, is the truth;
@@ -749,11 +762,6 @@ async fn relay_until_exit(
             match spawned.reconnect(&daemon.home, id).await {
                 Ok(()) => {
                     tracing::info!(agent = %id, "reconnected to the session owner");
-                    // A stop asked for during the outage is still owed.
-                    let pending = *spawned.stop.borrow();
-                    if let Some(force) = pending {
-                        let _ = spawned.controller.send(&OwnerCommand::Stop { force }).await;
-                    }
                     break;
                 }
                 Err(error) => {
@@ -907,6 +915,242 @@ pub(crate) fn group_exists(group: u32) -> bool {
 mod tests {
     use super::*;
     use agentdocker_core::session::ChildIdentity;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_reconnect_keeps_stop_owed_before_terminal_reattachment() {
+        use agentdocker_host::procinfo;
+        let dir = tempfile::tempdir().unwrap();
+        let id = AgentId::from("stop-reconnect");
+        let socket = endpoint(dir.path(), &id);
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = agentdocker_host::ipc::Listener::bind(&socket).unwrap();
+        let now = procinfo::start_time(std::process::id()).unwrap();
+        let owner = SessionOwner {
+            pid: std::process::id(),
+            started_at: now,
+        };
+        let hello = OwnerHello {
+            format: FORMAT,
+            agent: id.clone(),
+            owner_pid: owner.pid,
+            owner_started_at: now,
+            child: Some(ChildIdentity {
+                pid: owner.pid,
+                started_at: now,
+                tty: true,
+            }),
+            activated: true,
+            output_offset: 0,
+        };
+        let (original, _peer) = agentdocker_host::ipc::pair().await.unwrap();
+        let (reader, writer) = original.into_split();
+        let (control, stop) = watch::channel(None);
+        let mut spawned = Spawned {
+            pid: owner.pid,
+            process_started_at: now,
+            owner,
+            link: OwnerLink::Detached,
+            controller: Controller {
+                reader: BufReader::new(reader),
+                writer,
+                partial: Vec::new(),
+            },
+            launch_error: None,
+            activated: true,
+            control,
+            stop,
+            session: None,
+            keystrokes: None,
+            resizes: None,
+            output: None,
+            scrollback: None,
+            relayed: 0,
+        };
+        spawned.open_session();
+        spawned
+            .session
+            .as_ref()
+            .unwrap()
+            .input
+            .try_send(b"queued draft".to_vec())
+            .unwrap();
+        spawned.control.send(Some(true)).unwrap();
+        // The initial attempt already observed the watch update. Retries must
+        // retain its desired state even with no further notification.
+        assert_eq!(*spawned.stop.borrow_and_update(), Some(true));
+        for refuse in [true, true, false] {
+            let (finished, mut attempt_finished) = tokio::sync::oneshot::channel();
+            let peer = async {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = serde_json::to_vec(&hello).unwrap();
+                bytes.push(b'\n');
+                stream.write_all(&bytes).await.unwrap();
+                if refuse {
+                    // Close after a complete valid handshake, before the
+                    // caller sends its stop. Read-side shutdown alone may
+                    // discard writes successfully on some Unix platforms.
+                    drop(stream);
+                    let _ = (&mut attempt_finished).await;
+                    return Vec::new();
+                }
+                let mut reader = BufReader::new(stream);
+                let mut partial = Vec::new();
+                let mut commands = Vec::new();
+                for _ in 0..2 {
+                    let line = read_frame(&mut reader, &mut partial, 1024)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    commands.push(serde_json::from_str::<OwnerCommand>(&line).unwrap());
+                }
+                let _ = (&mut attempt_finished).await;
+                commands
+            };
+            let (result, commands) = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(
+                    async {
+                        let result = spawned.reconnect(dir.path(), &id).await;
+                        let _ = finished.send(());
+                        result
+                    },
+                    peer
+                )
+            })
+            .await
+            .unwrap();
+            if refuse {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("session owner connection closed")
+                );
+                assert!(commands.is_empty());
+            } else {
+                result.unwrap();
+                assert!(matches!(
+                    commands.as_slice(),
+                    [
+                        OwnerCommand::Stop { force: true },
+                        OwnerCommand::Attach { after: 0 }
+                    ]
+                ));
+            }
+            assert_eq!(*spawned.stop.borrow(), Some(true));
+            assert_eq!(spawned.keystrokes.as_ref().unwrap().len(), 1);
+        }
+    }
+
+    /// A full terminal queue must not put an already-requested stop behind
+    /// more input or output. Exercise the real relay with an owner wire peer,
+    /// keeping both report and input branches ready before its first poll.
+    #[tokio::test]
+    async fn pending_stop_precedes_ready_terminal_traffic() {
+        for force in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let daemon =
+                Daemon::open(dir.path().join("state"), dir.path().join("daemon.sock")).unwrap();
+            let id = AgentId::from("stop-priority");
+            let now = chrono::Utc::now();
+            let (stream, peer) = agentdocker_host::ipc::pair().await.unwrap();
+            let (reader, writer) = stream.into_split();
+            let (control, stop) = watch::channel(None);
+            let mut output = serde_json::to_vec(&OwnerReport::Output {
+                offset: 0,
+                bytes: b"still writing".to_vec(),
+            })
+            .unwrap();
+            output.push(b'\n');
+            let owner = SessionOwner {
+                pid: std::process::id(),
+                started_at: now,
+            };
+            let report = ExitReport {
+                agent: id.clone(),
+                owner: owner.clone(),
+                child: ChildIdentity {
+                    pid: std::process::id(),
+                    started_at: now,
+                    tty: true,
+                },
+                code: Some(0),
+                signal: None,
+                log_flushed: true,
+                at: now,
+            };
+            let mut spawned = Spawned {
+                pid: std::process::id(),
+                process_started_at: now,
+                owner,
+                link: OwnerLink::Detached,
+                controller: Controller {
+                    reader: BufReader::new(reader),
+                    writer,
+                    partial: output,
+                },
+                launch_error: None,
+                activated: true,
+                control,
+                stop,
+                session: None,
+                keystrokes: None,
+                resizes: None,
+                output: None,
+                scrollback: None,
+                relayed: 0,
+            };
+            spawned.open_session();
+            let session = spawned.session.as_ref().unwrap();
+            session.input.try_send(vec![b'x'; 65536]).unwrap();
+            session.resize.try_send((100, 30)).unwrap();
+            spawned.control.send(Some(force)).unwrap();
+            let mut keys = spawned.keystrokes.take();
+            let mut sizes = spawned.resizes.take();
+            let (finished, mut relay_finished) = tokio::sync::oneshot::channel();
+            let peer = async {
+                let (reader, mut writer) = peer.into_split();
+                let mut reader = BufReader::new(reader);
+                let first = read_frame(&mut reader, &mut Vec::new(), 512 * 1024)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                // Always finish the relay, including the failing control.
+                let mut exit = serde_json::to_vec(&OwnerReport::Exited { status: report }).unwrap();
+                exit.push(b'\n');
+                writer.write_all(&exit).await.unwrap();
+                // Keep both halves alive and consume in-flight input until the
+                // relay observes exit, like a real owner awaiting its ACK.
+                let mut partial = Vec::new();
+                loop {
+                    tokio::select! {
+                        _ = &mut relay_finished => break,
+                        result = read_frame(&mut reader, &mut partial, 512 * 1024) => {
+                            assert!(result.unwrap().is_some());
+                        }
+                    }
+                }
+                serde_json::from_str::<OwnerCommand>(&first).unwrap()
+            };
+            let (outcome, first) = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(
+                    async {
+                        let result =
+                            relay_until_exit(&daemon, &id, &mut spawned, &mut keys, &mut sizes)
+                                .await;
+                        let _ = finished.send(());
+                        result
+                    },
+                    peer
+                )
+            })
+            .await
+            .expect("terminal traffic must not strand a pending stop");
+            assert!(matches!(outcome, Outcome::Exited(_)));
+            assert!(matches!(first, OwnerCommand::Stop { force: seen } if seen == force));
+            assert_eq!(spawned.relayed, b"still writing".len() as u64);
+        }
+    }
 
     /// A launch that ends before it is activated is described as a person
     /// reads it — its exit code, its signal, or that the program could
