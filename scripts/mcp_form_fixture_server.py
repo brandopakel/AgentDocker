@@ -1,7 +1,10 @@
-"""Private stdio MCP fixture: one explicit form elicitation per tool call."""
+"""Private stdio MCP fixture: one explicit form or URL review per tool call."""
 import json, sys, time
 from pathlib import Path
 log = Path(sys.argv[1])
+mode = sys.argv[2] if len(sys.argv) > 2 else 'form'
+assert mode in ('form', 'url')
+tool = 'review_with_' + mode
 number = 0
 
 def record(direction, value):
@@ -23,14 +26,14 @@ def handle(value):
     method = value.get('method'); request = value.get('id')
     if method == 'initialize':
         send({'id':request,'result':{'protocolVersion':value['params']['protocolVersion'],
-            'capabilities':{'tools':{}},'serverInfo':{'name':'private-form-review-fixture','version':'1'}}})
+            'capabilities':{'tools':{}},'serverInfo':{'name':'private-review-fixture','version':'1'}}})
     elif method == 'tools/list':
-        send({'id':request,'result':{'tools':[{'name':'review_with_form','description':'Exercise the private form review fixture once.',
+        send({'id':request,'result':{'tools':[{'name':tool,'description':'Exercise the private '+mode+' review fixture once.',
             'inputSchema':{'type':'object','properties':{},'additionalProperties':False}}]}})
     elif method == 'tools/call':
-        assert value['params']['name']=='review_with_form'
+        assert value['params']['name']==tool
         number += 1; elicitation = 'fixture-elicitation-'+str(number)
-        send({'id':elicitation,'method':'elicitation/create','params':{'mode':'form',
+        params={'mode':'form',
             'message':'Private fixture: review these nonsecret preferences before submitting.',
             'requestedSchema':{'type':'object','required':['name','count','enabled','color','tags','email','date','time','uri'],
                 'properties':{
@@ -42,7 +45,12 @@ def handle(value):
                     'email':{'type':'string','format':'email'}, 'date':{'type':'string','format':'date'},
                     'time':{'type':'string','format':'date-time'}, 'uri':{'type':'string','format':'uri'},
                     'optional':{'type':'string'}
-                }}}})
+                }}}
+        if mode == 'url':
+            params={'mode':'url','elicitationId':elicitation,
+                    'message':'Private fixture: review this example destination. Do not open the website.',
+                    'url':'https://example.com/agentdocker-fixture?case='+str(number)}
+        send({'id':elicitation,'method':'elicitation/create','params':params})
         while True:
             reply = incoming()
             if reply.get('id') == elicitation and 'method' not in reply: break

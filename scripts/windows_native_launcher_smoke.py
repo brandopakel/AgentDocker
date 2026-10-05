@@ -32,6 +32,17 @@ class RecoveryComplete(Exception):
     """A separate bounded recovery scenario completed its own native cleanup."""
 
 
+def canonical_reopen(descriptor, generation, ledger, agent, thread, receipts):
+    """Check durable identity; ConPTY may interleave the ready banner with redraws."""
+    provider = descriptor.get('provider')
+    return (descriptor.get('version') == 1 and 'birth' not in descriptor
+            and isinstance(provider, dict) and provider.get('session') == thread
+            and isinstance(generation, dict) and generation.get('provider') == provider
+            and ledger.get('binding', {}).get('agent') == agent
+            and ledger.get('binding', {}).get('provider') == provider
+            and ledger.get('attempt') is None and ledger.get('completed') == receipts)
+
+
 # pywinpty closes ConPTY when its root process exits. Keep a separate console
 # host alive so killing only the product front end cannot also close its console.
 # This host neither reads nor proxies terminal input and never owns a binding.
@@ -292,7 +303,8 @@ def main():
         reader = threading.Thread(target=drain, daemon=True); reader.start()
         wait(ready, 65)
         step('reopen binds the original canonical agent without a new prompt',
-             'AgentDocker native input ready: ' + receiver.agent in ''.join(output))
+             receiver.binding()['provider']['session'] == thread
+             and receiver.ledger()['binding']['agent'] == receiver.agent)
         records = [p for p in (receiver.home / 'codex-native').glob('*/server.json') if p != record]
         assert len(records) == 1
         record = records[0]; descriptor = json.loads(record.read_text(encoding='utf-8'))
@@ -359,10 +371,13 @@ def main():
             assert len(records) == 1
             descriptor = json.loads(records.pop().read_text(encoding='utf-8'))
             generation = receiver.binding()
+            ledger = receiver.ledger()
+            report.setdefault('reopen_probes', {})[probe_key] = {
+                'descriptor': descriptor, 'generation': generation,
+                'ledger_binding': ledger['binding'], 'attempt': ledger['attempt'],
+                'completed': ledger['completed'], 'ready_prefix_observed': ready()}
             step(target + ' exit probe reopens the same canonical provider without input',
-                 'AgentDocker native input ready: ' + receiver.agent in ''.join(output) and
-                 descriptor['version'] == 1 and descriptor['provider']['session'] == thread and
-                 generation['provider'] == descriptor['provider'] and receiver.ledger()['completed'] == [first, second])
+                 canonical_reopen(descriptor, generation, ledger, receiver.agent, thread, [first, second]))
             descendants = launcher.children(recursive=True); owned.extend(descendants)
             controller = fixture_controller(psutil, generation, receiver.cli)
             receiver.owned.append(controller)

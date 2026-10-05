@@ -50,12 +50,14 @@ def extract_checked(archive, destination, manifest):
     return app
 
 
-def validate_mcp_form_report(observed, info):
+def validate_mcp_review_report(observed, info, mode="form"):
     """Require exact archive identity, four decisions, receipts and clean retirement."""
     def require(ok):
         if not ok:
-            raise ValueError("Windows MCP form acceptance lacks exact decisions, receipts or cleanup")
+            raise ValueError("Windows MCP review acceptance lacks exact decisions, receipts or cleanup")
 
+    require(mode in ("form", "url") and observed.get("review_mode") == mode)
+    accept = "Submit" if mode == "form" else "Accept"
     require(observed.get("result") == "passed"
             and observed.get("source_commit") == info["source_commit"]
             and observed.get("source_tree") == info["source_tree"]
@@ -79,14 +81,14 @@ def validate_mcp_form_report(observed, info):
             and initial.get("id") == final.get("id") == observed.get("agent")
             and observed.get("initial_pid") == initial.get("pid"))
     cases = observed.get("cases", [])
-    require([c.get("decision") for c in cases] == ["Submit", "Decline", "Cancel", "cancel-route"])
+    require([c.get("decision") for c in cases] == [accept, "Decline", "Cancel", "cancel-route"])
     ledger = observed.get("final_ledger", {})
     rows = ledger.get("completed", [])
     require(len(rows) == 8 and ledger.get("attempt") is None and bool(ledger.get("thread")))
     receipts = {row["message"]: row["receipt"] for row in rows}
     require(len(receipts) == 8)
     all_ids, mcp_ids = [], []
-    for case in cases:
+    for number, case in enumerate(cases, 1):
         require(case.get("result") == "passed")
         ids = [case.get("input"), case.get("peer_input")]
         require(all(isinstance(i, str) and i for i in ids) and len(set(ids)) == 2)
@@ -104,17 +106,22 @@ def validate_mcp_form_report(observed, info):
                 and held["reviews"][0].get("response") is None)
         require(len(case.get("invalid_answers", [])) == 2
                 and all(a.get("code") == "invalid" for a in case["invalid_answers"]))
-        action = "accept" if case["decision"] == "Submit" else "decline" if case["decision"] == "Decline" else "cancel"
+        action = "accept" if case["decision"] == accept else "decline" if case["decision"] == "Decline" else "cancel"
         content = case.get("submitted_content")
-        require(isinstance(content, dict) if action == "accept" else content is None)
+        require(isinstance(content, dict) if mode == "form" and action == "accept" else content is None)
         response = {"action": action, "content": content}
         closed = case.get("closed_review", {})
         request = closed.get("request", {})
         question = case.get("question", {})
-        require(bool(question.get("id")) and question.get("presentation", {}).get("kind") == "mcp_form"
+        presentation = question.get("presentation", {})
+        require(bool(question.get("id")) and presentation.get("kind") == "mcp_" + mode
+                and presentation.get("server") == "review_fixture"
                 and len(request.get("questions", [])) == 1
                 and request["questions"][0].get("message") == question["id"]
                 and request["questions"][0].get("presentation") == question["presentation"])
+        if mode == "url":
+            require(presentation.get("url") == "https://example.com/agentdocker-fixture?case=" + str(number)
+                    and presentation.get("elicitation_id") == "fixture-elicitation-" + str(number))
         require(closed.get("outcome") == "resolved" and closed.get("acknowledged") is True
                 and request.get("id") == case.get("provider_request") == held["reviews"][0].get("id")
                 and request.get("thread") == ledger["thread"]
@@ -122,8 +129,8 @@ def validate_mcp_form_report(observed, info):
                 and request.get("response") == {"id": case["provider_request"], "result": response})
         reply = case.get("mcp_reply", {})
         # The app-server response includes content:null; Codex omits absent
-        # content when forwarding a decline/cancel to the MCP server.
-        wire_response = response if action == "accept" else {"action": action}
+        # content when forwarding a decline/cancel or URL decision to MCP.
+        wire_response = response if mode == "form" and action == "accept" else {"action": action}
         require(reply.get("result") == wire_response and bool(reply.get("id")))
         mcp_ids.append(reply["id"])
     require(len(set(all_ids)) == 8 and set(all_ids) == set(receipts) and len(set(mcp_ids)) == 4)
@@ -339,13 +346,15 @@ def main():
                         help="with automatic Codex acceptance, test explicit queued start and daemon holds")
     parser.add_argument("--mcp-forms", action="store_true",
                         help="also exercise managed Codex form decisions and exact receipts")
+    parser.add_argument("--mcp-urls", action="store_true",
+                        help="also exercise managed Codex website decisions without opening a browser")
     args = parser.parse_args()
     if not 0 <= args.startup_samples <= 20:
         parser.error("--startup-samples must be between 0 and 20")
     if args.queue_recovery and (not args.codex or args.codex_scenario != "automatic"):
         parser.error("--queue-recovery requires --codex with --codex-scenario automatic")
-    if args.mcp_forms and not args.codex:
-        parser.error("--mcp-forms requires --codex")
+    if (args.mcp_forms or args.mcp_urls) and not args.codex:
+        parser.error("--mcp-forms/--mcp-urls require --codex")
     if os.name != "nt":
         parser.error("the archive acceptance trial requires native Windows")
     build = json.loads(args.native_manifest.read_text(encoding="utf-8"))
@@ -406,14 +415,17 @@ def main():
             report.update(result="passed", steps=len(observed["steps"]), desktop=observed.get("desktop"))
             if args.codex:
                 report["result"] = "failed"
-                if args.mcp_forms:
-                    destination = output / "mcp-forms"
+                for mode, enabled in [("form", args.mcp_forms), ("url", args.mcp_urls)]:
+                    if not enabled:
+                        continue
+                    destination = output / ("mcp-" + mode + "s")
+                    key = "mcp_" + mode + "s"
                     run_native_trial([sys.executable, str(ROOT / "scripts/windows_mcp_form_smoke.py"),
                                       "--binary-dir", str(app), "--codex", str(args.codex.resolve(strict=True)),
-                                      "--output", str(destination)], scratch, report, "mcp_forms")
-                    forms = json.loads((destination / "result.json").read_text(encoding="utf-8"))
-                    validate_mcp_form_report(forms, info)
-                    report["mcp_forms"] = forms
+                                      "--mode", mode, "--output", str(destination)], scratch, report, key)
+                    reviewed = json.loads((destination / "result.json").read_text(encoding="utf-8"))
+                    validate_mcp_review_report(reviewed, info, mode)
+                    report[key] = reviewed
                 automatic = args.codex_scenario == "automatic"
                 driver = "windows_native_launcher_smoke.py" if automatic else "windows_native_codex_smoke.py"
                 run_native_trial([sys.executable, str(ROOT / "scripts" / driver),

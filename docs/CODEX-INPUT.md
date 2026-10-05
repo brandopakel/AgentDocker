@@ -987,6 +987,17 @@ remains failed; its corrected repeat independently confirmed all 12 recorded
 processes had retired. This adds provider-version coverage, not browser/account
 consent or final-package acceptance.
 
+The Windows package harness also supports a separate URL-mode trial: four
+explicit decisions, the original destination/callback, held peer input, no form
+content and eight exact ordinary-input receipts. It shares the bounded snapshot
+reader with form trials and retains its own wire, ledger and cleanup report.
+Actual Windows URL acceptance remains pending; this private fixture does not
+open a browser or establish account consent. When a provider request omits its
+turn ID, the review binds to the locally active turn. Its original turn cannot
+be independently established from that omission; late no-turn requests across
+interruption/restart remain a provider-contract acceptance question. Human
+review is still required for every acceptance.
+
 ## Active-turn steering acceptance (September 16)
 
 The owned bridge now retains one additional steering attempt independently of
@@ -1257,3 +1268,14 @@ input, one exact cancellation shared no content, two ordinary-input receipts
 followed, and all private processes retired cleanly. These use private model/MCP fixtures and
 synthetic answers; account, final desktop packages, broader versions,
 physical interaction, pending restart and waits beyond five minutes remain open.
+
+Windows source `58d652a9` passed the managed four-form/eight-receipt trial with
+both pinned Codex 0.160 and 0.155.1 after fixing deletion sharing in the observer.
+Their subsequent native-launcher checks failed independently. The 0.160 terminal
+interleaved the ready prefix and agent ID with provider redraw output; reopen
+acceptance now reads the exact daemon binding, provider generation and durable
+ledger, and retains those observations before asserting. A displayed banner
+alone cannot establish identity. Windows 0.155.1's native MCP identity call was
+refused because its metadata did not satisfy the root-conversation contract;
+that compatibility investigation remains open without relaxing child isolation.
+Neither failed package job is full native acceptance. See the trial index.

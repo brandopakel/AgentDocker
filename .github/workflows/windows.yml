@@ -129,7 +129,7 @@ jobs:
         # reserve time to finish cleanup and retain the diagnostic report.
         # This changes no daemon/client readiness deadline.
         # Three recovery scenarios retain input for 30s; managed MCP forms
-        # separately exercise four bounded human decisions on the same archive.
+        # and URL reviews each exercise four human decisions on the archive.
         timeout-minutes: ${{ inputs.startup_samples && inputs.startup_samples != '0' && 100 || inputs.service_acceptance && 35 || 20 }}
         env:
           STARTUP_SAMPLES: ${{ inputs.startup_samples || '0' }}
@@ -141,7 +141,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "service acceptance dependency failed" }
             $extra += '--service'
           }
-          python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES" --codex artifacts/codex.exe --codex-scenario automatic --queue-recovery --mcp-forms @extra
+          python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES" --codex artifacts/codex.exe --codex-scenario automatic --queue-recovery --mcp-forms --mcp-urls @extra
       - name: Diagnose established-session native Codex after startup failure
         # A narrower pass never changes the failed strict startup outcome.
         if: ${{ !cancelled() && steps.package.outcome == 'failure' }}
@@ -189,6 +189,7 @@ jobs:
             artifacts/windows-desktop-package/queued-recovery-holds/
             artifacts/windows-desktop-package/queued-recovery-client-reply-loss/
             artifacts/windows-desktop-package/mcp-forms/
+            artifacts/windows-desktop-package/mcp-urls/
             artifacts/windows-established-package/package-acceptance.json
             artifacts/windows-established-package/smoke/
             artifacts/windows-established-package/native-codex/

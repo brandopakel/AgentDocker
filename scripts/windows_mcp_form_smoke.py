@@ -1,4 +1,4 @@
-"""Native Windows managed Codex form review on extracted release binaries.
+"""Native Windows managed Codex form/URL review on extracted release binaries.
 Private stdio MCP and a loopback model exercise four decisions and exact receipts.
 
 No account/auth files, external requests, browser navigation, installed services,
@@ -15,7 +15,9 @@ from windows_native_codex_smoke import current_user_objects, read_shared_file, r
 
 parser=argparse.ArgumentParser();parser.add_argument('--binary-dir',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--codex',type=Path,required=True)
+parser.add_argument('--mode',choices=('form','url'),default='form')
 a=parser.parse_args()
+tool_name='review_with_'+a.mode
 if os.name != 'nt':parser.error('requires native Windows')
 import psutil
 current_user_objects()
@@ -31,7 +33,7 @@ report={'result':'failed','scope':__doc__,'started_at':datetime.datetime.now(dat
  'provider_version':subprocess.check_output([str(codex),'--version'],text=True,timeout=10).strip(),
  'provider_sha256':hashlib.sha256(codex.read_bytes()).hexdigest(),
  'driver_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
- 'mcp_driver_sha256':hashlib.sha256((evidence/'mcp_form_fixture_server.py').read_bytes()).hexdigest(),'cases':[],'model_requests':[]}
+ 'mcp_driver_sha256':hashlib.sha256((evidence/'mcp_form_fixture_server.py').read_bytes()).hexdigest(),'review_mode':a.mode,'cases':[],'model_requests':[]}
 assert all(provenance['binary_sha256'][k]==v for k,v in report['binary_sha256'].items())
 report['helper_sha256']={name:hashlib.sha256((evidence/name).read_bytes()).hexdigest() for name in ['windows_smoke_pipe.py','windows_remote_receiver_fixture.py','windows_native_codex_smoke.py']}
 report['cleanup_errors']=[]
@@ -41,10 +43,10 @@ context={'tool_sent':False,'case':None};lock=threading.Lock()
 def call_events(number,body):
     found=[]
     for tool in body.get('tools',[]):
-        if tool.get('type')=='function' and 'review_with_form' in tool.get('name',''):found.append((None,tool['name']))
+        if tool.get('type')=='function' and tool_name in tool.get('name',''):found.append((None,tool['name']))
         if tool.get('type')=='namespace':
             for member in tool.get('tools',[]):
-                if 'review_with_form' in member.get('name',''):found.append((tool['name'],member['name']))
+                if tool_name in member.get('name',''):found.append((tool['name'],member['name']))
     assert len(found)==1, ('missing unique fixture tool',body.get('tools'))
     namespace,name=found[0]
     item={'type':'function_call','id':'fc_fixture_'+str(number),'call_id':'call_fixture_'+str(number),'name':name,'arguments':'{}','status':'completed'}
@@ -118,7 +120,7 @@ try:
         project.mkdir();profile.mkdir()
         subprocess.run(['git','init','-q',str(project)],check=True,timeout=5)
         mcp_log=out/'mcp-wire.jsonl'
-        config='model = "fixture-model"\nmodel_provider = "fixture"\napproval_policy = "on-request"\nsandbox_mode = "danger-full-access"\ncheck_for_update_on_startup = false\n[features]\napps = false\n[analytics]\nenabled = false\n[model_providers.fixture]\nname = "Private form review fixture"\nbase_url = '+json.dumps(f'http://127.0.0.1:{server.server_port}/v1')+'\nwire_api = "responses"\nenv_key = "AGENTDOCKER_FIXTURE_KEY"\nrequest_max_retries = 0\nstream_max_retries = 0\nsupports_websockets = false\n[projects.'+json.dumps(str(project))+']\ntrust_level = "trusted"\n[mcp_servers.review_fixture]\ncommand = '+json.dumps(sys.executable)+'\nargs = '+json.dumps([str(evidence/'mcp_form_fixture_server.py'),str(mcp_log)])+'\nrequired = true\ntool_timeout_sec = 90\n[mcp_servers.review_fixture.tools.review_with_form]\napproval_mode = "approve"\n'
+        config='model = "fixture-model"\nmodel_provider = "fixture"\napproval_policy = "on-request"\nsandbox_mode = "danger-full-access"\ncheck_for_update_on_startup = false\n[features]\napps = false\n[analytics]\nenabled = false\n[model_providers.fixture]\nname = "Private form review fixture"\nbase_url = '+json.dumps(f'http://127.0.0.1:{server.server_port}/v1')+'\nwire_api = "responses"\nenv_key = "AGENTDOCKER_FIXTURE_KEY"\nrequest_max_retries = 0\nstream_max_retries = 0\nsupports_websockets = false\n[projects.'+json.dumps(str(project))+']\ntrust_level = "trusted"\n[mcp_servers.review_fixture]\ncommand = '+json.dumps(sys.executable)+'\nargs = '+json.dumps([str(evidence/'mcp_form_fixture_server.py'),str(mcp_log),a.mode])+'\nrequired = true\ntool_timeout_sec = 90\n[mcp_servers.review_fixture.tools.'+tool_name+']\napproval_mode = "approve"\n'
         (profile/'config.toml').write_text(config,encoding='utf-8')
         report['config_sha256']=hashlib.sha256((profile/'config.toml').read_bytes()).hexdigest()
         env={k:v for k,v in os.environ.items() if k.upper() in ['PATH','SYSTEMROOT','WINDIR','USERPROFILE','TEMP','TMP','LOCALAPPDATA','APPDATA','COMSPEC','PATHEXT','PROGRAMFILES','PROGRAMFILES(X86)','LANG','LC_ALL','PYTHONUTF8']}
@@ -150,14 +152,18 @@ try:
         initial=inspect();report['initial_agent']=initial;assert not initial['input_delivery']['paused'],initial['input_delivery'];report['initial_pid']=initial['pid']
         def questions():return [q for q in rpc(endpoint,{'op':'questions','agent':'user'})['questions'] if q['from']==agent]
         def send(sender,text):return rpc(endpoint,{'op':'send','from':sender,'to':agent,'kind':'chat','payload':{'text':text}})['message']
-        for decision in ['Submit','Decline','Cancel','cancel-route']:
+        for decision in ['Submit' if a.mode=='form' else 'Accept','Decline','Cancel','cancel-route']:
             context.update(case=decision,tool_sent=False)
             entry={'decision':decision};report['cases'].append(entry)
-            nonce='MCP_FORM_'+decision+'_'+uuid.uuid4().hex
+            nonce='MCP_'+a.mode.upper()+'_'+decision+'_'+uuid.uuid4().hex
             first=send(human,nonce);entry['input']=first
             question=wait(lambda:next(iter(questions()),None),45);entry['question']=question
-            presentation=question['presentation'];assert presentation['kind']=='mcp_form' and presentation['server']=='review_fixture',presentation
-            assert presentation['schema']['type']=='object' and set(presentation['schema']['properties'])=={'name','count','enabled','color','tags','email','date','time','uri','optional'}
+            presentation=question['presentation'];assert presentation['kind']=='mcp_'+a.mode and presentation['server']=='review_fixture',presentation
+            if a.mode=='form':
+                assert presentation['schema']['type']=='object' and set(presentation['schema']['properties'])=={'name','count','enabled','color','tags','email','date','time','uri','optional'}
+            else:
+                assert presentation['url']=='https://example.com/agentdocker-fixture?case='+str(len(report['cases']))
+                assert presentation['elicitation_id']=='fixture-elicitation-'+str(len(report['cases']))
             peer_message=send(peer,'PEER_'+nonce);entry['peer_input']=peer_message
             before=ledger();assert len(before['reviews'])==1 and before['reviews'][0]['response'] is None
             assert before['attempt']['message']==first and before['attempt']['acknowledged']
@@ -171,7 +177,7 @@ try:
             entry['invalid_answers']=[invalid]
             content={'name':'Ada','count':3,'enabled':False,'color':'green','tags':['a','b'],'email':'fixture@example.com','date':'2024-02-29','time':'2026-10-04T12:00:00Z','uri':'urn:example:private-fixture'}
             entry['submitted_content']=content if decision=='Submit' else None
-            invalid_content=dict(content,count=4)
+            invalid_content=dict(content,count=4) if a.mode=='form' else {'accept':True}
             invalid=rpc(endpoint,{'op':'answer','from':'user','message':question['id'],'text':json.dumps(invalid_content)},True)
             assert invalid.get('code')=='invalid' and any(q['id']==question['id'] for q in questions())
             entry['invalid_answers'].append(invalid)
@@ -185,7 +191,7 @@ try:
             done=wait(finished,45)
             closure=next(c for c in done['closed_reviews'] if c['request']['id']==callback);entry['closed_review']=closure
             assert closure['outcome']=='resolved' and closure['acknowledged']
-            expected='accept' if decision=='Submit' else decision.lower() if decision!='cancel-route' else 'cancel'
+            expected='accept' if decision in ('Submit','Accept') else decision.lower() if decision!='cancel-route' else 'cancel'
             assert closure['request']['response']=={'id':callback,'result':{'action':expected,'content':content if decision=='Submit' else None}}
             receipt={v['message']:v['receipt'] for v in done['completed'] if v['message'] in [first,peer_message]};entry['receipts']=receipt
             assert len(receipt)==2 and receipt[first]['item']!=receipt[peer_message]['item']
@@ -206,7 +212,7 @@ try:
         assert len(replies)==4 and len({v['id'] for v in replies})==4
         report['final_ledger']=ledger();report['final_agent']=inspect()
         report['direct_provider_launch']=True
-        report['fixture_tool_approval']='Only the private synthetic review_with_form tool is configured approve; its form submission still requires the product human review.'
+        report['fixture_tool_approval']='Only the private synthetic '+tool_name+' tool is configured approve; its decision still requires the product human review.'
         assert report['final_agent']['pid']==report['initial_pid']
         assert report['final_agent']['process_started_at']==report['initial_agent']['process_started_at']
         report['config_unchanged']=hashlib.sha256((profile/'config.toml').read_bytes()).hexdigest()==report['config_sha256']
