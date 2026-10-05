@@ -121,7 +121,10 @@ def validate_mcp_form_report(observed, info):
                 and request.get("turn") == receipts[ids[0]]["turn"]
                 and request.get("response") == {"id": case["provider_request"], "result": response})
         reply = case.get("mcp_reply", {})
-        require(reply.get("result") == response and bool(reply.get("id")))
+        # The app-server response includes content:null; Codex omits absent
+        # content when forwarding a decline/cancel to the MCP server.
+        wire_response = response if action == "accept" else {"action": action}
+        require(reply.get("result") == wire_response and bool(reply.get("id")))
         mcp_ids.append(reply["id"])
     require(len(set(all_ids)) == 8 and set(all_ids) == set(receipts) and len(set(mcp_ids)) == 4)
 

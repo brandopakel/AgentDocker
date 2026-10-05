@@ -226,7 +226,11 @@ mod tests {
         let mut reader = agentdocker_host::files::open_regular(&ledger.path).unwrap();
         let message = message();
         let input = ledger.prepare(&message).unwrap();
-        let after = dirs::read_private_file(&ledger.path).unwrap();
+        let mut after = Vec::new();
+        dirs::read_private_file(&ledger.path)
+            .unwrap()
+            .read_to_end(&mut after)
+            .unwrap();
         assert_ne!(after, before);
         let mut retained = Vec::new();
         reader.read_to_end(&mut retained).unwrap();
@@ -238,7 +242,7 @@ mod tests {
         assert_eq!(attempt.message, message.id.as_str());
         assert_eq!(attempt.input, input);
         assert!(reopened.prepare(&message).is_err());
-        assert_eq!(dirs::read_private_file(&reopened.path).unwrap(), after);
+        assert_eq!(std::fs::read(&reopened.path).unwrap(), after);
     }
 
     #[test]

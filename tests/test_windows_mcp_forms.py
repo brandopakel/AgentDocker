@@ -40,7 +40,7 @@ class WindowsMcpForms(unittest.TestCase):
                     "id": n, "thread": "thread", "turn": f"turn-{n}",
                     "questions": [{"message": question["id"], "presentation": copy.deepcopy(question["presentation"])}],
                     "response": {"id": n, "result": response}}},
-                "mcp_reply": {"id": f"mcp-{n}", "result": copy.deepcopy(response)}})
+                "mcp_reply": {"id": f"mcp-{n}", "result": copy.deepcopy(response) if action == "accept" else {"action": action}}})
         return report, info
 
     def test_four_decisions_accept_only_complete_correlated_report(self):
@@ -71,6 +71,7 @@ class WindowsMcpForms(unittest.TestCase):
             lambda r: r["cases"][0]["closed_review"]["request"]["questions"][0]["presentation"].update(schema={}),
             lambda r: r["cases"][0]["mcp_reply"]["result"].update(content={"name": "changed"}),
             lambda r: r["cases"][1].update(submitted_content={"secret": "should not be sent"}),
+            lambda r: r["cases"][1]["mcp_reply"]["result"].update(content={"name": "not submitted"}),
             lambda r: r["cases"][1]["mcp_reply"].update(id="mcp-0"),
             lambda r: r["final_ledger"]["completed"].pop(),
             lambda r: r["cases"][0]["receipts"].pop("peer-0"),
