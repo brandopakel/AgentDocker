@@ -87,7 +87,7 @@ Reads are served from memory; every mutation is written through to SQLite (`rusq
 
 An unresolved Codex hook offer may be settled only by exact provider evidence or
 explicit `codex-queue-resolve` readback. The latter is receiver-local administration,
-not a new daemon receipt kind: ledger version 5 retains the generation-bound input
+not a new daemon receipt kind: ledger version 6 retains the generation-bound input
 digest, hook nonce, operator process and resolution ID; existing `journal_add`
 records the manual disposition before token-bound `provider_inbox` ACK. It never
 emits `report_input(received)` for manual reading. Retries retain the same intent;
@@ -1831,9 +1831,10 @@ to numeric IPv4 loopback after validating a private immutable server record.
 That record binds both native TUI/server PID births, kernel executable paths,
 server checkout, thread/profile and capability file/digest. Both server and TUI
 arguments must select the same exact loopback endpoint without duplicate options.
-Ledger version 5
-retains its absolute path and SHA-256; migration from versions 2/3/4 accepts no
-preexisting remote descriptor and preserves all delivery state. Reconnect
+Ledger version 6
+retains its absolute path and SHA-256. Migration preserves delivery state: versions
+2/3/4 cannot contain a preexisting remote descriptor, and version 5 cannot contain
+a queued-start intent. Reconnect
 revalidates generations and capability before and after connection, and checks
 the initialized profile and thread. A maintained WebSocket implementation bounds
 frames to 4 MiB and connection/write/close to five seconds. Each 30-second RPC

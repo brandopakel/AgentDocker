@@ -253,8 +253,13 @@ repeating the same confirmation only reports that intent. Lost replies, refused
 starts or interrupted journal writes leave it retained without an automatic
 retry or hook handoff. The ordinary exact provider receipt is still required
 before acknowledgement. A reply naming a turn is not a delivery receipt.
-This candidate needs final review and actual CLI recovery/negative-path trials;
-the earlier direct-RPC diagnostic is not acceptance of this command.
+Actual Codex 0.160 on Mac with a private model passed this command after a
+deliberate interruption: 30 seconds of retained input, four distinct refusals,
+one explicit start, a repeated confirmation returning the same intent, two exact
+receipts and one new model request. All ten recorded processes retired. Original
+connection and fixture failures remain indexed. Full review, lost-provider-reply
+and pause/limit races, Linux/Windows and real-account acceptance remain; this does
+not establish automatic crash/reopen recovery.
 
 `agentdocker codex-queue-resolve --agent <id>` asks the owning receiver for a
 read-only preview of its complete retained envelope and a confirmation digest.
@@ -275,9 +280,9 @@ an input still scheduled under its original client or queue ID, even if its text
 was edited. A missing project journal refuses before any disposition is written.
 The existing provider, receiver ownership and queue order remain intact.
 
-Ledger version 5 migrates versions 2/3/4 without changing their input or token.
-It adds the optional immutable remote-server descriptor and refuses a remote
-descriptor in an older record. The existing manual readback protocol
+Ledger version 6 migrates versions 2/3/4/5 without changing their input or token.
+Versions before 5 cannot contain the immutable remote-server descriptor; versions
+before 6 cannot contain a queued-start intent. The existing manual readback protocol
 persists the manual intent, journals its resolution ID, acknowledges that one ID
 through the existing token-bound inbox, then records completion. Loss of a journal
 reply can produce duplicate notes with the same resolution ID; lost ACK/reply or
