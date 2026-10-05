@@ -708,6 +708,18 @@ missing history and buffer overflow pause immediately; no fresh subscription
 replaces a lost cursor. The existing five-second connection/replay/frame bounds
 apply to each attempt, and shutdown cancels the worker and its socket.
 
+Actual Mac and Oracle Linux Codex 0.160 with private model/MCP fixtures and source
+`8778a67f` each preserved four pending forms through eight experimental same-binary
+daemon handovers, with 32 stable seconds between replacements. Each form retained its
+original question and provider request; its explicit decision reached MCP once,
+and queued peer input waited for that decision. An earlier rapid burst exhausted
+the documented reconnect allowance after six successful handovers: the controller
+paused and exited with the fourth form unanswered in its ledger. That trial
+remains failed; the sustained result does not establish rapid-burst recovery,
+provider/controller crash recovery, account consent or installed service upgrades.
+The daemon reload gate remains experimental. See the
+[verification index](verification/INDEX.md).
+
 Read-only `provider_inbox` calls with an empty acknowledgement list now also
 retry up to three times after transient I/O failures or the existing five-second
 request timeout, with 100 ms between attempts. Retries cannot start a replacement
