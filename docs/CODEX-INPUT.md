@@ -1015,8 +1015,8 @@ including a third prompt-free reopen followed by front-end termination. Its
 owner/provider/receiver exit, capability revocation, unchanged receipts and no
 additional model request were verified before closing the synthetic console.
 These trials used actual Codex 0.160 with a private loopback model and synthetic
-terminals. Independent review remains required. This does not protect against
-killing the owner itself or establish pending-input recovery; those trials,
+terminals. Internal-owner death and whole-console cleanup have the additional
+bounded acceptance below. Final review, broader pending-input recovery,
 real-account and physical-terminal acceptance remain open.
 It observes an empty server before launching the terminal, requires the sole new
 thread birth, then registers the exact TUI and publishes its private birth
@@ -1039,7 +1039,25 @@ record used ordinary history with no birth allowance. Windows also verified
 actual MCP identity in both terminal generations. The Unix trials configured
 MCP but did not invoke it. These private loopback-model and synthetic-terminal
 trials do not establish real-account or physical-input acceptance. If receiver binding and its cleanup both fail, the original binding error is
-retained with the cleanup failure as additional context. On Unix, the front end now creates a dedicated group for the internal owner and retains its unreaped child identity until that group is retired. It also owns the capability path before startup, so an internal-owner crash can revoke it. A controlling terminal is handed to the owner group directly, with foreground and mode restoration on cleanup and suspension; stdin is never proxied. Source `4042605a` passed the bounded actual Codex 0.160 owner-crash trial, but failed a separate controlling-terminal suspension: Darwin returned a stopped-child notification to the exit wait. Corrected `368443bc` passed the independent-host suspension/continue and owner-death trial, with foreground and terminal modes restored before host cleanup. Frontend SIGKILL and SIGTERM regressions also passed. All three retained the exact first receipt, revoked the capability, retired their processes and produced no extra model request. These private-model Mac trials do not establish startup-crash, physical keyboard or other-platform acceptance. Windows process containment after internal-owner death remains open.
+retained with the cleanup failure as additional context. On Unix, the front end now creates a dedicated group for the internal owner and retains its unreaped child identity until that group is retired. It also owns the capability path before startup, so an internal-owner crash can revoke it. A controlling terminal is handed to the owner group directly, with foreground and mode restoration on cleanup and suspension; stdin is never proxied. Source `4042605a` passed the bounded actual Codex 0.160 owner-crash trial, but failed a separate controlling-terminal suspension: Darwin returned a stopped-child notification to the exit wait. Corrected `368443bc` passed the independent-host suspension/continue and owner-death trial, with foreground and terminal modes restored before host cleanup. Frontend SIGKILL and SIGTERM regressions also passed. All three retained the exact first receipt, revoked the capability, retired their processes and produced no extra model request. These private-model Mac trials do not establish startup-crash, physical keyboard or other-platform acceptance. On Windows, the authenticated internal owner enters an unnamed kill-on-close job
+before starting provider children. Its non-inheritable handle remains until
+process exit; daemon startup happens before admission, and provider descendants
+cannot autostart a shared daemon inside the job. A retained private kernel
+delete-on-close file handle revokes the capability even when console closure
+prevents either Rust cleanup path from running.
+
+Actual Windows Codex 0.160 package `64a93e82` (compiled `ffadbda6`, identical source
+tree) passed 62 daemon, 42 installer and 22 native checks. Distinct frontend and
+internal-owner termination retained an independent live, resizable console.
+Separately dropping the last ConPTY owner while all watched participants were
+alive retired the console host, frontend, owner, providers and receiver and
+removed the capability. Original receipts stayed exact, no extra model request
+occurred, and no forced fixture cleanup was needed. Source/archive/executable,
+CRLF driver/helper hashes and cleanup reports were independently verified; the
+[trial index](verification/INDEX.md) preserves the original failures as well.
+These are extracted-package, private-model and synthetic-console checks.
+Windows startup races, pending-input/unsent-draft recovery, installed service
+survival, real accounts and physical consoles remain open.
 
 The launcher retires its own children on exit, revokes its capability
 and retains bounded private server diagnostics. Capability cleanup is owned before
