@@ -43,6 +43,16 @@ fn unpaused_project(response: Response, project: &ProjectId) -> Result<()> {
     Ok(())
 }
 
+async fn admitted_message(client: &Client, ledger: &Ledger, message: &str) -> Result<()> {
+    let (messages, uncertain, _) = queue(client, ledger, Vec::new()).await?;
+    ensure!(
+        messages.first().is_some_and(|m| m.id.as_str() == message)
+            && !uncertain.iter().any(|id| id.as_str() == message),
+        "the daemon is holding this input or its delivery is uncertain; start refused"
+    );
+    Ok(())
+}
+
 pub(super) async fn start(
     client: &Client,
     provider: &mut Provider,
@@ -127,12 +137,7 @@ pub(super) async fn start(
     // The daemon checks exact receiver ownership and shared provider blocks.
     // Its inbox remains readable during a project pause so lifecycle notices
     // can arrive; queue visibility is not permission to start paused work.
-    let (messages, uncertain, _) = queue(client, ledger, Vec::new()).await?;
-    ensure!(
-        messages.first().is_some_and(|m| m.id.as_str() == message)
-            && !uncertain.iter().any(|id| id.as_str() == message),
-        "the daemon is holding this input or its delivery is uncertain; start refused"
-    );
+    admitted_message(client, ledger, message).await?;
     let current = identity(client, &binding).await?;
     let project = current
         .project
@@ -147,9 +152,10 @@ pub(super) async fn start(
             start.id, message, queued, binding.provider.process.pid, binding.provider.process.started_at,
             binding.provider.session, start.operator.pid, start.operator.started_at, start.note),
     }).await?, Response::JournalEntry { .. }), "queued start journal write unconfirmed; intent retained without provider transmission");
-    // A pause may have arrived while the journal call was pending. Refuse it
-    // here too, retaining the already persisted intent without blind retries.
-    // This is a snapshot before transmission, not an atomic provider lock.
+    // Ownership, provider limits or a pause may change while the journal call
+    // is pending. Recheck admission, retaining the persisted intent on refusal.
+    // These snapshots do not atomically lock the daemon and provider together.
+    admitted_message(client, ledger, message).await?;
     unpaused_project(call(client, Request::Pauses).await?, &project)?;
     // The provider atomically refuses a newly active/pending turn. Never add,
     // delete, reorder or repeat this queued submission to recover a lost reply.

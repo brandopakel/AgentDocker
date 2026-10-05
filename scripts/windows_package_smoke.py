@@ -172,13 +172,28 @@ def validate_queue_recovery_report(native, info, mode):
     rows = proof.get("completed_after", [])
     require(len(rows) == (2 if mode == "holds" else 3) and rows[:2] == before["completed"])
     if mode == "normal":
-        require(proof.get("response", {}).get("exit_code") == 0 and proof.get("repeat", {}).get("exit_code") == 0)
-        first, repeat = (json.loads(proof[k]["stdout"]) for k in ("response", "repeat"))
-        require(first.get("already_attempted") is False and repeat.get("already_attempted") is True
+        require(proof.get("response", {}).get("exit_code") == 0)
+        first = json.loads(proof["response"]["stdout"])
+        require(first.get("already_attempted") is False
                 and first.get("message") == proof.get("message") and bool(first.get("queued_start"))
-                and bool(first.get("turn")) and all(first.get(k) == repeat.get(k) for k in ("message", "queued_start", "turn"))
+                and bool(first.get("turn"))
                 and rows[-1]["message"] == first["message"] and rows[-1]["receipt"]["turn"] == first["turn"]
                 and sum(bool(r.get("recovery")) and not r.get("title") for r in native.get("requests", [])) == 1)
+        reply = proof.get("repeat", {})
+        if reply.get("exit_code") == 0:
+            repeat = json.loads(reply["stdout"])
+            require(repeat.get("already_attempted") is True
+                    and all(first.get(k) == repeat.get(k) for k in ("message", "queued_start", "turn")))
+        else:
+            require(proof.get("repeat_disposition") == "already_delivered"
+                    and reply.get("exit_code") == 1 and reply.get("stdout") == ""
+                    and reply.get("stderr", "").strip() == "Error: no retained native input to start"
+                    and proof.get("ledger_after_repeat", {}).get("completed") == rows
+                    and "attempt" in proof.get("ledger_after_repeat", {})
+                    and proof["ledger_after_repeat"]["attempt"] is None
+                    and proof.get("retired_preview", {}).get("exit_code") == 0)
+            preview = json.loads(proof["retired_preview"]["stdout"])
+            require("pending" in preview and preview["pending"] is None)
     else:
         require("daemon is holding this input" in proof["refusals"][0]["reply"].get("stderr", "")
                 and "project is paused" in proof["refusals"][1]["reply"].get("stderr", "")

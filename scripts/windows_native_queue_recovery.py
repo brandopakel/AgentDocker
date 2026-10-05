@@ -107,9 +107,24 @@ def exercise(mode, receiver, call, thread, held_text, recovery_text, held_model,
         first = json.loads(proof['response']['stdout'])
         assert first['message'] == message and first['queued_start'] and first['turn'] and not first['already_attempted']
         proof['repeat'] = recover(command)
-        assert proof['repeat']['exit_code'] == 0, proof['repeat']
-        again = json.loads(proof['repeat']['stdout'])
-        assert again['already_attempted'] and all(again[k] == first[k] for k in ['message', 'queued_start', 'turn'])
+        proof['ledger_after_repeat'] = receiver.ledger()
+        if proof['repeat']['exit_code'] == 0:
+            again = json.loads(proof['repeat']['stdout'])
+            assert again['already_attempted'] and all(again[k] == first[k] for k in ['message', 'queued_start', 'turn'])
+            proof['repeat_disposition'] = 'pending_intent'
+        else:
+            # Ordinary receipt reconciliation can retire the pending attempt
+            # before this second CLI process runs. Require its exact receipt;
+            # an arbitrary retry error is never acceptance evidence.
+            assert proof['repeat']['stderr'].strip() == 'Error: no retained native input to start', proof['repeat']
+            assert not proof['repeat']['stdout'] and proof['ledger_after_repeat']['attempt'] is None
+            delivered = proof['ledger_after_repeat']['completed']
+            assert len(delivered) == 3 and delivered[:2] == completed
+            assert delivered[-1]['message'] == message and delivered[-1]['receipt']['turn'] == first['turn']
+            proof['retired_preview'] = recover([])
+            assert proof['retired_preview']['exit_code'] == 0
+            assert json.loads(proof['retired_preview']['stdout'])['pending'] is None
+            proof['repeat_disposition'] = 'already_delivered'
         receipt = receiver.received(message)
         assert receipt['receipt']['turn'] == first['turn']
         assert receiver.ledger()['completed'] == completed + [receipt]
@@ -117,7 +132,7 @@ def exercise(mode, receiver, call, thread, held_text, recovery_text, held_model,
         wait(lambda: call('thread/read', {'threadId': thread, 'includeTurns': False})['thread']['status']['type'] == 'idle', 20)
         assert sum(r['recovery'] and not r['title'] for r in report['requests']) == 1
         proof['completed_after'] = receiver.ledger()['completed']
-        step('four invalid starts refuse and one explicit start with repeated confirmation preserves the original receipts', True)
+        step('four invalid starts refuse and retry preserves the pending intent or its completed exact receipt', True)
     proof['final_history'] = call('thread/items/list', {'threadId': thread, 'limit': 20, 'sortDirection': 'asc'})
     users = [item for item in proof['final_history']['data'] if item['item']['type'] == 'userMessage']
     assert len(users) == len(proof['completed_after'])

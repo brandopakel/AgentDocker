@@ -247,15 +247,18 @@ agentdocker codex-queue-resolve --agent <id> --message <message-id> \
 This starts the existing submission ID; it never adds a replacement input.
 The receiver checks the live generation, original content and queue head, absence
 of an existing receipt, and the daemon's ownership/provider-limit checks. It
-separately checks the current project's pause before persisting an intent and
-again after the journal write. Inbox visibility alone does not permit starting
-paused work: lifecycle notices must remain readable during a pause. A pause
+checks daemon admission and the current project's pause before persisting an
+intent and again after the journal write. Inbox visibility alone does not permit starting
+paused work: lifecycle notices must remain readable during a pause. A provider hold, ownership loss or pause
 observed after persistence retains the intent without sending to the provider.
 These are snapshots before transmission, not an atomic lock across daemon and
 provider; a later pause cannot retract an already transmitted start.
 The provider itself refuses a newly active or pending turn. A private version-6
 ledger persists one start intent before the journal write and provider call;
-repeating the same confirmation only reports that intent. Lost replies, refused
+while the entry remains pending, repeating the same confirmation only reports
+that intent. Once its ordinary receipt retires the pending entry, an old start
+request is refused because there is no retained input; the completed receipt
+remains delivery evidence. Lost replies, refused
 starts or interrupted journal writes leave it retained without an automatic
 retry or hook handoff. The ordinary exact provider receipt is still required
 before acknowledgement. A reply naming a turn is not a delivery receipt.
@@ -274,8 +277,17 @@ turn and interrupted held turn), one new model input and the same-intent retry.
 Both holds refused before intent and retained the two prior receipts. All
 recorded fixture generations retired, configurations were unchanged and private
 capabilities/scratch were removed. Source, archive, executable and driver hashes
-were independently checked. Full review, lost provider/journal replies, concurrent
-pause/limit races, actual accounts and physical input remain. Windows discarded
+were independently checked. Separate actual Mac journal-boundary trials at
+`3cd4fd47` retained the same intent, queue and original receipt without a new input
+when a committed journal response was discarded or a project pause arrived before
+that response. Retry after clearing the fault remained read-only. A provider-rate
+hold injected at that boundary exposed a missing admission recheck; the receiver
+now checks admission again after journaling, with fresh acceptance pending. A
+Windows repeat reached recovery after its exact receipt had retired the attempt;
+the fixture now accepts that outcome only with the matching completed receipt,
+empty preview and no additional input. Original failed trials remain indexed.
+Full review, lost provider replies, broader concurrent pause/limit races, actual
+accounts and physical input remain. Windows discarded
 client replies are not covered, and these trials do not establish automatic
 crash/reopen recovery.
 

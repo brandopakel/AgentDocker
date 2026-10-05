@@ -253,6 +253,25 @@ class WindowsDesktopPackaging(unittest.TestCase):
             with self.assertRaises(ValueError):
                 SMOKE.validate_queue_recovery_report(invalid, self.manifest, "holds")
 
+    def test_completed_recovery_retry_requires_exact_receipt_and_empty_preview(self):
+        native = self.queued_recovery_report("normal")
+        proof = native["queued_recovery"]
+        proof.update(repeat_disposition="already_delivered",
+                     repeat={"exit_code": 1, "stdout": "", "stderr": "Error: no retained native input to start\n"},
+                     ledger_after_repeat={"completed": copy.deepcopy(proof["completed_after"]), "attempt": None},
+                     retired_preview={"exit_code": 0, "stdout": '{"pending":null}'})
+        SMOKE.validate_queue_recovery_report(native, self.manifest, "normal")
+        for change in (lambda p: p["repeat"].update(stderr="Error: daemon unavailable"),
+                       lambda p: p["ledger_after_repeat"]["completed"][-1].update(message="other"),
+                       lambda p: p["ledger_after_repeat"].update(attempt={"message": "2"}),
+                       lambda p: p["ledger_after_repeat"].pop("attempt"),
+                       lambda p: p["retired_preview"].update(stdout='{"pending":{"message":"2"}}'),
+                       lambda p: p["retired_preview"].update(stdout='{}'),
+                       lambda p: p.update(repeat_disposition="pending_intent")):
+            invalid = copy.deepcopy(native); change(invalid["queued_recovery"])
+            with self.assertRaises(ValueError):
+                SMOKE.validate_queue_recovery_report(invalid, self.manifest, "normal")
+
     def build(self):
         info = PACKAGE.package(self.args)
         return info, self.output / next(iter(info["artifacts"]))

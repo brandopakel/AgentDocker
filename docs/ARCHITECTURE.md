@@ -1829,12 +1829,15 @@ cause a resubmission or resume the TUI.
 Explicit native queued-entry recovery persists one version-6 start intent before
 journaling and starting the existing submission ID. Only an ordinary exact
 provider receipt acknowledges input; a start response does not. Recovery checks
-project pause separately before persistence and again after journaling because
+daemon ownership, uncertainty and provider limits before persistence and again
+after journaling. It separately checks project pause at both boundaries because
 `provider_inbox` intentionally keeps lifecycle messages visible during pause. A
-new pause observed after persistence leaves the intent retained without provider
+new hold or loss of admission observed after persistence leaves the intent retained without provider
 transmission or automatic retry. These cross-process checks are snapshots, not
 an atomic pause lock on the provider. Read-only retries can report an existing
-intent while paused, but cannot start it again.
+intent while paused, but cannot start it again. Once the ordinary receipt retires
+the pending attempt, a repeated start is refused; the retained completed receipt
+is its delivery evidence.
 
 The native receiver's optional authenticated WebSocket transport attaches only
 to numeric IPv4 loopback after validating a private immutable server record.
