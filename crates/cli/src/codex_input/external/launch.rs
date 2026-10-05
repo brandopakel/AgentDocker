@@ -60,6 +60,11 @@ fn command(program: &Path, cwd: &Path, profile: &Path, home: &Path, client: &Cli
         .env_remove("AGENTDOCKER_AGENT_ID")
         .env_remove(lifetime::ENV)
         .kill_on_drop(true);
+    // A provider's later MCP/hook reconnect must not start a shared daemon
+    // inside the Windows owner's job. Initial startup happens before admission;
+    // later daemon recovery belongs to its service or an outside client.
+    #[cfg(windows)]
+    command.env("AGENTDOCKER_NO_AUTOSTART", "1");
     command
 }
 
@@ -439,19 +444,26 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         .canonicalize()?;
     let options = provider_input::codex_arguments(&args.arguments)?;
     crate::codex_input::call(&client, Request::Ping).await?;
+    // Any daemon autostart must precede Windows job admission: the shared
+    // daemon belongs to the desktop session, not this native provider owner.
+    #[cfg(windows)]
+    lifetime::contain_owner_until_process_exit()
+        .context("cannot contain native lifetime owner processes")?;
     let home = dirs::home();
-    let parent = home.join("codex-native");
-    dirs::ensure_private_dir(&parent)?;
-    let directory = parent.join(uuid::Uuid::new_v4().simple().to_string());
-    dirs::ensure_private_dir(&directory)?;
-    let directory = directory.canonicalize()?;
+    let directory = owner.directory.clone();
     let token = uuid::Uuid::new_v4().simple().to_string();
     // Own cleanup before the first fallible write/spawn. A startup failure must
     // not leave the capability behind before the normal shutdown path exists.
     let capability_path = tempfile::TempPath::try_from_path(directory.join("capability"))?;
+    #[cfg(unix)]
     let mut capability = dirs::create_private_file(&capability_path)?;
+    // Console closure can terminate both cleanup processes before Rust Drop.
+    // Retain a non-inheritable kernel deletion handle until this owner exits.
+    #[cfg(windows)]
+    let mut capability = dirs::create_private_delete_on_close_file(&capability_path)?;
     capability.write_all(token.as_bytes())?;
     capability.sync_all()?;
+    #[cfg(unix)]
     drop(capability);
     let port = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?
         .local_addr()?
@@ -495,7 +507,7 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
     };
     let result = tokio::select! {
         _ = stop_signal() => Ok(()),
-        result = lifetime::disconnected(&mut owner) => result,
+        result = lifetime::disconnected(&mut owner.stream) => result,
         result = async {
             let mut binding = startup.witness(&mut server,&mut tui).await?;
             let prior = if resume.is_some() {
@@ -534,7 +546,20 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
             .and_then(|r| r),
     );
     // Retain bounded private diagnostics/record; revoke the dead server capability.
-    cleanup = cleanup.and(capability_path.close().map_err(Into::into));
+    #[cfg(windows)]
+    drop(capability);
+    cleanup = cleanup.and(
+        capability_path
+            .close()
+            .or_else(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(Into::into),
+    );
     result.and(cleanup)
 }
 
