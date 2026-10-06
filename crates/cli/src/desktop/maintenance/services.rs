@@ -1,7 +1,14 @@
-//! Read-only manager inventory complements on-disk service definitions.
-//! Keep conservative whole-store protection until exact executable references
-//! and legacy registration races can be proved independently.
+//! Exact explicit references from recognized persisted and cached services.
+//! Ambiguous definitions or manager settings conservatively retain the store.
 use super::*;
+mod references;
+pub(super) use references::References;
+#[cfg(not(windows))]
+mod definition;
+#[cfg(not(windows))]
+mod launchd;
+#[cfg(not(windows))]
+mod systemd;
 
 const DAEMON_LABEL: &str = crate::service::LABEL;
 const CONNECTOR_LABEL: &str = crate::connector::service::LABEL;
@@ -20,39 +27,25 @@ fn query(argv: &[String]) -> Result<String> {
     Ok(output.stdout)
 }
 
-pub(super) fn manager_references() -> Result<bool> {
-    if cfg!(target_os = "macos") {
-        let uid = crate::service::current_uid_for_service();
-        for kind in ["gui", "user"] {
-            let domain = format!("{kind}/{uid}");
-            let text = query(&["/bin/launchctl".into(), "print".into(), domain.clone()])?;
-            if launchd_references(&domain, &text)? {
-                return Ok(true);
-            }
+pub(super) fn inventory(layout: &Layout) -> Result<References> {
+    let mut homes = vec![layout.prefix.clone()];
+    if let Some(home) = std::env::home_dir() {
+        homes.push(home);
+    }
+    #[cfg(not(windows))]
+    {
+        if cfg!(target_os = "macos") {
+            launchd::inventory(layout, &homes)
+        } else if cfg!(target_os = "linux") {
+            systemd::inventory(layout, &homes)
+        } else {
+            bail!("user service inventory is unavailable; installation preserved")
         }
-        Ok(false)
-    } else if cfg!(target_os = "linux") {
-        for method in ["ListUnits", "ListUnitFiles"] {
-            let text = query(
-                &[
-                    "busctl",
-                    "--user",
-                    "--json=short",
-                    "call",
-                    "org.freedesktop.systemd1",
-                    "/org/freedesktop/systemd1",
-                    "org.freedesktop.systemd1.Manager",
-                    method,
-                ]
-                .map(str::to_owned),
-            )?;
-            if systemd_references(method, &text)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    } else {
-        bail!("user service inventory is unavailable; installation preserved")
+    }
+    #[cfg(windows)]
+    {
+        let _ = homes;
+        bail!("Unix service inventory is unavailable")
     }
 }
 

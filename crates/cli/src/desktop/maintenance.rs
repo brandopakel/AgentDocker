@@ -79,11 +79,11 @@ fn checked_version(layout: &Layout, directory: &Path) -> Result<u32> {
         .unwrap_or(0))
 }
 
-fn plan(
+fn plan<T: Into<services::References>>(
     layout: &Layout,
     keep: Option<usize>,
     applying: bool,
-    inspect_services: impl FnOnce() -> Result<bool>,
+    inspect_services: impl FnOnce() -> Result<T>,
 ) -> Result<(Plan, installation::VersionInventoryGuard)> {
     layout.preflight()?;
     let active = layout.active()?;
@@ -96,8 +96,9 @@ fn plan(
     };
     let pins = installation::VersionInventoryGuard::default();
     let Some(keep) = keep else {
+        let references: services::References = inspect_services()?.into();
         ensure!(
-            !inspect_services()?,
+            !references.any,
             "a daemon or connector user service is installed; remove its registration before removing desktop launchers"
         );
         for (path, _) in layout.links() {
@@ -157,7 +158,7 @@ fn plan(
         })
         .collect();
     let pins = installation::reserve_versions_for_inventory(&layout.root, &candidates, applying)?;
-    let service_installed = inspect_services()?;
+    let service_references: services::References = inspect_services()?.into();
     for entry in directories {
         let path = entry.path();
         let id = entry.file_name().to_string_lossy().into_owned();
@@ -168,7 +169,7 @@ fn plan(
             Some("active or rollback version")
         } else if launcher.as_deref() == Some(&id) {
             Some("visible application supplies the managed launcher")
-        } else if service_installed {
+        } else if service_references.retains(&id) {
             Some("installed user service may reference retained binaries")
         } else if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
             Some("unrecognized directory; preserved")
@@ -226,14 +227,11 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
     Ok(())
 }
 
-fn service_installed(layout: &Layout) -> Result<bool> {
-    let mut homes = vec![layout.prefix.clone()];
-    if let Some(home) = std::env::home_dir() {
-        homes.push(home);
-    }
-    service_installed_in(&homes, services::manager_references)
+fn service_installed(layout: &Layout) -> Result<services::References> {
+    services::inventory(layout)
 }
 
+#[cfg(test)]
 fn service_installed_in(
     homes: &[PathBuf],
     manager_references: impl FnOnce() -> Result<bool>,
@@ -290,9 +288,9 @@ pub(super) fn after_activation(layout: &Layout, _install_lock: &lock::Lock) -> s
     }
 }
 
-fn prune_activated(
+fn prune_activated<T: Into<services::References>>(
     layout: &Layout,
-    service: impl FnOnce() -> Result<bool>,
+    service: impl FnOnce() -> Result<T>,
 ) -> Result<(usize, usize)> {
     let (plan, _pins) = plan(layout, Some(0), true, service)?;
     if !plan.remove.is_empty() {
@@ -429,6 +427,40 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn exact_stopped_service_keeps_only_its_version_through_unrelated_deletion() {
+        let (_temp, layout) = fixture();
+        let needed = retained(&layout, "stopped-service", 1);
+        let unrelated = retained(&layout, "unused-version", 1);
+        let current = retained(&layout, "active", 1);
+        layout.activate(current, None).unwrap();
+        let selected = layout
+            .payload(&needed)
+            .join(layout.binary_subdir())
+            .join("agentd");
+        let (review, reservations) = plan(&layout, Some(0), true, || {
+            let mut refs = services::References::default();
+            refs.include(&layout.root, &selected)?;
+            Ok(refs)
+        })
+        .unwrap();
+        assert_eq!(
+            review.remove,
+            [layout.root.join("versions").join(&unrelated.id)]
+        );
+        assert!(
+            lock::try_shared(&installation::pin_path(&layout.root, &unrelated.id).unwrap())
+                .unwrap()
+                .is_none()
+        );
+        apply(&layout, &review).unwrap();
+        assert!(selected.is_file());
+        assert!(!layout.payload(&unrelated).exists());
+        drop(reservations);
+        let (next, _) = plan(&layout, Some(0), false, || Ok(false)).unwrap();
+        assert_eq!(next.remove, [layout.root.join("versions").join(&needed.id)]);
     }
 
     #[test]
