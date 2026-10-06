@@ -22,6 +22,8 @@ use crate::format;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod windows;
 
+pub(crate) mod systemd;
+
 pub(crate) const LABEL: &str = "dev.agentdocker.agentd";
 /// How long `daemon reload` waits for a mutation that is still executing
 /// before giving the refusal to the user.
@@ -278,7 +280,7 @@ pub fn launchd_plist(layout: &Layout) -> String {
 
 /// A systemd user unit with the same policy.
 pub fn systemd_unit(layout: &Layout) -> String {
-    let exec: Vec<String> = layout.argv().iter().map(|a| systemd_quote(a)).collect();
+    let exec = systemd::command(&layout.argv());
     format!(
         "[Unit]\n\
          Description=AgentDocker daemon\n\
@@ -292,7 +294,7 @@ pub fn systemd_unit(layout: &Layout) -> String {
          \n\
          [Install]\n\
          WantedBy=default.target\n",
-        exec.join(" ")
+        exec
     )
 }
 
@@ -300,16 +302,6 @@ fn xml(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
-}
-
-fn systemd_quote(s: &str) -> String {
-    if s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || "/-._=:".contains(c))
-    {
-        s.to_owned()
-    } else {
-        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-    }
 }
 
 // ----- plans -------------------------------------------------------------
@@ -1049,10 +1041,20 @@ mod tests {
     }
 
     #[test]
+    fn systemd_service_paths_remain_literal_and_cannot_add_directives() {
+        let mut odd = layout();
+        odd.agentd = PathBuf::from("/path %h ${HOME}/agentd");
+        odd.home = PathBuf::from("/state %h ${HOME}\nRestart=no");
+        let unit = systemd_unit(&odd);
+        assert!(unit.contains("ExecStart=\":/path %%h ${HOME}/agentd\" --home \"/state %%h ${HOME}\\nRestart=no\"\n"), "{unit}");
+        assert!(!unit.lines().any(|line| line == "Restart=no"));
+    }
+
+    #[test]
     fn unit_quotes_only_what_needs_it() {
         let text = systemd_unit(&layout());
         assert!(
-            text.contains("ExecStart=/opt/agentdocker/bin/agentd --home /Users/me/.agentdocker\n")
+            text.contains("ExecStart=:/opt/agentdocker/bin/agentd --home /Users/me/.agentdocker\n")
         );
         assert!(text.contains("Restart=on-failure"));
         assert!(text.contains("WantedBy=default.target"));

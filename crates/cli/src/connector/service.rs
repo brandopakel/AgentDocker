@@ -152,17 +152,6 @@ fn xml(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-#[cfg(any(not(windows), test))]
-fn systemd_quote(s: &str) -> String {
-    if s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || "/-._=:@".contains(c))
-    {
-        s.to_owned()
-    } else {
-        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-    }
-}
-
 /// A launchd agent: starts at login, restarts after a crash, not after a
 /// clean exit; its output is the serve log, which holds the banner and
 /// so the pairing code.
@@ -214,7 +203,7 @@ pub fn launchd_plist(layout: &Layout) -> String {
 
 #[cfg(any(not(windows), test))]
 pub fn systemd_unit(layout: &Layout) -> String {
-    let exec: Vec<String> = layout.argv().iter().map(|a| systemd_quote(a)).collect();
+    let exec = crate::service::systemd::command(&layout.argv());
     format!(
         "[Unit]\n\
          Description=AgentDocker remote connector\n\
@@ -224,14 +213,14 @@ pub fn systemd_unit(layout: &Layout) -> String {
          ExecStart={}\n\
          Restart=on-failure\n\
          RestartSec=2\n\
-         Environment=AGENTDOCKER_HOME={}\n\
-         Environment=PATH={}\n\
+         Environment={}\n\
+         Environment={}\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",
-        exec.join(" "),
-        systemd_quote(&layout.home.to_string_lossy()),
-        systemd_quote(&layout.path_value()),
+        exec,
+        crate::service::systemd::quote(&format!("AGENTDOCKER_HOME={}", layout.home.display())),
+        crate::service::systemd::quote(&format!("PATH={}", layout.path_value())),
     )
 }
 
@@ -773,6 +762,26 @@ mod tests {
     }
 
     #[test]
+    fn systemd_connector_paths_preserve_expansion_characters_and_line_boundaries() {
+        let mut odd = layout();
+        odd.home = PathBuf::from("/state %h ${HOME}\nRestart=no");
+        odd.serve_args = vec![
+            "--project".into(),
+            "/project %h ${HOME}\nExecStart=no".into(),
+        ];
+        let unit = systemd_unit(&odd);
+        assert!(unit.contains("--project \"/project %%h ${HOME}\\nExecStart=no\"\n"));
+        assert!(
+            unit.contains("Environment=\"AGENTDOCKER_HOME=/state %%h ${HOME}\\nRestart=no\"\n")
+        );
+        assert!(
+            !unit
+                .lines()
+                .any(|line| line == "Restart=no" || line == "ExecStart=no")
+        );
+    }
+
+    #[test]
     fn the_service_definitions_carry_the_serve_arguments_home_and_path() {
         let layout = layout();
         let plist = launchd_plist(&layout);
@@ -784,7 +793,7 @@ mod tests {
         assert!(plist.contains("<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>"));
         assert!(plist.contains("<string>/Users/p/.agentdocker/connector/serve.log</string>"));
         let unit = systemd_unit(&layout);
-        assert!(unit.contains("ExecStart=/opt/agentdocker connector serve --tunnel cloudflared --project /Users/p/keel --allow-from anthropic\n"));
+        assert!(unit.contains("ExecStart=:/opt/agentdocker connector serve --tunnel cloudflared --project /Users/p/keel --allow-from anthropic\n"));
         assert!(unit.contains("Environment=AGENTDOCKER_HOME=/Users/p/.agentdocker\n"));
         assert!(unit.contains("Restart=on-failure"));
         let install = install_plan(&layout, true);

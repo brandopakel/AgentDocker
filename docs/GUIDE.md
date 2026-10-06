@@ -86,6 +86,8 @@ agentdocker daemon install    # launchd, systemd user unit, or Windows login tas
 agentdocker daemon status     # what is running, and where
 ```
 
+Linux service definitions preserve spaces, dollar signs and percent characters in selected paths.
+
 On macOS, installation registers the launchd definition and explicitly requests
 an immediate start, just as `daemon start` does. A GUI domain in on-demand-only
 mode can leave automatic starts or crash recovery pending; explicit startup
