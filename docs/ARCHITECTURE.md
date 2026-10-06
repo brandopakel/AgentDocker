@@ -858,6 +858,12 @@ registrations: launchd GUI/user domain services, and systemd's typed loaded-unit
 and unit-file inventories. A removed definition does not erase a cached service
 reference. Unavailable or unrecognized manager output preserves the installation;
 queries are bounded and never include service arguments/environment in errors.
+Windows task inspection recognizes only the exact encoded daemon and connector
+scripts emitted by the shared registration renderers, using literal extraction
+and byte-for-byte reconstruction without executing task content. It verifies
+the PowerShell executable and checks both literal and resolvable path spellings.
+Opaque wrappers, altered scripts, other executables and malformed encodings
+preserve the installation even when no store path appears in the action text.
 Service registration and desktop maintenance share a permanent owner-only
 `services.lock` in each affected managed store. Registration acquires store
 guards in path order and pins both the calling CLI and a separately selected

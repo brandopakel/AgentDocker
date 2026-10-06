@@ -94,12 +94,6 @@ fn desired(layout: &Layout, previous: Option<&Receipt>) -> Result<Definition> {
         },
         |receipt| receipt.current.description.clone(),
     );
-    let args = layout
-        .serve_args
-        .iter()
-        .map(|arg| scheduler::quoted(arg))
-        .collect::<Vec<_>>()
-        .join(" ");
     let endpoint = layout
         .socket
         .clone()
@@ -113,23 +107,20 @@ fn desired(layout: &Layout, previous: Option<&Receipt>) -> Result<Definition> {
     // Scheduler's RestartOnFailure did not recover the actual crash trial.
     // A clean service shutdown stays stopped; three failures are retried, with
     // a stable ten-minute run resetting the budget, as for the daemon service.
-    let script = format!(
-        "$ErrorActionPreference='Stop';$env:AGENTDOCKER_HOME={};$env:AGENTDOCKER_NO_AUTOSTART='1';Remove-Item Env:AGENTDOCKER_AGENT_ID,Env:AGENTDOCKER_AGENT_NAME,Env:AGENTDOCKER_SOCKET,Env:AGENTDOCKER_TOKEN_FILE -ErrorAction SilentlyContinue; $ErrorActionPreference='Continue'; $restarts=0; while($true){{$began=[DateTime]::UtcNow;$LASTEXITCODE=$null; & {} --socket {} connector service-run --owner {} {args} *> {}; $code=$LASTEXITCODE; if($null -eq $code){{exit 1}}; if($code -eq 0){{exit 0}}; if(([DateTime]::UtcNow-$began).TotalSeconds -ge 600){{$restarts=0}}; if($restarts -ge 3){{exit $code}}; $restarts++; Start-Sleep -Seconds 2}}",
-        scheduler::quoted(&layout.home.to_string_lossy()),
-        scheduler::quoted(&controller.to_string_lossy()),
-        scheduler::quoted(&endpoint.to_string_lossy()),
-        scheduler::quoted(&owner),
-        scheduler::quoted(&layout.log().to_string_lossy()),
+    let script = scheduler::actions::connector(
+        &layout.home.to_string_lossy(),
+        &controller.to_string_lossy(),
+        &endpoint.to_string_lossy(),
+        &owner,
+        &layout.serve_args,
+        &layout.log().to_string_lossy(),
     );
     Ok(Definition {
         task: task_name(&layout.home),
         home: layout.home.clone(),
         description: owner,
         executable: scheduler::powershell()?,
-        arguments: format!(
-            "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand {}",
-            scheduler::encoded(&script)
-        ),
+        arguments: scheduler::actions::arguments(&script),
     })
 }
 
