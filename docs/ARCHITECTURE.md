@@ -878,7 +878,8 @@ Dry-run registration creates no guard, and maintenance preview opens only an
 existing one. Unix inventory recognizes exact emitted service definitions and
 compares cached manager arguments and environment before selecting named
 versions. It validates the selected executable's immutable payload, including
-recognized services in other installation prefixes, then retains explicit
+recognized services in other installation prefixes without interpreting their
+launcher-placement settings, then retains explicit
 program, tunnel, project/feed, state/log, working-directory and environment
 paths with both literal and physical alias dependencies. Unknown definitions,
 missing fragments, overrides, unknown environment settings and unavailable or

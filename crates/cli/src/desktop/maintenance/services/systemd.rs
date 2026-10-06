@@ -206,6 +206,10 @@ pub(super) fn inventory(layout: &Layout, homes: &[PathBuf]) -> Result<References
             }
         }
     }
+    ensure!(
+        files.len() <= 8 && loaded.len() <= 2,
+        "ambiguous service inventory"
+    );
     if files.is_empty() && loaded.is_empty() {
         return Ok(References::default());
     }

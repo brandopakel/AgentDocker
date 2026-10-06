@@ -106,14 +106,8 @@ pub(super) fn known_program(
     );
     if !verified.contains(&version) {
         let root = versions.parent().context("missing service store")?;
-        let prefix = root
-            .ancestors()
-            .nth(4)
-            .context("missing installation prefix")?;
-        let layout = Layout::new(prefix.to_owned())?;
         ensure!(
-            layout.root == root
-                && super::super::checked_version(&layout, &version)? == installation::LOCK_FORMAT,
+            super::super::checked_version_at(root, &version)? == installation::LOCK_FORMAT,
             "unrecognized service payload"
         );
         verified.insert(version);
@@ -190,6 +184,52 @@ mod tests {
         refs.include(&root, &root.join("versions/unknown/data"))
             .unwrap();
         assert!(refs.retains(&"c".repeat(64)));
+    }
+
+    #[test]
+    fn foreign_payload_validation_does_not_resolve_its_unrelated_launcher() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join(".local/share/agentdocker/desktop");
+        let staging = root.join("versions").join("a".repeat(64));
+        let payload = staging.join(if cfg!(target_os = "macos") {
+            "AgentDocker.app"
+        } else {
+            "agentdocker-desktop"
+        });
+        let bin = payload.join(if cfg!(target_os = "macos") {
+            "Contents/MacOS/agentd"
+        } else {
+            "bin/agentd"
+        });
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "fixture executable").unwrap();
+        let metadata = payload.join(if cfg!(target_os = "macos") {
+            "Contents/Resources/build.json"
+        } else {
+            "build.json"
+        });
+        std::fs::create_dir_all(metadata.parent().unwrap()).unwrap();
+        std::fs::write(
+            metadata,
+            json!({"format":1,"product":"agentdocker","installation_lock":1}).to_string(),
+        )
+        .unwrap();
+        let id = tree_hash(&payload).unwrap();
+        let version = root.join("versions").join(id);
+        std::fs::rename(&staging, &version).unwrap();
+        std::fs::write(
+            root.join("launcher.json"),
+            json!({"format":1,"application":"/unrelated/launcher.app"}).to_string(),
+        )
+        .unwrap();
+        let program = version.join(bin.strip_prefix(&staging).unwrap());
+        known_program(&program, "agentd", &mut BTreeSet::new()).unwrap();
+        std::fs::write(&program, "modified executable").unwrap();
+        assert!(known_program(&program, "agentd", &mut BTreeSet::new()).is_err());
     }
 
     #[test]

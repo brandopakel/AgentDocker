@@ -31,11 +31,15 @@ impl Plan {
 /// Validating an inactive payload uses its recorded content identity, not a
 /// new signing/notarization decision. Changed or unrecognized files stay put.
 fn checked_version(layout: &Layout, directory: &Path) -> Result<u32> {
+    checked_version_at(&layout.root, directory)
+}
+
+fn checked_version_at(root: &Path, directory: &Path) -> Result<u32> {
     let id = directory
         .file_name()
         .and_then(|n| n.to_str())
         .context("invalid release name")?;
-    installation::pin_path(&layout.root, id)?;
+    installation::pin_path(root, id)?;
     ensure!(
         directory.symlink_metadata()?.is_dir(),
         "release directory is not a regular directory"
