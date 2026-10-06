@@ -195,6 +195,56 @@ pub fn service_inventory_guard(root: &Path, create: bool) -> io::Result<Option<l
         })
 }
 
+/// Candidate-version pins held before reading service registrations.
+///
+/// A legacy registrar may hold only its executable's lifetime pin, without
+/// taking services.lock. Remember that version as busy even if the registrar
+/// publishes a service and exits during the subsequent inventory query.
+#[derive(Default)]
+pub struct VersionInventoryGuard {
+    busy: BTreeSet<String>,
+    _pins: Vec<lock::Lock>,
+}
+
+impl VersionInventoryGuard {
+    pub fn is_busy(&self, version: &str) -> bool {
+        self.busy.contains(version)
+    }
+}
+
+/// Reserve inactive candidates before inspecting persisted/loaded services.
+/// Hold the result through deletion. Preview opens existing permanent pins
+/// only; apply creates missing pins and must recompute its service inventory.
+pub fn reserve_versions_for_inventory(
+    root: &Path,
+    versions: &[String],
+    applying: bool,
+) -> io::Result<VersionInventoryGuard> {
+    let mut result = VersionInventoryGuard::default();
+    if applying && !versions.is_empty() {
+        dirs::secure_state_dir(&root.join("pins"))?;
+    }
+    for version in versions {
+        let path = pin_path(root, version)?;
+        if applying {
+            dirs::private_file(&path, true, false)?;
+        } else {
+            match path.symlink_metadata() {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        match lock::try_exclusive_existing(&path)? {
+            Some(pin) => result._pins.push(pin),
+            None => {
+                result.busy.insert(version.clone());
+            }
+        }
+    }
+    Ok(result)
+}
+
 /// Locate only our versioned layout. An ordinary checkout/package is unpinned.
 #[cfg(not(windows))]
 fn managed(executable: &Path) -> Option<(PathBuf, PathBuf, &str)> {

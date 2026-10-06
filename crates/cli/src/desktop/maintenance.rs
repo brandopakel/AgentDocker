@@ -83,8 +83,8 @@ fn plan(
     layout: &Layout,
     keep: Option<usize>,
     applying: bool,
-    service_installed: bool,
-) -> Result<(Plan, Vec<lock::Lock>)> {
+    inspect_services: impl FnOnce() -> Result<bool>,
+) -> Result<(Plan, installation::VersionInventoryGuard)> {
     layout.preflight()?;
     let active = layout.active()?;
     let mut plan = Plan {
@@ -94,10 +94,10 @@ fn plan(
         retained: Vec::new(),
         keep,
     };
-    let mut pins = Vec::new();
+    let pins = installation::VersionInventoryGuard::default();
     let Some(keep) = keep else {
         ensure!(
-            !service_installed,
+            !inspect_services()?,
             "a daemon or connector user service is installed; remove its registration before removing desktop launchers"
         );
         for (path, _) in layout.links() {
@@ -142,6 +142,22 @@ fn plan(
     });
     let mut extra = 0;
     let launcher = layout.copied_launcher_version()?;
+    let protected = |id: &str| {
+        active
+            .as_ref()
+            .is_some_and(|a| a.current.id == id || a.previous.as_ref().is_some_and(|p| p.id == id))
+            || launcher.as_deref() == Some(id)
+    };
+    let candidates: Vec<_> = directories
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.file_name().to_str()?.to_owned();
+            (id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()) && !protected(&id))
+                .then_some(id)
+        })
+        .collect();
+    let pins = installation::reserve_versions_for_inventory(&layout.root, &candidates, applying)?;
+    let service_installed = inspect_services()?;
     for entry in directories {
         let path = entry.path();
         let id = entry.file_name().to_string_lossy().into_owned();
@@ -161,27 +177,11 @@ fn plan(
         } else if extra < keep {
             extra += 1;
             Some("additional retained version")
+        } else if pins.is_busy(&id) {
+            Some("running process uses this version")
         } else {
-            let pin = installation::pin_path(&layout.root, &id)?;
-            if applying {
-                dirs::secure_state_dir(&layout.root.join("pins"))?;
-                dirs::private_file(&pin, true, false)?;
-            }
-            // Pin files are permanent. A preview never creates a missing pin.
-            let held = if pin.exists() {
-                lock::try_exclusive_existing(&pin)?
-            } else {
-                None
-            };
-            if pin.exists() && held.is_none() {
-                Some("running process uses this version")
-            } else {
-                if applying && let Some(held) = held {
-                    pins.push(held);
-                }
-                plan.remove.push(path.clone());
-                None
-            }
+            plan.remove.push(path.clone());
+            None
         };
         if let Some(reason) = reason {
             plan.retained.push(Entry { path, reason });
@@ -274,7 +274,7 @@ fn service_installed_in(
 pub(super) fn after_activation(layout: &Layout, _install_lock: &lock::Lock) -> serde_json::Value {
     let result = (|| {
         let _services = installation::service_inventory_guard(&layout.root, true)?;
-        service_installed(layout).and_then(|service| prune_activated(layout, service))
+        prune_activated(layout, || service_installed(layout))
     })();
     match result {
         Ok((removed, retained)) => json!({
@@ -290,7 +290,10 @@ pub(super) fn after_activation(layout: &Layout, _install_lock: &lock::Lock) -> s
     }
 }
 
-fn prune_activated(layout: &Layout, service: bool) -> Result<(usize, usize)> {
+fn prune_activated(
+    layout: &Layout,
+    service: impl FnOnce() -> Result<bool>,
+) -> Result<(usize, usize)> {
     let (plan, _pins) = plan(layout, Some(0), true, service)?;
     if !plan.remove.is_empty() {
         apply(layout, &plan)?;
@@ -318,7 +321,7 @@ pub(super) fn run(
     };
     layout.preflight()?;
     let _services = installation::service_inventory_guard(&layout.root, !preview)?;
-    let (plan, _pins) = plan(layout, keep, !preview, service_installed(layout)?)?;
+    let (plan, _pins) = plan(layout, keep, !preview, || service_installed(layout))?;
     let id = plan.id()?;
     if let Some(expected) = expected {
         ensure!(id == expected, "maintenance plan changed; review again");
@@ -387,7 +390,7 @@ mod tests {
         let pinned = lock::try_shared(&installation::pin_path(&layout.root, &busy.id).unwrap())
             .unwrap()
             .unwrap();
-        let (review, _) = plan(&layout, Some(0), false, false).unwrap();
+        let (review, _) = plan(&layout, Some(0), false, || Ok(false)).unwrap();
         assert_eq!(review.remove, [layout.root.join("versions").join(&old.id)]);
         assert_eq!(review.retained.len(), 4);
         assert!(
@@ -396,7 +399,7 @@ mod tests {
                 .exists(),
             "preview must not create pins"
         );
-        let (action, locks) = plan(&layout, Some(0), true, false).unwrap();
+        let (action, locks) = plan(&layout, Some(0), true, || Ok(false)).unwrap();
         assert_eq!(review.id().unwrap(), action.id().unwrap());
         apply(&layout, &action).unwrap();
         drop(locks);
@@ -415,7 +418,7 @@ mod tests {
         // tests do, while still requiring precisely the former busy version.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            let (next, _) = plan(&layout, Some(0), false, false).unwrap();
+            let (next, _) = plan(&layout, Some(0), false, || Ok(false)).unwrap();
             if !next.remove.is_empty() {
                 assert_eq!(next.remove, [layout.root.join("versions").join(&busy.id)]);
                 break;
@@ -447,7 +450,7 @@ mod tests {
         for n in 0..12 {
             let current = retained(&layout, &format!("release-{n}"), 1);
             layout.activate(current.clone(), previous.clone()).unwrap();
-            let (removed, kept) = prune_activated(&layout, false).unwrap();
+            let (removed, kept) = prune_activated(&layout, || Ok(false)).unwrap();
             assert_eq!(removed, usize::from(n >= 2));
             assert_eq!(kept, if n == 0 { 4 } else { 5 });
             assert!(layout.payload(&current).exists());
@@ -480,12 +483,12 @@ mod tests {
         let _install = lock::try_exclusive(&layout.root.join("install.lock"))
             .unwrap()
             .unwrap();
-        assert_eq!(prune_activated(&layout, true).unwrap(), (0, 2));
+        assert_eq!(prune_activated(&layout, || Ok(true)).unwrap(), (0, 2));
         assert!(layout.payload(&old).exists());
 
         let changed = layout.payload(&old).join("user-file");
         std::fs::write(&changed, "preserve").unwrap();
-        assert!(prune_activated(&layout, false).is_err());
+        assert!(prune_activated(&layout, || Ok(false)).is_err());
         assert_eq!(layout.active().unwrap(), before);
         assert!(layout.payload(&current).exists());
         assert_eq!(std::fs::read_to_string(changed).unwrap(), "preserve");
@@ -511,13 +514,13 @@ mod tests {
             std::fs::write(&unit, "stopped fixture connector").unwrap();
             let service = service_installed_in(&homes, || panic!("file already protects")).unwrap();
             assert!(service);
-            assert_eq!(prune_activated(&layout, service).unwrap(), (0, 2));
+            assert_eq!(prune_activated(&layout, || Ok(service)).unwrap(), (0, 2));
             assert!(layout.payload(&old).exists());
-            assert!(plan(&layout, None, false, service).is_err());
+            assert!(plan(&layout, None, false, || Ok(service)).is_err());
             std::fs::remove_file(&unit).unwrap();
             assert!(!service_installed_in(&homes, || Ok(false)).unwrap());
         }
-        assert_eq!(prune_activated(&layout, false).unwrap(), (1, 1));
+        assert_eq!(prune_activated(&layout, || Ok(false)).unwrap(), (1, 1));
         assert!(!layout.payload(&old).exists());
     }
 
@@ -530,17 +533,79 @@ mod tests {
         let homes = [layout.prefix.clone()];
         assert!(!service_installed_in(&homes, || Ok(false)).unwrap());
         let loaded = service_installed_in(&homes, || Ok(true)).unwrap();
-        assert_eq!(prune_activated(&layout, loaded).unwrap(), (0, 2));
+        assert_eq!(prune_activated(&layout, || Ok(loaded)).unwrap(), (0, 2));
         assert!(layout.payload(&old).exists());
-        assert!(plan(&layout, None, false, loaded).is_err());
+        assert!(plan(&layout, None, false, || Ok(loaded)).is_err());
 
         // A failed query is neither an empty inventory nor permission to
         // delete. Only a positively empty manager releases the protection.
         assert!(service_installed_in(&homes, || bail!("manager unavailable")).is_err());
         assert!(layout.payload(&old).exists());
         let absent = service_installed_in(&homes, || Ok(false)).unwrap();
-        assert_eq!(prune_activated(&layout, absent).unwrap(), (1, 1));
+        assert_eq!(prune_activated(&layout, || Ok(absent)).unwrap(), (1, 1));
         assert!(!layout.payload(&old).exists());
+    }
+
+    #[test]
+    fn legacy_registrar_finishing_during_inventory_cannot_expose_its_build() {
+        let (_temp, layout) = fixture();
+        let old = retained(&layout, "legacy-registrar", 1);
+        let current = retained(&layout, "active", 1);
+        layout.activate(current, None).unwrap();
+        dirs::secure_state_dir(&layout.root.join("pins")).unwrap();
+        let registrar = lock::try_shared(&installation::pin_path(&layout.root, &old.id).unwrap())
+            .unwrap()
+            .unwrap();
+        let definition = layout.prefix.join(if cfg!(target_os = "macos") {
+            "Library/LaunchAgents/dev.agentdocker.agentd.plist"
+        } else {
+            ".config/systemd/user/agentd.service"
+        });
+        std::fs::create_dir_all(definition.parent().unwrap()).unwrap();
+        let homes = [layout.prefix.clone()];
+        let (review, pins) = plan(&layout, Some(0), true, || {
+            // The inventory sees absence, then the older registrar publishes
+            // and exits. Acquiring pins AFTER this read would miss both its
+            // registration and the shared pin it has now released.
+            let snapshot = service_installed_in(&homes, || Ok(false))?;
+            std::fs::write(&definition, "stopped legacy registration")?;
+            drop(registrar);
+            Ok(snapshot)
+        })
+        .unwrap();
+        assert!(pins.is_busy(&old.id));
+        assert!(review.remove.is_empty());
+        assert!(layout.payload(&old).exists());
+        drop(pins);
+        let (next, _) = plan(&layout, Some(0), true, || {
+            service_installed_in(&homes, || Ok(false))
+        })
+        .unwrap();
+        assert!(next.remove.is_empty());
+        assert!(next.retained.iter().any(|entry| entry.path
+            == layout.root.join("versions").join(&old.id)
+            && entry.reason == "installed user service may reference retained binaries"));
+    }
+
+    #[test]
+    fn inactive_build_is_reserved_before_service_inventory_until_deletion() {
+        let (_temp, layout) = fixture();
+        let old = retained(&layout, "inactive-service-candidate", 1);
+        let current = retained(&layout, "active", 1);
+        layout.activate(current, None).unwrap();
+        let pin = installation::pin_path(&layout.root, &old.id).unwrap();
+        let (action, pins) = plan(&layout, Some(0), true, || {
+            // A legacy process starting after reservation cannot obtain its
+            // lifetime pin and therefore cannot publish a new registration.
+            assert!(lock::try_shared(&pin)?.is_none());
+            Ok(false)
+        })
+        .unwrap();
+        assert_eq!(action.remove, [layout.root.join("versions").join(&old.id)]);
+        assert!(lock::try_shared(&pin).unwrap().is_none());
+        apply(&layout, &action).unwrap();
+        assert!(!layout.payload(&old).exists());
+        drop(pins);
     }
 
     #[cfg(target_os = "macos")]
@@ -557,14 +622,14 @@ mod tests {
             .activate(first.clone(), Some(modern.clone()))
             .unwrap();
         layout.activate(second, Some(first)).unwrap();
-        let (review, _) = plan(&layout, Some(0), false, false).unwrap();
+        let (review, _) = plan(&layout, Some(0), false, || Ok(false)).unwrap();
         assert!(review.remove.is_empty());
         assert!(review.retained.iter().any(|entry| entry.path
             == layout.root.join("versions").join(&modern.id)
             && entry.reason == "visible application supplies the managed launcher"));
-        let (removal, _) = plan(&layout, None, true, false).unwrap();
+        let (removal, _) = plan(&layout, None, true, || Ok(false)).unwrap();
         apply(&layout, &removal).unwrap();
-        let (review, _) = plan(&layout, Some(0), false, false).unwrap();
+        let (review, _) = plan(&layout, Some(0), false, || Ok(false)).unwrap();
         assert!(
             review
                 .remove
@@ -579,14 +644,14 @@ mod tests {
         layout.activate(release.clone(), None).unwrap();
         let settings = layout.prefix.join("provider-settings.json");
         std::fs::write(&settings, "keep settings").unwrap();
-        let (review, _) = plan(&layout, None, false, false).unwrap();
+        let (review, _) = plan(&layout, None, false, || Ok(false)).unwrap();
         assert!(layout.active().unwrap().is_some());
         apply(&layout, &review).unwrap();
         assert!(layout.active().unwrap().is_none());
         assert!(layout.payload(&release).exists());
         assert_eq!(std::fs::read_to_string(settings).unwrap(), "keep settings");
         assert!(
-            plan(&layout, None, false, false)
+            plan(&layout, None, false, || Ok(false))
                 .unwrap()
                 .0
                 .remove
@@ -635,11 +700,11 @@ mod tests {
         let (_temp, layout) = fixture();
         let release = retained(&layout, "changed", 1);
         std::fs::write(layout.payload(&release).join("foreign-file"), "preserve").unwrap();
-        assert!(plan(&layout, Some(0), false, false).is_err());
+        assert!(plan(&layout, Some(0), false, || Ok(false)).is_err());
         assert!(layout.payload(&release).join("foreign-file").exists());
         std::fs::create_dir_all(&layout.bin).unwrap();
         std::fs::write(layout.bin.join("agentdocker"), "foreign command").unwrap();
-        assert!(plan(&layout, None, false, false).is_err());
+        assert!(plan(&layout, None, false, || Ok(false)).is_err());
         assert_eq!(
             std::fs::read_to_string(layout.bin.join("agentdocker")).unwrap(),
             "foreign command"
@@ -653,15 +718,15 @@ mod tests {
         let second = retained(&layout, "second", 1);
         let old = retained(&layout, "old", 1);
         layout.activate(first.clone(), None).unwrap();
-        let (before, _) = plan(&layout, None, false, false).unwrap();
+        let (before, _) = plan(&layout, None, false, || Ok(false)).unwrap();
         layout.activate(second, Some(first)).unwrap();
-        let (after, _) = plan(&layout, None, false, false).unwrap();
+        let (after, _) = plan(&layout, None, false, || Ok(false)).unwrap();
         assert_ne!(before.id().unwrap(), after.id().unwrap());
-        assert!(plan(&layout, None, false, true).is_err());
-        let (prune, _) = plan(&layout, Some(0), false, true).unwrap();
+        assert!(plan(&layout, None, false, || Ok(true)).is_err());
+        let (prune, _) = plan(&layout, Some(0), false, || Ok(true)).unwrap();
         assert!(prune.remove.is_empty());
         assert!(layout.payload(&old).exists());
-        let (keep_extra, _) = plan(&layout, Some(1), false, false).unwrap();
+        let (keep_extra, _) = plan(&layout, Some(1), false, || Ok(false)).unwrap();
         assert!(keep_extra.remove.is_empty());
     }
 }

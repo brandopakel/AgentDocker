@@ -148,8 +148,8 @@ fn plan(
     layout: &Layout,
     keep: Option<usize>,
     applying: bool,
-    services: &ServiceReferences,
-) -> Result<(Plan, Vec<lock::Lock>)> {
+    inspect_services: impl FnOnce() -> Result<ServiceReferences>,
+) -> Result<(Plan, installation::VersionInventoryGuard)> {
     layout.preflight()?;
     let active = layout.active()?;
     let mut plan = Plan {
@@ -159,10 +159,10 @@ fn plan(
         retained: Vec::new(),
         keep,
     };
-    let mut pins = Vec::new();
+    let pins = installation::VersionInventoryGuard::default();
     let Some(keep) = keep else {
         ensure!(
-            !services.any,
+            !inspect_services()?.any,
             "a Windows service references this installation; uninstall its service registration first"
         );
         if present(&layout.bin)? {
@@ -196,6 +196,19 @@ fn plan(
         ))
     });
     let mut extra = 0;
+    let candidates: Vec<_> = entries
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.file_name().to_str()?.to_owned();
+            let protected = active.as_ref().is_some_and(|a| {
+                a.current.id == id || a.previous.as_ref().is_some_and(|p| p.id == id)
+            });
+            (id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()) && !protected)
+                .then_some(id)
+        })
+        .collect();
+    let pins = installation::reserve_versions_for_inventory(&layout.root, &candidates, applying)?;
+    let services = inspect_services()?;
     for entry in entries {
         let path = entry.path();
         let id = entry.file_name().to_string_lossy().into_owned();
@@ -211,26 +224,11 @@ fn plan(
         } else if extra < keep {
             extra += 1;
             Some("additional retained version")
+        } else if pins.is_busy(&id) {
+            Some("running process uses this version")
         } else {
-            let pin = installation::pin_path(&layout.root, &id)?;
-            if applying {
-                dirs::private_file(&pin, true, false)?;
-            }
-            let existed = present(&pin)?;
-            let held = if existed {
-                lock::try_exclusive_existing(&pin)?
-            } else {
-                None
-            };
-            if existed && held.is_none() {
-                Some("running process uses this version")
-            } else {
-                if applying {
-                    pins.push(held.context("release pin was not created")?);
-                }
-                plan.remove.push(path.clone());
-                None
-            }
+            plan.remove.push(path.clone());
+            None
         };
         if let Some(reason) = reason {
             plan.retained.push(Retained { path, reason });
@@ -305,8 +303,7 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
 pub(super) fn after_activation(layout: &Layout, _install: &lock::Lock) -> serde_json::Value {
     let result = (|| -> Result<(usize, usize)> {
         let _services = installation::service_inventory_guard(&layout.root, true)?;
-        let services = references(&layout.root)?;
-        let (plan, _pins) = plan(layout, Some(0), true, &services)?;
+        let (plan, _pins) = plan(layout, Some(0), true, || references(&layout.root))?;
         apply(layout, &plan)?;
         Ok((plan.remove.len(), plan.retained.len()))
     })();
@@ -332,8 +329,7 @@ pub(super) fn run(
         Some(layout.install_lock()?)
     };
     let _services = installation::service_inventory_guard(&layout.root, !preview)?;
-    let services = references(&layout.root)?;
-    let (plan, _pins) = plan(layout, keep, !preview, &services)?;
+    let (plan, _pins) = plan(layout, keep, !preview, || references(&layout.root))?;
     let id = plan.id()?;
     if let Some(expected) = expected {
         ensure!(id == expected, "maintenance plan changed; review again");

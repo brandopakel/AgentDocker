@@ -863,6 +863,11 @@ Service registration and desktop maintenance share a permanent owner-only
 guards in path order and pins both the calling CLI and a separately selected
 daemon through definition and manager publication. Maintenance holds its guard
 from service inventory through removal; contention refuses before mutation.
+Cleanup reserves candidate version pins before querying services and holds
+them through deletion. It remembers a busy version even when an older registrar
+publishes a service and exits during that query; versions pinned only after the
+query could otherwise lose both protections in that interval. Preview opens
+only existing version pins; apply creates missing pins and recomputes inventory.
 Dry-run registration creates no guard, and maintenance preview opens only an
 existing one. These checks do not yet select exact referenced versions or relax
 conservative retained-build protection; legacy registration races still need
