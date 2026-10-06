@@ -207,6 +207,32 @@ fn inline_tool_selection_never_replays_the_original_prompt_through_the_cli() {
 }
 
 #[test]
+fn a_recorded_conversation_option_is_refused_before_a_resume_request() {
+    let root = tempfile::Builder::new()
+        .prefix("ad-reconnect-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let socket = root.path().join("d.sock");
+    let mut record = record(root.path());
+    record.spec.labels.insert(
+        "session_id".into(),
+        "--permission-mode=bypassPermissions".into(),
+    );
+    let worker = serve(&socket, record.clone(), 1);
+    let output = cli(root.path(), &socket, &["reconnect", record.id.as_str()]);
+    let requests = worker.join().unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("Claude reconnect needs its recorded conversation"),
+        "{error}"
+    );
+    assert!(!error.contains("bypassPermissions"));
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["op"], "inspect");
+}
+
+#[test]
 fn ambiguous_recorded_options_are_refused_before_a_resume_request() {
     let root = tempfile::Builder::new()
         .prefix("ad-reconnect-")

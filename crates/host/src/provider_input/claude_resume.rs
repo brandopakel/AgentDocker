@@ -16,7 +16,10 @@ pub fn reconnect_claude(
     program: &Path,
     cli: &Path,
 ) -> io::Result<AgentSpec> {
-    if previous.runtime != "claude-code" || session.is_empty() || program.as_os_str().is_empty() {
+    if previous.runtime != "claude-code"
+        || !agentdocker_core::identity::plain_session_id(session)
+        || program.as_os_str().is_empty()
+    {
         return Err(invalid("Claude reconnect needs its recorded conversation"));
     }
     let mut command = vec![program.to_string_lossy().into_owned()];
@@ -236,6 +239,27 @@ mod tests {
                 .collect(),
             tty: true,
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_conversation_selector_cannot_become_a_provider_option() {
+        let cli = tempfile::NamedTempFile::new().unwrap();
+        let previous = launch(&["--permission-mode", "plan"]);
+        for session in [
+            "",
+            "--permission-mode=bypassPermissions",
+            "-c",
+            "private\nselector",
+            "private\0selector",
+        ] {
+            let error =
+                reconnect_claude(&previous, session, Path::new("claude"), cli.path()).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(
+                error.to_string(),
+                "Claude reconnect needs its recorded conversation"
+            );
         }
     }
 
