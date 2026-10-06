@@ -215,8 +215,9 @@ pub(super) fn install(layout: &Layout, dry_run: bool, enable: bool) -> Result<()
         );
         return Ok(());
     }
-    let _registration =
-        agentdocker_host::installation::guard_service_registration(&[layout.agentdocker.clone()])?;
+    let _registration = agentdocker_host::installation::guard_service_registration(
+        std::slice::from_ref(&layout.agentdocker),
+    )?;
     scheduler::connector_dependency(&layout.home, &layout.user_home, false)?;
     dirs::secure_state_dir(&directory(&layout.home))?;
     let _lock = lock::try_exclusive(&directory(&layout.home).join("windows-service.lock"))?
