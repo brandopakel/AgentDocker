@@ -3,6 +3,9 @@ use agentdocker_core::AgentSpec;
 use std::io;
 use std::path::Path;
 
+mod claude_resume;
+pub use claude_resume::reconnect_claude;
+
 pub const CLAUDE_CHANNEL_ENV: &str = "AGENTDOCKER_CLAUDE_CHANNEL_INPUT";
 pub const CODEX_INPUT_ENV: &str = "AGENTDOCKER_CODEX_INPUT";
 

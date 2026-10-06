@@ -2990,10 +2990,11 @@ impl App {
                 "Exit the session in its terminal first (/exit); this enables when it has.",
             );
         }
-        if !self
-            .runtimes
-            .iter()
-            .any(|r| r.name == "claude-code" && r.cli.is_some())
+        if agent.spec.command.first().is_none_or(String::is_empty)
+            && !self
+                .runtimes
+                .iter()
+                .any(|r| r.name == "claude-code" && r.cli.is_some())
         {
             return Some("Claude Code is not installed here.");
         }
@@ -3044,41 +3045,24 @@ impl App {
             .get("session_id")
             .cloned()
             .ok_or("This session has no conversation id to resume")?;
-        let claude = self
-            .runtimes
-            .iter()
-            .find(|r| r.name == "claude-code")
-            .and_then(|r| r.cli.clone())
-            .ok_or("Claude Code is not installed here")?;
-        let workdir = agent
+        if agent.spec.workdir.is_none() {
+            return Err("This session has no checkout to resume in".into());
+        }
+        let claude = agent
             .spec
-            .workdir
-            .clone()
-            .ok_or("This session has no checkout to resume in")?;
-        let mut spec = agentdocker_core::AgentSpec {
-            name: agent.spec.name.clone(),
-            runtime: "claude-code".into(),
-            provider: None,
-            model: None,
-            command: vec![
-                claude.to_string_lossy().into_owned(),
-                "--resume".into(),
-                session,
-            ],
-            workdir: Some(workdir),
-            env: BTreeMap::new(),
-            labels: BTreeMap::new(),
-            isolate: false,
-            tty: true,
-            restore: false,
-            in_pane: false,
-            restart: Default::default(),
-            depends_on: Vec::new(),
-        };
+            .command
+            .first()
+            .map(PathBuf::from)
+            .or_else(|| {
+                self.runtimes
+                    .iter()
+                    .find(|r| r.name == "claude-code")
+                    .and_then(|r| r.cli.clone())
+            })
+            .ok_or("Claude Code is not installed here")?;
         let cli = cli.map_err(|error| format!("Cannot enable live messages: {error}"))?;
-        agentdocker_host::provider_input::enable_claude_channel(&mut spec, &cli)
-            .map_err(|error| format!("Cannot enable live messages: {error}"))?;
-        Ok(spec)
+        agentdocker_host::provider_input::reconnect_claude(&agent.spec, &session, &claude, &cli)
+            .map_err(|error| format!("Cannot reconstruct the Claude session launch: {error}"))
     }
 
     fn launch_spec(&self) -> Result<agentdocker_core::AgentSpec, String> {
@@ -5332,6 +5316,68 @@ mod tests {
             .insert("session_id".into(), "x".into());
         app.runtimes.clear();
         assert!(app.reconnect_blocker(&app.agents[0]).is_some());
+    }
+
+    #[test]
+    fn reconnect_keeps_the_recorded_executable_permissions_and_profile() {
+        let (mut app, commands, _) = app();
+        let cli = tempfile::NamedTempFile::new().unwrap();
+        let mut spec = agentdocker_core::AgentSpec {
+            name: "restricted-session".into(),
+            runtime: "claude-code".into(),
+            command: vec![
+                "/fixture/chosen-claude".into(),
+                "--permission-mode".into(),
+                "dontAsk".into(),
+                "--tools".into(),
+                "".into(),
+                "--strict-mcp-config".into(),
+                "--".into(),
+                "do not replay this prompt".into(),
+            ],
+            workdir: Some("/fixture/project".into()),
+            env: BTreeMap::from([("CLAUDE_CONFIG_DIR".into(), "/fixture/profile".into())]),
+            labels: BTreeMap::from([("session_id".into(), "original-conversation".into())]),
+            tty: true,
+            ..Default::default()
+        };
+        agentdocker_host::provider_input::enable_claude_channel(&mut spec, cli.path()).unwrap();
+        let mut agent = AgentRecord::new(spec.clone(), true, Utc::now());
+        agent.id = "restricted-session".into();
+        agent.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        app.agents.push(agent);
+        // A recorded executable remains usable without choosing a different
+        // provider from the current PATH inventory.
+        app.runtimes.clear();
+        let resumed = app
+            .reconnect_spec("restricted-session", Ok(cli.path().into()))
+            .unwrap();
+        assert_eq!(resumed.command[0], "/fixture/chosen-claude");
+        assert_eq!(resumed.env, spec.env);
+        assert_eq!(
+            &resumed.command[5..],
+            [
+                "--permission-mode",
+                "dontAsk",
+                "--tools",
+                "",
+                "--strict-mcp-config",
+                "--resume",
+                "original-conversation"
+            ]
+        );
+        assert!(commands.try_recv().is_err());
+
+        app.agents[0].spec.command.push("--unknown-option".into());
+        assert!(
+            app.reconnect_spec("restricted-session", Ok(cli.path().into()))
+                .is_err()
+        );
+        assert!(commands.try_recv().is_err());
+        assert_eq!(
+            app.agents[0].status,
+            agentdocker_core::AgentStatus::Exited { code: Some(0) }
+        );
     }
 
     #[test]
