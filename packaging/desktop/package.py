@@ -31,8 +31,65 @@ def run(*args, **kwargs):
     return subprocess.run([str(arg) for arg in args], check=True, **kwargs)
 
 
+def verify_dmg(destination, report, save):
+    """Retry only the observed OS availability error against the same image."""
+    command = ['/usr/bin/hdiutil', 'verify', str(destination)]
+    image_hash = sha256(destination)
+    report['image_sha256'] = image_hash
+    report['verification_attempts'] = []
+    save()
+    for attempt in range(1, 4):
+        if sha256(destination) != image_hash:
+            raise RuntimeError('disk image changed before integrity verification')
+        started = time.monotonic()
+        timed_out = False
+        launch_error = None
+        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+            try:
+                result = subprocess.run(command, stdout=stdout, stderr=stderr,
+                                        stdin=subprocess.DEVNULL, timeout=180)
+                code = result.returncode
+            except subprocess.TimeoutExpired:
+                code, timed_out = None, True
+            except OSError as error:
+                code, launch_error = None, error
+            streams = []
+            for stream in (stdout, stderr):
+                stream.seek(0, 2)
+                stream.seek(max(0, stream.tell() - 65536))
+                streams.append(stream.read().decode('utf-8', errors='replace'))
+        output, error = streams
+        print(output, end='', flush=True)
+        print(error, end='', file=sys.stderr, flush=True)
+        unavailable = code == 1 and any(
+            line.strip() == 'hdiutil: verify failed - Resource temporarily unavailable'
+            for line in error.splitlines())
+        entry = {'attempt': attempt, 'exit_code': code,
+                 'seconds': time.monotonic() - started, 'timed_out': timed_out,
+                 'resource_unavailable': unavailable,
+                 'stdout_tail': output, 'stderr_tail': error}
+        report['verification_attempts'].append(entry)
+        if launch_error is not None:
+            entry['launch_error'] = str(launch_error)
+        save()
+        if launch_error is not None:
+            raise launch_error
+        if sha256(destination) != image_hash:
+            raise RuntimeError('disk image changed during integrity verification')
+        if code == 0:
+            return attempt
+        if not unavailable or attempt == 3:
+            if timed_out:
+                raise subprocess.TimeoutExpired(command, 180, output=output, stderr=error)
+            raise subprocess.CalledProcessError(code, command, output=output, stderr=error)
+        delay = 2 ** attempt
+        print(f'hdiutil verification was unavailable; attempt {attempt}/3 retained; waiting {delay}s',
+              file=sys.stderr, flush=True)
+        time.sleep(delay)
+
+
 def create_dmg(source, destination, diagnostics):
-    """Bound only the known transient hdiutil create error; retain every attempt."""
+    """Bound known hdiutil availability errors; retain every attempt."""
     command = ['/usr/bin/hdiutil', 'create', '-verbose', '-volname', 'AgentDocker',
                '-srcfolder', str(source), '-format', 'UDZO', '-ov', str(destination)]
     report = {'command': command, 'attempts': [], 'result': 'failed'}
@@ -86,8 +143,8 @@ def create_dmg(source, destination, diagnostics):
                 report['verification'] = 'running'
                 save()
                 try:
-                    run('/usr/bin/hdiutil', 'verify', destination, timeout=180)
-                except (subprocess.SubprocessError, OSError) as error:
+                    verified_attempt = verify_dmg(destination, report, save)
+                except (subprocess.SubprocessError, OSError, RuntimeError) as error:
                     report['verification'] = f'{type(error).__name__}: {error}'
                     save()
                     raise
@@ -95,7 +152,8 @@ def create_dmg(source, destination, diagnostics):
                 report['verification'] = 'passed'
                 report['verified'] = True
                 save()
-                return {'attempts': attempt, 'recovered': attempt > 1}
+                return {'attempts': attempt, 'verification_attempts': verified_attempt,
+                        'recovered': attempt > 1 or verified_attempt > 1}
             if not busy or attempt == 3:
                 if timed_out:
                     raise subprocess.TimeoutExpired(command, 180, output=output, stderr=error)

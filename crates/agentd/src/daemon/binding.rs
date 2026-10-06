@@ -1382,15 +1382,61 @@ mod tests {
     struct Other(std::process::Child);
 
     impl Other {
+        fn executable() -> PathBuf {
+            let path = std::env::var_os("PATH").expect("fixture PATH");
+            agentdocker_host::command::find_program(
+                &std::env::split_paths(&path).collect::<Vec<_>>(),
+                "sleep",
+            )
+            .expect("fixture sleep executable")
+            .canonicalize()
+            .unwrap()
+        }
+
         fn spawn() -> Self {
-            Self(
-                std::process::Command::new("sleep")
+            let executable = Self::executable();
+            let mut child = Self(
+                std::process::Command::new(&executable)
                     .arg("30")
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .spawn()
                     .unwrap(),
-            )
+            );
+            // Linux CI observed the parent's executable immediately after
+            // spawn, then sleep at the upgrade check. A fixture descriptor
+            // must name the intended, ready executable, never that snapshot.
+            child
+                .wait_for_executable(&executable, std::time::Duration::from_secs(5))
+                .expect("fixture executable readiness");
+            child
+        }
+
+        fn wait_for_executable(
+            &mut self,
+            expected: &Path,
+            timeout: std::time::Duration,
+        ) -> std::io::Result<()> {
+            let deadline = std::time::Instant::now() + timeout;
+            loop {
+                if let Some(status) = self.0.try_wait()? {
+                    return Err(std::io::Error::other(format!(
+                        "fixture exited before executable readiness: {status}"
+                    )));
+                }
+                let actual = agentdocker_host::procinfo::executable_path_of(self.0.id())
+                    .and_then(|path| path.canonicalize());
+                if actual.as_deref().is_ok_and(|path| path == expected) {
+                    return Ok(());
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("fixture executable was {actual:?}; expected {expected:?}"),
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
         }
 
         fn identity(&self) -> ProcessIdentity {
@@ -1412,6 +1458,42 @@ mod tests {
             let _ = self.0.kill();
             let _ = self.0.wait();
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn controller_fixture_waits_for_exec_before_accepting_its_descriptor() {
+        use std::io::Write;
+        let executable = Other::executable();
+        // The pipe keeps this process in sh until the test explicitly allows
+        // exec. No timing assumption or failing invariant is retried.
+        let mut child = Other(
+            std::process::Command::new("/bin/sh")
+                .args(["-c", "read -r ready; exec \"$1\" 30", "fixture"])
+                .arg(&executable)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        assert_eq!(
+            child
+                .wait_for_executable(&executable, std::time::Duration::ZERO)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        child.0.stdin.take().unwrap().write_all(b"ready\n").unwrap();
+        child
+            .wait_for_executable(&executable, std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            agentdocker_host::procinfo::executable_path_of(child.0.id())
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            executable
+        );
     }
 
     /// Register an agent standing for this process, with the session id

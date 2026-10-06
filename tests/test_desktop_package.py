@@ -1,6 +1,7 @@
 """Artifact integrity/architecture failures must not replace a prior installable build."""
 import importlib.util
 import contextlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -182,16 +183,21 @@ class DiskImageCreation(unittest.TestCase):
         self.image, self.diagnostics = root / 'owned.dmg', root / 'diagnostics.json'
         self.commands = []
 
-    def simulate(self, outcomes, *, verify_fails=False):
+    def simulate(self, outcomes, *, verification=((0, ''),), during_delay=None):
         outcomes = iter(outcomes)
+        verification = iter(verification)
 
         def command(args, **kwargs):
             self.commands.append(args)
             if args[1] == 'verify':
                 self.assertEqual(self.image.read_bytes(), b'complete')
-                if verify_fails:
-                    raise subprocess.CalledProcessError(1, args, stderr='checksum mismatch')
-                return subprocess.CompletedProcess(args, 0)
+                outcome = next(verification)
+                if isinstance(outcome, Exception):
+                    kwargs['stderr'].write(b'verification did not finish\n')
+                    raise outcome
+                code, error = outcome
+                kwargs['stderr'].write(error.encode())
+                return subprocess.CompletedProcess(args, code)
             self.assertEqual(kwargs['timeout'], 180)
             self.image.write_bytes(b'partial')
             outcome = next(outcomes)
@@ -205,7 +211,7 @@ class DiskImageCreation(unittest.TestCase):
             return subprocess.CompletedProcess(args, code)
 
         with mock.patch.object(PACKAGE.subprocess, 'run', side_effect=command), \
-                mock.patch.object(PACKAGE.time, 'sleep') as sleep, \
+                mock.patch.object(PACKAGE.time, 'sleep', side_effect=during_delay) as sleep, \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             try:
                 return PACKAGE.create_dmg(self.image.parent, self.image, self.diagnostics)
@@ -214,7 +220,7 @@ class DiskImageCreation(unittest.TestCase):
 
     def test_busy_recovery_keeps_failure_and_requires_a_verified_image(self):
         result = self.simulate([(1, 'hdiutil: create failed - Resource busy\n'), (0, '')])
-        self.assertEqual(result, {'attempts': 2, 'recovered': True})
+        self.assertEqual(result, {'attempts': 2, 'verification_attempts': 1, 'recovered': True})
         report = json.loads(self.diagnostics.read_text())
         self.assertEqual(report['result'], 'passed')
         self.assertTrue(report['verified'])
@@ -253,11 +259,78 @@ class DiskImageCreation(unittest.TestCase):
 
     def test_failed_integrity_verification_keeps_the_failure(self):
         with self.assertRaises(subprocess.CalledProcessError):
-            self.simulate([(0, '')], verify_fails=True)
+            self.simulate([(0, '')], verification=[(1, 'checksum mismatch\n')])
         report = json.loads(self.diagnostics.read_text())
         self.assertEqual(report['result'], 'failed')
         self.assertIn('CalledProcessError', report['verification'])
+        self.assertEqual(report['verification_attempts'][0]['stderr_tail'], 'checksum mismatch\n')
         self.assertEqual(self.delays, [])
+
+    def test_unavailable_verification_retries_same_image_and_preserves_diagnostics(self):
+        error = 'hdiutil: verify failed - Resource temporarily unavailable\n'
+        result = self.simulate([(0, '')], verification=[(1, error), (0, '')])
+        self.assertEqual(result, {'attempts': 1, 'verification_attempts': 2, 'recovered': True})
+        report = json.loads(self.diagnostics.read_text())
+        self.assertEqual(report['image_sha256'], hashlib.sha256(b'complete').hexdigest())
+        self.assertEqual([v['exit_code'] for v in report['verification_attempts']], [1, 0])
+        self.assertEqual(report['verification_attempts'][0]['stderr_tail'], error)
+        self.assertEqual([args[1] for args in self.commands], ['create', 'verify', 'verify'])
+        self.assertEqual(self.delays, [2])
+        self.assertTrue(report['verified'])
+
+    def test_persistent_unavailable_verification_stops_after_three_attempts(self):
+        error = 'hdiutil: verify failed - Resource temporarily unavailable\n'
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.simulate([(0, '')], verification=[(1, error)] * 3)
+        report = json.loads(self.diagnostics.read_text())
+        self.assertEqual(report['result'], 'failed')
+        self.assertNotIn('verified', report)
+        self.assertEqual(len(report['verification_attempts']), 3)
+        self.assertEqual(self.delays, [2, 4])
+
+    def test_verification_recovery_never_retries_a_later_checksum_error(self):
+        error = 'hdiutil: verify failed - Resource temporarily unavailable\n'
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.simulate([(0, '')], verification=[(1, error), (1, 'checksum mismatch\n')])
+        report = json.loads(self.diagnostics.read_text())
+        self.assertEqual(report['result'], 'failed')
+        self.assertEqual(len(report['verification_attempts']), 2)
+        self.assertEqual(self.delays, [2])
+
+    def test_verification_timeout_is_retained_without_retry(self):
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.simulate([(0, '')], verification=[subprocess.TimeoutExpired(['hdiutil'], 180)])
+        report = json.loads(self.diagnostics.read_text())
+        self.assertTrue(report['verification_attempts'][0]['timed_out'])
+        self.assertEqual(report['result'], 'failed')
+        self.assertEqual(self.delays, [])
+
+    def test_verification_launch_failure_is_retained_without_retry(self):
+        with self.assertRaises(FileNotFoundError):
+            self.simulate([(0, '')], verification=[FileNotFoundError('verify unavailable')])
+        report = json.loads(self.diagnostics.read_text())
+        self.assertIn('verify unavailable', report['verification_attempts'][0]['launch_error'])
+        self.assertEqual(report['result'], 'failed')
+        self.assertEqual(self.delays, [])
+
+    def test_image_change_during_backoff_prevents_another_verification(self):
+        error = 'hdiutil: verify failed - Resource temporarily unavailable\n'
+        with self.assertRaisesRegex(RuntimeError, 'image changed'):
+            self.simulate([(0, '')], verification=[(1, error)],
+                          during_delay=lambda _: self.image.write_bytes(b'changed'))
+        report = json.loads(self.diagnostics.read_text())
+        self.assertEqual(report['result'], 'failed')
+        self.assertEqual(len(report['verification_attempts']), 1)
+        self.assertEqual([args[1] for args in self.commands], ['create', 'verify'])
+
+    def test_verification_retry_requires_the_exact_error_and_exit_status(self):
+        for code, error in [(2, 'hdiutil: verify failed - Resource temporarily unavailable\n'),
+                            (1, 'some other resource is temporarily unavailable\n')]:
+            with self.subTest(code=code, error=error):
+                self.diagnostics.unlink(missing_ok=True)
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.simulate([(0, '')], verification=[(code, error)])
+                self.assertEqual(self.delays, [])
 
     def test_existing_diagnostics_are_never_replaced(self):
         self.diagnostics.write_text('prior failure evidence')
