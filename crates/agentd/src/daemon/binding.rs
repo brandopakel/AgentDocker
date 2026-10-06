@@ -46,6 +46,29 @@ fn is_running(process: &ProcessIdentity) -> bool {
         && agentdocker_host::procinfo::start_time(process.pid) == Some(process.started_at)
 }
 
+fn executable_matches(
+    actual: &std::io::Result<PathBuf>,
+    expected: &std::io::Result<PathBuf>,
+    expected_file: &std::io::Result<bool>,
+) -> bool {
+    matches!((actual, expected, expected_file), (Ok(actual), Ok(expected), Ok(true)) if actual == expected)
+}
+
+fn lookup_error(error: &std::io::Error) -> serde_json::Value {
+    serde_json::json!({
+        "error": error.to_string(),
+        "kind": format!("{:?}", error.kind()),
+        "os_code": error.raw_os_error(),
+    })
+}
+
+fn executable_lookup(result: &std::io::Result<PathBuf>) -> serde_json::Value {
+    match result {
+        Ok(path) => serde_json::json!({ "path": path.to_string_lossy() }),
+        Err(error) => lookup_error(error),
+    }
+}
+
 /// End a process the daemon launched, if it is still the one launched:
 /// the host crate compares the birth before it acts, on every platform.
 /// `force` is SIGKILL where there are signals; Windows ends it either way.
@@ -797,13 +820,26 @@ impl State {
         if is_running(&controller) {
             let actual = agentdocker_host::procinfo::executable_path_of(controller.pid)
                 .and_then(|path| path.canonicalize());
-            if actual.ok().as_ref() != previous.executable.canonicalize().ok().as_ref()
-                || !previous.executable.is_file()
-            {
-                return Response::error(
-                    ErrorCode::Conflict,
-                    "the live controller executable differs from its descriptor",
-                );
+            let expected = previous.executable.canonicalize();
+            let expected_file = std::fs::metadata(&previous.executable).map(|m| m.is_file());
+            if !executable_matches(&actual, &expected, &expected_file) {
+                // Preserve the observations used for this refusal. A later
+                // successful lookup cannot explain an earlier failed one.
+                return Response::Error {
+                    code: ErrorCode::Conflict,
+                    message: "the live controller executable could not be verified against its descriptor".into(),
+                    details: Some(serde_json::json!({
+                        "check": "controller_executable",
+                        "controller": controller,
+                        "requested_executable": previous.executable.to_string_lossy(),
+                        "actual": executable_lookup(&actual),
+                        "expected": executable_lookup(&expected),
+                        "expected_file": match &expected_file {
+                            Ok(value) => serde_json::json!({ "is_file": value }),
+                            Err(error) => lookup_error(error),
+                        },
+                    })),
+                };
             }
         }
         match launch.executable.canonicalize() {
@@ -2950,6 +2986,114 @@ mod tests {
             }
         ));
     }
+    #[test]
+    fn two_failed_executable_lookups_never_establish_a_match() {
+        let unavailable = || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        // Comparing .ok() values would mistake two failures for agreement,
+        // even when a separate metadata lookup still sees a regular file.
+        assert!(!executable_matches(
+            &unavailable(),
+            &unavailable(),
+            &Ok(true)
+        ));
+        let path = PathBuf::from("/receiver");
+        assert!(executable_matches(
+            &Ok(path.clone()),
+            &Ok(path.clone()),
+            &Ok(true)
+        ));
+        assert!(!executable_matches(
+            &Ok(path.clone()),
+            &Ok(path),
+            &Ok(false)
+        ));
+    }
+
+    #[tokio::test]
+    async fn receiver_upgrade_refusal_retains_exact_lookup_results_without_a_transition() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = provider(&daemon, "receiver", "lookup-session").await;
+        let old = Other::spawn();
+        let controller = old.identity();
+        let actual = agentdocker_host::procinfo::executable_path_of(controller.pid)
+            .unwrap()
+            .canonicalize()
+            .unwrap();
+        let expected = dir.path().join("expected-receiver");
+        let successor = dir.path().join("successor");
+        std::fs::copy(&actual, &expected).unwrap();
+        std::fs::copy(&actual, &successor).unwrap();
+        let previous = ControllerLaunch {
+            executable: expected.canonicalize().unwrap(),
+            args: vec!["30".into()],
+            cwd: dir.path().canonicalize().unwrap(),
+            env: Default::default(),
+        };
+        let launch = ControllerLaunch {
+            executable: successor.canonicalize().unwrap(),
+            ..previous.clone()
+        };
+        let provider = generation(&receiver, "lookup-session");
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider: provider.clone(),
+                    controller: controller.clone(),
+                    token: TOKEN.into(),
+                    launch: Some(previous.clone()),
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        let before = binding_of(&daemon, &receiver.id);
+        let seq = lock(&daemon.state).next_seq;
+        for removed in [false, true] {
+            if removed {
+                std::fs::remove_file(&expected).unwrap();
+            }
+            let response = daemon
+                .handle(Request::UpgradeController {
+                    agent: receiver.id.to_string(),
+                    provider: provider.clone(),
+                    controller: controller.clone(),
+                    previous: previous.clone(),
+                    launch: launch.clone(),
+                    token: TOKEN.into(),
+                })
+                .await;
+            let Response::Error {
+                code: ErrorCode::Conflict,
+                details: Some(details),
+                ..
+            } = response
+            else {
+                panic!("expected lookup refusal: {response:?}");
+            };
+            assert_eq!(details["check"], "controller_executable");
+            assert_eq!(details["actual"]["path"], actual.to_string_lossy().as_ref());
+            assert_eq!(details["controller"]["pid"], controller.pid);
+            assert_eq!(
+                details["requested_executable"],
+                previous.executable.to_string_lossy().as_ref()
+            );
+            if removed {
+                assert_eq!(details["expected"]["kind"], "NotFound");
+                assert_eq!(details["expected_file"]["kind"], "NotFound");
+            } else {
+                assert_eq!(
+                    details["expected"]["path"],
+                    previous.executable.to_string_lossy().as_ref()
+                );
+                assert_eq!(details["expected_file"]["is_file"], true);
+            }
+            assert_eq!(binding_of(&daemon, &receiver.id), before);
+            assert_eq!(lock(&daemon.state).next_seq, seq);
+            assert!(is_running(&controller));
+        }
+    }
+
     #[tokio::test]
     async fn receiver_upgrade_commits_before_stop_and_retains_queue_across_reopen() {
         let dir = TempDir::new().unwrap();

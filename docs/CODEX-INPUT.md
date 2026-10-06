@@ -496,6 +496,12 @@ The successor takes the same lifetime ledger lock and reconciles pending input;
 a missing receipt never authorizes resubmission. Repeating an accepted request
 cannot stop the successor.
 
+If the live receiver executable cannot be verified, the daemon refuses without
+changing the binding or stopping it. Error details retain the controller identity,
+requested path, both canonical lookup results and the expected-file check from
+that decision. Lookup errors include their kind and OS code; arguments, environment
+and binding tokens are excluded. Two failed lookups never count as a match.
+
 The schema version prevents an older daemon from opening a retained replacement
 intent it cannot understand. The candidate includes refusal/write-failure/reopen
 regressions and an actual-client `controller-upgrade` scenario with
