@@ -298,25 +298,6 @@ fn layout(args: &ServeArgs) -> Result<Layout> {
     })
 }
 
-/// launchd unloads a job asynchronously: a `bootstrap` right after
-/// `bootout` can meet the old job still there and fail with I/O error 5.
-/// Wait, briefly, until the label is gone.
-#[cfg(not(windows))]
-fn wait_for_bootout(target: &str) {
-    for _ in 0..50 {
-        let present = std::process::Command::new("launchctl")
-            .args(["print", target])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
-        if !present {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-}
-
 #[cfg(not(windows))]
 pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
     let macos = cfg!(target_os = "macos");
@@ -342,17 +323,6 @@ pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
         ))?
     };
     let plan = install_plan(&layout, macos);
-    if macos && !dry_run {
-        // The plan's first command boots the old job out; the bootstrap
-        // that follows needs it gone. Do the bootout here, wait, then let
-        // the plan run its (now tolerated, idle) bootout and the bootstrap.
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &layout.target()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        wait_for_bootout(&layout.target());
-    }
     execute(&plan, dry_run)?;
     if !dry_run {
         eprintln!(

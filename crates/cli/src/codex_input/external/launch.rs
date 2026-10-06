@@ -1,5 +1,7 @@
 //! Own a dedicated server and native TUI for zero-prompt input binding.
 mod lifetime;
+#[cfg(windows)]
+mod log_reader;
 
 use super::{birth::Witness, bootstrap, ledger::Binding, remote};
 use crate::{client::Client, codex_input::transport::birth::BirthObserver};
@@ -15,10 +17,12 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::AsyncReadExt,
     process::{Child, Command},
     time::{Instant, timeout},
 };
+
+#[cfg(not(windows))]
+use tokio::io::AsyncReadExt;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -112,7 +116,10 @@ async fn log_output(mut input: tokio::process::ChildStderr, path: PathBuf) -> Re
     let mut buffer = [0; 8192];
     let mut retained = 0;
     loop {
+        #[cfg(not(windows))]
         let n = input.read(&mut buffer).await?;
+        #[cfg(windows)]
+        let n = log_reader::read(&mut input, &mut buffer).await?;
         if n == 0 {
             break;
         }
@@ -484,7 +491,7 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         .stderr(Stdio::piped())
         .spawn()
         .context("cannot start dedicated Codex server")?;
-    let log = tokio::spawn(log_output(
+    let mut log = tokio::spawn(log_output(
         server
             .stderr
             .take()
@@ -538,13 +545,20 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         cleanup = cleanup.and(retire(child).await);
     }
     cleanup = cleanup.and(retire(&mut server).await);
-    cleanup = cleanup.and(
-        timeout(Duration::from_secs(5), log)
-            .await
-            .context("native server log did not close")
-            .and_then(|r| r.context("native server log task failed"))
+    let logged = match timeout(Duration::from_secs(5), &mut log).await {
+        Ok(joined) => joined
+            .context("native server log task failed")
             .and_then(|r| r),
-    );
+        Err(error) => {
+            // A descendant may retain the server's stderr after its direct
+            // parent exits. Drop the reader before the owner's runtime exits;
+            // its Windows job then retires those remaining descendants.
+            log.abort();
+            let _ = log.await;
+            Err(error).context("native server log did not close")
+        }
+    };
+    cleanup = cleanup.and(logged);
     // Retain bounded private diagnostics/record; revoke the dead server capability.
     #[cfg(windows)]
     drop(capability);
