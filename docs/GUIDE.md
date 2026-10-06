@@ -73,6 +73,10 @@ at eight directories and 256 MiB. Uninstall
 refuses while a service references the installation, even if stopped: run
 `daemon uninstall` for that service first. Use `desktop --prefix <directory>` for
 an isolated installation. Start menu shortcuts and PATH changes are not installed.
+Windows pruning keeps the exact versions referenced by recognized services,
+including their working directories and explicitly selected files. An unknown
+wrapper, program, option or ambiguous path keeps all builds. Preview shows which
+versions remain protected; a stopped registration still prevents uninstall.
 
 You do not start the daemon. The first client that needs it starts it, on
 `~/.agentdocker/agentd.sock`. To have it survive a reboot:

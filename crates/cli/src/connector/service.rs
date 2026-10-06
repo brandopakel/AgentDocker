@@ -44,32 +44,48 @@ pub struct Layout {
     pub path_dirs: Vec<PathBuf>,
 }
 
+/// Filesystem inputs shared by registration and strict maintenance inventory.
+#[derive(Default, Debug)]
+pub(crate) struct Resources {
+    pub(crate) executables: Vec<PathBuf>,
+    pub(crate) data: Vec<PathBuf>,
+}
+
+/// Refuse unknown options rather than assuming they contain no filesystem path.
+pub(crate) fn argument_resources(args: &[String]) -> Result<Resources> {
+    let mut resources = Resources::default();
+    let mut pairs = args.chunks_exact(2);
+    for pair in &mut pairs {
+        match pair[0].as_str() {
+            "--cloudflared" | "--tailscale" => resources.executables.push(PathBuf::from(&pair[1])),
+            "--project" => resources.data.push(PathBuf::from(&pair[1])),
+            "--allow-from" => {
+                if let Some(path) = pair[1].strip_prefix('@') {
+                    anyhow::ensure!(!path.is_empty(), "connector feed path is empty");
+                    resources.data.push(PathBuf::from(path));
+                }
+            }
+            "--public-url" | "--bind" | "--allow-callback" | "--tunnel" | "--tunnel-name"
+            | "--tunnel-port" | "--client-ip-header" => {}
+            _ => bail!("unrecognized connector service argument; registration refused"),
+        }
+    }
+    anyhow::ensure!(
+        pairs.remainder().is_empty(),
+        "incomplete connector service arguments"
+    );
+    Ok(resources)
+}
+
 impl Layout {
     /// Serialize all selected resource stores with maintenance, including
     /// resources outside the installation containing the connector executable.
     fn registration_guard(&self) -> Result<Vec<agentdocker_host::lock::Lock>> {
         let mut executables = vec![self.agentdocker.clone()];
         let mut data = vec![self.home.clone(), self.log(), self.user_home.clone()];
-        let mut pairs = self.serve_args.chunks_exact(2);
-        for pair in &mut pairs {
-            match pair[0].as_str() {
-                "--cloudflared" | "--tailscale" => executables.push(PathBuf::from(&pair[1])),
-                "--project" => data.push(PathBuf::from(&pair[1])),
-                "--allow-from" => {
-                    if let Some(path) = pair[1].strip_prefix('@') {
-                        anyhow::ensure!(!path.is_empty(), "connector feed path is empty");
-                        data.push(PathBuf::from(path));
-                    }
-                }
-                "--public-url" | "--bind" | "--allow-callback" | "--tunnel" | "--tunnel-name"
-                | "--tunnel-port" | "--client-ip-header" => {}
-                _ => bail!("unrecognized connector service argument; registration refused"),
-            }
-        }
-        anyhow::ensure!(
-            pairs.remainder().is_empty(),
-            "incomplete connector service arguments"
-        );
+        let resources = argument_resources(&self.serve_args)?;
+        executables.extend(resources.executables);
+        data.extend(resources.data);
         Ok(agentdocker_host::installation::guard_service_references(
             &executables,
             &data,

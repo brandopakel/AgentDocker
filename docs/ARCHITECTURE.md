@@ -875,9 +875,11 @@ publishes a service and exits during that query; versions pinned only after the
 query could otherwise lose both protections in that interval. Preview opens
 only existing version pins; apply creates missing pins and recomputes inventory.
 Dry-run registration creates no guard, and maintenance preview opens only an
-existing one. These checks do not yet select exact referenced versions or relax
-conservative retained-build protection; legacy registration races still need
-acceptance before selective retention is enabled.
+existing one. Unix inventory still conservatively protects whole stores; exact
+Unix references and legacy portable registrars selecting a separate daemon need
+further acceptance.
+
+Windows maintenance recognizes only exact rendered actions around a content-verified same-store controller and daemon or receipt-checked stable bootstrap. It retains every explicitly referenced immutable version, including connector tunnel/project/feed paths, state/log paths and Task Scheduler working directories. Literal and resolved aliases both count. Unknown programs/options, relative or parent-traversing paths and unreadable inventory conservatively retain the store; no arbitrary script is executed to discover paths. Native selective-deletion acceptance remains open.
 Windows desktop activation under implementation uses a private JSON snapshot in
 `AgentDocker/desktop`, pointing only to a hash-named immutable version. Launcher
 contract 2 denotes receipt-checked Windows bootstrap forwarding and lifetime

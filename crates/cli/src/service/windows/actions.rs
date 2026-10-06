@@ -49,6 +49,41 @@ pub(crate) struct LiteralAction {
     pub(crate) values: Vec<String>,
 }
 
+impl LiteralAction {
+    /// The parser has already proved one exact renderer. The field positions
+    /// below are that renderer's literal order, never general PowerShell input.
+    pub(crate) fn resources(&self) -> anyhow::Result<crate::connector::service::Resources> {
+        use crate::connector::service::{Resources, argument_resources};
+        use std::path::PathBuf;
+        let (endpoint, mut resources) = if self.values.len() == 4 {
+            (
+                &self.values[3],
+                Resources {
+                    executables: vec![PathBuf::from(&self.values[2])],
+                    data: vec![PathBuf::from(&self.values[1])],
+                },
+            )
+        } else {
+            let mut resources = argument_resources(&self.values[7..self.values.len() - 1])?;
+            resources.data.extend([
+                PathBuf::from(&self.values[1]),
+                PathBuf::from(self.values.last().unwrap()),
+            ]);
+            (&self.values[5], resources)
+        };
+        anyhow::ensure!(
+            endpoint.starts_with(r"\\.\pipe\") && endpoint.len() > 9,
+            "unrecognized Windows service endpoint"
+        );
+        resources.executables.push(PathBuf::from(&self.controller));
+        Ok(resources)
+    }
+
+    pub(crate) fn daemon(&self) -> Option<&str> {
+        (self.values.len() == 4).then(|| self.values[2].as_str())
+    }
+}
+
 pub(crate) fn recognize(arguments: &str) -> Option<LiteralAction> {
     if arguments.len() > 64 * 1024 {
         return None;
@@ -169,6 +204,54 @@ mod tests {
         assert_eq!(action.controller, path);
         assert_eq!(&action.values[7..10], &args);
         assert_eq!(action.values.last().unwrap(), LOG);
+    }
+
+    #[test]
+    fn typed_resources_include_tunnels_projects_feeds_and_refuse_unknown_options() {
+        let args = [
+            "--cloudflared",
+            CONTROLLER,
+            "--project",
+            HOME,
+            "--allow-from",
+            "@C:\\feed.json",
+            "--tunnel",
+            "cloudflared",
+        ]
+        .map(str::to_owned);
+        let parsed = recognize(&arguments(&connector(
+            HOME, CONTROLLER, ENDPOINT, OWNER, &args, LOG,
+        )))
+        .unwrap();
+        let resources = parsed.resources().unwrap();
+        assert_eq!(
+            resources.executables,
+            [CONTROLLER, CONTROLLER].map(std::path::PathBuf::from)
+        );
+        assert_eq!(
+            resources.data,
+            [HOME, r"C:\feed.json", HOME, LOG].map(std::path::PathBuf::from)
+        );
+        assert!(parsed.daemon().is_none());
+        let parsed = recognize(&arguments(&daemon(CONTROLLER, HOME, AGENTD, ENDPOINT))).unwrap();
+        assert_eq!(parsed.daemon(), Some(AGENTD));
+        assert_eq!(
+            parsed.resources().unwrap().executables,
+            [AGENTD, CONTROLLER].map(std::path::PathBuf::from)
+        );
+        for args in [
+            vec!["--future-file".into(), HOME.into()],
+            vec!["--project".into()],
+            vec!["--allow-from".into(), "@".into()],
+        ] {
+            let parsed = recognize(&arguments(&connector(
+                HOME, CONTROLLER, ENDPOINT, OWNER, &args, LOG,
+            )))
+            .unwrap();
+            assert!(parsed.resources().is_err());
+        }
+        let parsed = recognize(&arguments(&daemon(CONTROLLER, HOME, AGENTD, HOME))).unwrap();
+        assert!(parsed.resources().is_err());
     }
 
     #[test]
