@@ -49,6 +49,91 @@ fn strings(value: &Value) -> Result<Vec<String>> {
     Ok(serde_json::from_value(value.clone())?)
 }
 
+/// A negative lookup cached by `systemctl show` is not a registration. Require
+/// the full empty/inactive shape, so deleted files on real cached units and any
+/// remaining command, override, job or process still preserve the installation.
+fn cached_fragment<'a>(unit: &'a Value, service: &Value) -> Result<Option<&'a str>> {
+    if property(unit, "LoadState", "s")? == "not-found" {
+        ensure!(
+            property(unit, "ActiveState", "s")? == "inactive"
+                && property(unit, "SubState", "s")? == "dead"
+                && property(unit, "Job", "(uo)")? == &json!([0, "/"])
+                && property(unit, "NeedDaemonReload", "b")? == &json!(false)
+                && property(unit, "Transient", "b")? == &json!(false),
+            "ambiguous missing service"
+        );
+        for key in ["FragmentPath", "SourcePath"] {
+            ensure!(
+                property(unit, key, "s")? == "",
+                "missing service has a definition"
+            );
+        }
+        ensure!(
+            strings(property(unit, "DropInPaths", "as")?)?.is_empty(),
+            "missing service has overrides"
+        );
+        for key in ["MainPID", "ControlPID"] {
+            ensure!(
+                property(service, key, "u")? == &json!(0),
+                "missing service has a process"
+            );
+        }
+        for key in [
+            "ExecCondition",
+            "ExecStartPre",
+            "ExecStart",
+            "ExecStartPost",
+            "ExecReload",
+            "ExecStop",
+            "ExecStopPost",
+        ] {
+            for (name, signature) in [
+                (key.to_owned(), "a(sasbttttuii)"),
+                (format!("{key}Ex"), "a(sasasttttuii)"),
+            ] {
+                ensure!(
+                    property(service, &name, signature)?
+                        .as_array()
+                        .is_some_and(Vec::is_empty),
+                    "missing service has a command"
+                );
+            }
+        }
+        for (key, signature) in [
+            ("Environment", "as"),
+            ("EnvironmentFiles", "a(sb)"),
+            ("BindPaths", "a(ssbt)"),
+            ("BindReadOnlyPaths", "a(ssbt)"),
+        ] {
+            ensure!(
+                property(service, key, signature)?
+                    .as_array()
+                    .is_some_and(Vec::is_empty),
+                "missing service has resource settings"
+            );
+        }
+        for key in ["WorkingDirectory", "RootDirectory", "RootImage"] {
+            ensure!(
+                property(service, key, "s")? == "",
+                "missing service has a filesystem setting"
+            );
+        }
+        return Ok(None);
+    }
+    ensure!(
+        property(unit, "LoadState", "s")? == "loaded",
+        "unavailable service definition"
+    );
+    let fragment = property(unit, "FragmentPath", "s")?
+        .as_str()
+        .context("invalid cached fragment")?;
+    ensure!(
+        Path::new(fragment).is_absolute(),
+        "missing cached definition"
+    );
+    Ok(Some(fragment))
+}
+
 fn cached_matches(
     unit: &Value,
     service: &Value,
@@ -96,6 +181,7 @@ fn cached_matches(
         "unknown cached command flags"
     );
     for name in [
+        "ExecCondition",
         "ExecStartPre",
         "ExecStartPost",
         "ExecReload",
@@ -216,25 +302,7 @@ pub(super) fn inventory(layout: &Layout, homes: &[PathBuf]) -> Result<References
     let recognized = (|| -> Result<References> {
         let mut refs = References::default();
         let mut verified = BTreeSet::new();
-        let mut manager_environment = BTreeMap::new();
-        let manager = properties(
-            "/org/freedesktop/systemd1",
-            "org.freedesktop.systemd1.Manager",
-        )?;
-        for entry in strings(property(&manager, "Environment", "as")?)? {
-            let (key, value) = entry
-                .split_once('=')
-                .context("invalid manager environment")?;
-            ensure!(
-                manager_environment
-                    .insert(key.to_owned(), value.to_owned())
-                    .is_none(),
-                "duplicate manager environment"
-            );
-        }
-        for path in references::environment_paths(&manager_environment)? {
-            refs.include(&layout.root, &path)?;
-        }
+        let mut has_registration = !files.is_empty();
         for (path, connector) in files {
             let definition = definition::unit(&path, connector)?;
             definition.include(&layout.root, &mut refs, &mut verified)?;
@@ -243,19 +311,37 @@ pub(super) fn inventory(layout: &Layout, homes: &[PathBuf]) -> Result<References
         for (object, connector) in loaded {
             let unit = properties(&object, "org.freedesktop.systemd1.Unit")?;
             let service = properties(&object, "org.freedesktop.systemd1.Service")?;
-            let fragment = property(&unit, "FragmentPath", "s")?
-                .as_str()
-                .context("invalid cached fragment")?;
-            ensure!(
-                Path::new(fragment).is_absolute(),
-                "missing cached definition"
-            );
+            let Some(fragment) = cached_fragment(&unit, &service)? else {
+                continue;
+            };
+            has_registration = true;
             let definition = definition::unit(Path::new(fragment), connector)?;
             for path in cached_matches(&unit, &service, &definition)? {
                 refs.include(&layout.root, &path)?;
             }
             definition.include(&layout.root, &mut refs, &mut verified)?;
             refs.include(&layout.root, Path::new(fragment))?;
+        }
+        if has_registration {
+            let mut manager_environment = BTreeMap::new();
+            let manager = properties(
+                "/org/freedesktop/systemd1",
+                "org.freedesktop.systemd1.Manager",
+            )?;
+            for entry in strings(property(&manager, "Environment", "as")?)? {
+                let (key, value) = entry
+                    .split_once('=')
+                    .context("invalid manager environment")?;
+                ensure!(
+                    manager_environment
+                        .insert(key.to_owned(), value.to_owned())
+                        .is_none(),
+                    "duplicate manager environment"
+                );
+            }
+            for path in references::environment_paths(&manager_environment)? {
+                refs.include(&layout.root, &path)?;
+            }
         }
         Ok(refs)
     })();
@@ -289,6 +375,7 @@ mod tests {
             "BindPaths":variant("a(ssbt)",json!([])),"BindReadOnlyPaths":variant("a(ssbt)",json!([])),
             "WorkingDirectory":variant("s",json!("/work"))});
         for name in [
+            "ExecCondition",
             "ExecStartPre",
             "ExecStartPost",
             "ExecReload",
@@ -299,6 +386,73 @@ mod tests {
         }
         (definition, unit, service)
     }
+    #[test]
+    fn missing_systemd_status_record_has_no_registration() {
+        // Real systemd keeps these negative lookup objects after `show` of an
+        // absent unit. They have no persisted file or executable to retain.
+        let mut unit = json!({
+            "LoadState":variant("s",json!("not-found")),
+            "ActiveState":variant("s",json!("inactive")),
+            "SubState":variant("s",json!("dead")),
+            "FragmentPath":variant("s",json!("")),
+            "SourcePath":variant("s",json!("")),
+            "DropInPaths":variant("as",json!([])),
+            "NeedDaemonReload":variant("b",json!(false)),
+            "Transient":variant("b",json!(false)),
+            "Job":variant("(uo)",json!([0,"/"]))});
+        let mut service = json!({
+            "MainPID":variant("u",json!(0)),"ControlPID":variant("u",json!(0)),
+            "Environment":variant("as",json!([])),
+            "EnvironmentFiles":variant("a(sb)",json!([])),
+            "WorkingDirectory":variant("s",json!("")),
+            "RootDirectory":variant("s",json!("")),"RootImage":variant("s",json!("")),
+            "BindPaths":variant("a(ssbt)",json!([])),"BindReadOnlyPaths":variant("a(ssbt)",json!([]))});
+        for key in [
+            "ExecCondition",
+            "ExecStartPre",
+            "ExecStart",
+            "ExecStartPost",
+            "ExecReload",
+            "ExecStop",
+            "ExecStopPost",
+        ] {
+            service[key] = variant("a(sasbttttuii)", json!([]));
+            service[format!("{key}Ex")] = variant("a(sasasttttuii)", json!([]));
+        }
+        assert_eq!(cached_fragment(&unit, &service).unwrap(), None);
+        for (key, value) in [
+            ("FragmentPath", json!("/old/service")),
+            ("SourcePath", json!("/old/source")),
+            ("LoadState", json!("loaded")),
+            ("ActiveState", json!("activating")),
+            ("Job", json!([3, "/job/3"])),
+            ("DropInPaths", json!(["/old/override"])),
+        ] {
+            let mut changed = unit.clone();
+            changed[key]["data"] = value;
+            assert!(cached_fragment(&changed, &service).is_err(), "{key}");
+        }
+        for (key, value) in [
+            ("MainPID", json!(123)),
+            ("ControlPID", json!(123)),
+            ("WorkingDirectory", json!("/old/version")),
+            ("Environment", json!(["PATH=/old/version"])),
+            (
+                "ExecCondition",
+                json!([["/old/check", [], false, 0, 0, 0, 0, 0, 0, 0]]),
+            ),
+        ] {
+            let mut changed = service.clone();
+            changed[key]["data"] = value;
+            assert!(cached_fragment(&unit, &changed).is_err(), "{key}");
+        }
+        unit["LoadState"]["data"] = json!("loaded");
+        assert!(
+            cached_fragment(&unit, &service).is_err(),
+            "real cached service with missing fragment remains conservative"
+        );
+    }
+
     #[test]
     fn stopped_cached_unit_agrees_but_changed_files_or_overrides_do_not() {
         let (definition, unit, service) = fixture();

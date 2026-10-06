@@ -1993,3 +1993,8 @@ it. Never restore an older delivery ledger over already acknowledged input.
 The
 response is stored before writing and acknowledged only after provider resolution,
 using the same exact human-answer and no-replay contract as other reviews.
+
+Systemd may cache a negative lookup after a status query for an absent unit.
+Maintenance ignores it only when typed cached state confirms not-found/inactive,
+no definition or overrides, no command, no job or process and no resource settings.
+A missing file on a real cached registration still preserves the installation.
