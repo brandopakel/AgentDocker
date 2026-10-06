@@ -171,8 +171,10 @@ impl Layout {
         // Discovery is also used by status/dry-run; neither creates state.
         // Service ownership is the caller's identity, not a directory's owner.
         let uid = current_uid();
-        let user_home = std::env::home_dir().context("no home directory")?;
-        let home = home.canonicalize().unwrap_or(home);
+        let user_home = agentdocker_host::project::try_canonical(
+            &std::env::home_dir().context("no home directory")?,
+        )?;
+        let home = agentdocker_host::project::try_canonical(&home)?;
         let socket = service_socket(&home, socket);
         if let Some(socket) = &socket {
             validate_service_socket(socket)?;
@@ -624,10 +626,21 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
     // Protect the separately selected daemon as well as the CLI before any
     // definition is written or an existing service is retired/replaced.
     let _registration = if matches!(&args.command, DaemonCommand::Install { dry_run: false }) {
-        agentdocker_host::installation::guard_service_registration(&[
-            layout.agentd.clone(),
-            agentdocker_host::procinfo::executable_path()?,
-        ])?
+        let data = vec![layout.home.clone(), layout.user_home.clone(), layout.log()];
+        // Native Windows endpoints are pipe names, not filesystem resources.
+        #[cfg(unix)]
+        let data = {
+            let mut data = data;
+            data.extend(layout.socket.iter().cloned());
+            data
+        };
+        agentdocker_host::installation::guard_service_references(
+            &[
+                layout.agentd.clone(),
+                agentdocker_host::procinfo::executable_path()?,
+            ],
+            &data,
+        )?
     } else {
         Vec::new()
     };

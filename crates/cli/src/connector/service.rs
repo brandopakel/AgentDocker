@@ -45,6 +45,37 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Serialize all selected resource stores with maintenance, including
+    /// resources outside the installation containing the connector executable.
+    fn registration_guard(&self) -> Result<Vec<agentdocker_host::lock::Lock>> {
+        let mut executables = vec![self.agentdocker.clone()];
+        let mut data = vec![self.home.clone(), self.log(), self.user_home.clone()];
+        let mut pairs = self.serve_args.chunks_exact(2);
+        for pair in &mut pairs {
+            match pair[0].as_str() {
+                "--cloudflared" | "--tailscale" => executables.push(PathBuf::from(&pair[1])),
+                "--project" => data.push(PathBuf::from(&pair[1])),
+                "--allow-from" => {
+                    if let Some(path) = pair[1].strip_prefix('@') {
+                        anyhow::ensure!(!path.is_empty(), "connector feed path is empty");
+                        data.push(PathBuf::from(path));
+                    }
+                }
+                "--public-url" | "--bind" | "--allow-callback" | "--tunnel" | "--tunnel-name"
+                | "--tunnel-port" | "--client-ip-header" => {}
+                _ => bail!("unrecognized connector service argument; registration refused"),
+            }
+        }
+        anyhow::ensure!(
+            pairs.remainder().is_empty(),
+            "incomplete connector service arguments"
+        );
+        Ok(agentdocker_host::installation::guard_service_references(
+            &executables,
+            &data,
+        )?)
+    }
+
     #[cfg(any(not(windows), test))]
     pub fn argv(&self) -> Vec<String> {
         let mut argv = vec![
@@ -255,11 +286,14 @@ pub fn uninstall_plan(layout: &Layout, macos: bool) -> Plan {
 }
 
 fn layout(args: &ServeArgs) -> Result<Layout> {
+    let captured = capture_service_paths(args, &std::env::current_dir()?)?;
+    let args = &captured;
     let agentdocker = std::env::current_exe().context("cannot locate this executable")?;
-    let home = agentdocker_host::dirs::home();
-    #[cfg(windows)]
-    let home = home.canonicalize().unwrap_or(home);
-    let user_home = std::env::home_dir().context("no home directory")?;
+    let home = agentdocker_host::project::try_canonical(&agentdocker_host::dirs::home())
+        .context("cannot resolve connector service state directory")?;
+    let user_home = agentdocker_host::project::try_canonical(
+        &std::env::home_dir().context("no home directory")?,
+    )?;
     let mut serve_args = args.to_argv();
     let mut path_dirs = Vec::new();
     // Resolve the tunnel's binary now: launchd's PATH will not, and a
@@ -318,9 +352,7 @@ pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
     let _registration = if dry_run {
         Vec::new()
     } else {
-        agentdocker_host::installation::guard_service_registration(std::slice::from_ref(
-            &layout.agentdocker,
-        ))?
+        layout.registration_guard()?
     };
     let plan = install_plan(&layout, macos);
     execute(&plan, dry_run)?;
@@ -404,9 +436,7 @@ pub fn enable(args: &ServeArgs, dry_run: bool) -> Result<()> {
     if dry_run {
         return execute(&plan, true);
     }
-    let _registration = agentdocker_host::installation::guard_service_registration(
-        std::slice::from_ref(&layout.agentdocker),
-    )?;
+    let _registration = layout.registration_guard()?;
     for (path, contents) in &plan.files {
         ensure_definition(path, contents)?;
     }
@@ -436,8 +466,7 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
 
 /// A login task does not inherit the installing shell's working directory.
 /// Capture configured project, feed and executable paths before registration.
-#[cfg(any(windows, test))]
-fn capture_windows_paths(args: &ServeArgs, cwd: &std::path::Path) -> Result<ServeArgs> {
+fn capture_service_paths(args: &ServeArgs, cwd: &std::path::Path) -> Result<ServeArgs> {
     anyhow::ensure!(
         cwd.is_absolute(),
         "service setup directory must be absolute"
@@ -491,7 +520,7 @@ fn capture_windows_arguments(
     cwd: &std::path::Path,
     find: impl Fn(&str) -> Result<PathBuf>,
 ) -> Result<ServeArgs> {
-    let mut args = capture_windows_paths(args, cwd)?;
+    let mut args = capture_service_paths(args, cwd)?;
     // Pin discovery before serialization so install and reparsed service-run
     // produce the same argument order, even with trailing allowlist options.
     match args.tunnel.as_deref() {
@@ -524,6 +553,55 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connector_registration_guards_tunnel_project_and_feed_versions_in_other_stores() {
+        use agentdocker_host::{dirs, installation, lock};
+        for option in ["--cloudflared", "--tailscale", "--project", "--allow-from"] {
+            let temp = tempfile::tempdir().unwrap();
+            let store = temp.path().join(if cfg!(windows) {
+                "AgentDocker/desktop"
+            } else {
+                ".local/share/agentdocker/desktop"
+            });
+            dirs::secure_state_dir(&store).unwrap();
+            let payload = store.join("versions").join("a".repeat(64)).join("payload");
+            std::fs::create_dir_all(&payload).unwrap();
+            let executable = temp.path().join("portable-controller");
+            let resource = payload.join("selected-resource");
+            std::fs::write(&executable, "fixture").unwrap();
+            if option == "--project" {
+                std::fs::create_dir(&resource).unwrap();
+            } else {
+                std::fs::write(&resource, "fixture").unwrap();
+            }
+            let value = if option == "--allow-from" {
+                format!("@{}", resource.display())
+            } else {
+                resource.to_string_lossy().into_owned()
+            };
+            let mut layout = layout();
+            layout.agentdocker = executable;
+            layout.home = temp.path().join("absent-state");
+            layout.user_home = temp.path().to_owned();
+            layout.serve_args = vec![option.into(), value];
+            let _guard = layout.registration_guard().unwrap();
+            assert_eq!(
+                installation::service_inventory_guard(&store, true)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            assert!(
+                lock::try_exclusive_existing(
+                    &installation::pin_path(&store, &"a".repeat(64)).unwrap()
+                )
+                .unwrap()
+                .is_none()
+            );
+            assert!(!layout.home.exists());
+        }
+    }
 
     #[test]
     fn discovered_windows_tunnel_arguments_survive_service_run_reparse() {
@@ -594,7 +672,7 @@ mod tests {
             allow_from: vec!["@egress.txt".into(), "openai".into(), "192.0.2.0/24".into()],
             ..ServeArgs::default()
         };
-        let captured = capture_windows_paths(&args, temp.path()).unwrap();
+        let captured = capture_service_paths(&args, temp.path()).unwrap();
         assert_eq!(
             captured.project.unwrap(),
             temp.path().join("project").canonicalize().unwrap()
@@ -627,7 +705,7 @@ mod tests {
                 allow_from: vec![value.into()],
                 ..ServeArgs::default()
             };
-            assert!(capture_windows_paths(&args, temp.path()).is_err());
+            assert!(capture_service_paths(&args, temp.path()).is_err());
         }
     }
 

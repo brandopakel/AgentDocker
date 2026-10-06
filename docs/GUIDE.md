@@ -505,6 +505,11 @@ turn. A copied instruction is not executed by AgentDocker.
 | `mcp` | Serve our tools to an MCP host over stdio |
 | `connector serve` / `status` / `install` / `enable` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
 
+Connector service installation saves absolute project, tunnel-program and local `@file`
+allowlist paths, so login does not depend on the installing shell’s working directory.
+Those configured paths must exist when installing; a missing feed or program is
+reported before the service definition is written.
+
 ---
 
 ## MCP tools

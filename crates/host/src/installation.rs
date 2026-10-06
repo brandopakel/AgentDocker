@@ -147,13 +147,38 @@ pub fn pin_current_executable() -> io::Result<Option<lock::Lock>> {
 /// pins; maintenance holds the same lock from inventory through deletion.
 /// Portable executables have no managed store and create no installation state.
 pub fn guard_service_registration(executables: &[PathBuf]) -> io::Result<Vec<lock::Lock>> {
+    guard_service_references(executables, &[])
+}
+
+/// Protect every managed store a service will use before publishing it.
+///
+/// Executables must exist; data paths may name a future log or state directory.
+/// Resolve aliases first, acquire store guards in path order, then pin every
+/// referenced immutable version. Hold these guards through manager registration.
+/// This also protects tunnel binaries and data in a different installation from
+/// the controller; ordinary paths outside managed stores create no state.
+pub fn guard_service_references(
+    executables: &[PathBuf],
+    data_paths: &[PathBuf],
+) -> io::Result<Vec<lock::Lock>> {
     let executables = executables
         .iter()
         .map(|path| path.canonicalize())
         .collect::<io::Result<Vec<_>>>()?;
+    let data_paths = data_paths
+        .iter()
+        .map(|path| crate::project::try_canonical(path))
+        .collect::<io::Result<Vec<_>>>()?;
+    let versions: BTreeSet<_> = executables
+        .iter()
+        .chain(&data_paths)
+        .filter_map(|path| managed_reference(path))
+        .map(|(root, version, id)| (root, version, id.to_owned()))
+        .collect();
     let roots: BTreeSet<_> = executables
         .iter()
-        .filter_map(|path| managed(path).map(|(root, _, _)| root))
+        .chain(&data_paths)
+        .filter_map(|path| managed_store(path))
         .collect();
     let mut guards = Vec::new();
     for root in roots {
@@ -162,12 +187,45 @@ pub fn guard_service_registration(executables: &[PathBuf]) -> io::Result<Vec<loc
                 .ok_or_else(|| io::Error::other("service registration guard was not created"))?,
         );
     }
-    for executable in executables {
-        if let Some(pin) = pin_executable(&executable)? {
-            guards.push(pin);
-        }
+    for (root, version, id) in versions {
+        guards.push(pin_version(&root, &version, &id)?);
+    }
+    if executables.iter().any(|path| !path.is_file()) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "service executable disappeared before registration",
+        ));
     }
     Ok(guards)
+}
+
+// Stable bootstrap paths and store-level data still need the service guard
+// even when they name no immutable version. A bare similarly named directory
+// with no installation inventory is not a managed store.
+fn managed_store(path: &Path) -> Option<PathBuf> {
+    let suffix = if cfg!(windows) {
+        "AgentDocker/desktop"
+    } else {
+        ".local/share/agentdocker/desktop"
+    };
+    path.ancestors()
+        .find(|root| root.ends_with(suffix) && root.join("versions").is_dir())
+        .map(Path::to_owned)
+}
+
+// Reference protection includes payload data and external tunnel programs, not
+// only the three launcher entrypoint names recognized by Windows redirection.
+fn managed_reference(path: &Path) -> Option<(PathBuf, PathBuf, &str)> {
+    let root = managed_store(path)?;
+    let versions = root.join("versions");
+    let id = path
+        .strip_prefix(&versions)
+        .ok()?
+        .components()
+        .next()?
+        .as_os_str()
+        .to_str()?;
+    Some((root, versions.join(id), id))
 }
 
 /// Hold the service inventory stable through a maintenance operation.
@@ -331,8 +389,19 @@ pub fn pin_executable(executable: &Path) -> io::Result<Option<lock::Lock>> {
     let Some((root, version, id)) = managed(executable) else {
         return Ok(None);
     };
-    let path = pin_path(&root, id)?;
-    dirs::secure_state_dir(&root)?;
+    let pin = pin_version(&root, &version, id)?;
+    if !executable.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "desktop release was removed; reopen the active installation",
+        ));
+    }
+    Ok(Some(pin))
+}
+
+fn pin_version(root: &Path, version: &Path, id: &str) -> io::Result<lock::Lock> {
+    let path = pin_path(root, id)?;
+    dirs::secure_state_dir(root)?;
     dirs::secure_state_dir(&root.join("pins"))?;
     let pin = lock::try_shared(&path)?.ok_or_else(|| {
         io::Error::new(
@@ -341,14 +410,14 @@ pub fn pin_executable(executable: &Path) -> io::Result<Option<lock::Lock>> {
         )
     })?;
     // A pruner may have won before this lock was opened. Pin files outlive
-    // deletion, so startup must recheck the version while holding the pin.
-    if !version.is_dir() || !executable.is_file() {
+    // deletion, so all referenced versions must still exist under the pin.
+    if !version.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "desktop release was removed; reopen the active installation",
         ));
     }
-    Ok(Some(pin))
+    Ok(pin)
 }
 
 #[cfg(test)]
@@ -672,6 +741,103 @@ mod tests {
             io::ErrorKind::WouldBlock,
             "registration must refuse before publishing across a guarded inventory"
         );
+    }
+
+    #[test]
+    fn service_data_and_tunnel_references_pin_other_stores_until_registration_finishes() {
+        let (_controller_temp, controller_root, controller) = fixture();
+        let (_data_temp, data_root, sample) = fixture();
+        let payload = sample.parent().unwrap();
+        let tunnel = payload.join("private-tunnel.exe");
+        let feed = payload.join("egress.json");
+        let project = payload.join("project");
+        std::fs::write(&tunnel, "fixture tunnel").unwrap();
+        std::fs::write(&feed, "fixture feed").unwrap();
+        std::fs::create_dir(&project).unwrap();
+        let future_log = payload.join("future/log/output.log");
+        let registration =
+            guard_service_references(&[controller, tunnel], &[feed, project, future_log.clone()])
+                .unwrap();
+        assert!(
+            !future_log.exists(),
+            "reference protection must not create data files"
+        );
+        for root in [&controller_root, &data_root] {
+            assert_eq!(
+                service_inventory_guard(root, true).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert!(
+                lock::try_exclusive_existing(&pin_path(root, &"a".repeat(64)).unwrap())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        drop(registration);
+        let _maintenance = released_lock(
+            &data_root.join("services.lock"),
+            lock::try_exclusive_existing,
+        );
+        assert_eq!(
+            guard_service_references(&[], &[future_log])
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn stable_service_bootstrap_and_store_data_guard_deactivation_without_data_creation() {
+        for use_bootstrap in [true, false] {
+            let (_temp, root, _sample) = fixture();
+            let bootstrap = root.join("bin/agentdocker.exe");
+            std::fs::create_dir(bootstrap.parent().unwrap()).unwrap();
+            std::fs::write(&bootstrap, "fixture stable bootstrap").unwrap();
+            let future_state = root.join("service-state/state.json");
+            let (executables, data) = if use_bootstrap {
+                (vec![bootstrap], vec![])
+            } else {
+                (vec![], vec![future_state.clone()])
+            };
+            let _guard = guard_service_references(&executables, &data).unwrap();
+            assert_eq!(
+                service_inventory_guard(&root, true).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert!(!future_state.exists());
+        }
+    }
+
+    #[test]
+    fn future_data_in_an_absent_installation_does_not_create_a_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join(if cfg!(windows) {
+            "AgentDocker/desktop"
+        } else {
+            ".local/share/agentdocker/desktop"
+        });
+        let future = root
+            .join("versions")
+            .join("a".repeat(64))
+            .join("state/file");
+        assert!(guard_service_references(&[], &[future]).unwrap().is_empty());
+        assert!(!root.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn service_reference_aliases_resolve_to_the_store_even_with_a_missing_suffix() {
+        let (temp, root, sample) = fixture();
+        let alias = temp.path().join("resource-alias");
+        std::os::unix::fs::symlink(sample.parent().unwrap(), &alias).unwrap();
+        let guard = guard_service_references(&[], &[alias.join("future/output.log")]).unwrap();
+        assert!(
+            lock::try_exclusive_existing(&pin_path(&root, &"a".repeat(64)).unwrap())
+                .unwrap()
+                .is_none()
+        );
+        drop(guard);
+        let _released = released_lock(&root.join("services.lock"), lock::try_exclusive_existing);
     }
 
     #[test]
