@@ -1857,7 +1857,7 @@ receipt recovery remains required for uncertain provider submissions.
 The external native Codex receiver prefers read-only item pagination. Only the
 provider's exact `-32601` “thread/items/list is not supported yet” refusal on
 the first page enables a fallback to `thread/turns/list`, one complete turn per
-page. It preserves exact turn/item receipts and anchors, rejects cursor cycles,
+page. If that first turn-page request returns the exact `-32601` “list_turns is not supported yet” refusal, the receiver retries only that read every 100 ms for at most two additional seconds, including response time. This covers a first input accepted before its history store exists. A successful page is still required; expiration retains the refusal and original input for recovery. Other errors and failures after an accepted page are not retried. It preserves exact turn/item receipts and anchors, rejects cursor cycles,
 and bounds each lookup to 100 pages, 5,000 items, 8 MiB and one minute. Transport
 frames remain limited to 4 MiB. Errors after partial pagination, absent/partial
 items, limits and missing receipts retain delivery for recovery; they never

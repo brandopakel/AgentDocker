@@ -1,11 +1,12 @@
 //! Read-only item pages, with bounded full-turn pages for legacy Codex stores.
 use super::super::{
     recovery,
-    transport::{Provider, items_list_unsupported},
+    transport::{Provider, items_list_unsupported, turns_list_not_ready},
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Duration};
+use tokio::time::{Instant, sleep, timeout_at};
 
 const MAX_PAGES: usize = 100;
 const MAX_ITEMS: usize = 5000;
@@ -72,6 +73,38 @@ impl History {
     }
 
     async fn turn_page(&self, provider: &mut Provider) -> Result<Value> {
+        let mut error = match self.read_turn_page(provider).await {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        if self.pages != 0 || !turns_list_not_ready(&error) {
+            return Err(error);
+        }
+        // Codex can accept the first native queue entry before materializing
+        // history. Preserve the same thread/cursor and await an actual page;
+        // a rejected read never counts as empty history or a receipt. The
+        // fixed deadline covers both the delay and every retry's response.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match timeout_at(deadline, async {
+                sleep(Duration::from_millis(100)).await;
+                self.read_turn_page(provider).await
+            })
+            .await
+            {
+                Ok(Ok(value)) => return Ok(value),
+                Ok(Err(next)) if turns_list_not_ready(&next) => error = next,
+                Ok(Err(other)) => return Err(other),
+                Err(_) => {
+                    return Err(error).context(
+                        "Codex history remains unavailable after a bounded read-only wait",
+                    );
+                }
+            }
+        }
+    }
+
+    async fn read_turn_page(&self, provider: &mut Provider) -> Result<Value> {
         provider
             .request(
                 "thread/turns/list",

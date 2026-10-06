@@ -51,6 +51,17 @@ pub(super) fn items_list_unsupported(error: &anyhow::Error) -> bool {
     })
 }
 
+/// A freshly queued native input can precede creation of its history store.
+/// This exact refusal permits a bounded read-only wait, never an empty history
+/// result or another input submission. Other errors retain their normal path.
+pub(super) fn turns_list_not_ready(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<RpcRejection>().is_some_and(|r| {
+        r.method == "thread/turns/list"
+            && r.error["code"].as_i64() == Some(-32601)
+            && r.error["message"].as_str() == Some("list_turns is not supported yet")
+    })
+}
+
 use std::{collections::VecDeque, path::Path, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
