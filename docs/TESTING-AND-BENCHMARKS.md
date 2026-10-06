@@ -141,6 +141,9 @@ Native graphical failures record connection state, inventory count, whether the 
 
 Native Windows package installation acceptance registers three uniquely named,
 disabled Task Scheduler fixtures without triggers and never starts their actions.
+Trigger checks distinguish a null trigger property from a one-element array;
+the original Windows fixture failure and cleanup refusal remain in the
+verification index. Corrected native acceptance is still required.
 An opaque wrapper and an exact retained-version reference must protect the old
 payload and invalidate a prior removal plan. A stable-bootstrap reference must
 permit inactive-build pruning while still blocking launcher uninstall. Each

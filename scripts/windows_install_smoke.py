@@ -186,6 +186,8 @@ def main():
             return json.loads(result.stdout)
 
         try:
+            # ScheduledTasks represents no triggers as $null. Wrapping that
+            # scalar in @() counts one item, so distinguish it before counting.
             value = scheduler('register disabled task', query +
                 "if($tasks.Count -ne 0){throw 'Fixture task name already exists'};"
                 "$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
@@ -196,7 +198,8 @@ def main():
                 "-Action $action -Settings $settings -Description $description | Out-Null;"
                 "Disable-ScheduledTask -TaskPath '\\' -TaskName $name | Out-Null;"
                 "$task=Get-ScheduledTask -TaskPath '\\' -TaskName $name -ErrorAction Stop;"
-                "[pscustomobject]@{state=$task.State.ToString();triggers=@($task.Triggers).Count;"
+                "[pscustomobject]@{state=$task.State.ToString();"
+                "triggers=$(if($null -eq $task.Triggers){0}else{@($task.Triggers).Count});"
                 "actions=@($task.Actions).Count}|ConvertTo-Json -Compress")
             entry['registered'] = value
             save()
@@ -215,7 +218,8 @@ def main():
                 "if($tasks.Count -eq 1){$task=$tasks[0];"
                 "if($task.Description -cne $description -or @($task.Actions).Count -ne 1 "
                 "-or $task.Actions[0].Execute -ine $executable -or $task.Actions[0].Arguments -cne $arguments "
-                "-or @($task.Triggers).Count -ne 0 -or $task.State.ToString() -eq 'Running')"
+                "-or ($null -ne $task.Triggers -and @($task.Triggers).Count -ne 0) "
+                "-or $task.State.ToString() -eq 'Running')"
                 "{throw 'Changed or running fixture task was preserved'};"
                 "Unregister-ScheduledTask -TaskPath '\\' -TaskName $name -Confirm:$false | Out-Null};" +
                 query + "[pscustomobject]@{absent=($tasks.Count -eq 0)}|ConvertTo-Json -Compress")
