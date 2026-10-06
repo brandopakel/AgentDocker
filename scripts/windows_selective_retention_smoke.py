@@ -4,6 +4,7 @@ Runs only inside windows_install_smoke's random private installation. No
 provider, account, logon or production task is involved.
 """
 import base64
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ import uuid
 def exercise(scratch, store, second_app, retained, current, desktop, run,
              stopped_task, step, report, save):
     import psutil
+    import msvcrt
     from windows_smoke_pipe import WindowsSmokePipe
 
     detail = {'result': 'running', 'processes': [], 'cleanup_errors': []}
@@ -27,11 +29,40 @@ def exercise(scratch, store, second_app, retained, current, desktop, run,
     unrelated = desktop('install', '--from', spare, '--local-preview', '--preview')['candidate']['id']
     assert unrelated not in (retained, current)
     destination = store / 'versions' / unrelated / 'AgentDocker'
-    shutil.copytree(spare, destination)
-    # Create its lifetime pin through an actual managed entrypoint, then let
-    # that invocation retire before maintenance. Activation stays unchanged.
-    run('--version', executable=destination / 'agentdocker.exe', raw=True)
-    assert (store / 'pins' / (unrelated + '.lock')).is_file()
+    original = desktop('status')['installation']
+    assert original['current']['id'] == current and original['previous'] is not None
+    previous = original['previous']['id']
+
+    @contextmanager
+    def pinned(identity):
+        with (store / 'pins' / (identity + '.lock')).open('r+b') as held:
+            msvcrt.locking(held.fileno(), msvcrt.LK_NBLCK, 1)
+            try:
+                yield
+            finally:
+                held.seek(0)
+                msvcrt.locking(held.fileno(), msvcrt.LK_UNLCK, 1)
+
+    # Use the real installer to create its protected version directory. A
+    # manually copied folder is not proof of private installer ownership.
+    # Lifetime pins preserve the original inactive/rollback releases while
+    # normal activation/rollback restores the exact original current pair.
+    with ExitStack() as pins:
+        pins.enter_context(pinned(previous))
+        pins.enter_context(pinned(retained))
+        desktop('install', '--from', spare, '--local-preview',
+                '--expect-current', current, '--expect-release', unrelated)
+        run('--version', executable=destination / 'agentdocker.exe', raw=True)
+        pins.enter_context(pinned(unrelated))
+        desktop('rollback', '--local-preview', '--expect-current', unrelated, '--expect-release', current)
+        desktop('install', '--from', store / 'versions' / previous / 'AgentDocker',
+                '--local-preview', '--expect-current', current, '--expect-release', previous)
+        desktop('rollback', '--local-preview', '--expect-current', previous, '--expect-release', current)
+    detail['provisioned_plan'] = desktop('prune', '--preview')
+    save()
+    step('real installer creates an eligible unrelated build and restores the original activation pair',
+         {Path(p).name for p in detail['provisioned_plan']['maintenance']['remove']} == {retained, unrelated}
+         and desktop('status')['installation'] == original)
     controller = store / 'bin/agentdocker.exe'
     selected_controller = store / 'versions' / current / 'AgentDocker/agentdocker.exe'
     daemon = store / 'versions' / retained / 'AgentDocker/agentd.exe'
@@ -90,9 +121,9 @@ def exercise(scratch, store, second_app, retained, current, desktop, run,
         with stopped_task('selective retained service', arguments, execution_seconds=120) as task:
             try:
                 before = desktop('prune', '--preview')
-                assert {Path(p).name for p in before['maintenance']['remove']} == {unrelated}
                 detail['reviewed_plan'] = before
                 save()
+                assert {Path(p).name for p in before['maintenance']['remove']} == {unrelated}
                 desktop('prune', '--expect-plan', before['plan_id'])
                 step('stopped service keeps its exact old version while unrelated verified build is removed',
                      daemon.is_file() and not destination.parent.exists()
