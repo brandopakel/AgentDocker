@@ -101,6 +101,8 @@ jobs:
       # The first daemon/CLI slice: both build and lint natively, and a
       # daemon on a private home answers the CLI over a named pipe. Their
       # test suites still carry Unix-only fixtures and run elsewhere.
+      - name: Native server log cancellation regression
+        run: cargo test --locked -p agentdocker --test windows_log_reader -- --nocapture
       - name: Native daemon and CLI lint
         run: cargo clippy --locked -p agentd -p agentdocker -- -D warnings
       - name: Native daemon, CLI and desktop release build with provenance
