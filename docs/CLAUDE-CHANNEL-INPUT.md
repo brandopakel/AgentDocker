@@ -72,7 +72,7 @@ are supplied by the app; no handwritten environment command is needed.
 Reconnect preserves the recorded executable, supported launch options (including
 permission mode, tool allow/deny lists, strict MCP settings, model and system
 prompt) and explicit launch environment. It replaces the session selector with
-the recorded conversation and never resubmits the initial positional prompt.
+the recorded conversation and never resubmits the initial positional prompt. The stored conversation ID must pass the same plain-ID validation as the daemon before either client constructs its command.
 The owned AgentDocker channel entry is rebuilt using the current CLI. Ambiguous
 or unsupported options and altered MCP entries refuse before a launch; resume
 such a session explicitly with its original configuration. External sessions
