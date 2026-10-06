@@ -805,12 +805,17 @@ and cleanup confirmed no installed task. The following cleanup lookup took
 and Scheduler lookup; it does not explain why that Windows host was slow or
 diagnose the separate historical daemon-start failure.
 
-Each Scheduler script now allows 60 seconds, including PowerShell startup.
-The command still runs once, preserves ownership checks and private staging,
-and terminates its owned job on timeout. It never retries a possibly committed
-mutation. Daemon readiness and stop deadlines remain unchanged. Native service
-acceptance of this revised allowance is pending; the original failure remains
-indexed.
+Each daemon/connector service-management Scheduler script allows 60 seconds,
+including PowerShell startup. The command still runs once, preserves ownership
+checks and private staging, and terminates its owned job on timeout. It never
+retries a possibly committed mutation. Daemon readiness and stop deadlines remain
+unchanged. Source `5ea18f84` passed forty fresh starts and portable/installed
+service trials; all 98 traced operations stayed within the old allowance, so the
+slow failure was not reproduced. Published beta.8 (`590c4bb9`) subsequently passed
+actual beta.7 → beta.8 update/schema rollback refusal, 13 installed daemon and
+24 connector checks, with exact bytes and cleanup independently verified. The
+original failure and physical/logon/reboot gates remain open; see
+[distribution acceptance](DISTRIBUTION-SETUP.md#coworker-preview-releases).
 
 Native review-correction source `30e78859` passed 17 portable and 21 installed connector checks, including
 relative-path startup/HTTP, repeated enable, stale/foreign ownership refusal,
