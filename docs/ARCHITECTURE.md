@@ -853,14 +853,20 @@ and rechecks content identity. Pins outlive deleted versions to prevent inode
 replacement races. Active, rollback, legacy unpinned and running versions remain;
 an installed daemon or connector user service protects retained binaries and
 blocks uninstall, including stopped services that hold no running-process pin.
+Unix maintenance checks both definition paths and the manager's retained
+registrations: launchd GUI/user domain services, and systemd's typed loaded-unit
+and unit-file inventories. A removed definition does not erase a cached service
+reference. Unavailable or unrecognized manager output preserves the installation;
+queries are bounded and never include service arguments/environment in errors.
 Service registration and desktop maintenance share a permanent owner-only
 `services.lock` in each affected managed store. Registration acquires store
 guards in path order and pins both the calling CLI and a separately selected
 daemon through definition and manager publication. Maintenance holds its guard
 from service inventory through removal; contention refuses before mutation.
 Dry-run registration creates no guard, and maintenance preview opens only an
-existing one. This serialization does not yet supply an exact loaded/persisted
-service-reference inventory or relax conservative retained-build protection.
+existing one. These checks do not yet select exact referenced versions or relax
+conservative retained-build protection; legacy registration races still need
+acceptance before selective retention is enabled.
 Windows desktop activation under implementation uses a private JSON snapshot in
 `AgentDocker/desktop`, pointing only to a hash-named immutable version. Launcher
 contract 2 denotes receipt-checked Windows bootstrap forwarding and lifetime

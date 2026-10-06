@@ -5,6 +5,8 @@
 use super::*;
 use agentdocker_host::{installation, lock};
 
+mod services;
+
 #[derive(Serialize)]
 struct Entry {
     path: PathBuf,
@@ -229,10 +231,13 @@ fn service_installed(layout: &Layout) -> Result<bool> {
     if let Some(home) = std::env::home_dir() {
         homes.push(home);
     }
-    service_installed_in(&homes)
+    service_installed_in(&homes, services::manager_references)
 }
 
-fn service_installed_in(homes: &[PathBuf]) -> Result<bool> {
+fn service_installed_in(
+    homes: &[PathBuf],
+    manager_references: impl FnOnce() -> Result<bool>,
+) -> Result<bool> {
     use crate::connector::service::{LABEL as CONNECTOR_LABEL, UNIT as CONNECTOR_UNIT};
     use crate::service::{LABEL as DAEMON_LABEL, UNIT as DAEMON_UNIT};
     let names = if cfg!(target_os = "macos") {
@@ -258,7 +263,9 @@ fn service_installed_in(homes: &[PathBuf]) -> Result<bool> {
             }
         }
     }
-    Ok(false)
+    // Removing a file does not unload the manager's cached registration.
+    // Unknown/unavailable manager state cannot authorize deleting binaries.
+    manager_references()
 }
 
 /// The caller still holds the activation's installation lock. Cleanup is
@@ -497,20 +504,42 @@ mod tests {
         } else {
             ".config/systemd/user/agentdocker-connector.service"
         };
-        assert!(!service_installed_in(&homes).unwrap());
+        assert!(!service_installed_in(&homes, || Ok(false)).unwrap());
         for home in &homes {
             let unit = home.join(name);
             std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
             std::fs::write(&unit, "stopped fixture connector").unwrap();
-            let service = service_installed_in(&homes).unwrap();
+            let service = service_installed_in(&homes, || panic!("file already protects")).unwrap();
             assert!(service);
             assert_eq!(prune_activated(&layout, service).unwrap(), (0, 2));
             assert!(layout.payload(&old).exists());
             assert!(plan(&layout, None, false, service).is_err());
             std::fs::remove_file(&unit).unwrap();
-            assert!(!service_installed_in(&homes).unwrap());
+            assert!(!service_installed_in(&homes, || Ok(false)).unwrap());
         }
         assert_eq!(prune_activated(&layout, false).unwrap(), (1, 1));
+        assert!(!layout.payload(&old).exists());
+    }
+
+    #[test]
+    fn cached_registration_without_a_definition_still_protects_stopped_binaries() {
+        let (_temp, layout) = fixture();
+        let old = retained(&layout, "stopped-loaded-service", 1);
+        let current = retained(&layout, "active", 1);
+        layout.activate(current, None).unwrap();
+        let homes = [layout.prefix.clone()];
+        assert!(!service_installed_in(&homes, || Ok(false)).unwrap());
+        let loaded = service_installed_in(&homes, || Ok(true)).unwrap();
+        assert_eq!(prune_activated(&layout, loaded).unwrap(), (0, 2));
+        assert!(layout.payload(&old).exists());
+        assert!(plan(&layout, None, false, loaded).is_err());
+
+        // A failed query is neither an empty inventory nor permission to
+        // delete. Only a positively empty manager releases the protection.
+        assert!(service_installed_in(&homes, || bail!("manager unavailable")).is_err());
+        assert!(layout.payload(&old).exists());
+        let absent = service_installed_in(&homes, || Ok(false)).unwrap();
+        assert_eq!(prune_activated(&layout, absent).unwrap(), (1, 1));
         assert!(!layout.payload(&old).exists());
     }
 
