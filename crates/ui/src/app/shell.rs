@@ -5366,14 +5366,14 @@ mod tests {
                 "original-conversation"
             ]
         );
-        assert!(commands.try_recv().is_err());
+        assert_eq!(commands.try_iter().count(), 0);
 
         app.agents[0].spec.command.push("--unknown-option".into());
         assert!(
             app.reconnect_spec("restricted-session", Ok(cli.path().into()))
                 .is_err()
         );
-        assert!(commands.try_recv().is_err());
+        assert_eq!(commands.try_iter().count(), 0);
         assert_eq!(
             app.agents[0].status,
             agentdocker_core::AgentStatus::Exited { code: Some(0) }
