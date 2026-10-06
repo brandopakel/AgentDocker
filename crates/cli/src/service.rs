@@ -481,22 +481,75 @@ pub(crate) fn execute(plan: &Plan, dry_run: bool) -> Result<()> {
 }
 
 fn execute_commands(commands: &[Cmd], dry_run: bool) -> Result<()> {
+    execute_commands_with(
+        commands,
+        dry_run,
+        &mut |argv| {
+            Command::new(&argv[0])
+                .args(&argv[1..])
+                .output()
+                .with_context(|| format!("cannot run {}", argv.join(" ")))
+        },
+        Duration::from_secs(5),
+    )
+}
+
+fn execute_commands_with(
+    commands: &[Cmd],
+    dry_run: bool,
+    run: &mut impl FnMut(&[String]) -> Result<std::process::Output>,
+    unload_wait: Duration,
+) -> Result<()> {
     for Cmd { argv, tolerated } in commands {
         let line = argv.join(" ");
         if dry_run {
             println!("# would run: {line}");
             continue;
         }
-        let output = Command::new(&argv[0])
-            .args(&argv[1..])
-            .output()
-            .with_context(|| format!("cannot run {line}"))?;
+        let output = run(argv)?;
         if !output.status.success() && !tolerated {
             let _ = std::io::stderr().write_all(&output.stderr);
             bail!("`{line}` failed with {}", output.status);
         }
+        if argv.len() == 3 && argv[0] == "launchctl" && argv[1] == "bootout" {
+            wait_for_bootout(&argv[2], run, unload_wait)?;
+        }
     }
     Ok(())
+}
+
+/// `bootout` returns before launchd finishes removing a running job. A
+/// premature bootstrap can fail while kickstart still succeeds against the
+/// retiring job. Confirm removal before starting its replacement or deleting
+/// the definition. An unknown manager failure is not evidence of removal.
+fn wait_for_bootout(
+    target: &str,
+    run: &mut impl FnMut(&[String]) -> Result<std::process::Output>,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    let query = ["launchctl", "print", target].map(str::to_owned);
+    loop {
+        let output = run(&query)?;
+        // launchctl uses 113 for a service absent from the selected domain.
+        if output.status.code() == Some(113) {
+            return Ok(());
+        }
+        if !output.status.success() {
+            bail!(
+                "cannot confirm launchd service {target} was removed: {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "launchd service {target} was not removed within {} s",
+                timeout.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Ask a daemon on this socket to exit, then wait until it is gone. Used
@@ -775,6 +828,102 @@ fn current_uid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn manager_output(code: i32) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn launchd_replacement_waits_until_the_old_job_is_absent() {
+        let plan = install_plan(&layout(), true);
+        let mut trace = Vec::new();
+        let mut queries = 0;
+        execute_commands_with(
+            &plan.commands,
+            false,
+            &mut |argv| {
+                trace.push(argv[1].clone());
+                if argv[1] == "print" {
+                    queries += 1;
+                    return Ok(manager_output(if queries == 1 { 0 } else { 113 }));
+                }
+                if argv[1] == "bootstrap" {
+                    assert_eq!(queries, 2, "replacement must not meet the retiring job");
+                }
+                Ok(manager_output(0))
+            },
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(
+            trace,
+            ["bootout", "print", "print", "bootstrap", "kickstart"]
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn launchd_unknown_removal_errors_and_timeouts_stop_the_plan() {
+        for query_code in [0, 5] {
+            let plan = install_plan(&layout(), true);
+            let mut trace = Vec::new();
+            let error = execute_commands_with(
+                &plan.commands,
+                false,
+                &mut |argv| {
+                    trace.push(argv[1].clone());
+                    Ok(manager_output(if argv[1] == "print" {
+                        query_code
+                    } else {
+                        0
+                    }))
+                },
+                Duration::ZERO,
+            )
+            .unwrap_err();
+            assert_eq!(trace, ["bootout", "print"]);
+            assert!(
+                error.to_string().contains(if query_code == 0 {
+                    "was not removed"
+                } else {
+                    "cannot confirm"
+                }),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn launchd_absent_uninstall_is_idempotent_but_still_verifies_absence() {
+        let plan = uninstall_plan(&layout(), true);
+        let mut trace = Vec::new();
+        execute_commands_with(
+            &plan.commands,
+            false,
+            &mut |argv| {
+                trace.push(argv[1].clone());
+                Ok(manager_output(if argv[1] == "print" { 113 } else { 3 }))
+            },
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert_eq!(trace, ["bootout", "print"]);
+        execute_commands_with(
+            &plan.commands,
+            true,
+            &mut |_| panic!("dry run must not query or mutate launchd"),
+            Duration::ZERO,
+        )
+        .unwrap();
+    }
 
     #[test]
     fn overlong_service_socket_is_rejected_before_layout_side_effects() {
