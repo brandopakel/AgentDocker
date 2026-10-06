@@ -420,7 +420,16 @@ def main():
             else:
                 target_process.kill()
             report[probe_key]['frontend_exit_code'] = launcher.wait(timeout=10)
+            report[probe_key]['watched_details'] = []
+            for process in watched:
+                try:
+                    report[probe_key]['watched_details'].append({'pid': process.pid,
+                        'birth': process.create_time(), 'parent': process.ppid(), 'executable': process.exe()})
+                except psutil.NoSuchProcess:
+                    report[probe_key]['watched_details'].append({'pid': process.pid, 'already_exited': True})
+            retirement_started = time.monotonic()
             _, alive = psutil.wait_procs(watched, timeout=15)
+            report[probe_key]['retirement_wait_seconds'] = time.monotonic() - retirement_started
             # Save failure observations too, before an assertion or fixture cleanup.
             report[probe_key]['remaining'] = [p.pid for p in alive]
             report[probe_key]['capability_revoked'] = not Path(descriptor['token_file']).exists()
