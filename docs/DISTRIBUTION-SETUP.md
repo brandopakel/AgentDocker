@@ -11,7 +11,11 @@ A protected `v*` tag triggers `.github/workflows/release.yml`; editing the
 workflow does not publish anything. The tag version must match `Cargo.toml`
 and the recorded build must have clean source. The current published preview is
 `0.2.0-beta.8`; its protected workflow and bounded hosted checks passed in the
-scopes recorded below. Tags exclude `+build` metadata.
+scopes recorded below. Source version `0.2.0-beta.9` is an unpublished candidate
+for the reconnect and native receipt corrections; it still needs candidate
+validation, review, protected-tag publication and hosted acceptance. Both
+beta.8 and beta.9 use schema 26; same-schema rollback still needs an actual
+package lifecycle trial. Tags exclude `+build` metadata.
 The workflow builds CLI archives and four native desktop targets: Apple
 Silicon, Intel Mac, Linux x86_64 and Linux ARM64. The graphical Linux packages
 use GNU libc; the separate CLI-only Linux archives use musl.
