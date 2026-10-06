@@ -166,6 +166,47 @@ fn reconnect_cli_preserves_recorded_options_and_environment_with_explicit_execut
 }
 
 #[test]
+fn inline_tool_selection_never_replays_the_original_prompt_through_the_cli() {
+    let root = tempfile::Builder::new()
+        .prefix("ad-reconnect-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let socket = root.path().join("d.sock");
+    let mut record = record(root.path());
+    record.spec.command = [
+        "claude",
+        "--tools=Read",
+        "initial-input",
+        "--permission-mode",
+        "dontAsk",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let worker = serve(&socket, record.clone(), 2);
+    let output = cli(root.path(), &socket, &["reconnect", record.id.as_str()]);
+    let requests = worker.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        &requests[1]["spec"]["command"].as_array().unwrap()[5..],
+        json!([
+            "--tools=Read",
+            "--permission-mode",
+            "dontAsk",
+            "--resume",
+            "bound-conversation"
+        ])
+        .as_array()
+        .unwrap()
+    );
+    assert!(!requests[1].to_string().contains("initial-input"));
+}
+
+#[test]
 fn ambiguous_recorded_options_are_refused_before_a_resume_request() {
     let root = tempfile::Builder::new()
         .prefix("ad-reconnect-")

@@ -197,16 +197,20 @@ fn resume_options(previous: &AgentSpec) -> io::Result<Vec<String>> {
                     index += 1;
                 }
             }
-            Arity::Many => {
-                let first = index;
+            Arity::Many if inline.is_none() => {
+                // Claude's bundled parser consumes one required value even
+                // when it starts with '-'. Only the later values stop at an
+                // option. In contrast, --tools=value does NOT activate
+                // variadic consumption: the following operand is the prompt.
+                if index == args.len() {
+                    return Err(invalid("A recorded Claude option is missing its values"));
+                }
+                index += 1;
                 while args
                     .get(index)
                     .is_some_and(|value| !value.starts_with('-') || value == "-")
                 {
                     index += 1;
-                }
-                if inline.is_none() && first == index {
-                    return Err(invalid("A recorded Claude option is missing its values"));
                 }
             }
             _ => {}
@@ -316,7 +320,6 @@ mod tests {
             "--system-prompt",
             "--resume",
             "--tools=Read",
-            "Edit",
             "--debug=hooks",
             "--permission-mode=plan",
             "--",
@@ -329,6 +332,47 @@ mod tests {
         assert_eq!(
             resume_options(&launch(&["--tools", "", "--resume", "old"])).unwrap(),
             ["--tools", ""]
+        );
+    }
+
+    #[test]
+    fn an_inline_variadic_value_does_not_absorb_the_original_prompt() {
+        for flag in [
+            "--tools",
+            "--allowedTools",
+            "--disallowed-tools",
+            "--add-dir",
+            "--betas",
+        ] {
+            let inline = format!("{flag}=fixture-value");
+            let previous = launch(&[&inline, "original prompt", "--permission-mode", "plan"]);
+            assert_eq!(
+                resume_options(&previous).unwrap(),
+                [inline, "--permission-mode".into(), "plan".into()]
+            );
+        }
+    }
+
+    #[test]
+    fn the_first_separate_variadic_value_can_start_with_a_dash() {
+        let previous = launch(&[
+            "--add-dir",
+            "-fixture-dir",
+            "second-dir",
+            "--permission-mode",
+            "plan",
+            "--",
+            "original prompt",
+        ]);
+        assert_eq!(
+            resume_options(&previous).unwrap(),
+            [
+                "--add-dir",
+                "-fixture-dir",
+                "second-dir",
+                "--permission-mode",
+                "plan"
+            ]
         );
     }
 
