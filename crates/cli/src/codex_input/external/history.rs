@@ -1,11 +1,12 @@
 //! Read-only item pages, with bounded full-turn pages for legacy Codex stores.
 use super::super::{
     recovery,
-    transport::{Provider, items_list_unsupported},
+    transport::{Provider, items_list_unsupported, turns_list_not_ready},
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Duration};
+use tokio::time::{Instant, sleep, timeout_at};
 
 const MAX_PAGES: usize = 100;
 const MAX_ITEMS: usize = 5000;
@@ -72,6 +73,38 @@ impl History {
     }
 
     async fn turn_page(&self, provider: &mut Provider) -> Result<Value> {
+        let mut error = match self.read_turn_page(provider).await {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        if self.pages != 0 || !turns_list_not_ready(&error) {
+            return Err(error);
+        }
+        // Codex can accept the first native queue entry before materializing
+        // history. Preserve the same thread/cursor and await an actual page;
+        // a rejected read never counts as empty history or a receipt. The
+        // fixed deadline covers both the delay and every retry's response.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match timeout_at(deadline, async {
+                sleep(Duration::from_millis(100)).await;
+                self.read_turn_page(provider).await
+            })
+            .await
+            {
+                Ok(Ok(value)) => return Ok(value),
+                Ok(Err(next)) if turns_list_not_ready(&next) => error = next,
+                Ok(Err(other)) => return Err(other),
+                Err(_) => {
+                    return Err(error).context(
+                        "Codex history remains unavailable after a bounded read-only wait",
+                    );
+                }
+            }
+        }
+    }
+
+    async fn read_turn_page(&self, provider: &mut Provider) -> Result<Value> {
         provider
             .request(
                 "thread/turns/list",
@@ -140,6 +173,109 @@ fn full_turn_items(turns: &[Value]) -> Result<Vec<Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn first_history_read_waits_only_for_the_exact_temporary_store_refusal() {
+        use std::os::unix::fs::PermissionsExt;
+        for scenario in [
+            "ready",
+            "permanent",
+            "other-code",
+            "other-message",
+            "later-page",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let program = root.path().join("provider");
+            let requests = root.path().join("requests.jsonl");
+            let script = format!(
+                r#"#!/usr/bin/env python3
+import json,sys
+scenario={scenario}
+turn_reads=0
+for line in sys.stdin:
+    request=json.loads(line)
+    with open({requests},'a') as log: log.write(json.dumps(request)+'\n')
+    assert request['params']['threadId']=='original-thread'
+    if request['method']=='thread/items/list':
+        reply={{'error':{{'code':-32601,'message':'thread/items/list is not supported yet'}}}}
+    elif request['method']=='thread/turns/list':
+        turn_reads+=1
+        assert request['params']['limit']==1 and request['params']['itemsView']=='full'
+        assert request['params']['sortDirection']=='desc'
+        cursor=request['params']['cursor']
+        ready=(scenario=='ready' and turn_reads>=3) or (scenario=='later-page' and cursor is None)
+        if ready:
+            reply={{'result':{{'data':[{{'id':'original-turn','items':[{{'id':'original-item','type':'userMessage','content':[{{'type':'text','text':'exact original input'}}]}}]}}],'nextCursor':'older' if scenario=='later-page' else None}}}}
+        else:
+            reply={{'error':{{'code':-32603 if scenario=='other-code' else -32601,'message':'different refusal' if scenario=='other-message' else 'list_turns is not supported yet'}}}}
+    else: raise AssertionError('unexpected or mutating request')
+    print(json.dumps(dict(reply,id=request['id'])),flush=True)
+"#,
+                scenario = serde_json::to_string(scenario).unwrap(),
+                requests = serde_json::to_string(&requests.to_str().unwrap()).unwrap()
+            );
+            std::fs::write(&program, script).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let mut provider = Provider::start(&program, &[], root.path()).unwrap();
+            let mut history = History::new("original-thread", 50);
+            let first = history.next(&mut provider).await;
+            let later = if scenario == "later-page" && first.is_ok() {
+                Some(history.next(&mut provider).await)
+            } else {
+                None
+            };
+            provider.shutdown().await.unwrap();
+            let seen: Vec<Value> = std::fs::read_to_string(requests)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(seen[0]["method"], "thread/items/list");
+            assert!(seen[1..].iter().all(|r| r["method"] == "thread/turns/list"));
+            if matches!(scenario, "ready" | "later-page") {
+                let entries = first.unwrap().unwrap();
+                assert_eq!(entries.len(), 1);
+                let receipt = recovery::receipt(
+                    "original-thread",
+                    entries[0]["turnId"].as_str().unwrap(),
+                    &entries[0]["item"],
+                    "exact original input",
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    (
+                        receipt.thread.as_str(),
+                        receipt.turn.as_str(),
+                        receipt.item.as_str()
+                    ),
+                    ("original-thread", "original-turn", "original-item")
+                );
+                if scenario == "ready" {
+                    assert_eq!(seen.len(), 4);
+                    assert!(history.done);
+                } else {
+                    assert!(later.unwrap().is_err());
+                    assert_eq!(seen.len(), 3, "later-page refusals must not be retried");
+                    assert_eq!(seen[2]["params"]["cursor"], "older");
+                    assert!(!history.done);
+                }
+            } else {
+                assert!(
+                    first.is_err(),
+                    "a rejected history must never become empty history"
+                );
+                assert_eq!(history.pages, 0);
+                assert!(!history.done);
+                if scenario == "permanent" {
+                    assert!(seen.len() <= 25, "history retry must remain bounded");
+                } else {
+                    assert_eq!(seen.len(), 2, "unrelated errors must not be retried");
+                }
+            }
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]

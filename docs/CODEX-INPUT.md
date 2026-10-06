@@ -1121,7 +1121,7 @@ an empty native queue and a receiver ledger with no attempted, completed, failed
 or manually disposed input. This establishes an initial anchor without treating
 any history error as empty history. Writing the first attempt permanently spends
 that allowance; receipt recovery, explicit resolution and upgrades keep normal
-history requirements. Version-1 records cannot opt into it. Codex reconstructs both timestamps from
+history requirements. After a queued input is accepted, its history can briefly remain unavailable: the exact `-32601` “list_turns is not supported yet” refusal on the first page now gets up to two additional seconds of read-only retries. An actual history page and exact receipt are still required; this never recreates the birth allowance, treats an error as empty history, or sends the input again. Other errors, later-page errors and an expired wait retain normal recovery behavior. Version-1 records cannot opt into the birth allowance. Codex reconstructs both timestamps from
 its current clock while a thread remains unmaterialized. They must be equal and
 bounded by the witnessed creation and current read time; they are not thread
 identity. Thread/session IDs, canonical checkout, live generations and all empty
