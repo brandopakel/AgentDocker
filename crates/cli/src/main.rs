@@ -2504,22 +2504,17 @@ async fn run() -> Result<()> {
                 .get("session_id")
                 .cloned()
                 .ok_or_else(|| anyhow!("this session has no conversation id to resume"))?;
-            let claude = claude.unwrap_or_else(|| PathBuf::from("claude"));
-            let mut spec = agentdocker_core::AgentSpec {
-                name: record.spec.name.clone(),
-                runtime: record.spec.runtime.clone(),
-                command: vec![
-                    claude.to_string_lossy().into_owned(),
-                    "--resume".into(),
-                    session,
-                ],
-                workdir: record.spec.workdir.clone(),
-                tty: true,
-                ..Default::default()
-            };
+            let claude = claude
+                .or_else(|| record.spec.command.first().map(PathBuf::from))
+                .unwrap_or_else(|| PathBuf::from("claude"));
             let me = std::env::current_exe().context("cannot find this executable")?;
-            agentdocker_host::provider_input::enable_claude_channel(&mut spec, &me)
-                .context("cannot enable live messages")?;
+            let spec = agentdocker_host::provider_input::reconnect_claude(
+                &record.spec,
+                &session,
+                &claude,
+                &me,
+            )
+            .context("cannot reconstruct the Claude session launch")?;
             match client
                 .call(&Request::ResumeSession {
                     agent: record.id.to_string(),

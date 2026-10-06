@@ -412,13 +412,18 @@ as unavailable rather than imply that every recipient can wake.
 
 For an existing Claude session with no channel, save the current work, exit that
 Claude session, and either press **Reconnect here** in the app's session Details,
-run `agentdocker reconnect <session>` (`--claude <path>` when the tool is not on
-PATH as `claude`), or use the session-specific resume command shown in Delivery
+run `agentdocker reconnect <session>` (`--claude <path>` to choose a different
+executable; otherwise the recorded command or `claude` on PATH is used), or use
+the session-specific resume command shown in Delivery
 details or `ps --input-details` from its project folder. The first two bring the
 session back under its own record with its conversation and the channel — what
 was queued for it stays its own — and refuse with the reason while its process
 is still running, in another checkout, or with somebody attached; the app opens
-its pane, and `reconnect` prints the same id. Accept Claude's prompt there.
+its pane, and `reconnect` prints the same id. Accept Claude's prompt there. Recorded launch options and explicit environment values are preserved, including
+permission/tool restrictions and the provider profile. The original prompt is
+not submitted again. Unsupported or ambiguous options refuse with guidance to
+resume explicitly; options never recorded for an external session cannot be
+recovered.
 Complete Claude's startup channel consent. The AgentDocker MCP entry must include `--claude-channel`; see
 [Claude channel setup](CLAUDE-CHANNEL-INPUT.md). Hooks alone cannot start an idle
 turn. A copied instruction is not executed by AgentDocker.
