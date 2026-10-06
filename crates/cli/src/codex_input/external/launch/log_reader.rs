@@ -72,7 +72,7 @@ mod tests {
     use super::*;
     use std::os::windows::io::{FromRawHandle, OwnedHandle};
     use windows_sys::Win32::{
-        Foundation::GetHandleInformation, Storage::FileSystem::WriteFile, System::Pipes::CreatePipe,
+        Foundation::ERROR_NO_DATA, Storage::FileSystem::WriteFile, System::Pipes::CreatePipe,
     };
 
     fn pipe() -> (ChildStderr, OwnedHandle) {
@@ -94,7 +94,6 @@ mod tests {
     #[tokio::test]
     async fn cancellation_releases_the_reader_while_a_descendant_keeps_writing_open() {
         let (mut reader, writer) = pipe();
-        let raw = reader.as_raw_handle();
         let mut buffer = [0; 16];
         assert!(
             tokio::time::timeout(Duration::from_millis(30), read(&mut reader, &mut buffer))
@@ -102,15 +101,26 @@ mod tests {
                 .is_err()
         );
         drop(reader);
-        let mut flags = 0;
-        // SAFETY: GetHandleInformation only queries numeric handle validity;
-        // it does not close or access data through a possibly invalid handle.
-        // Retain the writer until after the assertion so EOF cannot hide an
-        // uncancellable background read retaining the reader's handle.
-        assert_eq!(unsafe { GetHandleInformation(raw, &mut flags) }, 0);
-        assert_ne!(
-            unsafe { GetHandleInformation(writer.as_raw_handle(), &mut flags) },
-            0
+        let mut written = 0;
+        // SAFETY: writer is still our live pipe handle and one byte fits its
+        // empty buffer. A closed reader must make this write fail. Querying
+        // the old reader handle instead could mistake a recycled handle for
+        // a reader retained by Tokio's blocking worker.
+        let result = unsafe {
+            WriteFile(
+                writer.as_raw_handle(),
+                b"x".as_ptr(),
+                1,
+                &mut written,
+                null_mut(),
+            )
+        };
+        let error = io::Error::last_os_error();
+        drop(writer); // Also releases an old implementation's blocked worker.
+        assert_eq!(result, 0, "a cancelled read retained the pipe reader");
+        assert!(
+            eof(&error) || error.raw_os_error() == Some(ERROR_NO_DATA as i32),
+            "{error}"
         );
     }
 
