@@ -87,6 +87,10 @@ an immediate start, just as `daemon start` does. A GUI domain in on-demand-only
 mode can leave automatic starts or crash recovery pending; explicit startup
 does not establish recovery after a crash, login or reboot in that mode.
 
+On macOS, daemon and connector service operations wait up to five seconds for
+launchd to confirm removal before replacing a job or removing its definition.
+A timeout or an unrecognized manager error stops the operation.
+
 On Linux, `daemon uninstall` stops and disables the user service before
 removing its definition, then reloads systemd. If stopping or disabling an
 installed service fails, its definition remains available for diagnosis and
