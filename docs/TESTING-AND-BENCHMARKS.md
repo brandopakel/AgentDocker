@@ -143,7 +143,12 @@ Native Windows package installation acceptance registers three uniquely named,
 disabled Task Scheduler fixtures without triggers and never starts their actions.
 Trigger checks distinguish a null trigger property from a one-element array;
 the original Windows fixture failure and cleanup refusal remain in the
-verification index. Corrected native acceptance is still required.
+verification index. Corrected Windows CI
+[run 37425039256](https://github.com/brandopakel/AgentDocker/actions/runs/37425039256)
+at `c6bfb577` passed 53 installation checks and removed all three disabled
+fixtures and scratch. The runner built merge `142c482a`, whose tree matches
+`c6bfb577`. This establishes the stopped-task CI cases; physical Windows,
+stopped-service Mac/Linux trials and exact per-version retention remain open.
 An opaque wrapper and an exact retained-version reference must protect the old
 payload and invalidate a prior removal plan. A stable-bootstrap reference must
 permit inactive-build pruning while still blocking launcher uninstall. Each
