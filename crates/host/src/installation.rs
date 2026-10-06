@@ -169,16 +169,34 @@ pub fn guard_service_references(
         .iter()
         .map(|path| crate::project::try_canonical(path))
         .collect::<io::Result<Vec<_>>>()?;
-    let versions: BTreeSet<_> = executables
+    let references = executables
         .iter()
         .chain(&data_paths)
-        .filter_map(|path| managed_reference(path))
-        .map(|(root, version, id)| (root, version, id.to_owned()))
+        .map(|path| Ok((path, managed_store(path)?)))
+        .collect::<io::Result<Vec<_>>>()?;
+    let roots: BTreeSet<_> = references
+        .iter()
+        .filter_map(|(_, root)| root.clone())
         .collect();
-    let roots: BTreeSet<_> = executables
+    let versions: BTreeSet<_> = references
         .iter()
-        .chain(&data_paths)
-        .filter_map(|path| managed_store(path))
+        .filter_map(|(path, root)| {
+            let root = root.as_ref()?;
+            let versions = root.join("versions");
+            let id = path
+                .strip_prefix(&versions)
+                .ok()?
+                .components()
+                .next()?
+                .as_os_str()
+                .to_str()?;
+            // Unrecognized names are never deletion candidates; protect their
+            // store without pretending they are immutable release identities.
+            if pin_path(root, id).is_err() {
+                return None;
+            }
+            Some((root.clone(), versions.join(id), id.to_owned()))
+        })
         .collect();
     let mut guards = Vec::new();
     for root in roots {
@@ -202,30 +220,28 @@ pub fn guard_service_references(
 // Stable bootstrap paths and store-level data still need the service guard
 // even when they name no immutable version. A bare similarly named directory
 // with no installation inventory is not a managed store.
-fn managed_store(path: &Path) -> Option<PathBuf> {
+fn managed_store(path: &Path) -> io::Result<Option<PathBuf>> {
     let suffix = if cfg!(windows) {
         "AgentDocker/desktop"
     } else {
         ".local/share/agentdocker/desktop"
     };
-    path.ancestors()
-        .find(|root| root.ends_with(suffix) && root.join("versions").is_dir())
-        .map(Path::to_owned)
-}
-
-// Reference protection includes payload data and external tunnel programs, not
-// only the three launcher entrypoint names recognized by Windows redirection.
-fn managed_reference(path: &Path) -> Option<(PathBuf, PathBuf, &str)> {
-    let root = managed_store(path)?;
-    let versions = root.join("versions");
-    let id = path
-        .strip_prefix(&versions)
-        .ok()?
-        .components()
-        .next()?
-        .as_os_str()
-        .to_str()?;
-    Some((root, versions.join(id), id))
+    for root in path.ancestors().filter(|root| root.ends_with(suffix)) {
+        match root.join("versions").symlink_metadata() {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                return Ok(Some(root.to_owned()));
+            }
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "managed version inventory is not a regular directory",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(None)
 }
 
 /// Hold the service inventory stable through a maintenance operation.
@@ -806,6 +822,26 @@ mod tests {
             );
             assert!(!future_state.exists());
         }
+    }
+
+    #[test]
+    fn unknown_version_names_keep_the_store_guard_and_malformed_inventory_refuses() {
+        let (_temp, root, _sample) = fixture();
+        let unrecognized = root.join("versions/user-notes/project");
+        let guard = guard_service_references(&[], &[unrecognized]).unwrap();
+        assert_eq!(
+            service_inventory_guard(&root, true).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(guard);
+        std::fs::rename(root.join("versions"), root.join("retained-fixture")).unwrap();
+        std::fs::write(root.join("versions"), "malformed inventory").unwrap();
+        assert_eq!(
+            guard_service_references(&[], &[root.join("future-state")])
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     #[test]
