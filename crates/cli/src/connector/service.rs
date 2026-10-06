@@ -334,6 +334,11 @@ pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
         );
     }
     let layout = layout(args)?;
+    let _registration = if dry_run {
+        Vec::new()
+    } else {
+        agentdocker_host::installation::guard_service_registration(&[layout.agentdocker.clone()])?
+    };
     let plan = install_plan(&layout, macos);
     if macos && !dry_run {
         // The plan's first command boots the old job out; the bootstrap
@@ -427,6 +432,8 @@ pub fn enable(args: &ServeArgs, dry_run: bool) -> Result<()> {
     if dry_run {
         return execute(&plan, true);
     }
+    let _registration =
+        agentdocker_host::installation::guard_service_registration(&[layout.agentdocker.clone()])?;
     for (path, contents) in &plan.files {
         ensure_definition(path, contents)?;
     }

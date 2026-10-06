@@ -265,7 +265,10 @@ fn service_installed_in(homes: &[PathBuf]) -> Result<bool> {
 /// best-effort after that successful switch: a damaged old payload or an I/O
 /// failure must not make the caller retry an already-committed activation.
 pub(super) fn after_activation(layout: &Layout, _install_lock: &lock::Lock) -> serde_json::Value {
-    let result = service_installed(layout).and_then(|service| prune_activated(layout, service));
+    let result = (|| {
+        let _services = installation::service_inventory_guard(&layout.root, true)?;
+        service_installed(layout).and_then(|service| prune_activated(layout, service))
+    })();
     match result {
         Ok((removed, retained)) => json!({
             "completed": true,
@@ -307,6 +310,7 @@ pub(super) fn run(
         None
     };
     layout.preflight()?;
+    let _services = installation::service_inventory_guard(&layout.root, !preview)?;
     let (plan, _pins) = plan(layout, keep, !preview, service_installed(layout)?)?;
     let id = plan.id()?;
     if let Some(expected) = expected {

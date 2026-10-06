@@ -304,6 +304,7 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
 
 pub(super) fn after_activation(layout: &Layout, _install: &lock::Lock) -> serde_json::Value {
     let result = (|| -> Result<(usize, usize)> {
+        let _services = installation::service_inventory_guard(&layout.root, true)?;
         let services = references(&layout.root)?;
         let (plan, _pins) = plan(layout, Some(0), true, &services)?;
         apply(layout, &plan)?;
@@ -330,6 +331,7 @@ pub(super) fn run(
     } else {
         Some(layout.install_lock()?)
     };
+    let _services = installation::service_inventory_guard(&layout.root, !preview)?;
     let services = references(&layout.root)?;
     let (plan, _pins) = plan(layout, keep, !preview, &services)?;
     let id = plan.id()?;
