@@ -890,8 +890,9 @@ launcher-placement settings, then retains explicit
 program, tunnel, project/feed, state/log, working-directory and environment
 paths with both literal and physical alias dependencies. Unknown definitions,
 missing fragments, overrides, unknown environment settings and unavailable or
-conflicting cached data preserve whole stores. Exact Unix references and legacy
-portable registrars selecting a separate daemon still need native acceptance.
+conflicting cached data preserve whole stores. Source-specific Mac `53696dab` and
+Oracle `05582d3a` stopped-service retention/restart trials are indexed; hosted-current
+acceptance and legacy portable registrars selecting a separate daemon remain open.
 
 Windows maintenance recognizes only exact rendered actions around a content-verified same-store controller and daemon or receipt-checked stable bootstrap. It retains every explicitly referenced immutable version, including connector tunnel/project/feed paths, state/log paths and Task Scheduler working directories. Literal and resolved aliases both count. Unknown programs/options, relative or parent-traversing paths and unreadable inventory conservatively retain the store; no arbitrary script is executed to discover paths. Source-specific native selective-deletion acceptance is recorded in the verification index; final-package and physical acceptance remain open.
 Windows desktop activation under implementation uses a private JSON snapshot in
