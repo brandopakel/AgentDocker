@@ -669,9 +669,9 @@ mod tests {
             destination: id.into(),
             label: "Message".into(),
             value: text.into(),
-            change: Arc::new(Message::ChannelDraft),
+            change: Arc::new(Message::ConsoleInput),
             enabled,
-            submit: ready.then_some(Message::SendChannel),
+            submit: ready.then_some(Message::RunConsole),
             bare: false,
         }
     }
@@ -740,9 +740,9 @@ mod tests {
             "room",
             "Message",
             "words",
-            Message::ChannelDraft,
+            Message::ConsoleInput,
             true,
-            Some(Message::SendChannel),
+            Some(Message::RunConsole),
             iced::widget::text("footer").into(),
         );
         let mut tree = Tree::new(&element);
@@ -841,7 +841,7 @@ mod tests {
                 &mut clipboard,
             );
             assert_eq!(messages.len(), sends);
-            assert!(messages.iter().all(|m| matches!(m, Message::SendChannel)));
+            assert!(messages.iter().all(|m| matches!(m, Message::RunConsole)));
             assert_eq!(
                 tree.state.downcast_ref::<State>().content.text(),
                 "line one"
@@ -857,7 +857,7 @@ mod tests {
             &mut clipboard,
         );
         assert!(
-            matches!(messages.as_slice(), [Message::ChannelDraft(text)] if text == "line one\n")
+            matches!(messages.as_slice(), [Message::ConsoleInput(text)] if text == "line one\n")
         );
         assert_eq!(
             tree.state.downcast_ref::<State>().content.text(),
@@ -896,7 +896,7 @@ mod tests {
             &mut clipboard,
         );
         assert!(
-            matches!(messages.as_slice(), [Message::ChannelDraft(text)] if text == "before\n日本語")
+            matches!(messages.as_slice(), [Message::ConsoleInput(text)] if text == "before\n日本語")
         );
         assert!(matches!(
             event(
@@ -906,7 +906,7 @@ mod tests {
                 &mut clipboard
             )
             .as_slice(),
-            [Message::SendChannel]
+            [Message::RunConsole]
         ));
     }
 
@@ -940,7 +940,7 @@ mod tests {
             &mut clipboard,
         );
         assert!(
-            matches!(messages.as_slice(), [Message::ChannelDraft(text)] if text == "changed\n日本語")
+            matches!(messages.as_slice(), [Message::ConsoleInput(text)] if text == "changed\n日本語")
         );
     }
 
@@ -962,7 +962,7 @@ mod tests {
             &mut clipboard,
         );
         assert!(
-            matches!(messages.as_slice(), [Message::ChannelDraft(text)] if text == "café\n日本語\nlast line")
+            matches!(messages.as_slice(), [Message::ConsoleInput(text)] if text == "café\n日本語\nlast line")
         );
         event(
             &mut composer,
@@ -986,7 +986,7 @@ mod tests {
             &mut clipboard,
         );
         assert!(
-            matches!(messages.as_slice(), [Message::ChannelDraft(text)] if text.chars().count() == 18000)
+            matches!(messages.as_slice(), [Message::ConsoleInput(text)] if text.chars().count() == 18000)
         );
         assert_eq!(
             tree.state
@@ -1034,7 +1034,7 @@ mod tests {
             &mut clipboard,
         );
         assert!(
-            matches!(messages.as_slice(), [Message::ChannelDraft(text)] if text.starts_with("日本語") && text.ends_with("END") && text.chars().count() == crate::drafts::MAX_TEXT_CHARS + 3)
+            matches!(messages.as_slice(), [Message::ConsoleInput(text)] if text.starts_with("日本語") && text.ends_with("END") && text.chars().count() == crate::drafts::MAX_TEXT_CHARS + 3)
         );
         composer.diff(&mut tree);
         assert_eq!(tree.state.downcast_ref::<State>().content.text(), original);
@@ -1056,8 +1056,8 @@ mod tests {
         let cleared = fixture("conversation", "", true, false);
         cleared.diff(&mut tree);
         assert!(tree.state.downcast_ref::<State>().content.text().is_empty());
-        // Legacy session/channel forms reuse a static accessibility id;
-        // the destination must still reset their editor and focus.
+        // The legacy session form reuses a static accessibility id;
+        // the destination must still reset its editor and focus.
         let mut thread = fixture("conversation", "thread's draft\nretained", true, true);
         thread.destination = "another-recipient".into();
         thread.diff(&mut tree);

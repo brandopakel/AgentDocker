@@ -1644,32 +1644,28 @@ fn orientation(me: &AgentRecord, agents: &[AgentRecord], inbox: &[Envelope]) -> 
                 .unwrap_or_default()
         )
     };
+    // An agent reaches only its own project and the person, so another
+    // repository's agents are not named: naming them invited messages
+    // that landed in that project's terminals.
     let mine = me.project.as_ref().map(ProjectRef::id);
-    let (here, elsewhere): (Vec<String>, Vec<String>) = agents
+    let others: Vec<String> = agents
         .iter()
         .filter(|a| a.id != me.id && a.status.is_live())
-        .partition_map_by(
-            |a| mine.is_some() && a.project.as_ref().map(ProjectRef::id) == mine,
-            describe,
-        );
+        .filter(|a| mine.is_none() || a.project.as_ref().map(ProjectRef::id) == mine)
+        .map(describe)
+        .collect();
 
     let mut text = format!("AgentDocker: this session is agent `{}`", me.spec.name);
     if let Some(project) = &me.project {
         text.push_str(&format!(" in project `{}`", project.name()));
     }
     text.push_str(". ");
-    match (here.is_empty(), elsewhere.is_empty()) {
-        (true, true) => text.push_str("No other agents are live right now. "),
-        (true, false) if mine.is_none() => {
-            text.push_str(&format!("Other live agents: {}. ", elsewhere.join(", ")));
-        }
-        _ => {
-            if !here.is_empty() {
-                text.push_str(&format!("In this project: {}. ", here.join(", ")));
-            }
-            if !elsewhere.is_empty() {
-                text.push_str(&format!("Elsewhere: {}. ", elsewhere.join(", ")));
-            }
+    match (others.is_empty(), mine.is_some()) {
+        (true, true) => text.push_str("No other agents are live in this project right now. "),
+        (true, false) => text.push_str("No other agents are live right now. "),
+        (false, true) => text.push_str(&format!("In this project: {}. ", others.join(", "))),
+        (false, false) => {
+            text.push_str(&format!("Other live agents: {}. ", others.join(", ")));
         }
     }
     text.push_str(
@@ -1690,28 +1686,6 @@ fn orientation(me: &AgentRecord, agents: &[AgentRecord], inbox: &[Envelope]) -> 
     }
     text
 }
-
-/// `partition` for iterators of references, mapping as it goes.
-trait PartitionMapBy: Iterator + Sized {
-    fn partition_map_by<T>(
-        self,
-        pick: impl Fn(&Self::Item) -> bool,
-        map: impl Fn(Self::Item) -> T,
-    ) -> (Vec<T>, Vec<T>) {
-        let mut yes = Vec::new();
-        let mut no = Vec::new();
-        for item in self {
-            if pick(&item) {
-                yes.push(map(item));
-            } else {
-                no.push(map(item));
-            }
-        }
-        (yes, no)
-    }
-}
-
-impl<I: Iterator> PartitionMapBy for I {}
 
 // ----- install --------------------------------------------------------------
 
@@ -3172,9 +3146,11 @@ mod tests {
             .unwrap();
         assert!(text.contains("in project `alpha`"), "{text}");
         assert!(text.contains("In this project: mate ("), "{text}");
-        assert!(text.contains("Elsewhere: stranger ("), "{text}");
-        assert!(text.contains("nowhere ("), "{text}");
-        assert!(text.find("mate (").unwrap() < text.find("stranger (").unwrap());
+        // Another repository's agents, and agents in none, are not this
+        // agent's to message, so they are not named.
+        assert!(!text.contains("stranger"), "{text}");
+        assert!(!text.contains("nowhere"), "{text}");
+        assert!(!text.contains("Elsewhere"), "{text}");
         assert!(text.contains("`--to project`"), "{text}");
         // The session's own MCP tool comes before the shell fallback.
         assert!(

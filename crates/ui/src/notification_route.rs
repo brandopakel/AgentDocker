@@ -134,12 +134,13 @@ pub fn reply_text(text: &str) -> Result<Option<String>, Failure> {
 }
 
 /// Where a reply to a message goes: where the message went. A message
-/// to the project's everyone or to a channel is answered there, one to
-/// the person is answered to whoever wrote it — never inferred from
-/// the notification, whose project is set for a direct message too. A
-/// question is answered to whoever asked it wherever it was asked: the
-/// daemon closes a question only by a reply addressed to its asker, and
-/// an answer is not for everyone.
+/// to the project's everyone is answered there, one to the person is
+/// answered to whoever wrote it — never inferred from the notification,
+/// whose project is set for a direct message too. A question is answered
+/// to whoever asked it wherever it was asked: the daemon closes a question
+/// only by a reply addressed to its asker, and an answer is not for
+/// everyone. A channel or every agent (`all`) is the CLI's to write to,
+/// as the app does not show them: a reply there is refused, with how.
 #[cfg(any(target_os = "macos", test))]
 pub fn reply_destination(original: &agentdocker_core::Envelope) -> Result<String, Failure> {
     use agentdocker_core::Destination;
@@ -152,8 +153,16 @@ pub fn reply_destination(original: &agentdocker_core::Envelope) -> Result<String
     }
     Ok(match &original.to {
         Destination::Project(project) => format!("project:{}", project.as_str()),
-        Destination::Channel(channel) => format!("channel:{channel}"),
-        Destination::Broadcast => "all".to_owned(),
+        Destination::Channel(channel) => {
+            return Err(Failure::certain(format!(
+                "the app does not post in channels; reply with `agentdocker send --to channel:{channel}`"
+            )));
+        }
+        Destination::Broadcast => {
+            return Err(Failure::certain(
+                "the app does not post to every agent; reply with `agentdocker send --to all`",
+            ));
+        }
         Destination::Agent(_) if original.from == agentdocker_core::conversation::DAEMON => {
             return Err(Failure::certain("a notice from AgentDocker has no reply"));
         }
@@ -524,10 +533,11 @@ mod tests {
         );
     }
 
-    /// A reply goes where the original went — the project's everyone,
-    /// the channel, or back to whoever wrote to the person — as the
-    /// person's reply to that message; a notice and a topic post have no
-    /// reply; blank is nothing and oversized is refused before any socket.
+    /// A reply goes where the original went — the project's everyone, or
+    /// back to whoever wrote to the person — as the person's reply to that
+    /// message; a notice and a topic post have no reply, and a channel or
+    /// every agent is refused with the command that reaches it; blank is
+    /// nothing and oversized is refused before any socket.
     #[test]
     fn a_reply_answers_where_the_original_went_as_the_person() {
         use agentdocker_core::{Destination, Envelope};
@@ -549,18 +559,22 @@ mod tests {
             .unwrap(),
             "project:p1"
         );
-        assert_eq!(
-            reply_destination(&original(
-                "sender-1",
-                Destination::Channel(agentdocker_core::ChannelId::from("reviews"))
-            ))
-            .unwrap(),
-            "channel:reviews"
+        let refused = reply_destination(&original(
+            "sender-1",
+            Destination::Channel(agentdocker_core::ChannelId::from("reviews")),
+        ))
+        .unwrap_err();
+        assert!(refused.certain);
+        assert!(
+            refused
+                .reason
+                .contains("`agentdocker send --to channel:reviews`"),
+            "{}",
+            refused.reason
         );
-        assert_eq!(
-            reply_destination(&original("sender-1", Destination::Broadcast)).unwrap(),
-            "all"
-        );
+        let refused = reply_destination(&original("sender-1", Destination::Broadcast)).unwrap_err();
+        assert!(refused.certain);
+        assert!(refused.reason.contains("`agentdocker send --to all`"));
         // A question asked of everyone is answered to its asker: that is
         // the only reply the daemon closes it by, and an answer is not
         // for everyone.

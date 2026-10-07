@@ -208,9 +208,10 @@ The app remembers the selected project and keeps quiet projects available.
 - **Launch agent…** starts an installed CLI in the selected project. **Connect**
   adopts a process under **Running here, not connected** for coordination; it does not
   install provider integrations.
-- **Activity** shows the recent project journal, newest first. **More → Channels** shows
-  project rooms and messages queued for you. **More** also holds **Files in use**,
-  **Command line**, and project pin/forget actions.
+- **Activity** shows the recent project journal, newest first. **More** also
+  holds **Files in use**, **Command line**, and project pin/forget actions.
+  Channels and `#all` are not in the app; `agentdocker channels` and
+  `agentdocker history <conversation>` read them.
 - **Pause…** on the project header asks for a reason and tells every agent in
   the project to hold; the daemon refuses their new leases until **Resume**.
   What an agent already holds, it keeps; only you can pause or resume.
@@ -393,7 +394,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `ps` | Agents grouped by project, with INPUT readiness; `--input-details` adds reconnect guidance |
+| `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); `--input-details` adds reconnect guidance |
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is doing: working, idle, or blocked on a named resource |
 | `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour`), each count with its coverage (`~` where some samples did not say, `—` where none did), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on, and the overhead AgentDocker injected — *not measured* until it is; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
@@ -424,7 +425,8 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
+| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. An agent reaches only its own project and you; its `all` means its project, and you can still send anywhere. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
+| `delivery <message>` | Where one of your messages stands with each agent it was queued for: answered, delivered, received by the model, shown to its session, or why it is still waiting (next prompt, a browser agent's check-in, paused, blocked, ended). Never "read": nothing says a model read it. `send` prints the id; `--json` |
 | `watch` | Stream messages for an agent or matching topics |
 | `inbox` | Messages queued while an agent was not watching |
 | `ask` | Ask an agent — or the human — and wait for the answer |
@@ -695,6 +697,41 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- Under your own messages in the app, one line per agent says where each
+  message stands: answered, delivered, received by the model, shown to its
+  session, or why it is still waiting.
+- The app keeps to each project's chat and your direct messages. Messages
+  lists **Projects** (each project's chat, opening its Chat) and **Direct
+  messages**; `#all`, channels and the rooms AgentDocker opens over contested
+  paths are no longer in the app — no More → Channels, no new channel or
+  **Add members**, no **Reviews** — and what reaches you there is marked read,
+  so it never piles up in your queue or the badge. They all remain on the
+  CLI: `agentdocker conversations`, `agentdocker history all` or
+  `agentdocker history channel:<id>`, `agentdocker channels`, `agentdocker
+  channel …` and `agentdocker send --to channel:<id>`. A notification about
+  such a message opens your conversation with its sender and names the
+  command; a reply typed into it is refused with the command to use instead.
+- Projects keep their own messages. An agent reaches only its own project's
+  agents, its channels and you: a send, ask or question to another project's
+  agent, project or channel is refused, and an agent's `all` means its own
+  project. `list_agents` and the session-start note no longer name agents in
+  other projects. You can still message anyone anywhere.
+- Token usage counts the Claude Code or Codex release you are on. Only
+  releases someone had checked used to count, so a newer Claude Code read as
+  no usage at all; a later release of the same major version is now counted as
+  it reports, and the usage report's coverage says unchecked releases may be
+  in it. Usage skipped before is read again once, without counting anything
+  twice.
+- Tokens where you look: `agentdocker ps` has a TOKENS 24H column, and the
+  desktop's session rows show each session's tokens over the last day, with
+  one line above the list that sums them and opens Usage. Both appear only
+  when usage collection is on and there is something to show.
+- `agentdocker delivery <message>` says where one of your messages stands with
+  each agent it went to: answered, delivered, received by the model, shown to
+  its session, or why it is still waiting. `send` points to it.
+- A session that opens within an hour of your message to everyone in a project
+  still gets it, as its first input. Only your own messages count, and only
+  once.
 - **Reconnect here** in a Claude Code session's Details, and `agentdocker
   reconnect <session>`: once the session has exited in its terminal, the daemon
   brings it back under its own record with its conversation (`--resume`) and

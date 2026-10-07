@@ -61,8 +61,6 @@ const HISTORY_CONVERSATIONS: usize = 32;
 const THREAD_CAP: usize = 5_000;
 const CONSOLE_BYTES: usize = 256 * 1024;
 pub(crate) const MESSAGE_CAPACITY: usize = 64;
-const SENT_CHANNEL_LIMIT: usize = 128;
-const SENT_CHANNEL_BYTES: usize = 256 * 1024;
 const CONSOLE_HISTORY_COMMANDS: usize = 100;
 const CONSOLE_HISTORY_BYTES: usize = 64 * 1024;
 /// How long a console command may run. Long enough for anything that
@@ -88,7 +86,6 @@ pub enum Screen {
     Board,
     Usage,
     Questions,
-    Channels,
     Terminal,
     Console,
     Runtimes,
@@ -124,9 +121,10 @@ enum Cmd {
     ConnectorEnable(ConnectorTunnel),
     Discovered,
     Journal(String, String),
-    Channels(String, String),
     Inbox,
     Activity,
+    /// Where one of the person's messages stands with each agent it went to.
+    Delivery(agentdocker_core::MessageId),
     /// The selected project's board.
     /// The selected project's board: a page from `offset`, `limit`
     /// cards at most (a refresh asks for as many as are on view), for
@@ -145,6 +143,8 @@ enum Cmd {
         since: &'static str,
         by: agentdocker_core::usage::report::Group,
     },
+    /// Every agent's tokens over the last day, for the session rows.
+    AgentTokens,
     /// The person files a card.
     TaskCreate {
         project: String,
@@ -203,7 +203,6 @@ enum Cmd {
     /// An ended session brought back under its own record: the daemon
     /// checks the launch against the record and keeps the queue.
     Resume(String, Box<agentdocker_core::AgentSpec>),
-    ChannelSend(String, String),
     SessionSend(String, String),
     /// Text from the person to every agent in a project, receipted under
     /// the agent whose conversation it was typed in.
@@ -219,20 +218,6 @@ enum Cmd {
     Thread(MessageId, u64),
     /// The person read a conversation through an archive seq.
     MarkRead(String, u64),
-    /// The person opens a room in the project they are looking at, with
-    /// the members they picked (everyone else in it when none).
-    ChannelOpen {
-        request: MessageId,
-        name: String,
-        task: String,
-        members: Vec<String>,
-        project: Option<String>,
-    },
-    ChannelInvite {
-        request: MessageId,
-        channel: String,
-        member: String,
-    },
     /// Text from the person into a conversation: `draft` is the composer it
     /// came from (the conversation, or `<conversation>#<root>` in a thread,
     /// which is where the receipt goes), `to` the destination the
@@ -318,9 +303,13 @@ enum Msg {
     ConnectorEnabled(Result<(), String>),
     Discovered(Vec<DiscoveredProcess>),
     Journal(String, Option<u64>, Vec<JournalEntry>),
-    Channels(String, Vec<agentdocker_core::Channel>),
     Inbox(Vec<agentdocker_core::Envelope>),
     Activity(Vec<AgentActivity>),
+    /// Where one of the person's messages stands, or why it could not be read.
+    Delivery(
+        agentdocker_core::MessageId,
+        Result<Vec<agentdocker_core::delivery::Recipient>, String>,
+    ),
     /// The board of the project asked for.
     /// The board read for a project: its cards and whether the page
     /// cut the board short, or why it could not be read.
@@ -337,6 +326,8 @@ enum Msg {
         u64,
         Result<agentdocker_core::usage::report::Report, String>,
     ),
+    /// Every agent's tokens over the last day, or why they could not be read.
+    AgentTokens(Result<agentdocker_core::usage::report::Report, String>),
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
     Pauses(Vec<agentdocker_core::Pause>),
@@ -367,10 +358,6 @@ enum Msg {
     /// An ended session is back under its own id with the process the
     /// daemon started (its id and that process's start), or why it is not.
     Reconnected(Result<(String, Option<chrono::DateTime<chrono::Utc>>), String>),
-    ChannelSent(String, Result<QueuedSend, String>),
-    /// The room the person asked for, by id, or why not.
-    ChannelOpened(MessageId, Result<agentdocker_core::ChannelId, String>),
-    ChannelInvited(MessageId, String, Result<agentdocker_core::Channel, String>),
     SessionSent(String, Result<QueuedSend, String>),
     /// `Err` when the daemon does not know conversations at all.
     Conversations(Result<Vec<agentdocker_core::ConversationSummary>, String>),
@@ -448,27 +435,26 @@ pub struct App {
     discovered: Vec<DiscoveredProcess>,
     journal: Vec<JournalEntry>,
     journal_project: Option<String>,
-    /// Open channels across the projects of registered live agents.
-    ///
-    /// The person at the keyboard is an agent like any other, so channel
-    /// messages arrive in their inbox — and until this screen existed
-    /// the window dropped every one of them on the floor. Read without
-    /// draining, because a window that polls must not consume what it
-    /// shows.
-    channels: Vec<agentdocker_core::Channel>,
     inbox: Vec<agentdocker_core::Envelope>,
     /// What the person can read, as the daemon lists it; `None` until the
     /// daemon has answered, `Some(false)` from a daemon without it.
     conversations: Vec<agentdocker_core::ConversationSummary>,
     conversations_supported: Option<bool>,
-    /// The form for a conversation the person is starting — a direct
-    /// message or a channel — while it is open.
-    new_conversation: Option<NewConversation>,
+    /// The conversations the app leaves to the CLI (`#all`, channels,
+    /// contested rooms) and the archive seq each was last asked to be read
+    /// through, so a refresh asks once per new message, not every sweep.
+    hidden_reads: BTreeMap<String, u64>,
+    /// Whether the form for a direct message the person is starting is
+    /// open.
+    new_conversation: bool,
     /// A notification's message to scroll to once its conversation's
     /// archive has it.
     reveal_archived: Option<Seek>,
     /// Archived history per conversation, oldest first, as last fetched.
     history: BTreeMap<String, Vec<agentdocker_core::ArchivedMessage>>,
+    /// Where each of the person's newest messages in the open conversation
+    /// stands with each agent it went to, by message id.
+    deliveries: BTreeMap<agentdocker_core::MessageId, Vec<agentdocker_core::delivery::Recipient>>,
     /// Conversations whose earliest archived message is on view.
     history_complete: BTreeSet<String>,
     /// Advanced when the daemon prunes; archive replies from an earlier
@@ -479,9 +465,6 @@ pub struct App {
         agentdocker_core::ArchivedMessage,
         Vec<agentdocker_core::ArchivedMessage>,
     )>,
-    /// Confirmed sends from this window. Inbox polling must not erase them.
-    /// Receipt times are local; this bounded cache is not durable channel history.
-    sent_channels: std::collections::VecDeque<agentdocker_core::Envelope>,
     connected: Result<(), String>,
     /// The highest event sequence taken, so a reconnect's replay is not
     /// shown or acted on twice. Live-only events carry `0` and always pass.
@@ -513,6 +496,11 @@ pub struct App {
     /// The usage report on view: which project's, and the report — kept
     /// as last read when a read fails, with the failure said beside it.
     usage: Option<(String, agentdocker_core::usage::report::Report)>,
+    /// What each agent's provider reported over the last day, by agent id,
+    /// and when it was last asked for: at most once a minute, as the agent
+    /// list refreshes.
+    agent_tokens: BTreeMap<String, agentdocker_core::usage::report::Tokens>,
+    agent_tokens_asked: Option<std::time::Instant>,
     usage_error: Option<String>,
     usage_requests: u64,
     usage_pending: Option<(
@@ -630,17 +618,17 @@ impl App {
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
-            channels: Vec::new(),
             inbox: Vec::new(),
             conversations: Vec::new(),
             conversations_supported: None,
-            new_conversation: None,
+            hidden_reads: BTreeMap::new(),
+            new_conversation: false,
             reveal_archived: None,
             history: BTreeMap::new(),
+            deliveries: BTreeMap::new(),
             history_complete: BTreeSet::new(),
             history_epoch: 0,
             thread: None,
-            sent_channels: Default::default(),
             smoke: None,
             setup_plan: None,
             setup_health: None,
@@ -670,6 +658,8 @@ impl App {
             activity: BTreeMap::new(),
             tasks: None,
             usage: None,
+            agent_tokens: BTreeMap::new(),
+            agent_tokens_asked: None,
             usage_error: None,
             usage_requests: 0,
             usage_pending: None,
@@ -710,17 +700,17 @@ impl App {
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
-            channels: Vec::new(),
             inbox: Vec::new(),
             conversations: Vec::new(),
             conversations_supported: None,
-            new_conversation: None,
+            hidden_reads: BTreeMap::new(),
+            new_conversation: false,
             reveal_archived: None,
             history: BTreeMap::new(),
+            deliveries: BTreeMap::new(),
             history_complete: BTreeSet::new(),
             history_epoch: 0,
             thread: None,
-            sent_channels: Default::default(),
             smoke: None,
             setup_plan: None,
             setup_health: None,
@@ -749,6 +739,8 @@ impl App {
             activity: BTreeMap::new(),
             tasks: None,
             usage: None,
+            agent_tokens: BTreeMap::new(),
+            agent_tokens_asked: None,
             usage_error: None,
             usage_requests: 0,
             usage_pending: None,
@@ -801,13 +793,11 @@ impl App {
                 Cmd::DismissMessages(ids) => {
                     self.dismissing.retain(|id| !ids.contains(id));
                 }
-                Cmd::ChannelOpen { request, .. } | Cmd::ChannelInvite { request, .. } => {
-                    if let Some(form) = &mut self.new_conversation
-                        && form.request == request
-                    {
-                        form.creating = false;
-                        form.error = Some(reason.into());
-                    }
+                // A read of a conversation the app leaves to the CLI is
+                // asked again on the next refresh.
+                Cmd::MarkRead(conversation, _) => {
+                    self.hidden_reads.remove(&conversation);
+                    return;
                 }
                 Cmd::Pause { request, .. } | Cmd::ResumeProject(request) => {
                     self.complete_pause(request, Err(reason.into()));
@@ -824,13 +814,6 @@ impl App {
                     self.append_console(&format!("Command not queued: {reason}\n"));
                 }
                 Cmd::Launch(_) | Cmd::Resume(..) => self.shell.launching = false,
-                Cmd::ChannelSend(id, _) => {
-                    self.shell
-                        .channel_drafts
-                        .entry(id)
-                        .or_default()
-                        .complete(Err(reason.into()));
-                }
                 Cmd::SessionSend(id, _) | Cmd::ProjectSend(id, _, _) => {
                     if let Some(entry) = self.shell.session_drafts.get_mut(&id) {
                         entry.draft.complete(Err(reason.into()));
@@ -982,6 +965,7 @@ impl App {
                         self.shell.selected = Some(self.canonical_agent(selected).to_owned());
                     }
                     self.agents = agents;
+                    self.request_agent_tokens();
                     // A reconnected session's pane opens when the list shows
                     // the process the daemon started; an older list, from
                     // before the reconnect, says nothing about it and the
@@ -1003,12 +987,6 @@ impl App {
                             }
                         }
                     }
-                    let projects = self.channel_projects();
-                    self.channels
-                        .retain(|channel| projects.contains(&channel.project.to_string()));
-                    for project in projects {
-                        self.request_channels(project);
-                    }
                 }
                 Msg::Leases(leases) => self.leases = leases,
                 Msg::Runtimes(runtimes) => self.runtimes = runtimes,
@@ -1017,18 +995,6 @@ impl App {
                     self.connector_busy = None;
                     self.connector_error = result.err();
                     self.send(Cmd::Connector);
-                }
-                Msg::Channels(project, channels) => {
-                    // A late reply for a project no longer on screen must not
-                    // restore it. Other projects keep their current snapshots.
-                    if self.channel_projects().contains(&project) {
-                        self.channels
-                            .retain(|channel| channel.project.as_str() != project);
-                        self.channels.extend(channels);
-                        self.channels.sort_by(|a, b| {
-                            a.opened_at.cmp(&b.opened_at).then_with(|| a.id.cmp(&b.id))
-                        });
-                    }
                 }
                 Msg::Inbox(inbox) => {
                     // An unfolded message folds when it is gone from
@@ -1162,6 +1128,13 @@ impl App {
                             }
                             Err(error) => self.usage_error = Some(error),
                         }
+                    }
+                }
+                Msg::AgentTokens(result) => {
+                    // A failed read keeps the last counts: tokens are a
+                    // footnote on a row, not worth a message of their own.
+                    if let Ok(report) = result {
+                        self.agent_tokens = report.tokens();
                     }
                 }
                 Msg::TaskCreated(project, request, result) => {
@@ -1408,6 +1381,7 @@ impl App {
                     Ok(conversations) => {
                         self.conversations_supported = Some(true);
                         self.conversations = conversations;
+                        self.read_hidden_conversations();
                         // A thread opened before the daemon answered (a
                         // notification at launch) names its conversation now.
                         if self.shell.inbox_open && self.shell.conversation.is_none() {
@@ -1428,6 +1402,13 @@ impl App {
                         self.conversations_supported = Some(false);
                     }
                 },
+                Msg::Delivery(message, result) => {
+                    // An older daemon has no `delivery`: nothing is shown,
+                    // rather than a failure under every message.
+                    if let Ok(recipients) = result {
+                        self.deliveries.insert(message, recipients);
+                    }
+                }
                 Msg::History(conversation, epoch, messages) => {
                     if epoch != self.history_epoch {
                         continue;
@@ -1532,90 +1513,6 @@ impl App {
                     }
                     self.shell.drafts.changed();
                 }
-                Msg::ChannelInvited(request, member, result) => {
-                    if let Some(form) = &mut self.new_conversation
-                        && form.request == request
-                    {
-                        form.creating = false;
-                        match result {
-                            Ok(channel) => {
-                                form.members.insert(member.into());
-                                form.error = None;
-                                self.channels.retain(|c| c.id != channel.id);
-                                self.channels.push(channel);
-                                self.send(Cmd::Conversations(self.conversation_scope()));
-                            }
-                            Err(error) => form.error = Some(error),
-                        }
-                    }
-                }
-                Msg::ChannelOpened(request, result) => {
-                    if self
-                        .new_conversation
-                        .as_ref()
-                        .is_none_or(|form| form.request != request)
-                    {
-                        continue;
-                    }
-                    match result {
-                        Ok(id) => {
-                            self.new_conversation = None;
-                            let conversation = agentdocker_core::ConversationId::channel(&id)
-                                .as_str()
-                                .to_owned();
-                            if let Some(project) = self.selected_project_id() {
-                                self.request_channels(project);
-                            }
-                            self.send(Cmd::Conversations(self.conversation_scope()));
-                            // The form's message, not a Task: drain has none
-                            // to return, and selecting needs no effect of
-                            // its own beyond the history request it sends.
-                            let _ = self.update(Message::SelectConversation(conversation));
-                        }
-                        Err(error) => {
-                            if let Some(form) = &mut self.new_conversation {
-                                form.creating = false;
-                                form.error = Some(error);
-                            }
-                        }
-                    }
-                }
-                Msg::ChannelSent(id, result) => {
-                    let draft = self.shell.channel_drafts.entry(id.clone()).or_default();
-                    match result {
-                        Ok(message) => {
-                            let sent = draft.sending.clone();
-                            draft.complete(Ok(()));
-                            draft.readiness = message.readiness;
-                            if let Some(sent) = sent {
-                                let mut receipt = agentdocker_core::Envelope::new(
-                                    agentdocker_core::HUMAN,
-                                    agentdocker_core::Destination::Channel(id.into()),
-                                    "message",
-                                    serde_json::Value::String(sent),
-                                    None,
-                                    Utc::now(),
-                                );
-                                receipt.id = message.message;
-                                self.sent_channels.push_back(receipt);
-                                while self.sent_channels.len() > SENT_CHANNEL_LIMIT
-                                    || self
-                                        .sent_channels
-                                        .iter()
-                                        .map(|item| item.payload.as_str().map_or(0, str::len))
-                                        .sum::<usize>()
-                                        > SENT_CHANNEL_BYTES
-                                {
-                                    self.sent_channels.pop_front();
-                                }
-                            }
-                            self.send(Cmd::Inbox);
-                            self.say("Message sent");
-                        }
-                        Err(error) => draft.complete(Err(error)),
-                    }
-                    self.shell.drafts.changed();
-                }
             }
         }
         // Nothing is asked of a daemon that is not there: each request
@@ -1636,6 +1533,7 @@ impl App {
             ] {
                 self.send(cmd);
             }
+            self.request_deliveries();
         }
         if self.connected.is_ok() && self.last_runtimes.elapsed() >= RUNTIMES_REFRESH {
             self.last_runtimes = Instant::now();
@@ -1712,7 +1610,9 @@ impl App {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
-            EventKind::InboxAcknowledged { .. } => self.send(Cmd::Activity),
+            EventKind::InboxAcknowledged { .. } | EventKind::MessagesCaughtUp { .. } => {
+                self.send(Cmd::Activity)
+            }
             EventKind::AgentActivityReported { .. } => {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
@@ -1876,27 +1776,6 @@ impl App {
         }
     }
 
-    /// Every room in the project, and what is still queued for this
-    /// person in each.
-    ///
-    /// Two corrections to the obvious design, both of which this screen
-    /// got wrong first. A channel between two agents need not have the
-    /// human as a member — most will not — so listing only this person's
-    /// memberships shows an empty screen while agents talk. And an inbox
-    /// is a queue, not a transcript: a message an agent has taken is
-    /// gone from it, so what is here is what has not been delivered yet,
-    /// never the history of the room. Durable history needs somewhere to
-    /// keep it and a bound on how much; neither exists, so this does not
-    /// pretend otherwise.
-    fn channel_projects(&self) -> BTreeSet<String> {
-        self.agents
-            .iter()
-            .filter_map(|agent| agent.project.as_ref())
-            .chain(self.shell.catalog.selected().map(|entry| &entry.project))
-            .map(|project| project.id().to_string())
-            .collect()
-    }
-
     fn project_selector(&self, id: &str) -> String {
         self.agents
             .iter()
@@ -1908,6 +1787,53 @@ impl App {
     /// Read the selected project's board, when there is one and the
     /// daemon is there: as many cards as are on view, so a board
     /// expanded past its first page stays expanded through a refresh.
+    /// Ask for every agent's tokens over the last day, at most once a
+    /// minute: the rows show them, and the agent list refreshes far more
+    /// often than they change.
+    fn request_agent_tokens(&mut self) {
+        let now = std::time::Instant::now();
+        if self
+            .agent_tokens_asked
+            .is_some_and(|at| now.duration_since(at) < std::time::Duration::from_secs(60))
+        {
+            return;
+        }
+        self.agent_tokens_asked = Some(now);
+        self.send(Cmd::AgentTokens);
+    }
+
+    /// Ask where the person's newest messages in the open conversation
+    /// stand, on the same beat as the rest of the screen. One whose every
+    /// recipient answered or can no longer take it is not asked again, and
+    /// what is no longer on view is let go.
+    fn request_deliveries(&mut self) {
+        const FOLLOWED: usize = 5;
+        let mine: Vec<agentdocker_core::MessageId> = self
+            .shell
+            .conversation
+            .as_ref()
+            .and_then(|open| self.history.get(open))
+            .map(|history| {
+                history
+                    .iter()
+                    .rev()
+                    .filter(|m| self.is_human(m.envelope.from.as_str()))
+                    .take(FOLLOWED)
+                    .map(|m| m.envelope.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.deliveries.retain(|id, _| mine.contains(id));
+        for message in mine {
+            let settled = self.deliveries.get(&message).is_some_and(|recipients| {
+                !recipients.is_empty() && recipients.iter().all(|r| r.state.settled())
+            });
+            if !settled {
+                self.send(Cmd::Delivery(message));
+            }
+        }
+    }
+
     /// Read the selected project's usage as the screen is set: its
     /// window and grouping.
     pub(crate) fn request_usage(&mut self) {
@@ -2011,10 +1937,6 @@ impl App {
         request
     }
 
-    fn request_channels(&mut self, id: String) {
-        let selector = self.project_selector(&id);
-        self.send(Cmd::Channels(id, selector));
-    }
     /// The id of the project the sidebar is scoped to, when one is.
     pub(crate) fn selected_project_id(&self) -> Option<String> {
         let root = self.shell.catalog.selected.as_deref()?;
@@ -2070,7 +1992,9 @@ impl App {
     }
 
     /// Where a message typed into a conversation goes: the destination the
-    /// conversation stands for, or none for the daemon's own notices.
+    /// conversation stands for, or none for the daemon's own notices and
+    /// for what the app leaves to the CLI (`#all`, channels), which is
+    /// never written from here.
     pub(crate) fn conversation_destination(&self, conversation: &str) -> Option<String> {
         use agentdocker_core::{ConversationId, ConversationKind};
         let id = ConversationId::from(conversation);
@@ -2078,10 +2002,7 @@ impl App {
             ConversationKind::Everyone => id
                 .everyone_project()
                 .map(|p| format!("project:{}", p.as_str())),
-            ConversationKind::All => Some("all".to_owned()),
-            ConversationKind::Channel | ConversationKind::Collision => {
-                id.channel_id().map(|c| format!("channel:{c}"))
-            }
+            ConversationKind::All | ConversationKind::Channel | ConversationKind::Collision => None,
             // Only a direct conversation the person is in can be written
             // to; one between two agents is theirs to read here.
             ConversationKind::Dm => {
@@ -2257,6 +2178,40 @@ impl App {
         {
             self.history.remove(&oldest);
             self.history_complete.remove(&oldest);
+        }
+    }
+
+    /// What reaches the person in a conversation the app leaves to the
+    /// CLI — `#all`, a channel, a contested room — is read through its
+    /// newest message as each list arrives: nobody can read it here, so it
+    /// must not pile up in the person's queue (a read acknowledges what it
+    /// covers) or stand as unread nobody can clear. Each head is asked for
+    /// once; a refused ask is asked again on the next list.
+    fn read_hidden_conversations(&mut self) {
+        let listed: BTreeSet<&str> = self
+            .conversations
+            .iter()
+            .map(|s| s.conversation.as_str())
+            .collect();
+        self.hidden_reads
+            .retain(|conversation, _| listed.contains(conversation.as_str()));
+        let heads: Vec<(String, u64)> = self
+            .conversations
+            .iter()
+            .filter(|s| messages::hidden_kind(s.kind) && s.unread > 0)
+            .filter_map(|s| {
+                let seq = s.last_seq?;
+                let conversation = s.conversation.as_str();
+                (self.hidden_reads.get(conversation) < Some(&seq))
+                    .then(|| (conversation.to_owned(), seq))
+            })
+            .collect();
+        if heads.is_empty() || self.connected.is_err() {
+            return;
+        }
+        for (conversation, seq) in heads {
+            self.hidden_reads.insert(conversation.clone(), seq);
+            self.send(Cmd::MarkRead(conversation, seq));
         }
     }
 
@@ -2557,10 +2512,6 @@ fn spawn_worker(
                         Cmd::DismissMessages(id) => Some(id.clone()),
                         _ => None,
                     };
-                    let channel = match &daemon {
-                        Cmd::ChannelSend(id, _) => Some(id.clone()),
-                        _ => None,
-                    };
                     let session = match &daemon {
                         Cmd::SessionSend(id, _) | Cmd::ProjectSend(id, _, _) => Some(id.clone()),
                         _ => None,
@@ -2616,13 +2567,6 @@ fn spawn_worker(
                                 break;
                             }
                             if launch && tx.send(Msg::Launched(Err(format!("{err:#}")))).is_err() {
-                                break;
-                            }
-                            if let Some(id) = channel
-                                && tx
-                                    .send(Msg::ChannelSent(id, Err(format!("{err:#}"))))
-                                    .is_err()
-                            {
                                 break;
                             }
                             if let Some(id) = answer {
@@ -2785,6 +2729,32 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::Tasks(project, request, result))
         }
+        Cmd::AgentTokens => {
+            let result = match client.call(&Request::Usage {
+                project: None,
+                agent: None,
+                since: Some("24h".to_owned()),
+                until: None,
+                by: agentdocker_core::usage::report::Group::Agent,
+            }) {
+                Ok(Response::Usage { report }) => Ok(report),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::AgentTokens(result))
+        }
+        Cmd::Delivery(message) => {
+            let result = match client.call(&Request::Delivery {
+                message: message.clone(),
+            }) {
+                Ok(Response::Delivery { recipients, .. }) => Ok(recipients),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::Delivery(message, result))
+        }
         Cmd::Usage {
             project,
             request,
@@ -2907,18 +2877,6 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             all: true,
         })? {
             Response::Activity { activity } => Some(Msg::Activity(activity)),
-            _ => None,
-        },
-        // Every room in the named project, not only the ones this person is
-        // in. A channel between two agents need not have the human as a
-        // member — most will not — and a window that listed only its
-        // own memberships would show nothing while agents talked.
-        Cmd::Channels(project, selector) => match client.call(&Request::Channels {
-            project: selector,
-            all: false,
-            agent: None,
-        })? {
-            Response::Channels { channels } => Some(Msg::Channels(project, channels)),
             _ => None,
         },
         // Never drained: this is a window looking, not a consumer
@@ -3115,44 +3073,6 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             })?;
             None
         }
-        Cmd::ChannelOpen {
-            request,
-            name,
-            task,
-            members,
-            project,
-        } => {
-            let result = match client.call(&Request::ChannelOpen {
-                agent: agentdocker_core::HUMAN.into(),
-                task,
-                members,
-                name: Some(name),
-                project,
-            }) {
-                Ok(Response::Channel { channel }) => Ok(channel.id),
-                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
-                Ok(other) => Err(unexpected_reply(&other)),
-                Err(error) => Err(format!("{error:#}")),
-            };
-            Some(Msg::ChannelOpened(request, result))
-        }
-        Cmd::ChannelInvite {
-            request,
-            channel,
-            member,
-        } => {
-            let result = match client.call(&Request::ChannelInvite {
-                agent: agentdocker_core::HUMAN.into(),
-                channel,
-                member: member.clone(),
-            }) {
-                Ok(Response::Channel { channel }) => Ok(channel),
-                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
-                Ok(other) => Err(unexpected_reply(&other)),
-                Err(error) => Err(format!("{error:#}")),
-            };
-            Some(Msg::ChannelInvited(request, member, result))
-        }
         Cmd::ConversationSend {
             draft,
             to,
@@ -3223,28 +3143,6 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 _ => Err("Unexpected message response".into()),
             };
             Some(Msg::SessionSent(agent, result))
-        }
-        Cmd::ChannelSend(channel, text) => {
-            let response = client.call(&Request::Send {
-                from: agentdocker_core::HUMAN.into(),
-                to: format!("channel:{channel}"),
-                kind: "message".into(),
-                payload: serde_json::Value::String(text),
-                reply_to: None,
-                links: Vec::new(),
-            })?;
-            let result = match response {
-                Response::Sent {
-                    message,
-                    recipient_readiness,
-                    ..
-                } => Ok(QueuedSend {
-                    message,
-                    readiness: recipient_readiness,
-                }),
-                _ => Err("Unexpected message response".into()),
-            };
-            Some(Msg::ChannelSent(channel, result))
         }
         Cmd::ConnectorEnable(tunnel) => Some(Msg::ConnectorEnabled(enable_connector(tunnel))),
         Cmd::Setup(args) => Some(Msg::Setup(setup(&args))),
@@ -3802,42 +3700,6 @@ pub(crate) fn missing_setup(runtime: &agentdocker_core::runtime::RuntimeInfo) ->
     }
 }
 
-/// Which kind of conversation the person is starting.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NewKind {
-    Direct,
-    Channel,
-}
-
-/// The form for a conversation the person is starting: a direct message
-/// is one pick, a channel is a name, what it is for and who is in it.
-#[derive(Clone, Debug)]
-pub(crate) struct NewConversation {
-    pub request: MessageId,
-    pub invite: Option<String>,
-    pub kind: NewKind,
-    pub name: String,
-    pub purpose: String,
-    pub members: BTreeSet<agentdocker_core::AgentId>,
-    pub creating: bool,
-    pub error: Option<String>,
-}
-
-impl NewConversation {
-    pub(crate) fn new() -> Self {
-        Self {
-            request: MessageId::generate(),
-            invite: None,
-            kind: NewKind::Direct,
-            name: String::new(),
-            purpose: String::new(),
-            members: BTreeSet::new(),
-            creating: false,
-            error: None,
-        }
-    }
-}
-
 /// A notification's message being looked for in its conversation's
 /// archive: the conversation, the message, how many pages back have
 /// been asked for, and the seq the last page was asked before — so a
@@ -4072,94 +3934,70 @@ pub(crate) mod tests {
         assert_eq!(missing_setup(&runtime), "Needs setup · missing MCP entry");
     }
 
+    /// What reaches the person in `#all`, a channel or a contested room is
+    /// read through as each list arrives — the app does not show those —
+    /// so it never fills their queue or a badge: once per newest message,
+    /// again when a newer one arrives or the ask was refused, and never for
+    /// a project's chat or a direct message.
     #[test]
-    fn channel_creation_replies_belong_to_the_submitted_form() {
-        let (commands, _requests) = queue::channel();
+    fn hidden_conversations_are_read_through_as_each_list_arrives() {
+        let (commands, requests) = queue::channel();
         let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        let first = NewConversation::new();
-        let mut second = NewConversation::new();
-        second.creating = true;
-        second.name = "second".into();
-        let expected = second.request.clone();
-        app.new_conversation = Some(second);
-        for result in [Ok("first-room".into()), Err("first failure".into())] {
-            messages
-                .send(Msg::ChannelOpened(first.request.clone(), result))
-                .unwrap();
-            app.drain();
-            let current = app.new_conversation.as_ref().unwrap();
-            assert_eq!(current.request, expected);
-            assert_eq!(current.name, "second");
-            assert!(current.creating);
-            assert!(current.error.is_none());
-            assert!(app.shell.conversation.is_none());
-        }
-        messages
-            .send(Msg::ChannelOpened(expected, Err("second failure".into())))
-            .unwrap();
-        app.drain();
-        let current = app.new_conversation.as_ref().unwrap();
-        assert!(!current.creating);
-        assert_eq!(current.error.as_deref(), Some("second failure"));
-    }
-
-    #[test]
-    fn channel_invitation_replies_belong_to_the_submitted_form() {
-        let (commands, _requests) = queue::channel();
-        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
-        let mut app = App::bare(commands, results);
-        let first = NewConversation::new();
-        let mut second = NewConversation::new();
-        second.invite = Some("second-room".into());
-        second.creating = true;
-        second.name = "second".into();
-        second.members.insert("existing-member".into());
-        let expected = second.request.clone();
-        app.new_conversation = Some(second);
-        let channel = agentdocker_core::Channel {
-            id: "first-room".into(),
-            project: "project".into(),
-            name: Some("first".into()),
-            subject: agentdocker_core::ChannelSubject::Task {
-                task: "first".into(),
-            },
-            members: vec!["new-member".into()],
-            opened_by: None,
-            opened_at: chrono::Utc::now(),
-            reviews: vec![],
-            closed_at: None,
-            resolution: None,
+        app.connected = Ok(());
+        let summary = |conversation: &str, kind: &str, unread: u64, last: u64| {
+            serde_json::from_value::<agentdocker_core::ConversationSummary>(serde_json::json!({
+                "conversation": conversation, "kind": kind, "title": "",
+                "members": [], "unread": unread, "last_seq": last,
+            }))
+            .unwrap()
         };
-        for result in [Ok(channel), Err("first failure".into())] {
-            messages
-                .send(Msg::ChannelInvited(
-                    first.request.clone(),
-                    "new-member".into(),
-                    result,
-                ))
-                .unwrap();
-            app.drain();
-            let current = app.new_conversation.as_ref().unwrap();
-            assert_eq!(current.request, expected);
-            assert_eq!(current.name, "second");
-            assert_eq!(current.invite.as_deref(), Some("second-room"));
-            assert_eq!(current.members, BTreeSet::from(["existing-member".into()]));
-            assert!(current.creating);
-            assert!(current.error.is_none());
-            assert!(app.channels.is_empty());
-        }
-        messages
-            .send(Msg::ChannelInvited(
-                expected,
-                "new-member".into(),
-                Err("second failure".into()),
-            ))
-            .unwrap();
+        let list = |all: u64| {
+            vec![
+                summary("everyone:project", "everyone", 2, 10),
+                summary("dm:agent-a:user", "dm", 1, 11),
+                summary("all", "all", 1, all),
+                summary("channel:named", "channel", 3, 13),
+                summary("channel:contested", "collision", 40, 14),
+                summary("channel:quiet", "channel", 0, 15),
+                summary("notices:agent-a", "notices", 5, 16),
+            ]
+        };
+        let reads = |requests: &queue::Receiver| {
+            let mut reads: Vec<(String, u64)> = requests
+                .try_iter()
+                .filter_map(|cmd| match cmd {
+                    Cmd::MarkRead(conversation, through) => Some((conversation, through)),
+                    _ => None,
+                })
+                .collect();
+            reads.sort();
+            reads
+        };
+        messages.send(Msg::Conversations(Ok(list(12)))).unwrap();
         app.drain();
-        let current = app.new_conversation.as_ref().unwrap();
-        assert!(!current.creating);
-        assert_eq!(current.error.as_deref(), Some("second failure"));
+        assert_eq!(
+            reads(&requests),
+            [
+                ("all".to_owned(), 12),
+                ("channel:contested".to_owned(), 14),
+                ("channel:named".to_owned(), 13),
+            ]
+        );
+        // The same list again asks for nothing; a newer message in one
+        // asks for that one alone.
+        messages.send(Msg::Conversations(Ok(list(12)))).unwrap();
+        app.drain();
+        assert!(reads(&requests).is_empty());
+        messages.send(Msg::Conversations(Ok(list(17)))).unwrap();
+        app.drain();
+        assert_eq!(reads(&requests), [("all".to_owned(), 17)]);
+        // A refused ask is asked again on the next list.
+        app.rejected(Cmd::MarkRead("channel:named".into(), 13), "full");
+        messages.send(Msg::Conversations(Ok(list(17)))).unwrap();
+        app.drain();
+        assert_eq!(reads(&requests), [("channel:named".to_owned(), 13)]);
+        assert!(app.status.is_empty(), "a background read says nothing");
     }
 
     #[test]
@@ -4186,15 +4024,15 @@ pub(crate) mod tests {
         assert_eq!(app.panes.widths, preferred);
     }
 
-    /// The window looks at the conversation; it does not consume it.
+    /// The window looks at the inbox; it does not consume it.
     ///
-    /// Channel messages reach the person at the keyboard because they
-    /// are an agent like any other, and their inbox is where those
-    /// messages sit. Reading it with `drain: true` would delete the
-    /// conversation out from under whoever is reading the screen — and
-    /// this screen polls, so it would do it every couple of seconds.
+    /// Messages reach the person at the keyboard because they are an agent
+    /// like any other, and their inbox is where those messages sit. Reading
+    /// it with `drain: true` would delete them out from under whoever is
+    /// reading the screen — and this screen polls, so it would do it every
+    /// couple of seconds. A room's messages are never taken for direct ones.
     #[test]
-    fn the_conversation_is_read_without_being_taken_and_kept_in_its_room() {
+    fn the_inbox_is_read_without_being_taken_and_rooms_stay_out_of_direct() {
         assert!(
             matches!(inbox_request(), Request::Inbox { drain: false, .. }),
             "a window that polls must never drain what it shows"
@@ -4223,105 +4061,6 @@ pub(crate) mod tests {
         // happens to sort first.
         assert_eq!(direct.len(), 1);
         assert_eq!(direct[0].id.as_str(), "m4");
-    }
-
-    #[test]
-    fn confirmed_channel_messages_survive_refresh_and_failures_never_look_sent() {
-        let (commands, _requests) = queue::channel();
-        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
-        let mut app = App::bare(commands, results);
-        let draft = app.shell.channel_drafts.entry("room".into()).or_default();
-        draft.text = "keep my draft".into();
-        draft.begin();
-        messages
-            .send(Msg::ChannelSent("room".into(), Err("offline".into())))
-            .unwrap();
-        app.drain();
-        assert!(app.sent_channels.is_empty());
-        assert_eq!(app.shell.channel_drafts["room"].text, "keep my draft");
-        for index in 0..SENT_CHANNEL_LIMIT + 1 {
-            let draft = app.shell.channel_drafts.get_mut("room").unwrap();
-            draft.text = "x".repeat(8192);
-            draft.begin();
-            messages
-                .send(Msg::ChannelSent(
-                    "room".into(),
-                    Ok(MessageId::from(format!("sent-{index}")).into()),
-                ))
-                .unwrap();
-            app.drain();
-        }
-        let retained = app.sent_channels.len();
-        assert!(retained > 0 && retained <= SENT_CHANNEL_LIMIT);
-        assert!(
-            app.sent_channels
-                .iter()
-                .map(|item| item.payload.as_str().unwrap().len())
-                .sum::<usize>()
-                <= SENT_CHANNEL_BYTES
-        );
-        messages.send(Msg::Inbox(Vec::new())).unwrap();
-        app.drain();
-        assert_eq!(
-            app.sent_channels.len(),
-            retained,
-            "an inbox refresh erased confirmed sends"
-        );
-        assert_eq!(
-            app.sent_channels.back().unwrap().id.as_str(),
-            format!("sent-{SENT_CHANNEL_LIMIT}")
-        );
-    }
-
-    #[test]
-    fn channel_request_uses_explicit_project_and_no_membership_filter() {
-        use std::io::{BufRead, BufReader, Write};
-        use std::os::unix::net::UnixListener;
-        let temp = tempfile::tempdir().unwrap();
-        let socket = temp.path().join("fixture.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let server = std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            let stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(Instant::now() < deadline, "missing channel request");
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(error) => panic!("fixture accept: {error}"),
-                }
-            };
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            stream
-                .set_write_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(request["op"], "channels");
-            assert_eq!(request["project"], "fixture-project");
-            assert_eq!(request["all"], false);
-            assert!(request["agent"].is_null());
-            reader
-                .get_mut()
-                .write_all(b"{\"type\":\"channels\",\"channels\":[]}\n")
-                .unwrap();
-        });
-        let response = run(
-            &Client::isolated(socket),
-            Cmd::Channels("fixture-project".into(), "fixture-project".into()),
-        );
-        server.join().unwrap();
-        assert!(
-            matches!(response.unwrap(), Some(Msg::Channels(project, channels))
-            if project == "fixture-project" && channels.is_empty())
-        );
     }
 
     /// The status line stops being news.
@@ -4707,106 +4446,27 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn channel_and_inbox_refreshes_coalesce_without_losing_other_projects() {
+    fn journal_and_inbox_refreshes_coalesce_without_losing_other_projects() {
         let (commands, requests) = queue::channel();
         for _ in 0..10_000 {
             commands
-                .send(Cmd::Channels("project-a".into(), "project-a".into()))
+                .send(Cmd::Journal("project-a".into(), "project-a".into()))
                 .unwrap();
             commands
-                .send(Cmd::Channels("project-b".into(), "project-b".into()))
+                .send(Cmd::Journal("project-b".into(), "project-b".into()))
                 .unwrap();
             commands.send(Cmd::Inbox).unwrap();
         }
         let pending: Vec<_> = requests.try_iter().collect();
         assert_eq!(pending.len(), 3);
-        assert!(matches!(&pending[0], Cmd::Channels(project, _) if project == "project-a"));
-        assert!(matches!(&pending[1], Cmd::Channels(project, _) if project == "project-b"));
+        assert!(matches!(&pending[0], Cmd::Journal(project, _) if project == "project-a"));
+        assert!(matches!(&pending[1], Cmd::Journal(project, _) if project == "project-b"));
         assert!(matches!(&pending[2], Cmd::Inbox));
         commands
-            .send(Cmd::Channels("project-a".into(), "project-a".into()))
+            .send(Cmd::Journal("project-a".into(), "project-a".into()))
             .unwrap();
         commands.send(Cmd::Inbox).unwrap();
         assert_eq!(requests.try_iter().count(), 2);
-    }
-
-    #[test]
-    fn channel_snapshots_keep_other_projects_and_refuse_departed_projects() {
-        use agentdocker_core::channel::{Channel, ChannelSubject};
-        use agentdocker_core::{AgentSpec, ChannelId, ProjectId};
-        let (commands, requests) = queue::channel();
-        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
-        let mut app = App::bare(commands, results);
-        let mut agents = Vec::new();
-        for name in ["project-a", "project-a", "project-b"] {
-            let mut agent = AgentRecord::new(
-                AgentSpec {
-                    name: name.into(),
-                    ..Default::default()
-                },
-                false,
-                Utc::now(),
-            );
-            let mut project = ProjectRef::directory(format!("/fixture/{name}"));
-            project.fingerprint = Some(name.into());
-            agent.project = Some(project);
-            agents.push(agent);
-        }
-        messages
-            .send(Msg::Agents(agents.clone(), BTreeMap::new()))
-            .unwrap();
-        app.drain();
-        assert_eq!(
-            requests
-                .try_iter()
-                .filter(|cmd| matches!(cmd, Cmd::Channels(_, _)))
-                .count(),
-            2
-        );
-        let channel = |project: &str, id: &str| Channel {
-            id: ChannelId::from(id),
-            project: ProjectId::from(project),
-            name: None,
-            subject: ChannelSubject::Task {
-                task: "fixture".into(),
-            },
-            members: Vec::new(),
-            opened_by: None,
-            opened_at: Utc::now(),
-            closed_at: None,
-            resolution: None,
-            reviews: Vec::new(),
-        };
-        messages
-            .send(Msg::Channels(
-                "project-a".into(),
-                vec![channel("project-a", "a")],
-            ))
-            .unwrap();
-        messages
-            .send(Msg::Channels(
-                "project-b".into(),
-                vec![channel("project-b", "b")],
-            ))
-            .unwrap();
-        app.drain();
-        assert_eq!(app.channels.len(), 2);
-        messages
-            .send(Msg::Channels("project-a".into(), Vec::new()))
-            .unwrap();
-        app.drain();
-        assert_eq!(app.channels.len(), 1);
-        assert_eq!(app.channels[0].project.as_str(), "project-b");
-        agents.retain(|agent| agent.project.as_ref().unwrap().id().as_str() == "project-a");
-        messages.send(Msg::Agents(agents, BTreeMap::new())).unwrap();
-        messages
-            .send(Msg::Channels(
-                "project-b".into(),
-                vec![channel("project-b", "stale")],
-            ))
-            .unwrap();
-        app.drain();
-        assert!(app.channels.is_empty());
     }
 
     fn journal_entry(seq: u64) -> JournalEntry {
@@ -4992,21 +4652,6 @@ pub(crate) mod tests {
             "worker sent an unexpected extra request after the planned replies"
         );
         results.try_iter().collect()
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn channel_requests_name_a_project_without_filtering_to_human_membership() {
-        use serde_json::json;
-        let replies = command_with_replies(
-            Cmd::Channels("fixture-project".into(), "fixture-project".into()),
-            vec![(
-                json!({"op":"channels", "project":"fixture-project", "all":false, "agent":null}),
-                Some(json!({"type":"channels", "channels":[]})),
-            )],
-        );
-        assert!(replies.iter().any(|reply| matches!(reply,
-            Msg::Channels(project, channels) if project == "fixture-project" && channels.is_empty())));
     }
 
     #[cfg(unix)]
@@ -5486,6 +5131,96 @@ pub(crate) mod tests {
         assert_eq!(requests.try_iter().count(), 0);
         app.send(Cmd::Agents);
         assert!(matches!(requests.try_iter().next(), Some(Cmd::Agents)));
+    }
+
+    /// Where the person's newest messages in the open conversation stand
+    /// is asked on each refresh, for five at most; one whose every
+    /// recipient answered is not asked again, and leaving the conversation
+    /// lets its answers go.
+    #[test]
+    fn the_persons_newest_messages_are_followed_until_settled() {
+        use agentdocker_core::delivery::{Recipient, State};
+        let (tx, requests) = queue::channel();
+        let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        let room = "everyone:project".to_owned();
+        app.shell.conversation = Some(room.clone());
+        let archived = |seq: u64| {
+            let from = if seq.is_multiple_of(4) {
+                "agent-a"
+            } else {
+                agentdocker_core::HUMAN
+            };
+            agentdocker_core::ArchivedMessage {
+                seq,
+                conversation: agentdocker_core::ConversationId::from(room.clone()),
+                envelope: {
+                    let mut envelope = agentdocker_core::Envelope::new(
+                        from,
+                        agentdocker_core::Destination::Broadcast,
+                        "chat",
+                        serde_json::json!({ "text": format!("{seq}") }),
+                        None,
+                        Utc::now(),
+                    );
+                    envelope.id = MessageId::from(format!("m{seq}"));
+                    envelope
+                },
+                replies: 0,
+            }
+        };
+        messages
+            .send(Msg::History(
+                room.clone(),
+                app.history_epoch,
+                (1..=8).map(archived).collect(),
+            ))
+            .unwrap();
+        app.drain();
+        let _: Vec<_> = requests.try_iter().collect();
+        let asked = |app: &mut App| {
+            app.request_deliveries();
+            requests
+                .try_iter()
+                .filter_map(|cmd| match cmd {
+                    Cmd::Delivery(message) => Some(message.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(asked(&mut app), ["m7", "m6", "m5", "m3", "m2"]);
+
+        let recipient = |state| Recipient {
+            agent: agentdocker_core::AgentId::from("agent-a"),
+            name: Some("agent-a".into()),
+            runtime: None,
+            queued_at: Utc::now(),
+            offered_at: None,
+            received_at: None,
+            taken_at: None,
+            reply: None,
+            state,
+        };
+        for (message, state) in [("m7", State::Answered), ("m6", State::WaitingForPrompt)] {
+            messages
+                .send(Msg::Delivery(
+                    MessageId::from(message.to_owned()),
+                    Ok(vec![recipient(state)]),
+                ))
+                .unwrap();
+        }
+        app.drain();
+        assert_eq!(
+            asked(&mut app),
+            ["m6", "m5", "m3", "m2"],
+            "an answered message is not asked again"
+        );
+        assert_eq!(app.deliveries.len(), 2);
+
+        app.shell.conversation = None;
+        assert!(asked(&mut app).is_empty());
+        assert!(app.deliveries.is_empty(), "what is off view is let go");
     }
 
     /// A notification's message on the Messages screen is scrolled to

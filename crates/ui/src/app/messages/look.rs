@@ -47,21 +47,6 @@ pub(in crate::app) fn with_presence<'a>(
     .into()
 }
 
-/// A `#` on a small raised tile: a channel's mark in lists.
-pub(in crate::app) fn channel_mark<'a>(size: f32, tone: Color, c: Colors) -> Element<'a, Message> {
-    container(icon(Icon::Hash, tone, (size * 0.5).round()))
-        .center(size)
-        .style(move |_| container::Style {
-            background: Some(mix(c.ground, c.text, if c.dark { 0.07 } else { 0.05 }).into()),
-            border: iced::Border {
-                radius: RADIUS_SM.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into()
-}
-
 /// A row with an optional tint behind it and an optional accent rail
 /// down its left edge: unread, the open thread's message, the one a
 /// notification led to.
