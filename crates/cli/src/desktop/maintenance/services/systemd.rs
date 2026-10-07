@@ -477,7 +477,7 @@ mod tests {
             for path in &paths {
                 refs.include(&root, path).unwrap();
             }
-            assert_eq!(paths, [cwd.clone()]);
+            assert_eq!(paths, std::slice::from_ref(&cwd));
             assert!(refs.retains(&id));
             assert!(!refs.retains(&"b".repeat(64)));
             assert!(
