@@ -69,6 +69,69 @@ impl Daemon {
         }
     }
 
+    /// `delivery`: where one of the person's messages stands with each
+    /// agent it was queued for — answered, taken, received, shown, or why
+    /// it still waits. Only what the daemon saw; nothing says it was read.
+    pub(super) fn delivery(&self, message: MessageId) -> Response {
+        use agentdocker_core::delivery::{Recipient, State as Delivery};
+        let state = lock(&self.state);
+        let storage = |error: anyhow::Error| {
+            Response::error(ErrorCode::StorageUnavailable, error.to_string())
+        };
+        let rows = match state.store.deliveries(&message) {
+            Ok(rows) => rows,
+            Err(error) => return storage(error),
+        };
+        let replies = match state.store.replies_to(&message) {
+            Ok(replies) => replies,
+            Err(error) => return storage(error),
+        };
+        let now = Utc::now();
+        let everyone: Vec<AgentRecord> = state.registry.all().cloned().collect();
+        let recipients = rows
+            .into_iter()
+            .map(|(agent, queued_at, taken_at)| {
+                let id = state.registry.canonical_id(&agent).clone();
+                let record = state.registry.get(&id);
+                let reply = replies
+                    .iter()
+                    .find(|(_, sender)| {
+                        *state.registry.canonical_id(&AgentId::from(sender.clone())) == id
+                    })
+                    .map(|(reply, _)| reply.clone());
+                let offered_at = record.and_then(|r| r.legacy_offers.get(&message).copied());
+                let received_at = record
+                    .and_then(|r| r.input_delivery.as_ref())
+                    .filter(|d| {
+                        d.received
+                            .as_ref()
+                            .is_some_and(|r| r.messages.contains(&message))
+                    })
+                    .and_then(|d| d.received_at);
+                let blocked = record
+                    .and_then(|r| agentdocker_core::provider_block(r, &everyone))
+                    .and_then(|(_, block)| block.issue.as_ref().map(|issue| issue.kind));
+                let mut recipient = Recipient {
+                    agent: id.clone(),
+                    name: record.map(|r| r.spec.name.clone()),
+                    runtime: record.map(|r| r.spec.runtime.clone()),
+                    queued_at,
+                    offered_at,
+                    received_at,
+                    taken_at,
+                    reply,
+                    state: Delivery::Unknown,
+                };
+                recipient.state = Delivery::of(record, &recipient, blocked, now);
+                recipient
+            })
+            .collect();
+        Response::Delivery {
+            message,
+            recipients,
+        }
+    }
+
     pub(super) fn thread(
         &self,
         message: MessageId,
@@ -311,7 +374,7 @@ impl State {
 
     /// The person: their record, or the bare `user` id a reader falls back
     /// to before anyone has registered them.
-    fn is_human_id(&self, id: &AgentId) -> bool {
+    pub(super) fn is_human_id(&self, id: &AgentId) -> bool {
         id.as_str() == HUMAN || self.registry.get(id).is_some_and(super::humans::is_human)
     }
 

@@ -963,16 +963,48 @@ impl<B: Backend> McpServer<B> {
                     .await
             }
             "list_agents" => {
+                // An agent reaches only its own project and the person, so
+                // that is who it is shown: another repository's agents are
+                // not its to message.
                 let args: ListAgentsArgs = parse(arguments)?;
-                self.forward_as(
-                    Request::List {
+                let mine = match self
+                    .backend
+                    .call(Request::Inspect { agent: me.clone() })
+                    .await
+                {
+                    Ok(Response::Agent { agent }) => {
+                        agent.project.as_ref().map(agentdocker_core::ProjectRef::id)
+                    }
+                    _ => None,
+                };
+                let response = self
+                    .backend
+                    .call(Request::List {
                         all: args.all,
                         project: None,
                         labels: Default::default(),
-                    },
-                    verbose,
-                )
-                .await
+                    })
+                    .await
+                    .map_err(transport)?;
+                let response = match (response, mine) {
+                    (Response::Agents { agents, aliases }, Some(mine)) => {
+                        let agents: Vec<_> = agents
+                            .into_iter()
+                            .filter(|a| {
+                                a.spec.runtime == agentdocker_core::HUMAN_RUNTIME
+                                    || a.project.as_ref().map(agentdocker_core::ProjectRef::id)
+                                        == Some(mine.clone())
+                            })
+                            .collect();
+                        let aliases = aliases
+                            .into_iter()
+                            .filter(|(_, canonical)| agents.iter().any(|a| &a.id == canonical))
+                            .collect();
+                        Response::Agents { agents, aliases }
+                    }
+                    (other, _) => other,
+                };
+                Ok(render(response, verbose))
             }
             "inspect_agent" => {
                 let args: InspectAgentArgs = parse(arguments)?;
@@ -1848,7 +1880,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "list_agents",
-            "description": "List the agents AgentDocker knows about on this host. Live ones by default.",
+            "description": "List the agents in your project, and the person. Live ones by default. An agent reaches only its own project and the person.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1870,11 +1902,11 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "send_message",
-            "description": "Send a message to an agent (id or name), this project (`project`), a topic (`topic:name`), or everyone (`all`). Give text or a structured payload. Success confirms routing acceptance only, not provider receipt or idle wake. Topics and empty broadcasts may have no queued recipient. Check an agent with inspect_agent before depending on a reply.",
+            "description": "Send a message to an agent in your project (id or name), the person, this project (`project`, which `all` also means for an agent), or a topic (`topic:name`). An agent reaches only its own project and the person; a send elsewhere is refused. Give text or a structured payload. Success confirms routing acceptance only, not provider receipt or idle wake. Topics and empty broadcasts may have no queued recipient. Check an agent with inspect_agent before depending on a reply.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string", "description": "Agent id/name or `role:<name>` (the one agent holding that role in this project), `project` (this project) or `project:<id|path>`, `topic:<name>`, or `all`." },
+                    "to": { "type": "string", "description": "Agent id/name or `role:<name>` (the one agent holding that role in this project), `project` (this project), `topic:<name>`, or `all` (for an agent, the same as `project`)." },
                     "text": { "type": "string" },
                     "payload": { "type": "object", "description": "Structured payload instead of text." },
                     "kind": { "type": "string", "description": "chat, task, handoff, question, answer, notice...", "default": "chat" },
@@ -2477,15 +2509,52 @@ mod tests {
             updated_at: Utc::now(),
         });
 
-        let s = server(vec![Response::Agents {
-            aliases: Default::default(),
-            agents: vec![record.clone()],
-        }]);
+        // The caller's own record comes first: it says which project the
+        // list is narrowed to.
+        let caller = |project: Option<&str>| {
+            let mut me = AgentRecord::new(
+                AgentSpec {
+                    name: "me".into(),
+                    runtime: "claude-code".into(),
+                    ..AgentSpec::default()
+                },
+                false,
+                Utc::now(),
+            );
+            me.project = project.map(ProjectRef::directory);
+            Response::Agent { agent: me }
+        };
+        let mut stranger = record.clone();
+        stranger.id = "0b1c2d3e4f5061728394a5b6c7d8e9f0".into();
+        stranger.spec.name = "stranger".into();
+        stranger.project = Some(ProjectRef::directory("/work/beta"));
+        let mut person = AgentRecord::new(
+            AgentSpec {
+                name: "user".into(),
+                runtime: agentdocker_core::HUMAN_RUNTIME.into(),
+                ..AgentSpec::default()
+            },
+            false,
+            Utc::now(),
+        );
+        person.project = Some(ProjectRef::directory("/work/beta"));
+
+        let s = server(vec![
+            caller(Some("/work/alpha")),
+            Response::Agents {
+                aliases: Default::default(),
+                agents: vec![record.clone(), stranger, person],
+            },
+        ]);
         let brief = body(
             &s.handle(rpc(1, "tools/call", json!({ "name": "list_agents" })))
                 .await
                 .unwrap(),
         );
+        // Another project's agent is not this agent's to message; the
+        // person is, wherever they are.
+        assert!(!brief.contains("stranger"), "{brief}");
+        assert!(brief.contains("\"name\":\"user\""), "{brief}");
         // No indentation, and none of the daemon's bookkeeping.
         assert!(!brief.contains('\n'), "compact: {brief}");
         assert!(brief.contains("\"name\":\"writer\""), "{brief}");
@@ -2505,10 +2574,13 @@ mod tests {
         );
 
         // Asking for everything gets everything, and costs more.
-        let s = server(vec![Response::Agents {
-            aliases: Default::default(),
-            agents: vec![record],
-        }]);
+        let s = server(vec![
+            caller(Some("/work/alpha")),
+            Response::Agents {
+                aliases: Default::default(),
+                agents: vec![record],
+            },
+        ]);
         let whole = body(
             &s.handle(rpc(
                 2,
@@ -2538,10 +2610,13 @@ mod tests {
             false,
             Utc::now(),
         );
-        let s = server(vec![Response::Agents {
-            aliases: Default::default(),
-            agents: vec![bare],
-        }]);
+        let s = server(vec![
+            caller(None),
+            Response::Agents {
+                aliases: Default::default(),
+                agents: vec![bare],
+            },
+        ]);
         let text = body(
             &s.handle(rpc(3, "tools/call", json!({ "name": "list_agents" })))
                 .await

@@ -52,7 +52,8 @@ pub enum Destination {
     /// membership is the channel's, not a subscription: an agent put in a
     /// channel hears it without asking.
     Channel(ChannelId),
-    /// Every live agent.
+    /// Every live agent. Only the person, or the daemon, says it to every
+    /// project; an agent's `all` is published to its own project.
     Broadcast,
 }
 
@@ -495,11 +496,14 @@ impl Question {
     }
 
     /// Whether this question was put to `agent` — directly, or as one of
-    /// the recipients of a wider destination it belongs to.
-    pub fn addressed_to(&self, agent: &AgentId) -> bool {
+    /// the recipients of a wider destination it belongs to. `project` is
+    /// the one `agent` works in: a question put to a project reaches its
+    /// agents.
+    pub fn addressed_to(&self, agent: &AgentId, project: Option<&ProjectId>) -> bool {
         match &self.to {
             Destination::Agent(id) => id == agent,
             Destination::Broadcast => true,
+            Destination::Project(to) => project == Some(to),
             _ => false,
         }
     }
@@ -524,6 +528,29 @@ pub fn topic_matches(pattern: &str, topic: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A question put to a project reaches the agents working in it, and
+    /// no agent elsewhere; one put to everyone reaches anyone.
+    #[test]
+    fn a_question_put_to_a_project_reaches_only_its_agents() {
+        let now = Utc::now();
+        let alpha = ProjectId::from("alpha");
+        let question = |to| Question {
+            id: MessageId::generate(),
+            from: "asker".to_owned(),
+            to,
+            text: "?".to_owned(),
+            presentation: None,
+            asked_at: now,
+            expires_at: now,
+        };
+        let agent = AgentId::from("agent");
+        let to_alpha = question(Destination::Project(alpha.clone()));
+        assert!(to_alpha.addressed_to(&agent, Some(&alpha)));
+        assert!(!to_alpha.addressed_to(&agent, Some(&ProjectId::from("beta"))));
+        assert!(!to_alpha.addressed_to(&agent, None));
+        assert!(question(Destination::Broadcast).addressed_to(&agent, None));
+    }
 
     #[test]
     fn mcp_url_review_keeps_the_destination_and_only_three_decisions() {
