@@ -1522,6 +1522,17 @@ source identities, allowing newly supported records to be collected without
 recounting earlier accepted samples. Existing historical gaps remain visible;
 this change does not claim their reconciliation or provider-billing accuracy.
 
+A release after the newest checked one, of the same major version, is counted as
+it reports: Claude Code after 2.1.280 and Codex after 0.160.0 (read with 0.160.0's
+semantics and format). Both ship every few days, and an exact list left a person
+on the current release with no usage at all — this Mac's Claude Code 2.1.292
+sessions recorded 30,778 gaps and no samples. Each counter is still checked field
+by field, and the coverage lists `claude-transcript-after-2.1.280-unchecked-v1`
+and `codex-rollout-after-0.160.0-unchecked-v1` so a report says unchecked releases
+may be in it. An older unchecked release, another major version or a pre-release
+stays refused. Parser cursor v7 replays v3–v6 scans, which skipped those releases;
+replay deduplicates sources already accepted.
+
 Collection configuration is separate from scan progress: enabling collection or
 changing roots can leave a scan waiting to start, without meaning collection is
 off. The CLI and desktop use the explicit optional `enabled` field, and preserve
