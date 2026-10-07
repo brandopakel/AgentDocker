@@ -1238,6 +1238,9 @@ impl App {
                 c,
             ));
         }
+        if !self.secrets.reviews.is_empty() {
+            content = content.push(self.secret_review_panel(c));
+        }
         let body = match self.screen {
             Screen::Chat => self.project_chat_view(c),
             Screen::Agents => self.sessions(c),
@@ -4060,6 +4063,7 @@ pub(super) fn plain_pause_reason(reason: &str) -> String {
 
 // Questions, approvals, the Inbox without conversations and Needs you.
 mod approvals;
+mod secret_reviews;
 
 /// Keep full question bodies in the review screen, with a bounded first line here.
 fn compact_question(value: &str) -> String {

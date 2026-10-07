@@ -70,6 +70,13 @@ impl SecretAnswers {
         self.0.len() == fields.len() && fields.iter().all(|f| self.0.contains_key(&f.id))
     }
 
+    pub fn allocated_bytes(&self) -> usize {
+        self.0
+            .iter()
+            .map(|(key, value)| key.capacity().saturating_add(value.0.capacity()))
+            .sum()
+    }
+
     pub fn into_values(self) -> BTreeMap<String, SecretText> {
         self.0
     }

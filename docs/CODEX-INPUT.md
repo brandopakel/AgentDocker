@@ -1365,8 +1365,8 @@ for 0.155.1. Both original failed URL reports remain indexed.
 
 A managed-only secret producer and metadata-only restart fence are implemented
 behind `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`. This development switch does not
-establish acceptance: masked entry, actual-provider lifecycle/fault trials and
-native-terminal parity remain open. The default path still refuses secret
+establish acceptance: masked desktop entry is implemented; actual-provider
+lifecycle/fault trials and native-terminal parity remain open. The default path still refuses secret
 bundles. The managed terminal discards new typing without echo while a secret route is
 open. After it closes, Enter discards the suspended line and returns to the
 preexisting draft; buffered text cannot become an ordinary queued message. A possibly sent answer without a provider resolution stays

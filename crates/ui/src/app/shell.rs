@@ -722,6 +722,10 @@ pub enum Message {
     CatalogSaved(u64, Result<(), String>),
     Draft(MessageId, String),
     Answer(MessageId),
+    SecretEdit(String, String, Option<agentdocker_core::secret::SecretText>),
+    SecretAcknowledge(String, bool),
+    SecretSubmit(String),
+    SecretCancel(String),
     AnswerChoice(MessageId, String),
     CopyQuestionUrl(MessageId),
     FormEdit(MessageId, String, String),
@@ -2076,6 +2080,30 @@ impl App {
                         .retain(|id, _| sending.contains(id));
                     self.shell.chosen_answers.insert(id.clone(), value.clone());
                     self.send(Cmd::Answer(id, value));
+                }
+            }
+            Message::SecretEdit(id, field, value) => {
+                if self.connected.is_ok() {
+                    if !value.is_some_and(|v| self.secrets.edit(&id, &field, v, Utc::now())) {
+                        self.say("Temporary input is closed or exceeds its size limit.");
+                    }
+                }
+            }
+            Message::SecretAcknowledge(id, value) => {
+                if self.connected.is_ok() {
+                    self.secrets.acknowledge(&id, value, Utc::now());
+                }
+            }
+            Message::SecretSubmit(id) => {
+                if self.connected.is_ok()
+                    && let Some(answers) = self.secrets.take(&id, Utc::now())
+                {
+                    self.send(Cmd::SecretAnswer(id, answers));
+                }
+            }
+            Message::SecretCancel(id) => {
+                if self.connected.is_ok() && self.secrets.cancel(&id, Utc::now()) {
+                    self.send(Cmd::SecretCancel(id));
                 }
             }
             Message::Answer(id) => {

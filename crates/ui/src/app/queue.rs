@@ -26,6 +26,8 @@ fn bytes(command: &Cmd) -> usize {
             .capacity()
             .saturating_add(cwd.as_ref().map_or(0, |p| p.capacity())),
         Cmd::Answer(_, text) => text.capacity(),
+        Cmd::SecretAnswer(id, answers) => id.capacity().saturating_add(answers.allocated_bytes()),
+        Cmd::SecretCancel(id) => id.capacity(),
         Cmd::DismissMessages(ids) => ids.iter().fold(
             ids.capacity()
                 .saturating_mul(size_of::<agentdocker_core::MessageId>()),
@@ -86,6 +88,7 @@ enum Key {
     Pauses,
     Me,
     Questions,
+    SecretReviews,
 }
 
 fn key(command: &Cmd) -> Option<Key> {
@@ -101,6 +104,7 @@ fn key(command: &Cmd) -> Option<Key> {
         Cmd::Pauses => Key::Pauses,
         Cmd::Me => Key::Me,
         Cmd::Questions => Key::Questions,
+        Cmd::SecretReviews => Key::SecretReviews,
         _ => return None,
     })
 }

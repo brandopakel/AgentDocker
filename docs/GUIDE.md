@@ -835,3 +835,8 @@ answers and may retain or repeat them into ordinary output history.
 This broker is not yet connected to the managed Codex producer or masked app
 entry. Existing provider secret requests remain refused pending that work; the
 commands do not make end-to-end secret input available.
+
+The experimental managed secret route also has masked desktop entry with a
+provider-retention acknowledgement. Submit once removes the local edits before
+sending; a missing acknowledgement never restores the answer or resubmits it.
+These development controls still need actual-provider and final-package trials.
