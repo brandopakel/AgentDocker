@@ -145,6 +145,8 @@ enum Cmd {
         since: &'static str,
         by: agentdocker_core::usage::report::Group,
     },
+    /// Every agent's tokens over the last day, for the session rows.
+    AgentTokens,
     /// The person files a card.
     TaskCreate {
         project: String,
@@ -337,6 +339,8 @@ enum Msg {
         u64,
         Result<agentdocker_core::usage::report::Report, String>,
     ),
+    /// Every agent's tokens over the last day, or why they could not be read.
+    AgentTokens(Result<agentdocker_core::usage::report::Report, String>),
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
     Pauses(Vec<agentdocker_core::Pause>),
@@ -513,6 +517,11 @@ pub struct App {
     /// The usage report on view: which project's, and the report — kept
     /// as last read when a read fails, with the failure said beside it.
     usage: Option<(String, agentdocker_core::usage::report::Report)>,
+    /// What each agent's provider reported over the last day, by agent id,
+    /// and when it was last asked for: at most once a minute, as the agent
+    /// list refreshes.
+    agent_tokens: BTreeMap<String, agentdocker_core::usage::report::Tokens>,
+    agent_tokens_asked: Option<std::time::Instant>,
     usage_error: Option<String>,
     usage_requests: u64,
     usage_pending: Option<(
@@ -670,6 +679,8 @@ impl App {
             activity: BTreeMap::new(),
             tasks: None,
             usage: None,
+            agent_tokens: BTreeMap::new(),
+            agent_tokens_asked: None,
             usage_error: None,
             usage_requests: 0,
             usage_pending: None,
@@ -749,6 +760,8 @@ impl App {
             activity: BTreeMap::new(),
             tasks: None,
             usage: None,
+            agent_tokens: BTreeMap::new(),
+            agent_tokens_asked: None,
             usage_error: None,
             usage_requests: 0,
             usage_pending: None,
@@ -982,6 +995,7 @@ impl App {
                         self.shell.selected = Some(self.canonical_agent(selected).to_owned());
                     }
                     self.agents = agents;
+                    self.request_agent_tokens();
                     // A reconnected session's pane opens when the list shows
                     // the process the daemon started; an older list, from
                     // before the reconnect, says nothing about it and the
@@ -1162,6 +1176,13 @@ impl App {
                             }
                             Err(error) => self.usage_error = Some(error),
                         }
+                    }
+                }
+                Msg::AgentTokens(result) => {
+                    // A failed read keeps the last counts: tokens are a
+                    // footnote on a row, not worth a message of their own.
+                    if let Ok(report) = result {
+                        self.agent_tokens = report.tokens();
                     }
                 }
                 Msg::TaskCreated(project, request, result) => {
@@ -1910,6 +1931,21 @@ impl App {
     /// expanded past its first page stays expanded through a refresh.
     /// Read the selected project's usage as the screen is set: its
     /// window and grouping.
+    /// Ask for every agent's tokens over the last day, at most once a
+    /// minute: the rows show them, and the agent list refreshes far more
+    /// often than they change.
+    fn request_agent_tokens(&mut self) {
+        let now = std::time::Instant::now();
+        if self
+            .agent_tokens_asked
+            .is_some_and(|at| now.duration_since(at) < std::time::Duration::from_secs(60))
+        {
+            return;
+        }
+        self.agent_tokens_asked = Some(now);
+        self.send(Cmd::AgentTokens);
+    }
+
     pub(crate) fn request_usage(&mut self) {
         if self.connected.is_ok()
             && let Some(project) = self.selected_project_root()
@@ -2784,6 +2820,21 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::Tasks(project, request, result))
+        }
+        Cmd::AgentTokens => {
+            let result = match client.call(&Request::Usage {
+                project: None,
+                agent: None,
+                since: Some("24h".to_owned()),
+                until: None,
+                by: agentdocker_core::usage::report::Group::Agent,
+            }) {
+                Ok(Response::Usage { report }) => Ok(report),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::AgentTokens(result))
         }
         Cmd::Usage {
             project,

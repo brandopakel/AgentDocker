@@ -364,7 +364,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `ps` | Agents grouped by project, with INPUT readiness; `--input-details` adds reconnect guidance |
+| `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); `--input-details` adds reconnect guidance |
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is doing: working, idle, or blocked on a named resource |
 | `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour`), each count with its coverage (`~` where some samples did not say, `—` where none did), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on, and the overhead AgentDocker injected — *not measured* until it is; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
@@ -672,6 +672,10 @@ Newest first. Only what changes how the product is used.
   it reports, and the usage report's coverage says unchecked releases may be
   in it. Usage skipped before is read again once, without counting anything
   twice.
+- Tokens where you look: `agentdocker ps` has a TOKENS 24H column, and the
+  desktop's session rows show each session's tokens over the last day, with
+  one line above the list that sums them and opens Usage. Both appear only
+  when usage collection is on and there is something to show.
 - **Reconnect here** in a Claude Code session's Details, and `agentdocker
   reconnect <session>`: once the session has exited in its terminal, the daemon
   brings it back under its own record with its conversation (`--resume`) and

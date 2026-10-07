@@ -20,7 +20,7 @@ mod skill;
 mod teams;
 mod top;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use agentdocker_core::contest::Direction;
@@ -1796,7 +1796,23 @@ async fn run() -> Result<()> {
                 Ok(Response::Activity { activity }) => activity,
                 _ => Vec::new(),
             };
-            print_agents(&agents, &unadopted, &activity, sources);
+            // What each one's provider reported over the last day, beside
+            // what it is doing. Nothing to show — collection off, or no
+            // tokens yet — adds no column.
+            let tokens = match client
+                .call(&Request::Usage {
+                    project: project.as_deref().map(project_selector),
+                    agent: None,
+                    since: Some("24h".to_owned()),
+                    until: None,
+                    by: agentdocker_core::usage::report::Group::Agent,
+                })
+                .await
+            {
+                Ok(Response::Usage { report }) => format::tokens_by_agent(&report),
+                _ => HashMap::new(),
+            };
+            print_agents(&agents, &unadopted, &activity, sources, &tokens);
             if input_details {
                 let now = chrono::Utc::now();
                 for agent in &agents {
@@ -3658,7 +3674,9 @@ fn print_agents(
     unadopted: &[DiscoveredProcess],
     activity: &[AgentActivity],
     input_sources: &[AgentRecord],
+    tokens: &HashMap<String, String>,
 ) {
+    let with_tokens = agents.iter().any(|a| tokens.contains_key(a.id.as_str()));
     let doing = |id: &agentdocker_core::AgentId| {
         activity
             .iter()
@@ -3720,6 +3738,14 @@ fn print_agents(
                 },
                 doing(&a.id),
             ];
+            if with_tokens {
+                row.push(
+                    tokens
+                        .get(a.id.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| "-".to_owned()),
+                );
+            }
             if in_session {
                 row.push(session_cell(a.session.as_ref()));
             }
@@ -3749,6 +3775,9 @@ fn print_agents(
             "Not connected".to_owned(),
             "-".to_owned(),
         ];
+        if with_tokens {
+            row.push("-".to_owned());
+        }
         if in_session {
             row.push(session_cell(p.session.as_ref()));
         }
@@ -3764,6 +3793,9 @@ fn print_agents(
         "AGENT ID", "NAME", "PROJECT", "BRANCH", "HEAD", "RUNTIME", "MODEL", "STATUS", "INPUT",
         "DOING",
     ];
+    if with_tokens {
+        headers.push("TOKENS 24H");
+    }
     if in_session {
         headers.push("LIVES IN");
     }

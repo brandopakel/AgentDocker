@@ -157,3 +157,54 @@ pub struct Report {
     pub coverage: ReportCoverage,
     pub overhead: Overhead,
 }
+
+/// A row's tokens, input and output together: the sum its samples gave and
+/// whether some did not say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tokens {
+    pub sum: u64,
+    pub partial: bool,
+}
+
+impl Tokens {
+    /// `1.2M`, marked `~` when some samples did not say.
+    pub fn label(&self) -> String {
+        format!(
+            "{}{}",
+            super::compact(self.sum),
+            if self.partial { "~" } else { "" }
+        )
+    }
+}
+
+impl Report {
+    /// Each row's tokens by its key. A row no sample gave a count for, and
+    /// unattributed usage, are left out rather than shown as zero.
+    pub fn tokens(&self) -> std::collections::BTreeMap<String, Tokens> {
+        self.rows
+            .iter()
+            .filter_map(|row| {
+                let key = row.key.clone()?;
+                let parts = [&row.counters.input_tokens, &row.counters.output_tokens];
+                if parts.iter().all(|c| c.sum.is_none()) {
+                    return None;
+                }
+                let sum = parts
+                    .iter()
+                    .filter_map(|c| c.sum)
+                    .fold(0u64, u64::saturating_add);
+                let partial = parts.iter().any(|c| c.coverage != Coverage::Complete);
+                Some((key, Tokens { sum, partial }))
+            })
+            .collect()
+    }
+
+    /// Every row's tokens together, or nothing when no row has a count.
+    pub fn total(&self) -> Option<Tokens> {
+        let tokens = self.tokens();
+        (!tokens.is_empty()).then(|| Tokens {
+            sum: tokens.values().map(|t| t.sum).fold(0, u64::saturating_add),
+            partial: tokens.values().any(|t| t.partial),
+        })
+    }
+}
