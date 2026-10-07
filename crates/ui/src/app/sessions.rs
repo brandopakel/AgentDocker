@@ -86,11 +86,11 @@ impl App {
             .is_dismissed(agent.id.as_str(), agent.process_started_at, agent.pid)
     }
 
-    /// Paused delivery that asks something of the person: a live session
+    /// Paused delivery the session's row and details say: a live session
     /// held by a provider block or not receiving messages, or an ended
-    /// session still held by a block or still holding messages. An ended
-    /// session can report no recovery, so each ended case can be dismissed;
-    /// otherwise it would sit here for good.
+    /// session still held by a block or still holding messages, until
+    /// dismissed. It colours the row; it is not a question for the person,
+    /// so Needs you and Needs input leave it out.
     pub(super) fn delivery_needs_you(&self, agent: &AgentRecord) -> bool {
         let blocked = agentdocker_core::provider_block(agent, &self.agents).is_some();
         if agent.status.is_live() {
@@ -99,8 +99,34 @@ impl App {
         (blocked || self.ended_with_undelivered(agent)) && !self.notice_dismissed(agent)
     }
 
+    /// The name of the project an agent works in, as the sidebar shows
+    /// it: the catalog's name when the person kept the project, else the
+    /// folder's.
+    pub(super) fn project_name_of(&self, agent: &str) -> Option<String> {
+        let id = self.canonical_agent(agent);
+        let project = self
+            .agents
+            .iter()
+            .find(|a| a.id.as_str() == id)?
+            .project
+            .as_ref()?;
+        Some(
+            self.shell
+                .catalog
+                .projects
+                .iter()
+                .find(|entry| entry.project.root == project.root)
+                .map(|entry| entry.name())
+                .unwrap_or_else(|| project.name()),
+        )
+    }
+
+    /// Needs input is a question waiting on the person, nothing else. A
+    /// session that is blocked, paused or ended with messages queued says
+    /// so on its own row and in its details; it is not a decision for the
+    /// person to make.
     fn needs_attention(&self, agent: &AgentRecord) -> bool {
-        self.needs_input(agent.id.as_str()) || self.delivery_needs_you(agent)
+        self.needs_input(agent.id.as_str())
     }
 
     pub(super) fn session_records(&self, filter: Filter) -> Vec<&AgentRecord> {
@@ -235,7 +261,9 @@ mod tests {
         );
         app.agents[0].status = AgentStatus::Exited { code: Some(1) };
         app.agents[0].process_started_at = Some(now + chrono::Duration::seconds(2));
-        assert_eq!(app.session_records(Filter::NeedsInput)[0].id, limited.id);
+        // Flagged on its row; Needs input is for questions to the person.
+        assert!(app.delivery_needs_you(&app.agents[0]));
+        assert!(app.session_records(Filter::NeedsInput).is_empty());
         assert!(
             !app.needs_input(limited.id.as_str()),
             "availability is not a question or an approval"
@@ -261,7 +289,8 @@ mod tests {
         });
         app.agents.push(paused.clone());
         assert!(app.session_records(Filter::Current).is_empty());
-        assert_eq!(app.session_records(Filter::NeedsInput)[0].id, paused.id);
+        assert!(app.delivery_needs_you(&app.agents[0]));
+        assert!(app.session_records(Filter::NeedsInput).is_empty());
         assert!(
             !app.needs_input(paused.id.as_str()),
             "delivery recovery is not a human question"
@@ -273,9 +302,9 @@ mod tests {
         );
     }
 
-    /// An ended session with paused delivery asks for the person only while
-    /// messages are left: with none it is just ended, with some it stays
-    /// in Needs input until they are dismissed, and dismissing keeps them.
+    /// An ended session with paused delivery is flagged on its row only
+    /// while messages are left, until dismissed, and dismissing keeps them.
+    /// It is never in Needs input: that is for questions to the person.
     #[test]
     fn ended_sessions_need_the_person_only_while_messages_wait_and_until_dismissed() {
         let mut app = app();
@@ -328,7 +357,9 @@ mod tests {
         app.queued_inputs.insert(id.clone(), 2);
         app.agents[0].input_binding = None;
         assert!(app.delivery_needs_you(&app.agents[0]));
-        assert_eq!(app.session_records(Filter::NeedsInput)[0].id, ended.id);
+        // Its row says so; Needs input is for questions to the person.
+        assert!(app.session_records(Filter::NeedsInput).is_empty());
+        assert_eq!(app.session_records(Filter::Earlier)[0].id, ended.id);
 
         // Dismissed: off Needs input, the count and the queue untouched.
         let _ = app.update(Message::DismissDelivery(id.clone()));
@@ -371,7 +402,7 @@ mod tests {
         });
         app.agents.push(limited.clone());
         assert!(app.delivery_needs_you(&app.agents[0]));
-        assert_eq!(app.session_records(Filter::NeedsInput).len(), 1);
+        assert!(app.session_records(Filter::NeedsInput).is_empty());
         let _ = app.update(Message::DismissDelivery(limited.id.to_string()));
         assert!(!app.delivery_needs_you(&app.agents[0]));
         assert!(app.session_records(Filter::NeedsInput).is_empty());

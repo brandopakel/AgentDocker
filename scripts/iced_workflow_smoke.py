@@ -736,8 +736,11 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                      step("click", id="inbox"),
                                      step("wait_control", id="thread-back", present=True),
                                      step("click", id="thread-back"),
-                                     step("wait_control", id=f"thread-{receiver['id']}", present=True),
-                                     step("click", id=f"thread-{receiver['id']}"),
+                                     # An agent nobody has written to is not listed;
+                                     # + (New message) starts the conversation.
+                                     step("click", id="new-conversation"),
+                                     step("wait_control", id=f"new-direct-{receiver['id']}", present=True),
+                                     step("click", id=f"new-direct-{receiver['id']}"),
                                      step("wait_control", id="thread-back", present=True),
                                      step("wait_control", id=f"reply-{receiver['id']}", present=True),
                                      step("wait_text", text=input_status), *send_probe,
@@ -778,9 +781,12 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             assert rpc(endpoint, {"op": "delivery_queue", "agent": receiver["id"]})["type"] == "input_waiting"
             report["provider_limit_window"] = launch("provider-limit", [
                 step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
-                step("wait_text", text="readiness-fixture: Usage limit"),
-                step("wait_control", id=f"needs-you-review-{receiver['id']}", present=False),
-                step("click", id=f"needs-you-provider-{receiver['id']}"),
+                # The block is the row's status word, in amber.
+                step("wait_text", text="Usage limit"),
+                # A blocked provider is said on the session's row, not in
+                # Needs you: that is for questions to the person.
+                step("wait_control", id=f"needs-you-provider-{receiver['id']}", present=False),
+                step("click", id=f"session-{receiver['id']}"),
                 step("wait_control", id="review-delivery", present=False),
                 step("wait_text", text="Usage limit"),
                 step("click", id="session-message"), step("fill", id="session-message-text", text="Keep this draft during recovery"),
