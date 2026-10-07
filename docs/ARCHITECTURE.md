@@ -865,6 +865,13 @@ registrations: launchd GUI/user domain services, and systemd's typed loaded-unit
 and unit-file inventories. A removed definition does not erase a cached service
 reference. Unavailable or unrecognized manager output preserves the installation;
 queries are bounded and never include service arguments/environment in errors.
+Systemd cached working-directory references decode its D-Bus missing-ok `!`
+flag and retain the resulting absolute dependency even if it does not yet exist.
+Home-relative `~`, malformed flags and other ambiguous paths preserve all builds.
+Systemd may cache a negative lookup after a status query for an absent unit.
+Maintenance ignores it only when typed cached state confirms not-found/inactive,
+no definition or overrides, no command, no job or process and no resource settings.
+A missing file on a real cached registration still preserves the installation.
 Windows task inspection recognizes only the exact encoded daemon and connector
 scripts emitted by the shared registration renderers, using literal extraction
 and byte-for-byte reconstruction without executing task content. It verifies
@@ -882,11 +889,19 @@ publishes a service and exits during that query; versions pinned only after the
 query could otherwise lose both protections in that interval. Preview opens
 only existing version pins; apply creates missing pins and recomputes inventory.
 Dry-run registration creates no guard, and maintenance preview opens only an
-existing one. Unix inventory still conservatively protects whole stores; exact
-Unix references and legacy portable registrars selecting a separate daemon need
-further acceptance.
+existing one. Unix inventory recognizes exact emitted service definitions and
+compares cached manager arguments and environment before selecting named
+versions. It validates the selected executable's immutable payload, including
+recognized services in other installation prefixes without interpreting their
+launcher-placement settings, then retains explicit
+program, tunnel, project/feed, state/log, working-directory and environment
+paths with both literal and physical alias dependencies. Unknown definitions,
+missing fragments, overrides, unknown environment settings and unavailable or
+conflicting cached data preserve whole stores. Source-specific Mac `53696dab` and
+Oracle `05582d3a` stopped-service retention/restart trials are indexed; hosted-current
+acceptance and legacy portable registrars selecting a separate daemon remain open.
 
-Windows maintenance recognizes only exact rendered actions around a content-verified same-store controller and daemon or receipt-checked stable bootstrap. It retains every explicitly referenced immutable version, including connector tunnel/project/feed paths, state/log paths and Task Scheduler working directories. Literal and resolved aliases both count. Unknown programs/options, relative or parent-traversing paths and unreadable inventory conservatively retain the store; no arbitrary script is executed to discover paths. Native selective-deletion acceptance remains open.
+Windows maintenance recognizes only exact rendered actions around a content-verified same-store controller and daemon or receipt-checked stable bootstrap. It retains every explicitly referenced immutable version, including connector tunnel/project/feed paths, state/log paths and Task Scheduler working directories. Literal and resolved aliases both count. Unknown programs/options, relative or parent-traversing paths and unreadable inventory conservatively retain the store; no arbitrary script is executed to discover paths. Source-specific native selective-deletion acceptance is recorded in the verification index; final-package and physical acceptance remain open.
 Windows desktop activation under implementation uses a private JSON snapshot in
 `AgentDocker/desktop`, pointing only to a hash-named immutable version. Launcher
 contract 2 denotes receipt-checked Windows bootstrap forwarding and lifetime
