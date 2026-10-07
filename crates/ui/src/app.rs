@@ -6117,7 +6117,7 @@ pub(crate) mod tests {
         app.drain();
         let received: Vec<_> = requests.try_iter().collect();
         assert!(app.connected.is_ok());
-        assert_eq!(received.len(), 12);
+        assert_eq!(received.len(), 13);
         assert!(
             received.iter().any(|cmd| matches!(cmd, Cmd::Ping)),
             "which daemon serves is asked on every connection"
@@ -6131,6 +6131,7 @@ pub(crate) mod tests {
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Discovered)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Runtimes)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Questions)));
+        assert!(received.iter().any(|cmd| matches!(cmd, Cmd::SecretReviews)));
         assert!(
             received
                 .iter()

@@ -52,11 +52,13 @@ impl State {
 
     pub(super) fn expire_secret_reviews(&mut self) {
         let now = Instant::now();
+        let wall_now = Utc::now();
         let expired: Vec<_> = self
             .secret_reviews
             .iter()
             .filter(|(_, entry)| {
                 now >= entry.expires
+                    || wall_now >= entry.view.expires_at
                     || now >= entry.owner_deadline
                     || !self.secret_owner_current(
                         &entry.view.agent,
@@ -619,6 +621,59 @@ mod tests {
             assert!(lock(&daemon.state).secret_reviews.is_empty());
         }
     }
+    #[tokio::test]
+    async fn displayed_expiry_rejects_new_answers_and_drops_unclaimed_answers() {
+        let (_dir, daemon, agent, human, owner) = fixture();
+        for submitted in [false, true] {
+            let view = open(&daemon, &agent, &human, &owner).await;
+            if submitted {
+                assert!(matches!(
+                    daemon
+                        .handle(Request::AnswerSecretReview {
+                            from: human.to_string(),
+                            review: view.id.clone(),
+                            answers: answers(),
+                            retention_acknowledged: true
+                        })
+                        .await,
+                    Response::Ok
+                ));
+            }
+            {
+                let mut state = lock(&daemon.state);
+                let entry = state.secret_reviews.get_mut(&view.id).unwrap();
+                // Simulate sleep or a clock jump past the displayed deadline,
+                // while both monotonic deadlines are still in the future.
+                entry.expires = Instant::now() + ROUTE_LIFETIME;
+                entry.owner_deadline = Instant::now() + OWNER_HEARTBEAT;
+                entry.view.expires_at = Utc::now() - Duration::seconds(1);
+            }
+            if !submitted {
+                assert!(matches!(
+                    daemon
+                        .handle(Request::AnswerSecretReview {
+                            from: human.to_string(),
+                            review: view.id.clone(),
+                            answers: answers(),
+                            retention_acknowledged: true
+                        })
+                        .await,
+                    Response::Error {
+                        code: ErrorCode::NotFound,
+                        ..
+                    }
+                ));
+            }
+            assert!(matches!(
+                take(&daemon, &agent, &owner, &view.id).await,
+                Response::SecretReply {
+                    reply: SecretReply::Closed
+                }
+            ));
+            assert!(lock(&daemon.state).secret_reviews.is_empty());
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn secret_notifications_do_not_break_the_checked_question_event_stream() {
