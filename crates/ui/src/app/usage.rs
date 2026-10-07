@@ -35,18 +35,7 @@ pub fn counter(report: &CounterReport) -> String {
     }
 }
 
-/// `12345678` as `12,345,678`.
-pub fn thousands(value: u64) -> String {
-    let digits = value.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
+pub use agentdocker_core::usage::{compact, thousands};
 
 /// Only current configuration establishes that collection is off. Missing
 /// discovery progress may mean it is starting or this is an older report.
@@ -161,30 +150,6 @@ pub fn total(report: &Report, pick: Pick) -> CounterReport {
             (true, false) => Coverage::Partial,
         },
     }
-}
-
-/// A large count in three figures: `9,999`, `12.3K`, `1.23M`. Exact
-/// below ten thousand; the table beside it keeps every digit.
-pub fn compact(value: u64) -> String {
-    if value < 10_000 {
-        return thousands(value);
-    }
-    let mut scaled = value as f64;
-    for unit in ["K", "M", "B", "T"] {
-        scaled /= 1000.0;
-        let digits = if scaled < 10.0 {
-            2
-        } else if scaled < 100.0 {
-            1
-        } else {
-            0
-        };
-        let rounded = format!("{scaled:.digits$}");
-        if rounded.parse::<f64>().is_ok_and(|r| r < 1000.0) || unit == "T" {
-            return format!("{rounded}{unit}");
-        }
-    }
-    thousands(value)
 }
 
 /// [`counter`] in three figures, with the same coverage marks.
@@ -888,6 +853,70 @@ mod tests {
                 .any(|cmd| matches!(cmd, Cmd::Usage { ref project, .. } if *project == second.root.display().to_string())),
             "asked again on reconnect"
         );
+    }
+
+    /// Each agent's tokens are read at most once a minute however often
+    /// the agent list refreshes; a reply fills the rows' counts, keyed by
+    /// agent, and a failed read keeps the last ones.
+    #[test]
+    fn agent_tokens_are_read_once_a_minute_and_kept_through_a_failed_read() {
+        let (tx, commands) = queue::channel();
+        let (messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        for _ in 0..3 {
+            messages
+                .send(Msg::Agents(Vec::new(), BTreeMap::new()))
+                .unwrap();
+            app.drain();
+        }
+        let asked = commands
+            .try_iter()
+            .filter(|cmd| matches!(cmd, Cmd::AgentTokens))
+            .count();
+        assert_eq!(asked, 1, "one read for three refreshes");
+
+        let counter = |sum: Option<u64>, coverage| CounterReport {
+            sum,
+            known_samples: sum.map_or(0, |_| 1),
+            coverage,
+        };
+        let row = |key: Option<&str>, input: Option<u64>, output: Option<u64>| Row {
+            key: key.map(str::to_owned),
+            samples: 1,
+            counters: CounterReports {
+                input_tokens: counter(input, Coverage::Complete),
+                cache_read_input_tokens: counter(None, Coverage::Unknown),
+                cache_write_input_tokens: counter(None, Coverage::Unknown),
+                output_tokens: counter(output, Coverage::Complete),
+                reasoning_output_tokens: counter(None, Coverage::Unknown),
+            },
+        };
+        let read = report(
+            vec![
+                row(Some("agent-a"), Some(1_200_000), Some(34_000)),
+                row(Some("agent-b"), None, None),
+                row(None, Some(9), Some(1)),
+            ],
+            CollectionState::CaughtUp,
+            Some(1),
+        );
+        messages.send(Msg::AgentTokens(Ok(read))).unwrap();
+        app.drain();
+        assert_eq!(
+            app.agent_tokens.get("agent-a").map(|t| t.label()),
+            Some("1.23M".to_owned())
+        );
+        assert!(
+            !app.agent_tokens.contains_key("agent-b"),
+            "no count is not zero"
+        );
+        assert_eq!(app.agent_tokens.len(), 1, "unattributed usage has no row");
+        messages
+            .send(Msg::AgentTokens(Err("daemon busy".into())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.agent_tokens.len(), 1, "a failed read keeps the counts");
     }
 
     /// The headline counts sum what the rows said and carry the weakest

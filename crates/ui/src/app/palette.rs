@@ -722,7 +722,7 @@ impl App {
                 "inbox",
                 if conversations { "Messages" } else { "Inbox" },
                 if conversations {
-                    "Conversations and channels"
+                    "Project chats and direct messages"
                 } else {
                     "Questions and messages for you"
                 },

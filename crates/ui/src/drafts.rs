@@ -28,6 +28,9 @@ pub struct Snapshot {
     pub(crate) version: u32,
     pub sessions: BTreeMap<String, String>,
     pub conversations: BTreeMap<String, String>,
+    /// Drafts for the Channels screen the app had before it left channels
+    /// to the CLI: still read, so a file from then loads, and let go on
+    /// loading (nothing here can send them); always saved empty.
     pub channels: BTreeMap<String, String>,
     #[serde(default)]
     pub answers: BTreeMap<String, String>,

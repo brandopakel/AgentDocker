@@ -2,7 +2,7 @@
 use super::{
     Message,
     messages::look::{link, status_line},
-    shell::{ChannelDraft, DeliveryTarget},
+    shell::{DeliveryTarget, TextDraft},
     style::{Colors, RADIUS_MD, alpha, weight},
     view::small,
 };
@@ -13,7 +13,7 @@ use iced::{
 };
 
 pub(super) fn notice(
-    draft: &ChannelDraft,
+    draft: &TextDraft,
     target: DeliveryTarget,
     c: Colors,
 ) -> Option<Element<'static, Message>> {
@@ -22,7 +22,7 @@ pub(super) fn notice(
 
 /// A composer already scrolls all its feedback within the available pane.
 pub(super) fn composer_notice(
-    draft: &ChannelDraft,
+    draft: &TextDraft,
     target: DeliveryTarget,
     c: Colors,
 ) -> Option<Element<'static, Message>> {
@@ -33,7 +33,7 @@ pub(super) fn composer_notice(
 /// and a quiet Details link — and, opened, who needs what and the two
 /// things to do about each, in a quiet box under it.
 fn notice_content(
-    draft: &ChannelDraft,
+    draft: &TextDraft,
     target: DeliveryTarget,
     c: Colors,
     scroll_details: bool,
@@ -45,7 +45,6 @@ fn notice_content(
     let key = match &target {
         DeliveryTarget::Conversation(key) => format!("conversation-{key}"),
         DeliveryTarget::Session(key) => format!("session-{key}"),
-        DeliveryTarget::Channel(key) => format!("channel-{key}"),
     };
     let expanded = draft.readiness_expanded;
     let toggle = link(

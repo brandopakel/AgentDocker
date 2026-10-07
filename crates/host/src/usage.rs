@@ -43,6 +43,40 @@ pub struct Codex {
     saw_usage: bool,
 }
 
+/// Codex releases whose rollouts were checked against a fixture.
+const CODEX_CHECKED: [&str; 4] = ["0.153.4", "0.154.0", "0.155.1", "0.160.0"];
+
+/// Claude Code releases whose transcripts were checked against a fixture.
+const CLAUDE_CHECKED: [&str; 21] = [
+    "2.1.246", "2.1.247", "2.1.248", "2.1.251", "2.1.259", "2.1.260", "2.1.261", "2.1.263",
+    "2.1.267", "2.1.268", "2.1.270", "2.1.271", "2.1.272", "2.1.273", "2.1.274", "2.1.275",
+    "2.1.276", "2.1.277", "2.1.278", "2.1.280", "2.1.287",
+];
+
+// Keep the initially accepted forward-compatibility floors fixed when adding
+// checked fixtures, so those additions cannot revoke already counted releases.
+const CODEX_FORWARD_COMPATIBLE_AFTER: (u32, u32, u32) = (0, 160, 0);
+const CLAUDE_FORWARD_COMPATIBLE_AFTER: (u32, u32, u32) = (2, 1, 280);
+
+/// `major.minor.patch`, and nothing else: a pre-release or a build suffix
+/// is not a release this reads as one.
+fn release(version: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = version.split('.');
+    let mut next = || parts.next()?.parse::<u32>().ok();
+    let release = (next()?, next()?, next()?);
+    parts.next().is_none().then_some(release)
+}
+
+/// Whether a release is checked, or newer within the same major version than
+/// the established compatibility floor. Adding checked fixtures must not raise
+/// that floor and stop counting releases previously admitted by the parser.
+fn counted(version: &str, checked: &[&str], floor: (u32, u32, u32)) -> bool {
+    if checked.contains(&version) {
+        return true;
+    }
+    release(version).is_some_and(|this| this.0 == floor.0 && this > floor)
+}
+
 fn label(value: &Value) -> Option<String> {
     let value = value.as_str()?;
     (!value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control))
@@ -133,12 +167,9 @@ impl Codex {
                 let session = label(&payload["id"]).ok_or("Codex session id is missing")?;
                 let version =
                     label(&payload["cli_version"]).ok_or("Codex log version is missing")?;
-                // Fixtures establish these local formats. Future formats must
-                // earn support rather than silently borrowing old semantics.
-                if !matches!(
-                    version.as_str(),
-                    "0.153.4" | "0.154.0" | "0.155.1" | "0.160.0"
-                ) {
+                // Fixtures establish these local formats; a later release is
+                // read with the newest checked one's semantics (`counted`).
+                if !counted(&version, &CODEX_CHECKED, CODEX_FORWARD_COMPATIBLE_AFTER) {
                     return Err("unsupported Codex rollout version".into());
                 }
                 if self.session.as_ref().is_some_and(|old| old != &session) {
@@ -180,8 +211,10 @@ impl Codex {
                     source_id: identity("codex", session, &key),
                     runtime: "codex".into(),
                     format: match self.version.as_deref() {
-                        Some("0.160.0") => "codex-rollout-0.160.0-v1",
-                        _ => "codex-rollout-0.153.4-0.154.0-v1",
+                        Some("0.153.4" | "0.154.0" | "0.155.1") => {
+                            "codex-rollout-0.153.4-0.154.0-v1"
+                        }
+                        _ => "codex-rollout-0.160.0-v1",
                     }
                     .into(),
                     session_id: session.clone(),
@@ -210,32 +243,10 @@ pub fn claude(record: &Value) -> Result<Option<Sample>, String> {
     if usage.is_null() {
         return Ok(None);
     }
-    if !matches!(
-        record["version"].as_str(),
-        Some(
-            "2.1.246"
-                | "2.1.247"
-                | "2.1.248"
-                | "2.1.251"
-                | "2.1.259"
-                | "2.1.260"
-                | "2.1.261"
-                | "2.1.263"
-                | "2.1.267"
-                | "2.1.268"
-                | "2.1.270"
-                | "2.1.271"
-                | "2.1.272"
-                | "2.1.273"
-                | "2.1.274"
-                | "2.1.275"
-                | "2.1.276"
-                | "2.1.277"
-                | "2.1.278"
-                | "2.1.280"
-                | "2.1.287"
-        )
-    ) {
+    if !record["version"]
+        .as_str()
+        .is_some_and(|version| counted(version, &CLAUDE_CHECKED, CLAUDE_FORWARD_COMPATIBLE_AFTER))
+    {
         return Err("unsupported Claude transcript version".into());
     }
     if !usage.is_object() {
@@ -341,6 +352,39 @@ mod tests {
             assert_eq!(parsed, claude(&record).unwrap().unwrap());
             record["version"] = json!("2.1.279");
             assert!(claude(&record).is_err(), "unobserved patches stay unknown");
+            // A release after the newest checked counts as it reports.
+            record["version"] = json!("2.1.292");
+            assert_eq!(parsed, claude(&record).unwrap().unwrap());
+        }
+    }
+
+    /// Checked releases count; so does a later release of the same major
+    /// version than the established floor, since both providers ship every few
+    /// days. An older unchecked release, another major version, a
+    /// pre-release or something that is not a version stays refused.
+    #[test]
+    fn later_checked_fixtures_preserve_the_previously_counted_release_range() {
+        for version in ["2.1.280", "2.1.281", "2.1.282", "2.1.283", "2.1.284", "2.1.285", "2.1.286", "2.1.287", "2.1.292", "2.2.0", "2.10.0"] {
+            assert!(counted(version, &CLAUDE_CHECKED, CLAUDE_FORWARD_COMPATIBLE_AFTER), "{version}");
+        }
+        for version in [
+            "2.1.279",
+            "2.1.200",
+            "1.9.9",
+            "3.0.0",
+            "2.1.300-beta",
+            "2.1",
+            "2.1.x",
+            "future",
+            "",
+        ] {
+            assert!(!counted(version, &CLAUDE_CHECKED, CLAUDE_FORWARD_COMPATIBLE_AFTER), "{version}");
+        }
+        for version in ["0.160.0", "0.160.1", "0.161.0", "0.200.3"] {
+            assert!(counted(version, &CODEX_CHECKED, CODEX_FORWARD_COMPATIBLE_AFTER), "{version}");
+        }
+        for version in ["0.159.9", "0.152.0", "1.0.0", "0.160.1-alpha.2"] {
+            assert!(!counted(version, &CODEX_CHECKED, CODEX_FORWARD_COMPATIBLE_AFTER), "{version}");
         }
     }
 
@@ -440,6 +484,18 @@ mod tests {
             assert!(supported.feed(&unsupported, false).is_err());
             assert!(supported.feed(&record, false).is_err());
         }
+        // A later release reads with the newest checked one's format.
+        let mut later = Codex::default();
+        later
+            .feed(
+                &json!({"type":"session_meta","payload":{"id":"thread-a","cli_version":"0.160.1"}}),
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            later.feed(&record, false).unwrap().unwrap().format,
+            "codex-rollout-0.160.0-v1"
+        );
         parser.feed(&json!({"type":"session_meta","payload":{"id":"thread-a","cli_version":"0.154.0","forked_from_id":"prior"}}), true).unwrap();
         record["payload"]["info"]["last_token_usage"] = totals;
         assert!(

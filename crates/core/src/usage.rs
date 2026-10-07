@@ -428,8 +428,58 @@ pub fn registration_windows<K: Clone>(registrations: &[(K, DateTime<Utc>)]) -> V
         .collect()
 }
 
+/// A large count in three figures: `9,999`, `12.3K`, `1.23M`. Exact
+/// below ten thousand. One format for the desktop and the CLI.
+pub fn compact(value: u64) -> String {
+    if value < 10_000 {
+        return thousands(value);
+    }
+    let mut scaled = value as f64;
+    for unit in ["K", "M", "B", "T"] {
+        scaled /= 1000.0;
+        let digits = if scaled < 10.0 {
+            2
+        } else if scaled < 100.0 {
+            1
+        } else {
+            0
+        };
+        let rounded = format!("{scaled:.digits$}");
+        if rounded.parse::<f64>().is_ok_and(|r| r < 1000.0) || unit == "T" {
+            return format!("{rounded}{unit}");
+        }
+    }
+    thousands(value)
+}
+
+/// `12345678` as `12,345,678`.
+pub fn thousands(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    /// A token count shortens to three figures without losing its scale.
+    #[test]
+    fn token_counts_shorten_to_three_figures() {
+        assert_eq!(compact(950), "950");
+        assert_eq!(compact(9_999), "9,999");
+        assert_eq!(compact(12_345), "12.3K");
+        assert_eq!(compact(123_456), "123K");
+        assert_eq!(compact(999_950), "1.00M");
+        assert_eq!(compact(1_234_567), "1.23M");
+        assert_eq!(compact(846_238_624), "846M");
+        assert_eq!(compact(45_600_000_000), "45.6B");
+    }
+
     use super::*;
 
     #[test]
