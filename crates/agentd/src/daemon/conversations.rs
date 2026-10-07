@@ -311,7 +311,7 @@ impl State {
 
     /// The person: their record, or the bare `user` id a reader falls back
     /// to before anyone has registered them.
-    fn is_human_id(&self, id: &AgentId) -> bool {
+    pub(super) fn is_human_id(&self, id: &AgentId) -> bool {
         id.as_str() == HUMAN || self.registry.get(id).is_some_and(super::humans::is_human)
     }
 

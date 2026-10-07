@@ -1293,6 +1293,25 @@ impl Store {
         Ok(())
     }
 
+    /// Queue archived messages for one more recipient, with the event that
+    /// says so, as one transaction. They are archived already and not
+    /// archived again.
+    pub fn enqueue_late(
+        &self,
+        agent: &AgentId,
+        messages: &[Envelope],
+        capacity: usize,
+        event: &Event,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for message in messages {
+            self.insert_inbox(agent, message, capacity)?;
+        }
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn enqueue(&self, agent: &AgentId, message: &Envelope, capacity: usize) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;

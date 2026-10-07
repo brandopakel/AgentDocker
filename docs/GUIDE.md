@@ -676,6 +676,9 @@ Newest first. Only what changes how the product is used.
   desktop's session rows show each session's tokens over the last day, with
   one line above the list that sums them and opens Usage. Both appear only
   when usage collection is on and there is something to show.
+- A session that opens within an hour of your message to everyone in a project
+  still gets it, as its first input. Only your own messages count, and only
+  once.
 - **Reconnect here** in a Claude Code session's Details, and `agentdocker
   reconnect <session>`: once the session has exited in its terminal, the daemon
   brings it back under its own record with its conversation (`--resume`) and

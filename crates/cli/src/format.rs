@@ -632,6 +632,10 @@ pub fn event_line(event: &Event) -> String {
         EventKind::InboxAcknowledged { agent, messages } => {
             format!("{agent} acknowledged {} messages", messages.len())
         }
+        EventKind::MessagesCaughtUp { agent, messages } => format!(
+            "{agent} opened after {} message(s) to everyone; queued for it",
+            messages.len()
+        ),
         EventKind::AgentDiscovered {
             pid,
             runtime,
