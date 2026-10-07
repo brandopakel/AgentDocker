@@ -2083,10 +2083,10 @@ impl App {
                 }
             }
             Message::SecretEdit(id, field, value) => {
-                if self.connected.is_ok() {
-                    if !value.is_some_and(|v| self.secrets.edit(&id, &field, v, Utc::now())) {
-                        self.say("Temporary input is closed or exceeds its size limit.");
-                    }
+                if self.connected.is_ok()
+                    && !value.is_some_and(|v| self.secrets.edit(&id, &field, v, Utc::now()))
+                {
+                    self.say("Temporary input is closed or exceeds its size limit.");
                 }
             }
             Message::SecretAcknowledge(id, value) => {
@@ -3598,6 +3598,68 @@ mod tests {
             !app.shell.catalog.remember(beta, false),
             "kept off the list"
         );
+    }
+
+    #[test]
+    fn secret_submission_and_disconnect_never_save_or_restore_the_ordinary_answer_draft() {
+        use agentdocker_core::{
+            ProcessIdentity,
+            secret::{SecretField, SecretReview, SecretReviewSpec, SecretText},
+        };
+        let (mut app, commands, messages) = app();
+        app.connected = Ok(());
+        let now = Utc::now();
+        let review = SecretReview {
+            id: "temporary".into(),
+            agent: "asker".into(),
+            recipient: "human".into(),
+            owner: ProcessIdentity {
+                pid: 1,
+                started_at: now,
+            },
+            expires_at: now + chrono::Duration::minutes(5),
+            request: SecretReviewSpec {
+                thread: "thread".into(),
+                turn: "turn".into(),
+                fields: vec![SecretField {
+                    id: "secret".into(),
+                    question: "Temporary value?".into(),
+                    is_secret: true,
+                }],
+            },
+        };
+        app.shell
+            .answers
+            .insert("ordinary".to_owned().into(), "preserve me".into());
+        let before = app.shell.draft_snapshot();
+        app.secrets.refresh(vec![review.clone()], now);
+        let edit = Message::SecretEdit(
+            "temporary".into(),
+            "secret".into(),
+            Some(SecretText::new("invented-UI-canary".into()).unwrap()),
+        );
+        assert!(!format!("{edit:?}").contains("invented-UI-canary"));
+        let _ = app.update(edit);
+        let _ = app.update(Message::SecretSubmit("temporary".into()));
+        assert_eq!(commands.try_iter().count(), 0, "consent is required");
+        assert_eq!(app.shell.draft_snapshot(), before);
+        let _ = app.update(Message::SecretAcknowledge("temporary".into(), true));
+        let _ = app.update(Message::SecretSubmit("temporary".into()));
+        let submitted: Vec<_> = commands.try_iter().collect();
+        assert!(matches!(submitted.as_slice(),[Cmd::SecretAnswer(id, _)] if id=="temporary"));
+        assert!(!format!("{submitted:?}").contains("invented-UI-canary"));
+        assert!(app.secrets.drafts.is_empty());
+        assert_eq!(app.shell.draft_snapshot(), before);
+        let _ = app.update(Message::SecretSubmit("temporary".into()));
+        assert_eq!(
+            commands.try_iter().count(),
+            0,
+            "no double click resubmission"
+        );
+        messages.send(Msg::Disconnected("fixture".into())).unwrap();
+        app.drain();
+        assert!(app.secrets.drafts.is_empty() && app.secrets.reviews.is_empty());
+        assert_eq!(app.shell.draft_snapshot(), before);
     }
 
     #[test]
