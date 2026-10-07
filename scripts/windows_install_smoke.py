@@ -372,9 +372,10 @@ def main():
         cleanup = desktop('prune', '--preview')
         step('unlocked inactive version becomes eligible for pruning',
              len(cleanup['maintenance']['remove']) == 1 and Path(cleanup['maintenance']['remove'][0]).name == second)
-        def daemon_action(daemon):
-            script = (f'& {quoted(launcher)} daemon supervise --home {quoted(home)} '
-                      f'--agentd {quoted(daemon)} --endpoint {quoted(env["AGENTDOCKER_SOCKET"])}; exit $LASTEXITCODE')
+        def daemon_action(daemon, service_home=home, endpoint=env['AGENTDOCKER_SOCKET']):
+            """Use one exact quoting/encoding path for every maintenance task."""
+            script = (f'& {quoted(launcher)} daemon supervise --home {quoted(service_home)} '
+                      f'--agentd {quoted(daemon)} --endpoint {quoted(endpoint)}; exit $LASTEXITCODE')
             return ('-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ' +
                     base64.b64encode(script.encode('utf-16le')).decode('ascii'))
 
@@ -399,7 +400,7 @@ def main():
                  desktop('prune', '--preview')['plan_id'] == cleanup['plan_id'])
         from windows_selective_retention_smoke import exercise
         exercise(scratch, store, second_app, second, third, desktop, run,
-                 stopped_task, step, report, save)
+                 stopped_task, daemon_action, step, report, save)
         step('selective trial leaves the original inactive candidate and plan intact',
              desktop('prune', '--preview')['plan_id'] == cleanup['plan_id'])
         unknown = store / 'versions/user-notes'
