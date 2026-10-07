@@ -666,6 +666,12 @@ Newest first. Only what changes how the product is used.
   agent, project or channel is refused, and an agent's `all` means its own
   project. `list_agents` and the session-start note no longer name agents in
   other projects. You can still message anyone anywhere.
+- Token usage counts the Claude Code or Codex release you are on. Only
+  releases someone had checked used to count, so a newer Claude Code read as
+  no usage at all; a later release of the same major version is now counted as
+  it reports, and the usage report's coverage says unchecked releases may be
+  in it. Usage skipped before is read again once, without counting anything
+  twice.
 - **Reconnect here** in a Claude Code session's Details, and `agentdocker
   reconnect <session>`: once the session has exited in its terminal, the daemon
   brings it back under its own record with its conversation (`--resume`) and
