@@ -734,11 +734,16 @@ masked entry, exact live request/turn/recipient ownership, bounded in-memory
 storage, explicit cancellation/expiry and no replay after a disconnect or crash.
 Before entry it must explain that Codex and the selected model receive the value
 and may retain it. Mixed bundles must not send their secret fields through the
-ordinary persisted answer route. A bounded local daemon broker and pipe-only administration commands are now in
-source. The managed-provider producer, durable metadata fence and masked UI are
-not connected yet, so end-to-end support is incomplete and the existing refusal
-remains in force. The broker does not save submitted values, but cannot prevent
-Codex or its model from repeating them into ordinary output history.
+ordinary persisted answer route. The bounded local daemon broker, pipe-only
+administration commands, managed-provider producer, durable metadata fence and
+masked desktop entry are connected behind `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`.
+Default and native sessions, plus unsupported interactive console modes, still
+refuse secret bundles. While either kind of review is pending, a conflicting
+secret/ordinary request gets an error without replacing the first review or
+changing its held input queue. Final-package, account, Windows/native parity and
+other crash-boundary acceptance remain open. The broker does not save submitted
+values, but cannot prevent Codex or its model from repeating them into ordinary
+output history.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.

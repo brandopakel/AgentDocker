@@ -2926,7 +2926,11 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             }) {
                 Ok(Response::SecretReviews { reviews }) => Some(Msg::SecretReviews(reviews)),
                 Ok(_) => Some(Msg::SecretReviews(Vec::new())),
-                Err(error) if error.downcast_ref::<RemoteError>().is_some() => {
+                Err(error)
+                    if error.downcast_ref::<RemoteError>().is_some_and(|remote| {
+                        remote.code == agentdocker_core::ErrorCode::Invalid
+                    }) =>
+                {
                     Some(Msg::SecretReviews(Vec::new()))
                 }
                 Err(error) => return Err(error),
@@ -5044,6 +5048,48 @@ pub(crate) mod tests {
     #[test]
     fn failed_stop_reports_transport_failure() {
         disconnected_command(Cmd::Stop("owned-fixture".into()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temporary_review_failures_remain_visible_except_for_older_daemons() {
+        use serde_json::json;
+        for code in ["invalid", "forbidden", "unavailable", "internal"] {
+            let messages = command_with_replies(
+                Cmd::SecretReviews,
+                vec![(
+                    json!({"op":"secret_reviews", "recipient":agentdocker_core::HUMAN}),
+                    Some(json!({"type":"error", "code":code, "message":"review lookup refused"})),
+                )],
+            );
+            if code == "invalid" {
+                assert!(
+                    messages
+                        .iter()
+                        .any(|m| matches!(m, Msg::SecretReviews(v) if v.is_empty()))
+                );
+            } else {
+                assert!(
+                    messages.iter().any(
+                        |m| matches!(m, Msg::Status(s) if s.contains("review lookup refused"))
+                    )
+                );
+                assert!(!messages.iter().any(|m| matches!(m, Msg::SecretReviews(_))));
+            }
+            assert!(!messages.iter().any(|m| matches!(m, Msg::Disconnected(_))));
+        }
+        let messages = command_with_replies(
+            Cmd::SecretReviews,
+            vec![(
+                json!({"op":"secret_reviews"}),
+                Some(json!({"type":"secret_reviews", "reviews":[]})),
+            )],
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| matches!(m, Msg::SecretReviews(v) if v.is_empty()))
+        );
     }
 
     #[test]

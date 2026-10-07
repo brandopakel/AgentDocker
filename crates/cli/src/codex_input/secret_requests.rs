@@ -134,6 +134,13 @@ fn plan(event: &Value, thread: &str, turn: Option<&str>) -> Result<(Fence, Secre
     ))
 }
 
+// Refuse only the new request. Never replace, persist or cancel the review
+// already holding the input queue, and never reflect provider text in errors.
+pub(super) fn overlap_response(id: &Value) -> Value {
+    json!({"id":id,"error":{"code":-32000,
+        "message":"another input review is still pending"}})
+}
+
 struct Live {
     review: String,
     token: SecretText,
@@ -174,10 +181,12 @@ impl Session {
             return Ok(Some(json!({"id":event["id"],"error":{"code":-32000,
                 "message":"temporary input cannot be completely reviewed"}})));
         };
-        ensure!(
-            self.live.is_none(),
-            "another temporary input route is active"
-        );
+        if self.live.is_some()
+            || ledger.record().secret_review.is_some()
+            || !ledger.record().reviews.is_empty()
+        {
+            return Ok(Some(overlap_response(&event["id"])));
+        }
         // Durable identity first, before even opening an in-memory route. If the
         // IPC response is lost there is no reopen/resubmit attempt on restart.
         ledger.open_secret_review(fence)?;
@@ -387,6 +396,127 @@ mod tests {
         assert!(plan(&event, "other", Some("turn")).is_err());
         assert!(plan(&event, "thread", None).is_err());
     }
+    #[tokio::test]
+    async fn overlapping_reviews_refuse_only_the_new_request_without_writing_or_ipc() {
+        use super::super::{
+            file_changes,
+            ledger::{Binding, Receipt},
+            requests,
+        };
+        use agentdocker_core::{Destination, Envelope};
+        for order in 0..5 {
+            let home = tempfile::tempdir().unwrap();
+            let binding = Binding {
+                agent: "owner".into(),
+                socket: home.path().join("absent.sock"),
+                cwd: home.path().into(),
+                provider_home: home.path().into(),
+            };
+            let client = Client::new(Some(binding.socket.clone())).with_start_timeout(None);
+            let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+            ledger.bind_thread("thread".into()).unwrap();
+            let message = Envelope::new(
+                "peer",
+                Destination::Agent("owner".into()),
+                "chat",
+                json!({"text":"original input"}),
+                None,
+                chrono::Utc::now(),
+            );
+            let input = ledger.prepare(&message).unwrap();
+            ledger
+                .accept(
+                    &input,
+                    Receipt {
+                        thread: "thread".into(),
+                        turn: "turn".into(),
+                        item: "item".into(),
+                    },
+                )
+                .unwrap();
+            ledger.acknowledge(message.id.as_str()).unwrap();
+            let ordinary = json!({"id":31,"method":"item/commandExecution/requestApproval",
+                "params":{"threadId":"thread","turnId":"turn","command":"original command","cwd":"/owned"}});
+            let mut session = Session {
+                owner: ProcessIdentity {
+                    pid: std::process::id(),
+                    started_at: chrono::Utc::now(),
+                },
+                live: None,
+            };
+            if order == 0 {
+                let pending = review::Pending::plan(
+                    &ordinary,
+                    "thread",
+                    Some("turn"),
+                    "human",
+                    chrono::Utc::now(),
+                )
+                .unwrap();
+                ledger
+                    .update_reviews(|reviews, _| {
+                        reviews.push(pending);
+                        Ok(true)
+                    })
+                    .unwrap();
+            } else if order != 3 {
+                ledger
+                    .open_secret_review(plan(&event(), "thread", Some("turn")).unwrap().0)
+                    .unwrap();
+            }
+            // The live-only case independently covers a route awaiting teardown.
+            if order == 2 || order == 3 {
+                session.live = Some(Live {
+                    review: "first-route".into(),
+                    token: SecretText::new("private-capability".into()).unwrap(),
+                });
+            }
+            let before = serde_json::to_value(ledger.record()).unwrap();
+            let mut incoming = if order == 1 { ordinary } else { event() };
+            incoming["id"] = json!(99);
+            let response = if order == 1 {
+                requests::open(
+                    &client,
+                    &mut ledger,
+                    "human",
+                    "thread",
+                    Some("turn"),
+                    incoming,
+                    &mut file_changes::Reviews::default(),
+                )
+                .await
+            } else {
+                session
+                    .open(
+                        &client,
+                        &mut ledger,
+                        "human",
+                        "thread",
+                        Some("turn"),
+                        &incoming,
+                    )
+                    .await
+            }
+            .unwrap()
+            .unwrap();
+            assert_eq!(response["id"], 99);
+            assert_eq!(response["error"]["code"], -32000);
+            assert_eq!(
+                response["error"]["message"],
+                "another input review is still pending"
+            );
+            assert_eq!(serde_json::to_value(ledger.record()).unwrap(), before);
+            if order == 2 || order == 3 {
+                assert_eq!(session.live.as_ref().unwrap().review, "first-route");
+            }
+            drop(ledger);
+            let ledger = Ledger::open(home.path(), binding).unwrap();
+            assert_eq!(serde_json::to_value(ledger.record()).unwrap(), before);
+            let saved = serde_json::to_string(ledger.record()).unwrap();
+            assert!(!saved.contains("Temporary value") && !saved.contains("private-capability"));
+        }
+    }
+
     #[test]
     fn invalid_mixed_bundles_never_downgrade_to_ordinary_questions() {
         for mutation in 0..5 {

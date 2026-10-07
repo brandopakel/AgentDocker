@@ -249,6 +249,53 @@ fn cached_matches(
     Ok(paths)
 }
 
+/// A persisted unit may not be loaded, so its cached DropInPaths cannot prove
+/// that the next start uses the emitted command. Inspect the manager's actual
+/// search path, including other-prefix and type/prefix-wide overrides. Any
+/// existing node or unreadable path is ambiguous; do not interpret its contents.
+fn no_persisted_dropins(roots: &BTreeSet<PathBuf>) -> Result<()> {
+    ensure!(
+        !roots.is_empty() && roots.len() <= 128,
+        "ambiguous unit search path"
+    );
+    for root in roots {
+        ensure!(
+            root.is_absolute()
+                && !root
+                    .components()
+                    .any(|c| c == std::path::Component::ParentDir),
+            "ambiguous unit search directory"
+        );
+        match root.symlink_metadata() {
+            Ok(_) => ensure!(root.metadata()?.is_dir(), "invalid unit search directory"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        }
+        for name in [
+            "agentd.service.d",
+            "agentdocker-connector.service.d",
+            "agentdocker-.service.d",
+            "service.d",
+        ] {
+            match root.join(name).symlink_metadata() {
+                Ok(_) => bail!("persisted service overrides"),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn unit_search_roots(manager: &Value) -> Result<BTreeSet<PathBuf>> {
+    let paths = strings(property(manager, "UnitPath", "as")?)?;
+    ensure!(
+        !paths.is_empty() && paths.len() <= 128,
+        "ambiguous manager unit path"
+    );
+    Ok(paths.into_iter().map(PathBuf::from).collect())
+}
+
 pub(super) fn inventory(layout: &Layout, homes: &[PathBuf]) -> Result<References> {
     let mut files = BTreeMap::new();
     let mut loaded = Vec::new();
@@ -308,6 +355,16 @@ pub(super) fn inventory(layout: &Layout, homes: &[PathBuf]) -> Result<References
         return Ok(References::default());
     }
     let recognized = (|| -> Result<References> {
+        let manager = properties(
+            "/org/freedesktop/systemd1",
+            "org.freedesktop.systemd1.Manager",
+        )?;
+        let mut roots = unit_search_roots(&manager)?;
+        roots.extend(homes.iter().map(|home| home.join(".config/systemd/user")));
+        for path in files.keys() {
+            roots.insert(path.parent().context("unit lacks a directory")?.to_owned());
+        }
+        no_persisted_dropins(&roots)?;
         let mut refs = References::default();
         let mut verified = BTreeSet::new();
         let mut has_registration = !files.is_empty();
@@ -323,6 +380,13 @@ pub(super) fn inventory(layout: &Layout, homes: &[PathBuf]) -> Result<References
                 continue;
             };
             has_registration = true;
+            roots.insert(
+                Path::new(fragment)
+                    .parent()
+                    .context("cached unit lacks a directory")?
+                    .to_owned(),
+            );
+            no_persisted_dropins(&roots)?;
             let definition = definition::unit(Path::new(fragment), connector)?;
             for path in cached_matches(&unit, &service, &definition)? {
                 refs.include(&layout.root, &path)?;
@@ -332,10 +396,6 @@ pub(super) fn inventory(layout: &Layout, homes: &[PathBuf]) -> Result<References
         }
         if has_registration {
             let mut manager_environment = BTreeMap::new();
-            let manager = properties(
-                "/org/freedesktop/systemd1",
-                "org.freedesktop.systemd1.Manager",
-            )?;
             for entry in strings(property(&manager, "Environment", "as")?)? {
                 let (key, value) = entry
                     .split_once('=')
@@ -363,6 +423,92 @@ mod tests {
     fn variant(signature: &str, value: Value) -> Value {
         json!({"type":signature,"data":value})
     }
+    #[test]
+    fn unloaded_services_reject_unit_prefix_type_and_other_path_overrides() {
+        let home = tempfile::tempdir().unwrap();
+        let base = home.path().join("base");
+        let other = home.path().join("other-search-root");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let manager = json!({"UnitPath":variant("as",json!([base, other]))});
+        let roots = unit_search_roots(&manager).unwrap();
+        no_persisted_dropins(&roots).unwrap();
+        // No loaded unit, DropInPaths or daemon-reload observation is involved.
+        // The emitted file remains unchanged while a distinct search root adds
+        // a command override referencing another retained payload.
+        let rendered = crate::service::systemd_unit(&crate::service::Layout {
+            agentd: "/old/agentd".into(),
+            home: "/state".into(),
+            socket: None,
+            user_home: home.path().into(),
+            uid: 0,
+        });
+        std::fs::write(base.join(DAEMON_UNIT), &rendered).unwrap();
+        for root in [&base, &other] {
+            for name in [
+                "agentd.service.d",
+                "agentdocker-connector.service.d",
+                "agentdocker-.service.d",
+                "service.d",
+            ] {
+                let path = root.join(name);
+                std::fs::create_dir(&path).unwrap();
+                std::fs::write(
+                    path.join("override.conf"),
+                    "[Service]\nExecStart=\nExecStart=/different-build/agentd\n",
+                )
+                .unwrap();
+                assert!(definition::unit(&base.join(DAEMON_UNIT), false).is_ok());
+                assert!(no_persisted_dropins(&roots).is_err());
+                std::fs::remove_dir_all(&path).unwrap();
+                std::fs::write(&path, "unexpected file").unwrap();
+                assert!(no_persisted_dropins(&roots).is_err());
+                std::fs::remove_file(&path).unwrap();
+                std::os::unix::fs::symlink(home.path().join("absent-target"), &path).unwrap();
+                assert!(no_persisted_dropins(&roots).is_err());
+                std::fs::remove_file(&path).unwrap();
+            }
+        }
+        assert_eq!(
+            std::fs::read_to_string(base.join(DAEMON_UNIT)).unwrap(),
+            rendered
+        );
+        no_persisted_dropins(&roots).unwrap();
+    }
+
+    #[test]
+    fn unknown_or_unreadable_unit_search_paths_cannot_authorize_pruning() {
+        for paths in [
+            json!([]),
+            json!(["relative"]),
+            json!(["/absolute/../unknown"]),
+            json!([false]),
+        ] {
+            let manager = json!({"UnitPath":variant("as",paths)});
+            assert!(
+                unit_search_roots(&manager)
+                    .and_then(|r| no_persisted_dropins(&r))
+                    .is_err()
+            );
+        }
+        assert!(unit_search_roots(&json!({})).is_err());
+        let home = tempfile::tempdir().unwrap();
+        let missing = home.path().join("missing");
+        let linked = home.path().join("linked-root");
+        std::os::unix::fs::symlink(&missing, &linked).unwrap();
+        assert!(no_persisted_dropins(&BTreeSet::from([linked])).is_err());
+        let blocked = home.path().join("blocked");
+        std::fs::create_dir(&blocked).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0)).unwrap();
+        let result = no_persisted_dropins(&BTreeSet::from([blocked.clone()]));
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Root can traverse mode-000 directories; ordinary callers must refuse.
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(result.is_err());
+        }
+    }
+
     fn fixture() -> (definition::Definition, Value, Value) {
         let layout = crate::service::Layout {
             agentd: "/old/agentd".into(),

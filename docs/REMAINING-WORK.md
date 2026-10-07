@@ -36,6 +36,11 @@ managed secret input. Ledger 15/state schema 27 preserves uncertain secret-respo
 metadata. Binary rollback to beta.9/schema 26 must refuse without changing the
 selected installation; it cannot downgrade the database. Exact-source local
 validation, CI, included review and hosted trials remain release gates.
+Review corrections reject overlapping secret/ordinary requests without replacing
+the first review, expose operational secret-lookup errors in the desktop app and
+preserve builds when unloaded systemd units have unit, dash-prefix or type-wide
+drop-ins anywhere in the manager's active search path. Focused regressions cover
+these boundaries; source-package and hosted acceptance of these fixes remains open.
 
 ## Release and first run
 
