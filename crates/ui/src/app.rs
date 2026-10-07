@@ -5096,7 +5096,7 @@ pub(crate) mod tests {
         let room = "everyone:project".to_owned();
         app.shell.conversation = Some(room.clone());
         let archived = |seq: u64| {
-            let from = if seq % 4 == 0 {
+            let from = if seq.is_multiple_of(4) {
                 "agent-a"
             } else {
                 agentdocker_core::HUMAN
