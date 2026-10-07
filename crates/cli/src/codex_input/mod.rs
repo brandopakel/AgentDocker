@@ -362,6 +362,7 @@ async fn session(
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut input = terminal::Input::new(terminal_editing);
     let mut input_open = agent.spec.tty || agent.spec.in_pane;
+    let mut terminal_suspended = false;
     let mut turn: Option<String> = None;
     let mut turn_failures = availability::TurnFailures::default();
     let mut refused_steering: Option<String> = None;
@@ -385,7 +386,9 @@ async fn session(
                     let key = event["id"].to_string();
                     ensure!(request_ids.len() < 10_000 && request_ids.insert(key), "Codex repeated a request ID or exceeded the request history bound");
                     let response = if secret_input && secret_requests::contains_secret(&event) {
-                        secrets.open(client, ledger, &human, &thread, turn.as_deref(), &event).await?
+                        let response = secrets.open(client, ledger, &human, &thread, turn.as_deref(), &event).await?;
+                        terminal_suspended |= ledger.record().secret_review.is_some();
+                        response
                     } else {
                         requests::open(client, ledger, &human, &thread, turn.as_deref(), event, &mut file_reviews).await?
                     };
@@ -473,7 +476,19 @@ async fn session(
                     _ => (),
                 }
             }
-            line = input.read(&mut stdin), if input_open && ledger.record().secret_review.is_none() => {
+            line = async {
+                if terminal_suspended {
+                    terminal::discard(&mut stdin).await.map(|()| None)
+                } else { input.read(&mut stdin).await }
+            }, if input_open => {
+                if terminal_suspended {
+                    if line.is_err() { input_open = false; }
+                    else if ledger.record().secret_review.is_none() {
+                        terminal_suspended = false;
+                        println!("Terminal input resumed; your earlier draft is preserved.");
+                    }
+                    continue;
+                }
                 match line {
                     Ok(Some(text)) => {
                         ensure!(matches!(call(client, Request::Send { from: HUMAN.into(), to: agent.id.to_string(),

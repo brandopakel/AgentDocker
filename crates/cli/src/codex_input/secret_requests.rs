@@ -209,7 +209,7 @@ impl Session {
             token,
         });
         eprintln!(
-            "Codex is waiting for temporary input in AgentDocker. Do not type the answer into this terminal."
+            "Codex is waiting for temporary input in AgentDocker. This terminal discards new typing; after the request closes, press Enter once to resume your saved draft."
         );
         Ok(None)
     }
@@ -310,7 +310,9 @@ impl Session {
         }
         self.close_route(client, ledger).await?;
         ledger.close_secret_review()?;
-        eprintln!("Codex resolved the temporary input request.");
+        eprintln!(
+            "Codex resolved the temporary input request. Press Enter in the managed terminal once to resume its saved draft."
+        );
         Ok(())
     }
 
