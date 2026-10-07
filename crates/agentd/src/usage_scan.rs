@@ -55,7 +55,9 @@ pub struct Report {
     pub parsed_samples: usize,
     pub unique_source_records: u64,
     pub captured_bytes: u64,
-    pub metadata_budget_bytes: usize,
+    pub metadata_accounted_bytes: usize,
+    pub metadata_capacity_bytes: usize,
+    pub supported_formats: Vec<String>,
     pub elapsed_ms: u128,
     pub overhead: Overhead,
 }
@@ -177,6 +179,8 @@ fn scan_bounded(
     let mut formats = BTreeSet::new();
     for (index, (source, cursor)) in captured.into_iter().enumerate() {
         let length = cursor.captured_length();
+        let file_sample_start = samples.len();
+        let file_gap_start = gaps.len();
         let mut session = Session::at_snapshot(cursor, None)?;
         ensure!(
             session
@@ -231,6 +235,16 @@ fn scan_bounded(
                     "standalone scan exceeds its gap limit"
                 );
             }
+            if length > 0 && samples.len() == file_sample_start && gaps.len() == file_gap_start {
+                gaps.push((
+                    format!("unrecognized:{index}"),
+                    "no supported accounting records were observed in this nonempty input".into(),
+                ));
+                ensure!(
+                    gaps.len() <= MAX_GAPS,
+                    "standalone scan exceeds its gap limit"
+                );
+            }
             files.push(FileReport {
                 path: source.path.clone(),
                 runtime: source.runtime,
@@ -277,6 +291,7 @@ fn scan_bounded(
             seq += 1;
         }
         let scan_complete = files.iter().all(|f| f.stop == Stop::Complete);
+        let supported_formats: Vec<_> = formats.into_iter().collect();
         let collection = Collection {
             state: if scan_complete {
                 CollectionState::CaughtUp
@@ -293,7 +308,7 @@ fn scan_bounded(
             ),
             scope: usage::report::Scope {
                 roots: Vec::new(),
-                formats: formats.into_iter().collect(),
+                formats: supported_formats.clone(),
             },
             ..Collection::default()
         };
@@ -313,7 +328,7 @@ fn scan_bounded(
                 .is_some_and(|t| t.capacity_gap),
             "standalone accounting storage reached capacity; select fewer inputs"
         );
-        let complete = scan_complete && report.coverage.source_gaps == 0;
+        let complete = scan_complete && report.coverage.source_gaps == 0 && !samples.is_empty();
         // This coverage refers to the selected file snapshots, not all provider
         // accounts or the duration remaining in the current hour.
         for row in &mut report.rows {
@@ -345,7 +360,9 @@ fn scan_bounded(
             effective_until: report.effective_until,
             includes_current_hour: report.coverage.includes_current_hour,
             future_until_clamped: report.coverage.future_until_clamped,
-            coverage: if complete {
+            coverage: if samples.is_empty() {
+                Coverage::Unknown
+            } else if complete {
                 Coverage::Complete
             } else {
                 Coverage::Partial
@@ -356,7 +373,9 @@ fn scan_bounded(
             parsed_samples: samples.len(),
             unique_source_records: unique,
             captured_bytes,
-            metadata_budget_bytes: metadata_bytes,
+            metadata_accounted_bytes: metadata_bytes,
+            metadata_capacity_bytes: max_metadata,
+            supported_formats,
             elapsed_ms: started.elapsed().as_millis(),
             overhead: Overhead::default(),
         })
@@ -426,7 +445,7 @@ mod tests {
         assert!(report.captured_bytes > 16 * 1024 * 1024);
         assert!(report.scan_complete);
         assert_eq!(report.rows[0].counters.input_tokens.sum, Some(540));
-        assert!(report.metadata_budget_bytes < 1024 * 1024);
+        assert!(report.metadata_accounted_bytes < 1024 * 1024);
         assert!(
             !serde_json::to_string(&report)
                 .unwrap()
@@ -450,6 +469,54 @@ mod tests {
             Coverage::Partial
         );
     }
+    #[test]
+    fn ignored_nonempty_inputs_cannot_borrow_another_files_complete_coverage() {
+        let temp = tempfile::tempdir().unwrap();
+        let good = temp.path().join("good.jsonl");
+        let ignored = temp.path().join("ignored.jsonl");
+        std::fs::write(
+            &good,
+            include_str!("../../host/src/usage/fixtures/codex-0.160.0.jsonl"),
+        )
+        .unwrap();
+        std::fs::write(
+            &ignored,
+            "{\"type\":\"assistant\",\"message\":\"not a Codex record\"}\n",
+        )
+        .unwrap();
+        let report = scan(
+            vec![
+                root(&good, reader::Runtime::Codex),
+                root(&ignored, reader::Runtime::Codex),
+            ],
+            query(),
+        )
+        .unwrap();
+        assert!(report.scan_complete);
+        assert_eq!(report.coverage, Coverage::Partial);
+        assert_eq!(report.source_gaps, 1);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(10));
+        assert_eq!(
+            report.rows[0].counters.input_tokens.coverage,
+            Coverage::Partial
+        );
+        assert_eq!(report.supported_formats, ["codex-rollout-0.160.0-v1"]);
+    }
+
+    #[test]
+    fn an_empty_or_unrecognized_selection_reports_unknown_counts_not_zero() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("empty.jsonl");
+        for content in ["", "{\"unrecognized\":true}\n"] {
+            std::fs::write(&path, content).unwrap();
+            let report = scan(vec![root(&path, reader::Runtime::Codex)], query()).unwrap();
+            assert!(report.scan_complete);
+            assert_eq!(report.coverage, Coverage::Unknown);
+            assert!(report.rows.is_empty() && report.supported_formats.is_empty());
+            assert_eq!(report.source_gaps, u64::from(!content.is_empty()));
+        }
+    }
+
     #[test]
     fn missing_input_and_exhausted_bounds_refuse_a_report() {
         let temp = tempfile::tempdir().unwrap();

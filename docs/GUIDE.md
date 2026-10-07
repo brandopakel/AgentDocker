@@ -306,12 +306,15 @@ sample. The upper bound defaults to the captured scan start. Ranges use UTC-hour
 rounding, shown explicitly in the JSON report.
 
 `scan_complete` describes the selected file snapshots. Unsupported records,
-conflicts and partial tails leave visible gaps/partial coverage. Complete coverage
+conflicts and partial tails leave visible gaps/partial coverage. Nonempty inputs
+without recognized accounting records add a gap; an empty or entirely unrecognized
+selection reports unknown counts. Supported format families are listed. Complete coverage
 applies only to those snapshots, not all account activity or the remaining current
 hour. The output contains paths and accounting metadata, never prompt/response
 text. Injected-byte overhead is still unknown.
 
-Each reader pass is bounded. The whole operation limits captured input to 8 GiB,
+Each parser pass reads at most 4 MiB/4,096 records; prefix validation is separate.
+Records above the 1 MiB parser limit produce gaps. The whole operation limits captured input to 8 GiB,
 100,000 parsed samples, a 64 MiB metadata allowance, 1,024 reader gaps and five
 minutes between operations; discovery retains its 10,000-file limit. These are
 operation limits, not a hard RSS or OS-I/O deadline. Changing files or exhausted
