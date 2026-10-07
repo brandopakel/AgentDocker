@@ -17,12 +17,6 @@ ambiguous or stale identities are refused without helper registration. This
 candidate changes adapter identity selection, not wire request or event formats;
 native acceptance remains required.
 
-Host multiplexer discovery on macOS reads its own environment directly, preserving
-spaces and value boundaries. Another process's flattened `ps` command text is not
-environment evidence; peer recognition uses its reported registration environment
-or the weaker process-ancestry fallback. Linux retains NUL-separated `/proc`
-environment discovery.
-
 ## Goals
 
 1. **Universal.** Any agent — any model, any vendor, any runtime — can participate with nothing more than the ability to write JSON to a socket. No SDK is required, though one may exist for convenience.
@@ -867,6 +861,10 @@ queries are bounded and never include service arguments/environment in errors.
 Systemd cached working-directory references decode its D-Bus missing-ok `!`
 flag and retain the resulting absolute dependency even if it does not yet exist.
 Home-relative `~`, malformed flags and other ambiguous paths preserve all builds.
+Systemd may cache a negative lookup after a status query for an absent unit.
+Maintenance ignores it only when typed cached state confirms not-found/inactive,
+no definition or overrides, no command, no job or process and no resource settings.
+A missing file on a real cached registration still preserves the installation.
 Windows task inspection recognizes only the exact encoded daemon and connector
 scripts emitted by the shared registration renderers, using literal extraction
 and byte-for-byte reconstruction without executing task content. It verifies
@@ -894,11 +892,6 @@ paths with both literal and physical alias dependencies. Unknown definitions,
 missing fragments, overrides, unknown environment settings and unavailable or
 conflicting cached data preserve whole stores. Exact Unix references and legacy
 portable registrars selecting a separate daemon still need native acceptance.
-Systemd may cache a negative lookup after a status query for an absent unit.
-Maintenance ignores it only when typed cached state confirms not-found/inactive,
-no definition or overrides, no command, no job or process and no resource settings.
-A missing file on a real cached registration still preserves the installation.
-
 
 Windows maintenance recognizes only exact rendered actions around a content-verified same-store controller and daemon or receipt-checked stable bootstrap. It retains every explicitly referenced immutable version, including connector tunnel/project/feed paths, state/log paths and Task Scheduler working directories. Literal and resolved aliases both count. Unknown programs/options, relative or parent-traversing paths and unreadable inventory conservatively retain the store; no arbitrary script is executed to discover paths. Source-specific native selective-deletion acceptance is recorded in the verification index; final-package and physical acceptance remain open.
 Windows desktop activation under implementation uses a private JSON snapshot in
@@ -1072,7 +1065,7 @@ A tmux start commits the record and `agent_started` event before reporting succe
 
 We should not write one. `tmux` exists, herdr exists, and a multiplexer is not the working set. What is worth having is an adapter — row 25 — and its first half is done: an agent living in a `tmux` pane, a `screen` window, a `zellij` session or a herdr session is recognised as such, and that is recorded beside its record, shown in `ps` and `discover`, and returned by `inspect`. That makes AgentDocker composable with whatever owns the terminal instead of competing for it: a person reaches the agent with the tool that already has it.
 
-**How it is known, and why that differs by platform.** A multiplexer tells its children who they are through the environment — `TMUX`/`TMUX_PANE`, `STY`/`WINDOW`, `ZELLIJ_SESSION_NAME`/`ZELLIJ_PANE_ID`, herdr's own — which is exact and names the pane. Reading it is where the platforms part. On Linux `/proc/<pid>/environ` is readable for the caller's own user, so the daemon can look for itself. **On macOS it is not**: measured on 26.5.1, `ps -E` returns only the command line for a process other than the caller — even one owned by the same user — so a daemon that only looked would find nothing on the platform we ship first. (What a *privileged* caller sees was not tested and is not relied on.) The answer is to have it reported first-hand instead — a client registering itself is running *inside* the session, so `register` carries what the client read of its own environment, and the daemon prefers what it can read itself, then what was reported, then ancestry. Ancestry — a `tmux` or `zellij` process between the agent and its shell — is the last resort: true, but it cannot name the pane, so it is recorded as `evidence: ancestry` rather than dressed up as the real thing.
+**How it is known, and why that differs by platform.** A multiplexer tells its children who they are through the environment — `TMUX`/`TMUX_PANE`, `STY`/`WINDOW`, `ZELLIJ_SESSION_NAME`/`ZELLIJ_PANE_ID`, herdr's own — which is exact and names the pane. Reading it is where the platforms part. On Linux `/proc/<pid>/environ` is readable for the caller's own user, so the daemon can look for itself. **On macOS it is not**: measured on 26.5.1, `ps -E` returns only the command line for a process other than the caller — even one owned by the same user — so a daemon that only looked would find nothing on the platform we ship first. (What a *privileged* caller sees was not tested and is not relied on.) The host reads its own environment directly, preserving spaces and value boundaries; another process's flattened `ps` command text is never first-hand environment evidence. The answer is to have it reported first-hand instead — a client registering itself is running *inside* the session, so `register` carries what the client read of its own environment, and the daemon prefers what it can read itself, then what was reported, then ancestry. Ancestry — a `tmux` or `zellij` process between the agent and its shell — is the last resort: true, but it cannot name the pane, so it is recorded as `evidence: ancestry` rather than dressed up as the real thing.
 
 Verified against a real `screen` session on macOS: registering from inside one records `{kind: screen, session: "83350.agentdocker-test", pane: "0", evidence: environment}` and `ps` shows `screen:0`.
 
