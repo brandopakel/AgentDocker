@@ -4463,6 +4463,7 @@ impl Daemon {
             }
             other => other,
         };
+        let to = lock(&self.state).within_project(sender.as_ref(), to)?;
         Ok((from, to))
     }
 
@@ -5236,6 +5237,64 @@ impl State {
                     .map_err(|err| Box::new(registry_error(err)))
             }
             _ => self.resolve(reference),
+        }
+    }
+
+    /// Keep an agent's word inside the project it works in. The person,
+    /// and a sender with no record such as `agentd`, may address anyone;
+    /// an agent in a project reaches that project's agents, its channels
+    /// and the person, and its `all` is said to its own project. Without
+    /// this, `all` and a name found in another repository carried one
+    /// project's messages into every other project's terminals.
+    pub fn within_project(
+        &self,
+        sender: Option<&AgentId>,
+        to: Destination,
+    ) -> Result<Destination, Box<Response>> {
+        let Some(record) = sender.and_then(|id| self.registry.get(id)) else {
+            return Ok(to);
+        };
+        if humans::is_human(record) {
+            return Ok(to);
+        }
+        let Some(own) = record.project.as_ref().map(ProjectRef::id) else {
+            return Ok(to);
+        };
+        let refuse = |what: String| {
+            Box::new(Response::error(
+                ErrorCode::Forbidden,
+                format!(
+                    "{what}: an agent reaches only its own project and the person; \
+                     ask the person to pass it on"
+                ),
+            ))
+        };
+        match to {
+            Destination::Broadcast => Ok(Destination::Project(own)),
+            Destination::Project(project) if project != own => {
+                Err(refuse("that is another project".to_owned()))
+            }
+            // An agent in no project is in nobody's way, and reachable.
+            Destination::Agent(id) => match self.registry.get(&id) {
+                Some(target) if !humans::is_human(target) => match &target.project {
+                    Some(project) if project.id() != own => Err(refuse(format!(
+                        "{} works in project `{}`",
+                        target.spec.name,
+                        project.name()
+                    ))),
+                    _ => Ok(Destination::Agent(id)),
+                },
+                _ => Ok(Destination::Agent(id)),
+            },
+            Destination::Channel(id)
+                if self
+                    .channels
+                    .get(&id)
+                    .is_some_and(|channel| channel.project != own) =>
+            {
+                Err(refuse(format!("channel {id} belongs to another project")))
+            }
+            other => Ok(other),
         }
     }
 
@@ -6665,7 +6724,7 @@ impl State {
         // for it; otherwise the queue is its route, said at once.
         let closed = envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
             .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
-            .filter(|pending| pending.addressed_to(&AgentId::from(envelope.from.as_str())))
+            .filter(|pending| self.put_to(pending, &AgentId::from(envelope.from.as_str())))
             .map(|pending| pending.id.clone());
         if let Some(
             presentation @ (agentdocker_core::QuestionPresentation::McpUrl { .. }
@@ -15462,6 +15521,86 @@ deny = ["send:all"]
         assert!(!sender.wants(&envelope));
         drop(two);
         drop(three);
+    }
+
+    /// An agent reaches only its own project and the person: another
+    /// repository's agent, that project and a question to it are refused
+    /// with nothing queued, and the agent's `all` is its own project. The
+    /// person, and the daemon's own word, still reach anyone.
+    #[tokio::test]
+    async fn an_agent_reaches_only_its_own_project_and_the_person() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = dir.path().join("alpha");
+        let beta = dir.path().join("beta");
+        for root in [&alpha, &beta] {
+            std::fs::create_dir_all(root).unwrap();
+            std::fs::write(root.join("Agentfile.toml"), "").unwrap();
+        }
+        let one = register_in(&daemon, "one", &alpha).await;
+        register_in(&daemon, "two", &alpha).await;
+        register_in(&daemon, "far", &beta).await;
+        register_spec(
+            &daemon,
+            AgentSpec {
+                name: "person".to_owned(),
+                runtime: agentdocker_core::HUMAN_RUNTIME.to_owned(),
+                workdir: Some(beta.clone()),
+                ..AgentSpec::default()
+            },
+        )
+        .await;
+        let forbidden = |response: Response| {
+            assert!(
+                matches!(
+                    response,
+                    Response::Error {
+                        code: ErrorCode::Forbidden,
+                        ..
+                    }
+                ),
+                "{response:?}"
+            );
+        };
+
+        forbidden(send(&daemon, "one", "far").await);
+        forbidden(send(&daemon, "one", &format!("project:{}", beta.display())).await);
+        forbidden(
+            daemon
+                .handle(Request::Ask {
+                    from: "one".into(),
+                    to: "far".into(),
+                    question: "?".into(),
+                    timeout_secs: 1,
+                })
+                .await,
+        );
+        assert!(inbox(&daemon, "far", false).await.is_empty());
+
+        assert!(matches!(
+            send(&daemon, "one", "all").await,
+            Response::Sent { .. }
+        ));
+        let heard = inbox(&daemon, "two", true).await;
+        assert_eq!(heard.len(), 1);
+        assert_eq!(
+            heard[0].to,
+            Destination::Project(one.project.clone().unwrap().id())
+        );
+        assert!(inbox(&daemon, "far", false).await.is_empty());
+
+        // The person is reached from any project, and reaches any.
+        for (from, to) in [("one", "person"), ("person", "far"), ("agentd", "far")] {
+            assert!(
+                matches!(send(&daemon, from, to).await, Response::Sent { .. }),
+                "{from} -> {to}"
+            );
+        }
+        assert!(matches!(
+            send(&daemon, "person", "all").await,
+            Response::Sent { .. }
+        ));
+        assert_eq!(inbox(&daemon, "far", false).await.len(), 3);
     }
 
     #[tokio::test]
