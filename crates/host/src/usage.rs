@@ -233,6 +233,7 @@ pub fn claude(record: &Value) -> Result<Option<Sample>, String> {
                 | "2.1.277"
                 | "2.1.278"
                 | "2.1.280"
+                | "2.1.287"
         )
     ) {
         return Err("unsupported Claude transcript version".into());
@@ -318,7 +319,7 @@ mod tests {
 
     #[test]
     fn observed_claude_patch_records_keep_top_level_accounting_authoritative() {
-        // Accounting-only records from installed 2.1.277/278/280 transcripts.
+        // Accounting-only records from installed 2.1.277/278/280/287 transcripts.
         // Identifiers, timestamps and model names are synthetic; no content is
         // retained. Nested cache/iteration totals must not be counted again,
         // including a 2.1.278 record whose top-level counters are all zero.
@@ -328,6 +329,8 @@ mod tests {
             [Some(41759), Some(24649), Some(17108), Some(276), Some(61)],
             [Some(0), Some(0), Some(0), Some(0), Some(0)],
             [Some(31131), Some(0), Some(31129), Some(6), None],
+            [Some(35138), Some(17227), Some(17909), Some(8), None],
+            [Some(44729), Some(43498), Some(1229), Some(120), Some(0)],
         ];
         assert_eq!(records.lines().count(), expected.len());
         for (line, expected) in records.lines().zip(expected) {

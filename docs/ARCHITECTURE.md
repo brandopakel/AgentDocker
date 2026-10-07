@@ -1456,8 +1456,8 @@ finish, and retries the full old-prefix proof on the next pass or after restart.
 Growth alone proves neither corruption nor append-only content; a rewrite that
 also grows must still fail the new prefix proof. Repeated growth stays pending,
 never caught up or a permanent source gap solely because its snapshot advanced.
-No discovery schema or transcript storage changes are required. A version-3, version-4 or version-5 parser cursor first verifies its old
-prefix, then replays from zero using version 6 without inventing a source-change
+No discovery schema or transcript storage changes are required. A version-3, version-4, version-5 or version-6 parser cursor first verifies its old
+prefix, then replays from zero using version 7 without inventing a source-change
 gap. Unknown cursor versions and failed prefix verification still record gaps. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
 Collector parsing batches stop after 128 complete source records, including
@@ -1514,8 +1514,8 @@ installed/provider-billing acceptance and sustained resource trials remain open.
 Only accounting metadata was retained; temporary raw transcript copies and the
 private trial databases were removed.
 
-Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278 and
-2.1.280 transcripts, Codex 0.155.1 rollouts and observed Codex 0.160.0
+Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278,
+2.1.280 and 2.1.287 transcripts, Codex 0.155.1 rollouts and observed Codex 0.160.0
 loopback rollouts extend that explicit version coverage. Codex 0.160.0 retains
 cumulative counters, optional cache/reasoning fields and stable replay identities;
 its sample format is named separately. Top-level Claude counters remain authoritative: nested iteration/cache
@@ -1525,8 +1525,8 @@ not assumed compatible. Accounting-only observations also cover historical Claud
 2.1.246, 2.1.247, 2.1.248, 2.1.251, 2.1.259, 2.1.260, 2.1.261, 2.1.263 and
 2.1.267. These are explicit supported patches, not an accepted version range.
 Their response semantics and sample format identity match the existing family;
-nested cache details do not contribute a second time. Parser cursor v6 verifies
-and replays v3/v4/v5 scans with the same stable
+nested cache details do not contribute a second time. Parser cursor v7 verifies
+and replays v3/v4/v5/v6 scans with the same stable
 source identities, allowing newly supported records to be collected without
 recounting earlier accepted samples. Existing historical gaps remain visible;
 this change does not claim their reconciliation or provider-billing accuracy.

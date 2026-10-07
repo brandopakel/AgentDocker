@@ -28,9 +28,9 @@ impl Session {
     pub fn at_snapshot(captured: Cursor, previous: Option<&Cursor>) -> Result<Self, Error> {
         let runtime = captured.runtime;
         // Versions 3 through 5 have the same prefix proof, but their parsers skipped
-        // patch versions now supported by version 6. Verify that proof before replay;
+        // patch versions now supported by version 7. Verify that proof before replay;
         // an upgrade must not hide a changed or truncated source.
-        let replay_parser = previous.is_some_and(|previous| matches!(previous.version, 3..=5));
+        let replay_parser = previous.is_some_and(|previous| matches!(previous.version, 3..=6));
         let cursor = if let Some(previous) = previous {
             if (previous.version != CURSOR_VERSION && !replay_parser)
                 || previous.runtime != runtime
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn parser_upgrade_replays_only_after_the_old_prefix_is_verified() {
-        for version in [3, 4, 5] {
+        for version in [3, 4, 5, 6] {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("upgrade.jsonl");
             std::fs::write(&path, format!("{}{}", row(0), row(1))).unwrap();

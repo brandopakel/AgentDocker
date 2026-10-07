@@ -442,6 +442,7 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                     "claude-transcript-2.1.268-270-v1".into(),
                     "claude-transcript-2.1.271-276-v1".into(),
                     "claude-transcript-2.1.277-278-280-v1".into(),
+                    "claude-transcript-2.1.287-v1".into(),
                     "claude-transcript-2.1.246-247-248-251-259-260-261-263-267-v1".into(),
                 ],
             },
@@ -940,7 +941,12 @@ mod tests {
 
     #[tokio::test]
     async fn usage_parser_upgrade_replays_skipped_patch_records_without_recounting() {
-        for (version, patch) in [(3, "2.1.280"), (4, "2.1.263"), (5, "2.1.263")] {
+        for (version, patch) in [
+            (3, "2.1.280"),
+            (4, "2.1.263"),
+            (5, "2.1.263"),
+            (6, "2.1.287"),
+        ] {
             let (temp, daemon, config, root) = fixture();
             let path = root.join("session.jsonl");
             let first = record("first", 11);
@@ -998,6 +1004,15 @@ mod tests {
                         .any(|format| {
                             format == "claude-transcript-2.1.246-247-248-251-259-260-261-263-267-v1"
                         })
+                );
+                assert!(
+                    report
+                        .coverage
+                        .collection
+                        .scope
+                        .formats
+                        .iter()
+                        .any(|format| format == "claude-transcript-2.1.287-v1")
                 );
             }
         }
