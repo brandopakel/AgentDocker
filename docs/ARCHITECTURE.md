@@ -1531,8 +1531,8 @@ loopback rollouts extend that explicit version coverage. Codex 0.160.0 retains
 cumulative counters, optional cache/reasoning fields and stable replay identities;
 its sample format is named separately. Top-level Claude counters remain authoritative: nested iteration/cache
 details are not added again, zero counters stay zero and absent reasoning remains
-unknown. Codex still reports cumulative snapshots. Unobserved patch versions are
-not assumed compatible. Accounting-only observations also cover historical Claude
+unknown. Codex still reports cumulative snapshots. Other versions follow the
+compatibility rule below. Accounting-only observations also cover historical Claude
 2.1.246, 2.1.247, 2.1.248, 2.1.251, 2.1.259, 2.1.260, 2.1.261, 2.1.263 and
 2.1.267. These are explicit supported patches, not an accepted version range.
 Their response semantics and sample format identity match the existing family;
@@ -1542,8 +1542,8 @@ source identities, allowing newly supported records to be collected without
 recounting earlier accepted samples. Existing historical gaps remain visible;
 this change does not claim their reconciliation or provider-billing accuracy.
 
-A release after the newest checked one, of the same major version, is counted as
-it reports: Claude Code after 2.1.280 and Codex after 0.160.0 (read with 0.160.0's
+A release after the established compatibility floor, of the same major version,
+is counted as it reports: Claude Code after 2.1.280 and Codex after 0.160.0 (read with 0.160.0's
 semantics and format). Both ship every few days, and an exact list left a person
 on the current release with no usage at all — this Mac's Claude Code 2.1.292
 sessions recorded 30,778 gaps and no samples. Each counter is still checked field
@@ -1552,6 +1552,12 @@ and `codex-rollout-after-0.160.0-unchecked-v1` so a report says unchecked releas
 may be in it. An older unchecked release, another major version or a pre-release
 stays refused. Parser cursor v7 replays v3–v6 scans, which skipped those releases;
 replay deduplicates sources already accepted.
+
+Accounting forward compatibility retains the established floors (Codex 0.160.0
+and Claude Code 2.1.280) when another release gains checked fixtures. Adding
+Claude Code 2.1.287 fixtures therefore keeps 2.1.281–2.1.286 readable. Cursor
+version 7 and verified replay of versions 3–6 are unchanged by this integration;
+existing coverage gaps and conflicting response counters are not erased.
 
 Collection configuration is separate from scan progress: enabling collection or
 changing roots can leave a scan waiting to start, without meaning collection is
@@ -2013,9 +2019,3 @@ it. Never restore an older delivery ledger over already acknowledged input.
 The
 response is stored before writing and acknowledged only after provider resolution,
 using the same exact human-answer and no-replay contract as other reviews.
-
-Accounting forward compatibility retains the established floors (Codex 0.160.0
-and Claude Code 2.1.280) when another release gains checked fixtures. Adding
-Claude Code 2.1.287 fixtures therefore keeps 2.1.281–2.1.286 readable. Cursor
-version 7 and verified replay of versions 3–6 are unchanged by this integration;
-existing coverage gaps and conflicting response counters are not erased.

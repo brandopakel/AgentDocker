@@ -29,7 +29,7 @@ impl Session {
         let runtime = captured.runtime;
         // Versions 3 through 6 have the same prefix proof, but their parsers skipped
         // releases counted since: patch versions checked by version 6, and by
-        // version 7 any release newer than the newest checked. Verify that proof
+        // version 7 releases beyond the compatibility floor. Verify that proof
         // before replay; an upgrade must not hide a changed or truncated source.
         let replay_parser = previous.is_some_and(|previous| matches!(previous.version, 3..=6));
         let cursor = if let Some(previous) = previous {

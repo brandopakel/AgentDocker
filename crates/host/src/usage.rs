@@ -364,8 +364,14 @@ mod tests {
     /// pre-release or something that is not a version stays refused.
     #[test]
     fn later_checked_fixtures_preserve_the_previously_counted_release_range() {
-        for version in ["2.1.280", "2.1.281", "2.1.282", "2.1.283", "2.1.284", "2.1.285", "2.1.286", "2.1.287", "2.1.292", "2.2.0", "2.10.0"] {
-            assert!(counted(version, &CLAUDE_CHECKED, CLAUDE_FORWARD_COMPATIBLE_AFTER), "{version}");
+        for version in [
+            "2.1.280", "2.1.281", "2.1.282", "2.1.283", "2.1.284", "2.1.285", "2.1.286", "2.1.287",
+            "2.1.292", "2.2.0", "2.10.0",
+        ] {
+            assert!(
+                counted(version, &CLAUDE_CHECKED, CLAUDE_FORWARD_COMPATIBLE_AFTER),
+                "{version}"
+            );
         }
         for version in [
             "2.1.279",
@@ -378,13 +384,22 @@ mod tests {
             "future",
             "",
         ] {
-            assert!(!counted(version, &CLAUDE_CHECKED, CLAUDE_FORWARD_COMPATIBLE_AFTER), "{version}");
+            assert!(
+                !counted(version, &CLAUDE_CHECKED, CLAUDE_FORWARD_COMPATIBLE_AFTER),
+                "{version}"
+            );
         }
         for version in ["0.160.0", "0.160.1", "0.161.0", "0.200.3"] {
-            assert!(counted(version, &CODEX_CHECKED, CODEX_FORWARD_COMPATIBLE_AFTER), "{version}");
+            assert!(
+                counted(version, &CODEX_CHECKED, CODEX_FORWARD_COMPATIBLE_AFTER),
+                "{version}"
+            );
         }
         for version in ["0.159.9", "0.152.0", "1.0.0", "0.160.1-alpha.2"] {
-            assert!(!counted(version, &CODEX_CHECKED, CODEX_FORWARD_COMPATIBLE_AFTER), "{version}");
+            assert!(
+                !counted(version, &CODEX_CHECKED, CODEX_FORWARD_COMPATIBLE_AFTER),
+                "{version}"
+            );
         }
     }
 
