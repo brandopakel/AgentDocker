@@ -68,6 +68,11 @@ pub enum EventKind {
         agent: AgentId,
         samples: u64,
     },
+    /// Volatile review metadata changed. Live-only seq:0, no prompt, answer or capability.
+    SecretReviewChanged {
+        review: String,
+        agent: AgentId,
+    },
     /// A question's answer route is durable until answered or expired.
     QuestionOpened {
         question: MessageId,

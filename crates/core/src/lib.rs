@@ -37,6 +37,7 @@ pub use provider::{
     ProviderAvailability, ProviderIssue, ProviderIssueKind, ProviderReport, provider_block,
 };
 pub mod registry;
+pub mod secret;
 
 pub use agent::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, RestartPolicy, VcsState,
