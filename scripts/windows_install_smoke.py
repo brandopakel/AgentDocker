@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise native installation using the extracted Windows package only."""
 import argparse
+import base64
 from contextlib import contextmanager
 import ctypes
 from ctypes import wintypes
@@ -116,7 +117,7 @@ def main():
     names = ('agentdocker.exe', 'agentd.exe', 'agentdocker-ui.exe')
     report = {'result': 'failed', 'source_commit': json.loads((app / 'build.json').read_text())['source_commit'],
               'binary_sha256': {n: hashlib.sha256((app / n).read_bytes()).hexdigest() for n in names},
-              'scope': 'Native private-prefix install and rollback. Second payload changes a fixture README only; a third metadata-only fixture exercises the local preview feed. No hosted update, actual provider, Start menu or reboot claim.',
+              'scope': 'Native private-prefix install and rollback. Second payload changes a fixture README only; a third metadata-only fixture exercises the local preview feed. Three uniquely named disabled/no-trigger Task Scheduler definitions exercise stopped service references without starting their actions. No hosted update, actual provider, Start menu or reboot claim.',
               'scratch': str(scratch), 'service_requested': args.service, 'steps': [], 'commands': []}
 
     def save():
@@ -142,6 +143,90 @@ def main():
         save()
         if not condition:
             raise AssertionError(name)
+
+    def quoted(value):
+        return "'" + ''.join(c * 2 if c in "'‘’‚‛" else c for c in str(value)) + "'"
+
+    @contextmanager
+    def stopped_task(case, arguments):
+        """A unique disabled task with no triggers; never start its action."""
+        powershell = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+        nonce = uuid.uuid4().hex
+        name = 'AgentDocker-Maintenance-' + nonce
+        description = 'AgentDocker private maintenance fixture ' + nonce
+        entry = {'case': case, 'name': name, 'removed': False, 'commands': []}
+        report.setdefault('maintenance_tasks', []).append(entry)
+        save()
+        context = ("$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';"
+                   "[Console]::OutputEncoding=[Text.UTF8Encoding]::new();"
+                   f"$name={quoted(name)};$description={quoted(description)};"
+                   f"$executable={quoted(powershell)};$arguments={quoted(arguments)};")
+        query = ("$tasks=@(Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | "
+                 "Where-Object {$_.TaskName -ceq $name});")
+
+        def scheduler(operation, script):
+            encoded = base64.b64encode((context + script).encode('utf-16le')).decode('ascii')
+            started = time.monotonic()
+            try:
+                result = subprocess.run([str(powershell), '-NoProfile', '-NonInteractive',
+                                         '-EncodedCommand', encoded], cwd=scratch, env=env,
+                                        capture_output=True, text=True, encoding='utf-8', timeout=45)
+            except (subprocess.TimeoutExpired, OSError) as error:
+                entry['commands'].append({'operation': operation,
+                    'seconds': time.monotonic() - started,
+                    'error': f'{type(error).__name__}: {error}'})
+                save()
+                raise
+            entry['commands'].append({'operation': operation, 'exit_code': result.returncode,
+                'seconds': time.monotonic() - started, 'stdout': result.stdout[-8192:],
+                'stderr': result.stderr[-8192:]})
+            save()
+            if result.returncode:
+                raise AssertionError(f'maintenance task {operation} failed: {result.stderr}')
+            return json.loads(result.stdout)
+
+        try:
+            # ScheduledTasks represents no triggers as $null. Wrapping that
+            # scalar in @() counts one item, so distinguish it before counting.
+            value = scheduler('register disabled task', query +
+                "if($tasks.Count -ne 0){throw 'Fixture task name already exists'};"
+                "$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
+                "$principal=New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive -RunLevel Limited;"
+                "$settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::FromSeconds(10));"
+                "$action=New-ScheduledTaskAction -Execute $executable -Argument $arguments;"
+                "Register-ScheduledTask -TaskPath '\\' -TaskName $name -Principal $principal "
+                "-Action $action -Settings $settings -Description $description | Out-Null;"
+                "Disable-ScheduledTask -TaskPath '\\' -TaskName $name | Out-Null;"
+                "$task=Get-ScheduledTask -TaskPath '\\' -TaskName $name -ErrorAction Stop;"
+                "[pscustomobject]@{state=$task.State.ToString();"
+                "triggers=$(if($null -eq $task.Triggers){0}else{@($task.Triggers).Count});"
+                "actions=@($task.Actions).Count}|ConvertTo-Json -Compress")
+            entry['registered'] = value
+            save()
+            if value != {'state': 'Disabled', 'triggers': 0, 'actions': 1}:
+                raise AssertionError('maintenance task must be disabled with no triggers and one action')
+            yield
+        except BaseException as error:
+            entry['body_error'] = f'{type(error).__name__}: {error}'
+            save()
+            raise
+        finally:
+            # Also inspect after uncertain registration. Remove only this exact
+            # unstarted definition; preserve any changed/foreign task as a failure.
+            value = scheduler('remove owned task', query +
+                "if($tasks.Count -gt 1){throw 'Ambiguous fixture task'};"
+                "if($tasks.Count -eq 1){$task=$tasks[0];"
+                "if($task.Description -cne $description -or @($task.Actions).Count -ne 1 "
+                "-or $task.Actions[0].Execute -ine $executable -or $task.Actions[0].Arguments -cne $arguments "
+                "-or ($null -ne $task.Triggers -and @($task.Triggers).Count -ne 0) "
+                "-or $task.State.ToString() -eq 'Running')"
+                "{throw 'Changed or running fixture task was preserved'};"
+                "Unregister-ScheduledTask -TaskPath '\\' -TaskName $name -Confirm:$false | Out-Null};" +
+                query + "[pscustomobject]@{absent=($tasks.Count -eq 0)}|ConvertTo-Json -Compress")
+            entry['removed'] = value.get('absent') is True
+            save()
+            if not entry['removed']:
+                raise AssertionError('maintenance fixture task remains registered')
 
     try:
         cold = desktop('status')
@@ -257,6 +342,31 @@ def main():
         cleanup = desktop('prune', '--preview')
         step('unlocked inactive version becomes eligible for pruning',
              len(cleanup['maintenance']['remove']) == 1 and Path(cleanup['maintenance']['remove'][0]).name == second)
+        def daemon_action(daemon):
+            script = (f'& {quoted(launcher)} daemon supervise --home {quoted(home)} '
+                      f'--agentd {quoted(daemon)} --endpoint {quoted(env["AGENTDOCKER_SOCKET"])}; exit $LASTEXITCODE')
+            return ('-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ' +
+                    base64.b64encode(script.encode('utf-16le')).decode('ascii'))
+
+        for case, arguments, retains_old in [
+            ('opaque wrapper', '-NoProfile -NonInteractive -Command "exit 0"', True),
+            ('stopped retained version', daemon_action(store / 'versions' / second / 'AgentDocker/agentd.exe'), True),
+            ('stable bootstrap', daemon_action(store / 'bin/agentd.exe'), False),
+        ]:
+            with stopped_task(case, arguments):
+                protected = desktop('prune', '--preview')
+                step(case + ' reports the expected inactive-build protection',
+                     not protected['maintenance']['remove'] if retains_old
+                     else protected['plan_id'] == cleanup['plan_id'])
+                desktop('uninstall', '--preview', good=False)
+                step(case + ' blocks launcher removal for a stopped registration',
+                     launcher.is_file() and (store / 'versions' / second).is_dir())
+                if retains_old:
+                    desktop('prune', '--expect-plan', cleanup['plan_id'], good=False)
+                    step(case + ' invalidates the earlier removal plan without deletion',
+                         (store / 'versions' / second).is_dir())
+            step(case + ' removal restores the original maintenance plan',
+                 desktop('prune', '--preview')['plan_id'] == cleanup['plan_id'])
         unknown = store / 'versions/user-notes'
         unknown.mkdir()
         (unknown / 'keep.txt').write_text('driver-owned content must be preserved', encoding='utf-8')

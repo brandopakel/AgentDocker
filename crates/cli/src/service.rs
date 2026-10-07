@@ -621,6 +621,16 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
     }
     // Service commands always use the canonical layout socket.
     let layout = Layout::discover(socket.as_deref())?;
+    // Protect the separately selected daemon as well as the CLI before any
+    // definition is written or an existing service is retired/replaced.
+    let _registration = if matches!(&args.command, DaemonCommand::Install { dry_run: false }) {
+        agentdocker_host::installation::guard_service_registration(&[
+            layout.agentd.clone(),
+            agentdocker_host::procinfo::executable_path()?,
+        ])?
+    } else {
+        Vec::new()
+    };
     let client = layout.client().with_start_timeout(None);
     if matches!(
         &args.command,
