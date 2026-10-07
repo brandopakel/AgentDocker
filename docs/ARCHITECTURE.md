@@ -880,9 +880,11 @@ publishes a service and exits during that query; versions pinned only after the
 query could otherwise lose both protections in that interval. Preview opens
 only existing version pins; apply creates missing pins and recomputes inventory.
 Dry-run registration creates no guard, and maintenance preview opens only an
-existing one. These checks do not yet select exact referenced versions or relax
-conservative retained-build protection; legacy registration races still need
-acceptance before selective retention is enabled.
+existing one. Unix inventory still conservatively protects whole stores; exact
+Unix references and legacy portable registrars selecting a separate daemon need
+further acceptance.
+
+Windows maintenance recognizes only exact rendered actions around a content-verified same-store controller and daemon or receipt-checked stable bootstrap. It retains every explicitly referenced immutable version, including connector tunnel/project/feed paths, state/log paths and Task Scheduler working directories. Literal and resolved aliases both count. Unknown programs/options, relative or parent-traversing paths and unreadable inventory conservatively retain the store; no arbitrary script is executed to discover paths. Native selective-deletion acceptance remains open.
 Windows desktop activation under implementation uses a private JSON snapshot in
 `AgentDocker/desktop`, pointing only to a hash-named immutable version. Launcher
 contract 2 denotes receipt-checked Windows bootstrap forwarding and lifetime
@@ -891,6 +893,8 @@ publication uses a same-directory rename with POSIX replacement semantics so
 open readers retain their old complete record. It has no delete/copy fallback.
 The ordinary strict private-file APIs remain unchanged; only read-only atomic
 snapshot readers accept an opened file whose link count became zero.
+
+Service registration also resolves and guards selected tunnel executables, project directories, local `@file` feeds and state/log paths across all referenced managed stores. Executable references must exist; future data paths pin their existing immutable version without creating data files. Store locks precede version pins and remain held through manager registration. Project/feed/tunnel paths are serialized absolutely on every platform. Systemd definitions use literal command arguments: the command prefix disables environment substitution, percent specifiers are escaped, and control characters cannot create unit directives. Environment assignments are quoted as complete words. Unreadable or malformed version inventories refuse registration; unknown version names hold the store guard without becoming deletion candidates. This protection is a prerequisite for selective retention; unknown service references still retain builds conservatively.
 
 The macOS Applications entry is an intact signed copy whose three entry points redirect to the selected immutable release before dispatch. External launcher ownership and exact retained payload hashes permit replacement without modifying signed metadata. An atomic app exchange follows activation; a failed exchange restores the previous activation. App publication and pointer selection are separate filesystem operations, and a surviving older copy follows the selected release. Package metadata records `launcher_redirect: 1`. Selecting an older payload retains a compatible launcher copy and protects its backing release from cleanup; a fresh legacy-only install is refused before activation. The visible copy may therefore have newer metadata than the selected release after rollback; installation status reports the selected version. These are local host operations, not daemon protocol mutations. They preserve
 state/provider configuration and do not replace a running daemon. See
