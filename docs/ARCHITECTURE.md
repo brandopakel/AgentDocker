@@ -1209,8 +1209,16 @@ work. Existing stores already above budget remain intact and may shrink, but
 cannot grow through accounting admission. Increasing usable storage beyond the
 fixed budget or safely compacting long-lived dedupe evidence is not implemented.
 Older daemons retain their own admission policy; the new metadata does not change
-schema-23 accounting meanings. Sustained resource acceptance, standalone scans
-and overhead instrumentation remain open. The collector's ephemeral prefix session handles large/growing
+schema-23 accounting meanings. The read-only `usage-storage --home` diagnostic measures accounting table/index
+pages, payload and unused bytes in a single SQLite read snapshot, including
+discovery/tracking metadata outside the logical admission counter. It uses the
+bundled SQLite [DBSTAT interface](https://www.sqlite.org/dbstat.html) in page mode
+with object/page/time bounds and returns no partial totals on refusal. Database
+page/free-page totals cover all state; file/WAL/shared-memory lengths are separate
+before/after observations. It starts no daemon, performs no migrations or
+checkpoint/vacuum, and changes no schema, events, retention or admission policy.
+Normal usage queries do not perform this scan. Sustained resource acceptance,
+standalone transcript scans and injected-byte/token overhead instrumentation remain open. The collector's ephemeral prefix session handles large/growing
 files in bounded passes; the standalone reader retains its 16 MiB validation
 limit. Overhead is returned as unknown until instrumented.
 
