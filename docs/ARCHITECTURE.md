@@ -853,6 +853,31 @@ and rechecks content identity. Pins outlive deleted versions to prevent inode
 replacement races. Active, rollback, legacy unpinned and running versions remain;
 an installed daemon or connector user service protects retained binaries and
 blocks uninstall, including stopped services that hold no running-process pin.
+Unix maintenance checks both definition paths and the manager's retained
+registrations: launchd GUI/user domain services, and systemd's typed loaded-unit
+and unit-file inventories. A removed definition does not erase a cached service
+reference. Unavailable or unrecognized manager output preserves the installation;
+queries are bounded and never include service arguments/environment in errors.
+Windows task inspection recognizes only the exact encoded daemon and connector
+scripts emitted by the shared registration renderers, using literal extraction
+and byte-for-byte reconstruction without executing task content. It verifies
+the PowerShell executable and checks both literal and resolvable path spellings.
+Opaque wrappers, altered scripts, other executables and malformed encodings
+preserve the installation even when no store path appears in the action text.
+Service registration and desktop maintenance share a permanent owner-only
+`services.lock` in each affected managed store. Registration acquires store
+guards in path order and pins both the calling CLI and a separately selected
+daemon through definition and manager publication. Maintenance holds its guard
+from service inventory through removal; contention refuses before mutation.
+Cleanup reserves candidate version pins before querying services and holds
+them through deletion. It remembers a busy version even when an older registrar
+publishes a service and exits during that query; versions pinned only after the
+query could otherwise lose both protections in that interval. Preview opens
+only existing version pins; apply creates missing pins and recomputes inventory.
+Dry-run registration creates no guard, and maintenance preview opens only an
+existing one. These checks do not yet select exact referenced versions or relax
+conservative retained-build protection; legacy registration races still need
+acceptance before selective retention is enabled.
 Windows desktop activation under implementation uses a private JSON snapshot in
 `AgentDocker/desktop`, pointing only to a hash-named immutable version. Launcher
 contract 2 denotes receipt-checked Windows bootstrap forwarding and lifetime
@@ -1022,7 +1047,7 @@ A tmux start commits the record and `agent_started` event before reporting succe
 
 We should not write one. `tmux` exists, herdr exists, and a multiplexer is not the working set. What is worth having is an adapter — row 25 — and its first half is done: an agent living in a `tmux` pane, a `screen` window, a `zellij` session or a herdr session is recognised as such, and that is recorded beside its record, shown in `ps` and `discover`, and returned by `inspect`. That makes AgentDocker composable with whatever owns the terminal instead of competing for it: a person reaches the agent with the tool that already has it.
 
-**How it is known, and why that differs by platform.** A multiplexer tells its children who they are through the environment — `TMUX`/`TMUX_PANE`, `STY`/`WINDOW`, `ZELLIJ_SESSION_NAME`/`ZELLIJ_PANE_ID`, herdr's own — which is exact and names the pane. Reading it is where the platforms part. On Linux `/proc/<pid>/environ` is readable for the caller's own user, so the daemon can look for itself. **On macOS it is not**: measured on 26.5.1, `ps -E` returns only the command line for a process other than the caller — even one owned by the same user — so a daemon that only looked would find nothing on the platform we ship first. (What a *privileged* caller sees was not tested and is not relied on.) The answer is to have it reported first-hand instead — a client registering itself is running *inside* the session, so `register` carries what the client read of its own environment, and the daemon prefers what it can read itself, then what was reported, then ancestry. Ancestry — a `tmux` or `zellij` process between the agent and its shell — is the last resort: true, but it cannot name the pane, so it is recorded as `evidence: ancestry` rather than dressed up as the real thing.
+**How it is known, and why that differs by platform.** A multiplexer tells its children who they are through the environment — `TMUX`/`TMUX_PANE`, `STY`/`WINDOW`, `ZELLIJ_SESSION_NAME`/`ZELLIJ_PANE_ID`, herdr's own — which is exact and names the pane. Reading it is where the platforms part. On Linux `/proc/<pid>/environ` is readable for the caller's own user, so the daemon can look for itself. **On macOS it is not**: measured on 26.5.1, `ps -E` returns only the command line for a process other than the caller — even one owned by the same user — so a daemon that only looked would find nothing on the platform we ship first. (What a *privileged* caller sees was not tested and is not relied on.) The host reads its own environment directly, preserving spaces and value boundaries; another process's flattened `ps` command text is never first-hand environment evidence. The answer is to have it reported first-hand instead — a client registering itself is running *inside* the session, so `register` carries what the client read of its own environment, and the daemon prefers what it can read itself, then what was reported, then ancestry. Ancestry — a `tmux` or `zellij` process between the agent and its shell — is the last resort: true, but it cannot name the pane, so it is recorded as `evidence: ancestry` rather than dressed up as the real thing.
 
 Verified against a real `screen` session on macOS: registering from inside one records `{kind: screen, session: "83350.agentdocker-test", pane: "0", evidence: environment}` and `ps` shows `screen:0`.
 

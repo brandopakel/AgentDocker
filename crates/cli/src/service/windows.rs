@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+pub(crate) mod actions;
+
 pub(crate) const RECORD_FORMAT: u32 = 1;
 pub(crate) const RECORD_LIMIT: u64 = 32 * 1024;
 
@@ -293,12 +295,11 @@ fn desired(layout: &Layout, owner: Option<&Receipt>) -> Result<Definition> {
         .socket
         .clone()
         .unwrap_or_else(|| agentdocker_host::dirs::socket_path(&layout.home));
-    let script = format!(
-        "& {} daemon supervise --home {} --agentd {} --endpoint {}; exit $LASTEXITCODE",
-        quoted(&controller.to_string_lossy()),
-        quoted(&layout.home.to_string_lossy()),
-        quoted(&daemon.to_string_lossy()),
-        quoted(&endpoint.to_string_lossy()),
+    let script = actions::daemon(
+        &controller.to_string_lossy(),
+        &layout.home.to_string_lossy(),
+        &daemon.to_string_lossy(),
+        &endpoint.to_string_lossy(),
     );
     Ok(Definition {
         task: task_name(&layout.home),
@@ -313,10 +314,7 @@ fn desired(layout: &Layout, owner: Option<&Receipt>) -> Result<Definition> {
             |owner| owner.current.description.clone(),
         ),
         executable: powershell()?,
-        arguments: format!(
-            "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand {}",
-            encoded(&script)
-        ),
+        arguments: actions::arguments(&script),
     })
 }
 
