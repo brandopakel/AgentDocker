@@ -395,7 +395,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
+| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. An agent reaches only its own project and you; its `all` means its project, and you can still send anywhere. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
 | `watch` | Stream messages for an agent or matching topics |
 | `inbox` | Messages queued while an agent was not watching |
 | `ask` | Ask an agent — or the human — and wait for the answer |
@@ -661,6 +661,11 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- Projects keep their own messages. An agent reaches only its own project's
+  agents, its channels and you: a send, ask or question to another project's
+  agent, project or channel is refused, and an agent's `all` means its own
+  project. `list_agents` and the session-start note no longer name agents in
+  other projects. You can still message anyone anywhere.
 - **Reconnect here** in a Claude Code session's Details, and `agentdocker
   reconnect <session>`: once the session has exited in its terminal, the daemon
   brings it back under its own record with its conversation (`--resume`) and

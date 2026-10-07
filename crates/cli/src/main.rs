@@ -525,7 +525,7 @@ enum Command {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
     },
-    /// Send a message to an agent, this project (`project`), a topic (`topic:name`), or everyone (`all`).
+    /// Send a message to an agent, this project (`project`), a topic (`topic:name`), or everyone (`all`; sent by an agent, only its own project).
     Send(SendArgs),
     /// Report an observed provider turn state (expires after five minutes).
     ReportActivity {

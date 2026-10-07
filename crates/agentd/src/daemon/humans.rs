@@ -65,10 +65,13 @@ impl State {
                 "question controls must match the complete question text",
             );
         }
-        if !matches!(to, Destination::Agent(_) | Destination::Broadcast) {
+        if !matches!(
+            to,
+            Destination::Agent(_) | Destination::Project(_) | Destination::Broadcast
+        ) {
             return Response::error(
                 ErrorCode::Invalid,
-                "ask needs one agent, or `all`; a question has to reach somebody who can answer it",
+                "ask needs one agent, a project, or `all`; a question has to reach somebody who can answer it",
             );
         }
         let asked_at = Utc::now();
@@ -186,11 +189,22 @@ impl State {
         let mut questions: Vec<Question> = self
             .questions
             .values()
-            .filter(|q| agent.is_none_or(|id| q.addressed_to(id)))
+            .filter(|q| agent.is_none_or(|id| self.put_to(q, id)))
             .cloned()
             .collect();
         questions.sort_by_key(|q| std::cmp::Reverse(q.asked_at));
         questions
+    }
+
+    /// Whether `who` may take `question` as put to them: directly, as
+    /// one of everyone, or as an agent of the project it was put to. The
+    /// person may answer a project's question too, as they may anyone's
+    /// put to everyone.
+    pub(super) fn put_to(&self, question: &Question, who: &AgentId) -> bool {
+        let record = self.registry.get(who);
+        let project = record.and_then(|r| r.project.as_ref().map(ProjectRef::id));
+        question.addressed_to(who, project.as_ref())
+            || (record.is_some_and(is_human) && matches!(question.to, Destination::Project(_)))
     }
 }
 
@@ -505,7 +519,7 @@ impl Daemon {
                 answer = answers.recv() => match answer {
                     Ok(envelope) if envelope.reply_to.as_ref() == Some(&message)
                         && matches!(&envelope.to, Destination::Agent(id) if id.as_str() == from)
-                        && match &to { Destination::Agent(id) => id.as_str() == envelope.from, Destination::Broadcast => true, _ => false } => {
+                        && match &to { Destination::Agent(id) => id.as_str() == envelope.from, Destination::Project(_) | Destination::Broadcast => true, _ => false } => {
                         // A reply can arrive after cancellation. Only the
                         // exact committed question-closure event accepts it.
                         if candidate.is_none() { candidate = Some(envelope); }
@@ -650,7 +664,7 @@ impl Daemon {
             return Response::error(ErrorCode::NotFound, "the question was answered or expired");
         }
         let sender = AgentId::from(from.as_str());
-        if !question.addressed_to(&sender) {
+        if !state.put_to(&question, &sender) {
             return Response::error(
                 ErrorCode::Forbidden,
                 "this question was addressed to another recipient",
