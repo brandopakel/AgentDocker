@@ -5,6 +5,12 @@ Apple signing/notarization still needs a private developer identity and actual
 release acceptance. Other engineering and platform work is tracked in
 [Remaining work](REMAINING-WORK.md); distribution setup is one part of delivery.
 
+The unpublished beta.10 source candidate uses ledger 15/state schema 27. Its
+beta.9/schema26 baseline cannot be selected by binary rollback; acceptance must
+verify exact refusal with the current selection and bytes preserved. Never
+restore an older delivery database over acknowledged input. The next publication
+requires final-source validation/review and new hosted download/install trials.
+
 ## Release workflow and retry policy
 
 A protected `v*` tag triggers `.github/workflows/release.yml`; editing the

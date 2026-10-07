@@ -1376,3 +1376,14 @@ managed terminal discards new typing without echo while a secret route is
 open. After it closes, Enter discards the suspended line and returns to the
 preexisting draft; buffered text cannot become an ordinary queued message. A possibly sent answer without a provider resolution stays
 paused for inspection and is never resubmitted by restart.
+
+An actual Codex0.160.1/private-model trial on `ecfffb22` dropped the exact
+`serverRequest/resolved` notification through a supported Node proxy after the
+provider received the invented answer. The terminal turn and one bounded
+controller restart retained the metadata-only uncertainty fence and original
+input receipt; the waiting ordinary message stayed queued. Read-only history
+recovery did not send the secret again or start another model turn. Independent
+cleanup checks passed. This is scoped confirmation-loss acceptance, not a manual
+inspection/reconciliation workflow, other crash boundaries or final-package,
+account, native-terminal or Windows acceptance. The first Python proxy failed
+its MCP handshake before model input; that failure remains in the trial index.
