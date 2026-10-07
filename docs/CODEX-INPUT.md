@@ -745,6 +745,16 @@ other crash-boundary acceptance remain open. The broker does not save submitted
 values, but cannot prevent Codex or its model from repeating them into ordinary
 output history.
 
+Source `9b88c488` passed an actual Codex 0.160.1/private-model trial with a proxy
+injecting one secret and one ordinary request during a real secret review. Both
+injected requests were refused; the original secret was answered once, two
+ordinary receipts completed in order, and the controller did not restart. Four
+recorded controller/proxy/provider processes and the private scratch retired;
+production services were unchanged. The initial fixture stopped before answering
+because it expected a serialized zero restart counter; that failure is retained.
+Natural provider parallelism, ordinary-first runtime and final-package/account
+acceptance remain open.
+
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
 Allow becomes available after opening the complete diff; Deny remains available

@@ -40,7 +40,14 @@ Review corrections reject overlapping secret/ordinary requests without replacing
 the first review, expose operational secret-lookup errors in the desktop app and
 preserve builds when unloaded systemd units have unit, dash-prefix or type-wide
 drop-ins anywhere in the manager's active search path. Focused regressions cover
-these boundaries; source-package and hosted acceptance of these fixes remains open.
+these boundaries. Source `9b88c488` also passed actual Mac Codex 0.160.1/private-model
+acceptance with two proxy-injected overlapping requests: both refused, the first
+secret answered once, two ordered ordinary receipts delivered, and no controller
+restart. Oracle's matching source tree passed seven unloaded-override retention,
+selective-pruning and subsequent-startup checks. All fixture generations and
+scratch were removed; the pre-existing startup link was restored. Initial test
+harness failures remain indexed. Natural provider parallelism, ordinary-first
+runtime, other platforms, real accounts and hosted acceptance remain open.
 
 ## Release and first run
 
