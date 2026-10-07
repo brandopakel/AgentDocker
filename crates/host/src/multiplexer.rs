@@ -137,57 +137,22 @@ mod platform {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::*;
-    use std::process::Command;
 
-    /// `ps -Ewww` prints the environment after the command line, as
-    /// `KEY=VALUE` words. It is the only way to read another process's
-    /// environment on macOS without entitlements, and it only works for
-    /// our own user — which is exactly the case we need.
+    /// Self-inspection uses the process environment directly, preserving value
+    /// boundaries. For peers, ps flattens argv and any visible environment into
+    /// indistinguishable text; it cannot establish first-hand evidence. Use the
+    /// registering client's reported environment or process ancestry instead.
     pub fn environment(pid: u32) -> Option<BTreeMap<String, String>> {
-        let output = Command::new("ps")
-            .args(["-Ewwwo", "command=", "-p", &pid.to_string()])
-            .output()
-            .ok()?;
-        if !output.status.success() {
+        if pid != std::process::id() {
             return None;
         }
-        Some(parse_ps_environment(&String::from_utf8_lossy(
-            &output.stdout,
-        )))
-    }
-
-    /// Everything after the command line is the environment, one
-    /// `KEY=VALUE` per word. The command line comes first and may itself
-    /// contain an `=`, so only words whose key looks like a variable
-    /// name are taken — and once one is, everything after it is
-    /// environment too.
-    pub fn parse_ps_environment(text: &str) -> BTreeMap<String, String> {
-        let mut env = BTreeMap::new();
-        let mut in_environment = false;
-        for word in text.split_whitespace() {
-            let Some((key, value)) = word.split_once('=') else {
-                continue;
-            };
-            if !in_environment {
-                if !looks_like_variable(key) {
-                    continue;
-                }
-                in_environment = true;
-            }
-            if looks_like_variable(key) {
-                env.insert(key.to_owned(), value.to_owned());
-            }
-        }
-        env
-    }
-
-    /// A shell variable name: letters, digits and underscores, not
-    /// starting with a digit, and not empty. `--flag` and `/a/path` are
-    /// not, which is what keeps the command line out.
-    fn looks_like_variable(key: &str) -> bool {
-        !key.is_empty()
-            && !key.starts_with(|c: char| c.is_ascii_digit())
-            && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        Some(
+            std::env::vars_os()
+                .filter_map(|(key, value)| {
+                    Some((key.into_string().ok()?, value.into_string().ok()?))
+                })
+                .collect(),
+        )
     }
 }
 
@@ -269,30 +234,59 @@ mod tests {
         assert_eq!(multiplexer_name(&["/home/tmux/agent".to_owned()]), None);
     }
 
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn ps_output_splits_the_command_line_from_the_environment() {
-        // `ps -E` prints argv and then KEY=VALUE words. The command line
-        // can contain an `=` of its own, which must not be mistaken for
-        // the start of the environment.
-        let env = platform::parse_ps_environment(
-            "/usr/bin/node --inspect=127.0.0.1 server.js PATH=/usr/bin TMUX_PANE=%2 SHELL=/bin/zsh",
-        );
-        assert_eq!(env.get("TMUX_PANE").map(String::as_str), Some("%2"));
-        assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin"));
-        assert!(
-            !env.contains_key("--inspect"),
-            "a flag with an = is not a variable: {env:?}"
-        );
-        assert_eq!(env.len(), 3);
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn proc_environ_is_nul_separated() {
         let env = platform::parse_nul_separated(b"PATH=/usr/bin\0TMUX_PANE=%2\0\0");
         assert_eq!(env.get("TMUX_PANE").map(String::as_str), Some("%2"));
         assert_eq!(env.len(), 2);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_environment_keeps_complete_self_values() {
+        const MARKER: &str = "AGENTDOCKER_MULTIPLEXER_TEST_CHILD";
+        const PATH: &str = "/usr/bin:/bin:/tmp/AgentDocker fixture path";
+        if std::env::var_os(MARKER).is_some() {
+            let actual = environment(std::process::id()).expect("own environment is available");
+            assert_eq!(actual.get("PATH").map(String::as_str), Some(PATH));
+            return;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "multiplexer::tests::mac_environment_keeps_complete_self_values",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env("PATH", PATH)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "self environment must preserve spaces without changing the parent environment"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_environment_does_not_treat_peer_arguments_as_environment() {
+        use std::process::{Command, Stdio};
+        // This owned shell has no TMUX_PANE environment variable. Its argv
+        // deliberately looks like one in ps's ambiguous flattened output.
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "read -r ignored", "TMUX_PANE=%forged"])
+            .env_clear()
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let observed = environment(child.id());
+        drop(child.stdin.take());
+        let _ = child.wait().unwrap();
+        assert!(
+            observed.is_none(),
+            "foreign command text must not become first-hand environment evidence"
+        );
     }
 
     /// The real thing, on this machine: our own process must be readable,

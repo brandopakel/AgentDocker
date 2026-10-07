@@ -16,11 +16,7 @@ struct Action {
 }
 
 fn normalized(text: &str) -> String {
-    let mut value = text.replace(r"\\?\", "").replace('/', "\\");
-    for quote in ['\'', '\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}'] {
-        value = value.replace(&format!("{quote}{quote}"), &quote.to_string());
-    }
-    value.to_lowercase()
+    text.replace(r"\\?\", "").replace('/', "\\").to_lowercase()
 }
 
 fn references(root: &Path) -> Result<ServiceReferences> {
@@ -60,42 +56,45 @@ fn references(root: &Path) -> Result<ServiceReferences> {
         actions.len() <= 1000,
         "Windows service inventory exceeds its bound"
     );
+    action_references(root, &executable, actions)
+}
+
+fn action_references(
+    root: &Path,
+    powershell: &Path,
+    actions: Vec<Action>,
+) -> Result<ServiceReferences> {
+    let powershell = powershell.canonicalize()?;
     let root = format!("{}\\", normalized(&root.to_string_lossy()));
     let mut found = ServiceReferences::default();
+    let unknown = || ServiceReferences {
+        any: true,
+        retained_versions: true,
+    };
     for action in actions {
-        let words: Vec<_> = action.arguments.split_whitespace().collect();
-        let decoded = if let Some(at) = words
-            .iter()
-            .position(|w| w.eq_ignore_ascii_case("-EncodedCommand"))
-        {
-            let parsed = (|| -> Result<String> {
-                ensure!(
-                    at + 2 == words.len() && words[at + 1].len() <= 64 * 1024,
-                    "unrecognized encoded service action"
-                );
-                let bytes = base64::engine::general_purpose::STANDARD.decode(words[at + 1])?;
-                ensure!(bytes.len() % 2 == 0, "invalid encoded service action");
-                let units: Vec<_> = bytes
-                    .chunks_exact(2)
-                    .map(|b| u16::from_le_bytes([b[0], b[1]]))
-                    .collect();
-                Ok(String::from_utf16(&units)?)
-            })();
-            match parsed {
-                Ok(text) => text,
-                // An opaque app task may still refer to this store. Preserve
-                // everything rather than guessing that it references nothing.
-                Err(_) => {
-                    return Ok(ServiceReferences {
-                        any: true,
-                        retained_versions: true,
-                    });
-                }
-            }
-        } else {
-            action.arguments
+        if Path::new(&action.executable).canonicalize().ok().as_ref() != Some(&powershell) {
+            return Ok(unknown());
+        }
+        let Some(parsed) = crate::service::windows::actions::recognize(&action.arguments) else {
+            // Missing literal paths are not evidence of absence: a wrapper or
+            // another encoded program could construct them at runtime.
+            return Ok(unknown());
         };
-        let text = normalized(&format!("{} {decoded}", action.executable));
+        if !Path::new(&parsed.controller).is_absolute() {
+            return Ok(unknown());
+        }
+        let mut values = parsed.values;
+        // Include resolved aliases as well as the original literal spelling.
+        // Missing endpoints/log files are normal; they add no resolved path.
+        let resolved: Vec<_> = values
+            .iter()
+            .map(Path::new)
+            .filter(|path| path.is_absolute())
+            .filter_map(|path| path.canonicalize().ok())
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        values.extend(resolved);
+        let text = normalized(&values.join("\n"));
         if text.contains(&root) {
             found.any = true;
             found.retained_versions |= text.contains(&format!("{root}versions\\"))
@@ -144,12 +143,84 @@ fn checked_version(layout: &Layout, directory: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::windows::actions;
+
+    #[test]
+    fn opaque_actions_without_literal_store_paths_preserve_the_installation() {
+        let scratch = tempfile::tempdir().unwrap();
+        let powershell = scratch.path().join("powershell.exe");
+        std::fs::write(&powershell, b"query fixture").unwrap();
+        let root = scratch.path().join("AgentDocker/desktop");
+        for arguments in [
+            "-File C:\\service-wrapper.ps1".into(),
+            actions::arguments("& (Join-Path $env:APP_ROOT 'agentdocker.exe') daemon supervise"),
+            "-NoProfile -EncodedCommand invalid".into(),
+        ] {
+            let refs = action_references(
+                &root,
+                &powershell,
+                vec![Action {
+                    executable: powershell.to_string_lossy().into_owned(),
+                    arguments,
+                }],
+            )
+            .unwrap();
+            assert!(refs.any && refs.retained_versions);
+        }
+    }
+
+    #[test]
+    fn recognized_service_paths_preserve_doubled_apostrophes_and_old_versions() {
+        let scratch = tempfile::tempdir().unwrap();
+        let powershell = scratch.path().join("powershell.exe");
+        std::fs::write(&powershell, b"query fixture").unwrap();
+        let root = scratch.path().join("O''Brien ‘quoted’/AgentDocker/desktop");
+        let controller = root.join("bin/agentdocker.exe");
+        let daemon = root
+            .join("versions")
+            .join("a".repeat(64))
+            .join("AgentDocker/agentd.exe");
+        let arguments = actions::arguments(&actions::daemon(
+            &controller.to_string_lossy(),
+            &scratch.path().to_string_lossy(),
+            &daemon.to_string_lossy(),
+            r"\\.\pipe\fixture",
+        ));
+        let refs = action_references(
+            &root,
+            &powershell,
+            vec![Action {
+                executable: powershell.to_string_lossy().into_owned(),
+                arguments: arguments.clone(),
+            }],
+        )
+        .unwrap();
+        assert!(refs.any && refs.retained_versions);
+
+        let foreign = scratch.path().join("another-wrapper.exe");
+        std::fs::write(&foreign, b"unrecognized program").unwrap();
+        let refs = action_references(
+            &scratch.path().join("unmentioned-store"),
+            &powershell,
+            vec![Action {
+                executable: foreign.to_string_lossy().into_owned(),
+                arguments,
+            }],
+        )
+        .unwrap();
+        assert!(refs.any && refs.retained_versions);
+    }
+}
+
 fn plan(
     layout: &Layout,
     keep: Option<usize>,
     applying: bool,
-    services: &ServiceReferences,
-) -> Result<(Plan, Vec<lock::Lock>)> {
+    inspect_services: impl FnOnce() -> Result<ServiceReferences>,
+) -> Result<(Plan, installation::VersionInventoryGuard)> {
     layout.preflight()?;
     let active = layout.active()?;
     let mut plan = Plan {
@@ -159,10 +230,10 @@ fn plan(
         retained: Vec::new(),
         keep,
     };
-    let mut pins = Vec::new();
+    let pins = installation::VersionInventoryGuard::default();
     let Some(keep) = keep else {
         ensure!(
-            !services.any,
+            !inspect_services()?.any,
             "a Windows service references this installation; uninstall its service registration first"
         );
         if present(&layout.bin)? {
@@ -196,6 +267,19 @@ fn plan(
         ))
     });
     let mut extra = 0;
+    let candidates: Vec<_> = entries
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.file_name().to_str()?.to_owned();
+            let protected = active.as_ref().is_some_and(|a| {
+                a.current.id == id || a.previous.as_ref().is_some_and(|p| p.id == id)
+            });
+            (id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()) && !protected)
+                .then_some(id)
+        })
+        .collect();
+    let pins = installation::reserve_versions_for_inventory(&layout.root, &candidates, applying)?;
+    let services = inspect_services()?;
     for entry in entries {
         let path = entry.path();
         let id = entry.file_name().to_string_lossy().into_owned();
@@ -211,26 +295,11 @@ fn plan(
         } else if extra < keep {
             extra += 1;
             Some("additional retained version")
+        } else if pins.is_busy(&id) {
+            Some("running process uses this version")
         } else {
-            let pin = installation::pin_path(&layout.root, &id)?;
-            if applying {
-                dirs::private_file(&pin, true, false)?;
-            }
-            let existed = present(&pin)?;
-            let held = if existed {
-                lock::try_exclusive_existing(&pin)?
-            } else {
-                None
-            };
-            if existed && held.is_none() {
-                Some("running process uses this version")
-            } else {
-                if applying {
-                    pins.push(held.context("release pin was not created")?);
-                }
-                plan.remove.push(path.clone());
-                None
-            }
+            plan.remove.push(path.clone());
+            None
         };
         if let Some(reason) = reason {
             plan.retained.push(Retained { path, reason });
@@ -304,8 +373,8 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
 
 pub(super) fn after_activation(layout: &Layout, _install: &lock::Lock) -> serde_json::Value {
     let result = (|| -> Result<(usize, usize)> {
-        let services = references(&layout.root)?;
-        let (plan, _pins) = plan(layout, Some(0), true, &services)?;
+        let _services = installation::service_inventory_guard(&layout.root, true)?;
+        let (plan, _pins) = plan(layout, Some(0), true, || references(&layout.root))?;
         apply(layout, &plan)?;
         Ok((plan.remove.len(), plan.retained.len()))
     })();
@@ -330,8 +399,8 @@ pub(super) fn run(
     } else {
         Some(layout.install_lock()?)
     };
-    let services = references(&layout.root)?;
-    let (plan, _pins) = plan(layout, keep, !preview, &services)?;
+    let _services = installation::service_inventory_guard(&layout.root, !preview)?;
+    let (plan, _pins) = plan(layout, keep, !preview, || references(&layout.root))?;
     let id = plan.id()?;
     if let Some(expected) = expected {
         ensure!(id == expected, "maintenance plan changed; review again");

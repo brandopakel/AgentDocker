@@ -72,6 +72,11 @@ mod worktrees;
 /// Unacknowledged addressed messages per agent. Live streams do not consume them.
 const INBOX_CAPACITY: usize = 1000;
 const INBOX_BYTES: usize = 4 * 1024 * 1024;
+/// How long the person's word to everyone in a project waits for a session
+/// that opens there after it, and how many of their latest messages are
+/// looked at.
+const CATCH_UP_WINDOW: Duration = Duration::hours(1);
+const CATCH_UP_MESSAGES: usize = 50;
 
 fn message_bytes(message: &Envelope) -> usize {
     // Refuse admission if a future envelope representation cannot be encoded.
@@ -233,6 +238,7 @@ fn mutates(request: &Request) -> bool {
             | Request::Channels { .. }
             | Request::Conversations { .. }
             | Request::History { .. }
+            | Request::Delivery { .. }
             | Request::Thread { .. }
             | Request::SearchMessages { .. }
             | Request::Leases { .. }
@@ -2401,6 +2407,7 @@ impl Daemon {
                 before_seq,
                 limit,
             } => self.history(conversation, before_seq, limit),
+            Request::Delivery { message } => self.delivery(message),
             Request::Thread {
                 message,
                 after_seq,
@@ -6830,6 +6837,9 @@ impl State {
                 event
             })
             .collect();
+        // The person's own messages are followed per recipient, so they can
+        // see where each stands; agents' traffic is not.
+        let tracked = self.is_human_id(&AgentId::from(envelope.from.as_str()));
         let _ = self.persist("message", |store| {
             store.publish_message_with_channel(
                 &envelope,
@@ -6843,6 +6853,7 @@ impl State {
                 document
                     .as_ref()
                     .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
+                tracked,
             )
         });
         if let Some(error) = self.write_failure() {
@@ -7194,9 +7205,101 @@ impl State {
         if let Some(error) = self.write_failure() {
             return error;
         }
-        Response::Agent {
-            agent: self.resume_session(record),
+        let new = record.id.clone();
+        let agent = self.resume_session(record);
+        // A session that took up its own earlier record carries on with its
+        // own queue; only one new to the project is caught up.
+        if agent.id == new {
+            self.catch_up(&agent);
         }
+        Response::Agent { agent }
+    }
+
+    /// A session that opens in a project shortly after the person said
+    /// something to everyone there gets it as its first input: the person
+    /// should not have to know which sessions were open the moment they
+    /// spoke. Only the person's messages to that project's everyone room
+    /// in the last hour count, never a pause or resume notice, and never
+    /// twice: a record that shares a session or a process with another
+    /// already had its chance. A queue without room is caught up as far as
+    /// it has room, and the session is never refused for it.
+    fn catch_up(&mut self, record: &AgentRecord) {
+        if humans::is_human(record) || self.write_failure().is_some() {
+            return;
+        }
+        let Some(project) = record.project.as_ref().map(ProjectRef::id) else {
+            return;
+        };
+        let session = record
+            .spec
+            .labels
+            .get("session_id")
+            .filter(|id| !id.is_empty());
+        let process = record.pid.map(|pid| (pid, record.process_started_at));
+        let twin = self.registry.all().any(|other| {
+            other.id != record.id
+                && (session.is_some_and(|id| other.spec.labels.get("session_id") == Some(id))
+                    || process.is_some_and(|process| {
+                        other.pid.map(|pid| (pid, other.process_started_at)) == Some(process)
+                    }))
+        });
+        if twin {
+            return;
+        }
+        let conversation = agentdocker_core::ConversationId::everyone(&project);
+        let Ok(recent) = self.store.history(&conversation, None, CATCH_UP_MESSAGES) else {
+            return;
+        };
+        let since = Utc::now() - CATCH_UP_WINDOW;
+        let queue = self.inboxes.get(&record.id);
+        let queued: HashSet<&MessageId> = queue.into_iter().flatten().map(|m| &m.id).collect();
+        let mut count = queue.map_or(0, VecDeque::len);
+        let mut bytes = self.inbox_bytes.get(&record.id).copied().unwrap_or(0);
+        let mut messages = Vec::new();
+        for archived in recent {
+            let envelope = archived.envelope;
+            if envelope.sent_at < since
+                || pause::reserved_message_kind(&envelope.kind)
+                || queued.contains(&envelope.id)
+                || !self.is_human_id(&AgentId::from(envelope.from.as_str()))
+            {
+                continue;
+            }
+            let size = message_bytes(&envelope);
+            if count >= INBOX_CAPACITY || bytes + size > INBOX_BYTES {
+                break;
+            }
+            count += 1;
+            bytes += size;
+            messages.push(envelope);
+        }
+        drop(queued);
+        if messages.is_empty() {
+            return;
+        }
+        let mut event = Event::new(
+            EventKind::MessagesCaughtUp {
+                agent: record.id.clone(),
+                messages: messages.iter().map(|m| m.id.clone()).collect(),
+            },
+            Utc::now(),
+        );
+        event.seq = self.next_seq;
+        if self.persist("catch-up", |store| {
+            store.enqueue_late(&record.id, &messages, INBOX_CAPACITY, &event)
+        }) != Persisted::Committed
+        {
+            return;
+        }
+        self.next_seq += 1;
+        for message in messages {
+            *self.inbox_bytes.entry(record.id.clone()).or_default() += message_bytes(&message);
+            self.inboxes
+                .entry(record.id.clone())
+                .or_default()
+                .push_back(message);
+        }
+        let _ = self.events.send(event);
     }
 
     /// A session that came back as a new process takes up the record it
@@ -15449,6 +15552,183 @@ deny = ["send:all"]
                 .collect::<Vec<_>>(),
             queued
         );
+    }
+
+    /// The person can see where their message stands with each agent it
+    /// was queued for: one that took it and answered says so, one nothing
+    /// woke waits for its next prompt, and a session caught up after the
+    /// message is followed too. An agent's own message is not followed.
+    #[tokio::test]
+    async fn the_person_sees_where_their_message_stands_with_each_agent() {
+        use agentdocker_core::delivery::State as Delivery;
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = dir.path().join("alpha");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::write(alpha.join("Agentfile.toml"), "").unwrap();
+        register_spec(
+            &daemon,
+            AgentSpec {
+                name: "person".to_owned(),
+                runtime: agentdocker_core::HUMAN_RUNTIME.to_owned(),
+                workdir: Some(alpha.clone()),
+                ..AgentSpec::default()
+            },
+        )
+        .await;
+        let quick = register_in(&daemon, "quick", &alpha).await;
+        register_in(&daemon, "slow", &alpha).await;
+        let everyone = format!("project:{}", alpha.display());
+        let Response::Sent { message, .. } = send(&daemon, "person", &everyone).await else {
+            panic!("the person speaks")
+        };
+        let stands = |response: Response| match response {
+            Response::Delivery { recipients, .. } => recipients
+                .into_iter()
+                .map(|r| (r.name.unwrap_or_default(), r.state))
+                .collect::<BTreeMap<_, _>>(),
+            other => panic!("unexpected {other:?}"),
+        };
+        let delivery = || {
+            daemon.handle(Request::Delivery {
+                message: message.clone(),
+            })
+        };
+        assert_eq!(
+            stands(delivery().await),
+            BTreeMap::from([
+                ("quick".to_owned(), Delivery::WaitingForPrompt),
+                ("slow".to_owned(), Delivery::WaitingForPrompt),
+            ])
+        );
+
+        assert!(matches!(
+            daemon
+                .handle(Request::AckInbox {
+                    agent: "quick".into(),
+                    messages: vec![message.clone()],
+                })
+                .await,
+            Response::Ok
+        ));
+        assert_eq!(stands(delivery().await)["quick"], Delivery::Delivered);
+        assert!(matches!(
+            daemon
+                .handle(Request::Send {
+                    from: quick.id.to_string(),
+                    to: "person".into(),
+                    kind: "chat".into(),
+                    payload: json!({"text": "on it"}),
+                    reply_to: Some(message.clone()),
+                    links: Vec::new(),
+                })
+                .await,
+            Response::Sent { .. }
+        ));
+        let after = stands(delivery().await);
+        assert_eq!(after["quick"], Delivery::Answered);
+        assert_eq!(after["slow"], Delivery::WaitingForPrompt);
+
+        // A session that opens now is caught up and followed as well.
+        register_in(&daemon, "late", &alpha).await;
+        assert_eq!(stands(delivery().await)["late"], Delivery::WaitingForPrompt);
+
+        let Response::Sent {
+            message: theirs, ..
+        } = send(&daemon, "slow", &everyone).await
+        else {
+            panic!("an agent speaks")
+        };
+        assert!(matches!(
+            daemon.handle(Request::Delivery { message: theirs }).await,
+            Response::Delivery { recipients, .. } if recipients.is_empty()
+        ));
+    }
+
+    /// A session that opens in a project within an hour of the person's
+    /// word to everyone there gets it as its first input, once, with the
+    /// event that says so. An agent's word, an older one, another project's
+    /// and a second record of the same session are not caught up.
+    #[tokio::test]
+    async fn a_session_that_opens_after_the_persons_word_to_everyone_gets_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = dir.path().join("alpha");
+        let beta = dir.path().join("beta");
+        for root in [&alpha, &beta] {
+            std::fs::create_dir_all(root).unwrap();
+            std::fs::write(root.join("Agentfile.toml"), "").unwrap();
+        }
+        let person = register_spec(
+            &daemon,
+            AgentSpec {
+                name: "person".to_owned(),
+                runtime: agentdocker_core::HUMAN_RUNTIME.to_owned(),
+                workdir: Some(alpha.clone()),
+                ..AgentSpec::default()
+            },
+        )
+        .await;
+        let early = register_in(&daemon, "early", &alpha).await;
+        let project = early.project.clone().unwrap().id();
+        let everyone = |root: &Path| format!("project:{}", root.display());
+        let Response::Sent { message: word, .. } = send(&daemon, "person", &everyone(&alpha)).await
+        else {
+            panic!("the person speaks")
+        };
+        assert!(matches!(
+            send(&daemon, "early", &everyone(&alpha)).await,
+            Response::Sent { .. }
+        ));
+        assert!(matches!(
+            send(&daemon, "person", &everyone(&beta)).await,
+            Response::Sent { .. }
+        ));
+        {
+            let mut state = lock(&daemon.state);
+            let old = Envelope::new(
+                person.id.as_str(),
+                Destination::Project(project.clone()),
+                "chat",
+                json!({"text": "two hours ago"}),
+                None,
+                Utc::now() - Duration::hours(2),
+            );
+            assert!(matches!(state.publish(old), Response::Sent { .. }));
+        }
+        let mut events = daemon.subscribe_events();
+
+        let late = register_spec(
+            &daemon,
+            AgentSpec {
+                labels: [("session_id".to_owned(), "late-session".to_owned())].into(),
+                ..spec_in("late", &alpha)
+            },
+        )
+        .await;
+        let queued = inbox(&daemon, "late", false).await;
+        assert_eq!(
+            queued.iter().map(|m| &m.id).collect::<Vec<_>>(),
+            [&word],
+            "only the person's recent word to this project"
+        );
+        let mut caught_up = false;
+        while let Ok(event) = events.try_recv() {
+            caught_up |= matches!(&event.kind, EventKind::MessagesCaughtUp { agent, messages }
+                if *agent == late.id && *messages == [word.clone()]);
+        }
+        assert!(caught_up, "the catch-up is announced");
+
+        // Another record of the same session already had its chance.
+        register_spec(
+            &daemon,
+            AgentSpec {
+                labels: [("session_id".to_owned(), "late-session".to_owned())].into(),
+                ..spec_in("late-again", &alpha)
+            },
+        )
+        .await;
+        assert!(inbox(&daemon, "late-again", false).await.is_empty());
     }
 
     #[tokio::test]

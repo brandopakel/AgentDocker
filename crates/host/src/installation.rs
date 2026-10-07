@@ -4,6 +4,7 @@
 //! retention. An exclusive maintenance lock and shared running binaries use
 //! the same inode; a startup losing that race exits before using the payload.
 use crate::{dirs, lock};
+use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -136,6 +137,112 @@ fn launcher_target(executable: &Path, home: Option<&Path>) -> io::Result<Option<
 
 pub fn pin_current_executable() -> io::Result<Option<lock::Lock>> {
     pin_executable(&crate::procinfo::executable_path()?)
+}
+
+/// Serialize service registration with maintenance of the selected stores.
+///
+/// A daemon selected from PATH can belong to a different release or store than
+/// the calling CLI. Protect both until the definition and manager registration
+/// are committed. The permanent service lock is acquired before executable
+/// pins; maintenance holds the same lock from inventory through deletion.
+/// Portable executables have no managed store and create no installation state.
+pub fn guard_service_registration(executables: &[PathBuf]) -> io::Result<Vec<lock::Lock>> {
+    let executables = executables
+        .iter()
+        .map(|path| path.canonicalize())
+        .collect::<io::Result<Vec<_>>>()?;
+    let roots: BTreeSet<_> = executables
+        .iter()
+        .filter_map(|path| managed(path).map(|(root, _, _)| root))
+        .collect();
+    let mut guards = Vec::new();
+    for root in roots {
+        guards.push(
+            service_inventory_guard(&root, true)?
+                .ok_or_else(|| io::Error::other("service registration guard was not created"))?,
+        );
+    }
+    for executable in executables {
+        if let Some(pin) = pin_executable(&executable)? {
+            guards.push(pin);
+        }
+    }
+    Ok(guards)
+}
+
+/// Hold the service inventory stable through a maintenance operation.
+/// A preview opens only an existing lock and creates no files. Actual
+/// registration/deletion creates the owner-only permanent lock if needed.
+pub fn service_inventory_guard(root: &Path, create: bool) -> io::Result<Option<lock::Lock>> {
+    let path = root.join("services.lock");
+    if create {
+        dirs::secure_state_dir(root)?;
+        dirs::private_file(&path, true, false)?;
+    } else {
+        match path.symlink_metadata() {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        }
+    }
+    lock::try_exclusive_existing(&path)?
+        .map(Some)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "service registration or desktop maintenance is in progress; try again when it finishes",
+            )
+        })
+}
+
+/// Candidate-version pins held before reading service registrations.
+///
+/// A legacy registrar may hold only its executable's lifetime pin, without
+/// taking services.lock. Remember that version as busy even if the registrar
+/// publishes a service and exits during the subsequent inventory query.
+#[derive(Default)]
+pub struct VersionInventoryGuard {
+    busy: BTreeSet<String>,
+    _pins: Vec<lock::Lock>,
+}
+
+impl VersionInventoryGuard {
+    pub fn is_busy(&self, version: &str) -> bool {
+        self.busy.contains(version)
+    }
+}
+
+/// Reserve inactive candidates before inspecting persisted/loaded services.
+/// Hold the result through deletion. Preview opens existing permanent pins
+/// only; apply creates missing pins and must recompute its service inventory.
+pub fn reserve_versions_for_inventory(
+    root: &Path,
+    versions: &[String],
+    applying: bool,
+) -> io::Result<VersionInventoryGuard> {
+    let mut result = VersionInventoryGuard::default();
+    if applying && !versions.is_empty() {
+        dirs::secure_state_dir(&root.join("pins"))?;
+    }
+    for version in versions {
+        let path = pin_path(root, version)?;
+        if applying {
+            dirs::private_file(&path, true, false)?;
+        } else {
+            match path.symlink_metadata() {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        match lock::try_exclusive_existing(&path)? {
+            Some(pin) => result._pins.push(pin),
+            None => {
+                result.busy.insert(version.clone());
+            }
+        }
+    }
+    Ok(result)
 }
 
 /// Locate only our versioned layout. An ordinary checkout/package is unpinned.
@@ -531,6 +638,52 @@ mod tests {
         assert!(lock::try_exclusive(&path).unwrap().is_none());
         drop(second);
         let _maintenance = released_lock(&path, lock::try_exclusive);
+    }
+
+    #[test]
+    fn service_registration_protects_every_selected_store_before_publication() {
+        let (_first, first_root, first_exe) = fixture();
+        let (_second, second_root, second_exe) = fixture();
+        let selected = [first_exe, second_exe];
+        let registration = guard_service_registration(&selected).unwrap();
+        for root in [&first_root, &second_root] {
+            assert_eq!(
+                service_inventory_guard(root, true).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert!(
+                lock::try_exclusive_existing(&pin_path(root, &"a".repeat(64)).unwrap())
+                    .unwrap()
+                    .is_none(),
+                "the separately selected daemon must be pinned too"
+            );
+        }
+        drop(registration);
+        let _first_inventory = released_lock(
+            &first_root.join("services.lock"),
+            lock::try_exclusive_existing,
+        );
+        let _second_inventory = released_lock(
+            &second_root.join("services.lock"),
+            lock::try_exclusive_existing,
+        );
+        assert_eq!(
+            guard_service_registration(&selected).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock,
+            "registration must refuse before publishing across a guarded inventory"
+        );
+    }
+
+    #[test]
+    fn service_preview_and_portable_registration_do_not_create_managed_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("absent-installation");
+        assert!(service_inventory_guard(&root, false).unwrap().is_none());
+        assert!(!root.exists());
+        let portable = temp.path().join("agentd");
+        std::fs::write(&portable, "fixture").unwrap();
+        assert!(guard_service_registration(&[portable]).unwrap().is_empty());
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 
     // Libtest runs process-spawning tests in this same process. A concurrent

@@ -315,6 +315,13 @@ pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
         );
     }
     let layout = layout(args)?;
+    let _registration = if dry_run {
+        Vec::new()
+    } else {
+        agentdocker_host::installation::guard_service_registration(std::slice::from_ref(
+            &layout.agentdocker,
+        ))?
+    };
     let plan = install_plan(&layout, macos);
     execute(&plan, dry_run)?;
     if !dry_run {
@@ -397,6 +404,9 @@ pub fn enable(args: &ServeArgs, dry_run: bool) -> Result<()> {
     if dry_run {
         return execute(&plan, true);
     }
+    let _registration = agentdocker_host::installation::guard_service_registration(
+        std::slice::from_ref(&layout.agentdocker),
+    )?;
     for (path, contents) in &plan.files {
         ensure_definition(path, contents)?;
     }

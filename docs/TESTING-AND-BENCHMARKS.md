@@ -139,6 +139,24 @@ A managed-workspace launch failure keeps the original daemon response even when 
 
 Native graphical failures record connection state, inventory count, whether the expected fixture was discovered, screenshot-request state, update ticks and elapsed time. These fields help distinguish discovery/connection failures from rendering failures without recording discovered command lines. A passing rerun does not diagnose a prior failure.
 
+Native Windows package installation acceptance registers three uniquely named,
+disabled Task Scheduler fixtures without triggers and never starts their actions.
+Trigger checks distinguish a null trigger property from a one-element array;
+the original Windows fixture failure and cleanup refusal remain in the
+verification index. Corrected Windows CI
+[run 37425039256](https://github.com/brandopakel/AgentDocker/actions/runs/37425039256)
+at `c6bfb577` passed 53 installation checks and removed all three disabled
+fixtures and scratch. The runner built merge `142c482a`, whose tree matches
+`c6bfb577`. This establishes the stopped-task CI cases; physical Windows,
+stopped-service Mac/Linux trials and exact per-version retention remain open.
+An opaque wrapper and an exact retained-version reference must protect the old
+payload and invalidate a prior removal plan. A stable-bootstrap reference must
+permit inactive-build pruning while still blocking launcher uninstall. Each
+fixture is removed only if its description and complete action still match;
+the original maintenance plan must return after removal. Reports retain command
+outcomes and cleanup state. This runs the extracted CLI on Windows even while
+the CLI Rust test suite still contains Unix-only fixtures.
+
 The native transport check retains its refused observation in `capture/transport-failure.json`: process index/PID/exit status, `lsof` return code and stdout/stderr capped at 2,048 characters each, including partial timeout output. If that file cannot be written, the observation and capture error remain in the transport exception. The workflow result records the original exception before cleanup; cleanup and reporting failures are retained separately and cannot replace it, including a closed or unencodable diagnostic stream. A cleanup failure also invalidates an otherwise passing result. Any unexpected inspector result still fails acceptance. The [September 15 Linux ARM refusal](verification/INDEX.md) predates these diagnostics and remains unexplained; the original helper discarded the evidence needed to distinguish an observed TCP socket from an inspection error.
 
 **Keep the graphical fixture visible and retain renderer diagnostics.**

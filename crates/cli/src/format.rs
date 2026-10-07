@@ -632,6 +632,10 @@ pub fn event_line(event: &Event) -> String {
         EventKind::InboxAcknowledged { agent, messages } => {
             format!("{agent} acknowledged {} messages", messages.len())
         }
+        EventKind::MessagesCaughtUp { agent, messages } => format!(
+            "{agent} opened after {} message(s) to everyone; queued for it",
+            messages.len()
+        ),
         EventKind::AgentDiscovered {
             pid,
             runtime,
@@ -924,6 +928,29 @@ fn usage_key(key: Option<&str>, names: &std::collections::HashMap<String, String
         None => "(unattributed)".to_owned(),
         Some(id) => names.get(id).cloned().unwrap_or_else(|| id.to_owned()),
     }
+}
+
+/// Each agent a message was queued for and where it stands, in the order
+/// it was queued; a message nobody was followed for says so.
+pub fn delivery(recipients: &[agentdocker_core::delivery::Recipient]) {
+    if recipients.is_empty() {
+        println!(
+            "No recipients recorded: only your own messages are followed, and only from this version on."
+        );
+        return;
+    }
+    let rows: Vec<Vec<String>> = recipients
+        .iter()
+        .map(|r| {
+            vec![
+                r.name.clone().unwrap_or_else(|| r.agent.to_string()),
+                r.state.label().to_owned(),
+                ago(r.queued_at),
+                r.taken_at.map(ago).unwrap_or_else(|| "-".to_owned()),
+            ]
+        })
+        .collect();
+    table(&["AGENT", "WHERE IT STANDS", "QUEUED", "TAKEN"], &rows);
 }
 
 /// The table of a usage report and, under it, what the totals cover:

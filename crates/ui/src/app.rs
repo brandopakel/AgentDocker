@@ -1569,7 +1569,9 @@ impl App {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
-            EventKind::InboxAcknowledged { .. } => self.send(Cmd::Activity),
+            EventKind::InboxAcknowledged { .. } | EventKind::MessagesCaughtUp { .. } => {
+                self.send(Cmd::Activity)
+            }
             EventKind::AgentActivityReported { .. } => {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
