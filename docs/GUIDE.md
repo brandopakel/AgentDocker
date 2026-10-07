@@ -309,6 +309,7 @@ Inspection refuses unsupported state and stops without partial totals if it
 exceeds 128 accounting btrees, 131,072 pages or ten seconds between page steps.
 Operating-system I/O itself has no hard timing guarantee. Use this on demand;
 the normal Usage screen and report do not scan database pages automatically.
+Missing state and refused scans produce an error with no partial JSON report.
 
 ### Terminal and settings
 
