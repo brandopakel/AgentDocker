@@ -1179,7 +1179,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 31 | ✅ notification routing: a click opens the message — question, inbox row or archived conversation — with the routing action in the notification itself, a running app receiving it directly and a cold start carrying it; an archived message is scrolled to, paging back a bounded number of pages | 5 | 14, 30 |
 | 32 | ✅ session reconnect: a provider session that comes back as a new process is folded into its ended record by `session_id` under the transfer fence (`session_resumed`); eligible observations, open channel membership and typed task references are preserved by #179; conflicting state, live holders and initialized input still refuse; live duplicates of one named session in one process are folded the same way by the liveness sweep (`session_duplicates_folded`), and a registration matches two named halves of a session without comparing their directories | 5 | 27 |
 | 33 | ✅ project pause: the person tells a project's agents to hold with a reason (`pause`, `resume_project`, `pauses`), the daemon refuses their new leases while it holds, and the reason reaches every live agent as a reserved `pause` message; schema 23 | 5 | 13 |
-| 34 | ⏳ token usage: reader merged (#165/#167); initial collector, store, protocol, CLI/MCP and responsive Usage screen merged in #194 with bounded real-binary acceptance; installed activation, persistent discovery, long-term resources, standalone scans and overhead remain | 5 | — |
+| 34 | ⏳ token usage: reader merged (#165/#167); initial collector, store, protocol, CLI/MCP and responsive Usage screen merged in #194 with bounded real-binary acceptance; collection, persistent discovery, bounded tracking and standalone scans are implemented; installed/current-platform endurance and overhead remain | 5 | — |
 | 35 | ✅ a board of work: cards with acceptance text pulled once over a `task:<id>` lease, moved by their holder or the person, paged; PR #176 merged and installed; actual card creation verified | 5 | 13 |
 | 36 | ✅ persisted message drafts: text-only, bounded, restored as unsent; PR #178 merged and installed; actual conversation draft close/reopen verified; question-answer drafts retain original IDs with no restored approval/send state (#185: full gate and native reopen passed at `13dd72c`; merged through #191); Board-card text now joins the shared private snapshot under its original project, with version-1/2 migration to version 3, shared storage limits and no restored filing state (full gate and 507 native steps/30 checks passed at `720fa72`; merged through #191); other forms remain window-local | 5 | 30 |
 | 37 | ✅ command-line exit statuses: the `agentdocker` command ends with a status by the class of the daemon's answer (2 invalid, 3 not found/ambiguous, 4 held, 5 refused/paused, 6 unavailable, 1 unexpected); PR #181 merged | 5 | — |
@@ -1268,10 +1268,21 @@ with object/page/time bounds and returns no partial totals on refusal. Database
 page/free-page totals cover all state; file/WAL/shared-memory lengths are separate
 before/after observations. It starts no daemon, performs no migrations or
 checkpoint/vacuum, and changes no schema, events, retention or admission policy.
-Normal usage queries do not perform this scan. Sustained resource acceptance,
-standalone transcript scans and injected-byte/token overhead instrumentation remain open. The collector's ephemeral prefix session handles large/growing
-files in bounded passes; the standalone reader retains its 16 MiB validation
-limit. Overhead is returned as unknown until instrumented.
+Normal usage queries do not perform this scan.
+
+The explicit `usage-scan` command now discovers selected local files/directories,
+reads fixed snapshots with the collector's bounded Session reader, globally sorts
+normalized metadata and uses the same Store dedupe/baseline logic in temporary
+private state. It does not open daemon state, contact providers or change daemon
+cursors. Its bounded metadata buffer and whole-command limits refuse resource
+exhaustion; parser gaps/partial tails remain visible. Input changes and temporary
+cleanup failures refuse the report. Complete coverage means only the selected
+snapshots. Standalone output has no retained-history promise or agent/project
+attribution; source paths and accounting metadata are included, transcript text
+is not. See [the command limits](GUIDE.md#standalone-transcript-scans).
+Sustained resource acceptance and overhead instrumentation remain open. The collector's ephemeral prefix session handles large/growing
+files in bounded passes; direct stateless reader calls retain their 16 MiB validation
+limit, while `usage-scan` uses the Session reader across larger snapshots. Overhead is returned as unknown until instrumented.
 
 **Token usage by agent, model and provider** (requested September 15;
 the bounded log reader is merged in #165/#167; initial collector/protocol/CLI/MCP/UI are merged in #194 with bounded acceptance; the remaining engineering and activation above stay open). The initial adapters read local Codex rollouts
@@ -1481,8 +1492,8 @@ finish, and retries the full old-prefix proof on the next pass or after restart.
 Growth alone proves neither corruption nor append-only content; a rewrite that
 also grows must still fail the new prefix proof. Repeated growth stays pending,
 never caught up or a permanent source gap solely because its snapshot advanced.
-No discovery schema or transcript storage changes are required. A version-3, version-4 or version-5 parser cursor first verifies its old
-prefix, then replays from zero using version 6 without inventing a source-change
+No discovery schema or transcript storage changes are required. A version-3, version-4, version-5 or version-6 parser cursor first verifies its old
+prefix, then replays from zero using version 7 without inventing a source-change
 gap. Unknown cursor versions and failed prefix verification still record gaps. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
 Collector parsing batches stop after 128 complete source records, including
@@ -1539,25 +1550,25 @@ installed/provider-billing acceptance and sustained resource trials remain open.
 Only accounting metadata was retained; temporary raw transcript copies and the
 private trial databases were removed.
 
-Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278 and
-2.1.280 transcripts, Codex 0.155.1 rollouts and observed Codex 0.160.0
+Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278,
+2.1.280 and 2.1.287 transcripts, Codex 0.155.1 rollouts and observed Codex 0.160.0
 loopback rollouts extend that explicit version coverage. Codex 0.160.0 retains
 cumulative counters, optional cache/reasoning fields and stable replay identities;
 its sample format is named separately. Top-level Claude counters remain authoritative: nested iteration/cache
 details are not added again, zero counters stay zero and absent reasoning remains
-unknown. Codex still reports cumulative snapshots. Unobserved patch versions are
-not assumed compatible. Accounting-only observations also cover historical Claude
+unknown. Codex still reports cumulative snapshots. Other versions follow the
+compatibility rule below. Accounting-only observations also cover historical Claude
 2.1.246, 2.1.247, 2.1.248, 2.1.251, 2.1.259, 2.1.260, 2.1.261, 2.1.263 and
 2.1.267. These are explicit supported patches, not an accepted version range.
 Their response semantics and sample format identity match the existing family;
-nested cache details do not contribute a second time. Parser cursor v6 verifies
-and replays v3/v4/v5 scans with the same stable
+nested cache details do not contribute a second time. Parser cursor v7 verifies
+and replays v3/v4/v5/v6 scans with the same stable
 source identities, allowing newly supported records to be collected without
 recounting earlier accepted samples. Existing historical gaps remain visible;
 this change does not claim their reconciliation or provider-billing accuracy.
 
-A release after the newest checked one, of the same major version, is counted as
-it reports: Claude Code after 2.1.280 and Codex after 0.160.0 (read with 0.160.0's
+A release after the established compatibility floor, of the same major version,
+is counted as it reports: Claude Code after 2.1.280 and Codex after 0.160.0 (read with 0.160.0's
 semantics and format). Both ship every few days, and an exact list left a person
 on the current release with no usage at all — this Mac's Claude Code 2.1.292
 sessions recorded 30,778 gaps and no samples. Each counter is still checked field
@@ -1566,6 +1577,12 @@ and `codex-rollout-after-0.160.0-unchecked-v1` so a report says unchecked releas
 may be in it. An older unchecked release, another major version or a pre-release
 stays refused. Parser cursor v7 replays v3–v6 scans, which skipped those releases;
 replay deduplicates sources already accepted.
+
+Accounting forward compatibility retains the established floors (Codex 0.160.0
+and Claude Code 2.1.280) when another release gains checked fixtures. Adding
+Claude Code 2.1.287 fixtures therefore keeps 2.1.281–2.1.286 readable. Cursor
+version 7 and verified replay of versions 3–6 are unchanged by this integration;
+existing coverage gaps and conflicting response counters are not erased.
 
 Collection configuration is separate from scan progress: enabling collection or
 changing roots can leave a scan waiting to start, without meaning collection is

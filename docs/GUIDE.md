@@ -318,6 +318,40 @@ Operating-system I/O itself has no hard timing guarantee. Use this on demand;
 the normal Usage screen and report do not scan database pages automatically.
 Missing state and refused scans produce an error with no partial JSON report.
 
+### Standalone transcript scans
+
+`agentdocker usage-scan --codex /path/to/rollouts --claude /path/to/transcript.jsonl`
+prints token accounting for explicitly selected local files or directories.
+Repeat either provider flag for up to sixteen inputs. Directories discover JSONL
+files using the same bounded walker as collection; missing/unreadable inputs or
+incomplete enumeration refuse the report. No provider, authentication or daemon
+connection is used. Daemon configuration, accepted records and cursors are unchanged.
+
+Records from the selected snapshots are ordered globally before the shared
+accounting logic deduplicates copied logs, handles cumulative baselines and marks
+conflicting records. Unknown counters stay unknown. `--by model|provider|hour`
+selects grouping; `--since` accepts a duration or RFC3339 timestamp and `--until`
+accepts RFC3339. Without a lower bound, the scan includes the earliest selected
+sample. The upper bound defaults to the captured scan start. Ranges use UTC-hour
+rounding, shown explicitly in the JSON report.
+
+`scan_complete` describes the selected file snapshots. Unsupported records,
+conflicts and partial tails leave visible gaps/partial coverage. Nonempty inputs
+without recognized accounting records add a gap; an empty or entirely unrecognized
+selection reports unknown counts. Supported format families are listed. Complete coverage
+applies only to those snapshots, not all account activity or the remaining current
+hour. The output contains paths and accounting metadata, never prompt/response
+text. Injected-byte overhead is still unknown.
+
+Each parser pass reads at most 4 MiB/4,096 records; prefix validation is separate.
+Records above the 1 MiB parser limit produce gaps. The whole operation limits captured input to 8 GiB,
+100,000 parsed samples, a 64 MiB metadata allowance, 1,024 reader gaps and five
+minutes between operations; discovery retains its 10,000-file limit. These are
+operation limits, not a hard RSS or OS-I/O deadline. Changing files or exhausted
+limits refuse without a partial JSON report. Temporary private accounting state
+is removed before success; cleanup failure is an error. This command has no saved
+progress and does not reconcile gaps in the daemon's retained history.
+
 ### Terminal and settings
 
 **Project terminal** in the project header opens a shell in that project’s folder.
