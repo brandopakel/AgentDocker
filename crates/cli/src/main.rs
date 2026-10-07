@@ -612,6 +612,8 @@ enum Command {
     },
     /// Tokens the providers reported, with what the totals cover.
     Usage(UsageArgs),
+    /// Scan selected local transcripts without starting a daemon or changing its accounting.
+    UsageScan(UsageScanArgs),
     /// What each agent is doing: working, idle, or blocked on a named
     /// resource held by a named agent.
     Activity {
@@ -1216,6 +1218,25 @@ struct HandoffArgs {
 /// `kind:target` from the command line, checked for its kind's shape.
 fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
     agentdocker_core::Link::parse(text).map_err(str::to_owned)
+}
+
+#[derive(Args)]
+struct UsageScanArgs {
+    /// Codex JSONL file or directory; repeat for additional selected inputs.
+    #[arg(long, required_unless_present = "claude")]
+    codex: Vec<PathBuf>,
+    /// Claude JSONL file or directory; repeat for additional selected inputs.
+    #[arg(long, required_unless_present = "codex")]
+    claude: Vec<PathBuf>,
+    /// From an RFC3339 timestamp or duration; defaults to the earliest selected sample.
+    #[arg(long)]
+    since: Option<String>,
+    /// Until an RFC3339 timestamp; defaults to the captured scan start time.
+    #[arg(long)]
+    until: Option<chrono::DateTime<chrono::Utc>>,
+    /// Group the JSON report by model, provider or UTC hour.
+    #[arg(long, default_value = "model", value_parser = ["model", "provider", "hour"])]
+    by: String,
 }
 
 #[derive(Args)]
@@ -2758,6 +2779,36 @@ async fn run() -> Result<()> {
             if let Response::Activity { activity } = client.call(&request).await? {
                 print_activity(&client, &activity).await;
             }
+        }
+        Command::UsageScan(args) => {
+            use agentdocker_core::usage::report::{Group, Query};
+            use agentdocker_host::usage::{discovery::Root, reader::Runtime};
+            let roots = args
+                .codex
+                .into_iter()
+                .map(|path| Root {
+                    runtime: Runtime::Codex,
+                    path,
+                })
+                .chain(args.claude.into_iter().map(|path| Root {
+                    runtime: Runtime::Claude,
+                    path,
+                }))
+                .collect();
+            let by = match args.by.as_str() {
+                "provider" => Group::Provider,
+                "hour" => Group::Hour,
+                _ => Group::Model,
+            };
+            print_json(&agentd::usage_scan::scan(
+                roots,
+                Query {
+                    by,
+                    since: args.since,
+                    until: args.until,
+                    ..Query::default()
+                },
+            )?)?;
         }
         Command::Usage(args) => {
             use agentdocker_core::usage::report::Group;

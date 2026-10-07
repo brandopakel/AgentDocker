@@ -1153,7 +1153,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 31 | ✅ notification routing: a click opens the message — question, inbox row or archived conversation — with the routing action in the notification itself, a running app receiving it directly and a cold start carrying it; an archived message is scrolled to, paging back a bounded number of pages | 5 | 14, 30 |
 | 32 | ✅ session reconnect: a provider session that comes back as a new process is folded into its ended record by `session_id` under the transfer fence (`session_resumed`); eligible observations, open channel membership and typed task references are preserved by #179; conflicting state, live holders and initialized input still refuse; live duplicates of one named session in one process are folded the same way by the liveness sweep (`session_duplicates_folded`), and a registration matches two named halves of a session without comparing their directories | 5 | 27 |
 | 33 | ✅ project pause: the person tells a project's agents to hold with a reason (`pause`, `resume_project`, `pauses`), the daemon refuses their new leases while it holds, and the reason reaches every live agent as a reserved `pause` message; schema 23 | 5 | 13 |
-| 34 | ⏳ token usage: reader merged (#165/#167); initial collector, store, protocol, CLI/MCP and responsive Usage screen merged in #194 with bounded real-binary acceptance; installed activation, persistent discovery, long-term resources, standalone scans and overhead remain | 5 | — |
+| 34 | ⏳ token usage: reader merged (#165/#167); initial collector, store, protocol, CLI/MCP and responsive Usage screen merged in #194 with bounded real-binary acceptance; collection, persistent discovery, bounded tracking and standalone scans are implemented; installed/current-platform endurance and overhead remain | 5 | — |
 | 35 | ✅ a board of work: cards with acceptance text pulled once over a `task:<id>` lease, moved by their holder or the person, paged; PR #176 merged and installed; actual card creation verified | 5 | 13 |
 | 36 | ✅ persisted message drafts: text-only, bounded, restored as unsent; PR #178 merged and installed; actual conversation draft close/reopen verified; question-answer drafts retain original IDs with no restored approval/send state (#185: full gate and native reopen passed at `13dd72c`; merged through #191); Board-card text now joins the shared private snapshot under its original project, with version-1/2 migration to version 3, shared storage limits and no restored filing state (full gate and 507 native steps/30 checks passed at `720fa72`; merged through #191); other forms remain window-local | 5 | 30 |
 | 37 | ✅ command-line exit statuses: the `agentdocker` command ends with a status by the class of the daemon's answer (2 invalid, 3 not found/ambiguous, 4 held, 5 refused/paused, 6 unavailable, 1 unexpected); PR #181 merged | 5 | — |
@@ -1234,10 +1234,19 @@ work. Existing stores already above budget remain intact and may shrink, but
 cannot grow through accounting admission. Increasing usable storage beyond the
 fixed budget or safely compacting long-lived dedupe evidence is not implemented.
 Older daemons retain their own admission policy; the new metadata does not change
-schema-23 accounting meanings. Sustained resource acceptance, standalone scans
-and overhead instrumentation remain open. The collector's ephemeral prefix session handles large/growing
-files in bounded passes; the standalone reader retains its 16 MiB validation
-limit. Overhead is returned as unknown until instrumented.
+schema-23 accounting meanings. The explicit `usage-scan` command now discovers selected local files/directories,
+reads fixed snapshots with the collector's bounded Session reader, globally sorts
+normalized metadata and uses the same Store dedupe/baseline logic in temporary
+private state. It does not open daemon state, contact providers or change daemon
+cursors. Its bounded metadata buffer and whole-command limits refuse resource
+exhaustion; parser gaps/partial tails remain visible. Input changes and temporary
+cleanup failures refuse the report. Complete coverage means only the selected
+snapshots. Standalone output has no retained-history promise or agent/project
+attribution; source paths and accounting metadata are included, transcript text
+is not. See [the command limits](GUIDE.md#standalone-transcript-scans).
+Sustained resource acceptance and overhead instrumentation remain open. The collector's ephemeral prefix session handles large/growing
+files in bounded passes; direct stateless reader calls retain their 16 MiB validation
+limit, while `usage-scan` uses the Session reader across larger snapshots. Overhead is returned as unknown until instrumented.
 
 **Token usage by agent, model and provider** (requested September 15;
 the bounded log reader is merged in #165/#167; initial collector/protocol/CLI/MCP/UI are merged in #194 with bounded acceptance; the remaining engineering and activation above stay open). The initial adapters read local Codex rollouts
