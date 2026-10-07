@@ -17,6 +17,12 @@ ambiguous or stale identities are refused without helper registration. This
 candidate changes adapter identity selection, not wire request or event formats;
 native acceptance remains required.
 
+Host multiplexer discovery on macOS reads its own environment directly, preserving
+spaces and value boundaries. Another process's flattened `ps` command text is not
+environment evidence; peer recognition uses its reported registration environment
+or the weaker process-ancestry fallback. Linux retains NUL-separated `/proc`
+environment discovery.
+
 ## Goals
 
 1. **Universal.** Any agent — any model, any vendor, any runtime — can participate with nothing more than the ability to write JSON to a socket. No SDK is required, though one may exist for convenience.
@@ -885,6 +891,11 @@ paths with both literal and physical alias dependencies. Unknown definitions,
 missing fragments, overrides, unknown environment settings and unavailable or
 conflicting cached data preserve whole stores. Exact Unix references and legacy
 portable registrars selecting a separate daemon still need native acceptance.
+Systemd may cache a negative lookup after a status query for an absent unit.
+Maintenance ignores it only when typed cached state confirms not-found/inactive,
+no definition or overrides, no command, no job or process and no resource settings.
+A missing file on a real cached registration still preserves the installation.
+
 
 Windows maintenance recognizes only exact rendered actions around a content-verified same-store controller and daemon or receipt-checked stable bootstrap. It retains every explicitly referenced immutable version, including connector tunnel/project/feed paths, state/log paths and Task Scheduler working directories. Literal and resolved aliases both count. Unknown programs/options, relative or parent-traversing paths and unreadable inventory conservatively retain the store; no arbitrary script is executed to discover paths. Source-specific native selective-deletion acceptance is recorded in the verification index; final-package and physical acceptance remain open.
 Windows desktop activation under implementation uses a private JSON snapshot in
@@ -1993,8 +2004,3 @@ it. Never restore an older delivery ledger over already acknowledged input.
 The
 response is stored before writing and acknowledged only after provider resolution,
 using the same exact human-answer and no-replay contract as other reviews.
-
-Systemd may cache a negative lookup after a status query for an absent unit.
-Maintenance ignores it only when typed cached state confirms not-found/inactive,
-no definition or overrides, no command, no job or process and no resource settings.
-A missing file on a real cached registration still preserves the installation.
