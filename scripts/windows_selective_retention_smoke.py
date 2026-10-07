@@ -3,7 +3,6 @@
 Runs only inside windows_install_smoke's random private installation. No
 provider, account, logon or production task is involved.
 """
-import base64
 from contextlib import ExitStack, contextmanager
 import hashlib
 import json
@@ -14,8 +13,51 @@ import time
 import uuid
 
 
+def cleanup_owned_processes(stop, discover, identities, detail, save):
+    """Attempt every owned retirement, report failures, then re-raise task errors."""
+    import psutil
+
+    first_error = None
+    # Attempt the exact task stop before fallback cleanup can provoke its
+    # supervisor. A failed scheduler query must not skip known identities.
+    for stage, action in [('discover before stop', discover), ('task stop', stop),
+                          ('discover after stop', discover)]:
+        try:
+            action()
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
+            detail['cleanup_errors'].append(f'{stage} failed: {type(error).__name__}: {error}')
+    for process in identities.values():
+        try:
+            process.wait(timeout=5)
+        except psutil.NoSuchProcess:
+            pass
+        except psutil.TimeoutExpired:
+            detail['cleanup_errors'].append(f'owned process {process.pid} forced retirement')
+            try:
+                process.kill()
+                process.wait(timeout=10)
+            except psutil.NoSuchProcess:
+                pass
+            except (psutil.Error, OSError) as error:
+                detail['cleanup_errors'].append(f'owned process {process.pid} kill/wait failed: {error}')
+        except (psutil.Error, OSError) as error:
+            detail['cleanup_errors'].append(f'owned process {process.pid} wait failed: {error}')
+    if detail['cleanup_errors']:
+        detail['result'] = 'failed'
+    try:
+        save()
+    except BaseException:
+        if first_error is not None:
+            raise first_error
+        raise
+    if first_error is not None:
+        raise first_error
+
+
 def exercise(scratch, store, second_app, retained, current, desktop, run,
-             stopped_task, step, report, save):
+             stopped_task, daemon_action, step, report, save):
     import psutil
     import msvcrt
     from windows_smoke_pipe import WindowsSmokePipe
@@ -69,12 +111,7 @@ def exercise(scratch, store, second_app, retained, current, desktop, run,
     home = scratch / ('retained service ' + uuid.uuid4().hex)
     endpoint = '\\\\.\\pipe\\agentdocker-retained-' + uuid.uuid4().hex
     assert not home.exists()
-    def quoted(value):
-        return "'" + ''.join(c * 2 if c in "'‘’‚‛" else c for c in str(value)) + "'"
-    script = (f'& {quoted(controller)} daemon supervise --home {quoted(home)} '
-              f'--agentd {quoted(daemon)} --endpoint {quoted(endpoint)}; exit $LASTEXITCODE')
-    encoded = base64.b64encode(script.encode('utf-16le')).decode('ascii')
-    arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ' + encoded
+    arguments = daemon_action(daemon, home, endpoint)
     shell = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
     identities = {}
     detail.update(retained=retained, unrelated=unrelated, home=str(home), endpoint=endpoint,
@@ -159,21 +196,7 @@ def exercise(scratch, store, second_app, retained, current, desktop, run,
                      all(not p.is_running() for p in identities.values()))
                 detail['result'] = 'passed'
             finally:
-                owned_processes()
-                # Even a failed readiness check must retire its exact task
-                # before fallback process cleanup can provoke a supervisor.
-                task['stop']()
-                owned_processes()
-                for process in identities.values():
-                    try:
-                        process.wait(timeout=5)
-                    except psutil.TimeoutExpired:
-                        detail['cleanup_errors'].append(f'owned process {process.pid} forced retirement')
-                        process.kill()
-                        process.wait(timeout=10)
-                if detail['cleanup_errors']:
-                    detail['result'] = 'failed'
-                save()
+                cleanup_owned_processes(task['stop'], owned_processes, identities, detail, save)
         if detail['result'] != 'passed':
             raise AssertionError('selective retention cleanup did not pass')
     except BaseException as error:
