@@ -236,6 +236,14 @@ fn cached_matches(
         .as_str()
         .context("invalid cached working directory")?;
     if !cwd.is_empty() {
+        // systemd's property_get_working_directory serializes missing-ok as
+        // a leading '!'. It still names a dependency, even when absent today.
+        // Home-relative '~' and unknown forms remain conservative.
+        let cwd = cwd.strip_prefix('!').unwrap_or(cwd);
+        ensure!(
+            Path::new(cwd).is_absolute(),
+            "ambiguous cached working directory"
+        );
         paths.push(cwd.into());
     }
     Ok(paths)
@@ -450,6 +458,57 @@ mod tests {
         assert!(
             cached_fragment(&unit, &service).is_err(),
             "real cached service with missing fragment remains conservative"
+        );
+    }
+
+    #[test]
+    fn cached_optional_working_directory_retains_its_version() {
+        // systemd's D-Bus getter prefixes a missing-ok directory with '!'.
+        // The real Oracle user manager supplies this for its default home.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap().join("store");
+        let id = "a".repeat(64);
+        let cwd = root.join("versions").join(&id).join("future/work");
+        let (definition, unit, mut service) = fixture();
+        for prefix in ["", "!"] {
+            service["WorkingDirectory"]["data"] = json!(format!("{prefix}{}", cwd.display()));
+            let paths = cached_matches(&unit, &service, &definition).unwrap();
+            let mut refs = References::default();
+            for path in &paths {
+                refs.include(&root, path).unwrap();
+            }
+            assert_eq!(paths, [cwd.clone()]);
+            assert!(refs.retains(&id));
+            assert!(!refs.retains(&"b".repeat(64)));
+            assert!(
+                !cwd.exists(),
+                "inventory never creates the optional directory"
+            );
+        }
+        for invalid in [
+            "!",
+            "!!/work",
+            "!relative",
+            "relative",
+            "~",
+            "!~",
+            "!/old/../work",
+        ] {
+            service["WorkingDirectory"]["data"] = json!(invalid);
+            let result = cached_matches(&unit, &service, &definition).and_then(|paths| {
+                let mut refs = References::default();
+                for path in paths {
+                    refs.include(&root, &path)?;
+                }
+                Ok(refs)
+            });
+            assert!(result.is_err(), "ambiguous cwd must retain all: {invalid}");
+        }
+        service["WorkingDirectory"]["data"] = json!("");
+        assert!(
+            cached_matches(&unit, &service, &definition)
+                .unwrap()
+                .is_empty()
         );
     }
 

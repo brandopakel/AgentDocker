@@ -864,6 +864,9 @@ registrations: launchd GUI/user domain services, and systemd's typed loaded-unit
 and unit-file inventories. A removed definition does not erase a cached service
 reference. Unavailable or unrecognized manager output preserves the installation;
 queries are bounded and never include service arguments/environment in errors.
+Systemd cached working-directory references decode its D-Bus missing-ok `!`
+flag and retain the resulting absolute dependency even if it does not yet exist.
+Home-relative `~`, malformed flags and other ambiguous paths preserve all builds.
 Windows task inspection recognizes only the exact encoded daemon and connector
 scripts emitted by the shared registration renderers, using literal extraction
 and byte-for-byte reconstruction without executing task content. It verifies
