@@ -661,6 +661,9 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- A session that opens within an hour of your message to everyone in a project
+  still gets it, as its first input. Only your own messages count, and only
+  once.
 - **Reconnect here** in a Claude Code session's Details, and `agentdocker
   reconnect <session>`: once the session has exited in its terminal, the daemon
   brings it back under its own record with its conversation (`--resume`) and
