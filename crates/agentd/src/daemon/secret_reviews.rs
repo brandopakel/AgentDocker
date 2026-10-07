@@ -619,4 +619,61 @@ mod tests {
             assert!(lock(&daemon.state).secret_reviews.is_empty());
         }
     }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn secret_notifications_do_not_break_the_checked_question_event_stream() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (_dir, daemon, agent, human, owner) = fixture();
+        let listener = crate::server::bind(&daemon).await.unwrap();
+        let serving = tokio::spawn(crate::server::serve(daemon.clone(), listener));
+        let stream = agentdocker_host::ipc::Stream::connect(&daemon.socket)
+            .await
+            .unwrap();
+        let mut client = BufReader::new(stream);
+        client
+            .get_mut()
+            .write_all(b"{\"op\":\"resume_events\",\"after\":null}\n")
+            .await
+            .unwrap();
+        async fn next(client: &mut BufReader<agentdocker_host::ipc::Stream>) -> Response {
+            let mut text = String::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.read_line(&mut text),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            serde_json::from_str(&text).unwrap()
+        }
+        let Response::EventsReadyAt { cursor } = next(&mut client).await else {
+            panic!("no checked cursor")
+        };
+        assert!(matches!(
+            next(&mut client).await,
+            Response::EventsCaughtUp { .. }
+        ));
+        let _review = open(&daemon, &agent, &human, &owner).await;
+        assert!(matches!(
+            daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: "after-secret-notification".into(),
+                        ..Default::default()
+                    },
+                    pid: None,
+                    session: None
+                })
+                .await,
+            Response::Agent { .. }
+        ));
+        let response = next(&mut client).await;
+        drop(client);
+        serving.abort();
+        let _ = serving.await;
+        assert!(
+            matches!(response,Response::EventAt { cursor:next,.. } if next.seq==cursor.seq+1),
+            "a volatile notification must not masquerade as missing durable history"
+        );
+    }
 }

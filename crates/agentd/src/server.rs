@@ -282,7 +282,8 @@ async fn resume_events(
                     // stream carries only the retained coordination log.
                     if event.seq == 0 && matches!(event.kind,
                         agentdocker_core::EventKind::FileChanged { .. }
-                        | agentdocker_core::EventKind::AgentStale { .. }) {
+                        | agentdocker_core::EventKind::AgentStale { .. }
+                        | agentdocker_core::EventKind::SecretReviewChanged { .. }) {
                         continue;
                     }
                     // The subscription and replay snapshot were taken under

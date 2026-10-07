@@ -1,6 +1,7 @@
 //! Temporary review fields deliberately bypass ordinary message/draft controls.
 use super::*;
 use agentdocker_core::secret::{PROVIDER_NOTICE, SecretText};
+use iced::widget::column;
 
 impl App {
     pub(super) fn secret_review_panel(&self, c: Colors) -> Element<'_, Message> {
