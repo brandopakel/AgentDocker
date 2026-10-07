@@ -531,7 +531,17 @@ impl App {
             .iter()
             .filter(|q| !q.expired(now) && self.agent_on_view(&q.from))
         {
-            let name = self.name_of(&question.from);
+            // Seen across projects, a row says whose project it is: the
+            // same tool names in several repositories are otherwise one
+            // list of strangers.
+            let name = match self
+                .all_projects()
+                .then(|| self.project_name_of(&question.from))
+                .flatten()
+            {
+                Some(project) => format!("{project} · {}", self.name_of(&question.from)),
+                None => self.name_of(&question.from),
+            };
             // An answer is kept for an ended session, but nobody is
             // reading it now; say so before the person writes.
             let live = self.agent_live(&question.from);
@@ -559,65 +569,10 @@ impl App {
                 ),
             ));
         }
-        for agent in self
-            .agents
-            .iter()
-            .filter(|a| self.delivery_needs_you(a) && self.has_project(a.project.as_ref()))
-        {
-            let name = self.display_name(agent);
-            let (joiner, what, control, label) =
-                if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
-                    (
-                        ": ",
-                        state
-                            .issue
-                            .as_ref()
-                            .expect("blocked")
-                            .kind
-                            .label()
-                            .to_string(),
-                        "provider",
-                        "Details",
-                    )
-                } else if agent.status.is_live() {
-                    (
-                        ": ",
-                        "messages are not being delivered".to_owned(),
-                        "review",
-                        "Review",
-                    )
-                } else {
-                    (
-                        " ",
-                        format!("ended {}", undelivered_phrase(self.undelivered(agent))),
-                        "review",
-                        "Review",
-                    )
-                };
-            // Review opens the session with its delivery review unfolded;
-            // Details opens the session, whose header carries the block.
-            // The review reads the session log, so while disconnected
-            // Review opens the session and says it is the last known state.
-            let open = if control == "review" && self.connected.is_ok() {
-                Message::ReviewSession(agent.id.to_string())
-            } else {
-                Message::OpenSession(agent.id.to_string())
-            };
-            rows.push(waiting_row(
-                spoken(
-                    format!("needs-you-line-{}", agent.id),
-                    format!("{name}{joiner}{what}"),
-                    waiting_words(name, None, what, narrow, c),
-                ),
-                None,
-                compact(
-                    format!("needs-you-{control}-{}", agent.id),
-                    label,
-                    Some(open),
-                    Kind::Secondary,
-                ),
-            ));
-        }
+        // Only questions: a session that is blocked, paused or ended with
+        // messages queued says so on its own row and in its details. It is
+        // not a decision for the person, and listing it here buried the
+        // questions that are.
         // Nobody waiting: on a fresh install the card turns into the two
         // things that get a person started, then disappears for good.
         // Finished sessions are not in it; they are not asking for anything
@@ -2122,6 +2077,69 @@ mod tests {
         assert!(
             during.control("answer-written").is_some(),
             "the written answer stays"
+        );
+    }
+
+    /// Needs you holds questions only, each naming its project while every
+    /// project is on view; a session that ended with messages queued says
+    /// so on its own row, not here.
+    #[test]
+    fn needs_you_holds_questions_only_and_names_their_project() {
+        let (mut app, _commands) = app();
+        let agent = |name: &str, runtime: &str| {
+            let mut record = AgentRecord::new(
+                agentdocker_core::AgentSpec {
+                    name: name.into(),
+                    runtime: runtime.into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            record.project = Some(agentdocker_core::ProjectRef::directory("/work/keel"));
+            record
+        };
+        let mut asker = agent("asker", "claude-code");
+        asker.status = agentdocker_core::AgentStatus::Running;
+        let now = Utc::now();
+        let mut ended = agent("ended", "codex");
+        ended.status = agentdocker_core::AgentStatus::Exited { code: None };
+        ended.process_started_at = Some(now);
+        ended.input_delivery = Some(agentdocker_core::InputDelivery {
+            process_started_at: now,
+            paused: true,
+            pause_reason: Some(agentdocker_core::input::PAUSE_CONTROLLER_ENDED.into()),
+            reported_at: now,
+            received: None,
+            received_at: None,
+        });
+        let (asker_id, ended_id) = (asker.id.to_string(), ended.id.to_string());
+        app.agents.extend([asker, ended]);
+        app.activity_seen = true;
+        app.queued_inputs.insert(ended_id.clone(), 3);
+        assert!(app.delivery_needs_you(&app.agents[1]), "its row is flagged");
+        app.questions.push(Question {
+            id: agentdocker_core::MessageId::from("ask".to_owned()),
+            from: asker_id,
+            to: agentdocker_core::Destination::Agent("human".into()),
+            text: "Merge it?".into(),
+            presentation: None,
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(10),
+        });
+        let view = seen(
+            app.needs_you(Colors::new(true))
+                .expect("a waiting question"),
+        );
+        let line = view.control("needs-you-line-ask").expect("the question");
+        assert_eq!(line.1, "keel · asker asks: Merge it?");
+        assert!(
+            view.control(&format!("needs-you-line-{ended_id}"))
+                .is_none()
+        );
+        assert!(
+            view.control(&format!("needs-you-review-{ended_id}"))
+                .is_none()
         );
     }
 
