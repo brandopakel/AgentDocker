@@ -238,6 +238,7 @@ fn mutates(request: &Request) -> bool {
             | Request::Channels { .. }
             | Request::Conversations { .. }
             | Request::History { .. }
+            | Request::Delivery { .. }
             | Request::Thread { .. }
             | Request::SearchMessages { .. }
             | Request::Leases { .. }
@@ -2406,6 +2407,7 @@ impl Daemon {
                 before_seq,
                 limit,
             } => self.history(conversation, before_seq, limit),
+            Request::Delivery { message } => self.delivery(message),
             Request::Thread {
                 message,
                 after_seq,
@@ -6776,6 +6778,9 @@ impl State {
                 event
             })
             .collect();
+        // The person's own messages are followed per recipient, so they can
+        // see where each stands; agents' traffic is not.
+        let tracked = self.is_human_id(&AgentId::from(envelope.from.as_str()));
         let _ = self.persist("message", |store| {
             store.publish_message_with_channel(
                 &envelope,
@@ -6789,6 +6794,7 @@ impl State {
                 document
                     .as_ref()
                     .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
+                tracked,
             )
         });
         if let Some(error) = self.write_failure() {
@@ -15487,6 +15493,97 @@ deny = ["send:all"]
                 .collect::<Vec<_>>(),
             queued
         );
+    }
+
+    /// The person can see where their message stands with each agent it
+    /// was queued for: one that took it and answered says so, one nothing
+    /// woke waits for its next prompt, and a session caught up after the
+    /// message is followed too. An agent's own message is not followed.
+    #[tokio::test]
+    async fn the_person_sees_where_their_message_stands_with_each_agent() {
+        use agentdocker_core::delivery::State as Delivery;
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = dir.path().join("alpha");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::write(alpha.join("Agentfile.toml"), "").unwrap();
+        register_spec(
+            &daemon,
+            AgentSpec {
+                name: "person".to_owned(),
+                runtime: agentdocker_core::HUMAN_RUNTIME.to_owned(),
+                workdir: Some(alpha.clone()),
+                ..AgentSpec::default()
+            },
+        )
+        .await;
+        let quick = register_in(&daemon, "quick", &alpha).await;
+        register_in(&daemon, "slow", &alpha).await;
+        let everyone = format!("project:{}", alpha.display());
+        let Response::Sent { message, .. } = send(&daemon, "person", &everyone).await else {
+            panic!("the person speaks")
+        };
+        let stands = |response: Response| match response {
+            Response::Delivery { recipients, .. } => recipients
+                .into_iter()
+                .map(|r| (r.name.unwrap_or_default(), r.state))
+                .collect::<BTreeMap<_, _>>(),
+            other => panic!("unexpected {other:?}"),
+        };
+        let delivery = || {
+            daemon.handle(Request::Delivery {
+                message: message.clone(),
+            })
+        };
+        assert_eq!(
+            stands(delivery().await),
+            BTreeMap::from([
+                ("quick".to_owned(), Delivery::WaitingForPrompt),
+                ("slow".to_owned(), Delivery::WaitingForPrompt),
+            ])
+        );
+
+        assert!(matches!(
+            daemon
+                .handle(Request::AckInbox {
+                    agent: "quick".into(),
+                    messages: vec![message.clone()],
+                })
+                .await,
+            Response::Ok
+        ));
+        assert_eq!(stands(delivery().await)["quick"], Delivery::Delivered);
+        assert!(matches!(
+            daemon
+                .handle(Request::Send {
+                    from: quick.id.to_string(),
+                    to: "person".into(),
+                    kind: "chat".into(),
+                    payload: json!({"text": "on it"}),
+                    reply_to: Some(message.clone()),
+                    links: Vec::new(),
+                })
+                .await,
+            Response::Sent { .. }
+        ));
+        let after = stands(delivery().await);
+        assert_eq!(after["quick"], Delivery::Answered);
+        assert_eq!(after["slow"], Delivery::WaitingForPrompt);
+
+        // A session that opens now is caught up and followed as well.
+        register_in(&daemon, "late", &alpha).await;
+        assert_eq!(stands(delivery().await)["late"], Delivery::WaitingForPrompt);
+
+        let Response::Sent {
+            message: theirs, ..
+        } = send(&daemon, "slow", &everyone).await
+        else {
+            panic!("an agent speaks")
+        };
+        assert!(matches!(
+            daemon.handle(Request::Delivery { message: theirs }).await,
+            Response::Delivery { recipients, .. } if recipients.is_empty()
+        ));
     }
 
     /// A session that opens in a project within an hour of the person's
