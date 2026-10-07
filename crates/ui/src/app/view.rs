@@ -324,23 +324,6 @@ fn mark() -> iced::widget::image::Handle {
     })
     .clone()
 }
-/// AgentDocker's own cube on a quiet tile: what speaks for the app
-/// itself, such as the notices it sends.
-pub(super) fn brand_tile<'a>(size: f32, c: Colors) -> Element<'a, Message> {
-    let inner = (size * 0.66).round();
-    container(iced::widget::image(mark()).width(inner).height(inner))
-        .center(size)
-        .style(move |_| container::Style {
-            background: Some(if c.dark { c.raised } else { c.card }.into()),
-            border: iced::Border {
-                color: c.line,
-                width: 1.0,
-                radius: (size * 0.25).round().into(),
-            },
-            ..Default::default()
-        })
-        .into()
-}
 /// The mark and the two-tone wordmark, on the rail. Two plain texts
 /// rather than one rich text: the rich text widget resolves heavier faces
 /// differently and lands on a monospace fallback for the system sans.
@@ -1023,7 +1006,7 @@ impl App {
             header_words = header_words.push(note(
                 match self.screen {
                     Screen::Questions if self.has_conversations() => {
-                        "Channels, direct messages and what your agents were told"
+                        "Each project's chat and your direct messages"
                     }
                     Screen::Questions => "Questions and messages waiting for you",
                     Screen::Runtimes => "Connect and configure your agent tools",
@@ -1157,15 +1140,10 @@ impl App {
             // over Agents, two tabs read as selected at once.
             let more_selected = matches!(
                 self.screen,
-                Screen::Journal
-                    | Screen::Channels
-                    | Screen::Leases
-                    | Screen::Console
-                    | Screen::Usage
+                Screen::Journal | Screen::Leases | Screen::Console | Screen::Usage
             );
             let more_label = match self.screen {
                 Screen::Journal => "History",
-                Screen::Channels => "Channels",
                 Screen::Leases => "Files in use",
                 Screen::Console => "Commands",
                 Screen::Usage => "Usage",
@@ -1248,7 +1226,6 @@ impl App {
             Screen::Runtimes => self.connections(c),
             Screen::Terminal => self.terminal_view(c),
             Screen::Journal => self.journal_view(c),
-            Screen::Channels => self.channels_view(c),
             Screen::Leases => self.coordination(c),
             Screen::Console => self.console_view(c),
             Screen::Settings => self.settings_view(c),
@@ -1801,30 +1778,6 @@ impl App {
         menu(items, c)
     }
 
-    /// Channel messages still queued for this person, in the projects on view.
-    fn queued_channel_messages(&self) -> usize {
-        let rooms: BTreeSet<_> = self
-            .channels
-            .iter()
-            .filter(|ch| {
-                self.selected_root().is_none()
-                    || self
-                        .shell
-                        .catalog
-                        .selected()
-                        .is_some_and(|e| e.project.id() == ch.project)
-            })
-            .map(|ch| ch.id.clone())
-            .collect();
-        self.inbox
-            .iter()
-            .filter(|m| match &m.to {
-                agentdocker_core::Destination::Channel(ch) => rooms.contains(ch),
-                _ => false,
-            })
-            .count()
-    }
-
     /// Whether an agent id belongs to the projects on view.
     fn agent_on_view(&self, id: &str) -> bool {
         self.agents
@@ -1852,7 +1805,6 @@ impl App {
     /// The project's other places and its management, in the menu that
     /// floats from the More tab: the screen on view is marked.
     fn more_menu(&self, c: Colors) -> Element<'_, Message> {
-        let queued = self.queued_channel_messages();
         let place = |id: &'static str, label: String, screen: Screen| {
             let selected = self.screen == screen;
             custom(
@@ -1875,15 +1827,6 @@ impl App {
         };
         let mut items = column![
             place("project-tab-Journal", "History".to_owned(), Screen::Journal),
-            place(
-                "project-tab-Channels",
-                if queued > 0 {
-                    format!("Channels ({queued} waiting)")
-                } else {
-                    "Channels".to_owned()
-                },
-                Screen::Channels
-            ),
             place(
                 "project-tab-Leases",
                 "Files in use".to_owned(),
@@ -2169,6 +2112,33 @@ impl App {
                     .align_y(Center),
             );
         }
+        // What the sessions on view used over the last day, when collection
+        // is on: one quiet line, and the way to the Usage screen.
+        let used: Vec<_> = current
+            .iter()
+            .filter_map(|a| self.agent_tokens.get(a.id.as_str()))
+            .collect();
+        if filter == Filter::Current && !used.is_empty() {
+            let total = agentdocker_core::usage::report::Tokens {
+                sum: used.iter().map(|t| t.sum).fold(0, u64::saturating_add),
+                partial: used.iter().any(|t| t.partial),
+            };
+            let label = format!("{} tokens in the last 24h", total.label());
+            panel_col = panel_col.push(custom(
+                "sessions-tokens",
+                format!("{label}. Open Usage"),
+                row![
+                    text(label).size(12).color(c.muted),
+                    text("Usage ›").size(12).color(c.accent_ink)
+                ]
+                .spacing(8)
+                .align_y(Center),
+                Some(Message::Navigate(Screen::Usage)),
+                false,
+                Kind::Quiet,
+                [4, 6],
+            ));
+        }
         if let Some(strip) = self.needs_you(c) {
             panel_col = panel_col.push(strip);
         }
@@ -2432,7 +2402,21 @@ impl App {
                 branch.map(|b| format!("{b} · ")).unwrap_or_default(),
                 activity
             );
-            let spoken = format!("{name}\n{} · {}", agent.spec.runtime, meta);
+            // What its provider reported over the last day, when collection
+            // is on and it has any: a footnote, beside the branch.
+            let tokens = self
+                .agent_tokens
+                .get(&id)
+                .map(|t| format!("{} tokens in 24h", t.label()));
+            let spoken = format!(
+                "{name}\n{} · {}{}",
+                agent.spec.runtime,
+                meta,
+                tokens
+                    .as_ref()
+                    .map(|t| format!(" · {t}"))
+                    .unwrap_or_default()
+            );
             // A generated name already reads as the tool ("Claude Code ·
             // 0180d761"), so only a chosen name says the tool again.
             let mut facts = Vec::new();
@@ -2441,6 +2425,9 @@ impl App {
             }
             if let Some(branch) = branch {
                 facts.push(branch.to_owned());
+            }
+            if let Some(tokens) = tokens {
+                facts.push(tokens);
             }
             let mut words = column![
                 text(name.clone())
@@ -3376,388 +3363,6 @@ impl App {
         window
     }
 
-    fn channels_view(&self, c: Colors) -> Element<'_, Message> {
-        let selected = self.shell.catalog.selected().map(|e| e.project.id());
-        let (messages, _) = by_room(self.inbox.iter().chain(&self.sent_channels));
-        // With no project chosen (All projects) every channel is shown;
-        // "Reviews" from a conversation lands here from anywhere and must not
-        // find "No channels yet" about the one just open. Channels agents
-        // opened come first; the rooms AgentDocker opens when checkouts
-        // overlap sit folded behind Overlaps (n), as Messages folds them.
-        let on_view: Vec<_> = self
-            .channels
-            .iter()
-            .filter(|ch| {
-                selected
-                    .as_ref()
-                    .is_none_or(|project| &ch.project == project)
-            })
-            .collect();
-        let is_overlap = |ch: &&agentdocker_core::Channel| {
-            matches!(
-                ch.subject,
-                agentdocker_core::ChannelSubject::Contested { .. }
-            )
-        };
-        let overlaps = on_view.iter().filter(|ch| is_overlap(ch)).count();
-        let named: Vec<_> = on_view
-            .iter()
-            .filter(|ch| !is_overlap(ch))
-            .copied()
-            .collect();
-        let folded: Vec<_> = on_view
-            .iter()
-            .filter(|ch| is_overlap(ch))
-            .copied()
-            .collect();
-        let count = on_view.len();
-        if count == 0 {
-            return empty(
-                "No channels yet",
-                "Agents open channels here when they coordinate on a task.",
-                None,
-                c,
-            );
-        }
-        let mut list = column![
-            row![
-                eyebrow(format!("Channels · {count}"), c).width(Fill),
-                small(
-                    "Messages for you and sends from this window · partial history",
-                    c
-                )
-                .color(c.faint)
-            ]
-            .spacing(12)
-            .align_y(Center)
-        ]
-        .spacing(12);
-        // Open, the fold sits where the overlap rooms begin.
-        let fold_at = (overlaps > 0 && self.shell.overlaps_open).then_some(named.len());
-        let mut shown = named;
-        if self.shell.overlaps_open {
-            shown.extend(folded);
-        }
-        for (index, channel) in shown.into_iter().enumerate() {
-            if fold_at == Some(index) {
-                list = list.push(self.overlaps_toggle(overlaps, c));
-            }
-            let id = channel.id.to_string();
-            let body = self.channel_body(channel, messages.get(&id), c);
-            let card = container(column![
-                container(self.channel_header(channel, c)).padding([12, 16]),
-                rule(c),
-                container(body).padding([12, 16]).width(Fill),
-            ])
-            .width(Fill)
-            .style(move |_| c.card_style());
-            list = list.push(container(card).id(format!("notification-channel-{id}")));
-        }
-        // Folded, the overlap rooms are not in the loop: the fold that
-        // opens them follows the named channels.
-        if overlaps > 0 && !self.shell.overlaps_open {
-            list = list.push(self.overlaps_toggle(overlaps, c));
-        }
-        list.into()
-    }
-
-    /// A channel's header: what kind of room on a tile, its name with
-    /// whether it is open as a dot and a word, what it is for and who is
-    /// in it on one quiet line, and their faces at the right.
-    fn channel_header(
-        &self,
-        channel: &agentdocker_core::Channel,
-        c: Colors,
-    ) -> Element<'_, Message> {
-        let open = channel.is_open();
-        let (title_text, purpose) = channel_heading(channel);
-        let glyph = if channel.paths().is_empty() {
-            Icon::Hash
-        } else {
-            Icon::File
-        };
-        let mut about = purpose.map_or_else(Vec::new, |p| vec![p]);
-        about.push(self.members_line(&channel.members));
-        row![
-            icon_tile(
-                icon(glyph, if open { c.muted } else { c.faint }, 14.0),
-                28.0,
-                c
-            ),
-            column![
-                row![
-                    text(title_text)
-                        .size(14)
-                        .font(weight(iced::font::Weight::Semibold))
-                        .color(if open { c.text } else { c.muted }),
-                    if open {
-                        status_word("Open", c.green, c)
-                    } else {
-                        status_word("Closed", c.faint, c)
-                    },
-                ]
-                .spacing(10)
-                .align_y(Center),
-                small(about.join(" · "), c).wrapping(iced::widget::text::Wrapping::Word),
-            ]
-            .spacing(3)
-            .width(Fill),
-            self.facepile(&channel.members, c),
-        ]
-        .spacing(12)
-        .align_y(Center)
-        .into()
-    }
-
-    /// The first members' faces, overlapping, each ringed in the card's
-    /// colour, and how many more there are.
-    fn facepile<'a>(
-        &self,
-        members: &[agentdocker_core::AgentId],
-        c: Colors,
-    ) -> Element<'a, Message> {
-        const FACE: f32 = 24.0;
-        const STEP: f32 = 17.0;
-        const SHOWN: usize = 4;
-        let ring = move |fill: iced::Color| container::Style {
-            background: Some(fill.into()),
-            border: iced::Border {
-                color: c.card,
-                width: 2.0,
-                radius: 999.0.into(),
-            },
-            ..Default::default()
-        };
-        let rest = members.len().saturating_sub(SHOWN);
-        let discs = members.len().min(SHOWN) + usize::from(rest > 0);
-        let width = if discs == 0 {
-            0.0
-        } else {
-            FACE + STEP * (discs - 1) as f32
-        };
-        let mut pile = iced::widget::Stack::new().push(Space::new().width(width).height(FACE));
-        for (index, id) in members.iter().take(SHOWN).enumerate() {
-            let name = self.name_of(id.as_str());
-            // A member's disc carries its tool's logo where there is one,
-            // its initial on its own tint otherwise.
-            let face: Element<'a, Message> = match self
-                .runtime_of(id.as_str())
-                .and_then(super::logos::Logo::for_runtime)
-            {
-                Some(logo) => container(
-                    iced::widget::image(logo.handle(c.dark))
-                        .width(14)
-                        .height(14),
-                )
-                .center(FACE)
-                .style(move |_| ring(c.raised))
-                .into(),
-                None => {
-                    let (tint, ink) = super::style::identity(id.as_str(), c.dark);
-                    let initial: String = name
-                        .chars()
-                        .find(|ch| ch.is_alphanumeric())
-                        .map(|ch| ch.to_uppercase().collect())
-                        .unwrap_or_else(|| "·".to_owned());
-                    container(
-                        text(initial)
-                            .size(11)
-                            .font(weight(iced::font::Weight::Semibold))
-                            .color(ink),
-                    )
-                    .center(FACE)
-                    .style(move |_| ring(tint))
-                    .into()
-                }
-            };
-            pile = pile.push(container(face).padding(iced::Padding {
-                left: STEP * index as f32,
-                ..iced::Padding::ZERO
-            }));
-        }
-        if rest > 0 {
-            pile = pile.push(
-                container(
-                    container(
-                        text(format!("+{rest}"))
-                            .size(10)
-                            .font(weight(iced::font::Weight::Medium))
-                            .color(c.muted),
-                    )
-                    .center(FACE)
-                    .style(move |_| ring(c.raised)),
-                )
-                .padding(iced::Padding {
-                    left: STEP * SHOWN as f32,
-                    ..iced::Padding::ZERO
-                }),
-            );
-        }
-        pile.into()
-    }
-
-    /// Under a channel's header: its reviews and how it closed, what is
-    /// queued in it, and the way to write to it.
-    fn channel_body<'a>(
-        &'a self,
-        channel: &'a agentdocker_core::Channel,
-        queued: Option<&Vec<&'a agentdocker_core::Envelope>>,
-        c: Colors,
-    ) -> Element<'a, Message> {
-        let id = channel.id.to_string();
-        let open = channel.is_open();
-        let mut body = column![].spacing(12).width(Fill);
-        if !channel.reviews.is_empty() {
-            let mut reviews = column![].spacing(6);
-            for review in &channel.reviews {
-                let (word, tone) = match review.verdict {
-                    agentdocker_core::channel::Verdict::Approve => ("Approved", c.green),
-                    agentdocker_core::channel::Verdict::Changes => ("Changes asked for", c.amber),
-                    agentdocker_core::channel::Verdict::Comment => ("Comment", c.muted),
-                };
-                reviews = reviews.push(
-                    row![
-                        status_word(word, tone, c),
-                        text(format!(
-                            "{} on {}'s work: {}",
-                            review.by_name, review.of_name, review.note
-                        ))
-                        .size(13)
-                        .wrapping(iced::widget::text::Wrapping::Word)
-                        .width(Fill),
-                    ]
-                    .spacing(10)
-                    .align_y(Center),
-                );
-            }
-            body = body.push(reviews);
-        }
-        if let Some(resolution) = &channel.resolution {
-            body = body.push(note(resolution.clone(), c));
-        }
-        match queued {
-            Some(queued) if !queued.is_empty() => {
-                body = body.push(self.transcript(self.recent_window(queued, 20).into_iter(), c));
-            }
-            _ => body = body.push(note("No messages to show in this channel yet.", c)),
-        }
-        let writing = self.shell.channel_target.as_deref() == Some(id.as_str());
-        body = body.push(action(
-            format!("reply-channel-{id}"),
-            "Write to channel",
-            // A closed channel takes no messages: the control would do
-            // nothing, so it is not offered as if it would.
-            (self.connected.is_ok() && open).then_some(Message::ChannelTarget(id.clone())),
-            writing,
-        ));
-        if writing {
-            let draft = self
-                .shell
-                .channel_drafts
-                .get(&id)
-                .cloned()
-                .unwrap_or_default();
-            if let Some(error) = &draft.error {
-                body = body.push(text(error.clone()).size(13).color(c.amber));
-            }
-            if let Some(notice) = super::send_readiness::notice(
-                &draft,
-                super::shell::DeliveryTarget::Channel(id.clone()),
-                c,
-            ) {
-                body = body.push(notice);
-            }
-            let ready =
-                draft.sending.is_none() && self.connected.is_ok() && !draft.text.trim().is_empty();
-            body = body.push(
-                row![
-                    composer(
-                        "channel-message",
-                        id.clone(),
-                        "Message",
-                        &draft.text,
-                        Message::ChannelDraft,
-                        draft.sending.is_none(),
-                        ready.then_some(Message::SendChannel),
-                    ),
-                    primary(
-                        "send-channel",
-                        if draft.sending.is_some() {
-                            "Sending…"
-                        } else {
-                            "Send message"
-                        },
-                        ready.then_some(Message::SendChannel),
-                    )
-                ]
-                .spacing(8)
-                .align_y(Center),
-            );
-        }
-        body.into()
-    }
-
-    /// The fold for AgentDocker's overlap rooms on the Channels screen.
-    fn overlaps_toggle(&self, count: usize, c: Colors) -> Element<'_, Message> {
-        let open = self.shell.overlaps_open;
-        row![
-            custom(
-                "channels-overlaps",
-                format!("{} Overlaps ({count})", if open { "▾" } else { "▸" }),
-                row![
-                    icon(
-                        if open {
-                            Icon::ChevronDown
-                        } else {
-                            Icon::ChevronRight
-                        },
-                        c.muted,
-                        13.0
-                    ),
-                    text(format!("Overlaps ({count})"))
-                        .size(13)
-                        .line_height(iced::Pixels(crate::controls::LABEL_LINE))
-                        .font(weight(iced::font::Weight::Medium)),
-                ]
-                .spacing(6)
-                .align_y(Center),
-                Some(Message::ToggleOverlaps),
-                false,
-                Kind::Ghost,
-                [7, 8],
-            ),
-            small(
-                "Rooms AgentDocker opens when two checkouts change the same files",
-                c
-            )
-            .color(c.faint),
-        ]
-        .spacing(8)
-        .align_y(Center)
-        .into()
-    }
-
-    /// Who is in a channel, in one line: the count and at most four names.
-    fn members_line(&self, members: &[agentdocker_core::AgentId]) -> String {
-        const NAMED: usize = 4;
-        let names: Vec<String> = members
-            .iter()
-            .take(NAMED)
-            .map(|id| self.name_of(id.as_str()))
-            .collect();
-        let rest = members.len().saturating_sub(NAMED);
-        let who = if rest > 0 {
-            format!("{} and {rest} more", names.join(", "))
-        } else {
-            names.join(", ")
-        };
-        format!(
-            "{} member{} · {who}",
-            members.len(),
-            if members.len() == 1 { "" } else { "s" }
-        )
-    }
-
     /// History: one row per journal entry, newest first, in one card —
     /// what kind of thing happened on a tile, the line itself, what kind
     /// and where under it, and how long ago at the right.
@@ -3980,34 +3585,6 @@ impl App {
         ]
         .spacing(12)
         .into()
-    }
-}
-
-/// A channel's heading and what it is about. A named room is its
-/// `#name` over its purpose; an overlap room is "Contested paths (338)"
-/// over "view.rs, shell.rs and 336 more" in one bounded line, never the
-/// list itself as a title.
-fn channel_heading(channel: &agentdocker_core::Channel) -> (String, Option<String>) {
-    match &channel.subject {
-        agentdocker_core::ChannelSubject::Contested { paths } if !paths.is_empty() => {
-            const NAMED: usize = 3;
-            let named: Vec<String> = paths
-                .iter()
-                .take(NAMED)
-                .map(|p| p.display().to_string())
-                .collect();
-            let rest = paths.len().saturating_sub(NAMED);
-            let detail = if rest > 0 {
-                format!("{} and {rest} more", named.join(", "))
-            } else {
-                named.join(", ")
-            };
-            (format!("Contested paths ({})", paths.len()), Some(detail))
-        }
-        _ => match &channel.name {
-            Some(name) if !name.is_empty() => (format!("#{name}"), Some(channel.title())),
-            _ => (channel.title(), None),
-        },
     }
 }
 

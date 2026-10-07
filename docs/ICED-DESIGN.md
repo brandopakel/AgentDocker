@@ -59,7 +59,7 @@ where to check the permission if the action times out.
 
 | Destination | Everyday purpose |
 | --- | --- |
-| Projects | All projects home; selecting a project opens its shared Chat with a compact list of current agents. Agents is the second tab; Board, History, Channels, Files in use and AgentDocker commands are under More. Open project terminal is visible in the project header. |
+| Projects | All projects home; selecting a project opens its shared Chat with a compact list of current agents. Agents is the second tab; Board, History, Files in use and AgentDocker commands are under More. Open project terminal is visible in the project header. |
 | Inbox | Questions, retained answer drafts and messages addressed to the user; Messages (conversations, threads, read cursors) against a daemon that keeps them |
 | Tools (rail id `connections`) | Installed tools and connection status. **Set up** appears for an installed tool missing MCP or hooks when no active session report exists. Expanded Details offers **Review setup**, health and history; setup plans use **Connect**, and applied plans offer **Undo** |
 | Settings | Appearance, installation, retained versions and diagnostics |
@@ -85,8 +85,7 @@ control does, its id or its accessible label:
   stored. The tile leads each rail row at 20 points, the project heading
   at 32 and each session row at 28.
 - **Every agent carries its tool's mark.** A session, a tool, a launch
-  choice, a conversation with an agent, a transcript run, a channel member,
-  a board card's holder and a usage row by agent, model or provider show
+  choice, a conversation with an agent, a transcript run, a board card's holder and a usage row by agent, model or provider show
   the vendor's logo on a quiet tile (`view::agent_mark`, `logo_tile`):
   Claude for Claude Code, Desktop and the browser extension; OpenAI for
   Codex and ChatGPT; Gemini, GitHub Copilot, Cursor, Windsurf, VS Code and
@@ -162,8 +161,8 @@ control does, its id or its accessible label:
   Iced runs operations over overlays too, so the popup's controls are
   focusable, carry accessibility nodes and are found by the workflow driver.
   The project row's **⋯** menu (Rename…, Pin, Remove from list, the path),
-  the **More** tab's menu (History, Channels, Files in use, Usage, AgentDocker
-  commands, then Pin and Forget project, the screen on view ticked) and the
+  the **More** tab's menu (History, Files in use, Usage, AgentDocker commands,
+  then Pin and Forget project, the screen on view ticked) and the
   **Launch agent** split button's menu of installed tools all float this way.
   A project row's **⋯** shows only under the pointer, on the selected row and
   while its menu is open; elsewhere it is drawn transparent but stays a
@@ -220,7 +219,7 @@ control does, its id or its accessible label:
   wake becomes one frame forty milliseconds later (`WAKE_SETTLE`), so the
   seven answers to a sweep's snapshot requests, which land within a few
   milliseconds of each other, are one frame rather than seven.
-- **Board, History, Files in use, Usage, Channels.** The five lanes are
+- **Board, History, Files in use, Usage.** The five lanes are
   tinted wells with no border, headed by the lane's dot, name and a count
   chip; cards are hairline cards (no shadow) whose edge firms under the
   pointer and turns accent when open. Filing lives at the foot of the Ready
@@ -230,14 +229,18 @@ control does, its id or its accessible label:
   of kind, branch and short sha, the time at the right. Usage leads with
   range and grouping as segmented controls and four totals, then one framed
   table with capital micro headers and right-aligned numbers (a share bar
-  from 1180 points wide). A channel is a card headed by a `#` tile, its name,
-  Open or Closed as a dot and a word, its purpose and members, and a small
-  stack of member marks.
+  from 1180 points wide).
 - **Messages** (`app/messages.rs`, helpers in `app/messages/look.rs`). The
-  conversation list is rows of a 28-point mark (with a presence dot for a
-  direct conversation) or a `#` tile, the name over one line of preview, cut
-  with an ellipsis, and a quiet unread count (the `@n` count in the accent);
-  its groups fold behind a chevron with their rows on a guide rail. The
+  conversation list is **Projects** — each project's chat on its project
+  monogram, named for the project, opening that project's Chat — then
+  **Direct messages**, rows of a 28-point mark with a presence dot, the name
+  over one line of preview, cut with an ellipsis, and a quiet unread count
+  (the `@n` count in the accent); **Between agents** and **Earlier** fold
+  behind a chevron with their rows on a guide rail. `#all`, channels, the
+  daemon's contested-path rooms and its notices to an agent are not listed
+  (`messages::hidden_kind`); their unread is read through as each list
+  arrives (`App::read_hidden_conversations`, once per newest message), and
+  the CLI reads them (`agentdocker history`, `agentdocker channels`). The
   history groups messages into runs at render time — one mark and one header
   (name, kind as a word, time) until the sender or kind changes, five minutes
   pass or a message names the person — with flat rows in the full text
@@ -251,8 +254,9 @@ control does, its id or its accessible label:
   spoken *Send*), the whole frame showing focus; one status line under it
   says the error, the queued state with **Details**, recoveries or the
   recipient's readiness. Mention offers float above it. The thread quotes
-  its parent on the accent rail; the new-conversation form is a card with a
-  Direct message | Channel segmented control. The project chat's side panel
+  its parent on the accent rail; the new-conversation form is a card listing
+  the agents a direct message can go to. A question put to every agent
+  shows its card in the direct conversation with whoever asked it. The project chat's side panel
   lists agents as a mark, the name over *status · 3m* and a terminal glyph.
 - **Tools, Settings, Installation** (`app/tools_view.rs`). Tools is one card of
   rows: a two-letter mark on the tool's tint, the name over a dot and its
@@ -299,9 +303,8 @@ control does, its id or its accessible label:
   through the canvas widget, inked in the row's own colour, so they stay crisp
   at any density and in both appearances with no icon font or bitmap. The
   build enables `canvas` for this (tiny-skia geometry; no GPU renderer).
-- **Scroll anchors.** Question cards, transcript lines and channel cards carry
-  container ids `notification-question-<id>`, `notification-message-<id>` and
-  `notification-channel-<id>`; `controls::reveal(id)` scrolls one into view
+- **Scroll anchors.** Question cards and transcript lines carry container ids
+  `notification-question-<id>` and `notification-message-<id>`; `controls::reveal(id)` scrolls one into view
   without moving keyboard focus, for notification routing and **Answer**. The
   message histories are anchored to their end (their scrollables' ids start
   `history-`): Iced reports their position from the top but takes a scroll
@@ -319,10 +322,8 @@ control does, its id or its accessible label:
   links `thread-<message>`, the back controls `thread-back` (to the list) and
   `close-thread` (the thread's one close, a header action when wide and the
   way back when narrow, never both), earlier pages `earlier-<conversation>`;
-  starting a conversation `new-conversation` (the + beside the search),
-  `new-kind-direct`/`new-kind-channel`, `new-direct-<agent>`,
-  `new-channel-name`, `new-channel-purpose`, `new-member-<agent>`,
-  `new-channel-create`; a mention offer `mention-<agent>`. On the Board
+  starting a direct message `new-conversation` (the + beside the search) and
+  `new-direct-<agent>`; a mention offer `mention-<agent>`. On the Board
   Usage under More (`project-tab-Usage`): `usage-since-24h|7d|30d`,
   `usage-by-Agent|Model|Provider|Hour`. On the Board
   tab (`project-tab-Board`): `task-title`, `task-acceptance`,
@@ -389,7 +390,7 @@ control does, its id or its accessible label:
   square **Keep running** (`stop-session-cancel`) beside it.
 - **Say each fact once.** Counts live in the sidebar (live agents per project,
   open questions on Inbox) and in the filter chips; the header does not repeat
-  them. Messages in Channels and Inbox are transcript lines (when · who · what)
+  them. Messages in Inbox are transcript lines (when · who · what)
   rather than a card per message, following the chat clients in the iced
   showcase (Halloy); the pane-header, footer-bar and inline-meter patterns come
   from Kraken Desktop and Sniffnet there.
@@ -404,7 +405,7 @@ group under them (`sessions-earlier`) and unanswered questions have a
 project-scoped Needs input filter. Current rows prioritize
 questions, then newest sessions, with ID as a stable tie-breaker. Search includes
 name, runtime, branch and session ID. Filter counts reflect that search.
-Board, History, Channels, Files in use, AgentDocker commands and project management
+Board, History, Files in use, AgentDocker commands and project management
 live under More. The project terminal remains visible in the header. Tools shows
 installed tools first and expands technical details on request. Full daemon
 records remain intact: these are view filters, not registry deletion or migration.
@@ -429,7 +430,7 @@ database remains a manual step.
 - Questions preserve drafts across navigation and failed sends. Duplicate sends
   are disabled while waiting. A successful reply means delivery, not proof that
   an agent consumed it or resumed work.
-- Conversation/thread, channel, session, question-answer and Board-card text persists under the desktop's
+- Conversation/thread, session, question-answer and Board-card text persists under the desktop's
   state-root/daemon-socket identity. Only text is restored, never send state or
   queued receipts. Serialized atomic saves preserve the newest generation;
   close waits for it or reports failure with retry/explicit unsaved-close controls.
@@ -447,13 +448,13 @@ database remains a manual step.
   same aggregate storage budget. A confirmed filing clears only that project's
   draft; a refused or old response cannot clear newer text. No filing state is
   restored and reopening never creates a card. Other forms remain window-local.
-- Each channel has its own draft and pending send. A late acknowledgement clears
-  only the text it sent. Channels show membership, reviews, resolution and queued
-  human messages, plus confirmed sends from this window. Reading never drains
-  the queue. The sent-message cache retains at most 128 entries and 256 KiB of
-  text; it survives navigation and polling but not window closure. The view
-  labels its partial history. Messages follow their envelope destination and
-  duplicate IDs appear once; payload fields cannot move them to another room.
+  A file's channel drafts (the `channels` field, kept so older files load) and
+  conversation drafts for `#all` or a channel are let go on loading; nothing
+  in the app can send them.
+- Each conversation keeps its own draft and pending send. A late
+  acknowledgement clears only the text it sent. Reading never drains the
+  queue. Inbox messages follow their envelope destination and duplicate IDs
+  appear once; payload fields cannot move them to another room.
 - Launch uses an installed supported CLI, explicit arguments, the selected folder
   and a managed PTY. It does not restart on window launch. Stop requires a second
   explicit activation within five seconds; detaching leaves the agent running.
@@ -480,7 +481,7 @@ database remains a manual step.
   release lifetime pins, queue limits or private state requirements.
 
 Send receipts carry bounded recipient-readiness metadata into the draft for the
-original session, channel, conversation or thread. The default presentation is
+original session, conversation or thread. The default presentation is
 one status line under the composer with a quiet **Details** link (spoken
 *Delivery details*); expanded details scroll within a
 180-point area and show named recipients plus explicit open/copy controls. The
@@ -564,7 +565,8 @@ frame is skipped, so a capture taken in the same beat as a change can show a
 stale layout with missing text. Captures from debug builds are slower to
 settle than release builds and are for review, not for the acceptance report.
 It drives the rendered controls' callbacks through question delivery, draft
-navigation, terminal attachment, channel messaging, setup preview/apply/undo,
+navigation, terminal attachment, the Messages rail (no channel, `#all` or
+contested room listed, a channel's messages read through), setup preview/apply/undo,
 folder pinning, agent launch/stop, CLI commands, focus reveal, resizing, appearance
 and a second launch. The Stop sequence waits for its control to disappear after confirmation, then
 checks that the exact launched record exited; two clicks alone are not success.
@@ -588,20 +590,22 @@ packaging and real-provider Windows acceptance remain separate platform work. Eq
 measurements must accompany release decisions, using exact binary provenance.
 See [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md) for public release gates.
 
-Messages review (September 17): mentioning an agent does not change recipients
-or grant channel membership. Suggestions only name current recipients. A late
-channel-creation reply may update only its originating form, preserving a newer
-form and its draft. These corrections are merged in #170 and installed; source
-and rendered workflow validation passed. Physical keyboard and IME acceptance
-remain open, as recorded in [remaining work](REMAINING-WORK.md).
+Messages review (September 17): mentioning an agent does not change recipients.
+Suggestions only name current recipients. These corrections are merged in #170
+and installed; source and rendered workflow validation passed. Physical
+keyboard and IME acceptance remain open, as recorded in
+[remaining work](REMAINING-WORK.md).
 
-For an open named channel the person belongs to, **Add members** opens a list
-of available agents who are not members yet. Adding one shows progress and
-keeps failures in the form; confirmed members disappear from the available list.
-Closing/replacing the form prevents a late reply from changing the new form.
-A refused local queue submission releases the busy state and preserves the form.
+The app keeps to each project's chat and direct messages: it has no Channels
+screen, no channel creation or invitation, no **Reviews** or **Add members** in
+a conversation's header and no `#all` or contested-room rows; the daemon and
+CLI keep all of them (`agentdocker channels`, `agentdocker channel …`,
+`agentdocker history <conversation>`). A notification about a channel or `#all`
+message opens the direct conversation with its sender (an agent) or Messages,
+with the history command in the status line; a reply typed into such a
+notification is refused with the `agentdocker send --to …` command instead.
 
-The new-conversation button keeps a compact width beside search; opening its form does not divide the search row into two equally wide controls. Its accessible name remains “New message or channel” (or “Close” for the open form).
+The new-conversation button keeps a compact width beside search; opening its form does not divide the search row into two equally wide controls. Its accessible name is “New message” (or “Close” for the open form).
 
 Project pause forms retain a separate bounded draft for each project. Their
 buttons and Enter action carry that project, and a unique request identity

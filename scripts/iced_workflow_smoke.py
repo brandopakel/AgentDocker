@@ -169,7 +169,12 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             dismissible = [rpc(endpoint, {"op": "send", "from": agent["id"], "to": human["id"],
                             "kind": "chat", "payload": {"text": text}})["message"]
                            for text in [f"Received message {index}" for index in range(35)]]
+            # A channel with the person in it, and a message there: the app
+            # lists neither (only each project's chat and direct messages)
+            # and reads it through, so it never waits in the person's queue.
             room = rpc(endpoint, {"op": "channel_open", "agent": agent["id"], "task": "Fixture coordination", "members": [human["id"]]})["channel"]
+            rpc(endpoint, {"op": "send", "from": agent["id"], "to": f"channel:{room['id']}", "kind": "chat",
+                           "payload": {"text": "Fixture channel message"}})
             with ThreadPoolExecutor(max_workers=1) as pool:
                 answer = pool.submit(rpc, endpoint, {"op": "ask", "from": agent["id"], "to": human["id"],
                                      "question": "Use the fixture API?", "timeout_secs": 150}, 160)
@@ -267,7 +272,13 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          # Messages: the direct conversation with the fixture holds its
                          # question cards and every message it sent; opening it reads
                          # them, so nothing is cleared by hand.
-                         step("click", id="inbox"), step("click", id=f"thread-{agent['id']}"),
+                         step("click", id="inbox"),
+                         step("wait_control", id=f"conversation-everyone:{room['project']}", present=True),
+                         step("wait_control", id=f"thread-{agent['id']}", present=True),
+                         step("wait_control", id=f"conversation-channel:{room['id']}", present=False),
+                         step("wait_control", id="collisions-toggle", present=False),
+                         step("wait_text_absent", text="Fixture channel message"), step("capture", name="messages-rail"),
+                         step("click", id=f"thread-{agent['id']}"),
                          step("wait_text", text="Received message 34"),
                          step("fill", id=f"answer-{question['id']}", text="Use API v2"),
                          step("wait_text", text="Use API v2"),
@@ -286,11 +297,10 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="terminal"),
                          step("focus", id="detach-terminal"), step("wait_focus", id="detach-terminal"), step("click", id="detach-terminal"),
-                         step("click", id="project-more"), step("click", id="project-tab-Channels"), step("click", id=f"reply-channel-{room['id']}"),
-                         step("fill", id="channel-message", text="Fixture channel message"), step("click", id="send-channel"),
-                         step("wait_text", text="Message sent"), step("wait_text", text="Fixture channel message"), step("capture", name="channels"),
-                         step("click", id="project-more"), step("click", id="project-tab-Journal"), step("capture", name="activity"),
-                         step("click", id="project-more"), step("click", id="project-tab-Channels"), step("wait_text", text="Fixture channel message"),
+                         # More holds History, Files in use, Usage and commands; no Channels.
+                         step("click", id="project-more"), step("wait_control", id="project-tab-Journal", present=True),
+                         step("wait_control", id="project-tab-Channels", present=False),
+                         step("click", id="project-tab-Journal"), step("capture", name="activity"),
                          step("click", id="project-more"), step("click", id="project-tab-Leases"), step("capture", name="coordination"),
                          step("click", id="project-more"), step("click", id="project-tab-Usage"), step("wait_control", id="usage-since-24h", present=True),
                          step("wait_text_absent", text="Reading…"), step("capture", name="usage"),
@@ -374,11 +384,17 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                     with_agent = next(c for c in conversations if c["kind"] == "dm" and agent["id"] in c["conversation"])
                     assert with_agent["unread"] == 0, with_agent
                     checks.append("reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count")
+                    # The channel was never listed, yet nothing of it waits: the
+                    # window read it through as each list arrived.
+                    hidden = next(c for c in conversations if c["conversation"] == f"channel:{room['id']}")
+                    assert hidden["unread"] == 0, hidden
+                    assert not any(m.get("to") == {"kind": "channel", "value": room["id"]} for m in remaining), remaining
+                    checks.append("a_channel_is_not_listed_and_its_messages_are_read_through_so_none_wait_in_the_persons_queue")
                 except BaseException:
                     stop(window)
                     stop(daemon)
                     raise
-            checks.extend(["rendered_actions", "answer_and_draft_navigation", "native_vt_rendering", "terminal_attach_detach", "channels", "setup_review_apply_undo", "launch_and_confirmed_stop", "focused_control_reveal", "compact_zoom", "current_history_separation", "project_attention", "compact_session_navigation"])
+            checks.extend(["rendered_actions", "answer_and_draft_navigation", "native_vt_rendering", "terminal_attach_detach", "setup_review_apply_undo", "launch_and_confirmed_stop", "focused_control_reveal", "compact_zoom", "current_history_separation", "project_attention", "compact_session_navigation"])
             def narrow_inbox():
                 nonlocal window
                 # Narrow Inbox: below the two-column breakpoint the window shows the
@@ -433,21 +449,8 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                 step("wait_control", id=f"mention-{narrow['id']}", present=True), step("click", id=f"mention-{narrow['id']}"),
                                 step("wait_text", text="ask @narrow-fixture "), step("wait_control", id=f"mention-{narrow['id']}", present=False),
                                 step("fill", id=f"reply-{narrow['id']}", text=""),
-                                # A new channel from the sidebar: name, purpose, members, and it opens.
-                                step("click", id="new-conversation"), step("wait_control", id="new-kind-channel", present=True),
-                                step("click", id="new-kind-channel"), step("wait_control", id="new-channel-name", present=True),
-                                step("fill", id="new-channel-name", text="Planning Room"), step("fill", id="new-channel-purpose", text="Plan the fixture"),
-                                step("click", id=f"new-member-{narrow['id']}"), step("capture", name="new-channel-form"),
-                                step("click", id="new-channel-create"), step("wait_text", text="#planning-room"),
-                                step("wait_control", id="new-channel-create", present=False),
-                                step("wait_control", id="invite-channel", present=True), step("click", id="invite-channel"),
-                                step("wait_control", id=f"invite-member-{agent['id']}", present=True),
-                                step("wait_control", id=f"invite-member-{narrow['id']}", present=False),
-                                step("click", id=f"invite-member-{agent['id']}"),
-                                step("wait_control", id=f"invite-member-{agent['id']}", present=False),
-                                step("capture", name="channel-member-added"), step("click", id="new-conversation"),
-                                # A new direct message is one pick.
-                                step("click", id="new-conversation"), step("click", id="new-kind-direct"),
+                                # A new message is one pick of an agent; there is no channel to start.
+                                step("click", id="new-conversation"), step("wait_control", id="new-kind-channel", present=False),
                                 step("wait_control", id=f"new-direct-{agent['id']}", present=True), step("capture", name="new-direct-form"),
                                 step("click", id=f"new-direct-{agent['id']}"), step("wait_control", id=f"reply-{agent['id']}", present=True),
                                 step("wait_control", id=f"new-direct-{agent['id']}", present=False),
@@ -561,18 +564,11 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 assert any(c["title"] == "Write the fixture notes" and c["column"] == "backlog" and not c.get("archived_at") for c in board.values()), board
                 checks.append("a_card_filed_in_the_window_was_pulled_once_by_an_agent_shown_with_its_holder_moved_on_by_the_person_and_archived")
                 # What the window did reached the daemon: the words sent with
-                # Enter are archived, and the room opened from the sidebar has
-                # the person, the picked member and the later invited agent.
+                # Enter are archived.
                 sent = rpc(endpoint, {"op": "history", "conversation": f"dm:{min(human['id'], narrow['id'])}:{max(human['id'], narrow['id'])}",
                                       "limit": 50})["messages"]
                 assert any("Sent with Enter" in json.dumps(m) for m in sent), sent
-                opened = [c for c in rpc(endpoint, {"op": "channels", "project": str(project)})["channels"] if c.get("name") == "planning-room"]
-                assert len(opened) == 1 and set(opened[0]["members"]) == {human["id"], narrow["id"], agent["id"]}, opened
-                invited = rpc(endpoint, {"op": "peek_input", "agent": agent["id"]})["messages"]
-                notices = [m for m in invited if m.get("to") == {"kind": "channel", "value": opened[0]["id"]}
-                           and "added terminal-fixture to this channel" in json.dumps(m.get("payload"))]
-                assert len(notices) == 1, notices
-                checks.append("enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members")
+                checks.append("enter_sends_a_direct_message_from_the_sidebar")
                 draft_question = rpc(endpoint, {"op": "post_question", "from": narrow["id"], "to": human["id"],
                                                 "question": "Keep this answer until explicitly submitted?", "timeout_secs": 300})["message"]
                 answer_marker = "Unsent answer café 日本語"
@@ -621,10 +617,6 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("wait_text", text="Keep this thread draft\nSecond line 日本語"),
                         step("capture", name="expanded-columns"),
                         step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
-                        step("click", id="project-more"), step("click", id="project-tab-Channels"),
-                        step("click", id=f"reply-channel-{room['id']}"),
-                        step("fill", id="channel-message", text="Keep this channel across reopen\nSecond line 日本語"),
-                        step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                         step("click", id=f"session-{narrow['id']}"), step("click", id="session-message"),
                         step("fill", id="session-message-text", text="Keep this session across reopen\nSecond line 日本語"),
                         step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
@@ -646,7 +638,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 assert saved_drafts["sessions"][narrow["id"]] == "Keep this session across reopen\nSecond line 日本語", saved_drafts
                 assert "Keep this conversation draft\nSecond line 日本語" in saved_drafts["conversations"].values(), saved_drafts
                 assert "Keep this thread draft\nSecond line 日本語" in saved_drafts["conversations"].values(), saved_drafts
-                assert saved_drafts["channels"][room["id"]] == "Keep this channel across reopen\nSecond line 日本語", saved_drafts
+                assert saved_drafts["channels"] == {}, saved_drafts
                 assert saved_drafts["answers"][draft_question] == answer_marker, saved_drafts
                 assert saved_drafts["boards"][str(project)] == {
                     "title": "Unfiled card café 日本語", "acceptance": "Check reopen without filing"
@@ -673,11 +665,6 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                     step("wait_text", text="Keep this session across reopen\nSecond line 日本語"),
                     step("capture", name="restored-session"),
                     step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
-                    step("click", id="project-more"), step("click", id="project-tab-Channels"),
-                    step("click", id=f"reply-channel-{room['id']}"),
-                    step("wait_text", text="Keep this channel across reopen\nSecond line 日本語"),
-                    step("capture", name="restored-channel"),
-                    step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                     step("click", id="project-tab-Board"),
                     step("wait_text", text="Unfiled card café 日本語"),
                     step("wait_text", text="Check reopen without filing"),
@@ -693,11 +680,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 assert not any(m.get("reply_to") == draft_question and m.get("kind") == "answer" for m in retained_input)
                 for marker in ("Keep this conversation draft", "Keep this thread draft", "Keep this session across reopen", answer_marker):
                     assert not any(marker in json.dumps(m.get("payload")) for m in retained_input), marker
-                channel_inputs = rpc(endpoint, {"op": "peek_input", "agent": agent["id"]})["messages"]
-                assert not any("Keep this channel across reopen" in json.dumps(m.get("payload")) for m in channel_inputs)
-                channel_history = rpc(endpoint, {"op": "history", "conversation": f"channel:{room['id']}", "limit": 100})["messages"]
-                assert not any("Keep this channel across reopen" in json.dumps(m) for m in channel_history)
-                checks.append("normal_close_flushes_multiline_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them")
+                checks.append("normal_close_flushes_multiline_conversation_thread_session_and_answer_drafts_and_reopen_never_sends_them")
                 rpc(endpoint, {"op": "stop", "agent": narrow["id"], "force": False})
                 until(lambda: rpc(endpoint, {"op": "inspect", "agent": narrow["id"]})["agent"]["status"]["state"] == "exited")
 
@@ -707,8 +690,6 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             assert len(entries) == 1 and entries[0]["pinned"], entries
             assert not list(pinned.iterdir()), "Adding or launching unexpectedly wrote into the folder"
             assert not (home / ".codex/config.toml").exists(), "Undo did not restore fixture configuration"
-            messages = rpc(endpoint, {"op": "inbox", "agent": agent["id"], "drain": False})["messages"]
-            assert any(m.get("payload") == "Fixture channel message" for m in messages), messages
             launched = [a for a in rpc(endpoint, {"op": "list", "all": True})["agents"] if a["spec"]["name"] == "launched-from-iced"]
             assert len(launched) == 1 and launched[0]["status"]["state"] == "exited", launched
             report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_control", id="project-terminal", present=True), step("click", id="project-tab-Agents"), step("wait_text", text="No agents in this project"), step("capture", name="restored-last-project"), step("click", id="sessions-earlier"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-earlier"),

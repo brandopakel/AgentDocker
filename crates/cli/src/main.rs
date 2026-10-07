@@ -20,7 +20,7 @@ mod skill;
 mod teams;
 mod top;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use agentdocker_core::contest::Direction;
@@ -325,6 +325,15 @@ enum Command {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", value_name = "AGENT")]
         agent: Option<String>,
     },
+    /// Where one of your messages stands with each agent it was queued for:
+    /// answered, delivered, received by the model, shown to its session, or
+    /// why it is still waiting. Never "read": nothing says a model read it.
+    Delivery {
+        /// The message id `send` printed.
+        message: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// The archived messages of one conversation, oldest first.
     History {
         /// `everyone:<project>`, `all`, `channel:<id>`, `dm:<a>:<b>` or `notices:<agent>`, as `conversations` lists them.
@@ -525,7 +534,7 @@ enum Command {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
     },
-    /// Send a message to an agent, this project (`project`), a topic (`topic:name`), or everyone (`all`).
+    /// Send a message to an agent, this project (`project`), a topic (`topic:name`), or everyone (`all`; sent by an agent, only its own project).
     Send(SendArgs),
     /// Report an observed provider turn state (expires after five minutes).
     ReportActivity {
@@ -1796,7 +1805,23 @@ async fn run() -> Result<()> {
                 Ok(Response::Activity { activity }) => activity,
                 _ => Vec::new(),
             };
-            print_agents(&agents, &unadopted, &activity, sources);
+            // What each one's provider reported over the last day, beside
+            // what it is doing. Nothing to show — collection off, or no
+            // tokens yet — adds no column.
+            let tokens = match client
+                .call(&Request::Usage {
+                    project: project.as_deref().map(project_selector),
+                    agent: None,
+                    since: Some("24h".to_owned()),
+                    until: None,
+                    by: agentdocker_core::usage::report::Group::Agent,
+                })
+                .await
+            {
+                Ok(Response::Usage { report }) => format::tokens_by_agent(&report),
+                _ => HashMap::new(),
+            };
+            print_agents(&agents, &unadopted, &activity, sources, &tokens);
             if input_details {
                 let now = chrono::Utc::now();
                 for agent in &agents {
@@ -1947,6 +1972,16 @@ async fn run() -> Result<()> {
                 for c in &conversations {
                     println!("{}", format::conversation_line(c));
                 }
+            }
+        }
+        Command::Delivery { message, json } => {
+            let request = Request::Delivery {
+                message: MessageId::from(message),
+            };
+            match client.call(&request).await? {
+                Response::Delivery { recipients, .. } if json => print_json(&recipients)?,
+                Response::Delivery { recipients, .. } => format::delivery(&recipients),
+                other => anyhow::bail!("unexpected delivery response: {other:?}"),
             }
         }
         Command::History {
@@ -2673,7 +2708,9 @@ async fn run() -> Result<()> {
             } = client.call(&request).await?
             {
                 println!("{message}");
-                eprintln!("accepted by AgentDocker; provider receipt unconfirmed");
+                eprintln!(
+                    "accepted by AgentDocker; provider receipt unconfirmed (`agentdocker delivery {message}` shows where it stands)"
+                );
                 if let Some(readiness) = recipient_readiness {
                     format::send_readiness(&readiness);
                 } else {
@@ -3658,7 +3695,9 @@ fn print_agents(
     unadopted: &[DiscoveredProcess],
     activity: &[AgentActivity],
     input_sources: &[AgentRecord],
+    tokens: &HashMap<String, String>,
 ) {
+    let with_tokens = agents.iter().any(|a| tokens.contains_key(a.id.as_str()));
     let doing = |id: &agentdocker_core::AgentId| {
         activity
             .iter()
@@ -3720,6 +3759,14 @@ fn print_agents(
                 },
                 doing(&a.id),
             ];
+            if with_tokens {
+                row.push(
+                    tokens
+                        .get(a.id.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| "-".to_owned()),
+                );
+            }
             if in_session {
                 row.push(session_cell(a.session.as_ref()));
             }
@@ -3749,6 +3796,9 @@ fn print_agents(
             "Not connected".to_owned(),
             "-".to_owned(),
         ];
+        if with_tokens {
+            row.push("-".to_owned());
+        }
         if in_session {
             row.push(session_cell(p.session.as_ref()));
         }
@@ -3764,6 +3814,9 @@ fn print_agents(
         "AGENT ID", "NAME", "PROJECT", "BRANCH", "HEAD", "RUNTIME", "MODEL", "STATUS", "INPUT",
         "DOING",
     ];
+    if with_tokens {
+        headers.push("TOKENS 24H");
+    }
     if in_session {
         headers.push("LIVES IN");
     }

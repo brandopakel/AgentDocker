@@ -1,16 +1,16 @@
-//! Messages as a workspace: a sidebar of channels and direct conversations
-//! with what is unread, one pane that always has a composer, and a thread
-//! beside it. The shape people know from Slack and Discord, over the
-//! daemon's conversations: the archive is what is shown, the queues stay
-//! the agents' own.
+//! Messages as a workspace: a sidebar of each project's chat and the
+//! person's direct conversations with what is unread, one pane that always
+//! has a composer, and a thread beside it. The shape people know from Slack
+//! and Discord, over the daemon's conversations: the archive is what is
+//! shown, the queues stay the agents' own. `#all`, channels and the rooms
+//! the daemon opens over contested paths are the CLI's (`agentdocker
+//! channels`, `agentdocker history`), never listed here.
 use super::icons::{Icon, icon};
 use super::panes::{Grid, Slot};
 use super::style::{Colors, alpha, weight};
 use super::view::{empty, first_line, note, panel, pill, rule, split_style};
 use super::*;
-use crate::controls::{
-    Kind, custom, custom_sized, framed_composer, input_enabled, input_submitting, popover, primary,
-};
+use crate::controls::{Kind, custom, custom_sized, framed_composer, input_enabled, popover};
 use agentdocker_core::conversation::line_of;
 use agentdocker_core::journal::ago;
 use agentdocker_core::{
@@ -21,11 +21,30 @@ use iced::{
     widget::{Space, column, container, responsive, row, scrollable, text},
 };
 use look::{
-    channel_mark, count_divider, day_divider, disc, group_header, guided, key_hint, link,
-    section_label, status_line, tinted, unread_divider, with_presence,
+    count_divider, day_divider, disc, group_header, guided, key_hint, link, section_label,
+    status_line, tinted, unread_divider, with_presence,
 };
 
 pub(super) mod look;
+
+/// Whether the app leaves a kind of conversation to the CLI: `#all`,
+/// channels and the daemon's contested-path rooms. Their unread is read
+/// through as it arrives (`App::read_hidden_conversations`), so it never
+/// fills the person's queue or a badge nobody can clear here.
+pub(super) fn hidden_kind(kind: ConversationKind) -> bool {
+    matches!(
+        kind,
+        ConversationKind::All | ConversationKind::Channel | ConversationKind::Collision
+    )
+}
+
+/// The same by id, for a conversation the daemon has not listed yet:
+/// `all` and every `channel:` (a contested room is a channel too).
+pub(super) fn hidden_conversation(conversation: &str) -> bool {
+    agentdocker_core::ConversationId::from(conversation)
+        .kind()
+        .is_some_and(hidden_kind)
+}
 
 impl App {
     /// Whether the daemon lists conversations, so this screen can be shown
@@ -35,11 +54,9 @@ impl App {
     }
 
     /// Unread across the conversations that are the person's to answer:
-    /// channels, broadcasts and their own direct messages. What two agents
-    /// say to each other, what AgentDocker told them, and the collision
-    /// rooms it opens between two checkouts (the person is not admitted to
-    /// those; their rows are the daemon's own contested-path notices) are
-    /// read here, not owed.
+    /// each project's chat and their own direct messages. What two agents
+    /// say to each other and what AgentDocker told an agent are read here,
+    /// not owed; `#all`, channels and contested rooms are not in the app.
     pub(super) fn unread_total(&self) -> u64 {
         self.conversations
             .iter()
@@ -48,12 +65,10 @@ impl App {
             .sum()
     }
 
-    /// What a sidebar row says is unread: what the person owes, and on a
-    /// collision room what the daemon noted there, worth a look without
-    /// being owed; a room two agents share or a notice to an agent is
-    /// listed quietly with its last line.
+    /// What a sidebar row says is unread: what the person owes; a room
+    /// two agents share is listed quietly with its last line.
     fn row_unread(&self, summary: &ConversationSummary) -> u64 {
-        if self.counts_for_person(summary) || summary.kind == ConversationKind::Collision {
+        if self.counts_for_person(summary) {
             summary.unread
         } else {
             0
@@ -62,9 +77,12 @@ impl App {
 
     pub(super) fn counts_for_person(&self, summary: &ConversationSummary) -> bool {
         match summary.kind {
+            ConversationKind::Everyone => true,
             ConversationKind::Dm => self.counterpart(summary).is_some(),
-            ConversationKind::Notices | ConversationKind::Collision => false,
-            _ => true,
+            ConversationKind::All
+            | ConversationKind::Channel
+            | ConversationKind::Collision
+            | ConversationKind::Notices => false,
         }
     }
 
@@ -90,26 +108,6 @@ impl App {
         }
     }
 
-    /// How many paths a collision room is about: the ones its title lists
-    /// and the `(+n more)` it ends with. None when the title is not a
-    /// path list.
-    fn contested_paths(summary: &ConversationSummary) -> Option<usize> {
-        let title = summary.title.trim();
-        if title.is_empty() {
-            return None;
-        }
-        let (listed, more) = match title.rsplit_once(" (+") {
-            Some((listed, rest)) => (
-                listed,
-                rest.strip_suffix(" more)")
-                    .and_then(|n| n.parse::<usize>().ok())?,
-            ),
-            None => (title, 0),
-        };
-        let listed = listed.split(", ").filter(|p| !p.trim().is_empty()).count();
-        (listed > 0).then_some(listed + more)
-    }
-
     /// The other party of a direct conversation the person is in; none for
     /// one between two agents, which is read here and written by neither
     /// side of this window.
@@ -131,9 +129,9 @@ impl App {
             .any(|a| a.id.as_str() == id && a.status.is_live())
     }
 
-    /// The name the sidebar and headers show: `#name` for a channel or the
-    /// broadcast, the other party's name for a direct conversation, the
-    /// room's task for a collision, AgentDocker for notices.
+    /// The name the sidebar and headers show: `#everyone` for a project's
+    /// chat, the other party's name for a direct conversation. The kinds
+    /// the app leaves to the CLI go by their title.
     fn conversation_label(&self, summary: &ConversationSummary) -> String {
         match summary.kind {
             // Every project has one; when more than one is on view, say
@@ -145,23 +143,6 @@ impl App {
                     format!("#everyone · {}", summary.title)
                 }
             }
-            ConversationKind::All => "#all".to_owned(),
-            // A room opened before names is called by a short name made
-            // from its task, never by the whole task; the header carries
-            // the rest.
-            ConversationKind::Channel => match &summary.name {
-                Some(name) if !name.is_empty() => format!("#{name}"),
-                _ => format!("#{}", Self::short_room_name(summary)),
-            },
-            // A collision room is about paths: say how many, never which,
-            // in a list. The header lists them.
-            ConversationKind::Collision => match &summary.name {
-                Some(name) if !name.is_empty() => format!("#{name}"),
-                _ => match Self::contested_paths(summary) {
-                    Some(n) => format!("Contested paths ({n})"),
-                    None => format!("#{}", Self::short_room_name(summary)),
-                },
-            },
             // A pair of agents reads as the two names, so two pairs of the
             // same tools are told apart; what each is on belongs under
             // the header, not in the list.
@@ -172,39 +153,35 @@ impl App {
                     None => summary.title.clone(),
                 },
             },
-            // Each agent's notices are its own conversation: say whose.
-            ConversationKind::Notices => summary
-                .conversation
-                .notices_agent()
-                .map(|agent| format!("AgentDocker → {}", self.name_of(agent.as_str())))
-                .unwrap_or_else(|| "AgentDocker".to_owned()),
+            ConversationKind::All
+            | ConversationKind::Channel
+            | ConversationKind::Collision
+            | ConversationKind::Notices => summary.title.clone(),
         }
     }
 
-    /// A slug from the room's task or first path, at most a few words; an
-    /// empty title falls back to the room's short id.
-    fn short_room_name(summary: &ConversationSummary) -> String {
-        let title = summary.title.trim();
-        let from_title = agentdocker_core::conversation::channel_name_from(title);
-        match from_title {
-            Some(name) if !name.is_empty() => {
-                // At most four words of the slug, so the list stays a list.
-                name.split('-')
-                    .filter(|w| !w.is_empty())
-                    .take(4)
-                    .collect::<Vec<_>>()
-                    .join("-")
-            }
-            _ => summary
-                .conversation
-                .channel_id()
-                .map(|id| {
-                    format!(
-                        "room-{}",
-                        id.to_string().chars().take(6).collect::<String>()
-                    )
-                })
-                .unwrap_or_else(|| "room".to_owned()),
+    /// The project a chat row stands for, from the person's list of
+    /// projects: its name, and the root that opens its Chat. A project
+    /// not on the list (a temporary folder nobody pinned) keeps the
+    /// daemon's title and opens here, in Messages.
+    fn chat_row_project(
+        &self,
+        summary: &ConversationSummary,
+    ) -> (String, Option<std::path::PathBuf>) {
+        let id = summary.conversation.everyone_project();
+        let entry = self
+            .shell
+            .catalog
+            .projects
+            .iter()
+            .find(|e| id.as_ref().is_some_and(|id| e.project.id() == *id));
+        match entry {
+            Some(entry) => (entry.name(), Some(entry.project.root.clone())),
+            None if !summary.title.trim().is_empty() => (summary.title.clone(), None),
+            None => (
+                id.map_or_else(|| summary.conversation.to_string(), |id| id.to_string()),
+                None,
+            ),
         }
     }
 
@@ -217,13 +194,17 @@ impl App {
 
     /// The open conversation as the pane needs it: the daemon's summary
     /// when it has listed it, else one made from the id alone, so a direct
-    /// conversation nobody has spoken in yet, or a channel opened before the
-    /// list arrived, still shows its header and composer.
+    /// conversation nobody has spoken in yet, or a project's chat before the
+    /// list arrived, still shows its header and composer. What the app
+    /// leaves to the CLI is never opened here.
     fn open_summary(&self) -> Option<ConversationSummary> {
+        let open = self.shell.conversation.as_deref()?;
+        if hidden_conversation(open) {
+            return None;
+        }
         if let Some(summary) = self.selected_summary() {
             return Some(summary.clone());
         }
-        let open = self.shell.conversation.as_deref()?;
         let conversation = agentdocker_core::ConversationId::from(open.to_owned());
         let kind = conversation.kind()?;
         let (name, title, members) = match kind {
@@ -255,15 +236,6 @@ impl App {
                     None,
                     self.name_of(other),
                     vec![AgentId::from(a.to_owned()), AgentId::from(b.to_owned())],
-                )
-            }
-            ConversationKind::Channel => {
-                let id = conversation.channel_id()?;
-                let channel = self.channels.iter().find(|c| c.id == id)?;
-                (
-                    channel.name.clone(),
-                    channel.subject.title(),
-                    channel.members.clone(),
                 )
             }
             _ => return None,
@@ -408,10 +380,10 @@ impl App {
         grid.into()
     }
 
-    /// One row of the sidebar: the mark (with presence for a direct
-    /// conversation), the name over its last line, and what is unread as
-    /// a quiet count — the `@` count in the accent, since that one asks
-    /// for an answer.
+    /// One row of the sidebar: the mark (the project's for its chat, the
+    /// agent's with presence for a direct conversation), the name over its
+    /// last line, and what is unread as a quiet count — the `@` count in
+    /// the accent, since that one asks for an answer.
     fn conversation_row(
         &self,
         summary: &ConversationSummary,
@@ -419,11 +391,25 @@ impl App {
         width: f32,
         c: Colors,
     ) -> Element<'_, Message> {
-        let label = self.conversation_label(summary);
         let selected = self.shell.conversation.as_deref() == Some(summary.conversation.as_str());
         let unread = self.row_unread(summary);
         // The presence dot's ring is the colour the row is drawn on.
         let ring = if selected { c.accent_soft } else { c.ground };
+        // A project's chat is named for its project and opens that
+        // project's Chat; anything else opens here.
+        let (label, open) = if summary.kind == ConversationKind::Everyone {
+            let (name, root) = self.chat_row_project(summary);
+            let open = match root {
+                Some(root) => Message::SelectProject(root),
+                None => Message::SelectConversation(summary.conversation.as_str().to_owned()),
+            };
+            (name, open)
+        } else {
+            (
+                self.conversation_label(summary),
+                Message::SelectConversation(summary.conversation.as_str().to_owned()),
+            )
+        };
         let mark: Element<'_, Message> = match summary.kind {
             ConversationKind::Dm => {
                 let seed = self
@@ -436,15 +422,17 @@ impl App {
                     ring,
                 )
             }
-            ConversationKind::Notices => super::view::brand_tile(28.0, c),
-            ConversationKind::Collision => channel_mark(28.0, c.amber, c),
-            _ => channel_mark(28.0, c.muted, c),
+            _ => super::view::monogram(
+                &label,
+                &summary
+                    .conversation
+                    .everyone_project()
+                    .map_or_else(|| summary.conversation.to_string(), |p| p.to_string()),
+                28.0,
+                c,
+            ),
         };
-        // The tile already says channel; the name need not say it twice.
-        let shown = match summary.kind {
-            ConversationKind::Dm | ConversationKind::Notices => label.clone(),
-            _ => label.strip_prefix('#').unwrap_or(&label).to_owned(),
-        };
+        let shown = label.clone();
         // As many characters as the row has room for, ending in an
         // ellipsis rather than a glyph cut in half: what is left of the
         // row after its padding, mark and counts, at the width of an
@@ -485,10 +473,7 @@ impl App {
                 })
                 .unwrap_or_default();
             let budget = ((room / 6.6) as usize).max(8);
-            let preview = if matches!(
-                summary.kind,
-                ConversationKind::Dm | ConversationKind::Notices
-            ) {
+            let preview = if summary.kind == ConversationKind::Dm {
                 first_line(line, budget)
             } else {
                 first_line(&format!("{who}: {line}"), budget)
@@ -533,9 +518,7 @@ impl App {
             control_id,
             label,
             content,
-            Some(Message::SelectConversation(
-                summary.conversation.as_str().to_owned(),
-            )),
+            Some(open),
             selected,
             Kind::Quiet,
             [6, 8],
@@ -552,35 +535,42 @@ impl App {
         // The rows' own width: the column less the scrollbar's lane.
         let row_width = width - 14.0;
         let filter = self.shell.messages_search.trim().to_lowercase();
-        let matches = |summary: &ConversationSummary| {
+        let matches = |label: &str, summary: &ConversationSummary| {
             filter.is_empty()
-                || self
-                    .conversation_label(summary)
-                    .to_lowercase()
-                    .contains(&filter)
+                || label.to_lowercase().contains(&filter)
                 || summary.title.to_lowercase().contains(&filter)
         };
-        let mut channels: Vec<&ConversationSummary> = Vec::new();
-        // What AgentDocker itself writes — notices to an agent, the rooms
-        // it opens between two checkouts — is one folded group, never in
-        // among the person's conversations.
-        let mut system: Vec<&ConversationSummary> = Vec::new();
+        // Each project's chat, by its project's name; the person's own
+        // direct messages; what two agents said to each other, folded; and
+        // conversations with sessions that have ended, folded under
+        // Earlier. Nothing else is listed: `#all`, channels, contested
+        // rooms and AgentDocker's notices to an agent are the CLI's.
+        let mut projects: Vec<(String, &ConversationSummary)> = Vec::new();
         let mut direct: Vec<&ConversationSummary> = Vec::new();
         let mut peers: Vec<&ConversationSummary> = Vec::new();
         let mut earlier: Vec<&ConversationSummary> = Vec::new();
-        for summary in self.conversations.iter().filter(|s| matches(s)) {
+        for summary in &self.conversations {
             match summary.kind {
-                ConversationKind::Everyone | ConversationKind::All | ConversationKind::Channel => {
-                    channels.push(summary);
+                ConversationKind::Everyone => {
+                    let (name, _) = self.chat_row_project(summary);
+                    if matches(&name, summary) {
+                        projects.push((name, summary));
+                    }
                 }
-                ConversationKind::Collision | ConversationKind::Notices => system.push(summary),
                 // The person's own direct messages are the list; what two
                 // agents said to each other is a group of its own, folded.
-                ConversationKind::Dm => match self.counterpart(summary) {
-                    Some(id) if self.agent_live(id) => direct.push(summary),
-                    Some(_) => earlier.push(summary),
-                    None => peers.push(summary),
-                },
+                ConversationKind::Dm if matches(&self.conversation_label(summary), summary) => {
+                    match self.counterpart(summary) {
+                        Some(id) if self.agent_live(id) => direct.push(summary),
+                        Some(_) => earlier.push(summary),
+                        None => peers.push(summary),
+                    }
+                }
+                ConversationKind::Dm
+                | ConversationKind::All
+                | ConversationKind::Channel
+                | ConversationKind::Collision
+                | ConversationKind::Notices => {}
             }
         }
         // An identity's older conversations — keyed by a former id — are
@@ -589,23 +579,7 @@ impl App {
         // once.
         let (direct, folded) = self.fold_direct(direct);
         earlier.extend(folded);
-        system.sort_by_key(|s| {
-            (
-                matches!(s.kind, ConversationKind::Notices),
-                self.conversation_label(s).to_lowercase(),
-            )
-        });
-        // The broadcast first, then named rooms by their names.
-        channels.sort_by_key(|s| {
-            (
-                match s.kind {
-                    ConversationKind::Everyone => 0,
-                    ConversationKind::All => 1,
-                    _ => 2,
-                },
-                self.conversation_label(s),
-            )
-        });
+        projects.sort_by_key(|(name, _)| name.to_lowercase());
         let mut list = column![].spacing(2);
         // A reply from a notification that did not go, whose conversation
         // could not be opened either: reachable here whatever is on view.
@@ -642,7 +616,7 @@ impl App {
         }
         // Find one, or start one: the search and, beside it, the way to a
         // conversation that does not exist yet.
-        let form_open = self.new_conversation.is_some();
+        let form_open = self.new_conversation;
         list = list.push(
             row![
                 input_enabled(
@@ -654,11 +628,7 @@ impl App {
                 ),
                 custom_sized(
                     "new-conversation",
-                    if form_open {
-                        "Close"
-                    } else {
-                        "New message or channel"
-                    },
+                    if form_open { "Close" } else { "New message" },
                     container(icon(
                         if form_open { Icon::Close } else { Icon::Add },
                         if form_open { c.accent_ink } else { c.muted },
@@ -675,15 +645,15 @@ impl App {
             .spacing(6)
             .align_y(Center),
         );
-        if let Some(form) = &self.new_conversation {
-            list = list.push(container(self.new_conversation_form(form, c)).padding(
-                iced::Padding {
+        if form_open {
+            list = list.push(
+                container(self.new_conversation_form(c)).padding(iced::Padding {
                     top: 6.0,
                     right: 0.0,
                     bottom: 4.0,
                     left: 0.0,
-                },
-            ));
+                }),
+            );
         }
         let unread_total = self.unread_total();
         if unread_total > 0 {
@@ -730,11 +700,11 @@ impl App {
                 }),
             );
         }
-        list = list.push(section_label("Channels", c));
-        if channels.is_empty() {
-            list = list.push(container(note("No channels yet.", c).size(12)).padding([2, 8]));
+        list = list.push(section_label("Projects", c));
+        if projects.is_empty() {
+            list = list.push(container(note("No project chat yet.", c).size(12)).padding([2, 8]));
         }
-        for summary in channels {
+        for (_, summary) in projects {
             list = list.push(self.conversation_row(summary, None, row_width, c));
         }
         list = list.push(section_label("Direct messages", c));
@@ -746,26 +716,6 @@ impl App {
         }
         // What is read rather than answered folds away under the lists.
         let mut folds = column![].spacing(2);
-        if !system.is_empty() {
-            let open = self.shell.collisions_open;
-            folds = folds.push(group_header(
-                "collisions-toggle",
-                "From AgentDocker",
-                system.len(),
-                open,
-                Message::ToggleCollisions,
-                c,
-            ));
-            if open {
-                folds = folds.push(guided(
-                    system
-                        .into_iter()
-                        .map(|summary| self.conversation_row(summary, None, row_width - 21.0, c))
-                        .collect(),
-                    c,
-                ));
-            }
-        }
         if !peers.is_empty() {
             let open = self.shell.peers_open;
             folds = folds.push(group_header(
@@ -1045,6 +995,46 @@ impl App {
                 Kind::Inline,
                 [2, 0],
             )]);
+        }
+        // Where the person's message stands with each agent it went to, as
+        // the daemon saw it: one quiet line each, and never "read".
+        if !in_thread
+            && self.is_human(from)
+            && let Some(recipients) = self.deliveries.get(&id).filter(|r| !r.is_empty())
+        {
+            use agentdocker_core::delivery::State as Delivery;
+            let mut lines = column![].spacing(2);
+            for recipient in recipients {
+                let state = recipient.state;
+                let tone = match state {
+                    Delivery::Answered => c.accent,
+                    Delivery::Delivered | Delivery::Received | Delivery::Shown => c.green,
+                    Delivery::Paused | Delivery::Blocked | Delivery::Silent | Delivery::Ended => {
+                        c.amber
+                    }
+                    _ => c.faint,
+                };
+                let who = recipient
+                    .name
+                    .as_ref()
+                    .map(|_| self.name_of(recipient.agent.as_str()))
+                    .unwrap_or_else(|| recipient.agent.short().to_owned());
+                lines = lines.push(
+                    row![
+                        super::view::dot(tone, 6.0, c),
+                        text(format!("{who} · {}", state.label()))
+                            .size(12)
+                            .color(if state.reached() { c.muted } else { c.faint })
+                            .wrapping(iced::widget::text::Wrapping::None),
+                    ]
+                    .spacing(6)
+                    .align_y(Center),
+                );
+            }
+            words = words.push(container(lines).padding(iced::Padding {
+                top: 4.0,
+                ..iced::Padding::ZERO
+            }));
         }
         let mark: Element<'_, Message> = if system {
             disc(Icon::Pulse, mark_size, c)
@@ -1440,8 +1430,8 @@ impl App {
     }
 
     /// The live agents the person can talk to, in the project the sidebar
-    /// is scoped to when it is: who a direct message can go to, who a
-    /// channel can hold.
+    /// is scoped to when it is: who a direct message can go to, and who a
+    /// project's chat can mention.
     fn agents_to_talk_to(&self) -> Vec<&AgentRecord> {
         let naming = self.naming();
         let mut agents: Vec<&AgentRecord> = self
@@ -1508,373 +1498,68 @@ impl App {
             .into()
     }
 
-    /// A field's name over it, with an optional quieter note.
-    fn field_label<'a>(name: &str, note_text: Option<&str>, c: Colors) -> Element<'a, Message> {
-        let mut line = row![
-            text(name.to_owned())
-                .size(12)
-                .font(weight(iced::font::Weight::Medium))
-                .color(c.muted)
-        ]
-        .spacing(6)
-        .align_y(Center);
-        if let Some(note_text) = note_text {
-            line = line.push(text(note_text.to_owned()).size(12).color(c.faint));
-        }
-        line.into()
-    }
-
-    /// A drawn checkbox: an accent square with a tick, or an empty edge.
-    fn checkbox<'a>(checked: bool, c: Colors) -> Element<'a, Message> {
-        let tick: Element<'a, Message> = if checked {
-            icon(Icon::Check, iced::Color::WHITE, 11.0)
-        } else {
-            Space::new().width(11).height(11).into()
-        };
-        container(tick)
-            .center(16)
-            .style(move |_| iced::widget::container::Style {
-                background: Some(if checked { c.accent } else { c.card }.into()),
-                border: iced::Border {
-                    color: if checked { c.accent } else { c.line_strong },
-                    width: 1.0,
-                    radius: super::style::RADIUS_XS.into(),
-                },
-                ..Default::default()
-            })
-            .into()
-    }
-
-    /// One choice of the Direct message | Channel switch, half the track.
-    fn kind_segment<'a>(
-        id: &str,
-        label: &str,
-        message: Message,
-        selected: bool,
-    ) -> Element<'a, Message> {
-        custom_sized(
-            id.to_owned(),
-            label.to_owned(),
-            container(
-                text(label.to_owned())
-                    .size(13)
-                    .line_height(iced::Pixels(18.0))
-                    .font(weight(iced::font::Weight::Medium)),
-            )
-            .center_x(Fill),
-            Some(message),
-            selected,
-            Kind::Segment,
-            [5, 10],
-            Fill,
-        )
-    }
-
-    /// Starting a conversation, the way Slack's New message does: a direct
-    /// message is one pick from the agents here; a channel is a name,
-    /// what it is for, and who is in it — everyone here when nobody is
-    /// picked — and the person is in it as its opener.
-    fn new_conversation_form(
-        &self,
-        form: &super::NewConversation,
-        c: Colors,
-    ) -> Element<'_, Message> {
-        use super::NewKind;
-        if let Some(channel) = &form.invite {
-            return self.invite_members_form(form, channel, c);
-        }
+    /// Starting a conversation, the way Slack's New message does: one pick
+    /// from the agents here opens the direct conversation with it.
+    fn new_conversation_form(&self, c: Colors) -> Element<'_, Message> {
         let agents = self.agents_to_talk_to();
         let human = self
             .agents
             .iter()
             .find(|a| self.is_human(a.id.as_str()))
             .map(|a| a.id.as_str().to_owned());
-        let kinds = container(
-            row![
-                Self::kind_segment(
-                    "new-kind-direct",
-                    "Direct message",
-                    Message::NewConversationKind(NewKind::Direct),
-                    form.kind == NewKind::Direct,
-                ),
-                Self::kind_segment(
-                    "new-kind-channel",
-                    "Channel",
-                    Message::NewConversationKind(NewKind::Channel),
-                    form.kind == NewKind::Channel,
-                ),
-            ]
-            .spacing(2),
-        )
-        .padding(2)
-        .width(Fill)
-        .style(move |_| iced::widget::container::Style {
-            background: Some(if c.dark { c.ground } else { c.raised }.into()),
-            border: iced::Border {
-                color: c.line,
-                width: 1.0,
-                radius: super::style::RADIUS_MD.into(),
-            },
-            ..Default::default()
-        });
         let mut body = column![
-            text("New conversation")
-                .size(14)
-                .font(weight(iced::font::Weight::Semibold)),
-            kinds
-        ]
-        .spacing(10);
-        match form.kind {
-            NewKind::Direct => {
-                if agents.is_empty() {
-                    body = body.push(note("No agent is running here to message.", c).size(12));
-                } else {
-                    let rows = agents
-                        .into_iter()
-                        .map(|agent| {
-                            let id = agent.id.as_str();
-                            let conversation = human.as_deref().map(|me| {
-                                agentdocker_core::ConversationId::dm(me, id)
-                                    .as_str()
-                                    .to_owned()
-                            });
-                            let shown = self.name_of(id);
-                            custom(
-                                format!("new-direct-{id}"),
-                                shown.clone(),
-                                row![
-                                    with_presence(
-                                        super::view::agent_mark(
-                                            Some(agent.spec.runtime.as_str()),
-                                            &shown,
-                                            id,
-                                            24.0,
-                                            c
-                                        ),
-                                        24.0,
-                                        Some(c.green),
-                                        c.card,
-                                    ),
-                                    column![
-                                        text(shown)
-                                            .size(13)
-                                            .font(weight(iced::font::Weight::Medium)),
-                                        text(self.tool_of(id)).size(12).color(c.muted),
-                                    ]
-                                    .spacing(1),
-                                ]
-                                .spacing(10)
-                                .align_y(Center),
-                                conversation.map(Message::NewDirect),
-                                false,
-                                Kind::Quiet,
-                                [6, 8],
-                            )
-                        })
-                        .collect();
-                    body = body.push(Self::bordered_list(rows, c));
-                }
-            }
-            NewKind::Channel => {
-                let ready = self.connected.is_ok() && !form.creating && !form.name.is_empty();
-                let create = ready.then_some(Message::CreateChannel);
-                body = body.push(
-                    column![
-                        Self::field_label("Name", None, c),
-                        input_submitting(
-                            "new-channel-name",
-                            "Name, like planning",
-                            &form.name,
-                            Message::NewChannelName,
-                            !form.creating,
-                            create.clone(),
-                        ),
-                    ]
-                    .spacing(5),
-                );
-                body = body.push(
-                    column![
-                        Self::field_label("Purpose", Some("optional"), c),
-                        input_submitting(
-                            "new-channel-purpose",
-                            "What it is for",
-                            &form.purpose,
-                            Message::NewChannelPurpose,
-                            !form.creating,
-                            create.clone(),
-                        ),
-                    ]
-                    .spacing(5),
-                );
-                let who = if form.members.is_empty() {
-                    "everyone here; pick some to narrow it".to_owned()
-                } else {
-                    format!("you and {}", form.members.len())
-                };
-                let mut members = column![Self::field_label("Members", Some(&who), c)].spacing(5);
-                if agents.is_empty() {
-                    members = members.push(note("No agent is running here.", c).size(12));
-                } else {
-                    let rows = agents
-                        .into_iter()
-                        .map(|agent| {
-                            let id = agent.id.as_str();
-                            let picked = form.members.contains(&agent.id);
-                            let shown = self.name_of(id);
-                            custom(
-                                format!("new-member-{id}"),
-                                shown.clone(),
-                                row![
-                                    Self::checkbox(picked, c),
-                                    super::view::agent_mark(
-                                        Some(agent.spec.runtime.as_str()),
-                                        &shown,
-                                        id,
-                                        20.0,
-                                        c
-                                    ),
-                                    container(
-                                        text(shown)
-                                            .size(13)
-                                            .font(weight(iced::font::Weight::Medium))
-                                            .wrapping(iced::widget::text::Wrapping::None),
-                                    )
-                                    .width(Fill)
-                                    .clip(true),
-                                    text(self.tool_of(id)).size(12).color(c.faint),
-                                ]
-                                .spacing(9)
-                                .align_y(Center),
-                                (!form.creating)
-                                    .then_some(Message::NewChannelMember(agent.id.clone())),
-                                false,
-                                Kind::Quiet,
-                                [6, 8],
-                            )
-                        })
-                        .collect();
-                    members = members.push(Self::bordered_list(rows, c));
-                }
-                body = body.push(members);
-                body = body.push(
-                    row![
-                        Space::new().width(Fill),
-                        primary(
-                            "new-channel-create",
-                            if form.creating {
-                                "Opening…"
-                            } else {
-                                "Create channel"
-                            },
-                            create,
-                        )
-                    ]
-                    .align_y(Center),
-                );
-            }
-        }
-        if let Some(error) = &form.error {
-            body = body.push(status_line(c.amber, error.clone(), c.amber, Vec::new(), c));
-        }
-        container(body)
-            .padding(12)
-            .width(Fill)
-            .style(move |_| c.card_style())
-            .into()
-    }
-
-    fn invite_members_form(
-        &self,
-        form: &super::NewConversation,
-        channel: &str,
-        c: Colors,
-    ) -> Element<'_, Message> {
-        let summary = self.conversations.iter().find(|s| {
-            s.conversation
-                .channel_id()
-                .is_some_and(|id| id.as_str() == channel)
-        });
-        let Some(summary) = summary.filter(|s| {
-            self.channels
-                .iter()
-                .any(|item| item.id.as_str() == channel && item.is_open())
-                && s.members.iter().any(|id| self.is_human(id.as_str()))
-        }) else {
-            return panel(
-                container(note(
-                    "This channel is no longer available to add members.",
-                    c,
-                ))
-                .padding(8),
-                c,
-            );
-        };
-        let agents: Vec<_> = self
-            .agents_to_talk_to()
-            .into_iter()
-            .filter(|agent| {
-                !summary.members.contains(&agent.id) && !form.members.contains(&agent.id)
-            })
-            .collect();
-        let mut body = column![
-            text(format!("Add to {}", self.conversation_label(summary)))
+            text("New message")
                 .size(14)
                 .font(weight(iced::font::Weight::Semibold))
         ]
         .spacing(10);
         if agents.is_empty() {
-            body = body.push(note("All available agents are already members.", c).size(12));
+            body = body.push(note("No agent is running here to message.", c).size(12));
         } else {
             let rows = agents
                 .into_iter()
                 .map(|agent| {
                     let id = agent.id.as_str();
+                    let conversation = human.as_deref().map(|me| {
+                        agentdocker_core::ConversationId::dm(me, id)
+                            .as_str()
+                            .to_owned()
+                    });
                     let shown = self.name_of(id);
-                    container(
+                    custom(
+                        format!("new-direct-{id}"),
+                        shown.clone(),
                         row![
-                            super::view::agent_mark(
-                                Some(agent.spec.runtime.as_str()),
-                                &shown,
-                                id,
+                            with_presence(
+                                super::view::agent_mark(
+                                    Some(agent.spec.runtime.as_str()),
+                                    &shown,
+                                    id,
+                                    24.0,
+                                    c
+                                ),
                                 24.0,
-                                c
+                                Some(c.green),
+                                c.card,
                             ),
                             column![
-                                text(shown.clone())
+                                text(shown)
                                     .size(13)
                                     .font(weight(iced::font::Weight::Medium)),
                                 text(self.tool_of(id)).size(12).color(c.muted),
                             ]
-                            .spacing(1)
-                            .width(Fill),
-                            custom(
-                                format!("invite-member-{}", agent.id),
-                                format!("Add {shown}"),
-                                text("Add")
-                                    .size(13)
-                                    .line_height(iced::Pixels(crate::controls::LABEL_LINE))
-                                    .font(weight(iced::font::Weight::Medium)),
-                                (!form.creating && self.connected.is_ok())
-                                    .then(|| Message::InviteMember(agent.id.to_string())),
-                                false,
-                                Kind::Secondary,
-                                [5, 12],
-                            ),
+                            .spacing(1),
                         ]
                         .spacing(10)
                         .align_y(Center),
+                        conversation.map(Message::NewDirect),
+                        false,
+                        Kind::Quiet,
+                        [6, 8],
                     )
-                    .padding([6, 8])
-                    .into()
                 })
                 .collect();
             body = body.push(Self::bordered_list(rows, c));
-        }
-        if form.creating {
-            body = body.push(note("Adding member…", c).size(12));
-        }
-        if let Some(error) = &form.error {
-            body = body.push(status_line(c.amber, error.clone(), c.amber, Vec::new(), c));
         }
         container(body)
             .padding(12)
@@ -1888,7 +1573,7 @@ impl App {
         let Some(summary) = self.open_summary() else {
             return empty(
                 "Pick a conversation",
-                "Channels, direct messages with your agents, and what AgentDocker told them are on the left.",
+                "Each project's chat and your direct messages with your agents are on the left.",
                 None,
                 c,
             );
@@ -1896,24 +1581,13 @@ impl App {
         let label = self.conversation_label(&summary);
         let key = summary.conversation.as_str().to_owned();
         // The name on one line, what the room is about on the next: a
-        // channel's task or contested paths, a pair's branches, a
-        // broadcast's members. Neither repeats the other.
+        // project's participants, a pair's branches. Neither repeats the
+        // other.
         let members = summary.members.len();
         let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
         let topic = match summary.kind {
             ConversationKind::Everyone => {
                 format!("{} · {}", summary.title, plural(members, "participant"))
-            }
-            ConversationKind::All => "every agent on this machine".to_owned(),
-            ConversationKind::Channel => {
-                format!("{} · {}", summary.title, plural(members, "member"))
-            }
-            ConversationKind::Collision => {
-                format!(
-                    "contested: {} · {}",
-                    summary.title,
-                    plural(members, "member")
-                )
             }
             // A live session's branch belongs here, under the name.
             ConversationKind::Dm => match self.counterpart(&summary) {
@@ -1934,14 +1608,11 @@ impl App {
                     None => "between two agents · read only".to_owned(),
                 },
             },
-            ConversationKind::Notices => format!(
-                "what AgentDocker told {}",
-                summary
-                    .conversation
-                    .notices_agent()
-                    .map(|a| self.name_of(a.as_str()))
-                    .unwrap_or_else(|| "this agent".to_owned())
-            ),
+            // Never opened here (`open_summary`).
+            ConversationKind::All
+            | ConversationKind::Channel
+            | ConversationKind::Collision
+            | ConversationKind::Notices => String::new(),
         };
         // The name on one line, what the room is about under it; a direct
         // conversation leads with the other party's mark and presence.
@@ -1982,37 +1653,6 @@ impl App {
             .spacing(1)
             .width(Fill),
         );
-        if matches!(
-            summary.kind,
-            ConversationKind::Channel | ConversationKind::Collision
-        ) {
-            // An overlap room is folded on Channels: going to it on purpose
-            // opens the fold, or Reviews would land where it is hidden.
-            title_row = title_row.push(crate::controls::ghost(
-                "open-channel-tools",
-                "Reviews",
-                Some(if summary.kind == ConversationKind::Collision {
-                    Message::ReviewOverlaps
-                } else {
-                    Message::Navigate(Screen::Channels)
-                }),
-            ));
-        }
-        if summary.kind == ConversationKind::Channel
-            && summary.members.iter().any(|id| self.is_human(id.as_str()))
-            && let Some(channel) = summary.conversation.channel_id()
-            && self
-                .channels
-                .iter()
-                .any(|item| item.id == channel && item.is_open())
-        {
-            title_row = title_row.push(crate::controls::button(
-                "invite-channel",
-                "Add members",
-                Some(Message::InviteChannel(channel.to_string())),
-                false,
-            ));
-        }
         let header = container(title_row).padding(iced::Padding {
             top: 2.0,
             right: 0.0,
@@ -2107,10 +1747,25 @@ impl App {
                 }
             }
         }
+        // A question put to every agent (`all`, which only the CLI lists)
+        // waits in the conversation with whoever asked it, so it is still
+        // answered here.
+        if summary.kind == ConversationKind::Dm
+            && let Some(asker) = self.counterpart(&summary)
+        {
+            let asker = self.canonical_agent(asker);
+            let now = Utc::now();
+            for question in self.questions.iter().filter(|q| {
+                q.to == agentdocker_core::Destination::Broadcast
+                    && !q.expired(now)
+                    && self.canonical_agent(&q.from) == asker
+            }) {
+                list = list.push(container(self.question_card(question, c)).padding([6, 8]));
+            }
+        }
         let destination = self.conversation_destination(&key);
         let can_send = self.conversation_can_send(&key);
         let placeholder = match summary.kind {
-            ConversationKind::Notices => "AgentDocker's notices; nothing to reply to".to_owned(),
             ConversationKind::Dm if destination.is_none() => {
                 "A conversation between two agents; you are not in it".to_owned()
             }
@@ -2411,10 +2066,10 @@ mod tests {
         assert_eq!(fit("abcdef", 0), "abc…");
     }
 
-    /// The badge counts what the person owes: a channel, a broadcast and
-    /// their own direct messages. A collision room's contested-path notices,
-    /// a pair of agents' words and the daemon's notices to an agent are
-    /// read without being owed.
+    /// The badge counts what the person owes: each project's chat and
+    /// their own direct messages. `#all`, channels and contested rooms are
+    /// not in the app; a pair of agents' words and the daemon's notices to
+    /// an agent are read without being owed.
     #[test]
     fn the_badge_counts_only_what_the_person_owes() {
         let (commands, _requests) = queue::channel();
@@ -2451,7 +2106,7 @@ mod tests {
             ),
             summary("notices:agent-a", "notices", 18),
         ];
-        assert_eq!(app.unread_total(), 3 + 1 + 11 + 2);
+        assert_eq!(app.unread_total(), 3 + 2);
         let owed: Vec<&str> = app
             .conversations
             .iter()
@@ -2460,22 +2115,199 @@ mod tests {
             .collect();
         assert_eq!(
             owed,
-            [
-                "everyone:project",
-                "all",
-                "channel:named",
-                "dm:agent-a:human-id"
-            ],
-            "collision rooms, peers and notices are read, not owed"
+            ["everyone:project", "dm:agent-a:human-id"],
+            "#all, channels, contested rooms, peers and notices are not owed"
         );
-        // The room's own row still says what is unread in it.
-        let contested = app
-            .conversations
-            .iter()
-            .find(|c| c.kind == ConversationKind::Collision)
-            .unwrap();
-        assert!(!app.counts_for_person(contested));
-        assert_eq!(app.row_unread(contested), 218);
+        // No row anywhere says otherwise.
+        for summary in &app.conversations {
+            if !app.counts_for_person(summary) {
+                assert_eq!(app.row_unread(summary), 0, "{}", summary.conversation);
+            }
+        }
+        for (conversation, hidden) in [
+            ("all", true),
+            ("channel:named", true),
+            ("everyone:project", false),
+            ("dm:agent-a:human-id", false),
+            ("notices:agent-a", false),
+        ] {
+            assert_eq!(hidden_conversation(conversation), hidden, "{conversation}");
+        }
+    }
+
+    /// The ids of the controls an element offers and the texts it reads,
+    /// for what a rail or a pane shows.
+    fn rendered(mut element: Element<'_, Message>) -> (Vec<String>, Vec<String>) {
+        use iced::advanced::widget::{Operation, Tree, operation::Outcome};
+        use iced::advanced::{Layout, layout};
+        #[derive(Default)]
+        struct Ids(Vec<String>, Vec<String>);
+        impl Operation for Ids {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+            fn text(
+                &mut self,
+                _: Option<&iced::advanced::widget::Id>,
+                _: iced::Rectangle,
+                text: &str,
+            ) {
+                self.1.push(text.to_owned());
+            }
+            fn custom(
+                &mut self,
+                _: Option<&iced::advanced::widget::Id>,
+                _: iced::Rectangle,
+                state: &mut dyn std::any::Any,
+            ) {
+                if let Some(semantic) = state.downcast_ref::<crate::accessibility::Semantic>() {
+                    self.0.push(semantic.id.clone());
+                }
+            }
+            fn finish(&self) -> Outcome<()> {
+                Outcome::None
+            }
+        }
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, 14.0.into());
+        let mut tree = Tree::new(&element);
+        let node = element.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(iced::Size::ZERO, iced::Size::new(360.0, 6000.0)),
+        );
+        let mut ids = Ids::default();
+        element
+            .as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &renderer, &mut ids);
+        (ids.0, ids.1)
+    }
+
+    fn control_ids(element: Element<'_, Message>) -> Vec<String> {
+        rendered(element).0
+    }
+
+    /// A question put to every agent (`all`, which the app does not list)
+    /// is answered in the direct conversation with whoever asked it: its
+    /// card is there, and only there and only while it waits.
+    #[test]
+    fn a_question_to_every_agent_waits_in_the_askers_direct_conversation() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        app.conversations_supported = Some(true);
+        let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
+        human.id = AgentId::from("human-id");
+        let mut asker = record("codex-1", "codex", Some(1));
+        asker.id = AgentId::from("asker");
+        let mut other = record("codex-2", "codex", Some(2));
+        other.id = AgentId::from("other");
+        app.agents = vec![human, asker, other];
+        let question =
+            |id: &str, from: &str, to: agentdocker_core::Destination| agentdocker_core::Question {
+                id: MessageId::from(id.to_owned()),
+                from: from.into(),
+                to,
+                text: format!("question {id} for everyone"),
+                presentation: None,
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+            };
+        app.questions = vec![
+            question(
+                "broadcast",
+                "asker",
+                agentdocker_core::Destination::Broadcast,
+            ),
+            question(
+                "elsewhere",
+                "other",
+                agentdocker_core::Destination::Broadcast,
+            ),
+        ];
+        let direct = agentdocker_core::ConversationId::dm("human-id", "asker").to_string();
+        app.shell.conversation = Some(direct.clone());
+        app.history.insert(direct.clone(), Vec::new());
+        let reads = |app: &App, words: &str| {
+            rendered(app.messages_pane(Colors::new(false)))
+                .1
+                .iter()
+                .any(|t| t.contains(words))
+        };
+        assert!(reads(&app, "question broadcast for everyone"));
+        assert!(!reads(&app, "question elsewhere for everyone"));
+        app.questions[0].expires_at = Utc::now() - chrono::Duration::seconds(1);
+        assert!(!reads(&app, "question broadcast for everyone"));
+    }
+
+    /// The rail is each project's chat, named for its project and opening
+    /// its Chat, and the person's direct messages; `#all`, channels,
+    /// contested rooms and AgentDocker's notices are not listed, nor is a
+    /// way to start a channel.
+    #[test]
+    fn the_rail_lists_project_chats_and_direct_messages_only() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        app.conversations_supported = Some(true);
+        let mut project = ProjectRef::directory("/fixture/alpha");
+        project.fingerprint = Some("alpha-fingerprint".into());
+        app.shell.catalog.remember(project.clone(), false);
+        let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
+        human.id = AgentId::from("human-id");
+        let mut agent = record("codex-1", "codex", Some(1));
+        agent.id = AgentId::from("agent-a");
+        agent.project = Some(project.clone());
+        app.agents = vec![human, agent];
+        let summary = |conversation: &str, kind: &str, title: &str| -> ConversationSummary {
+            serde_json::from_value(serde_json::json!({
+                "conversation": conversation, "kind": kind, "title": title,
+                "members": [], "unread": 1, "last_seq": 4,
+            }))
+            .unwrap()
+        };
+        let chat = format!("everyone:{}", project.id());
+        app.conversations = vec![
+            summary(&chat, "everyone", "alpha"),
+            summary("all", "all", "all"),
+            summary("channel:named", "channel", "planning"),
+            summary("channel:contested", "collision", "a.rs, b.rs"),
+            summary("notices:agent-a", "notices", "AgentDocker"),
+            summary(
+                agentdocker_core::ConversationId::dm("human-id", "agent-a").as_str(),
+                "dm",
+                "",
+            ),
+        ];
+        let ids = control_ids(app.messages_sidebar_at(360.0, Colors::new(false)));
+        assert!(ids.contains(&format!("conversation-{chat}")), "{ids:?}");
+        assert!(ids.contains(&"thread-agent-a".to_owned()), "{ids:?}");
+        for hidden in [
+            "conversation-all",
+            "conversation-channel:",
+            "conversation-notices:",
+            "collisions-toggle",
+        ] {
+            assert!(
+                !ids.iter().any(|id| id.contains(hidden)),
+                "{hidden} is not listed: {ids:?}"
+            );
+        }
+        // Its row is the project's name and opens the project's Chat.
+        let row = app.conversations[0].clone();
+        assert_eq!(app.chat_row_project(&row).0, "alpha");
+        let _ = app.update(Message::SelectProject("/fixture/alpha".into()));
+        assert_eq!(app.screen, Screen::Chat);
+        assert_eq!(app.shell.conversation.as_deref(), Some(chat.as_str()));
+        // The new-conversation form picks an agent; it starts no channel.
+        let _ = app.update(Message::NewConversation);
+        let ids = control_ids(app.messages_sidebar_at(360.0, Colors::new(false)));
+        assert!(ids.contains(&"new-direct-agent-a".to_owned()), "{ids:?}");
+        assert!(!ids.iter().any(|id| id.contains("channel")), "{ids:?}");
+        // A hidden conversation is never opened, even when asked by id.
+        app.shell.conversation = Some("channel:named".into());
+        assert!(app.open_summary().is_none());
     }
 
     #[test]
@@ -2490,13 +2322,13 @@ mod tests {
             app.agents.push(agent);
         }
         let summary = serde_json::from_value(serde_json::json!({
-            "conversation":"channel:room", "kind":"channel", "title":"room", "members":["member"],
-            "unread":0, "mentions":0, "open":true
+            "conversation":"everyone:project", "kind":"everyone", "title":"project", "members":["member"],
+            "unread":0, "mentions":0
         }))
         .unwrap();
         app.conversations.push(summary);
         app.aliases.insert("retired".into(), "member".into());
-        for conversation in ["channel:room", "dm:user:member", "dm:user:retired"] {
+        for conversation in ["everyone:project", "dm:user:member", "dm:user:retired"] {
             let ids: Vec<&str> = app
                 .mention_recipients(conversation)
                 .iter()
@@ -2504,9 +2336,9 @@ mod tests {
                 .collect();
             assert_eq!(ids, ["member"], "{conversation}");
         }
-        assert!(app.mention_recipients("channel:missing").is_empty());
+        assert!(app.mention_recipients("everyone:missing").is_empty());
         app.agents[0].status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
-        assert!(app.mention_recipients("channel:room").is_empty());
+        assert!(app.mention_recipients("everyone:project").is_empty());
         assert!(app.mention_recipients("dm:user:member").is_empty());
     }
 
@@ -2564,7 +2396,10 @@ mod tests {
         assert!(app.conversation_can_send(conversation));
         assert!(!app.conversation_can_send("dm:missing:user"));
         assert!(!app.conversation_can_send("dm:peer:worker"));
-        assert!(app.conversation_can_send("channel:room"));
+        assert!(app.conversation_can_send("everyone:project"));
+        // What the app leaves to the CLI is never written from it.
+        assert!(!app.conversation_can_send("channel:room"));
+        assert!(!app.conversation_can_send("all"));
         app.agents[0].status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
         assert!(!app.conversation_can_send(conversation));
         for key in &keys {
@@ -2593,9 +2428,8 @@ mod tests {
     }
 
     /// The list reads by stable names: a pair of agents as its two names,
-    /// a collision room as a count of paths, and a conversation keyed by a
-    /// former id of a live agent stands with the one keyed by its id now —
-    /// one identity, one row.
+    /// and a conversation keyed by a former id of a live agent stands with
+    /// the one keyed by its id now — one identity, one row.
     #[test]
     fn rows_are_named_stably_and_one_identity_is_one_row() {
         let (commands, _requests) = queue::channel();
@@ -2650,29 +2484,7 @@ mod tests {
                 super::naming::word_for("agent-c")
             )
         );
-        let contested = summary(
-            "channel:ee3cbc67d8b7",
-            "collision",
-            ".coderabbit.yaml, .config/nextest.toml, .github/workflows/ci.yml (+300 more)",
-            0,
-        );
-        assert_eq!(app.conversation_label(&contested), "Contested paths (303)");
-        assert_eq!(
-            App::contested_paths(&summary("channel:x", "collision", "a.rs, b.rs", 0)),
-            Some(2)
-        );
-        assert_eq!(
-            App::contested_paths(&summary("channel:x", "collision", "", 0)),
-            None
-        );
         let notice = summary("notices:agent-b", "notices", "", 0);
-        assert_eq!(
-            app.conversation_label(&notice),
-            format!(
-                "AgentDocker → Codex · {}",
-                super::naming::word_for("agent-b")
-            )
-        );
         assert_eq!(app.tool_of("agent-c"), "Claude Code");
 
         // Two direct conversations with one identity: the newer stands.
@@ -2741,7 +2553,7 @@ mod tests {
         let at = Utc::now();
         let message = |from: &str, kind: &str, minutes: i64| ArchivedMessage {
             seq: 0,
-            conversation: agentdocker_core::ConversationId::from("channel:room".to_owned()),
+            conversation: agentdocker_core::ConversationId::from("dm:agent-a:agent-b".to_owned()),
             envelope: {
                 let mut envelope = agentdocker_core::Envelope::new(
                     from,
@@ -2789,22 +2601,5 @@ mod tests {
             &message("agent-a", "chat", 1),
             true
         ));
-    }
-
-    #[test]
-    fn fallback_room_names_keep_unicode_boundaries() {
-        for (id, expected) in [
-            ("a", "room-a"),
-            ("abcdefg", "room-abcdef"),
-            ("abcde💬z", "room-abcde💬"),
-            ("💬📦🌍1234", "room-💬📦🌍123"),
-        ] {
-            let summary: ConversationSummary = serde_json::from_value(serde_json::json!({
-                "conversation": format!("channel:{id}"), "kind": "channel", "title": "",
-                "members": [], "unread": 0,
-            }))
-            .unwrap();
-            assert_eq!(App::short_room_name(&summary), expected);
-        }
     }
 }
