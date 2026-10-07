@@ -2169,6 +2169,33 @@ impl App {
                     .align_y(Center),
             );
         }
+        // What the sessions on view used over the last day, when collection
+        // is on: one quiet line, and the way to the Usage screen.
+        let used: Vec<_> = current
+            .iter()
+            .filter_map(|a| self.agent_tokens.get(a.id.as_str()))
+            .collect();
+        if filter == Filter::Current && !used.is_empty() {
+            let total = agentdocker_core::usage::report::Tokens {
+                sum: used.iter().map(|t| t.sum).fold(0, u64::saturating_add),
+                partial: used.iter().any(|t| t.partial),
+            };
+            let label = format!("{} tokens in the last 24h", total.label());
+            panel_col = panel_col.push(custom(
+                "sessions-tokens",
+                format!("{label}. Open Usage"),
+                row![
+                    text(label).size(12).color(c.muted),
+                    text("Usage ›").size(12).color(c.accent_ink)
+                ]
+                .spacing(8)
+                .align_y(Center),
+                Some(Message::Navigate(Screen::Usage)),
+                false,
+                Kind::Quiet,
+                [4, 6],
+            ));
+        }
         if let Some(strip) = self.needs_you(c) {
             panel_col = panel_col.push(strip);
         }
@@ -2432,7 +2459,21 @@ impl App {
                 branch.map(|b| format!("{b} · ")).unwrap_or_default(),
                 activity
             );
-            let spoken = format!("{name}\n{} · {}", agent.spec.runtime, meta);
+            // What its provider reported over the last day, when collection
+            // is on and it has any: a footnote, beside the branch.
+            let tokens = self
+                .agent_tokens
+                .get(&id)
+                .map(|t| format!("{} tokens in 24h", t.label()));
+            let spoken = format!(
+                "{name}\n{} · {}{}",
+                agent.spec.runtime,
+                meta,
+                tokens
+                    .as_ref()
+                    .map(|t| format!(" · {t}"))
+                    .unwrap_or_default()
+            );
             // A generated name already reads as the tool ("Claude Code ·
             // 0180d761"), so only a chosen name says the tool again.
             let mut facts = Vec::new();
@@ -2441,6 +2482,9 @@ impl App {
             }
             if let Some(branch) = branch {
                 facts.push(branch.to_owned());
+            }
+            if let Some(tokens) = tokens {
+                facts.push(tokens);
             }
             let mut words = column![
                 text(name.clone())

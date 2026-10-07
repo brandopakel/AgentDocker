@@ -164,8 +164,11 @@ Session rows show the session's mark — its tool's logo (Claude, OpenAI,
 Gemini, Copilot, Cursor, Windsurf, VS Code, OpenCode), or a letter tile for
 a tool without one — the name over its tool (only when the
 name is one somebody chose; a generated name already reads as the tool) and
-branch, the observed activity as a dot and a word, and how long it has run or
-since it ended. Sessions needing
+branch, with the tokens its provider reported over the last 24 hours when
+collection is on (`1.23M tokens in 24h`, `~` where some samples did not say,
+nothing where none did), the observed activity as a dot and a word, and how
+long it has run or since it ended. Above the Current list one quiet line sums
+those sessions' tokens and opens **Usage**. Sessions needing
 input appear first within each project. An ended Claude Code session that can
 come back carries **Reconnect here** on its row itself (the same action as in
 Details, which still says why a session cannot be reconnected yet); while its

@@ -903,18 +903,19 @@ pub fn counter(report: &agentdocker_core::usage::CounterReport) -> String {
     }
 }
 
-/// `12345678` as `12,345,678`.
-pub fn thousands(value: u64) -> String {
-    let digits = value.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
+/// Each agent's tokens over a usage report grouped by agent, as `ps`
+/// cells keyed by agent id.
+pub fn tokens_by_agent(
+    report: &agentdocker_core::usage::report::Report,
+) -> std::collections::HashMap<String, String> {
+    report
+        .tokens()
+        .into_iter()
+        .map(|(agent, tokens)| (agent, tokens.label()))
+        .collect()
 }
+
+pub use agentdocker_core::usage::thousands;
 
 /// A usage row's first column: the agent or project by name when it is
 /// still known, else its ID (history outlives the registry), and
