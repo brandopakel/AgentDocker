@@ -663,6 +663,9 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- Under your own messages in the app, one line per agent says where each
+  message stands: answered, delivered, received by the model, shown to its
+  session, or why it is still waiting.
 - The app keeps to each project's chat and your direct messages. Messages
   lists **Projects** (each project's chat, opening its Chat) and **Direct
   messages**; `#all`, channels and the rooms AgentDocker opens over contested

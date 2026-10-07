@@ -123,6 +123,8 @@ enum Cmd {
     Journal(String, String),
     Inbox,
     Activity,
+    /// Where one of the person's messages stands with each agent it went to.
+    Delivery(agentdocker_core::MessageId),
     /// The selected project's board.
     /// The selected project's board: a page from `offset`, `limit`
     /// cards at most (a refresh asks for as many as are on view), for
@@ -301,6 +303,11 @@ enum Msg {
     Journal(String, Option<u64>, Vec<JournalEntry>),
     Inbox(Vec<agentdocker_core::Envelope>),
     Activity(Vec<AgentActivity>),
+    /// Where one of the person's messages stands, or why it could not be read.
+    Delivery(
+        agentdocker_core::MessageId,
+        Result<Vec<agentdocker_core::delivery::Recipient>, String>,
+    ),
     /// The board of the project asked for.
     /// The board read for a project: its cards and whether the page
     /// cut the board short, or why it could not be read.
@@ -441,6 +448,9 @@ pub struct App {
     reveal_archived: Option<Seek>,
     /// Archived history per conversation, oldest first, as last fetched.
     history: BTreeMap<String, Vec<agentdocker_core::ArchivedMessage>>,
+    /// Where each of the person's newest messages in the open conversation
+    /// stands with each agent it went to, by message id.
+    deliveries: BTreeMap<agentdocker_core::MessageId, Vec<agentdocker_core::delivery::Recipient>>,
     /// Conversations whose earliest archived message is on view.
     history_complete: BTreeSet<String>,
     /// Advanced when the daemon prunes; archive replies from an earlier
@@ -606,6 +616,7 @@ impl App {
             new_conversation: false,
             reveal_archived: None,
             history: BTreeMap::new(),
+            deliveries: BTreeMap::new(),
             history_complete: BTreeSet::new(),
             history_epoch: 0,
             thread: None,
@@ -685,6 +696,7 @@ impl App {
             new_conversation: false,
             reveal_archived: None,
             history: BTreeMap::new(),
+            deliveries: BTreeMap::new(),
             history_complete: BTreeSet::new(),
             history_epoch: 0,
             thread: None,
@@ -1369,6 +1381,13 @@ impl App {
                         self.conversations_supported = Some(false);
                     }
                 },
+                Msg::Delivery(message, result) => {
+                    // An older daemon has no `delivery`: nothing is shown,
+                    // rather than a failure under every message.
+                    if let Ok(recipients) = result {
+                        self.deliveries.insert(message, recipients);
+                    }
+                }
                 Msg::History(conversation, epoch, messages) => {
                     if epoch != self.history_epoch {
                         continue;
@@ -1493,6 +1512,7 @@ impl App {
             ] {
                 self.send(cmd);
             }
+            self.request_deliveries();
         }
         if self.connected.is_ok() && self.last_runtimes.elapsed() >= RUNTIMES_REFRESH {
             self.last_runtimes = Instant::now();
@@ -1748,6 +1768,38 @@ impl App {
     /// expanded past its first page stays expanded through a refresh.
     /// Read the selected project's usage as the screen is set: its
     /// window and grouping.
+    /// Ask where the person's newest messages in the open conversation
+    /// stand, on the same beat as the rest of the screen. One whose every
+    /// recipient answered or can no longer take it is not asked again, and
+    /// what is no longer on view is let go.
+    fn request_deliveries(&mut self) {
+        const FOLLOWED: usize = 5;
+        let mine: Vec<agentdocker_core::MessageId> = self
+            .shell
+            .conversation
+            .as_ref()
+            .and_then(|open| self.history.get(open))
+            .map(|history| {
+                history
+                    .iter()
+                    .rev()
+                    .filter(|m| self.is_human(m.envelope.from.as_str()))
+                    .take(FOLLOWED)
+                    .map(|m| m.envelope.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.deliveries.retain(|id, _| mine.contains(id));
+        for message in mine {
+            let settled = self.deliveries.get(&message).is_some_and(|recipients| {
+                !recipients.is_empty() && recipients.iter().all(|r| r.state.settled())
+            });
+            if !settled {
+                self.send(Cmd::Delivery(message));
+            }
+        }
+    }
+
     pub(crate) fn request_usage(&mut self) {
         if self.connected.is_ok()
             && let Some(project) = self.selected_project_root()
@@ -2640,6 +2692,17 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::Tasks(project, request, result))
+        }
+        Cmd::Delivery(message) => {
+            let result = match client.call(&Request::Delivery {
+                message: message.clone(),
+            }) {
+                Ok(Response::Delivery { recipients, .. }) => Ok(recipients),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::Delivery(message, result))
         }
         Cmd::Usage {
             project,
@@ -5017,6 +5080,96 @@ pub(crate) mod tests {
         assert_eq!(requests.try_iter().count(), 0);
         app.send(Cmd::Agents);
         assert!(matches!(requests.try_iter().next(), Some(Cmd::Agents)));
+    }
+
+    /// Where the person's newest messages in the open conversation stand
+    /// is asked on each refresh, for five at most; one whose every
+    /// recipient answered is not asked again, and leaving the conversation
+    /// lets its answers go.
+    #[test]
+    fn the_persons_newest_messages_are_followed_until_settled() {
+        use agentdocker_core::delivery::{Recipient, State};
+        let (tx, requests) = queue::channel();
+        let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        let room = "everyone:project".to_owned();
+        app.shell.conversation = Some(room.clone());
+        let archived = |seq: u64| {
+            let from = if seq % 4 == 0 {
+                "agent-a"
+            } else {
+                agentdocker_core::HUMAN
+            };
+            agentdocker_core::ArchivedMessage {
+                seq,
+                conversation: agentdocker_core::ConversationId::from(room.clone()),
+                envelope: {
+                    let mut envelope = agentdocker_core::Envelope::new(
+                        from,
+                        agentdocker_core::Destination::Broadcast,
+                        "chat",
+                        serde_json::json!({ "text": format!("{seq}") }),
+                        None,
+                        Utc::now(),
+                    );
+                    envelope.id = MessageId::from(format!("m{seq}"));
+                    envelope
+                },
+                replies: 0,
+            }
+        };
+        messages
+            .send(Msg::History(
+                room.clone(),
+                app.history_epoch,
+                (1..=8).map(archived).collect(),
+            ))
+            .unwrap();
+        app.drain();
+        let _: Vec<_> = requests.try_iter().collect();
+        let asked = |app: &mut App| {
+            app.request_deliveries();
+            requests
+                .try_iter()
+                .filter_map(|cmd| match cmd {
+                    Cmd::Delivery(message) => Some(message.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(asked(&mut app), ["m7", "m6", "m5", "m3", "m2"]);
+
+        let recipient = |state| Recipient {
+            agent: agentdocker_core::AgentId::from("agent-a"),
+            name: Some("agent-a".into()),
+            runtime: None,
+            queued_at: Utc::now(),
+            offered_at: None,
+            received_at: None,
+            taken_at: None,
+            reply: None,
+            state,
+        };
+        for (message, state) in [("m7", State::Answered), ("m6", State::WaitingForPrompt)] {
+            messages
+                .send(Msg::Delivery(
+                    MessageId::from(message.to_owned()),
+                    Ok(vec![recipient(state)]),
+                ))
+                .unwrap();
+        }
+        app.drain();
+        assert_eq!(
+            asked(&mut app),
+            ["m6", "m5", "m3", "m2"],
+            "an answered message is not asked again"
+        );
+        assert_eq!(app.deliveries.len(), 2);
+
+        app.shell.conversation = None;
+        assert!(asked(&mut app).is_empty());
+        assert!(app.deliveries.is_empty(), "what is off view is let go");
     }
 
     /// A notification's message on the Messages screen is scrolled to

@@ -123,6 +123,12 @@ impl State {
         }
     }
 
+    /// Whether it can change no further: answered, or the agent can no
+    /// longer take it.
+    pub fn settled(self) -> bool {
+        matches!(self, Self::Answered | Self::Ended | Self::Gone)
+    }
+
     /// Whether the message has reached the agent's session at all.
     pub fn reached(self) -> bool {
         matches!(
