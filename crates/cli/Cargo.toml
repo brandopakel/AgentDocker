@@ -46,6 +46,7 @@ windows-sys.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
+rusqlite.workspace = true
 zip.workspace = true
 filetime.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

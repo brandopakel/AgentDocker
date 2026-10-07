@@ -621,6 +621,8 @@ enum Command {
     },
     /// Tokens the providers reported, with what the totals cover.
     Usage(UsageArgs),
+    /// Measure accounting SQLite storage in an existing home without starting a daemon.
+    UsageStorage(UsageStorageArgs),
     /// What each agent is doing: working, idle, or blocked on a named
     /// resource held by a named agent.
     Activity {
@@ -1225,6 +1227,13 @@ struct HandoffArgs {
 /// `kind:target` from the command line, checked for its kind's shape.
 fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
     agentdocker_core::Link::parse(text).map_err(str::to_owned)
+}
+
+#[derive(Args)]
+struct UsageStorageArgs {
+    /// Existing private AgentDocker state home to inspect; no database is created or migrated.
+    #[arg(long)]
+    home: PathBuf,
 }
 
 #[derive(Args)]
@@ -2795,6 +2804,9 @@ async fn run() -> Result<()> {
             if let Response::Activity { activity } = client.call(&request).await? {
                 print_activity(&client, &activity).await;
             }
+        }
+        Command::UsageStorage(args) => {
+            print_json(&agentd::usage_storage::inspect(&args.home)?)?;
         }
         Command::Usage(args) => {
             use agentdocker_core::usage::report::Group;

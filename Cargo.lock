@@ -165,6 +165,7 @@ dependencies = [
  "futures-util",
  "indexmap",
  "libc",
+ "rusqlite",
  "semver",
  "serde",
  "serde_json",

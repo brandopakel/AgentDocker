@@ -19,6 +19,7 @@ mod store;
 mod supervisor;
 #[cfg(unix)]
 mod takeover;
+pub mod usage_storage;
 mod watcher;
 
 use std::path::PathBuf;

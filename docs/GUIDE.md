@@ -295,6 +295,29 @@ delete accounting tables to make space: doing so can invalidate deduplication.
 AgentDocker's own injected overhead remains **not measured** until that separate
 instrumentation is implemented.
 
+### Accounting storage
+
+Run `agentdocker usage-storage --home /path/to/agentdocker-state` to inspect an
+existing private state directory. The command prints JSON and starts no daemon.
+It opens a separate read-only connection and does not initialize, migrate,
+checkpoint or vacuum the database. SQLite may maintain shared-memory read locks
+in its WAL sidecar. It does not change accounting retention or
+recover records omitted at capacity.
+
+The logical tracking budget is separate from allocated SQLite table/index pages.
+The report measures all `usage_` tables and their indexes in one read snapshot,
+including discovery and tracking metadata. Payload and unused space are included
+in those pages; do not add them again. Whole-database page/free-page totals also
+cover unrelated coordination state. Main-file, WAL and shared-memory lengths are
+separate before/after observations; a changing WAL cannot be attributed entirely
+to accounting. These measurements do not estimate injected tokens or billing.
+
+Inspection refuses unsupported state and stops without partial totals if it
+exceeds 128 accounting btrees, 131,072 pages or ten seconds between page steps.
+Operating-system I/O itself has no hard timing guarantee. Use this on demand;
+the normal Usage screen and report do not scan database pages automatically.
+Missing state and refused scans produce an error with no partial JSON report.
+
 ### Terminal and settings
 
 **Project terminal** in the project header opens a shell in that project’s folder.
