@@ -118,11 +118,14 @@ def smoke(binary_dir, output):
                          step("click", id="connections")]
             gates.append((len(sequence), action(direct, agents[1])))
             sequence += [step("wait_text", text="OLD DIRECT NOTIFICATION TARGET"), step("capture", name="direct-route"),
-                         step("click", id=f"project-{second}"), step("click", id="project-more"), step("click", id="project-tab-Channels"),
-                         step("click", id=f"reply-channel-{room['id']}"), step("fill", id="channel-message", text="Keep this channel draft"),
-                         step("click", id="connections")]
+                         step("click", id=f"project-{second}"), step("click", id="connections")]
+            # The app leaves channels to the CLI: a channel message's
+            # notification opens the direct conversation with its sender and
+            # says how to read the message itself.
             gates.append((len(sequence), action(channel_message, agents[1], room)))
-            sequence += [step("wait_text", text="OLD CHANNEL NOTIFICATION TARGET"), step("wait_text", text="Keep this channel draft"),
+            sequence += [step("wait_text", text=f"agentdocker history channel:{room['id']}"),
+                         step("wait_control", id=f"reply-{agents[1]['id']}", present=True),
+                         step("wait_control", id="project-tab-Channels", present=False),
                          step("capture", name="channel-route"), step("click", id="inbox"), step("click", id="thread-everyone"),
                          step("wait_text", text="Keep this answer draft"), step("capture", name="retained-answer-draft")]
             window = launch("existing", sequence)
@@ -140,7 +143,7 @@ def smoke(binary_dir, output):
             assert existing["scenario_steps_completed"] == len(sequence), existing
             report["existing_window_steps"] = len(sequence)
             report["checks"] += ["existing_window_forwarding", "question_navigation", "older_direct_message",
-                                  "older_channel_message", "answer_draft_preserved", "channel_draft_preserved"]
+                                  "channel_message_opens_its_sender", "answer_draft_preserved"]
 
             cold = [step("wait_text", text="OLD DIRECT NOTIFICATION TARGET"), step("capture", name="cold-route")]
             window = launch("cold", cold, action(direct, agents[1]))

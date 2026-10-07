@@ -202,9 +202,10 @@ The app remembers the selected project and keeps quiet projects available.
 - **Launch agent…** starts an installed CLI in the selected project. **Connect**
   adopts a process under **Running here, not connected** for coordination; it does not
   install provider integrations.
-- **Activity** shows the recent project journal, newest first. **More → Channels** shows
-  project rooms and messages queued for you. **More** also holds **Files in use**,
-  **Command line**, and project pin/forget actions.
+- **Activity** shows the recent project journal, newest first. **More** also
+  holds **Files in use**, **Command line**, and project pin/forget actions.
+  Channels and `#all` are not in the app; `agentdocker channels` and
+  `agentdocker history <conversation>` read them.
 - **Pause…** on the project header asks for a reason and tells every agent in
   the project to hold; the daemon refuses their new leases until **Resume**.
   What an agent already holds, it keeps; only you can pause or resume.
@@ -663,6 +664,17 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- The app keeps to each project's chat and your direct messages. Messages
+  lists **Projects** (each project's chat, opening its Chat) and **Direct
+  messages**; `#all`, channels and the rooms AgentDocker opens over contested
+  paths are no longer in the app — no More → Channels, no new channel or
+  **Add members**, no **Reviews** — and what reaches you there is marked read,
+  so it never piles up in your queue or the badge. They all remain on the
+  CLI: `agentdocker conversations`, `agentdocker history all` or
+  `agentdocker history channel:<id>`, `agentdocker channels`, `agentdocker
+  channel …` and `agentdocker send --to channel:<id>`. A notification about
+  such a message opens your conversation with its sender and names the
+  command; a reply typed into it is refused with the command to use instead.
 - Projects keep their own messages. An agent reaches only its own project's
   agents, its channels and you: a send, ask or question to another project's
   agent, project or channel is refused, and an agent's `all` means its own

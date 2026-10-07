@@ -19,9 +19,7 @@ fn bytes(command: &Cmd) -> usize {
             .project
             .capacity()
             .saturating_add(request.id.as_str().len()),
-        Cmd::Journal(id, selector) | Cmd::Channels(id, selector) => {
-            id.capacity().saturating_add(selector.capacity())
-        }
+        Cmd::Journal(id, selector) => id.capacity().saturating_add(selector.capacity()),
         Cmd::Console(text, cwd) => text
             .capacity()
             .saturating_add(cwd.as_ref().map_or(0, |p| p.capacity())),
@@ -31,34 +29,7 @@ fn bytes(command: &Cmd) -> usize {
                 .saturating_mul(size_of::<agentdocker_core::MessageId>()),
             |total, id| total.saturating_add(id.as_str().len()),
         ),
-        Cmd::ChannelSend(id, text) | Cmd::SessionSend(id, text) => {
-            id.capacity().saturating_add(text.capacity())
-        }
-        Cmd::ChannelOpen {
-            request,
-            name,
-            task,
-            members,
-            project,
-        } => members.iter().fold(
-            members
-                .capacity()
-                .saturating_mul(size_of::<String>())
-                .saturating_add(request.as_str().len())
-                .saturating_add(name.capacity())
-                .saturating_add(task.capacity())
-                .saturating_add(project.as_ref().map_or(0, |p| p.capacity())),
-            |sum, member| sum.saturating_add(member.capacity()),
-        ),
-        Cmd::ChannelInvite {
-            request,
-            channel,
-            member,
-        } => request
-            .as_str()
-            .len()
-            .saturating_add(channel.capacity())
-            .saturating_add(member.capacity()),
+        Cmd::SessionSend(id, text) => id.capacity().saturating_add(text.capacity()),
         Cmd::Launch(spec) => {
             serde_json::to_vec(spec).map_or(COMMAND_BYTES + 1, |bytes| bytes.len())
         }
@@ -80,7 +51,6 @@ enum Key {
     Runtimes,
     Discovered,
     Journal(String, String),
-    Channels(String, String),
     Inbox,
     Activity,
     Pauses,
@@ -95,7 +65,6 @@ fn key(command: &Cmd) -> Option<Key> {
         Cmd::Runtimes => Key::Runtimes,
         Cmd::Discovered => Key::Discovered,
         Cmd::Journal(project, selector) => Key::Journal(project.clone(), selector.clone()),
-        Cmd::Channels(project, selector) => Key::Channels(project.clone(), selector.clone()),
         Cmd::Inbox => Key::Inbox,
         Cmd::Activity => Key::Activity,
         Cmd::Pauses => Key::Pauses,
@@ -210,11 +179,8 @@ mod tests {
             sender
                 .send(Cmd::Journal("same-fingerprint".into(), selector.into()))
                 .unwrap();
-            sender
-                .send(Cmd::Channels("same-fingerprint".into(), selector.into()))
-                .unwrap();
         }
-        assert_eq!(receiver.try_iter().count(), 4);
+        assert_eq!(receiver.try_iter().count(), 2);
     }
     #[test]
     fn pause_refreshes_coalesce_and_pause_commands_obey_the_byte_budget() {
