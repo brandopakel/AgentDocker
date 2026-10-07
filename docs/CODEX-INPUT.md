@@ -719,6 +719,24 @@ Provider `requestUserInput` bundles reject `isSecret: true` before opening any
 ordinary question route. A supplied flag must be a boolean; malformed values,
 including strings and null, cannot fall back to persisted ordinary answers.
 
+A private Codex 0.160.1 probe delivered an invented answer to an actual
+`isSecret: true` callback. The request resolved and the answer reached the
+scripted loopback model; the driver also found it twice in the provider's private
+rollout JSONL. `thread/read` did not expose it in that observation. Masking a
+question is therefore not proof that Codex or its model does not retain its
+answer. The initial fixture was rejected for missing choices; both outcomes and
+cleanup are indexed. This is provider behavior evidence, not AgentDocker secret
+input acceptance.
+
+The remaining AgentDocker route must keep answers out of its messages, database,
+events, delivery-ledger payloads, logs and ordinary drafts. It needs dedicated
+masked entry, exact live request/turn/recipient ownership, bounded in-memory
+storage, explicit cancellation/expiry and no replay after a disconnect or crash.
+Before entry it must explain that Codex and the selected model receive the value
+and may retain it. Mixed bundles must not send their secret fields through the
+ordinary persisted answer route. That route is not implemented yet; the existing
+refusal remains in force.
+
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
 Allow becomes available after opening the complete diff; Deny remains available
