@@ -396,6 +396,8 @@ each one by pid.
 | Command | What it does |
 |---|---|
 | `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. An agent reaches only its own project and you; its `all` means its project, and you can still send anywhere. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
+| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
+| `delivery <message>` | Where one of your messages stands with each agent it was queued for: answered, delivered, received by the model, shown to its session, or why it is still waiting (next prompt, a browser agent's check-in, paused, blocked, ended). Never "read": nothing says a model read it. `send` prints the id; `--json` |
 | `watch` | Stream messages for an agent or matching topics |
 | `inbox` | Messages queued while an agent was not watching |
 | `ask` | Ask an agent — or the human — and wait for the answer |
@@ -676,6 +678,9 @@ Newest first. Only what changes how the product is used.
   desktop's session rows show each session's tokens over the last day, with
   one line above the list that sums them and opens Usage. Both appear only
   when usage collection is on and there is something to show.
+- `agentdocker delivery <message>` says where one of your messages stands with
+  each agent it went to: answered, delivered, received by the model, shown to
+  its session, or why it is still waiting. `send` points to it.
 - A session that opens within an hour of your message to everyone in a project
   still gets it, as its first input. Only your own messages count, and only
   once.

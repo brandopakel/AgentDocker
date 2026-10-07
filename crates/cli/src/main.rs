@@ -325,6 +325,15 @@ enum Command {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", value_name = "AGENT")]
         agent: Option<String>,
     },
+    /// Where one of your messages stands with each agent it was queued for:
+    /// answered, delivered, received by the model, shown to its session, or
+    /// why it is still waiting. Never "read": nothing says a model read it.
+    Delivery {
+        /// The message id `send` printed.
+        message: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// The archived messages of one conversation, oldest first.
     History {
         /// `everyone:<project>`, `all`, `channel:<id>`, `dm:<a>:<b>` or `notices:<agent>`, as `conversations` lists them.
@@ -1965,6 +1974,16 @@ async fn run() -> Result<()> {
                 }
             }
         }
+        Command::Delivery { message, json } => {
+            let request = Request::Delivery {
+                message: MessageId::from(message),
+            };
+            match client.call(&request).await? {
+                Response::Delivery { recipients, .. } if json => print_json(&recipients)?,
+                Response::Delivery { recipients, .. } => format::delivery(&recipients),
+                other => anyhow::bail!("unexpected delivery response: {other:?}"),
+            }
+        }
         Command::History {
             conversation,
             before,
@@ -2689,7 +2708,9 @@ async fn run() -> Result<()> {
             } = client.call(&request).await?
             {
                 println!("{message}");
-                eprintln!("accepted by AgentDocker; provider receipt unconfirmed");
+                eprintln!(
+                    "accepted by AgentDocker; provider receipt unconfirmed (`agentdocker delivery {message}` shows where it stands)"
+                );
                 if let Some(readiness) = recipient_readiness {
                     format::send_readiness(&readiness);
                 } else {
