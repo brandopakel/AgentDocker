@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const VERSION: u32 = 14;
+const VERSION: u32 = 15;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const RETAINED_RECEIPTS: usize = 128;
@@ -1009,6 +1009,8 @@ pub(super) struct Record {
     #[serde(default)]
     pub closed_reviews: VecDeque<Closed>,
     #[serde(default)]
+    pub secret_review: Option<super::secret_requests::Fence>,
+    #[serde(default)]
     retired_questions: Vec<MessageId>,
     #[serde(default)]
     pub mcp_answers: VecDeque<Answer>,
@@ -1026,6 +1028,24 @@ fn valid_id(id: &str) -> bool {
 
 impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
+        ensure!(
+            self.version >= 15 || self.secret_review.is_none(),
+            "legacy input cannot supply a temporary response fence"
+        );
+        if let Some(fence) = &self.secret_review {
+            ensure!(
+                self.reviews.is_empty()
+                    && self.attempt.as_ref().is_some_and(|a| a.acknowledged)
+                    && fence.valid(
+                        self.thread.as_deref(),
+                        self.attempt
+                            .as_ref()
+                            .and_then(|a| a.receipt.as_ref())
+                            .map(|r| r.turn.as_str())
+                    ),
+                "temporary response fence has another input or overlaps ordinary questions"
+            );
+        }
         ensure!(
             self.version >= 14
                 || self
@@ -1110,7 +1130,7 @@ impl Record {
         );
         ensure!(
             self.version == VERSION
-                || matches!(self.version, 3..=13)
+                || matches!(self.version, 3..=14)
                 || (matches!(self.version, 1 | 2)
                     && self.reviews.is_empty()
                     && self.closed_reviews.is_empty()
@@ -1352,6 +1372,7 @@ impl Ledger {
                 completed: VecDeque::new(),
                 reviews: Vec::new(),
                 closed_reviews: VecDeque::new(),
+                secret_review: None,
                 retired_questions: Vec::new(),
                 mcp_answers: VecDeque::new(),
             },
@@ -1368,6 +1389,36 @@ impl Ledger {
 
     pub fn record(&self) -> &Record {
         &self.record
+    }
+
+    pub fn open_secret_review(&mut self, fence: super::secret_requests::Fence) -> Result<()> {
+        ensure!(
+            self.record.secret_review.is_none(),
+            "another temporary request is unresolved"
+        );
+        let mut next = self.record.clone();
+        next.secret_review = Some(fence);
+        self.save(next)
+    }
+
+    pub fn secret_response_attempted(&mut self) -> Result<()> {
+        let mut next = self.record.clone();
+        let fence = next
+            .secret_review
+            .as_mut()
+            .context("temporary response fence is absent")?;
+        ensure!(
+            !fence.response_attempted,
+            "temporary response cannot be sent twice"
+        );
+        fence.response_attempted = true;
+        self.save(next)
+    }
+
+    pub fn close_secret_review(&mut self) -> Result<()> {
+        let mut next = self.record.clone();
+        next.secret_review = None;
+        self.save(next)
     }
 
     pub fn update_reviews(
@@ -1513,6 +1564,7 @@ impl Ledger {
             self.record.attempt.is_none()
                 && self.record.completed.is_empty()
                 && self.record.reviews.is_empty()
+                && self.record.secret_review.is_none()
                 && self.record.closed_reviews.is_empty()
                 && self.record.mcp_answers.is_empty()
                 && self.record.retired_questions.is_empty(),
@@ -1589,7 +1641,7 @@ impl Ledger {
             "Codex conversation is not ready"
         );
         ensure!(
-            self.record.reviews.is_empty(),
+            self.record.reviews.is_empty() && self.record.secret_review.is_none(),
             "a provider question still needs response recovery"
         );
         let message = envelope.id.to_string();
@@ -1702,7 +1754,7 @@ impl Ledger {
             "MCP answer still needs queue acknowledgement"
         );
         ensure!(
-            self.record.reviews.is_empty(),
+            self.record.reviews.is_empty() && self.record.secret_review.is_none(),
             "provider turn still has unresolved questions"
         );
         let mut next = self.record.clone();
@@ -1725,5 +1777,108 @@ impl Ledger {
             next.completed.pop_front();
         }
         self.save(next)
+    }
+}
+
+#[cfg(test)]
+mod secret_fence_tests {
+    use super::*;
+    use crate::codex_input::secret_requests::Fence;
+    use agentdocker_core::Destination;
+    use serde_json::json;
+
+    #[test]
+    fn temporary_input_survives_reopen_without_values_or_permission_to_replay() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = Binding {
+            agent: "owned".into(),
+            socket: home.path().join("sock"),
+            cwd: home.path().into(),
+            provider_home: home.path().into(),
+        };
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        let input = Envelope::new(
+            "peer",
+            Destination::Agent("owned".into()),
+            "chat",
+            json!({"text":"start"}),
+            None,
+            chrono::Utc::now(),
+        );
+        let text = ledger.prepare(&input).unwrap();
+        ledger
+            .accept(
+                &text,
+                Receipt {
+                    thread: "thread".into(),
+                    turn: "turn".into(),
+                    item: "item".into(),
+                },
+            )
+            .unwrap();
+        ledger.acknowledge(input.id.as_str()).unwrap();
+        let fence = Fence {
+            id: json!(17),
+            thread: "thread".into(),
+            turn: "turn".into(),
+            response_attempted: false,
+        };
+        let mut other = fence.clone();
+        other.turn = "other".into();
+        assert!(ledger.open_secret_review(other).is_err());
+        ledger.open_secret_review(fence.clone()).unwrap();
+        let path = ledger.path.clone();
+        let queued = Envelope::new(
+            "peer",
+            Destination::Agent("owned".into()),
+            "chat",
+            json!({"text":"later"}),
+            None,
+            chrono::Utc::now(),
+        );
+        assert!(ledger.open_secret_review(fence.clone()).is_err());
+        assert!(ledger.prepare_steering(&queued, "turn").is_err());
+        assert!(ledger.finish("turn").is_err());
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        assert!(ledger.record().secret_review.is_some());
+        assert!(ledger.prepare(&queued).is_err());
+        ledger.secret_response_attempted().unwrap();
+        assert!(ledger.secret_response_attempted().is_err());
+        drop(ledger);
+        let bytes = std::fs::read(&path).unwrap();
+        let mut old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        old["version"] = json!(14);
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(Ledger::open(home.path(), binding.clone()).is_err());
+        std::fs::write(&path, &bytes).unwrap();
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        assert!(
+            ledger
+                .record()
+                .secret_review
+                .as_ref()
+                .unwrap()
+                .response_attempted
+        );
+        assert!(ledger.finish("turn").is_err());
+        ledger.close_secret_review().unwrap();
+        ledger.finish("turn").unwrap();
+        assert!(ledger.prepare(&queued).is_ok());
+        drop(ledger);
+        let mut old: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        old["version"] = json!(14);
+        old.as_object_mut().unwrap().remove("secret_review");
+        let before = serde_json::to_vec(&old).unwrap();
+        std::fs::write(&path, &before).unwrap();
+        let ledger = Ledger::open(home.path(), binding).unwrap();
+        assert!(ledger.record().secret_review.is_none());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "legacy open does not rewrite a retained attempt"
+        );
     }
 }

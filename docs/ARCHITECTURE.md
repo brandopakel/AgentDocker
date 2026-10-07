@@ -1989,3 +1989,14 @@ response is stored before writing and acknowledged only after provider resolutio
 using the same exact human-answer and no-replay contract as other reviews.
 
 Secret review metadata events use `seq:0` and are live-only; clients list routes after reconnect. These types carry wire values but are never stored in SQLite or delivery ledgers. Memory is bounded, not locked or guaranteed zeroized. Provider output can repeat supplied values and enter ordinary output history.
+
+Managed secret input has a separate experimental producer, enabled only with
+`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`. A whole mixed bundle uses the volatile
+broker. Delivery ledger 15 stores only the request/thread/turn identity and a
+possible-response flag before the provider write; it never stores the answer,
+question or capability. Normal queued input waits behind this fence. A matching
+provider resolution removes it. Restart never reopens a secret route or resends
+an answer; a confirmed terminal turn can retire an unanswered request, while an
+unconfirmed attempted response remains paused for inspection. Schema 27 extends
+the installation rollback boundary to this ledger. Older ledgers remain readable
+without being rewritten on open; older receivers refuse version 15.

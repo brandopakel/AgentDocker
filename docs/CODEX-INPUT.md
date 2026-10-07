@@ -1362,3 +1362,11 @@ Invalid answers refused and peers stayed held until the exact review resolved;
 controller/configuration were unchanged. The CI reports record clean retirement
 of 58 form/54 URL process generations for 0.160 and 30 form/28 URL generations
 for 0.155.1. Both original failed URL reports remain indexed.
+
+A managed-only secret producer and metadata-only restart fence are implemented
+behind `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`. This development switch does not
+establish acceptance: masked entry, actual-provider lifecycle/fault trials and
+native-terminal parity remain open. The default path still refuses secret
+bundles. Answers cannot be typed into the ordinary managed terminal while a
+secret route is open. A possibly sent answer without a provider resolution stays
+paused for inspection and is never resubmitted by restart.

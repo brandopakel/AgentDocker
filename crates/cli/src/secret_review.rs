@@ -69,7 +69,7 @@ pub async fn run(client: &Client, args: Args) -> Result<()> {
             );
             ensure!(
                 !std::io::stdin().is_terminal(),
-                "Use masked entry in the app. This command accepts a JSON answer object through a pipe only."
+                "This command accepts a JSON answer object through a pipe only; interactive masked entry is not available yet."
             );
             let mut bytes = Vec::new();
             std::io::stdin().take(524_289).read_to_end(&mut bytes)?;
