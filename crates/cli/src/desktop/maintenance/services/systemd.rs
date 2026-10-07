@@ -500,7 +500,7 @@ mod tests {
         let blocked = home.path().join("blocked");
         std::fs::create_dir(&blocked).unwrap();
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
         let result = no_persisted_dropins(&BTreeSet::from([blocked.clone()]));
         std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o700)).unwrap();
         // Root can traverse mode-000 directories; ordinary callers must refuse.
