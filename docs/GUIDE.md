@@ -73,6 +73,10 @@ at eight directories and 256 MiB. Uninstall
 refuses while a service references the installation, even if stopped: run
 `daemon uninstall` for that service first. Use `desktop --prefix <directory>` for
 an isolated installation. Start menu shortcuts and PATH changes are not installed.
+Windows pruning keeps the exact versions referenced by recognized services,
+including their working directories and explicitly selected files. An unknown
+wrapper, program, option or ambiguous path keeps all builds. Preview shows which
+versions remain protected; a stopped registration still prevents uninstall.
 
 You do not start the daemon. The first client that needs it starts it, on
 `~/.agentdocker/agentd.sock`. To have it survive a reboot:
@@ -81,6 +85,8 @@ You do not start the daemon. The first client that needs it starts it, on
 agentdocker daemon install    # launchd, systemd user unit, or Windows login task
 agentdocker daemon status     # what is running, and where
 ```
+
+Linux service definitions preserve spaces, dollar signs and percent characters in selected paths.
 
 On macOS, installation registers the launchd definition and explicitly requests
 an immediate start, just as `daemon start` does. A GUI domain in on-demand-only
@@ -527,6 +533,11 @@ turn. A copied instruction is not executed by AgentDocker.
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
 | `connector serve` / `status` / `install` / `enable` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
+
+Connector service installation saves absolute project, tunnel-program and local `@file`
+allowlist paths, so login does not depend on the installing shell’s working directory.
+Those configured paths must exist when installing; a missing feed or program is
+reported before the service definition is written.
 
 ---
 

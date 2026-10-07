@@ -105,6 +105,8 @@ jobs:
         run: cargo nextest run --locked -p agentdocker --test usage_storage --profile ci
       - name: Native server log cancellation regression
         run: cargo test --locked -p agentdocker --test windows_log_reader -- --nocapture
+      - name: Native service reference path regression
+        run: cargo test --locked -p agentdocker --test windows_service_references -- --nocapture
       - name: Native daemon and CLI lint
         run: cargo clippy --locked -p agentd -p agentdocker -- -D warnings
       - name: Native daemon, CLI and desktop release build with provenance
