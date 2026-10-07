@@ -27,7 +27,7 @@ impl Session {
     /// Use the collector's already captured high-water mark for this generation.
     pub fn at_snapshot(captured: Cursor, previous: Option<&Cursor>) -> Result<Self, Error> {
         let runtime = captured.runtime;
-        // Versions 3 through 5 have the same prefix proof, but their parsers skipped
+        // Versions 3 through 6 have the same prefix proof, but their parsers skipped
         // patch versions now supported by version 7. Verify that proof before replay;
         // an upgrade must not hide a changed or truncated source.
         let replay_parser = previous.is_some_and(|previous| matches!(previous.version, 3..=6));
