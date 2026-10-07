@@ -58,16 +58,14 @@ pub(super) struct State {
     pub answer_errors: BTreeMap<MessageId, String>,
     pub file_review: Option<MessageId>,
     pub message_detail: Option<MessageId>,
-    /// The conversation open in Messages, by its id (`everyone:<project>`,
-    /// `channel:<id>`, `dm:<a>:<b>`, ...), and the thread root open beside
-    /// it, if any.
+    /// The conversation open in Messages, by its id (`everyone:<project>`
+    /// or `dm:<a>:<b>`), and the thread root open beside it, if any.
     pub conversation: Option<String>,
     pub thread: Option<MessageId>,
-    pub conversation_drafts: BTreeMap<String, ChannelDraft>,
+    pub conversation_drafts: BTreeMap<String, TextDraft>,
     /// The sidebar's filter text.
     pub messages_search: String,
     /// Whether the collapsed sidebar groups are open.
-    pub collisions_open: bool,
     pub earlier_open: bool,
     /// How many of the Earlier group's entries are on screen: a page, and
     /// a page more for each *Show older*; closing the group resets it.
@@ -102,8 +100,6 @@ pub(super) struct State {
     /// this is which. Wide windows show both and ignore it.
     pub inbox_open: bool,
     pub needs_you_expanded: bool,
-    /// Whether the Channels screen shows AgentDocker's overlap rooms.
-    pub overlaps_open: bool,
     /// The session being renamed and the name typed so far.
     pub renaming: Option<(String, String)>,
     /// Processes a Connect was pressed for, until the daemon answers.
@@ -114,8 +110,6 @@ pub(super) struct State {
     pub reveal_next_question: bool,
     /// An archived message now on view that the next tick scrolls to.
     pub reveal_archived_next: Option<MessageId>,
-    pub channel_drafts: BTreeMap<String, ChannelDraft>,
-    pub channel_target: Option<String>,
     pub generation: u64,
     pub saved_generation: u64,
     pub saving: bool,
@@ -196,9 +190,10 @@ pub const FOCUSED_SWEEP: Duration = Duration::from_secs(2);
 /// tick paints the whole window.
 pub const UNFOCUSED_SWEEP: Duration = Duration::from_secs(30);
 
-/// Each room keeps its own draft; receipts clear only an untouched submission.
+/// Each conversation and session keeps its own draft; receipts clear only an
+/// untouched submission.
 #[derive(Clone, Debug, Default)]
-pub(super) struct ChannelDraft {
+pub(super) struct TextDraft {
     pub text: String,
     pub sending: Option<String>,
     pub error: Option<String>,
@@ -209,10 +204,10 @@ pub(super) struct ChannelDraft {
 
 #[derive(Default)]
 pub(super) struct SessionDraft {
-    pub draft: ChannelDraft,
+    pub draft: TextDraft,
     pub queued: Option<MessageId>,
 }
-impl ChannelDraft {
+impl TextDraft {
     pub fn edit(&mut self, text: String) {
         self.text = text.chars().take(16_000).collect();
         // Only one send can be pending. Remember any edit during that send,
@@ -297,7 +292,7 @@ impl State {
                     (
                         key,
                         SessionDraft {
-                            draft: ChannelDraft {
+                            draft: TextDraft {
                                 text,
                                 ..Default::default()
                             },
@@ -306,26 +301,16 @@ impl State {
                     )
                 })
                 .collect(),
+            // A draft for a conversation the app no longer opens (`#all`,
+            // a channel) is let go: nothing here could send it.
             conversation_drafts: saved
                 .conversations
                 .into_iter()
+                .filter(|(key, _)| !super::messages::hidden_conversation(split_draft_key(key).0))
                 .map(|(key, text)| {
                     (
                         key,
-                        ChannelDraft {
-                            text,
-                            ..Default::default()
-                        },
-                    )
-                })
-                .collect(),
-            channel_drafts: saved
-                .channels
-                .into_iter()
-                .map(|(key, text)| {
-                    (
-                        key,
-                        ChannelDraft {
+                        TextDraft {
                             text,
                             ..Default::default()
                         },
@@ -363,8 +348,9 @@ impl State {
     }
 
     /// Failed notification replies whose conversation could not be
-    /// opened — the message, project or channel is gone, or the route was
-    /// cancelled — and which no route is still on its way to. They are
+    /// opened — the message or project is gone, the message is in a
+    /// conversation the app leaves to the CLI, or the route was cancelled
+    /// — and which no route is still on its way to. They are
     /// shown where the person can always reach them, whatever is on view.
     pub fn orphan_reply_recoveries(&self) -> Vec<&ReplyRecovery> {
         let routing: Option<&MessageId> = self
@@ -384,7 +370,6 @@ impl State {
 enum DraftKind {
     Session,
     Conversation,
-    Channel,
     Answer,
     TaskTitle,
     TaskAcceptance,
@@ -401,12 +386,6 @@ impl State {
                 .collect(),
             conversations: self
                 .conversation_drafts
-                .iter()
-                .filter(|(_, d)| !d.text.is_empty())
-                .map(|(k, d)| (k.clone(), d.text.clone()))
-                .collect(),
-            channels: self
-                .channel_drafts
                 .iter()
                 .filter(|(_, d)| !d.text.is_empty())
                 .map(|(k, d)| (k.clone(), d.text.clone()))
@@ -440,7 +419,6 @@ impl State {
         let old = match kind {
             DraftKind::Session => self.session_drafts.get(&id).map(|d| &d.draft.text),
             DraftKind::Conversation => self.conversation_drafts.get(&id).map(|d| &d.text),
-            DraftKind::Channel => self.channel_drafts.get(&id).map(|d| &d.text),
             DraftKind::Answer => self.answers.get(&question),
             DraftKind::TaskTitle => self.task_drafts.get(&id).map(|d| &d.title),
             DraftKind::TaskAcceptance => self.task_drafts.get(&id).map(|d| &d.acceptance),
@@ -450,7 +428,6 @@ impl State {
             .values()
             .map(|d| d.draft.text.len())
             .chain(self.conversation_drafts.values().map(|d| d.text.len()))
-            .chain(self.channel_drafts.values().map(|d| d.text.len()))
             .chain(self.answers.values().map(String::len))
             .chain(
                 self.task_drafts
@@ -538,16 +515,6 @@ impl State {
                     false
                 }
             }
-            DraftKind::Channel => {
-                self.channel_drafts
-                    .retain(|key, d| key == &id || !d.text.is_empty() || d.sending.is_some());
-                if self.channel_drafts.contains_key(&id) || self.channel_drafts.len() < 128 {
-                    self.channel_drafts.entry(id).or_default().edit(text);
-                    true
-                } else {
-                    false
-                }
-            }
         };
         if edited {
             self.drafts.changed();
@@ -563,7 +530,6 @@ impl State {
 pub enum DeliveryTarget {
     Conversation(String),
     Session(String),
-    Channel(String),
 }
 
 #[derive(Clone, Debug)]
@@ -598,10 +564,6 @@ pub enum Message {
     /// The Needs-you strip's **Review**: open that session with its
     /// delivery review already unfolded, wherever the person was.
     ReviewSession(String),
-    /// Show or fold the overlap rooms AgentDocker opened.
-    ToggleOverlaps,
-    /// Go to Channels with the overlap rooms shown (Reviews on one of them).
-    ReviewOverlaps,
     /// Start, edit, submit or cancel renaming a session.
     StartRename(String),
     RenameDraft(String),
@@ -639,7 +601,6 @@ pub enum Message {
     OpenThread(MessageId),
     CloseThread,
     MessagesSearch(String),
-    ToggleCollisions,
     ToggleEarlier,
     /// One page more of the Earlier group.
     MoreEarlier,
@@ -672,18 +633,8 @@ pub enum Message {
     PauseCancel(String),
     ResumeProject(String),
 
-    /// Start a conversation: open or close the form.
+    /// Start a direct message: open or close the form.
     NewConversation,
-    /// A direct message or a channel.
-    NewConversationKind(super::NewKind),
-    NewChannelName(String),
-    NewChannelPurpose(String),
-    /// Put an agent in the new channel, or take it out.
-    NewChannelMember(agentdocker_core::AgentId),
-    /// Open the channel the form describes.
-    CreateChannel,
-    InviteChannel(String),
-    InviteMember(String),
     /// The person picked who to message: open that direct conversation.
     NewDirect(String),
     /// Open or close the menu under a project row.
@@ -759,9 +710,6 @@ pub enum Message {
     ConsoleInput(String),
     RunConsole,
     Recall(bool),
-    ChannelTarget(String),
-    ChannelDraft(String),
-    SendChannel,
     ConnectorEnable(super::ConnectorTunnel),
     Setup(Vec<String>),
     SetupClose,
@@ -1442,7 +1390,6 @@ impl App {
             Message::MessagesSearch(text) => {
                 self.shell.messages_search = text.chars().take(200).collect();
             }
-            Message::ToggleCollisions => self.shell.collisions_open = !self.shell.collisions_open,
             Message::ToggleEarlier => {
                 self.shell.earlier_open = !self.shell.earlier_open;
                 self.shell.earlier_shown = EARLIER_PAGE;
@@ -1514,96 +1461,10 @@ impl App {
             }
             Message::PauseSubmit(project) => self.submit_pause(project, PauseAction::Pause),
             Message::ResumeProject(project) => self.submit_pause(project, PauseAction::Resume),
-            Message::NewConversation => {
-                self.new_conversation = match self.new_conversation {
-                    Some(_) => None,
-                    None => Some(super::NewConversation::new()),
-                };
-            }
-            Message::InviteChannel(channel) => {
-                let mut form = super::NewConversation::new();
-                form.invite = Some(channel);
-                self.new_conversation = Some(form);
-            }
-            Message::InviteMember(member) => {
-                if let Some(form) = &mut self.new_conversation
-                    && !form.creating
-                    && let Some(channel) = &form.invite
-                {
-                    form.creating = true;
-                    form.error = None;
-                    let cmd = Cmd::ChannelInvite {
-                        request: form.request.clone(),
-                        channel: channel.clone(),
-                        member,
-                    };
-                    self.send(cmd);
-                }
-            }
-            Message::NewConversationKind(kind) => {
-                if let Some(form) = &mut self.new_conversation {
-                    form.kind = kind;
-                    form.error = None;
-                }
-            }
-            Message::NewChannelName(name) => {
-                if let Some(form) = &mut self.new_conversation {
-                    // What a channel name is: lowercase letters, digits and
-                    // hyphens, so what is typed is kept to that.
-                    form.name = name
-                        .to_lowercase()
-                        .chars()
-                        .map(|ch| if ch.is_whitespace() { '-' } else { ch })
-                        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
-                        .take(40)
-                        .collect();
-                    form.error = None;
-                }
-            }
-            Message::NewChannelPurpose(purpose) => {
-                if let Some(form) = &mut self.new_conversation {
-                    form.purpose = purpose.chars().take(400).collect();
-                    form.error = None;
-                }
-            }
-            Message::NewChannelMember(agent) => {
-                if let Some(form) = &mut self.new_conversation
-                    && !form.members.remove(&agent)
-                {
-                    form.members.insert(agent);
-                }
-            }
+            Message::NewConversation => self.new_conversation = !self.new_conversation,
             Message::NewDirect(conversation) => {
-                self.new_conversation = None;
+                self.new_conversation = false;
                 return self.update(Message::SelectConversation(conversation));
-            }
-            Message::CreateChannel => {
-                let project = self
-                    .shell
-                    .catalog
-                    .selected
-                    .as_ref()
-                    .map(|root| root.display().to_string());
-                if let Some(form) = &mut self.new_conversation
-                    && !form.creating
-                    && !form.name.is_empty()
-                {
-                    form.creating = true;
-                    form.error = None;
-                    let task = if form.purpose.trim().is_empty() {
-                        form.name.replace('-', " ")
-                    } else {
-                        form.purpose.trim().to_owned()
-                    };
-                    let cmd = Cmd::ChannelOpen {
-                        request: form.request.clone(),
-                        name: form.name.clone(),
-                        task,
-                        members: form.members.iter().map(|id| id.to_string()).collect(),
-                        project,
-                    };
-                    self.send(cmd);
-                }
             }
             Message::TaskTitle(title) => {
                 if let Some(project) = self.selected_project_root()
@@ -1975,7 +1836,6 @@ impl App {
                         .session_drafts
                         .get_mut(&key)
                         .map(|entry| &mut entry.draft),
-                    DeliveryTarget::Channel(key) => self.shell.channel_drafts.get_mut(&key),
                 };
                 if let Some(draft) = draft {
                     draft.readiness_expanded = !draft.readiness_expanded;
@@ -2224,11 +2084,6 @@ impl App {
                 }
             }
             Message::CancelRename => self.shell.renaming = None,
-            Message::ToggleOverlaps => self.shell.overlaps_open = !self.shell.overlaps_open,
-            Message::ReviewOverlaps => {
-                self.shell.overlaps_open = true;
-                return self.update(Message::Navigate(Screen::Channels));
-            }
             Message::LaunchMenu => {
                 self.shell.launch_menu = !self.shell.launch_menu;
                 if self.shell.launch_menu
@@ -2396,40 +2251,6 @@ impl App {
                 }
             }
             Message::Recall(back) => self.recall(back),
-            Message::ChannelTarget(id) => {
-                self.shell
-                    .channel_drafts
-                    .retain(|_, draft| !draft.text.is_empty() || draft.sending.is_some());
-                if self
-                    .channels
-                    .iter()
-                    .any(|c| c.id.as_str() == id && c.is_open())
-                {
-                    self.shell.channel_target = Some(id);
-                }
-            }
-            Message::ChannelDraft(text) => {
-                if let Some(id) = self.shell.channel_target.clone() {
-                    self.shell.edit_draft(DraftKind::Channel, id, text);
-                }
-            }
-            Message::SendChannel => {
-                if self.connected.is_ok()
-                    && let Some(id) = self.shell.channel_target.clone()
-                    && self
-                        .channels
-                        .iter()
-                        .any(|c| c.id.as_str() == id && c.is_open())
-                    && let Some(text) = self
-                        .shell
-                        .channel_drafts
-                        .entry(id.clone())
-                        .or_default()
-                        .begin()
-                {
-                    self.send(Cmd::ChannelSend(id, text));
-                }
-            }
             Message::ConfirmDaemonRestart(asking) => self.shell.confirm_daemon_restart = asking,
             Message::RestartDaemon => {
                 if !self.daemon_restarting {
@@ -2799,9 +2620,6 @@ impl App {
             self.journal.clear();
             if let Some(project) = selected {
                 self.request_journal(project);
-                if let Some(entry) = self.shell.catalog.selected() {
-                    self.request_channels(entry.project.id().to_string());
-                }
             }
             // Another project's board, and a card open on the old one
             // is not open on this.
@@ -2821,6 +2639,10 @@ impl App {
 
     /// Wait for initial/reconnected snapshots before resolving a click. Route
     /// by the actual message and sender IDs, never by the notification's text.
+    /// A message in a conversation the app leaves to the CLI (`#all`, a
+    /// channel) opens the direct conversation with its sender when that is
+    /// an agent, else Messages, and the status line says where the message
+    /// itself is read.
     fn advance_notification(&mut self) -> Task<Message> {
         let Some((action, started)) = self.shell.pending_notification.clone() else {
             return Task::none();
@@ -2834,17 +2656,19 @@ impl App {
             m.id == target.message
                 && self.canonical_agent(&m.from) == self.canonical_agent(target.agent.as_str())
         });
-        let channel = envelope.and_then(|m| match &m.to {
-            agentdocker_core::Destination::Channel(id) => Some(id.clone()),
-            _ => None,
-        });
+        // Where the message went, when that is somewhere the app does not
+        // show: a channel — the notification names it, so this is known
+        // even once the message has left the inbox — or every agent.
+        let hidden = match envelope.map(|m| &m.to) {
+            Some(agentdocker_core::Destination::Channel(id)) => Some(format!("channel:{id}")),
+            Some(agentdocker_core::Destination::Broadcast) => Some("all".to_owned()),
+            _ => target.channel.as_ref().map(|id| format!("channel:{id}")),
+        };
         // A message the person has already read is no longer in the inbox
         // but is archived in its conversation; with conversations, the
-        // notification's own agent and channel name where it sits, and it
-        // is there even when that agent's record or the channel is gone:
-        // the archive outlives both.
+        // notification's own agent names where it sits, and it is there
+        // even when that agent's record is gone: the archive outlives it.
         let archived = question.is_none() && envelope.is_none() && self.has_conversations();
-        let channel = channel.or_else(|| archived.then(|| target.channel.clone()).flatten());
         let found = question.is_some() || envelope.is_some() || archived;
         if !found {
             if started.elapsed() >= Duration::from_secs(10) {
@@ -2860,14 +2684,12 @@ impl App {
             return Task::none();
         }
         let is_question = question.is_some();
-        // Prefer the actual channel's project. The source agent may have moved
-        // since posting; a retained project ID is a fallback for direct messages.
-        let project = channel
-            .as_ref()
-            .and_then(|id| self.channels.iter().find(|c| &c.id == id))
-            .map(|c| c.project.clone())
-            .or_else(|| target.project.clone());
-        if let Some(project) = &project {
+        // A question is answered with whoever asked it, wherever it was
+        // asked; its card is in that conversation.
+        let hidden = hidden.filter(|_| !is_question);
+        // The notification's project: the channel's for a channel message,
+        // else the sender's when it posted.
+        if let Some(project) = &target.project {
             let root = self
                 .shell
                 .catalog
@@ -2890,21 +2712,6 @@ impl App {
                 return Task::none();
             }
         }
-        // The Channels screen needs the channel open; an archived
-        // conversation needs only its id.
-        if let Some(channel) = &channel
-            && !archived
-            && !self.channels.iter().any(|c| &c.id == channel)
-        {
-            if started.elapsed() < Duration::from_secs(10) {
-                return Task::none();
-            }
-            self.shell.pending_notification = None;
-            self.shell.notification_message = None;
-            self.screen = Screen::Questions;
-            self.say("This notification's channel is no longer available.");
-            return Task::none();
-        }
         self.shell.pending_notification = None;
         self.shell.notification_message = Some(target.message.clone());
         self.shell.message_detail = Some(target.message.clone());
@@ -2912,21 +2719,10 @@ impl App {
         self.shell.selected = Some(self.canonical_agent(target.agent.as_str()).to_owned());
         self.shell.more = false;
         self.confirm_stop = None;
-        // A notification about an overlap room shows it, fold or not.
-        if let Some(channel) = &channel
-            && self.channels.iter().any(|c| {
-                &c.id == channel
-                    && matches!(
-                        c.subject,
-                        agentdocker_core::ChannelSubject::Contested { .. }
-                    )
-            })
-        {
-            self.shell.overlaps_open = true;
-        }
-        self.screen = if channel.is_some() {
-            Screen::Channels
-        } else {
+        self.screen = Screen::Questions;
+        let sender = target.agent.as_str();
+        let from_agent = sender != agentdocker_core::conversation::DAEMON && !self.is_human(sender);
+        if hidden.is_none() || from_agent {
             // Opened, not merely selected: in the narrow layout the list
             // would otherwise hide the conversation the notification names.
             // An archived conversation sits under the id its party had at
@@ -2935,39 +2731,41 @@ impl App {
             let thread_with = if archived {
                 target.agent.to_string()
             } else {
-                self.canonical_agent(target.agent.as_str()).to_owned()
+                self.canonical_agent(sender).to_owned()
             };
             self.open_thread_with(thread_with);
-            Screen::Questions
-        };
-        if let Some(channel) = channel {
-            self.shell.channel_target = Some(channel.to_string());
-            if self.has_conversations() {
-                self.screen = Screen::Questions;
-                let conversation = format!("channel:{channel}");
-                // Another conversation's thread does not follow.
-                if self.shell.conversation.as_deref() != Some(conversation.as_str()) {
-                    self.shell.thread = None;
-                    self.thread = None;
+        }
+        if let Some(conversation) = &hidden {
+            self.say(format!(
+                "That message went to {}, which the app does not show; read it with `agentdocker history {conversation}`.",
+                if conversation == "all" {
+                    "every agent (#all)"
+                } else {
+                    "a channel"
                 }
-                self.shell.conversation = Some(conversation.clone());
-                self.shell.inbox_open = true;
-                self.send(Cmd::History(conversation, self.history_epoch));
+            ));
+            if !from_agent {
+                // Nothing on view is the message's: a reply that did not go
+                // stays at the top of Messages to copy, never in whatever
+                // conversation happens to be open.
+                self.shell.notification_message = None;
             }
         }
-        self.recover_reply();
+        if hidden.is_none() || from_agent {
+            self.recover_reply();
+        }
         // On the Messages screen the message is a row of the archive, not
         // of the inbox: it is scrolled to once its page is here, paging
         // back for it if the conversation was already open at its newest
         // — a click on a notification must always show its message.
         if self.has_conversations()
             && !is_question
-            && self.screen == Screen::Questions
+            && hidden.is_none()
             && let Some(conversation) = self.shell.conversation.clone()
         {
             self.start_archive_reveal(conversation, target.message.clone());
         }
-        // Revealing the card expands its retained text and scrolls to it. Existing answer/channel
+        // Revealing the card expands its retained text and scrolls to it. Existing answer
         // drafts and their keyboard focus are not submitted or rewritten.
         crate::controls::reveal(format!(
             "notification-{}-{}",
@@ -3819,9 +3617,9 @@ mod tests {
             ));
         }
         let remaining = crate::drafts::MAX_TOTAL_BYTES - 128 * (1 + 16_000 * 2);
-        for (index, chunk) in vec![b'z'; remaining].chunks(16_000).enumerate() {
+        for (index, chunk) in vec![b'z'; remaining].chunks(4_000).enumerate() {
             assert!(app.shell.edit_draft(
-                DraftKind::Channel,
+                DraftKind::TaskAcceptance,
                 index.to_string(),
                 String::from_utf8(chunk.to_vec()).unwrap()
             ));
@@ -4114,7 +3912,7 @@ mod tests {
                 break;
             }
             let count = remaining.min(16_000);
-            assert!(state.edit_draft(DraftKind::Channel, index.to_string(), "x".repeat(count)));
+            assert!(state.edit_draft(DraftKind::Answer, index.to_string(), "x".repeat(count)));
             remaining -= count;
         }
         let before = state.draft_snapshot();
@@ -4152,7 +3950,6 @@ mod tests {
         let used = [
             &snapshot.sessions,
             &snapshot.conversations,
-            &snapshot.channels,
             &snapshot.answers,
         ]
         .into_iter()
@@ -4161,9 +3958,9 @@ mod tests {
         .sum::<usize>();
         let left = crate::drafts::MAX_TOTAL_BYTES - used;
         // Fill the remaining shared space without changing any answer.
-        for (index, chunk) in "z".repeat(left).as_bytes().chunks(16_000).enumerate() {
+        for (index, chunk) in "z".repeat(left).as_bytes().chunks(4_000).enumerate() {
             assert!(state.edit_draft(
-                DraftKind::Channel,
+                DraftKind::TaskAcceptance,
                 index.to_string(),
                 String::from_utf8(chunk.to_vec()).unwrap()
             ));
@@ -4192,7 +3989,6 @@ mod tests {
             "dm:a:b/thread".into(),
             "thread input".into(),
         );
-        state.edit_draft(DraftKind::Channel, "room".into(), "channel input".into());
         state
             .session_drafts
             .get_mut("agent-a")
@@ -4202,7 +3998,11 @@ mod tests {
         state.session_drafts.get_mut("agent-a").unwrap().queued =
             Some(MessageId::from("old-receipt".to_owned()));
         state.conversation_drafts.get_mut("dm:a:b").unwrap().begin();
-        state.channel_drafts.get_mut("room").unwrap().error = Some("old failure".into());
+        state
+            .conversation_drafts
+            .get_mut("dm:a:b/thread")
+            .unwrap()
+            .error = Some("old failure".into());
         let saved = state.draft_snapshot();
         saved.save(&state.draft_home).unwrap();
         let reopened = State::load(home.path());
@@ -4210,9 +4010,59 @@ mod tests {
         assert!(reopened.session_drafts["agent-a"].draft.sending.is_none());
         assert!(reopened.session_drafts["agent-a"].queued.is_none());
         assert!(reopened.conversation_drafts["dm:a:b"].sending.is_none());
-        assert!(reopened.channel_drafts["room"].error.is_none());
+        assert!(
+            reopened.conversation_drafts["dm:a:b/thread"]
+                .error
+                .is_none()
+        );
         assert!(reopened.drafts.clean());
         assert!(reopened.drafts.error.is_none());
+    }
+
+    /// A drafts file from when the app had channels still loads: what was
+    /// typed for a channel, `#all` or a contested room is let go — nothing
+    /// here could send it — and everything else comes back, saved without
+    /// them from then on.
+    #[test]
+    fn an_old_drafts_file_loads_and_lets_go_of_channel_drafts() {
+        let home = tempfile::tempdir().unwrap();
+        let draft_home = State::load(home.path()).draft_home;
+        let old = crate::drafts::Snapshot {
+            sessions: BTreeMap::from([("agent-a".into(), "session words".into())]),
+            conversations: BTreeMap::from([
+                ("dm:a:b".into(), "direct words".into()),
+                ("dm:a:b#root".into(), "thread words".into()),
+                ("everyone:project".into(), "chat words".into()),
+                ("all".into(), "to everyone".into()),
+                ("channel:room".into(), "room words".into()),
+                ("channel:room#root".into(), "room thread words".into()),
+            ]),
+            channels: BTreeMap::from([("room".into(), "channels screen words".into())]),
+            answers: BTreeMap::from([("question".into(), "an answer".into())]),
+            ..Default::default()
+        };
+        old.save(&draft_home).unwrap();
+        let state = State::load(home.path());
+        assert!(state.drafts.error.is_none(), "{:?}", state.drafts.error);
+        let kept: Vec<&str> = state
+            .conversation_drafts
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(kept, ["dm:a:b", "dm:a:b#root", "everyone:project"]);
+        assert_eq!(state.session_drafts["agent-a"].draft.text, "session words");
+        assert_eq!(
+            state.answers[&MessageId::from("question".to_owned())],
+            "an answer"
+        );
+        let saved = state.draft_snapshot();
+        assert!(saved.channels.is_empty());
+        assert!(
+            !saved
+                .conversations
+                .keys()
+                .any(|k| k.starts_with("channel:") || k == "all")
+        );
     }
 
     #[test]
@@ -4342,16 +4192,11 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         app.shell = State::load(home.path());
         app.shell.conversation = Some("elsewhere".into());
-        for kind in [
-            DraftKind::Session,
-            DraftKind::Conversation,
-            DraftKind::Channel,
-        ] {
+        for kind in [DraftKind::Session, DraftKind::Conversation] {
             app.shell.edit_draft(kind, "original".into(), "sent".into());
             let target = match kind {
                 DraftKind::Session => DeliveryTarget::Session("original".into()),
                 DraftKind::Conversation => DeliveryTarget::Conversation("original".into()),
-                DraftKind::Channel => DeliveryTarget::Channel("original".into()),
                 DraftKind::Answer | DraftKind::TaskTitle | DraftKind::TaskAcceptance => {
                     unreachable!("message drafts only")
                 }
@@ -4368,7 +4213,6 @@ mod tests {
                 .send(match kind {
                     DraftKind::Session => Msg::SessionSent("original".into(), receipt),
                     DraftKind::Conversation => Msg::ConversationSent("original".into(), receipt),
-                    DraftKind::Channel => Msg::ChannelSent("original".into(), receipt),
                     DraftKind::Answer | DraftKind::TaskTitle | DraftKind::TaskAcceptance => {
                         unreachable!("message drafts only")
                     }
@@ -4378,7 +4222,6 @@ mod tests {
             let draft = match kind {
                 DraftKind::Session => &app.shell.session_drafts["original"].draft,
                 DraftKind::Conversation => &app.shell.conversation_drafts["original"],
-                DraftKind::Channel => &app.shell.channel_drafts["original"],
                 DraftKind::Answer | DraftKind::TaskTitle | DraftKind::TaskAcceptance => {
                     unreachable!("message drafts only")
                 }
@@ -4405,33 +4248,26 @@ mod tests {
                 .values()
                 .all(|draft| draft.readiness.is_none())
         );
-        assert!(
-            reopened
-                .channel_drafts
-                .values()
-                .all(|draft| draft.readiness.is_none())
-        );
     }
 
     #[test]
-    fn retyped_channel_and_session_drafts_survive_late_receipts() {
-        fn draft(app: &mut App, session: bool) -> &mut ChannelDraft {
+    fn retyped_conversation_and_session_drafts_survive_late_receipts() {
+        fn draft(app: &mut App, session: bool) -> &mut TextDraft {
             if session {
                 &mut app.shell.session_drafts.get_mut("recipient").unwrap().draft
             } else {
-                app.shell.channel_drafts.get_mut("recipient").unwrap()
+                app.shell.conversation_drafts.get_mut("recipient").unwrap()
             }
         }
         fn edit(session: bool, text: &str) -> Message {
             if session {
                 Message::SessionDraft("recipient".into(), text.into())
             } else {
-                Message::ChannelDraft(text.into())
+                Message::ConversationDraft("recipient".into(), text.into())
             }
         }
         for session in [false, true] {
             let (mut app, _, messages) = app();
-            app.shell.channel_target = Some("recipient".into());
             let _ = app.update(edit(session, "sent text"));
             assert_eq!(
                 draft(&mut app, session).begin().as_deref(),
@@ -4444,7 +4280,7 @@ mod tests {
                 .send(if session {
                     Msg::SessionSent("recipient".into(), receipt)
                 } else {
-                    Msg::ChannelSent("recipient".into(), receipt)
+                    Msg::ConversationSent("recipient".into(), receipt)
                 })
                 .unwrap();
             app.drain();
@@ -4664,10 +4500,10 @@ mod tests {
         app.shell
             .answers
             .insert(question.id.clone(), "unfinished answer".into());
-        app.shell.channel_drafts.insert(
-            "another-room".into(),
-            ChannelDraft {
-                text: "unfinished channel message".into(),
+        app.shell.conversation_drafts.insert(
+            "everyone:another-project".into(),
+            TextDraft {
+                text: "unfinished chat message".into(),
                 ..Default::default()
             },
         );
@@ -4691,8 +4527,8 @@ mod tests {
         assert!(app.shell.pending_notification.is_none());
         assert_eq!(app.shell.answers[&question.id], "unfinished answer");
         assert_eq!(
-            app.shell.channel_drafts["another-room"].text,
-            "unfinished channel message"
+            app.shell.conversation_drafts["everyone:another-project"].text,
+            "unfinished chat message"
         );
         assert!(app.sending.is_empty());
         assert!(
@@ -4703,7 +4539,7 @@ mod tests {
         assert!(commands.try_iter().all(|cmd| !matches!(
             cmd,
             Cmd::Answer(..)
-                | Cmd::ChannelSend(..)
+                | Cmd::ConversationSend { .. }
                 | Cmd::Launch(..)
                 | Cmd::Resume(..)
                 | Cmd::Stop(..)
@@ -4712,8 +4548,8 @@ mod tests {
     }
 
     /// An archived message's notification opens its conversation even when
-    /// its sender's record is gone and its channel is closed: the archive
-    /// outlives both, and no ten-second wait ends in "no longer available".
+    /// its sender's record is gone: the archive outlives it, and no
+    /// ten-second wait ends in "no longer available".
     /// A reply typed into a notification that did not go opens the
     /// conversation the way a click does and puts the words in its
     /// composer — after what was already there, never over it — and says
@@ -4730,7 +4566,7 @@ mod tests {
             .to_owned();
         app.shell.conversation_drafts.insert(
             conversation.clone(),
-            ChannelDraft {
+            TextDraft {
                 text: "half typed".into(),
                 ..Default::default()
             },
@@ -4799,11 +4635,7 @@ mod tests {
         messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
         messages.send(Msg::Inbox(Vec::new())).unwrap();
         messages.send(Msg::Questions(Vec::new())).unwrap();
-        for kind in [
-            DraftKind::Session,
-            DraftKind::Channel,
-            DraftKind::Conversation,
-        ] {
+        for kind in [DraftKind::Session, DraftKind::Conversation] {
             for index in 0..crate::drafts::MAX_PER_KIND {
                 app.shell
                     .edit_draft(kind, format!("filler-{index}"), "x".repeat(16_000));
@@ -4816,15 +4648,21 @@ mod tests {
                 .sessions
                 .values()
                 .chain(snapshot.conversations.values())
-                .chain(snapshot.channels.values())
                 .map(String::len)
                 .sum()
         };
-        app.shell.edit_draft(
-            DraftKind::Conversation,
-            "filler-room".into(),
-            "x".repeat(crate::drafts::MAX_TOTAL_BYTES - used),
-        );
+        for (index, chunk) in "x"
+            .repeat(crate::drafts::MAX_TOTAL_BYTES - used)
+            .as_bytes()
+            .chunks(4_000)
+            .enumerate()
+        {
+            assert!(app.shell.edit_draft(
+                DraftKind::TaskAcceptance,
+                format!("/filler-{index}"),
+                String::from_utf8(chunk.to_vec()).unwrap(),
+            ));
+        }
         app.shell.error = None;
         let before = app.shell.draft_snapshot();
         let _ = app.update(Message::Notification(
@@ -4910,7 +4748,7 @@ mod tests {
     }
 
     #[test]
-    fn an_archived_notification_opens_its_conversation_without_a_live_sender_or_channel() {
+    fn an_archived_notification_opens_its_conversation_without_a_live_sender() {
         // A direct message from a sender nobody has a record of.
         let (mut app, commands, messages, _home, action) = notification_app();
         messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
@@ -4953,10 +4791,20 @@ mod tests {
             Some(agentdocker_core::ConversationId::dm("user", "sender-1").as_str()),
             "the archived conversation, not the current record's"
         );
+    }
 
-        // A channel message whose channel is no longer open.
+    /// A notification about a message in a conversation the app leaves to
+    /// the CLI — a channel, a contested room, `#all` — never opens a screen
+    /// that is gone: from an agent it opens the direct conversation with
+    /// that agent, from AgentDocker itself just Messages, and either way
+    /// the status line says how to read the message. A reply to it that
+    /// did not go waits in the direct conversation's composer, or, with no
+    /// conversation of its own, at the top of Messages.
+    #[test]
+    fn a_notification_about_a_hidden_conversation_opens_what_the_app_shows() {
+        // A channel message, read already, from an agent.
         let (mut app, commands, messages, _home, mut action) = notification_app();
-        action.target.channel = Some(agentdocker_core::ChannelId::from("closed-room".to_owned()));
+        action.target.channel = Some(agentdocker_core::ChannelId::from("planning".to_owned()));
         messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
         messages.send(Msg::Inbox(Vec::new())).unwrap();
         messages.send(Msg::Questions(Vec::new())).unwrap();
@@ -4966,16 +4814,81 @@ mod tests {
         let _ = app.update(Message::Tick);
         assert!(app.shell.pending_notification.is_none(), "routed at once");
         assert_eq!(app.screen, Screen::Questions);
-        assert_eq!(
-            app.shell.conversation.as_deref(),
-            Some("channel:closed-room")
-        );
+        let direct = agentdocker_core::ConversationId::dm("user", "sender-1").to_string();
+        assert_eq!(app.shell.conversation.as_deref(), Some(direct.as_str()));
         assert!(
-            commands
-                .try_iter()
-                .any(|cmd| matches!(cmd, Cmd::History(ref c, _) if c == "channel:closed-room"))
+            app.status
+                .contains("`agentdocker history channel:planning`"),
+            "{}",
+            app.status
         );
-        assert!(app.status.is_empty());
+        assert!(app.reveal_archived.is_none(), "nothing to look for there");
+        assert!(!commands.try_iter().any(|cmd| matches!(
+            cmd,
+            Cmd::History(ref c, _) | Cmd::HistoryBefore(ref c, ..) if c.starts_with("channel:")
+        )));
+
+        // A message to every agent, still in the inbox.
+        let (mut app, _commands, messages, _home, action) = notification_app();
+        let mut envelope = agentdocker_core::Envelope::new(
+            "sender-1",
+            agentdocker_core::Destination::Broadcast,
+            "chat",
+            serde_json::json!({"text": "to everyone"}),
+            None,
+            Utc::now(),
+        );
+        envelope.id = action.target.message.clone();
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(vec![envelope])).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action),
+        ));
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.screen, Screen::Questions);
+        assert_eq!(app.shell.conversation.as_deref(), Some(direct.as_str()));
+        assert!(
+            app.status.contains("`agentdocker history all`"),
+            "{}",
+            app.status
+        );
+
+        // AgentDocker's own notice in a contested room: Messages, and a
+        // reply that did not go stays at the top of it to copy, never in
+        // whatever conversation was open.
+        let (mut app, _commands, messages, _home, mut action) = notification_app();
+        action.target.agent =
+            agentdocker_core::AgentId::from(agentdocker_core::conversation::DAEMON);
+        action.target.channel = Some(agentdocker_core::ChannelId::from("contested".to_owned()));
+        app.shell.conversation = Some("everyone:project".into());
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::ReplyFailed {
+                action,
+                text: "my words".into(),
+                reason: "the app does not reply in channels".into(),
+                certain: true,
+            },
+        ));
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.screen, Screen::Questions);
+        assert_eq!(app.shell.conversation.as_deref(), Some("everyone:project"));
+        assert!(
+            !app.shell
+                .conversation_drafts
+                .contains_key("everyone:project"),
+            "the words are not put in an unrelated conversation"
+        );
+        let orphans = app.shell.orphan_reply_recoveries();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].text, "my words");
+        assert!(
+            app.status
+                .contains("`agentdocker history channel:contested`")
+        );
     }
 
     #[test]
@@ -5111,16 +5024,6 @@ mod tests {
 
         let _ = app.update(Message::CopyGuidance("resume".into()));
         assert!(app.status.contains("Copied"), "{}", app.status);
-    }
-
-    /// Reviews on an overlap room opens the fold that hides it.
-    #[test]
-    fn reviews_on_an_overlap_room_opens_the_fold() {
-        let (mut app, _commands, _) = app();
-        assert!(!app.shell.overlaps_open);
-        let _ = app.update(Message::ReviewOverlaps);
-        assert!(app.shell.overlaps_open);
-        assert_eq!(app.screen, Screen::Channels);
     }
 
     /// The Earlier groups (ended sessions, earlier conversations) open on a
@@ -5526,7 +5429,7 @@ mod tests {
         ] {
             app.shell.conversation_drafts.insert(
                 key.into(),
-                ChannelDraft {
+                TextDraft {
                     text: text.into(),
                     ..Default::default()
                 },
@@ -5766,7 +5669,7 @@ mod tests {
         let (mut app, commands, messages, _home, mut action) = notification_app();
         app.conversations_supported = Some(true);
         app.screen = Screen::Questions;
-        let conversation = "channel:previous".to_owned();
+        let conversation = "dm:previous:user".to_owned();
         app.shell.conversation = Some(conversation.clone());
         let old = MessageId::from("previous-message".to_owned());
         app.reveal_archived = Some(super::Seek {
@@ -5896,13 +5799,13 @@ mod tests {
         );
         assert!(commands.try_iter().all(|cmd| matches!(
             cmd,
-            Cmd::Journal(_, _) | Cmd::Channels(_, _) | Cmd::Conversations(_) | Cmd::History(_, _)
+            Cmd::Journal(_, _) | Cmd::Conversations(_) | Cmd::History(_, _)
         )));
         assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 0);
     }
     #[test]
-    fn late_channel_acknowledgements_preserve_new_text_and_other_rooms() {
-        let mut first = ChannelDraft {
+    fn late_conversation_acknowledgements_preserve_new_text_and_other_conversations() {
+        let mut first = TextDraft {
             text: "sent text".into(),
             ..Default::default()
         };
@@ -5916,25 +5819,33 @@ mod tests {
         assert_eq!(first.text, "next thought");
         assert_eq!(first.error.as_deref(), Some("connection lost"));
         let (mut app, _, messages) = app();
-        app.shell.channel_drafts.insert("one".into(), first);
-        app.shell.channel_drafts.insert(
-            "two".into(),
-            ChannelDraft {
-                text: "other room".into(),
+        app.shell
+            .conversation_drafts
+            .insert("dm:one:user".into(), first);
+        app.shell.conversation_drafts.insert(
+            "dm:two:user".into(),
+            TextDraft {
+                text: "other conversation".into(),
                 ..Default::default()
             },
         );
-        app.shell.channel_drafts.get_mut("one").unwrap().begin();
+        app.shell
+            .conversation_drafts
+            .get_mut("dm:one:user")
+            .unwrap()
+            .begin();
         messages
-            .send(Msg::ChannelSent(
-                "one".into(),
+            .send(Msg::ConversationSent(
+                "dm:one:user".into(),
                 Ok(MessageId::from("confirmed".to_owned()).into()),
             ))
             .unwrap();
         app.drain();
-        assert!(app.shell.channel_drafts["one"].text.is_empty());
-        assert_eq!(app.shell.channel_drafts["two"].text, "other room");
-        assert_eq!(app.sent_channels.back().unwrap().payload, "next thought");
+        assert!(app.shell.conversation_drafts["dm:one:user"].text.is_empty());
+        assert_eq!(
+            app.shell.conversation_drafts["dm:two:user"].text,
+            "other conversation"
+        );
     }
     #[test]
     fn commands_capture_project_context_and_a_late_reply_does_not_navigate() {
@@ -5959,14 +5870,11 @@ mod tests {
         assert_eq!(app.console_running, 0);
     }
     #[test]
-    fn quiet_project_channels_remain_queryable_and_stale_folder_checks_are_ignored() {
+    fn stale_folder_checks_are_ignored() {
         let folder = tempfile::tempdir().unwrap();
         let (mut app, _, _) = app();
         let project = crate::catalog::resolve(folder.path()).unwrap();
-        let id = project.id().to_string();
         app.shell.catalog.pin(project).unwrap();
-        assert!(app.agents.is_empty());
-        assert!(app.channel_projects().contains(&id));
         let _ = app.update(Message::ProjectLocation(
             PathBuf::from("/some/other/project"),
             false,

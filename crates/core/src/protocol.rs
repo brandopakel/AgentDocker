@@ -869,6 +869,11 @@ pub enum Request {
         #[serde(default)]
         reader: Option<String>,
     },
+    /// Where one of the person's messages stands with each agent it was
+    /// queued for. Answers `delivery`; empty for anyone else's message.
+    Delivery {
+        message: crate::MessageId,
+    },
     /// The newest `limit` archived messages of one conversation before
     /// `before_seq`, oldest first, each thread root with its reply count.
     /// Answers `history`.
@@ -1434,6 +1439,10 @@ pub enum Response {
     },
     History {
         messages: Vec<crate::ArchivedMessage>,
+    },
+    Delivery {
+        message: crate::MessageId,
+        recipients: Vec<crate::delivery::Recipient>,
     },
     Thread {
         root: crate::ArchivedMessage,

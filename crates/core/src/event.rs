@@ -324,6 +324,12 @@ pub enum EventKind {
         agent: crate::AgentId,
         messages: Vec<crate::MessageId>,
     },
+    /// What the person said to everyone in a project shortly before an
+    /// agent opened there, queued for it as its first input.
+    MessagesCaughtUp {
+        agent: crate::AgentId,
+        messages: Vec<crate::MessageId>,
+    },
     /// A process of a known agent runtime appeared that no registered
     /// agent claims; `adopt` makes it one.
     AgentDiscovered {

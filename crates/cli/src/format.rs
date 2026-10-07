@@ -635,6 +635,10 @@ pub fn event_line(event: &Event) -> String {
         EventKind::InboxAcknowledged { agent, messages } => {
             format!("{agent} acknowledged {} messages", messages.len())
         }
+        EventKind::MessagesCaughtUp { agent, messages } => format!(
+            "{agent} opened after {} message(s) to everyone; queued for it",
+            messages.len()
+        ),
         EventKind::AgentDiscovered {
             pid,
             runtime,
@@ -906,18 +910,19 @@ pub fn counter(report: &agentdocker_core::usage::CounterReport) -> String {
     }
 }
 
-/// `12345678` as `12,345,678`.
-pub fn thousands(value: u64) -> String {
-    let digits = value.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
+/// Each agent's tokens over a usage report grouped by agent, as `ps`
+/// cells keyed by agent id.
+pub fn tokens_by_agent(
+    report: &agentdocker_core::usage::report::Report,
+) -> std::collections::HashMap<String, String> {
+    report
+        .tokens()
+        .into_iter()
+        .map(|(agent, tokens)| (agent, tokens.label()))
+        .collect()
 }
+
+pub use agentdocker_core::usage::thousands;
 
 /// A usage row's first column: the agent or project by name when it is
 /// still known, else its ID (history outlives the registry), and
@@ -927,6 +932,29 @@ fn usage_key(key: Option<&str>, names: &std::collections::HashMap<String, String
         None => "(unattributed)".to_owned(),
         Some(id) => names.get(id).cloned().unwrap_or_else(|| id.to_owned()),
     }
+}
+
+/// Each agent a message was queued for and where it stands, in the order
+/// it was queued; a message nobody was followed for says so.
+pub fn delivery(recipients: &[agentdocker_core::delivery::Recipient]) {
+    if recipients.is_empty() {
+        println!(
+            "No recipients recorded: only your own messages are followed, and only from this version on."
+        );
+        return;
+    }
+    let rows: Vec<Vec<String>> = recipients
+        .iter()
+        .map(|r| {
+            vec![
+                r.name.clone().unwrap_or_else(|| r.agent.to_string()),
+                r.state.label().to_owned(),
+                ago(r.queued_at),
+                r.taken_at.map(ago).unwrap_or_else(|| "-".to_owned()),
+            ]
+        })
+        .collect();
+    table(&["AGENT", "WHERE IT STANDS", "QUEUED", "TAKEN"], &rows);
 }
 
 /// The table of a usage report and, under it, what the totals cover:

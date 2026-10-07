@@ -79,6 +79,7 @@ pub use wait::{
 pub mod working_set;
 pub use working_set::{ReadMark, StalePath};
 
+pub mod delivery;
 pub mod recovery;
 pub mod send_readiness;
 pub mod session;

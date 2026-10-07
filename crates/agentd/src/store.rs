@@ -16,6 +16,10 @@ use agentdocker_core::{
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+
+/// One recipient of a followed message: who, when it was queued for them,
+/// and when they took it.
+pub type Delivery = (AgentId, DateTime<Utc>, Option<DateTime<Utc>>);
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub(crate) mod event_replay;
@@ -96,6 +100,13 @@ CREATE TABLE IF NOT EXISTS inbox (
     json       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS inbox_agent ON inbox (agent, seq);
+CREATE TABLE IF NOT EXISTS deliveries (
+    message_id TEXT NOT NULL,
+    agent      TEXT NOT NULL,
+    queued_at  TEXT NOT NULL,
+    taken_at   TEXT,
+    PRIMARY KEY (message_id, agent)
+);
 CREATE TABLE IF NOT EXISTS events (
     seq  INTEGER PRIMARY KEY AUTOINCREMENT,
     at   TEXT NOT NULL,
@@ -1223,7 +1234,7 @@ impl Store {
         events: &[Event],
     ) -> Result<()> {
         self.publish_message_with_channel(
-            message, recipients, capacity, sender, question, closed, events, None, None,
+            message, recipients, capacity, sender, question, closed, events, None, None, false,
         )
     }
 
@@ -1241,10 +1252,14 @@ impl Store {
         events: &[Event],
         channel: Option<(&Channel, Option<&JournalEntry>)>,
         document: Option<(&str, &str, Option<&serde_json::Value>)>,
+        tracked: bool,
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         for recipient in recipients {
             self.insert_inbox(recipient, message, capacity)?;
+            if tracked {
+                self.record_delivery(recipient, &message.id, message.sent_at)?;
+            }
         }
         match document {
             Some((kind, id, Some(value))) => self.put_document(kind, id, value)?,
@@ -1291,6 +1306,26 @@ impl Store {
         for event in events {
             self.append_event(event)?;
         }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Queue archived messages for one more recipient, with the event that
+    /// says so, as one transaction. They are archived already and not
+    /// archived again.
+    pub fn enqueue_late(
+        &self,
+        agent: &AgentId,
+        messages: &[Envelope],
+        capacity: usize,
+        event: &Event,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for message in messages {
+            self.insert_inbox(agent, message, capacity)?;
+            self.record_delivery(agent, &message.id, event.at)?;
+        }
+        self.append_event(event)?;
         tx.commit()?;
         Ok(())
     }
@@ -1660,6 +1695,7 @@ impl Store {
                 "DELETE FROM inbox WHERE agent = ?1 AND message_id = ?2",
                 params![cursor.reader.as_str(), message.as_str()],
             )?;
+            self.take_delivery(&cursor.reader, message, event.at)?;
         }
         self.append_event(event)?;
         tx.commit()?;
@@ -1831,6 +1867,10 @@ impl Store {
     fn delete_archived(&self, seqs: &[i64]) -> Result<usize> {
         let mut removed = 0;
         for seq in seqs {
+            self.conn.execute(
+                "DELETE FROM deliveries WHERE message_id = (SELECT message_id FROM messages WHERE seq = ?1)",
+                [seq],
+            )?;
             removed += self
                 .conn
                 .execute("DELETE FROM messages WHERE seq = ?1", [seq])?;
@@ -1848,6 +1888,67 @@ impl Store {
                 .execute("DELETE FROM meta WHERE key='messages_fts_complete'", [])?;
         }
         Ok(removed)
+    }
+
+    /// That `message` was queued for `agent`: kept for the person's own
+    /// messages, so they can see where each one stands with each agent.
+    fn record_delivery(
+        &self,
+        agent: &AgentId,
+        message: &MessageId,
+        at: DateTime<Utc>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO deliveries (message_id, agent, queued_at) VALUES (?1, ?2, ?3)",
+            params![message.as_str(), agent.as_str(), at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// That `agent` took `message` from its queue, the first time it did.
+    fn take_delivery(&self, agent: &AgentId, message: &MessageId, at: DateTime<Utc>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE deliveries SET taken_at = ?3 WHERE message_id = ?1 AND agent = ?2 AND taken_at IS NULL",
+            params![message.as_str(), agent.as_str(), at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Every agent `message` was queued for, in the order it was queued,
+    /// with when, and when each took it.
+    pub fn deliveries(&self, message: &MessageId) -> Result<Vec<Delivery>> {
+        let time = |text: String| {
+            DateTime::parse_from_rfc3339(&text)
+                .map(|at| at.with_timezone(&Utc))
+                .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT agent, queued_at, taken_at FROM deliveries WHERE message_id = ?1 ORDER BY queued_at, rowid",
+        )?;
+        let rows = stmt
+            .query_map([message.as_str()], |row| {
+                let taken: Option<String> = row.get(2)?;
+                Ok((
+                    AgentId::from(row.get::<_, String>(0)?),
+                    time(row.get(1)?)?,
+                    taken.map(time).transpose()?,
+                ))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Who replied to `message`, in any conversation, earliest first.
+    pub fn replies_to(&self, message: &MessageId) -> Result<Vec<(MessageId, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT message_id, sender FROM messages WHERE reply_to = ?1 ORDER BY seq")?;
+        let rows = stmt
+            .query_map([message.as_str()], |row| {
+                Ok((MessageId::from(row.get::<_, String>(0)?), row.get(1)?))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
     }
 
     fn insert_inbox(&self, agent: &AgentId, message: &Envelope, capacity: usize) -> Result<()> {
@@ -1903,6 +2004,7 @@ impl Store {
                 "DELETE FROM inbox WHERE agent = ?1 AND message_id = ?2",
                 params![agent.as_str(), message.as_str()],
             )?;
+            self.take_delivery(agent, message, event.at)?;
         }
         self.append_event(event)?;
         tx.commit()?;

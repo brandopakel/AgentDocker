@@ -38,10 +38,15 @@ goes there, Escape steps back. **Launch agent…** in it lists the installed too
 With no saved selection, the app opens on **All projects**, with sessions grouped
 under their project names. A saved project or Other sessions view is restored.
 **Projects** in the sidebar returns to All projects. Choosing a project opens
-its shared **Chat**, with the agents working there beside it. **Agents** opens the
+its shared **Chat**, with the agents working there beside it. Under each of your
+own five newest messages in a conversation, one quiet line per agent it went to
+says where it stands, refreshed with the screen: *answered*, *delivered*,
+*received by the model*, *shown to its session, not confirmed*, or why it still
+waits — *waiting for its next prompt*, *waits until it checks in* (a browser
+agent), *delivery paused*, *session ended before taking it*. Nothing says
+*read*: the daemon cannot know it. **Agents** opens the
 session list and **Board** the project's cards. **More** opens a menu of History,
-Channels, Files in use, Usage, AgentDocker commands and the project's Pin and
-Forget; the tab takes the name of the screen on view and is underlined only
+Files in use, Usage, AgentDocker commands and the project's Pin and Forget; the tab takes the name of the screen on view and is underlined only
 while one of those screens is open. **Pause…**, **Open terminal** and
 **Launch agent…** stay in the header on every project screen; the chevron
 beside Launch agent lists the installed tools and opens the form with one
@@ -142,10 +147,7 @@ before are dropped, though you can still add either yourself.
 
 A session that asked something shows **Answer**, which opens that exact
 question, as the project chat's **Answer N questions** does for the oldest
-waiting one. A closed channel offers no **Write to channel**; with **All
-projects** chosen, Channels lists every project's channels, so **Reviews** from
-a conversation always lands on its channel. Copy buttons say *Copied to the
-clipboard*.
+waiting one. Copy buttons say *Copied to the clipboard*.
 
 **Current** shows live sessions; **Needs input** shows this project's
 unanswered, unexpired questions, including questions from a session that has
@@ -164,8 +166,11 @@ Session rows show the session's mark — its tool's logo (Claude, OpenAI,
 Gemini, Copilot, Cursor, Windsurf, VS Code, OpenCode), or a letter tile for
 a tool without one — the name over its tool (only when the
 name is one somebody chose; a generated name already reads as the tool) and
-branch, the observed activity as a dot and a word, and how long it has run or
-since it ended. Sessions needing
+branch, with the tokens its provider reported over the last 24 hours when
+collection is on (`1.23M tokens in 24h`, `~` where some samples did not say,
+nothing where none did), the observed activity as a dot and a word, and how
+long it has run or since it ended. Above the Current list one quiet line sums
+those sessions' tokens and opens **Usage**. Sessions needing
 input appear first within each project. An ended Claude Code session that can
 come back carries **Reconnect here** on its row itself (the same action as in
 Details, which still says why a session cannot be reconnected yet); while its
@@ -264,15 +269,6 @@ Project tabs provide:
 - **Chat:** the shared project conversation with current agents and terminal actions.
 - **Agents:** current sessions, connection details and reconnect actions.
 - **More → Board / History:** task cards and the recent durable journal.
-- **More → Channels:** project rooms, membership, reviews and queued messages.
-  Channels agents opened come first; the rooms AgentDocker opens when two
-  checkouts change the same files sit folded behind **▸ Overlaps (n)**, each
-  titled **Contested paths (n)** with the first few paths under it. Members
-  read as a count and at most four names, and AgentDocker's own notices are
-  signed AgentDocker. **Reviews** on an overlap conversation, or a
-  notification about an overlap room, opens the fold so the room is in view.
-  Its label counts messages waiting for you. Each room retains its own draft
-  across navigation and failed delivery; viewing does not drain your inbox.
 - **More → Files in use:** current leases and their holders, each path shown
   from the project's root, with a thin meter of the time left that turns
   amber, with the word *Expiring*, under one fifth.
@@ -334,28 +330,27 @@ conversation, and **Conversations** returns to the list.
 **Messages** is what the rail item (named Messages then, Inbox otherwise)
 opens against a daemon that keeps conversations (schema 21 and later); an
 older daemon still gets the inbox below. It is shaped like a chat workspace.
-The sidebar lists **Channels** (`#everyone` for the selected project, or
-`#everyone · project` when every project is on view, `#all`, and named
-channels; a room opened before names gets a short name from its task),
-**Direct messages** with a presence dot for a live session — one row per
-live agent, by its stable name, and one row for an identity however many
-ids it has had: the conversation written in last is the row, and its
-conversations under former ids sit under **Earlier**, each with its own
-unread, draft and history — then, folded behind **From AgentDocker (n)**, what
-AgentDocker itself writes: the rooms it opens between two checkouts, named
-`Contested paths (303)` by how many paths they are about, and the
-**AgentDocker → agent** notices per agent; conversations two agents had with
-each other sit behind **Between agents** (read as `Codex · Heron ↔ Claude Code · Otter`,
-so two pairs of the same tools are told apart); a search box filters by
-name. Ended sessions' conversations sit behind **Earlier (n)**, eight at a time
-with **Show older**. Every row is
-one line each for the name and the latest line. Unread counts and the rail
-badge cover what is yours to answer: channels, broadcasts and your own direct
-messages, never what two agents said to each other, what AgentDocker told
-them, or a collision room (AgentDocker opens those between two checkouts
-and fills them with its own contested-path notices; you are not a member,
-though the room's own row still shows what is unread in it); **Mark all
-read** beside the count reads all of it at once. The
+The sidebar lists **Projects** — each project's chat (its `#everyone`), named
+for the project and opening that project's **Chat** — then **Direct
+messages** with a presence dot for a live session — one row per live agent,
+by its stable name, and one row for an identity however many ids it has had:
+the conversation written in last is the row, and its conversations under
+former ids sit under **Earlier**, each with its own unread, draft and
+history; conversations two agents had with each other sit behind **Between
+agents** (read as `Codex · Heron ↔ Claude Code · Otter`, so two pairs of the
+same tools are told apart); a search box filters by name. Ended sessions'
+conversations sit behind **Earlier (n)**, eight at a time with **Show
+older**. Every row is one line each for the name and the latest line.
+Nothing else is listed: `#all`, channels, the rooms AgentDocker opens when
+two checkouts change the same files, and AgentDocker's notices to an agent
+are the CLI's (`agentdocker conversations`, `agentdocker history
+<conversation>`, `agentdocker channels`, `agentdocker channel …`). Unread
+counts and the rail badge cover what is yours to answer: each project's chat
+and your own direct messages, never what two agents said to each other or
+what AgentDocker told them; **Mark all read** beside the count reads all of
+it at once. What reaches you in `#all`, a channel or a contested room is
+read through as each list arrives, so it never waits in your queue or under
+a count nobody can clear here. The
 sidebar, the conversation and the thread are columns with a divider between
 each that drags, like the rail's beside the workspace: a name the sidebar
 clips gets its room by dragging, and the widths are kept in pixels and
@@ -364,9 +359,8 @@ conversation the room. In a smaller window or with larger text, side columns
 shrink to keep the conversation usable; when the columns cannot fit, Messages
 shows one pane with a way back. Expanding restores saved widths (rail 180–440
 points, sidebar 200–560, thread 240–640).
-The pane's header is the name on one line and, under it, what the room is
-about (the task or contested paths, a pair's branches, a broadcast's
-members). The pane shows the newest 200 archived messages, newest
+The pane's header is the name on one line and, under it, what the
+conversation is about (a project chat's participants, a pair's branches). The pane shows the newest 200 archived messages, newest
 last, with **Show earlier messages** at the top until the first is on view,
 day dividers and a **New** divider before the unread part; a question keeps
 its card (Answer, Allow, Deny) in place. Messages from one sender run together
@@ -386,17 +380,21 @@ its thread beside the conversation, or in place of it when narrow with
 **‹ Conversation** to return; the thread is read whole. The thread has a
 composer of its own with its own draft, and only it sends with `reply_to`;
 the conversation's composer stays under the conversation and never becomes a
-reply. It sends to the channel, to the project (`#everyone`), to every agent
-(`#all`) or to that agent; it reads **This session has ended** for a direct
-conversation whose agent is gone, says so for one between two agents, and has
-nothing to send for notices. Drafts survive navigation, a failed request and
-disconnection. A notification opens the message's conversation even after it
-has been read, and even when the sender's record or the channel is gone: the
-archive outlives both. A notification for a message has a **Reply** field
-(macOS): what is typed there goes from you to where that message went — the
-project's everyone, its channel, or back to the agent who wrote to you — as a
-reply to it, so a typed answer closes the question it answers, without the
-window opening. Only the daemon's `sent` counts as sent. A reply that did
+reply. It sends to the project (`#everyone`) or to that agent; it reads
+**This session has ended** for a direct conversation whose agent is gone and
+says so for one between two agents. Drafts survive navigation, a failed
+request and disconnection. A notification opens the message's conversation
+even after it has been read, and even when the sender's record is gone: the
+archive outlives it. A notification about a message in a channel or to every
+agent (`#all`) opens the direct conversation with its sender when that is an
+agent, otherwise Messages, and the status line gives the `agentdocker history
+…` command that reads the message; a question put to every agent waits as a
+card in the direct conversation with whoever asked it. A notification for a
+message has a **Reply** field (macOS): what is typed there goes from you to
+where that message went — the project's everyone, or back to the agent who
+wrote to you — as a reply to it, so a typed answer closes the question it
+answers, without the window opening; a reply to a channel or to every agent
+is refused with the `agentdocker send --to …` command that reaches it. Only the daemon's `sent` counts as sent. A reply that did
 not go is said as a notification (**Open the app to recover your reply**)
 and comes back to the app: the conversation opens with your words in its
 composer, after anything already drafted there, and the status line says why — **Reply not sent** when the
@@ -404,7 +402,8 @@ daemon refused it, **Reply may not have been sent** when the connection went
 before an answer, in which case read the history before sending again.
 When the draft cannot take the words (draft storage is full) they wait beside
 the composer with **Copy** and **Dismiss**; when the conversation itself cannot
-be opened (its message, project or channel is gone) they wait at the top of the
+be opened (its message or project is gone, or the message is in a channel or
+`#all`) they wait at the top of the
 Messages list instead, with the same two controls, whatever is on view; the
 window keeps up to eight such replies and says so when a further one cannot be
 kept. A notification from
@@ -421,12 +420,9 @@ draft is empty or already sending. Pasted text keeps its line breaks. Longer
 messages scroll inside the composer, and unfinished multiline drafts survive
 switching conversations and reopening the window. Enter during an active IME
 composition does not send; held Enter does not repeat a send. **+** beside the search starts a
-conversation the way Slack's New message does: **Direct message** is one
-pick from the agents running here (in the selected project when one is);
-**Channel** is a name (kept to lowercase letters, digits and hyphens as it
-is typed), what it is for, and who is in it — everyone here when nobody is
-picked — and the person is in it as its opener; the room opens as soon as
-the daemon has it. `@` in a composer offers who is here and a pick finishes
+direct message the way Slack's New message does: one pick from the agents
+running here (in the selected project when one is) opens the conversation
+with it. `@` in a composer offers who is here and a pick finishes
 the name (`@codex-51242`, the record's own name, which is what a mention
 reaches); a row whose unread rows name the person shows an **@n** count beside
 its count, and such a message carries **mentions you** in its header and an
@@ -434,8 +430,9 @@ amber edge. The composer is one frame: the text, then a footer with its keys
 (Enter sends, Shift+Enter starts a line, @ mentions) and the send arrow.
 The selected project also scopes archived direct conversations. Project message search retains finished sessions' direct messages and AgentDocker notices after restart.
 
-Conversation, thread, channel, session and unfinished answer text is saved locally for
-its daemon and restored after a normal window close. Text that was in flight
+Conversation, thread, session and unfinished answer text is saved locally for
+its daemon and restored after a normal window close; channel and `#all` drafts
+an earlier version saved are let go when the file loads. Text that was in flight
 returns as an editable draft and is never sent automatically; check the history
 before retrying an uncertain submission. Newer edits survive older send replies.
 A failed save keeps the window open with **Retry saving** and an explicit
