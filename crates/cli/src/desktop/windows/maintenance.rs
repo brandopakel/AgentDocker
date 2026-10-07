@@ -3,20 +3,14 @@
 use super::*;
 use base64::Engine;
 
-#[derive(Default)]
-struct ServiceReferences {
-    any: bool,
-    retained_versions: bool,
-}
+use crate::service::windows::references::References as ServiceReferences;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Action {
     executable: String,
     arguments: String,
-}
-
-fn normalized(text: &str) -> String {
-    text.replace(r"\\?\", "").replace('/', "\\").to_lowercase()
+    working_directory: String,
 }
 
 fn references(root: &Path) -> Result<ServiceReferences> {
@@ -28,7 +22,7 @@ fn references(root: &Path) -> Result<ServiceReferences> {
     );
     // Query all AgentDocker task homes, including stopped tasks. Names select
     // the inventory only; no task is edited or treated as owned by this query.
-    let script = r#"$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new();$rows=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {$_.TaskPath -eq '\' -and $_.TaskName -like 'AgentDocker-*'} | ForEach-Object {foreach($a in $_.Actions){[pscustomobject]@{executable=[string]$a.Execute;arguments=[string]$a.Arguments}}});ConvertTo-Json -InputObject $rows -Depth 4 -Compress"#;
+    let script = r#"$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new();$rows=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {$_.TaskPath -eq '\' -and $_.TaskName -like 'AgentDocker-*'} | ForEach-Object {foreach($a in $_.Actions){[pscustomobject]@{executable=[string]$a.Execute;arguments=[string]$a.Arguments;working_directory=[string]$a.WorkingDirectory}}});ConvertTo-Json -InputObject $rows -Depth 4 -Compress"#;
     let encoded = base64::engine::general_purpose::STANDARD.encode(
         script
             .encode_utf16()
@@ -59,46 +53,87 @@ fn references(root: &Path) -> Result<ServiceReferences> {
     action_references(root, &executable, actions)
 }
 
+/// Recognize owned immutable binaries or receipt-checked stable launchers in
+/// this store. A same-looking script around an arbitrary program stays opaque.
+fn known_program(
+    root: &Path,
+    path: &Path,
+    name: &str,
+    verified: &mut std::collections::BTreeSet<PathBuf>,
+) -> Result<bool> {
+    if !path.is_absolute() {
+        return Ok(false);
+    }
+    let path = path.canonicalize()?;
+    if path.file_name().and_then(|n| n.to_str()) != Some(name) {
+        return Ok(false);
+    }
+    let target = native::launcher_target(&path)?.unwrap_or(path);
+    let Some((store, version, _)) = native::managed(&target) else {
+        return Ok(false);
+    };
+    if store != root {
+        return Ok(false);
+    }
+    let prefix = root
+        .parent()
+        .and_then(Path::parent)
+        .context("invalid store path")?;
+    let layout = Layout::new(prefix.to_owned())?;
+    if !verified.contains(&version) {
+        checked_version(&layout, &version)?;
+        verified.insert(version);
+    }
+    Ok(true)
+}
+
 fn action_references(
     root: &Path,
     powershell: &Path,
     actions: Vec<Action>,
 ) -> Result<ServiceReferences> {
     let powershell = powershell.canonicalize()?;
-    let root = format!("{}\\", normalized(&root.to_string_lossy()));
+    let root = root.canonicalize()?;
     let mut found = ServiceReferences::default();
-    let unknown = || ServiceReferences {
-        any: true,
-        retained_versions: true,
-    };
+    let mut verified = std::collections::BTreeSet::new();
     for action in actions {
-        if Path::new(&action.executable).canonicalize().ok().as_ref() != Some(&powershell) {
-            return Ok(unknown());
-        }
-        let Some(parsed) = crate::service::windows::actions::recognize(&action.arguments) else {
-            // Missing literal paths are not evidence of absence: a wrapper or
-            // another encoded program could construct them at runtime.
-            return Ok(unknown());
-        };
-        if !Path::new(&parsed.controller).is_absolute() {
-            return Ok(unknown());
-        }
-        let mut values = parsed.values;
-        // Include resolved aliases as well as the original literal spelling.
-        // Missing endpoints/log files are normal; they add no resolved path.
-        let resolved: Vec<_> = values
-            .iter()
-            .map(Path::new)
-            .filter(|path| path.is_absolute())
-            .filter_map(|path| path.canonicalize().ok())
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect();
-        values.extend(resolved);
-        let text = normalized(&values.join("\n"));
-        if text.contains(&root) {
-            found.any = true;
-            found.retained_versions |= text.contains(&format!("{root}versions\\"))
-                || !text.contains(&format!("{root}bin\\"));
+        let recognized = (|| -> Result<()> {
+            ensure!(
+                Path::new(&action.executable).is_absolute()
+                    && Path::new(&action.executable).canonicalize()? == powershell,
+                "unknown service executable"
+            );
+            let parsed = crate::service::windows::actions::recognize(&action.arguments)
+                .context("unknown service action")?;
+            ensure!(
+                known_program(
+                    &root,
+                    Path::new(&parsed.controller),
+                    "agentdocker.exe",
+                    &mut verified
+                )?,
+                "unknown service controller"
+            );
+            if let Some(daemon) = parsed.daemon() {
+                ensure!(
+                    known_program(&root, Path::new(daemon), "agentd.exe", &mut verified)?,
+                    "unknown service daemon"
+                );
+            }
+            let mut resources = parsed.resources()?;
+            if !action.working_directory.is_empty() {
+                resources
+                    .data
+                    .push(PathBuf::from(&action.working_directory));
+            }
+            for path in resources.executables.iter().chain(&resources.data) {
+                found.include(&root, path)?;
+            }
+            Ok(())
+        })();
+        if recognized.is_err() {
+            // Do not print service arguments, private paths or environment.
+            return Ok(ServiceReferences::unknown());
         }
     }
     Ok(found)
@@ -154,6 +189,7 @@ mod tests {
         let powershell = scratch.path().join("powershell.exe");
         std::fs::write(&powershell, b"query fixture").unwrap();
         let root = scratch.path().join("AgentDocker/desktop");
+        std::fs::create_dir_all(&root).unwrap();
         for arguments in [
             "-File C:\\service-wrapper.ps1".into(),
             actions::arguments("& (Join-Path $env:APP_ROOT 'agentdocker.exe') daemon supervise"),
@@ -163,12 +199,13 @@ mod tests {
                 &root,
                 &powershell,
                 vec![Action {
+                    working_directory: String::new(),
                     executable: powershell.to_string_lossy().into_owned(),
                     arguments,
                 }],
             )
             .unwrap();
-            assert!(refs.any && refs.retained_versions);
+            assert!(refs.any && refs.all);
         }
     }
 
@@ -178,6 +215,7 @@ mod tests {
         let powershell = scratch.path().join("powershell.exe");
         std::fs::write(&powershell, b"query fixture").unwrap();
         let root = scratch.path().join("O''Brien ‘quoted’/AgentDocker/desktop");
+        std::fs::create_dir_all(&root).unwrap();
         let controller = root.join("bin/agentdocker.exe");
         let daemon = root
             .join("versions")
@@ -193,25 +231,27 @@ mod tests {
             &root,
             &powershell,
             vec![Action {
+                working_directory: String::new(),
                 executable: powershell.to_string_lossy().into_owned(),
                 arguments: arguments.clone(),
             }],
         )
         .unwrap();
-        assert!(refs.any && refs.retained_versions);
+        assert!(refs.any && refs.all);
 
         let foreign = scratch.path().join("another-wrapper.exe");
         std::fs::write(&foreign, b"unrecognized program").unwrap();
         let refs = action_references(
-            &scratch.path().join("unmentioned-store"),
+            &root,
             &powershell,
             vec![Action {
+                working_directory: String::new(),
                 executable: foreign.to_string_lossy().into_owned(),
                 arguments,
             }],
         )
         .unwrap();
-        assert!(refs.any && refs.retained_versions);
+        assert!(refs.any && refs.all);
     }
 }
 
@@ -288,7 +328,7 @@ fn plan(
             .is_some_and(|a| a.current.id == id || a.previous.as_ref().is_some_and(|p| p.id == id))
         {
             Some("active or rollback version")
-        } else if services.retained_versions {
+        } else if services.retains(&id) {
             Some("a stopped service may reference retained binaries")
         } else if checked_version(layout, &path).is_err() {
             Some("modified or unrecognized release; preserved")

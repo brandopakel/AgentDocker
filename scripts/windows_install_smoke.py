@@ -117,7 +117,7 @@ def main():
     names = ('agentdocker.exe', 'agentd.exe', 'agentdocker-ui.exe')
     report = {'result': 'failed', 'source_commit': json.loads((app / 'build.json').read_text())['source_commit'],
               'binary_sha256': {n: hashlib.sha256((app / n).read_bytes()).hexdigest() for n in names},
-              'scope': 'Native private-prefix install and rollback. Second payload changes a fixture README only; a third metadata-only fixture exercises the local preview feed. Three uniquely named disabled/no-trigger Task Scheduler definitions exercise stopped service references without starting their actions. No hosted update, actual provider, Start menu or reboot claim.',
+              'scope': 'Native private-prefix install and rollback. Second payload changes a fixture README only; a third metadata-only fixture exercises the local preview feed. Three uniquely named disabled/no-trigger Task Scheduler definitions exercise conservative references; a fourth retains its exact old daemon while an unrelated verified build is deleted, then starts that retained daemon and retires its owned processes. No hosted update, actual provider, Start menu or reboot claim.',
               'scratch': str(scratch), 'service_requested': args.service, 'steps': [], 'commands': []}
 
     def save():
@@ -148,8 +148,9 @@ def main():
         return "'" + ''.join(c * 2 if c in "'‘’‚‛" else c for c in str(value)) + "'"
 
     @contextmanager
-    def stopped_task(case, arguments):
-        """A unique disabled task with no triggers; never start its action."""
+    def stopped_task(case, arguments, execution_seconds=10):
+        """A unique disabled/no-trigger task, started only by an explicit callback."""
+        assert execution_seconds in (10, 120)
         powershell = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
         nonce = uuid.uuid4().hex
         name = 'AgentDocker-Maintenance-' + nonce
@@ -192,7 +193,7 @@ def main():
                 "if($tasks.Count -ne 0){throw 'Fixture task name already exists'};"
                 "$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
                 "$principal=New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive -RunLevel Limited;"
-                "$settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::FromSeconds(10));"
+                f"$settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::FromSeconds({execution_seconds}));"
                 "$action=New-ScheduledTaskAction -Execute $executable -Argument $arguments;"
                 "Register-ScheduledTask -TaskPath '\\' -TaskName $name -Principal $principal "
                 "-Action $action -Settings $settings -Description $description | Out-Null;"
@@ -205,20 +206,49 @@ def main():
             save()
             if value != {'state': 'Disabled', 'triggers': 0, 'actions': 1}:
                 raise AssertionError('maintenance task must be disabled with no triggers and one action')
-            yield
+            guard = (query + "if($tasks.Count -ne 1){throw 'Missing or ambiguous fixture task'};"
+                "$task=$tasks[0];if($task.Description -cne $description -or @($task.Actions).Count -ne 1 "
+                "-or $task.Actions[0].Execute -ine $executable -or $task.Actions[0].Arguments -cne $arguments "
+                "-or -not [string]::IsNullOrEmpty($task.Actions[0].WorkingDirectory) "
+                "-or ($null -ne $task.Triggers -and @($task.Triggers).Count -ne 0))"
+                "{throw 'Changed fixture task was preserved'};")
+            def start():
+                assert execution_seconds == 120
+                entry['start_attempted'] = True
+                save()
+                return scheduler('start retained task', guard +
+                    "Enable-ScheduledTask -TaskPath '\\' -TaskName $name | Out-Null;"
+                    "Start-ScheduledTask -TaskPath '\\' -TaskName $name;"
+                    "[pscustomobject]@{started=$true}|ConvertTo-Json -Compress")
+            def stop():
+                if not entry.get('start_attempted'):
+                    return
+                value = scheduler('stop retained task', guard +
+                    "Stop-ScheduledTask -TaskPath '\\' -TaskName $name;"
+                    "$deadline=[DateTime]::UtcNow.AddSeconds(15);"
+                    "do{$task=Get-ScheduledTask -TaskPath '\\' -TaskName $name -ErrorAction Stop;"
+                    "if($task.State.ToString() -ne 'Running'){break};Start-Sleep -Milliseconds 100}"
+                    "while([DateTime]::UtcNow -lt $deadline);"
+                    "if($task.State.ToString() -eq 'Running'){throw 'Fixture task did not stop'};"
+                    "Disable-ScheduledTask -TaskPath '\\' -TaskName $name | Out-Null;"
+                    "[pscustomobject]@{stopped=$true}|ConvertTo-Json -Compress")
+                entry['stopped'] = value.get('stopped') is True
+                save()
+            yield {'start': start, 'stop': stop}
         except BaseException as error:
             entry['body_error'] = f'{type(error).__name__}: {error}'
             save()
             raise
         finally:
             # Also inspect after uncertain registration. Remove only this exact
-            # unstarted definition; preserve any changed/foreign task as a failure.
+            # stopped definition; preserve any changed/foreign task as a failure.
             value = scheduler('remove owned task', query +
                 "if($tasks.Count -gt 1){throw 'Ambiguous fixture task'};"
                 "if($tasks.Count -eq 1){$task=$tasks[0];"
                 "if($task.Description -cne $description -or @($task.Actions).Count -ne 1 "
                 "-or $task.Actions[0].Execute -ine $executable -or $task.Actions[0].Arguments -cne $arguments "
                 "-or ($null -ne $task.Triggers -and @($task.Triggers).Count -ne 0) "
+                "-or -not [string]::IsNullOrEmpty($task.Actions[0].WorkingDirectory) "
                 "-or $task.State.ToString() -eq 'Running')"
                 "{throw 'Changed or running fixture task was preserved'};"
                 "Unregister-ScheduledTask -TaskPath '\\' -TaskName $name -Confirm:$false | Out-Null};" +
@@ -342,9 +372,10 @@ def main():
         cleanup = desktop('prune', '--preview')
         step('unlocked inactive version becomes eligible for pruning',
              len(cleanup['maintenance']['remove']) == 1 and Path(cleanup['maintenance']['remove'][0]).name == second)
-        def daemon_action(daemon):
-            script = (f'& {quoted(launcher)} daemon supervise --home {quoted(home)} '
-                      f'--agentd {quoted(daemon)} --endpoint {quoted(env["AGENTDOCKER_SOCKET"])}; exit $LASTEXITCODE')
+        def daemon_action(daemon, service_home=home, endpoint=env['AGENTDOCKER_SOCKET']):
+            """Use one exact quoting/encoding path for every maintenance task."""
+            script = (f'& {quoted(launcher)} daemon supervise --home {quoted(service_home)} '
+                      f'--agentd {quoted(daemon)} --endpoint {quoted(endpoint)}; exit $LASTEXITCODE')
             return ('-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ' +
                     base64.b64encode(script.encode('utf-16le')).decode('ascii'))
 
@@ -367,6 +398,11 @@ def main():
                          (store / 'versions' / second).is_dir())
             step(case + ' removal restores the original maintenance plan',
                  desktop('prune', '--preview')['plan_id'] == cleanup['plan_id'])
+        from windows_selective_retention_smoke import exercise
+        exercise(scratch, store, second_app, second, third, desktop, run,
+                 stopped_task, daemon_action, step, report, save)
+        step('selective trial leaves the original inactive candidate and plan intact',
+             desktop('prune', '--preview')['plan_id'] == cleanup['plan_id'])
         unknown = store / 'versions/user-notes'
         unknown.mkdir()
         (unknown / 'keep.txt').write_text('driver-owned content must be preserved', encoding='utf-8')

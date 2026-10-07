@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 pub(crate) mod actions;
+pub(crate) mod references;
 
 pub(crate) const RECORD_FORMAT: u32 = 1;
 pub(crate) const RECORD_LIMIT: u64 = 32 * 1024;
