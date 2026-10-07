@@ -996,6 +996,46 @@ impl App {
                 [2, 0],
             )]);
         }
+        // Where the person's message stands with each agent it went to, as
+        // the daemon saw it: one quiet line each, and never "read".
+        if !in_thread
+            && self.is_human(from)
+            && let Some(recipients) = self.deliveries.get(&id).filter(|r| !r.is_empty())
+        {
+            use agentdocker_core::delivery::State as Delivery;
+            let mut lines = column![].spacing(2);
+            for recipient in recipients {
+                let state = recipient.state;
+                let tone = match state {
+                    Delivery::Answered => c.accent,
+                    Delivery::Delivered | Delivery::Received | Delivery::Shown => c.green,
+                    Delivery::Paused | Delivery::Blocked | Delivery::Silent | Delivery::Ended => {
+                        c.amber
+                    }
+                    _ => c.faint,
+                };
+                let who = recipient
+                    .name
+                    .as_ref()
+                    .map(|_| self.name_of(recipient.agent.as_str()))
+                    .unwrap_or_else(|| recipient.agent.short().to_owned());
+                lines = lines.push(
+                    row![
+                        super::view::dot(tone, 6.0, c),
+                        text(format!("{who} · {}", state.label()))
+                            .size(12)
+                            .color(if state.reached() { c.muted } else { c.faint })
+                            .wrapping(iced::widget::text::Wrapping::None),
+                    ]
+                    .spacing(6)
+                    .align_y(Center),
+                );
+            }
+            words = words.push(container(lines).padding(iced::Padding {
+                top: 4.0,
+                ..iced::Padding::ZERO
+            }));
+        }
         let mark: Element<'_, Message> = if system {
             disc(Icon::Pulse, mark_size, c)
         } else if head {

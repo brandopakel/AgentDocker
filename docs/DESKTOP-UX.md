@@ -38,7 +38,13 @@ goes there, Escape steps back. **Launch agent…** in it lists the installed too
 With no saved selection, the app opens on **All projects**, with sessions grouped
 under their project names. A saved project or Other sessions view is restored.
 **Projects** in the sidebar returns to All projects. Choosing a project opens
-its shared **Chat**, with the agents working there beside it. **Agents** opens the
+its shared **Chat**, with the agents working there beside it. Under each of your
+own five newest messages in a conversation, one quiet line per agent it went to
+says where it stands, refreshed with the screen: *answered*, *delivered*,
+*received by the model*, *shown to its session, not confirmed*, or why it still
+waits — *waiting for its next prompt*, *waits until it checks in* (a browser
+agent), *delivery paused*, *session ended before taking it*. Nothing says
+*read*: the daemon cannot know it. **Agents** opens the
 session list and **Board** the project's cards. **More** opens a menu of History,
 Files in use, Usage, AgentDocker commands and the project's Pin and Forget; the tab takes the name of the screen on view and is underlined only
 while one of those screens is open. **Pause…**, **Open terminal** and
