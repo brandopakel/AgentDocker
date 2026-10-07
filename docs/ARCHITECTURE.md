@@ -1995,7 +1995,9 @@ using the same exact human-answer and no-replay contract as other reviews.
 Secret review metadata events use `seq:0` and are live-only; clients list routes after reconnect. Checked durable-event streams exclude them, just like file/staleness notifications, so a temporary question cannot break receipt recovery. These types carry wire values but are never stored in SQLite or delivery ledgers. Routes close when either their monotonic deadline or displayed UTC expiry is reached, including after sleep or a forward clock adjustment. Memory is bounded, not locked or guaranteed zeroized. Provider output can repeat supplied values and enter ordinary output history.
 
 Managed secret input has a separate experimental producer, enabled only with
-`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`. A whole mixed bundle uses the volatile
+`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`. Interactive sessions additionally
+require the bounded editor to control terminal echo; unsupported console modes
+retain the refusal. A whole mixed bundle uses the volatile
 broker. Delivery ledger 15 stores only the request/thread/turn identity and a
 possible-response flag before the provider write; it never stores the answer,
 question or capability. Normal queued input waits behind this fence. A matching

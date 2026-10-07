@@ -369,8 +369,10 @@ async fn session(
     let mut request_ids = std::collections::HashSet::new();
     let mut file_reviews = file_changes::Reviews::default();
     let mut secrets = secret_requests::Session::new(agent)?;
-    // Keep existing refusal until the masked UI and full end-to-end trials pass.
-    let secret_input = std::env::var("AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT").as_deref() == Ok("1");
+    // Interactive routes require the bounded editor to own terminal echo.
+    // Windows console input keeps refusing until it has equivalent mode control.
+    let secret_input = std::env::var("AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT").as_deref() == Ok("1")
+        && (!input_open || terminal_editing);
     loop {
         tokio::select! {
             event = question_events.next() => { requests::observe(ledger, &event?)?; }

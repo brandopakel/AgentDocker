@@ -843,11 +843,14 @@ It prints no answer. A failed or uncertain submission must not be resent
 without inspecting the request state. Codex and its selected model receive the
 answers and may retain or repeat them into ordinary output history.
 
-This broker is not yet connected to the managed Codex producer or masked app
-entry. Existing provider secret requests remain refused pending that work; the
-commands do not make end-to-end secret input available.
+Managed Codex can use this broker through the development switch
+`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`; default and native-input sessions still
+refuse secret bundles. Interactive managed terminals also require AgentDocker to
+control echo, so Windows console secret input remains refused.
 
 The experimental managed secret route also has masked desktop entry with a
 provider-retention acknowledgement. Submit once removes the local edits before
 sending; a missing acknowledgement never restores the answer or resubmits it.
-These development controls still need actual-provider and final-package trials.
+A source-built Mac trial passed masked entry, explicit consent and actual Codex
+delivery through a private model. Broader lifecycle, account, platform and
+final-package acceptance remain open.
