@@ -190,6 +190,22 @@ impl Smoke {
     }
 }
 
+// The Projects navigation control includes its unviewed-completion count in
+// its spoken title. Require the exact label or that canonical positive count;
+// unrelated prefix matches must not turn a missing control into a pass.
+#[cfg(any(target_os = "macos", test))]
+fn navigation_exposed(names: &[String]) -> bool {
+    names.iter().any(|name| {
+        name == "Projects"
+            || name.strip_prefix("Projects ").is_some_and(|count| {
+                count
+                    .parse::<usize>()
+                    .ok()
+                    .is_some_and(|n| n > 0 && n.to_string() == count)
+            })
+    }) && names.iter().any(|name| name == "Settings")
+}
+
 fn native_accessibility(id: window::Id) -> Task<Message> {
     window::run(id, |window| {
         #[cfg(target_os = "macos")]
@@ -226,7 +242,7 @@ fn native_accessibility(id: window::Id) -> Task<Message> {
             let view = unsafe { &*handle.ns_view.as_ptr().cast::<AnyObject>() };
             let mut names = Vec::new();
             titles(view, 0, &mut names);
-            if names.iter().any(|n| n == "Projects") && names.iter().any(|n| n == "Settings") {
+            if navigation_exposed(&names) {
                 Ok(names.len())
             } else {
                 Err(format!(
@@ -241,4 +257,30 @@ fn native_accessibility(id: window::Id) -> Task<Message> {
         }
     })
     .map(Message::NativeAccessibility)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::navigation_exposed;
+
+    #[test]
+    fn native_navigation_probe_accepts_completion_badges_but_requires_both_controls() {
+        for label in ["Projects", "Projects 1", "Projects 120"] {
+            assert!(navigation_exposed(&[label.into(), "Settings".into()]));
+            assert!(!navigation_exposed(&[label.into()]));
+        }
+        for label in [
+            "Project",
+            "Projects waiting",
+            "Projects 1 extra",
+            "Projects 0",
+            "Projects 01",
+            "Projects -1",
+            "Projects +1",
+            "Projects 999999999999999999999999999999",
+        ] {
+            assert!(!navigation_exposed(&[label.into(), "Settings".into()]));
+        }
+        assert!(!navigation_exposed(&["Settings".into()]));
+    }
 }

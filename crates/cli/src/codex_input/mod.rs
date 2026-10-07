@@ -10,6 +10,7 @@ mod question_events;
 mod recovery;
 mod requests;
 mod review;
+mod secret_requests;
 mod session_identity;
 mod terminal;
 mod transport;
@@ -361,11 +362,17 @@ async fn session(
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut input = terminal::Input::new(terminal_editing);
     let mut input_open = agent.spec.tty || agent.spec.in_pane;
+    let mut terminal_suspended = false;
     let mut turn: Option<String> = None;
     let mut turn_failures = availability::TurnFailures::default();
     let mut refused_steering: Option<String> = None;
     let mut request_ids = std::collections::HashSet::new();
     let mut file_reviews = file_changes::Reviews::default();
+    let mut secrets = secret_requests::Session::new(agent)?;
+    // Interactive routes require the bounded editor to own terminal echo.
+    // Windows console input keeps refusing until it has equivalent mode control.
+    let secret_input = std::env::var("AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT").as_deref() == Ok("1")
+        && (!input_open || terminal_editing);
     loop {
         tokio::select! {
             event = question_events.next() => { requests::observe(ledger, &event?)?; }
@@ -380,7 +387,14 @@ async fn session(
                 if event.get("method").is_some() && event.get("id").is_some() {
                     let key = event["id"].to_string();
                     ensure!(request_ids.len() < 10_000 && request_ids.insert(key), "Codex repeated a request ID or exceeded the request history bound");
-                    if let Some(response) = requests::open(client, ledger, &human, &thread, turn.as_deref(), event, &mut file_reviews).await? {
+                    let response = if secret_input && secret_requests::contains_secret(&event) {
+                        let response = secrets.open(client, ledger, &human, &thread, turn.as_deref(), &event).await?;
+                        terminal_suspended |= ledger.record().secret_review.is_some();
+                        response
+                    } else {
+                        requests::open(client, ledger, &human, &thread, turn.as_deref(), event, &mut file_reviews).await?
+                    };
+                    if let Some(response) = response {
                         provider.send(&response).await?;
                     }
                     continue;
@@ -393,7 +407,10 @@ async fn session(
                     Some("item/completed") if params["item"]["type"] == "mcpToolCall" => {
                         mcp_answers::observe(client, ledger, &thread, params["turnId"].as_str().unwrap_or_default(), &params["item"]).await?;
                     }
-                    Some("serverRequest/resolved") => requests::resolved(client, ledger, params).await?,
+                    Some("serverRequest/resolved") => {
+                        secrets.resolved(client, ledger, params).await?;
+                        requests::resolved(client, ledger, params).await?;
+                    },
                     Some("item/started" | "item/completed") if params["item"]["type"] == "userMessage" => {
                         // Duplicate item/completed notifications can arrive after an
                         // acknowledged steering input has moved into receipt history.
@@ -434,6 +451,7 @@ async fn session(
                         }
                         acknowledge(client, ledger, agent).await?;
                         ensure!(recovery::terminal(status), "Codex completed notification is not terminal");
+                        secrets.turn_ended(client, ledger).await?;
                         requests::turn_ended(client, ledger).await?;
                         mcp_answers::reconcile(provider, client, ledger).await?;
                         ledger.finish(id)?; turn = None;
@@ -460,7 +478,19 @@ async fn session(
                     _ => (),
                 }
             }
-            line = input.read(&mut stdin), if input_open => {
+            line = async {
+                if terminal_suspended {
+                    terminal::discard(&mut stdin).await.map(|()| None)
+                } else { input.read(&mut stdin).await }
+            }, if input_open => {
+                if terminal_suspended {
+                    if line.is_err() { input_open = false; }
+                    else if ledger.record().secret_review.is_none() {
+                        terminal_suspended = false;
+                        println!("Terminal input resumed; your earlier draft is preserved.");
+                    }
+                    continue;
+                }
                 match line {
                     Ok(Some(text)) => {
                         ensure!(matches!(call(client, Request::Send { from: HUMAN.into(), to: agent.id.to_string(),
@@ -471,8 +501,9 @@ async fn session(
                 }
             }
             _ = poll.tick() => {
+                secrets.poll(client, provider, ledger).await?;
                 let messages = requests::poll(client, provider, ledger).await?;
-                if ledger.record().reviews.is_empty() {
+                if ledger.record().reviews.is_empty() && ledger.record().secret_review.is_none() {
                 if let Some(message) = messages.first() {
                     if let Some(active) = turn.as_deref() {
                         if refused_steering.as_deref() == Some(active)

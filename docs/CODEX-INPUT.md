@@ -719,6 +719,27 @@ Provider `requestUserInput` bundles reject `isSecret: true` before opening any
 ordinary question route. A supplied flag must be a boolean; malformed values,
 including strings and null, cannot fall back to persisted ordinary answers.
 
+A private Codex 0.160.1 probe delivered an invented answer to an actual
+`isSecret: true` callback. The request resolved and the answer reached the
+scripted loopback model; the driver also found it twice in the provider's private
+rollout JSONL. `thread/read` did not expose it in that observation. Masking a
+question is therefore not proof that Codex or its model does not retain its
+answer. The initial fixture was rejected for missing choices; both outcomes and
+cleanup are indexed. This is provider behavior evidence, not AgentDocker secret
+input acceptance.
+
+The remaining AgentDocker route must keep answers out of its messages, database,
+events, delivery-ledger payloads, logs and ordinary drafts. It needs dedicated
+masked entry, exact live request/turn/recipient ownership, bounded in-memory
+storage, explicit cancellation/expiry and no replay after a disconnect or crash.
+Before entry it must explain that Codex and the selected model receive the value
+and may retain it. Mixed bundles must not send their secret fields through the
+ordinary persisted answer route. A bounded local daemon broker and pipe-only administration commands are now in
+source. The managed-provider producer, durable metadata fence and masked UI are
+not connected yet, so end-to-end support is incomplete and the existing refusal
+remains in force. The broker does not save submitted values, but cannot prevent
+Codex or its model from repeating them into ordinary output history.
+
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
 Allow becomes available after opening the complete diff; Deny remains available
@@ -1341,3 +1362,17 @@ Invalid answers refused and peers stayed held until the exact review resolved;
 controller/configuration were unchanged. The CI reports record clean retirement
 of 58 form/54 URL process generations for 0.160 and 30 form/28 URL generations
 for 0.155.1. Both original failed URL reports remain indexed.
+
+A managed-only secret producer and metadata-only restart fence are implemented
+behind `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`. This development switch does not
+establish full acceptance. Source `0433147b` passed actual Mac Codex0.160.1
+delivery through a private model, masked desktop entry and a synthetic PTY draft
+trial. No supplied value was found in AgentDocker state/logs; Codex retained it
+in its rollout. Broader lifecycle/fault, account, final-package and native-terminal
+parity remain open. Default sessions still refuse secret bundles. An interactive
+route additionally requires AgentDocker to control terminal echo; Windows console
+input remains refused until equivalent mode handling is implemented. A supported
+managed terminal discards new typing without echo while a secret route is
+open. After it closes, Enter discards the suspended line and returns to the
+preexisting draft; buffered text cannot become an ordinary queued message. A possibly sent answer without a provider resolution stays
+paused for inspection and is never resubmitted by restart.

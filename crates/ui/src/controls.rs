@@ -784,6 +784,36 @@ fn build<'a>(
     .into()
 }
 
+/// Password entry never places plaintext on the accessibility tree. Iced's
+/// secure input masks rendering and disables copying/cutting the selection.
+pub fn secret_input<'a>(
+    id: impl Into<String>,
+    label: &str,
+    value: &str,
+    change: impl Fn(String) -> Message + Send + Sync + 'static,
+    enabled: bool,
+) -> Element<'a, Message> {
+    let id = id.into();
+    let change = std::sync::Arc::new(change);
+    let on_input = change.clone();
+    let content = iced::widget::text_input("Temporary answer", value)
+        .id(widget::Id::from(id.clone()))
+        .secure(true)
+        .padding([7, 10])
+        .size(14)
+        .on_input_maybe(enabled.then_some(move |value| on_input(value)));
+    let mut semantic = Semantic::password(id, label.into(), change);
+    if !enabled {
+        semantic.change = None;
+    }
+    Control {
+        content: content.into(),
+        semantic,
+        button: false,
+    }
+    .into()
+}
+
 pub fn input<'a>(
     id: impl Into<String>,
     label: &str,

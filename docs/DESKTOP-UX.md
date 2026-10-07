@@ -560,3 +560,13 @@ Editing alone never submits. Form edits stay in window memory until submission,
 expiry or closing the window; ordinary saved drafts remain separate. The card
 explains that submitted answers enter the conversation and that secrets must be
 entered through website requests instead.
+
+Temporary managed-Codex questions use a separate masked form above the current
+page, naming the session and project. Every field in a mixed secret/ordinary
+bundle is masked; its edits stay only in memory and never join ordinary drafts.
+The person must acknowledge that Codex/model may retain or repeat the values
+before Submit once is enabled. Submission clears the edits and cannot be repeated
+by this window, even if its acknowledgement is lost. Cancel, expiry, closure and
+disconnection also clear them. Accessibility marks these controls as password
+inputs without publishing their values; physical screen-reader acceptance is open.
+The provider producer remains behind its development switch pending acceptance.

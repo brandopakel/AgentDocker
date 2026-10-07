@@ -13,6 +13,7 @@ mod mcp;
 mod opencode_plugin;
 mod provider_status;
 mod rtk;
+mod secret_review;
 mod sender;
 mod service;
 mod setup;
@@ -619,6 +620,8 @@ enum Command {
         /// The answer.
         text: String,
     },
+    /// Inspect, cancel or submit a temporary secret review through local IPC.
+    SecretReview(secret_review::Args),
     /// Tokens the providers reported, with what the totals cover.
     Usage(UsageArgs),
     /// Measure accounting SQLite storage in an existing home without starting a daemon.
@@ -2991,6 +2994,7 @@ async fn run() -> Result<()> {
                 }
             }
         }
+        Command::SecretReview(args) => secret_review::run(&client, args).await?,
         Command::Questions { agent, me } => {
             let agent = if me { Some(HUMAN.to_owned()) } else { agent };
             if let Response::Questions { questions } =

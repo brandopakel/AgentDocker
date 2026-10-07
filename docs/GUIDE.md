@@ -925,3 +925,26 @@ These Messages additions merged in PR #170 and have been installed since the
 September 17 `d14610b7` preview (the current installation is `652cf6a3`). Native workflows and a targeted
 synthetic Enter event passed; physical keyboard and IME acceptance remain in
 [Remaining work](REMAINING-WORK.md).
+
+### Temporary review administration
+
+The local `agentdocker secret-review list` command lists pending temporary review
+metadata for the person. `secret-review cancel <id>` closes a route; it cannot
+recall an answer already taken. `secret-review answer <id>
+--acknowledge-provider-retention` accepts a complete JSON object of field IDs and
+text values through a pipe, never command-line values or an echoing terminal.
+It prints no answer. A failed or uncertain submission must not be resent
+without inspecting the request state. Codex and its selected model receive the
+answers and may retain or repeat them into ordinary output history.
+
+Managed Codex can use this broker through the development switch
+`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`; default and native-input sessions still
+refuse secret bundles. Interactive managed terminals also require AgentDocker to
+control echo, so Windows console secret input remains refused.
+
+The experimental managed secret route also has masked desktop entry with a
+provider-retention acknowledgement. Submit once removes the local edits before
+sending; a missing acknowledgement never restores the answer or resubmits it.
+A source-built Mac trial passed masked entry, explicit consent and actual Codex
+delivery through a private model. Broader lifecycle, account, platform and
+final-package acceptance remain open.
