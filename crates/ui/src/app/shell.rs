@@ -16,6 +16,8 @@ pub(super) struct State {
     pub usage_since: &'static str,
     pub usage_by: agentdocker_core::usage::report::Group,
     pub session_details: bool,
+    /// The changed file whose diff is open in the session's Changes.
+    pub diff_file: Option<String>,
     pub review_delivery: bool,
     pub session_message: bool,
     pub session_drafts: BTreeMap<String, SessionDraft>,
@@ -560,6 +562,12 @@ pub enum Message {
     SessionFilter(super::sessions::Filter),
     More,
     SessionDetails,
+    /// Read the session's branch against the main folder's again.
+    ReviewChanges(String),
+    /// Open or close one changed file's diff.
+    ToggleDiffFile(String),
+    /// Merge the session's branch at the head the person looked at.
+    MergeBranch(String, String),
     ReviewDelivery,
     /// The Needs-you strip's **Review**: open that session with its
     /// delivery review already unfolded, wherever the person was.
@@ -1282,6 +1290,11 @@ impl App {
             }
             Message::SelectSession(id) => {
                 self.shell.unviewed_done.remove(&id);
+                if self.shell.selected.as_deref() != Some(id.as_str()) {
+                    self.shell.diff_file = None;
+                    self.merge_outcome = None;
+                }
+                self.request_review(&id);
                 self.shell.selected = Some(id);
                 self.shell.session_details = false;
                 self.shell.review_delivery = false;
@@ -1681,6 +1694,21 @@ impl App {
                 }
             }
             Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
+            Message::ReviewChanges(id) => self.request_review(&id),
+            Message::ToggleDiffFile(path) => {
+                self.shell.diff_file = if self.shell.diff_file.as_deref() == Some(path.as_str()) {
+                    None
+                } else {
+                    Some(path)
+                };
+            }
+            Message::MergeBranch(id, head) => {
+                if self.merging.is_none() && self.connected.is_ok() {
+                    self.merging = Some(id.clone());
+                    self.merge_outcome = None;
+                    self.send(Cmd::MergeBranch { agent: id, head });
+                }
+            }
             Message::SelectThread(agent) => {
                 self.shell.inbox_thread = agent;
                 self.shell.inbox_open = true;

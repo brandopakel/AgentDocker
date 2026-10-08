@@ -129,6 +129,29 @@ enum Command {
         /// Agent id, name or unique prefix (defaults to this session).
         agent: String,
     },
+    /// What an agent's branch would bring to the branch in the project's
+    /// main checkout: its commits and files, and what stops a merge now.
+    ReviewBranch {
+        /// Agent id, name or unique prefix.
+        agent: String,
+        /// Print the diff too.
+        #[arg(long)]
+        patch: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Merge an agent's branch into the branch in the project's main
+    /// checkout with a merge commit. Refused, with nothing changed, when its
+    /// work is not committed, the main checkout has uncommitted changes,
+    /// it would conflict, someone holds files there, or its branch moved
+    /// since `review-branch` (pass the head it printed).
+    MergeBranch {
+        /// Agent id, name or unique prefix.
+        agent: String,
+        /// The head `review-branch` showed; the merge is refused if it moved.
+        #[arg(long)]
+        head: String,
+    },
     /// Preview or prepare an uncommitted merge of validated source code.
     Integrate {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -1668,6 +1691,28 @@ async fn run() -> Result<()> {
         }
         Command::WorktreeDiff { agent } => {
             print_json(&client.call(&Request::WorktreeDiff { agent }).await?)?
+        }
+        Command::ReviewBranch { agent, patch, json } => {
+            match client.call(&Request::ReviewBranch { agent }).await? {
+                Response::BranchReview { review } if json => print_json(&review)?,
+                Response::BranchReview { review } => format::review(&review, patch),
+                other => bail!("unexpected review response: {other:?}"),
+            }
+        }
+        Command::MergeBranch { agent, head } => {
+            match client
+                .call(&Request::MergeBranch {
+                    from: HUMAN.into(),
+                    agent,
+                    head,
+                })
+                .await?
+            {
+                Response::BranchMerged { target, commit } => {
+                    println!("merged into {target} as {commit}")
+                }
+                other => bail!("unexpected merge response: {other:?}"),
+            }
         }
         Command::Integrate {
             agent,

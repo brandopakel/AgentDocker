@@ -231,6 +231,14 @@ pub enum EventKind {
         files: usize,
         pushed: bool,
     },
+    /// The person merged an agent's branch into the branch in the
+    /// project's main checkout.
+    BranchMerged {
+        agent: crate::AgentId,
+        branch: String,
+        target: String,
+        commit: String,
+    },
     WorktreeCleanup {
         agent: crate::AgentId,
         path: std::path::PathBuf,

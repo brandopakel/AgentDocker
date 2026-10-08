@@ -145,6 +145,13 @@ enum Cmd {
     },
     /// Every agent's tokens over the last day, for the session rows.
     AgentTokens,
+    /// An agent's branch against the main folder's.
+    ReviewBranch(String),
+    /// Merge an agent's branch at the head the person looked at.
+    MergeBranch {
+        agent: String,
+        head: String,
+    },
     /// The person files a card.
     TaskCreate {
         project: String,
@@ -328,6 +335,10 @@ enum Msg {
     ),
     /// Every agent's tokens over the last day, or why they could not be read.
     AgentTokens(Result<agentdocker_core::usage::report::Report, String>),
+    /// An agent's branch reviewed, or why it could not be.
+    BranchReview(String, Result<agentdocker_core::review::Review, String>),
+    /// A merge made (into which branch, as which commit), or why not.
+    BranchMerged(String, Result<(String, String), String>),
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
     Pauses(Vec<agentdocker_core::Pause>),
@@ -501,6 +512,11 @@ pub struct App {
     /// list refreshes.
     agent_tokens: BTreeMap<String, agentdocker_core::usage::report::Tokens>,
     agent_tokens_asked: Option<std::time::Instant>,
+    /// The selected session's branch read against the main folder's, by
+    /// agent id; a merge on its way, and the last merge's outcome.
+    branch_review: Option<(String, Result<agentdocker_core::review::Review, String>)>,
+    merging: Option<String>,
+    merge_outcome: Option<(String, Result<String, String>)>,
     usage_error: Option<String>,
     usage_requests: u64,
     usage_pending: Option<(
@@ -660,6 +676,9 @@ impl App {
             usage: None,
             agent_tokens: BTreeMap::new(),
             agent_tokens_asked: None,
+            branch_review: None,
+            merging: None,
+            merge_outcome: None,
             usage_error: None,
             usage_requests: 0,
             usage_pending: None,
@@ -741,6 +760,9 @@ impl App {
             usage: None,
             agent_tokens: BTreeMap::new(),
             agent_tokens_asked: None,
+            branch_review: None,
+            merging: None,
+            merge_outcome: None,
             usage_error: None,
             usage_requests: 0,
             usage_pending: None,
@@ -1129,6 +1151,22 @@ impl App {
                             Err(error) => self.usage_error = Some(error),
                         }
                     }
+                }
+                Msg::BranchReview(agent, result) => {
+                    // Only the session on view; a late answer for another
+                    // is let go.
+                    if self.shell.selected.as_deref() == Some(agent.as_str()) {
+                        self.branch_review = Some((agent, result));
+                    }
+                }
+                Msg::BranchMerged(agent, result) => {
+                    self.merging = None;
+                    let said = result.map(|(target, commit)| {
+                        let short: String = commit.chars().take(7).collect();
+                        format!("Merged into {target} as {short}.")
+                    });
+                    self.merge_outcome = Some((agent.clone(), said));
+                    self.request_review(&agent);
                 }
                 Msg::AgentTokens(result) => {
                     // A failed read keeps the last counts: tokens are a
@@ -1552,6 +1590,16 @@ impl App {
             }
             self.last_seq = event.seq;
         }
+        // The session on view committed, moved or was merged: its Changes
+        // are read again.
+        if let EventKind::AgentVcsChanged { agent, .. }
+        | EventKind::Committed { agent, .. }
+        | EventKind::BranchMerged { agent, .. } = &event.kind
+            && self.shell.selected.as_deref() == Some(agent.as_str())
+        {
+            let agent = agent.to_string();
+            self.request_review(&agent);
+        }
         match &event.kind {
             EventKind::AgentCreated { .. }
             | EventKind::AgentStarted { .. }
@@ -1787,6 +1835,13 @@ impl App {
     /// Read the selected project's board, when there is one and the
     /// daemon is there: as many cards as are on view, so a board
     /// expanded past its first page stays expanded through a refresh.
+    /// Read a session's branch against the main folder's.
+    pub(crate) fn request_review(&mut self, agent: &str) {
+        if self.connected.is_ok() {
+            self.send(Cmd::ReviewBranch(agent.to_owned()));
+        }
+    }
+
     /// Ask for every agent's tokens over the last day, at most once a
     /// minute: the rows show them, and the agent list refreshes far more
     /// often than they change.
@@ -2728,6 +2783,30 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::Tasks(project, request, result))
+        }
+        Cmd::ReviewBranch(agent) => {
+            let result = match client.call(&Request::ReviewBranch {
+                agent: agent.clone(),
+            }) {
+                Ok(Response::BranchReview { review }) => Ok(review),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::BranchReview(agent, result))
+        }
+        Cmd::MergeBranch { agent, head } => {
+            let result = match client.call(&Request::MergeBranch {
+                from: agentdocker_core::HUMAN.into(),
+                agent: agent.clone(),
+                head,
+            }) {
+                Ok(Response::BranchMerged { target, commit }) => Ok((target, commit)),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::BranchMerged(agent, result))
         }
         Cmd::AgentTokens => {
             let result = match client.call(&Request::Usage {

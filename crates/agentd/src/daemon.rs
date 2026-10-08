@@ -61,6 +61,7 @@ mod relay;
 pub mod reload;
 mod restarts;
 mod restore;
+mod review;
 mod tasks;
 mod transport;
 mod usage;
@@ -225,6 +226,7 @@ fn mutates(request: &Request) -> bool {
             | Request::Handoffs { .. }
             | Request::Validations { .. }
             | Request::WorktreeDiff { .. }
+            | Request::ReviewBranch { .. }
             | Request::List { .. }
             | Request::Inspect { .. }
             | Request::Changes { .. }
@@ -1939,6 +1941,10 @@ impl Daemon {
                 from,
             } => self.worktree_create(&agent, path, branch, from).await,
             Request::WorktreeDiff { agent } => self.worktree_diff(&agent).await,
+            Request::ReviewBranch { agent } => self.review_branch(&agent).await,
+            Request::MergeBranch { from, agent, head } => {
+                self.merge_branch(&from, &agent, &head).await
+            }
             Request::Commit {
                 agent,
                 message,

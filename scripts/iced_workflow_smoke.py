@@ -792,6 +792,38 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             assert rpc(endpoint, {"op": "delivery_queue", "agent": receiver["id"]})["messages"] == retained
             checks.append("provider_limit_resume_preserves_draft_receipts_and_retained_queue")
             rpc(endpoint, {"op": "deregister", "agent": receiver["id"]})
+            # One-click review: an agent in a worktree of a git project has a
+            # commit; its session's Changes list the file and open its diff,
+            # and Merge into main makes a merge commit in the main folder.
+            repo, login = root / "review-repo", root / "review-login"
+            repo.mkdir(mode=0o700)
+            def git(cwd, *args):
+                subprocess.run(["git", "-c", "user.email=smoke@example.com", "-c", "user.name=Smoke", *args],
+                               cwd=cwd, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            git(repo, "init", "-q", "-b", "main")
+            (repo / "README.md").write_text("fixture\n")
+            git(repo, "add", ".")
+            git(repo, "commit", "-qm", "initial")
+            git(repo, "worktree", "add", "-q", "-b", "feat/login", str(login))
+            (login / "login.rs").write_text("fn login() {}\n")
+            git(login, "add", ".")
+            git(login, "commit", "-qm", "Add login")
+            reviewer = rpc(endpoint, {"op": "register", "spec": {
+                "name": "review-fixture", "runtime": "claude-code", "workdir": str(login)}})["agent"]
+            report["review_window"] = launch("review-merge", [
+                step("click", id="projects"), step("click", id=f"project-{repo}"),
+                step("click", id="project-tab-Agents"),
+                step("click", id=f"session-{reviewer['id']}"),
+                step("wait_text", text="feat/login → main"), step("wait_text", text="work committed"),
+                step("click", id="changes-file-login.rs"), step("wait_text", text="+fn login() {}"),
+                step("capture", name="review-changes"),
+                step("click", id="merge-branch"), step("wait_text", text="Merged into main"),
+                step("capture", name="review-merged")])
+            parents = subprocess.run(["git", "rev-list", "--parents", "-n", "1", "HEAD"], cwd=repo, env=env,
+                                     capture_output=True, text=True, check=True).stdout.split()
+            assert len(parents) == 3 and (repo / "login.rs").exists(), parents
+            checks.append("session_changes_review_and_one_click_merge")
+            rpc(endpoint, {"op": "deregister", "agent": reviewer["id"]})
             # Ended, with a conversation id and its tool on PATH: the row in
             # the Earlier group carries Reconnect here itself. A rendered
             # control, not a relaunch: nothing is pressed.

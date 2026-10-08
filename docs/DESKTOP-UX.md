@@ -176,7 +176,17 @@ come back carries **Reconnect here** on its row itself (the same action as in
 Details, which still says why a session cannot be reconnected yet); while its
 resume is on its way the row says **Reconnecting…**. Select a row for terminal access, reply, or stop. On a narrow
 window, the session replaces the list; **Back to sessions** returns to it. On a
-wide window, it opens beside the list. **Details** reveals the session ID, process,
+wide window, it opens beside the list. A session working on its own branch (in a
+worktree) shows **Changes** above Details: its branch and the branch it would be
+merged into (the one checked out in the project's main folder), its commits,
+files and lines, each file opening its own coloured diff (300 lines at most),
+a checklist — work committed, the main folder has nothing uncommitted, no
+conflicts, nobody holding files there — and **Merge into main**, enabled only
+when the checklist is clear. It makes a merge commit in the main folder and
+says so (*Merged into main as abc1234.*), or says why not, with nothing changed;
+a branch that moved since it was read is never merged unseen. Nothing is pushed.
+Changes are read again when the session commits or its branch moves, and with
+**Refresh**. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
 **More → Board** is the project's work: five
 columns — Backlog, Ready, In progress, Review, Done — of cards with a title

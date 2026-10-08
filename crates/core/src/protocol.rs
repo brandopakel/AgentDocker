@@ -109,6 +109,21 @@ pub enum Request {
     WorktreeDiff {
         agent: String,
     },
+    /// What an agent's branch would bring to the branch in the project's
+    /// main checkout, and whether it can be merged now. Answers
+    /// `branch_review`.
+    ReviewBranch {
+        agent: String,
+    },
+    /// Merge an agent's branch into the branch in the project's main
+    /// checkout with a merge commit, if its head is still `head` and
+    /// nothing stops it. Answers `branch_merged`.
+    MergeBranch {
+        #[serde(default = "default_human")]
+        from: String,
+        agent: String,
+        head: String,
+    },
     /// Commit an agent's checkout through the daemon, so the act is
     /// journaled against the agent that asked for it rather than guessed
     /// afterwards from a HEAD that moved.
@@ -1165,6 +1180,13 @@ pub enum Response {
     Diff {
         text: String,
     },
+    BranchReview {
+        review: crate::review::Review,
+    },
+    BranchMerged {
+        target: String,
+        commit: String,
+    },
     Committed {
         /// The commit that was made.
         head: String,
@@ -1466,6 +1488,10 @@ fn validation_timeout() -> u64 {
 
 fn access_ttl() -> u64 {
     3600
+}
+
+fn default_human() -> String {
+    crate::HUMAN.to_owned()
 }
 
 #[cfg(test)]
