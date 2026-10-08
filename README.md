@@ -33,19 +33,12 @@ It runs on the host: a native per-user daemon, CLI and desktop using local IPC �
 
 If you know [herdr](https://github.com/herdrdev/herdr), the two are complements rather than rivals: herdr owns the terminals agents live in, AgentDocker owns what they may touch, what they changed, and who else needs to know. See [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits). The same goes for [Dax](https://getdax.app/) (a macOS menu-bar companion whose Shepherd window embeds herdr) and [Paprika](https://paprika.ai/) (a hosted Kanban board where agents pull cards over MCP): they say what the work is and where it lives; AgentDocker helps agents coordinate their work, surfaces conflicts, and records what happened. What is shared today, what is designed and what is only an idea is in [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits) (the deeper focus/prompt bridge was measured and deferred; HERDR-BRIDGE.md in git history): a herdr, tmux, screen or zellij session is recognised and shown with the agent; a local board of cards with acceptance text, pulled once over a `task:<id>` lease, is in the app (the shape taken from Paprika); the herdr prompt/focus bridge and a Paprika card-to-lease bridge are proposals.
 
-> Status: **beta, single host.** The native desktop, messaging, agent terminals, reconnect, task board and usage collection are implemented. The published [v0.2.0-beta.10 preview](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.10) includes the macOS/Linux desktop and an unsigned Windows portable ZIP. The stable download and Homebrew formula remain v0.1.0. First-run and sustained acceptance remain open; the full Windows product is unfinished.
+> Status: **beta, single host.** The native desktop, messaging, agent terminals, reconnect, task board and usage collection are implemented. The current preview is [v0.2.0-beta.11](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.11): the macOS/Linux desktop and an unsigned Windows portable ZIP. The stable download and Homebrew formula remain v0.1.0. First-run and sustained acceptance remain open on every platform, and the full Windows product is unfinished. [Remaining work](docs/REMAINING-WORK.md) says what is done, what has evidence and what is still open.
 
 The first coworker rollout targets **macOS, Linux and native Windows**. Each
 platform needs a downloadable candidate and its own first-run acceptance; the
-Windows foundations alone do not satisfy that requirement.
-
-Projects open to shared chat first, with clearly named agents and terminal
-access beside the conversation. **Open project terminal** starts a shell in the
-project folder; **Agents** opens the session list. The shared-chat interface is merged
-and installed in the local macOS preview. Message composers now support multiple
-lines: **Enter** sends, **Shift+Enter** adds a line. Board, history and technical activity remain
-available under More. The [remaining-work tracker](docs/REMAINING-WORK.md)
-separates completed implementation, unmerged changes and release acceptance.
+Windows foundations alone do not satisfy that requirement. The app is described
+screen by screen in [Desktop UX](docs/DESKTOP-UX.md).
 
 ## The Docker analogy
 
@@ -65,36 +58,26 @@ separates completed implementation, unmerged changes and release acceptance.
 
 Agents don't need an SDK. Anything that can exchange a line of JSON over that local IPC — a shell hook, a Python script, an MCP tool call — is a first-class participant. That is what makes it model- and vendor-agnostic: Claude Code, Codex, Gemini CLI, Cursor, and hand-rolled agents all coordinate through the same daemon.
 
-Idle message delivery needs a provider input adapter as well. Managed Claude channels and the Codex bridge provide it. The existing-terminal Codex native queue is installed on the current Mac; peer input has started an idle turn, and fresh human-route, peer and project inputs have entered an active turn with exact receipts. Fresh startup, reopen and broader provider acceptance remain open. Other runtimes' coordination support does not establish idle wake. Current capabilities and remaining acceptance are in [Claude input](docs/CLAUDE-CHANNEL-INPUT.md), [Codex input](docs/CODEX-INPUT.md) and [remaining work](docs/REMAINING-WORK.md).
+Idle message delivery needs a provider input adapter as well. The Claude channel and the Codex input adapter provide it, each with explicit startup and version limits, and the OpenCode plugin wakes an idle session through OpenCode itself. Hooks and plain MCP tools deliver at the next prompt or tool boundary and do not wake a model. Current capabilities and remaining acceptance are in [Claude input](docs/CLAUDE-CHANNEL-INPUT.md), [Codex input](docs/CODEX-INPUT.md) and [remaining work](docs/REMAINING-WORK.md).
 
 ## Install
 
 **Trying the desktop preview with coworkers:** download
-[v0.2.0-beta.10](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.10)
+[v0.2.0-beta.11](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.11)
 explicitly. The default installer and Homebrew commands below still select the
 stable v0.1.0 release. For a source trial, follow
 [the local build instructions](docs/LOCAL-BUILD.md) at an agreed commit. The
 release checklist is in [Remaining work](docs/REMAINING-WORK.md).
 
-Published **0.2.0-beta.10** adds accounting inspection/scanning, service-build
-retention and experimental managed secret input. Actual beta.9 → beta.10 update
-and explicit-version installation passed on Mac ARM64, Oracle Ubuntu x86-64 and
-a Windows x64 runner. Beta.10 uses state schema 27; rollback to beta.9/schema 26
-deliberately refuses and preserves the installation. Never restore an older
-delivery ledger over already acknowledged input.
-
-Hosted Mac/Linux terminal and graphical checks and installed-service checks
-passed in private fixtures; Linux graphical acceptance used a corrected test
-observer against unchanged download bytes. Published Mac pruning conservatively
-retains all builds for one legitimate cached launchd status field. A corrected
-candidate passed selective pruning and retained-service startup, but that fix
-still needs a subsequent hosted preview. Oracle's downloaded beta.10 also passed
-existing-account Codex idle/busy delivery, receiver replacement and a synthetic
-draft trial. Packages target macOS and Linux on ARM64/x86-64, plus an unsigned
-Windows x64 ZIP with per-user installation and Task Scheduler startup. Native
-Codex launch, managed secret input and live daemon replacement remain experimental.
-Fresh-account, physical hardware, accessibility and sleep/reboot acceptance remain
-open; [the trial requirements](docs/LOCAL-TRIAL.md#stage-5--other-machines-and-systems)
+Previews are unsigned. Packages target macOS and Linux on ARM64/x86-64, plus an
+unsigned Windows x64 ZIP with per-user installation and Task Scheduler startup.
+A preview refuses to roll back to an older one whose state schema differs, and
+preserves the installation when it refuses; never restore an older delivery
+ledger over already acknowledged input. Native Codex launch, managed secret
+input and live daemon replacement remain experimental. Which platforms,
+providers and accounts have passed a first-run trial is recorded per release in
+[remaining work](docs/REMAINING-WORK.md);
+[the trial requirements](docs/LOCAL-TRIAL.md#stage-5--other-machines-and-systems)
 distinguish a preview from completed platform acceptance.
 
 End users download native executables; Rust build caches are development files.
@@ -152,8 +135,8 @@ The daemon keeps scanning for agent processes on its own and announces them as `
 
 - **One host.** Agents on two machines do not see each other; a hand-off bundle carries work across, a shared registry does not.
 - **Waking an idle Claude Code session.** A Claude session takes a message the moment it is next at a prompt, or live if it was launched with the AgentDocker channel (`agentdocker setup claude-code` writes the MCP entry; the session must start with `--dangerously-load-development-channels server:agentdocker` and accept the consent prompt, or be relaunched so — the app tells you when a recipient cannot be woken). **Reconnect here** now resumes an eligible ended Claude session in the app with its conversation and queue; Claude displays its own consent. **Wake terminal sessions** in Tools (or `agentdocker setup --shell`) previews the shell configuration for future Claude launches. Existing plain sessions need a normal exit/reconnect. Codex uses its separate [input adapter](docs/CODEX-INPUT.md), whose startup and version limits remain explicit.
-- **Linux:** CLI/daemon and desktop packages run in x86-64/ARM64 CI, with automated hosted acceptance on Oracle Ubuntu x86-64; hands-on target-distribution acceptance remains open. **Windows:** native pipes, ConPTY, per-user installation/update and Task Scheduler services are implemented. Hosted beta.7 → beta.8 installation, update and schema rollback refusal passed on a Windows runner, along with isolated installed daemon/connector checks. Historical first-start failures remain unexplained. Real-provider accounts, physical input, Start menu and logon/reboot acceptance remain open. See the [Windows port status](docs/WINDOWS-PORT.md).
-- **Accessibility and input:** external accessibility-tree inspection and More/Agents/Chat navigation passed on the installed macOS preview. Physical keyboard, VoiceOver and IME acceptance remain open.
+- **Linux:** CLI/daemon and desktop packages run in x86-64/ARM64 CI, with automated hosted acceptance on Oracle Ubuntu x86-64; hands-on target-distribution acceptance remains open. **Windows:** native pipes, ConPTY, per-user installation/update and Task Scheduler services are implemented. Historical first-start failures remain unexplained. Real-provider accounts, physical input, Start menu and logon/reboot acceptance remain open. See the [Windows port status](docs/WINDOWS-PORT.md).
+- **Accessibility and input:** the app registers a native accessibility tree and supports keyboard navigation, checked so far only with synthetic input on macOS. Physical keyboard, VoiceOver and IME acceptance remain open.
 - **Provider limits and account resets** are detected and recovered in bounded trials, not over days of real use.
 
 ### Report what you find

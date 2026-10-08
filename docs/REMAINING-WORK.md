@@ -6,76 +6,42 @@ failed trials, subsequent corrections and raw evidence locations remain in
 publication and installed acceptance are separate: use `agentdocker desktop
 status` and `agentdocker daemon status` to identify what a machine runs.
 
-Published `0.2.0-beta.10` is reviewed, integrated source `e2ea4a7` (#322).
-All 31 hosted assets, nine archives, five manifests and both preview feeds passed
-hash/source verification; stable `v0.1.0` and Homebrew remain unchanged. Actual
-beta.9 → beta.10 update and explicit-version installation passed on Mac ARM64,
-Oracle Ubuntu and a Windows x64 runner. Ledger 15/state schema 27 preserves
-uncertain secret-response metadata: rollback to beta.9/schema 26 correctly
-refuses without changing installed bytes or selection. Never restore an older
-delivery ledger over acknowledged input; older-version trials need isolated state.
+## Where it stands
 
-**Hosted acceptance is partial.** Mac passed eight terminal, 31 graphical and
-21 daemon-service checks, including 12 consecutive restarts. Windows passed
-15 hosted lifecycle checks and 13 daemon/24 connector checks through its retained
-bootstrap launchers. Published Mac pruning preserved both inactive builds because
-production launchd status included an unrecognized `last exit reason`. The exact
-regression failed before the correction. A separately built candidate at
-`5e388c9f` passed five pruning/startup checks: only the unrelated build was removed,
-the registered build restarted, both fixture generations retired, and production
-services were unchanged. This correction is not in the published beta.10 bytes.
+- **Published.** `0.2.0-beta.11` (source `47d06d3`, #326) is the current
+  preview; stable `v0.1.0` and the Homebrew formula are unchanged. Beta.11
+  carries the cached-launchd-status correction and the bounded Linux test
+  observation over beta.10; ledger 15 and state schema 27 are unchanged, so a
+  beta.10 ↔ beta.11 rollback is same-schema. Beta.10 passed hosted asset and
+  feed verification, beta.9 → beta.10 update on Mac ARM64, Oracle Ubuntu and a
+  Windows x64 runner, and schema-change rollback refusal (to beta.9/schema 26)
+  without changing installed bytes. Never restore an older delivery ledger over
+  acknowledged input; older-version trials need isolated state.
+- **Hosted acceptance is partial.** Mac passed terminal, graphical and
+  daemon-service checks, including twelve consecutive restarts; selective
+  pruning passed only in the separately built corrected candidate whose fix
+  beta.11 now carries. Oracle passed terminal, graphical, service and pruning
+  checks with a corrected test observer against unchanged hosted bytes; its
+  original graphical run failed when `/proc` vanished before the wait status
+  reported exit, and that failure stays recorded. Hosted Oracle also passed
+  existing-account Codex 0.155.1 idle/busy delivery, receiver replacement and
+  one synthetic draft. Windows passed hosted lifecycle, daemon and connector
+  checks; an extended run rebuilt from source passed 40 fresh-home startups,
+  22 Codex checks and 60 installer checks, which is CI evidence rather than
+  hosted-byte, physical-machine or real-account acceptance, and does not
+  explain the historical intermittent startup failures.
+- **Experimental.** Native Codex launch, managed secret input and live daemon
+  replacement. Preview distribution establishes none of: stable signing,
+  independent hardware, fresh accounts, physical accessibility, sleep/reboot.
+  The installed 48-hour Oracle accounting trial verified all 48 receipts and
+  token totals; it remains partial overall because three model echoes added a
+  trailing period.
+- **Gates for every change.** Exact-source local validation
+  (`bash scripts/verify.sh check`), CI, included review and hosted acceptance of
+  the published bytes. No earlier trial substitutes for them.
+- **Beta.11 still needs.** Hosted beta.10 → beta.11 update, successful
+  same-schema rollback and reapply against the published bytes.
 
-Oracle's original graphical workflow failed after 22 checks when `/proc` vanished
-before the process wait status reported exit. Its rendered report passed, but
-transport acceptance did not. The original report remains failed. A controlled
-16-child probe reproduced that timing boundary; all children retired within
-100 ms. The corrected `5e388c9f` test driver passed startup, eight terminal and
-31 graphical checks against the unchanged hosted beta.10 binaries. Thirteen
-bounded exit observations were recorded separately from live transport samples;
-live children, malformed output, permission failures, TCP and daemon exit still
-refuse acceptance. This demonstrates the observer boundary, not the sole cause
-of the original failure. Separate hosted Oracle service and pruning trials passed
-17 and five checks, with cleanup and the pre-existing startup link independently
-verified. Hosted beta.10 also passed five existing-account Codex 0.155.1 checks:
-ordered idle/busy delivery, same-provider receiver replacement and one preserved
-synthetic draft submission. Three provider turns and exact receipts/timing were
-independently verified; all 41 recorded generations and private scratch retired.
-
-An extended Windows run rebuilt the published source and passed 40 fresh-home
-startups, 22 actual Codex 0.155.1/private-model checks, 60 installer checks and
-portable/installed service trials. It is separately built CI evidence, not a
-hosted-byte, physical-machine or real-account result, and does not explain the
-historical intermittent startup failures.
-
-Beta.10 includes offline accounting inspection/scanning, stopped-service retention
-and experimental managed secret input. Native Codex launch, managed secret input
-and live daemon replacement remain experimental. Preview distribution does not
-establish stable signing, independent hardware, fresh accounts or physical
-accessibility. The installed Oracle 48-hour accounting trial verified all 48
-receipts and token totals; its overall result remains partial because three model
-echoes added a trailing period. Sleep/reboot and idle-performance acceptance remain
-open. Exact-source local validation, CI, included review and hosted trials remain
-release gates for subsequent changes.
-
-Review corrections reject overlapping secret/ordinary requests without replacing
-the first review, expose operational secret-lookup errors in the desktop app and
-preserve builds when unloaded systemd units have unit, dash-prefix or type-wide
-drop-ins anywhere in the manager's active search path. Focused regressions cover
-these boundaries. Source `9b88c488` also passed actual Mac Codex 0.160.1/private-model
-acceptance with two proxy-injected overlapping requests: both refused, the first
-secret answered once, two ordered ordinary receipts delivered, and no controller
-restart. Oracle's matching source tree passed seven unloaded-override retention,
-selective-pruning and subsequent-startup checks. All fixture generations and
-scratch were removed; the pre-existing startup link was restored. Initial test
-harness failures remain indexed. Natural provider parallelism, ordinary-first
-runtime, other platforms, real accounts and hosted acceptance remain open.
-
-The next source candidate is `0.2.0-beta.11`, not yet published. It includes the
-reviewed cached-launchd-status correction and bounded Linux test observation.
-Ledger 15/state schema 27 is unchanged. The new hosted lifecycle must prove
-beta.10 → beta.11 update, successful same-schema rollback and reapply against
-immutable bytes. Full local validation, CI, included review and new hosted
-package acceptance remain gates; no earlier trial substitutes for them.
 
 ## Release and first run
 
