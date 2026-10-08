@@ -682,6 +682,11 @@ Newest first. Only what changes how the product is used.
   merge commit, or says why not with nothing changed. `agentdocker
   review-branch` and `merge-branch` do the same from the CLI. Nothing is
   pushed.
+- Needs you holds only questions waiting on you, each naming its project. A
+  session that is blocked, not receiving messages or ended with messages
+  queued says so on its own row instead. Messages lists only conversations
+  with something in them: no Between agents or Earlier folds, and an ended
+  session's conversation only while it holds something unread.
 - Under your own messages in the app, one line per agent says where each
   message stands: answered, delivered, received by the model, shown to its
   session, or why it is still waiting.
