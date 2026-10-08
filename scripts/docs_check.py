@@ -15,6 +15,11 @@ Checks, each of which fails the gate when it does not hold:
    behaviour change`). The check asks that documentation was considered on
    every change; it does not demand an edit where none is due.
 
+5. With --base <ref>: every row added to docs/verification/INDEX.md is at
+   most ROW_LIMIT characters. A row says the date, what ran, the exact
+   source and the result in a sentence or two; the evidence lives in the
+   PR and where the trial ran. Rows already there are left as they are.
+
 A trial on real binaries is recorded as one line in docs/verification/INDEX.md;
 that file is a document like any other and needs nothing generated.
 """
@@ -33,6 +38,10 @@ CODE_FILES = ("install.sh", "Makefile", "Cargo.toml", "Cargo.lock")
 DOC_PATHS = ("docs/",)
 DOC_FILES = ("README.md", "CLAUDE.md")
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+VERIFICATION = "docs/verification/INDEX.md"
+# The median row had grown to 596 characters and the file past 370 KB in a
+# week; one line is a pointer, not the evidence.
+ROW_LIMIT = 500
 # The documents are named in capitals; a lower-case `docs/x.md` in a test is an example, not a pointer.
 POINTER = re.compile(r"docs/((?:verification/)?[A-Z][A-Z0-9-]*\.md)")
 
@@ -122,6 +131,37 @@ def docs_considered(base):
     ]
 
 
+def long_rows(lines, limit=ROW_LIMIT):
+    """The table rows among `lines` longer than `limit` characters: any line
+    that opens with a pipe, with or without a space after it, except the
+    header and its separator."""
+    def is_row(line):
+        cells = line.strip()
+        if not cells.startswith("|"):
+            return False
+        first = cells[1:].split("|", 1)[0].strip()
+        return first != "Date" and not set(first) <= set("-: ")
+    return [line for line in lines if is_row(line) and len(line) > limit]
+
+
+def verification_rows_concise(base):
+    try:
+        merge_base = subprocess.check_output(["git", "merge-base", base, "HEAD"], cwd=ROOT, text=True).strip()
+    except subprocess.CalledProcessError:
+        return [f"cannot find a merge base with {base}; fetch it or pass --base"]
+    added = []
+    # Committed in the range, and uncommitted work, as for the docs-considered check.
+    for diff in (["git", "diff", "--unified=0", f"{merge_base}...HEAD", "--", VERIFICATION],
+                 ["git", "diff", "--unified=0", "HEAD", "--", VERIFICATION]):
+        out = subprocess.check_output(diff, cwd=ROOT, text=True)
+        added += [line[1:] for line in out.splitlines() if line.startswith("+") and not line.startswith("+++")]
+    return [
+        f"{VERIFICATION}: a new row is {len(row)} characters, over {ROW_LIMIT}; say the date, what ran, the exact "
+        f"source and the result in a sentence or two, and leave the evidence to the PR: {row[:80]}..."
+        for row in long_rows(added)
+    ]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base", help="git ref to diff against for the docs-considered check")
@@ -129,6 +169,7 @@ def main():
     problems = index_completeness() + links_resolve() + pointers_resolve()
     if args.base:
         problems += docs_considered(args.base)
+        problems += verification_rows_concise(args.base)
     for problem in problems:
         print(f"docs_check: {problem}", file=sys.stderr)
     if problems:
