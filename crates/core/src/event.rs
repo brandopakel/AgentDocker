@@ -623,6 +623,11 @@ pub enum EventKind {
     MessagesPruned {
         removed: usize,
     },
+    /// Retention forgot the records of agents that ended before its
+    /// window and held nothing; each was said as `agent_removed` first.
+    AgentsPruned {
+        removed: usize,
+    },
     /// Somebody was added to an open channel.
     ChannelInvited {
         channel: ChannelId,

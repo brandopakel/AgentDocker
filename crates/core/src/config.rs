@@ -20,6 +20,8 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub usage: UsageConfig,
     #[serde(default)]
+    pub agents: AgentsConfig,
+    #[serde(default)]
     pub journal: JournalConfig,
     #[serde(default)]
     pub messages: MessagesConfig,
@@ -27,6 +29,35 @@ pub struct DaemonConfig {
     /// posted anywhere unless the person writes a sink here.
     #[serde(default)]
     pub webhooks: Vec<WebhookConfig>,
+}
+
+/// How many finished agents one retention tick forgets, so the
+/// once-a-minute tick stays short however many have piled up.
+pub const AGENT_RETENTION_BATCH: usize = 100;
+
+/// The records of agents that have ended.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentsConfig {
+    /// How long the record of an agent that has ended is kept, as `30m`,
+    /// `12h`, `180d` or plain seconds, or `off` to keep every record until
+    /// `rm`. The default is 30 days: every record is loaded at startup and
+    /// looked at on every tick, and one that old holds nothing and answers
+    /// nothing; the journal and the ledger keep its id regardless.
+    #[serde(default = "agents_retention")]
+    pub retention: String,
+}
+
+fn agents_retention() -> String {
+    "30d".to_owned()
+}
+
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        Self {
+            retention: agents_retention(),
+        }
+    }
 }
 
 /// Local accounting roots only; transcript text is parsed but never retained.
@@ -240,6 +271,18 @@ impl DaemonConfig {
         Ok(&self.webhooks)
     }
 
+    /// How long finished agents' records are kept: thirty days unless the
+    /// file says otherwise, `None` when it says `off`.
+    pub fn agents_retention(&self) -> Result<Option<Duration>, String> {
+        let text = self.agents.retention.trim();
+        if text.eq_ignore_ascii_case("off") || text.eq_ignore_ascii_case("never") {
+            return Ok(None);
+        }
+        parse_duration(text)
+            .map(Some)
+            .map_err(|error| format!("agents.retention: {error}"))
+    }
+
     /// The message archive's retention window, when one is configured.
     pub fn messages_retention(&self) -> Result<Option<Duration>, String> {
         self.messages
@@ -395,6 +438,44 @@ secret_file = {secret:?}
         ] {
             assert!(parse_duration(bad).is_err(), "{bad:?} should be refused");
         }
+    }
+
+    #[test]
+    fn finished_agents_are_kept_thirty_days_unless_the_file_says_otherwise() {
+        let parse = |text: &str| toml::from_str::<DaemonConfig>(text);
+        assert_eq!(
+            DaemonConfig::default().agents_retention().unwrap(),
+            Some(Duration::days(30))
+        );
+        assert_eq!(
+            parse("[journal]\nretention = \"180d\"\n")
+                .unwrap()
+                .agents_retention()
+                .unwrap(),
+            Some(Duration::days(30))
+        );
+        assert_eq!(
+            parse("[agents]\nretention = \"7d\"\n")
+                .unwrap()
+                .agents_retention()
+                .unwrap(),
+            Some(Duration::days(7))
+        );
+        assert_eq!(
+            parse("[agents]\nretention = \"off\"\n")
+                .unwrap()
+                .agents_retention()
+                .unwrap(),
+            None
+        );
+        assert!(
+            parse("[agents]\nretention = \"soon\"\n")
+                .unwrap()
+                .agents_retention()
+                .unwrap_err()
+                .starts_with("agents.retention:")
+        );
+        assert!(parse("[agents]\nkeep = \"7d\"\n").is_err());
     }
 
     #[test]

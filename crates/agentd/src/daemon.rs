@@ -1714,14 +1714,84 @@ impl Daemon {
         };
         let response = lock(&self.state).remove(&id.to_string());
         if matches!(response, Response::Ok) {
-            let log = self.log_path(&id);
-            let _ = std::fs::remove_file(&log);
-            let _ = std::fs::remove_file(paths::rotated_log(&log));
-            let controller = controller_log(&self.home, &id);
-            let _ = std::fs::remove_file(&controller);
-            let _ = std::fs::remove_file(paths::rotated_log(&controller));
+            self.forget_logs(&id);
         }
         response
+    }
+
+    /// The logs of a record that is gone: its own and its controller's.
+    fn forget_logs(&self, id: &AgentId) {
+        let log = self.log_path(id);
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_file(paths::rotated_log(&log));
+        let controller = controller_log(&self.home, id);
+        let _ = std::fs::remove_file(&controller);
+        let _ = std::fs::remove_file(paths::rotated_log(&controller));
+    }
+
+    /// Apply `[agents] retention` from `agentd.toml`, thirty days unless
+    /// the file says otherwise: the records of agents that ended before
+    /// the window and hold nothing — no lease, no open question, no input
+    /// binding, no restart or restore policy, no provider limit — are
+    /// forgotten the way `rm` forgets one, a bounded batch per tick, each
+    /// said as `agent_removed` and the batch as `agents_pruned`. Every
+    /// record is loaded at startup and looked at on every tick, so a
+    /// daemon that kept them all would slow down for as long as it was
+    /// used; the journal and the ledger keep a forgotten agent's id.
+    pub fn apply_agent_retention(&self) {
+        use agentdocker_core::config::{AGENT_RETENTION_BATCH, DaemonConfig, FILE_NAME};
+        use agentdocker_host::policy_file::{self, ReadPolicy};
+        let path = self.home.join(FILE_NAME);
+        let read = policy_file::read_changed(&path, None)
+            .map_err(|error| format!("cannot read {}: {}", path.display(), error.kind()))
+            .and_then(|read| match read {
+                ReadPolicy::Absent | ReadPolicy::Unchanged => {
+                    DaemonConfig::default().agents_retention()
+                }
+                ReadPolicy::Text { text, .. } => toml::from_str::<DaemonConfig>(&text)
+                    .map_err(|error| error.to_string())
+                    .and_then(|config| config.agents_retention())
+                    .map_err(|error| format!("{}: {error}", path.display())),
+            });
+        let removed = {
+            let mut state = lock(&self.state);
+            let window = match read {
+                Ok(window) => window,
+                Err(notice) => {
+                    if state.config_notice.as_ref() != Some(&notice) {
+                        warn!(%notice, "daemon configuration ignored");
+                        state.config_notice = Some(notice);
+                    }
+                    return;
+                }
+            };
+            let Some(cutoff) = window.and_then(|window| Utc::now().checked_sub_signed(window))
+            else {
+                return;
+            };
+            let mut removed = Vec::new();
+            for id in state.retirable_agents(cutoff, AGENT_RETENTION_BATCH) {
+                // A refusal is a write that failed or was fenced: nothing
+                // more lands this tick either.
+                if !matches!(state.remove(id.as_str()), Response::Ok) {
+                    break;
+                }
+                removed.push(id);
+            }
+            if !removed.is_empty() {
+                info!(
+                    count = removed.len(),
+                    "forgot the records of agents that ended before the retention window"
+                );
+                state.emit(EventKind::AgentsPruned {
+                    removed: removed.len(),
+                });
+            }
+            removed
+        };
+        for id in &removed {
+            self.forget_logs(id);
+        }
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<Event> {
@@ -5541,6 +5611,42 @@ impl State {
             Some(agent) => Response::Agent { agent },
             None => Response::error(ErrorCode::NotFound, "agent vanished"),
         }
+    }
+
+    /// The agents retention may forget, oldest first: ended before
+    /// `cutoff`, not the person, and holding or owed nothing.
+    fn retirable_agents(&self, cutoff: DateTime<Utc>, limit: usize) -> Vec<AgentId> {
+        let mut retirable: Vec<&AgentRecord> = self
+            .registry
+            .all()
+            .filter(|record| {
+                !record.status.is_live()
+                    && record.id.as_str() != agentdocker_core::HUMAN
+                    && record.spec.runtime != agentdocker_core::HUMAN_RUNTIME
+                    && record.finished_at.unwrap_or(record.last_seen) < cutoff
+                    && record.last_seen < cutoff
+                    && record.input_binding.is_none()
+                    && !record.spec.restore
+                    && record.spec.restart.is_no()
+                    && record
+                        .provider_availability
+                        .as_ref()
+                        .is_none_or(|availability| availability.issue.is_none())
+                    && self.leases.by_holder(&record.id).is_empty()
+                    && !self.pending_restarts.contains(&record.id)
+                    && !self.supervised.contains_key(&record.id)
+                    && !self.questions.values().any(|question| {
+                        question.from == record.id.as_str()
+                            || matches!(&question.to, Destination::Agent(to) if to == &record.id)
+                    })
+            })
+            .collect();
+        retirable.sort_by_key(|record| record.finished_at.unwrap_or(record.last_seen));
+        retirable
+            .into_iter()
+            .take(limit)
+            .map(|record| record.id.clone())
+            .collect()
     }
 
     fn remove(&mut self, reference: &str) -> Response {
@@ -9795,6 +9901,88 @@ mod tests {
             Response::Agent { agent } => agent,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn retention_forgets_finished_agents_that_hold_nothing() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let gone = register(&daemon, "gone", None).await;
+        let holder = register(&daemon, "holder", None).await;
+        let live = register(&daemon, "live", None).await;
+        for agent in [&gone, &holder] {
+            assert!(matches!(
+                daemon
+                    .handle(Request::Deregister {
+                        agent: agent.id.to_string()
+                    })
+                    .await,
+                Response::Agent { .. }
+            ));
+        }
+        let inspect = |daemon: &Arc<Daemon>, id: &AgentId| lock(&daemon.state).inspect(id.as_str());
+        // Fresh records stay, however they ended.
+        daemon.apply_agent_retention();
+        assert!(matches!(inspect(&daemon, &gone.id), Response::Agent { .. }));
+        // Forty days on, the default window has passed for both finished
+        // records; the one that is to come back under its id after a
+        // restart stays (its leases went when it ended; what it holds is
+        // its restore), and the live one stays.
+        {
+            let mut state = lock(&daemon.state);
+            for id in [&gone.id, &holder.id] {
+                let record = state.registry.get_mut(id).unwrap();
+                record.finished_at = Some(Utc::now() - Duration::days(40));
+                record.last_seen = Utc::now() - Duration::days(40);
+            }
+            state.registry.get_mut(&holder.id).unwrap().spec.restore = true;
+        }
+        daemon.apply_agent_retention();
+        assert!(matches!(
+            inspect(&daemon, &gone.id),
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+        assert!(matches!(
+            inspect(&daemon, &holder.id),
+            Response::Agent { .. }
+        ));
+        assert!(matches!(inspect(&daemon, &live.id), Response::Agent { .. }));
+        assert_eq!(
+            daemon
+                .recent_events(50)
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::AgentsPruned { removed: 1 }))
+                .count(),
+            1
+        );
+        // Its restore given up, `off` still keeps the record; a shorter
+        // window forgets it.
+        lock(&daemon.state)
+            .registry
+            .get_mut(&holder.id)
+            .unwrap()
+            .spec
+            .restore = false;
+        let config = daemon.home.join("agentd.toml");
+        std::fs::write(&config, "[agents]\nretention = \"off\"\n").unwrap();
+        daemon.apply_agent_retention();
+        assert!(matches!(
+            inspect(&daemon, &holder.id),
+            Response::Agent { .. }
+        ));
+        std::fs::write(&config, "[agents]\nretention = \"7d\"\n").unwrap();
+        daemon.apply_agent_retention();
+        assert!(matches!(
+            inspect(&daemon, &holder.id),
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+        assert!(matches!(inspect(&daemon, &live.id), Response::Agent { .. }));
     }
 
     // ----- the human as an agent -----------------------------------------
