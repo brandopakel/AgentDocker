@@ -194,6 +194,10 @@ pub fn render(
                     other => other.label().to_owned(),
                 })
                 .unwrap_or_else(|| agent.status.to_string());
+            let doing = match agent.restart_standing(chrono::Utc::now()) {
+                Some(standing) => format!("{} ({doing})", standing.words()),
+                None => doing,
+            };
             let held = leases.iter().filter(|l| l.holder == agent.id).count();
             let _ = writeln!(
                 out,

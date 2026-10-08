@@ -427,7 +427,7 @@ enum Command {
         note: Option<String>,
     },
     /// The agent tools installed on this machine — CLI, version, apps — and whether AgentDocker is wired into each.
-    Runtimes,
+    Runtimes(RuntimesArgs),
     /// Open the desktop app: a native window over the same socket, showing agents, runtimes, the journal, leases and events.
     Ui,
     /// Install, inspect or roll back the native desktop for this user.
@@ -754,6 +754,9 @@ enum Command {
         /// Only these agents.
         names: Vec<String>,
     },
+    /// Check, upgrade or describe an Agentfile.toml without starting anything.
+    #[command(subcommand)]
+    Agentfile(AgentfileCommand),
     /// Stop the agents in an Agentfile.toml.
     Down {
         /// Agentfile to read (default: ./Agentfile.toml).
@@ -776,7 +779,33 @@ enum Command {
         /// Resume after this complete JSON cursor from a processed frame.
         #[arg(long, requires = "resumable")]
         after_cursor: Option<String>,
+        /// Start with every agent as one `agents_at` frame, then the events after it: state and changes with no gap and nothing twice.
+        #[arg(long, requires = "resumable", conflicts_with = "after_cursor")]
+        snapshot: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum AgentfileCommand {
+    /// Read the file the way `up` will — upgraded, `${VAR}` expanded, commands built — and show what would start.
+    Check {
+        /// Agentfile to read (default: ./Agentfile.toml).
+        #[arg(short = 'f', long)]
+        file: Option<PathBuf>,
+        /// Only these agents.
+        names: Vec<String>,
+        /// The resolved agents as JSON (environment variable names only, never values).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the file rewritten as the latest version, leaving the file alone.
+    Upgrade {
+        /// Agentfile to read (default: ./Agentfile.toml).
+        #[arg(short = 'f', long)]
+        file: Option<PathBuf>,
+    },
+    /// Print the JSON Schema of the latest version, for editors.
+    Schema,
 }
 
 #[derive(Args)]
@@ -1177,6 +1206,24 @@ struct SendArgs {
     /// most 16): path, commit, pr, url, task, message or memory.
     #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
     links: Vec<agentdocker_core::Link>,
+    /// Your own key for this message (a UUID, say): sending again with the
+    /// same key within 24 hours answers with the first send's message id
+    /// and queues nothing, so a retry after a timeout is safe.
+    #[arg(long, value_name = "KEY")]
+    idempotency_key: Option<String>,
+}
+
+/// `runtimes`: its own struct, for the same reason as `SendArgs`.
+#[derive(Args)]
+struct RuntimesArgs {
+    /// Explain one runtime: what AgentDocker can do for its sessions, and whether each adapter is installed.
+    name: Option<String>,
+    /// What AgentDocker can do for each installed runtime's sessions: joins, tools, edit guard, stale reads, messages, idle wake.
+    #[arg(long, conflicts_with = "name")]
+    capabilities: bool,
+    /// Every runtime as JSON, with its capability profile.
+    #[arg(long)]
+    json: bool,
 }
 
 /// Its own struct, like `SendArgs`: the top-level command enum is parsed
@@ -1774,6 +1821,13 @@ async fn run() -> Result<()> {
             }
         }
         Command::Skill => print!("{}", skill::installed_document()),
+        Command::Agentfile(command) => match command {
+            AgentfileCommand::Check { file, names, json } => {
+                teams::check(file.as_deref(), &names, json)?
+            }
+            AgentfileCommand::Upgrade { file } => teams::upgrade(file.as_deref())?,
+            AgentfileCommand::Schema => print!("{}", agentfile::SCHEMA),
+        },
         Command::Ping => {
             if let Response::Pong {
                 version,
@@ -2375,9 +2429,32 @@ async fn run() -> Result<()> {
                 print_reviews(&client, &channel).await?;
             }
         }
-        Command::Runtimes => {
+        Command::Runtimes(RuntimesArgs {
+            name,
+            capabilities,
+            json,
+        }) => {
             if let Response::Runtimes { runtimes } = client.call(&Request::Runtimes).await? {
-                print_runtimes(&runtimes);
+                let selected: Vec<&agentdocker_core::RuntimeInfo> = match &name {
+                    Some(name) => {
+                        vec![runtimes.iter().find(|r| r.name == *name).with_context(|| {
+                            format!("unknown runtime `{name}`; `agentdocker runtimes` lists them")
+                        })?]
+                    }
+                    None => runtimes.iter().collect(),
+                };
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&runtimes_json(&selected))?
+                    );
+                } else if let Some(runtime) = selected.first().filter(|_| name.is_some()) {
+                    print_runtime_detail(runtime);
+                } else if capabilities {
+                    print_capabilities(&runtimes);
+                } else {
+                    print_runtimes(&runtimes);
+                }
             }
         }
         Command::Attach { agent } => attach::run(&client, &agent).await?,
@@ -2733,6 +2810,7 @@ async fn run() -> Result<()> {
                 payload,
                 reply_to: args.reply_to.map(MessageId::from),
                 links: args.links,
+                idempotency_key: args.idempotency_key,
             };
             if let Response::Sent {
                 message,
@@ -3164,12 +3242,27 @@ async fn run() -> Result<()> {
             replay,
             resumable,
             after_cursor,
+            snapshot,
         } => {
             if resumable {
-                let after = after_cursor
+                let mut after = after_cursor
                     .map(|raw| serde_json::from_str(&raw))
                     .transpose()
                     .context("--after-cursor requires the complete JSON cursor object")?;
+                if snapshot {
+                    let state = client
+                        .call(&Request::ListAt {
+                            all: true,
+                            project: None,
+                            labels: Default::default(),
+                        })
+                        .await?;
+                    let Response::AgentsAt { ref cursor, .. } = state else {
+                        bail!("unexpected reply to a snapshot: {state:?}");
+                    };
+                    after = Some(cursor.clone());
+                    println!("{}", serde_json::to_string(&state)?);
+                }
                 client
                     .checked_events(after, |response| {
                         println!("{}", serde_json::to_string(&response)?);
@@ -3806,7 +3899,12 @@ fn print_agents(
                 if a.connector_absent(chrono::Utc::now()) {
                     "not connected".to_owned()
                 } else {
-                    a.status.to_string()
+                    // A crash loop or a policy that gave up is said where
+                    // the status is read, not left to the log.
+                    match a.restart_standing(chrono::Utc::now()) {
+                        Some(standing) => format!("{} · {}", a.status, standing.words()),
+                        None => a.status.to_string(),
+                    }
                 },
                 if a.spec.runtime == agentdocker_core::HUMAN_RUNTIME {
                     "App inbox".into()
@@ -4142,6 +4240,131 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
         .collect();
     if !in_browser.is_empty() {
         println!("\n{}", format::in_browser_note(&in_browser));
+    }
+    println!(
+        "\n`agentdocker runtimes --capabilities` shows what AgentDocker can do for each one's sessions; `agentdocker runtimes <name>` explains one."
+    );
+}
+
+/// Each runtime as the inventory found it, with what AgentDocker can do for
+/// its sessions: the same data `runtimes` and the desktop show.
+fn runtimes_json(runtimes: &[&agentdocker_core::RuntimeInfo]) -> Vec<serde_json::Value> {
+    runtimes
+        .iter()
+        .map(|runtime| {
+            let mut value = serde_json::to_value(runtime).unwrap_or_default();
+            if let (Some(object), Some(spec)) = (
+                value.as_object_mut(),
+                agentdocker_core::runtime::spec(&runtime.name),
+            ) {
+                let profile = spec.capabilities();
+                let rows: serde_json::Map<String, serde_json::Value> = profile
+                    .rows()
+                    .into_iter()
+                    .map(|(heading, _, capability)| {
+                        let mut row = serde_json::to_value(capability).unwrap_or_default();
+                        if let Some(installed) = capability.installed(runtime) {
+                            row["installed"] = serde_json::to_value(installed).unwrap_or_default();
+                        }
+                        (heading.to_lowercase().replace(' ', "_"), row)
+                    })
+                    .collect();
+                object.insert("capabilities".into(), rows.into());
+            }
+            value
+        })
+        .collect()
+}
+
+/// The capability matrix: one row per installed runtime (every runtime
+/// when none is installed), one column per capability.
+fn print_capabilities(runtimes: &[agentdocker_core::RuntimeInfo]) {
+    let installed: Vec<&agentdocker_core::RuntimeInfo> =
+        runtimes.iter().filter(|r| r.installed()).collect();
+    let shown: Vec<&agentdocker_core::RuntimeInfo> = if installed.is_empty() {
+        runtimes.iter().collect()
+    } else {
+        installed
+    };
+    let mut headings = vec!["RUNTIME"];
+    let rows: Vec<Vec<String>> = shown
+        .iter()
+        .filter_map(|runtime| {
+            let profile = agentdocker_core::runtime::spec(&runtime.name)?.capabilities();
+            let mut row = vec![runtime.name.clone()];
+            for (_, _, capability) in profile.rows() {
+                let mut cell = capability.reach.word().to_owned();
+                // "auto" through an adapter that is not installed is a
+                // promise setup has not kept yet.
+                if capability.reach == agentdocker_core::runtime::Reach::Automatic
+                    && capability
+                        .installed(runtime)
+                        .is_some_and(|wiring| wiring != agentdocker_core::Wiring::Wired)
+                {
+                    cell.push_str(" (setup)");
+                }
+                row.push(cell);
+            }
+            Some(row)
+        })
+        .collect();
+    if let Some(spec) = agentdocker_core::runtime::RUNTIMES.first() {
+        headings.extend(spec.capabilities().rows().map(|(heading, _, _)| heading));
+    }
+    format::table(&headings, &rows);
+    println!(
+        "\nauto: the adapter does it whatever the model decides; (setup): its hooks or MCP entry are not installed yet, see `agentdocker setup --preview`.\ntools: the model can, through the MCP tools. if set up: needs a launch option, the provider's consent, `adopt` or the connector. -: not from this machine.\n`agentdocker runtimes <name>` explains one."
+    );
+}
+
+/// One runtime: what was found, and each capability with how it works and
+/// whether what it runs through is installed here.
+fn print_runtime_detail(runtime: &agentdocker_core::RuntimeInfo) {
+    println!("{} ({}), {}", runtime.label, runtime.name, runtime.vendor);
+    match &runtime.cli {
+        Some(cli) => println!(
+            "  command  {}{}",
+            cli.display(),
+            runtime
+                .version
+                .as_deref()
+                .map(|v| format!("  {v}"))
+                .unwrap_or_default()
+        ),
+        None if runtime.installed() => {}
+        None => println!("  not installed here"),
+    }
+    for app in &runtime.apps {
+        println!("  app      {}", app.label);
+    }
+    for extension in &runtime.extensions {
+        println!("  browser  {}", format::extension(extension));
+    }
+    let Some(spec) = agentdocker_core::runtime::spec(&runtime.name) else {
+        return;
+    };
+    println!();
+    for (_, label, capability) in spec.capabilities().rows() {
+        let state = match capability.installed(runtime) {
+            Some(agentdocker_core::Wiring::Wired) => " (installed)",
+            Some(agentdocker_core::Wiring::Missing) => " (not installed: `agentdocker setup`)",
+            Some(agentdocker_core::Wiring::Unverified) => {
+                " (unverified: `agentdocker setup --health`)"
+            }
+            Some(agentdocker_core::Wiring::Unsupported) | None => "",
+        };
+        println!(
+            "  {label:<32} {:<10} {}{state}",
+            capability.reach.word(),
+            capability.via.label()
+        );
+        println!("      {}", capability.how);
+    }
+    if spec.mcp == agentdocker_core::runtime::McpWiring::AgentConfig {
+        println!(
+            "\n`agentdocker setup {}` prints the toolset to add to an agent's YAML.",
+            runtime.name
+        );
     }
 }
 

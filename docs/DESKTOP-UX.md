@@ -79,13 +79,26 @@ The count is the larger of the queue and the input the receiver could not
 prove it handed over, never their sum. Right after launch, before the first
 activity snapshot, nothing is shown rather than a guess. An ended session with
 nothing waiting is simply ended: it sits in Earlier, not in Needs you.
-Finished sessions keep their **Done** badge on the row. Question previews use at
+Finished sessions keep their **Done** badge on the row. A supervised agent
+that keeps dying (three or more restarts, its latest run under a minute) has a
+red **Crash loop** pill, and one whose `on-failure` policy ran out has
+**Gave up**; an agent that came back and stayed up has neither. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
 Inbox. The first three items are shown; **Show more** expands the same list and
 **Show fewer** collapses it. When nobody needs an answer or delivery review, **To get started** can offer
 **Connect** for discovered processes and **Set up** for installed tools. Tools
 also keeps the full setup controls.
+
+Each tool's **Details** ends with **What AgentDocker can do**: one line per
+capability (joins by itself, coordination tools, refuses an edit to a held
+file, notices stale reads, hands messages to the model, wakes an idle
+session), each **Automatic**, **Automatic once set up** (its hooks or MCP
+entry are not installed yet), **When the agent uses the tools**, **With setup
+at launch** or **Not available**, with a sentence of how. Docker Agent reads
+**Installed · wired in each agent's YAML**, since its MCP servers live in each
+agent's file, and its details say to run `agentdocker setup docker-agent` for
+the toolset to add.
 
 A vendor's browser extension (Claude, ChatGPT) has its own Tools row, marked
 **Installed in Chrome · its sessions reach here only through the connector,

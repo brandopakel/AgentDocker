@@ -183,6 +183,35 @@ fn failed(status: &AgentStatus) -> bool {
     !matches!(status, AgentStatus::Exited { code: Some(0) })
 }
 
+/// Restarts after which runs that keep ending quickly read as a crash loop.
+pub const CRASH_LOOP_RESTARTS: u32 = 3;
+/// A run shorter than this never really got going.
+pub const CRASH_LOOP_RUN_SECS: i64 = 60;
+
+/// How an agent stands with its restart policy, when that is worth a
+/// person's attention: it keeps dying, or the policy has given up on it.
+/// An agent restarted now and then, that stays up, is neither.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum RestartStanding {
+    /// Restarted at least [`CRASH_LOOP_RESTARTS`] times and its latest run
+    /// (still going, or ended) has lasted less than
+    /// [`CRASH_LOOP_RUN_SECS`]: it is being started over and over.
+    CrashLoop { restarts: u32 },
+    /// It failed and its `on-failure` policy will not start it again.
+    GaveUp { restarts: u32 },
+}
+
+impl RestartStanding {
+    /// A few words for a status cell.
+    pub fn words(&self) -> String {
+        match self {
+            Self::CrashLoop { restarts } => format!("crash loop, {restarts} restarts"),
+            Self::GaveUp { restarts } => format!("gave up after {restarts} restarts"),
+        }
+    }
+}
+
 /// How long to wait before the nth restart.
 ///
 /// Doubling from a fifth of a second and capped at half a minute. The
@@ -450,6 +479,29 @@ pub const CONNECTOR_LABEL: &str = "connector";
 pub const CONNECTOR_PRESENCE: chrono::Duration = chrono::Duration::hours(1);
 
 impl AgentRecord {
+    /// Whether its restarts need a person's attention at `now`: see
+    /// [`RestartStanding`]. `None` for an agent without a policy, never
+    /// restarted, or restarted and since steady.
+    pub fn restart_standing(&self, now: DateTime<Utc>) -> Option<RestartStanding> {
+        if self.spec.restart.is_no() || self.restarts == 0 {
+            return None;
+        }
+        let restarts = self.restarts;
+        if !self.status.is_live()
+            && failed(&self.status)
+            && !self.spec.restart.restarts(&self.status, restarts)
+        {
+            return Some(RestartStanding::GaveUp { restarts });
+        }
+        if restarts < CRASH_LOOP_RESTARTS {
+            return None;
+        }
+        let started = self.started_at?;
+        let ended = self.finished_at.unwrap_or(now);
+        ((ended - started).num_seconds() < CRASH_LOOP_RUN_SECS)
+            .then_some(RestartStanding::CrashLoop { restarts })
+    }
+
     /// A browser agent the remote connector registered: labelled
     /// `connector=true`, external and without a process here.
     pub fn via_connector(&self) -> bool {
@@ -669,6 +721,64 @@ fn is_zero(n: &u32) -> bool {
 #[cfg(test)]
 mod restart_tests {
     use super::*;
+
+    /// A crash loop is many restarts with short runs; an agent that came
+    /// back and stayed up is steady; an `on-failure` that ran out has given
+    /// up; a stop on purpose (policy cleared) is none of these.
+    #[test]
+    fn restart_standing_tells_a_loop_from_a_survivor_and_a_give_up() {
+        let t0 = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let secs = |n: i64| t0 + chrono::Duration::seconds(n);
+        let mut record = AgentRecord::new(
+            AgentSpec {
+                name: "svc".into(),
+                restart: RestartPolicy::OnFailure { max: 5 },
+                ..AgentSpec::default()
+            },
+            true,
+            t0,
+        );
+        record.status = AgentStatus::Running;
+        record.started_at = Some(t0);
+        assert_eq!(record.restart_standing(secs(1)), None, "never restarted");
+        record.restarts = 2;
+        assert_eq!(record.restart_standing(secs(1)), None, "not yet a loop");
+        record.restarts = 3;
+        assert_eq!(
+            record.restart_standing(secs(5)),
+            Some(RestartStanding::CrashLoop { restarts: 3 })
+        );
+        assert_eq!(
+            record.restart_standing(secs(CRASH_LOOP_RUN_SECS + 1)),
+            None,
+            "up for a minute: steady again"
+        );
+        // Died quickly and will be started again: still a loop.
+        record.status = exited(1);
+        record.finished_at = Some(secs(2));
+        assert_eq!(
+            record.restart_standing(secs(10)),
+            Some(RestartStanding::CrashLoop { restarts: 3 })
+        );
+        // Died with the policy spent: given up, however long it ran.
+        record.restarts = 5;
+        record.finished_at = Some(secs(600));
+        assert_eq!(
+            record.restart_standing(secs(700)),
+            Some(RestartStanding::GaveUp { restarts: 5 })
+        );
+        assert_eq!(
+            RestartStanding::GaveUp { restarts: 5 }.words(),
+            "gave up after 5 restarts"
+        );
+        // A clean exit with on-failure is a finish, not a give-up.
+        record.status = exited(0);
+        assert_eq!(record.restart_standing(secs(700)), None);
+        // Stopped on purpose: the policy is cleared, and nothing is said.
+        record.status = exited(1);
+        record.spec.restart = RestartPolicy::No;
+        assert_eq!(record.restart_standing(secs(700)), None);
+    }
 
     fn exited(code: i32) -> AgentStatus {
         AgentStatus::Exited { code: Some(code) }

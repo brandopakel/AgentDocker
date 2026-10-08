@@ -49,8 +49,23 @@ pub enum McpWiring {
     /// directory: each server is `{"type": "local", "command": [executable,
     /// args…], "enabled": true}`, the command one array with its arguments.
     OpencodeJson { file: &'static str },
+    /// Declared in each agent's own configuration file rather than in one
+    /// of the runtime's: Docker Agent reads its MCP servers from the
+    /// `toolsets` of the YAML that describes the agent. There is no file
+    /// for setup to register in; setup prints the toolset to add instead.
+    AgentConfig,
     /// Not known to take one.
     None,
+}
+
+/// The toolset a Docker Agent YAML file lists to make every run of that
+/// agent a participant: `agentdocker mcp` over stdio, as runtime
+/// `docker-agent`. `{exe}` is the absolute path of this binary.
+pub fn docker_agent_toolset(exe: &str) -> String {
+    let quoted = serde_json::to_string(exe).expect("a string serializes");
+    format!(
+        "    toolsets:\n      - type: mcp\n        command: {quoted}\n        args: [\"mcp\", \"--runtime\", \"docker-agent\"]\n"
+    )
 }
 
 /// A vendor's browser extension: an agent that works inside the browser.
@@ -311,6 +326,22 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         },
         hooks: false,
     },
+    // Docker's agent runtime (formerly cagent): it runs the model loop
+    // itself, from a YAML file per agent, and ships both standalone and as
+    // the Docker CLI plugin behind `docker agent`. Its legacy name still
+    // works as a command, and its configuration directory kept that name.
+    RuntimeSpec {
+        name: "docker-agent",
+        vendor: "Docker",
+        label: "Docker Agent",
+        clis: &["docker-agent", "cagent"],
+        apps: &[],
+        linux_apps: &[],
+        extensions: &[],
+        config_dir: Some(".config/cagent"),
+        mcp: McpWiring::AgentConfig,
+        hooks: false,
+    },
 ];
 
 /// What every listing says under a runtime that works inside the browser,
@@ -444,6 +475,330 @@ impl RuntimeSpec {
     pub fn in_browser(&self) -> bool {
         !self.extensions.is_empty() && self.clis.is_empty() && self.apps.is_empty()
     }
+
+    /// How far AgentDocker reaches into a session of this runtime, by the
+    /// adapters it ships for it. This is what the adapters make possible;
+    /// whether one is installed here is the runtime's [`RuntimeInfo`]
+    /// wiring, which [`Capability::installed`] reads.
+    pub fn capabilities(&self) -> Capabilities {
+        use Adapter as A;
+        use Reach::*;
+        let c = |reach, via, how| Capability { reach, via, how };
+        const TOOLS: &str = "the MCP tools (claim, send_message, read_journal, checkpoint…), when the model calls them";
+        match self.name {
+            "claude-code" => Capabilities {
+                joins: c(
+                    Automatic,
+                    A::Hooks,
+                    "SessionStart registers the session; the MCP server does too",
+                ),
+                tools: c(Voluntary, A::Mcp, TOOLS),
+                edits: c(
+                    Automatic,
+                    A::Hooks,
+                    "PreToolUse refuses Edit, Write, MultiEdit and NotebookEdit on a file another agent holds, also under --dangerously-skip-permissions; shell writes are not covered",
+                ),
+                reads: c(
+                    Automatic,
+                    A::Hooks,
+                    "PreToolUse records Read, Grep and Glob, so a later change reads as stale",
+                ),
+                messages: c(
+                    Automatic,
+                    A::Hooks,
+                    "UserPromptSubmit and PostToolUse hand queued messages to the model",
+                ),
+                idle_wake: c(
+                    Conditional,
+                    A::Channel,
+                    "a session launched with the channel flag (`run --claude-channel`, `setup --shell`, Agentfile `idle_messages`), after Claude's consent",
+                ),
+            },
+            "codex" => Capabilities {
+                joins: c(
+                    Automatic,
+                    A::Hooks,
+                    "SessionStart registers the session once Codex's /hooks review accepts the hooks; the MCP server does too",
+                ),
+                tools: c(Voluntary, A::Mcp, TOOLS),
+                edits: c(
+                    Automatic,
+                    A::Hooks,
+                    "PreToolUse refuses each file an apply_patch names when another agent holds it; shell writes are not covered",
+                ),
+                reads: c(
+                    Voluntary,
+                    A::Mcp,
+                    "observe_paths and check_stale, when the model calls them",
+                ),
+                messages: c(
+                    Automatic,
+                    A::Hooks,
+                    "the prompt, tool and Stop hooks hand queued messages to the model",
+                ),
+                idle_wake: c(
+                    Conditional,
+                    A::InputAdapter,
+                    "Codex's input adapter (experimental): a session started through it (`run --codex-input`, Agentfile `idle_messages`) or an existing terminal's native queue",
+                ),
+            },
+            "opencode" => Capabilities {
+                joins: c(
+                    Automatic,
+                    A::Plugin,
+                    "the AgentDocker plugin registers the session; the MCP server does too",
+                ),
+                tools: c(Voluntary, A::Mcp, TOOLS),
+                edits: c(
+                    Automatic,
+                    A::Plugin,
+                    "the plugin refuses an edit, write or patch to a file another agent holds",
+                ),
+                reads: c(
+                    Automatic,
+                    A::Plugin,
+                    "the plugin records each read, so a later change reads as stale",
+                ),
+                messages: c(
+                    Automatic,
+                    A::Plugin,
+                    "the plugin hands messages and the journal to the model",
+                ),
+                idle_wake: c(
+                    Automatic,
+                    A::Plugin,
+                    "the plugin starts a turn through OpenCode's own promptAsync; no consent flag",
+                ),
+            },
+            _ if self.in_browser() => Capabilities {
+                joins: c(
+                    Conditional,
+                    A::Connector,
+                    "a browser agent joins through the remote connector, with consent for one project",
+                ),
+                tools: c(
+                    Conditional,
+                    A::Connector,
+                    "the messaging tools only, through the remote connector",
+                ),
+                edits: c(
+                    Unavailable,
+                    A::None,
+                    "nothing in the browser touches a checkout on this machine",
+                ),
+                reads: c(
+                    Unavailable,
+                    A::None,
+                    "nothing in the browser reads a checkout on this machine",
+                ),
+                messages: c(
+                    Conditional,
+                    A::Connector,
+                    "read_inbox, when the agent calls it through the connector",
+                ),
+                idle_wake: c(
+                    Unavailable,
+                    A::None,
+                    "no input reaches a browser session from this machine",
+                ),
+            },
+            _ if self.mcp != McpWiring::None => {
+                let (via, joins, guard) = if self.mcp == McpWiring::AgentConfig {
+                    (
+                        A::AgentConfig,
+                        "each run whose YAML lists the agentdocker toolset joins when the toolset starts; its sub-agents share that identity",
+                        "only when the model claims before editing; a harness sub-agent running Claude Code or Codex is that runtime's own session, with its guard",
+                    )
+                } else {
+                    (
+                        A::Mcp,
+                        "the MCP server registers the session when the host starts it",
+                        "only when the model claims before editing",
+                    )
+                };
+                Capabilities {
+                    joins: c(Automatic, via, joins),
+                    tools: c(Voluntary, via, TOOLS),
+                    edits: c(Voluntary, via, guard),
+                    reads: c(
+                        Voluntary,
+                        via,
+                        "observe_paths and check_stale, when the model calls them",
+                    ),
+                    messages: c(
+                        Voluntary,
+                        via,
+                        "read_inbox and wait_for_messages, when the model calls them",
+                    ),
+                    idle_wake: c(
+                        Unavailable,
+                        A::None,
+                        "no input adapter: a message waits until the model reads its inbox",
+                    ),
+                }
+            }
+            _ if !self.clis.is_empty() => Capabilities {
+                joins: c(
+                    Conditional,
+                    A::Adopt,
+                    "discovery finds its processes; `agentdocker adopt` registers one",
+                ),
+                tools: c(
+                    Conditional,
+                    A::Mcp,
+                    "if it takes MCP servers, point it at `agentdocker mcp` by hand",
+                ),
+                edits: c(
+                    Conditional,
+                    A::Mcp,
+                    "only through those tools, when the model claims before editing",
+                ),
+                reads: c(
+                    Conditional,
+                    A::Mcp,
+                    "only through those tools, when the model calls them",
+                ),
+                messages: c(
+                    Conditional,
+                    A::Mcp,
+                    "only through those tools, when the model reads its inbox",
+                ),
+                idle_wake: c(Unavailable, A::None, "no input adapter"),
+            },
+            _ => Capabilities {
+                joins: c(
+                    Unavailable,
+                    A::None,
+                    "an application whose sessions AgentDocker cannot tell apart; inventory only",
+                ),
+                tools: c(Unavailable, A::None, "no MCP registration known for it"),
+                edits: c(Unavailable, A::None, "no adapter"),
+                reads: c(Unavailable, A::None, "no adapter"),
+                messages: c(Unavailable, A::None, "no adapter"),
+                idle_wake: c(Unavailable, A::None, "no input adapter"),
+            },
+        }
+    }
+}
+
+/// How far AgentDocker reaches with one capability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reach {
+    /// The adapter does it whatever the model decides.
+    Automatic,
+    /// The model can, through the tools; nothing makes it.
+    Voluntary,
+    /// Only with something more from the person: a launch option and the
+    /// provider's consent, an experimental adapter, an adoption, a connector.
+    Conditional,
+    /// Nothing on this machine can.
+    Unavailable,
+}
+
+impl Reach {
+    /// A word for a table cell.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Automatic => "auto",
+            Self::Voluntary => "tools",
+            Self::Conditional => "if set up",
+            Self::Unavailable => "-",
+        }
+    }
+}
+
+/// What a capability runs through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Adapter {
+    /// The runtime's hook configuration (`setup` installs it).
+    Hooks,
+    /// The runtime's MCP registration (`setup` writes it).
+    Mcp,
+    /// A plugin the runtime loads (OpenCode's, which `setup` installs).
+    Plugin,
+    /// Claude's channel, chosen per launch.
+    Channel,
+    /// Codex's input adapter, chosen per launch.
+    InputAdapter,
+    /// The agent's own configuration file (docker-agent's YAML toolsets).
+    AgentConfig,
+    /// The remote connector, for an agent in the browser.
+    Connector,
+    /// `agentdocker adopt`, by hand.
+    Adopt,
+    None,
+}
+
+impl Adapter {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hooks => "hooks",
+            Self::Mcp => "MCP server",
+            Self::Plugin => "plugin",
+            Self::Channel => "Claude channel",
+            Self::InputAdapter => "Codex input adapter",
+            Self::AgentConfig => "agent YAML",
+            Self::Connector => "remote connector",
+            Self::Adopt => "adopt",
+            Self::None => "nothing",
+        }
+    }
+}
+
+/// One capability: how far it reaches, through what, and in a sentence how.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Capability {
+    pub reach: Reach,
+    pub via: Adapter,
+    pub how: &'static str,
+}
+
+impl Capability {
+    /// Whether the adapter this capability runs through is installed, as
+    /// far as the inventory can tell: `Some` for the hooks and the MCP
+    /// registration, which it reads; `None` for what is chosen per launch,
+    /// per file or per consent, or not looked at.
+    pub fn installed(&self, info: &RuntimeInfo) -> Option<Wiring> {
+        match self.via {
+            Adapter::Hooks => Some(info.hooks),
+            Adapter::Mcp => Some(info.mcp),
+            _ => None,
+        }
+    }
+}
+
+/// What AgentDocker can do for a session of one runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Capabilities {
+    /// The session joins the registry by itself.
+    pub joins: Capability,
+    /// The coordination tools the model may call.
+    pub tools: Capability,
+    /// An edit to a file another agent holds is refused before it happens.
+    pub edits: Capability,
+    /// What the session reads is recorded, so a later change makes it stale.
+    pub reads: Capability,
+    /// Messages reach the model during a turn without it asking.
+    pub messages: Capability,
+    /// A message starts a turn while the session is idle.
+    pub idle_wake: Capability,
+}
+
+impl Capabilities {
+    /// Each capability with its column heading and a sentence of what it is,
+    /// in display order.
+    pub fn rows(&self) -> [(&'static str, &'static str, Capability); 6] {
+        [
+            ("JOINS", "Joins by itself", self.joins),
+            ("TOOLS", "Coordination tools", self.tools),
+            ("EDITS", "Refuses an edit to a held file", self.edits),
+            ("READS", "Notices stale reads", self.reads),
+            ("MESSAGES", "Hands messages to the model", self.messages),
+            ("IDLE WAKE", "Wakes an idle session", self.idle_wake),
+        ]
+    }
 }
 
 #[cfg(test)]
@@ -495,5 +850,83 @@ mod tests {
         assert!(spec("claude-browser").unwrap().in_browser());
         assert!(spec("chatgpt-browser").unwrap().in_browser());
         assert!(!spec("claude-code").unwrap().in_browser());
+        let docker = spec("docker-agent").unwrap();
+        assert_eq!(docker.mcp, McpWiring::AgentConfig);
+        assert!(
+            docker.clis.contains(&"cagent"),
+            "the legacy name is found too"
+        );
+    }
+
+    /// A profile claims only what an adapter AgentDocker ships can do: an
+    /// automatic edit guard needs hooks or a plugin, nothing in the browser
+    /// touches a checkout, and an application with no adapter reaches
+    /// nothing.
+    #[test]
+    fn capability_profiles_follow_the_adapters() {
+        for runtime in RUNTIMES {
+            let profile = runtime.capabilities();
+            for (_, _, capability) in profile.rows() {
+                assert!(!capability.how.is_empty(), "{} says how", runtime.name);
+                if capability.reach == Reach::Unavailable {
+                    assert_eq!(capability.via, Adapter::None, "{}", runtime.name);
+                }
+            }
+            if profile.edits.reach == Reach::Automatic {
+                assert!(
+                    runtime.hooks || runtime.name == "opencode",
+                    "{} guards edits only with an adapter",
+                    runtime.name
+                );
+            }
+            if runtime.hooks {
+                assert_eq!(profile.edits.reach, Reach::Automatic, "{}", runtime.name);
+                assert_eq!(profile.edits.via, Adapter::Hooks);
+            }
+            if runtime.in_browser() {
+                assert_eq!(profile.edits.reach, Reach::Unavailable);
+                assert_eq!(profile.tools.via, Adapter::Connector);
+            }
+            if runtime.mcp == McpWiring::None && runtime.clis.is_empty() && !runtime.in_browser() {
+                assert!(
+                    profile
+                        .rows()
+                        .iter()
+                        .all(|(_, _, c)| c.reach == Reach::Unavailable),
+                    "{} has no adapter",
+                    runtime.name
+                );
+            }
+            if profile.idle_wake.reach == Reach::Automatic {
+                assert_eq!(runtime.name, "opencode", "only the plugin wakes unasked");
+            }
+        }
+        let docker = spec("docker-agent").unwrap().capabilities();
+        assert_eq!(docker.joins.via, Adapter::AgentConfig);
+        assert_eq!(docker.edits.reach, Reach::Voluntary);
+        assert!(docker.edits.how.contains("harness"));
+        let claude = spec("claude-code").unwrap().capabilities();
+        assert!(claude.edits.how.contains("--dangerously-skip-permissions"));
+        assert_eq!(claude.idle_wake.reach, Reach::Conditional);
+        // What the inventory reads says whether the adapter is installed.
+        let info = RuntimeInfo {
+            name: "claude-code".into(),
+            vendor: "Anthropic".into(),
+            label: "Claude Code".into(),
+            cli: None,
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: Wiring::Missing,
+            hooks: Wiring::Wired,
+            shell: Wiring::Unsupported,
+            hooks_missing: vec![],
+            running: 0,
+        };
+        assert_eq!(claude.edits.installed(&info), Some(Wiring::Wired));
+        assert_eq!(claude.tools.installed(&info), Some(Wiring::Missing));
+        assert_eq!(claude.idle_wake.installed(&info), None, "chosen per launch");
     }
 }

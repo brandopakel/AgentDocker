@@ -641,6 +641,7 @@ mod tests {
             payload: json!({"text":"hello"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         };
         for kind in ["pause", "resume"] {
             let mut request = send("peer");

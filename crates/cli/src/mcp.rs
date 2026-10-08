@@ -1027,6 +1027,7 @@ impl<B: Backend> McpServer<B> {
                     payload,
                     reply_to: args.reply_to.map(MessageId::from),
                     links: args.links,
+                    idempotency_key: args.idempotency_key,
                 })
                 .await
             }
@@ -1342,6 +1343,8 @@ struct SendMessageArgs {
     reply_to: Option<String>,
     #[serde(default)]
     links: Vec<agentdocker_core::Link>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1911,7 +1914,8 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "payload": { "type": "object", "description": "Structured payload instead of text." },
                     "kind": { "type": "string", "description": "chat, task, handoff, question, answer, notice...", "default": "chat" },
                     "reply_to": { "type": "string", "description": "Id of the message this answers." },
-                    "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
+                    "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } },
+                    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": agentdocker_core::idempotency::KEY_MAX, "description": "Your own key for this message (a UUID, say). If a send timed out or you are unsure it landed, send again with the same key: within 24 hours you get the first send's answer and nothing is queued twice." }
                 },
                 "required": ["to"],
                 "additionalProperties": false
@@ -2912,7 +2916,36 @@ mod tests {
                 payload: json!({ "text": "hi" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             }
+        );
+    }
+
+    /// A key the model chooses travels with the send, so that the daemon
+    /// can answer a retry with the first send instead of a second message.
+    #[tokio::test]
+    async fn send_message_carries_the_idempotency_key() {
+        let s = server(vec![Response::Sent {
+            message: MessageId::from("m1".to_owned()),
+            subscribers: 1,
+            recipient_readiness: None,
+        }]);
+        let reply = s
+            .handle(rpc(
+                5,
+                "tools/call",
+                json!({ "name": "send_message", "arguments": {
+                    "to": "reviewer", "text": "hi", "idempotency_key": "run-42/step-3"
+                } }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reply["result"]["isError"], false);
+        let requests = s.backend.requests.lock().unwrap();
+        assert!(
+            matches!(&requests[0], Request::Send { idempotency_key: Some(key), .. } if key == "run-42/step-3"),
+            "{:?}",
+            requests[0]
         );
     }
 

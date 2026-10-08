@@ -439,6 +439,14 @@ pub fn event_line(event: &Event) -> String {
             agent.short(),
             pid.map(|p| p.to_string()).unwrap_or_else(|| "-".to_owned())
         ),
+        EventKind::AgentRestartsExhausted {
+            agent,
+            restarts,
+            policy,
+        } => format!(
+            "agent gave up: {} failed again after {restarts} restarts; {policy} will not start it again",
+            agent.short()
+        ),
         EventKind::LeaseWaiting {
             resource: key,
             requester,

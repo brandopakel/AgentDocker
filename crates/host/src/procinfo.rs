@@ -263,6 +263,7 @@ pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
         "copilot" => Some("copilot"),
         "amp" => Some("amp"),
         "opencode" => Some("opencode"),
+        "docker-agent" | "cagent" => docker_agent_runtime(&argv[1..]),
         exe if interpreter(exe) => {
             let script = argv.get(1)?;
             #[cfg(windows)]
@@ -304,6 +305,12 @@ pub fn helper_of(argv: &[String]) -> Option<Helper> {
     let (runtime, arguments) = match executable(argv)?.as_ref() {
         "claude" => ("claude-code", &argv[1..]),
         "codex" => ("codex", &argv[1..]),
+        "docker-agent" | "cagent" => {
+            return docker_agent_helper(&argv[1..]).map(|role| Helper {
+                runtime: "docker-agent",
+                role,
+            });
+        }
         exe if interpreter(exe) => {
             let script = argv.get(1)?;
             #[cfg(windows)]
@@ -336,6 +343,43 @@ fn codex_helper(arguments: &[String]) -> Option<&'static str> {
 
 fn codex_runtime(arguments: &[String]) -> Option<&'static str> {
     codex_helper(arguments).is_none().then_some("codex")
+}
+
+/// Docker Agent's subcommand: the first word that is not a flag, past the
+/// `agent` the Docker CLI passes its plugin (`docker agent run x.yaml` runs
+/// `docker-agent agent run x.yaml`).
+fn docker_agent_mode(arguments: &[String]) -> Option<&str> {
+    let mut words = arguments
+        .iter()
+        .map(String::as_str)
+        .filter(|word| !word.starts_with('-'));
+    match words.next()? {
+        "agent" => words.next(),
+        mode => Some(mode),
+    }
+}
+
+/// A Docker Agent session is a `run` (the agent loop, in its terminal UI or
+/// headless) or a `new` (the agent that writes an agent's YAML). Everything
+/// else either serves agents to other clients, supervises runs of its own,
+/// or ends at once (`version`, `share push`, `doctor`…).
+fn docker_agent_runtime(arguments: &[String]) -> Option<&'static str> {
+    matches!(docker_agent_mode(arguments), Some("run" | "new")).then_some("docker-agent")
+}
+
+/// `serve` hosts agents for other clients (its HTTP API, MCP, A2A, ACP or
+/// chat); `board` keeps a card's runs alive in tmux, and each of those runs
+/// is a `run` of its own that discovery finds by itself.
+fn docker_agent_helper(arguments: &[String]) -> Option<&'static str> {
+    match docker_agent_mode(arguments)? {
+        "serve" => {
+            Some("Docker Agent serving agents to other clients (API, MCP, A2A, ACP or chat)")
+        }
+        "board" => {
+            Some("Docker Agent's board, which starts each card as its own `docker agent run`")
+        }
+        _ => None,
+    }
 }
 
 /// Codex's detached app-server (`codex app-server … --managed-daemon`, 0.160
@@ -871,6 +915,54 @@ mod tests {
 
         child.kill().unwrap();
         child.wait().unwrap();
+    }
+
+    #[test]
+    fn docker_agent_runs_are_sessions_and_its_servers_are_helpers() {
+        let argv = |s: &str| s.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        // Standalone, the legacy name, and the Docker CLI plugin, which the
+        // Docker CLI runs with the `agent` word in front of the subcommand.
+        for session in [
+            "/usr/local/bin/docker-agent run ./agent.yaml",
+            "cagent run --tui=false team.yaml hello",
+            "/Users/a/.docker/cli-plugins/docker-agent agent run ./agent.yaml",
+            "docker-agent --debug run agent.yaml",
+            "docker-agent new",
+        ] {
+            assert_eq!(
+                runtime_of(&argv(session)),
+                Some("docker-agent"),
+                "{session}"
+            );
+            assert_eq!(helper_of(&argv(session)), None, "{session}");
+        }
+        for (helper, word) in [
+            ("docker-agent serve api ./agents", "serving"),
+            (
+                "/usr/libexec/docker/cli-plugins/docker-agent agent serve mcp a.yaml",
+                "serving",
+            ),
+            ("cagent serve acp agent.yaml", "serving"),
+            ("docker-agent agent board", "board"),
+        ] {
+            assert_eq!(runtime_of(&argv(helper)), None, "{helper}");
+            let found = helper_of(&argv(helper)).unwrap_or_else(|| panic!("{helper}"));
+            assert_eq!(found.runtime, "docker-agent");
+            assert!(found.role.contains(word), "{helper}: {}", found.role);
+        }
+        // Short-lived commands are neither: nothing to adopt, nothing to explain.
+        for other in [
+            "docker-agent version",
+            "docker-agent share push a.yaml docker.io/me/a:1",
+            "docker-agent",
+            "docker-agent agent",
+            // The Docker CLI in front of the plugin is not the session; the
+            // plugin process it starts is.
+            "docker agent run ./agent.yaml",
+        ] {
+            assert_eq!(runtime_of(&argv(other)), None, "{other}");
+            assert_eq!(helper_of(&argv(other)), None, "{other}");
+        }
     }
 
     #[test]

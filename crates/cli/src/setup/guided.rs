@@ -469,6 +469,12 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> R
             (runtimes::hook_config_path(spec, roots), "hooks")
         } else if let Some(path) = runtimes::mcp_config_path(spec, roots) {
             (path, "mcp")
+        } else if spec.mcp == McpWiring::AgentConfig {
+            plan.notes.push(format!(
+                "{}: MCP servers are declared in each agent's YAML file; add the toolset `agentdocker setup {}` prints to the agents that should coordinate",
+                runtime.label, runtime.name
+            ));
+            continue;
         } else {
             plan.notes.push(format!(
                 "{}: no supported setup adapter; discovery alone does not enable coordination",
@@ -504,7 +510,7 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> R
                 McpWiring::OpencodeJson { .. } => {
                     super::opencode_edit(&path, before.as_deref(), executable)?
                 }
-                McpWiring::None => unreachable!(),
+                McpWiring::AgentConfig | McpWiring::None => unreachable!(),
             }
         };
         if let Some(after) = after {

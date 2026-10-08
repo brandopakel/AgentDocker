@@ -531,6 +531,14 @@ pub enum EventKind {
         pid: Option<u32>,
         attempt: u32,
     },
+    /// A managed agent failed and its `on-failure` policy has run out:
+    /// the daemon will not start it again. `restarts` is how many times
+    /// it was started again before this.
+    AgentRestartsExhausted {
+        agent: AgentId,
+        restarts: u32,
+        policy: String,
+    },
     /// An explicit stop cleared the agent's restart policy: it will not
     /// come back on its own.
     AgentRestartCleared {

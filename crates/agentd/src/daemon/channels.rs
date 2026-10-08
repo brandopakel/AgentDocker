@@ -1199,6 +1199,7 @@ mod tests {
                 payload: json!({"text":"hello new member"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         assert!(matches!(sent, Response::Sent { .. }));
@@ -1337,6 +1338,7 @@ mod tests {
                 payload: serde_json::json!({"text": "taking src/parser.rs"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         assert_eq!(inbox(&daemon, "reviewer").await.len(), 1);

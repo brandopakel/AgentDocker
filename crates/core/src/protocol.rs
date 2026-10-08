@@ -303,6 +303,17 @@ pub enum Request {
         #[serde(default)]
         labels: BTreeMap<String, String>,
     },
+    /// `List`, with the position in the event log the answer reflects:
+    /// a snapshot to start from. `ResumeEvents { after: cursor }` then
+    /// carries every change after it, none before it and nothing twice.
+    ListAt {
+        #[serde(default)]
+        all: bool,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        labels: BTreeMap<String, String>,
+    },
     Inspect {
         agent: String,
     },
@@ -469,6 +480,13 @@ pub enum Request {
         /// the shape its kind requires.
         #[serde(default)]
         links: Vec<crate::Link>,
+        /// A key the sender chooses so that a retry is not a second
+        /// message: the same sender sending the same key again within
+        /// [`crate::idempotency::WINDOW_HOURS`] gets the first send's
+        /// answer back and nothing is queued. Held in the daemon's memory:
+        /// a restart forgets it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
     },
     /// Stream messages for `agent` and/or matching `topics` until the
     /// connection closes. Queued messages are replayed first and retained
@@ -1276,6 +1294,15 @@ pub enum Response {
         /// remains unchanged; clients use these only for current navigation.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         aliases: BTreeMap<AgentId, AgentId>,
+    },
+    /// The answer to `ListAt`: the agents, read under the same lock that
+    /// orders the event log, and the cursor of the last event they
+    /// reflect.
+    AgentsAt {
+        agents: Vec<AgentRecord>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        aliases: BTreeMap<AgentId, AgentId>,
+        cursor: crate::EventCursor,
     },
     Processes {
         processes: Vec<DiscoveredProcess>,

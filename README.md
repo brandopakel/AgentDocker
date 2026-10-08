@@ -272,7 +272,15 @@ args = ["mcp", "--runtime", "codex"]
 
 # OpenCode (~/.config/opencode/opencode.json): its own shape
 { "mcp": { "agentdocker": { "type": "local", "command": ["agentdocker", "mcp", "--runtime", "opencode"], "enabled": true } } }
+
+# Docker Agent (docker agent / cagent): in each agent's YAML; `agentdocker setup docker-agent` prints it with the full path
+    toolsets:
+      - type: mcp
+        command: agentdocker
+        args: ["mcp", "--runtime", "docker-agent"]
 ```
+
+Docker Agent runs the model loop itself, so it has no file of its own for setup to write: each run of an agent whose YAML lists the toolset joins as one agent, its sub-agents under that identity. A Docker Agent *harness* sub-agent that runs `claude` or `codex` is that tool's own session, with its own hooks; Claude Code's hooks still refuse an edit to a held file under the harness's `--dangerously-skip-permissions`. `agentdocker runtimes --capabilities` shows, per tool, what AgentDocker can do for its sessions: join by itself, the tools, an edit guard, stale reads, messages during a turn, idle wake.
 
 `agentdocker setup opencode` writes that entry (a file with comments is left for you to edit) and installs the AgentDocker plugin at `~/.config/opencode/plugins/agentdocker.js`, OpenCode's counterpart of the Claude Code hooks below: an edit, write or patch to a file another agent holds is refused with the holder and its note, reads are recorded, messages and the journal reach the model, the turn's end gives back automatic leases, and a message that arrives while the session is idle wakes it (through OpenCode's own `session.promptAsync`, no consent flag needed). A message leaves the queue only after the turn that carried it completes, so an interrupted turn loses nothing. An edited plugin is never overwritten; restart OpenCode after setup so it loads the plugin.
 
@@ -299,30 +307,47 @@ The hook fails open: if `agentd` isn't running, Claude Code carries on as if the
 
 ### Teams: `Agentfile.toml`
 
-Describe several agents in one file and manage them together, the way a compose file manages containers:
+Describe several agents in one file and manage them together, the way a compose file manages containers. Say what each agent should do and AgentDocker builds the command, with its coordination wired in:
 
 ```toml
+#:schema https://raw.githubusercontent.com/brandopakel/AgentDocker/main/crates/cli/schemas/agentfile.schema.json
+version = 2
 name = "backend"                      # every agent gets label team=backend
 
 [agents.writer]
 runtime = "claude-code"
-command = ["claude", "-p", "Implement the parser in src/parser.rs"]
+prompt = "Implement ${TASK:-the parser} in src/parser.rs"
+model = "${WRITER_MODEL:-opus}"
+effort = "high"
 workdir = "."                         # relative to this file
 isolate = true                        # its own worktree and branch
 
 [agents.reviewer]
-tty = true                            # a terminal, for an interactive agent
 runtime = "codex"
-command = ["codex", "exec", "Review whatever writer changes and message it"]
-env = { RUST_LOG = "info" }
+tty = true                            # a terminal, for an interactive agent
+prompt = "Review whatever writer changes and message it"
+depends_on = ["writer"]
 labels = { role = "review" }
+
+[agents.helper]
+runtime = "docker-agent"
+config = "team.yaml"                  # its agent YAML, or a registry reference
+prompt = "Keep the changelog current"
+
+[agents.indexer]
+command = ["sh", "-c", "./index.sh > $$HOME/index.log"]   # any command, written out; $$ is a dollar sign
+env = { RUST_LOG = "${RUST_LOG:-info}" }
+restart = "on-failure:3"
 ```
 
 ```sh
-agentdocker up                # starts writer, then reviewer; skips any already running
+agentdocker agentfile check   # what `up` would start, commands and all, without starting it
+agentdocker up                # starts them, dependencies first; skips any already running
 agentdocker up reviewer       # just one
 agentdocker down              # stops them
 ```
+
+`prompt`, `model` and `effort` build the command for `claude-code`, `codex`, `docker-agent` and `gemini-cli`, adding the AgentDocker MCP server (and Claude Code's hooks) to that launch only where your own configuration lacks them; `idle_messages = true` enables idle wake for Claude Code and Codex. `${VAR}`, `${VAR:-default}` and `${VAR:?message}` read the environment; an unset variable without a default is an error, never an empty argument. A file without `version` is the older format, read as it always was: `agentdocker agentfile upgrade` prints it as version 2, and `agentdocker agentfile schema` prints the JSON Schema TOML editors use through the `#:schema` line.
 
 ### Waiting instead of failing
 

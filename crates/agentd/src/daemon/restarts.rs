@@ -52,6 +52,24 @@ impl Daemon {
                         "not restarting"
                     );
                 }
+                // A failure the policy has run out on is a change a person
+                // needs to hear about, not only a log line: said once, at
+                // the exit that spent it.
+                let exhausted = (matches!(
+                    record.spec.restart,
+                    agentdocker_core::RestartPolicy::OnFailure { .. }
+                ) && matches!(
+                    record.restart_standing(Utc::now()),
+                    Some(agentdocker_core::agent::RestartStanding::GaveUp { .. })
+                ))
+                .then(|| EventKind::AgentRestartsExhausted {
+                    agent: id.clone(),
+                    restarts: record.restarts,
+                    policy: record.spec.restart.describe(),
+                });
+                if let Some(kind) = exhausted {
+                    state.emit(kind);
+                }
                 return;
             }
             let record = record.clone();

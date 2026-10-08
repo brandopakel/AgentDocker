@@ -142,6 +142,27 @@ and in the app — but it cannot tell the daemon what it is holding or
 reading, so it reports nothing it is doing. See
 [Why an agent reads "idle"](#why-an-agent-reads-idle).
 
+**Docker Agent** (`docker agent`, or `docker-agent`/`cagent` on its own) runs
+the model loop itself and reads its MCP servers from each agent's YAML, so
+there is no file of its own for setup to write. `agentdocker setup
+docker-agent` prints the toolset to add, with this machine's path:
+
+```yaml
+    toolsets:
+      - type: mcp
+        command: /path/to/agentdocker
+        args: ["mcp", "--runtime", "docker-agent"]
+```
+
+Each run of an agent that lists it joins as one agent, its sub-agents under
+that identity; `discover` finds `docker agent run` processes either way and
+leaves its servers (`serve`) and board alone. A harness sub-agent that
+docker-agent runs as `claude` or `codex` is that tool's own session, with its
+own hooks: Claude Code's hooks still refuse an edit to a held file under the
+harness's `--dangerously-skip-permissions`. In an `Agentfile.toml`,
+`runtime = "docker-agent"` with `config = "agent.yaml"` and a `prompt`
+launches a run.
+
 An agent that works **inside the browser** — Claude's or ChatGPT's extension
 in its side panel, whichever vendor's — is a different case. `runtimes` finds
 the extension in each Chrome, Brave, Edge, Arc, Chromium or Vivaldi profile
@@ -435,7 +456,7 @@ each one by pid.
 | `inspect <agent>` | Everything known about one agent, as JSON |
 | `logs <agent>` | An agent's captured output, at most 16 MiB kept per agent (the newest 8 MiB and the 8 MiB before them); `-f` to follow, `--compress` for an rtk view |
 | `validation <id>` | The retained log of one validation; `--compress` for an rtk view |
-| `events` | The daemon's event stream; `[[webhooks]]` in `agentd.toml` posts a signed copy of chosen kinds to an address you name (see [webhooks](ARCHITECTURE.md#events)) |
+| `events` | The daemon's event stream; `--resumable` gives checked JSON frames with cursors (`--after-cursor` to resume), and `--resumable --snapshot` starts with every agent and the cursor that snapshot reflects, so state and changes come with no gap and nothing twice; `[[webhooks]]` in `agentd.toml` posts a signed copy of chosen kinds to an address you name (see [webhooks](ARCHITECTURE.md#events)) |
 | `ping` | Check the daemon is reachable |
 
 ### Start, adopt and stop
@@ -452,14 +473,15 @@ each one by pid.
 | `role <name>` | Give an agent (`--as`) a role — `reviewer`, `implementer` — so `send --to role:reviewer` and `handoff role:reviewer` reach it; `--clear` takes it away |
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not |
-| `up` / `down` | Start or stop the agents in an `Agentfile.toml` |
+| `up` / `down` | Start or stop the agents in an `Agentfile.toml`; an agent whose `depends_on` never came up is not started |
+| `agentfile check` / `upgrade` / `schema` | Show what `up` would start — every version upgraded, `${VAR}` expanded, commands built — without starting it (`--json`; environment variable names only, never values); print the file rewritten as the latest version (the file is left alone, comments are not kept); print the JSON Schema for editors |
 | `heartbeat` | Report that an agent is alive |
 
 ### Talk
 
 | Command | What it does |
 |---|---|
-| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. An agent reaches only its own project and you; its `all` means its project, and you can still send anywhere. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
+| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. An agent reaches only its own project and you; its `all` means its project, and you can still send anywhere. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. `--idempotency-key <key>` makes a retry safe: the same sender sending the same key again within 24 hours gets the first message id back and nothing is queued twice (the daemon remembers keys until it restarts). |
 | `delivery <message>` | Where one of your messages stands with each agent it was queued for: answered, delivered, received by the model, shown to its session, or why it is still waiting (next prompt, a browser agent's check-in, paused, blocked, ended). Never "read": nothing says a model read it. `send` prints the id; `--json` |
 | `watch` | Stream messages for an agent or matching topics |
 | `inbox` | Messages queued while an agent was not watching |
@@ -557,8 +579,8 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
-| `setup` | Wire us in: MCP registration, and hooks for Claude Code |
+| `runtimes` | Agent tools installed here, and whether we are wired in; `--capabilities` shows what AgentDocker can do for each one's sessions (joins by itself, coordination tools, refuses an edit to a held file, notices stale reads, hands messages to the model, wakes an idle session), `runtimes <name>` explains one with what is installed, `--json` gives every row with its profile; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
+| `setup` | Wire us in: MCP registration, and hooks for Claude Code; for Docker Agent, whose MCP servers live in each agent's YAML, it prints the toolset to add |
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches |
 | `daemon` | Install, start, stop, reload, inspect or `vacuum` `agentd` |
@@ -606,7 +628,9 @@ about us:
 
 Results are compact rather than pretty-printed, and most answer with a
 projection — the fields an agent uses, not every field the daemon keeps.
-Pass `verbose: true` for the whole record.
+Pass `verbose: true` for the whole record. `send_message` takes an
+optional `idempotency_key`: a model unsure whether a send landed sends again
+with the same key and gets the first send's answer instead of a duplicate.
 
 ## Hooks
 
@@ -730,6 +754,29 @@ separate operation: stopping terminates managed agents.
 Newest first. Only what changes how the product is used.
 
 ### Unreleased
+
+- **Docker Agent** is a runtime AgentDocker knows: `runtimes` finds it (as a
+  Docker CLI plugin too), `discover` lists its runs, and `setup docker-agent`
+  prints the YAML toolset that makes each run a participant.
+- `agentdocker runtimes --capabilities` shows what AgentDocker can do for
+  each tool's sessions, and `agentdocker runtimes <name>` explains one with
+  what is installed; the desktop's Tools details list the same.
+- `Agentfile.toml` has versions. `version = 2` adds `${VAR}` expansion and
+  lets an entry say `prompt`, `model` and `effort` instead of a command:
+  AgentDocker builds it for Claude Code, Codex, Docker Agent and Gemini CLI,
+  wiring in the MCP server (and Claude Code's hooks) where your configuration
+  lacks them. A file without `version` reads as before; `agentdocker
+  agentfile upgrade` prints it as version 2, `agentfile check` shows what `up`
+  would start, and `agentfile schema` gives editors the JSON Schema.
+- `up` no longer starts an agent whose `depends_on` never came up.
+- `send --idempotency-key` (and `idempotency_key` on the MCP `send_message`
+  tool) makes a retried send the same send.
+- `events --resumable --snapshot` starts with every agent and the event
+  cursor that snapshot reflects.
+- A supervised agent that keeps dying reads `crash loop, N restarts` in `ps`
+  and `top` and has a **Crash loop** pill in the app; one its `on-failure`
+  policy gave up on reads `gave up after N restarts`, with an
+  `agent_restarts_exhausted` event for webhooks.
 
 - Under your own messages in the app, one line per agent says where each
   message stands: answered, delivered, received by the model, shown to its

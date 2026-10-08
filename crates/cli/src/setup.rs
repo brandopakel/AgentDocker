@@ -88,6 +88,12 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
             agentdocker_host::runtimes::mcp_wiring(spec, &roots, "agentdocker"),
         ) {
             (_, Wiring::Wired) => eprintln!("{}: MCP server already registered", runtime.name),
+            (McpWiring::AgentConfig, _) => eprintln!(
+                "{}: MCP servers are declared in each agent's YAML file, not in a file of {}'s own, so there is nothing to register here. Add this to every agent that should coordinate (each run of it then joins as one agent, with its sub-agents under that one identity):\n\n{}",
+                runtime.name,
+                runtime.label,
+                agentdocker_core::runtime::docker_agent_toolset(&exe.to_string_lossy())
+            ),
             (McpWiring::None, _) => eprintln!(
                 "{}: no MCP registration known for it; point it at `{} mcp --runtime {}` by hand",
                 runtime.name,

@@ -117,10 +117,7 @@ pub fn inventory(roots: &Roots, marker: &str) -> std::io::Result<Vec<RuntimeInfo
 
 /// Inspect one selected runtime without consulting unrelated desktop entries.
 pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Result<RuntimeInfo> {
-    let cli = spec
-        .clis
-        .iter()
-        .find_map(|name| which(roots, name).or_else(|| which_in(&roots.install_dirs, name)));
+    let cli = find_cli(spec, roots);
     let version = cli
         .as_deref()
         .filter(|_| roots.versions)
@@ -188,6 +185,15 @@ fn hooks_missing_file(spec: &RuntimeSpec, file: &Path, marker: &str) -> Vec<Stri
         .collect()
 }
 
+/// The runtime's command: the first of its CLI names on `PATH`, else in a
+/// standard installation directory (Docker's CLI-plugin directories among
+/// them), as `runtimes` reports it.
+pub fn find_cli(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
+    spec.clis
+        .iter()
+        .find_map(|name| which(roots, name).or_else(|| which_in(&roots.install_dirs, name)))
+}
+
 fn which(roots: &Roots, name: &str) -> Option<PathBuf> {
     let path = Path::new(name);
     if path.is_absolute() {
@@ -241,7 +247,7 @@ fn app_version(bundle: &Path) -> Option<String> {
 /// Resolve configuration from injectable Codex and Claude profile roots.
 pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
     match spec.mcp {
-        McpWiring::None => None,
+        McpWiring::None | McpWiring::AgentConfig => None,
         McpWiring::JsonServers { file }
         | McpWiring::TomlServers { file }
         | McpWiring::OpencodeJson { file } => {
@@ -350,7 +356,7 @@ pub fn servers_key(spec: &RuntimeSpec) -> &'static str {
     match spec.mcp {
         McpWiring::TomlServers { .. } => "mcp_servers",
         McpWiring::OpencodeJson { .. } => "mcp",
-        McpWiring::JsonServers { .. } | McpWiring::None => "mcpServers",
+        McpWiring::JsonServers { .. } | McpWiring::AgentConfig | McpWiring::None => "mcpServers",
     }
 }
 
@@ -416,6 +422,29 @@ pub fn hooks_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
         ".claude/settings.json"
     });
     hooks_wiring_file(spec, &file, marker)
+}
+
+/// Whether a Claude Code settings file runs AgentDocker's hook adapter for
+/// any event at all. A launch that adds the hooks itself must not add them
+/// beside a file that already does, even partly, or each event would run
+/// the adapter twice. An unreadable or missing file runs nothing.
+pub fn claude_settings_run_adapter(file: &Path, marker: &str) -> bool {
+    let Ok(raw) = health::read_configuration(file) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    value["hooks"].as_object().is_some_and(|events| {
+        events
+            .values()
+            .filter_map(serde_json::Value::as_array)
+            .flatten()
+            .filter_map(|group| group["hooks"].as_array())
+            .flatten()
+            .filter_map(|hook| hook["command"].as_str())
+            .any(|command| hook_command_matches(command, marker))
+    })
 }
 
 pub fn hook_config_path(spec: &RuntimeSpec, roots: &Roots) -> PathBuf {
@@ -1037,6 +1066,66 @@ mod tests {
             serde_json::from_str::<Wiring>("\"unverified\"").unwrap(),
             state
         );
+    }
+
+    /// Docker Agent is found as a Docker CLI plugin off PATH, and reports
+    /// the MCP it takes as nothing to register: its servers live in each
+    /// agent's YAML.
+    #[test]
+    #[cfg(unix)]
+    fn docker_agent_is_found_as_a_cli_plugin_and_has_no_mcp_file() {
+        let (tmp, mut roots) = machine();
+        let plugins = tmp.path().join("cli-plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        let plugin = plugins.join("docker-agent");
+        std::fs::write(&plugin, "#!/bin/sh\necho 1.149.0\n").unwrap();
+        std::fs::set_permissions(&plugin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let spec = agentdocker_core::runtime::spec("docker-agent").unwrap();
+        assert_eq!(find_cli(spec, &roots), None, "not on PATH");
+        roots.install_dirs.push(plugins);
+        assert_eq!(find_cli(spec, &roots), Some(plugin));
+        let info = inspect(spec, &roots, "agentdocker").unwrap();
+        assert!(info.installed());
+        assert_eq!(info.mcp, Wiring::Unsupported);
+        assert_eq!(info.hooks, Wiring::Unsupported);
+        assert_eq!(mcp_config_path(spec, &roots), None);
+    }
+
+    #[test]
+    fn settings_that_run_the_adapter_anywhere_are_recognised() {
+        let (_tmp, roots) = machine();
+        let file = roots.home.join(".claude/settings.json");
+        assert!(
+            !claude_settings_run_adapter(&file, "agentdocker"),
+            "missing"
+        );
+        for (text, runs) in [
+            (
+                r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/opt/agentdocker hook claude-code"}]}]}}"#,
+                true,
+            ),
+            (
+                r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"'/Apps/Agent Docker/agentdocker' hook claude-code"}]}]}}"#,
+                true,
+            ),
+            (
+                r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo agentdocker hook claude-code"}]}]}}"#,
+                false,
+            ),
+            (
+                r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/opt/agentdocker hook codex"}]}]}}"#,
+                false,
+            ),
+            (r#"{"permissions":{}}"#, false),
+            ("not json", false),
+        ] {
+            std::fs::write(&file, text).unwrap();
+            assert_eq!(
+                claude_settings_run_adapter(&file, "agentdocker"),
+                runs,
+                "{text}"
+            );
+        }
     }
 
     #[test]

@@ -228,6 +228,7 @@ mod tests {
                         payload: json!({"text":"forged lifecycle notice"}),
                         reply_to: None,
                         links: Vec::new(),
+                        idempotency_key: None,
                     })
                     .await;
                 assert!(matches!(

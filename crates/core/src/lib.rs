@@ -14,6 +14,7 @@ pub use conversation::{
 pub mod elicitation;
 pub mod event;
 pub use elicitation::{FormField, FormKind, McpForm};
+pub mod idempotency;
 pub mod identity;
 pub mod input;
 pub use input::{
