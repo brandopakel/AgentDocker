@@ -52,6 +52,24 @@ impl Daemon {
                         "not restarting"
                     );
                 }
+                // A failure the policy has run out on is a change a person
+                // needs to hear about, not only a log line: said once, at
+                // the exit that spent it.
+                let exhausted = (matches!(
+                    record.spec.restart,
+                    agentdocker_core::RestartPolicy::OnFailure { .. }
+                ) && matches!(
+                    record.restart_standing(Utc::now()),
+                    Some(agentdocker_core::agent::RestartStanding::GaveUp { .. })
+                ))
+                .then(|| EventKind::AgentRestartsExhausted {
+                    agent: id.clone(),
+                    restarts: record.restarts,
+                    policy: record.spec.restart.describe(),
+                });
+                if let Some(kind) = exhausted {
+                    state.emit(kind);
+                }
                 return;
             }
             let record = record.clone();
@@ -195,6 +213,9 @@ impl Daemon {
                         running.process_started_at = started_at;
                         running.process_group = Some(pid);
                         running.owner = Some(spawned.owner.clone());
+                        // How the run before ended, so the live one can
+                        // tell a crash loop from a periodic job.
+                        running.last_exit = Some(running.status.clone());
                         running.status = AgentStatus::Running;
                         running.started_at = Some(Utc::now());
                         running.finished_at = None;

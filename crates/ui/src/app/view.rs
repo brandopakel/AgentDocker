@@ -2468,6 +2468,20 @@ impl App {
                 // in the status word; this says only that it is new to you.
                 content = content.push(pill("Done", c.accent_soft, c.accent_ink, c));
             }
+            // A supervised agent that keeps dying, or that its restart
+            // policy gave up on, says so on its row rather than only in
+            // the log: the status word alone reads like any other exit.
+            if let Some(standing) = agent.restart_standing(now) {
+                content = content.push(pill(
+                    match standing {
+                        agentdocker_core::agent::RestartStanding::CrashLoop { .. } => "Crash loop",
+                        agentdocker_core::agent::RestartStanding::GaveUp { .. } => "Gave up",
+                    },
+                    alpha(c.red, 0.14),
+                    c.red,
+                    c,
+                ));
+            }
             if let Some(window) = window {
                 content = content.push(window);
             }

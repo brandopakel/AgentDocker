@@ -207,6 +207,27 @@ enum Coordination {
     },
 }
 
+/// A keyed send's place in the ledger while it is being handled. Dropped
+/// unsettled — the send was refused, or its future was dropped or panicked
+/// before answering — it forgets the key, so the key is never left
+/// answering "still being handled" for the rest of its window.
+struct KeyReservation<'a> {
+    daemon: &'a Daemon,
+    sender: String,
+    key: String,
+    settled: bool,
+}
+
+impl Drop for KeyReservation<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            lock(&self.daemon.state)
+                .send_keys
+                .forget(&self.sender, &self.key);
+        }
+    }
+}
+
 /// Whether a request would write coordination state. Reads are served
 /// throughout a transfer from the projection this process still holds;
 /// everything else answers `transferring` until a coordinator owns the
@@ -227,6 +248,7 @@ fn mutates(request: &Request) -> bool {
             | Request::Validations { .. }
             | Request::WorktreeDiff { .. }
             | Request::List { .. }
+            | Request::ListAt { .. }
             | Request::Inspect { .. }
             | Request::Changes { .. }
             | Request::Overlap { .. }
@@ -466,6 +488,10 @@ struct State {
     /// Questions somebody is blocked on, by message id: an answer names
     /// one and only the question knows who is waiting for it.
     questions: HashMap<MessageId, agentdocker_core::Question>,
+    /// The answer to each keyed send, so a retry with the same key gets
+    /// it back instead of queuing the message twice. Memory only: a
+    /// restart forgets them, which the protocol says.
+    send_keys: agentdocker_core::idempotency::Ledger<Option<Response>>,
     secret_reviews: HashMap<String, secret_reviews::Entry>,
     /// The projects told to hold, and why; kept as documents.
     pauses: HashMap<ProjectId, agentdocker_core::Pause>,
@@ -1663,6 +1689,7 @@ impl Daemon {
                 channels,
                 contested: HashMap::new(),
                 questions,
+                send_keys: Default::default(),
                 secret_reviews: HashMap::new(),
                 pauses,
                 waiting: agentdocker_core::WaitQueue::new(),
@@ -2023,6 +2050,11 @@ impl Daemon {
                 project,
                 labels,
             } => self.list(all, project, labels).await,
+            Request::ListAt {
+                all,
+                project,
+                labels,
+            } => self.list_at(all, project, labels).await,
             Request::Inspect { agent } => lock(&self.state).inspect(&agent),
             Request::Heartbeat { agent } => match self.resolve(&agent) {
                 Ok(id) => {
@@ -2149,7 +2181,14 @@ impl Daemon {
                 payload,
                 reply_to,
                 links,
-            } => self.send(from, &to, kind, payload, reply_to, links).await,
+                idempotency_key,
+            } => match idempotency_key {
+                None => self.send(from, &to, kind, payload, reply_to, links).await,
+                Some(key) => {
+                    self.send_once(from, &to, kind, payload, reply_to, links, key)
+                        .await
+                }
+            },
             Request::Me { workdir } => self.me(workdir).await,
             Request::OpenSecretReview {
                 agent,
@@ -4441,6 +4480,49 @@ impl Daemon {
         Response::Agents { agents, aliases }
     }
 
+    /// `list`, and the event-log head it reflects, read under one lock:
+    /// every event at or before the cursor is in the agents, every event
+    /// after it is not.
+    async fn list_at(
+        &self,
+        all: bool,
+        project: Option<String>,
+        labels: BTreeMap<String, String>,
+    ) -> Response {
+        let project = match project {
+            None => None,
+            Some(selector) => match self.resolve_project(&selector).await {
+                Ok(id) => Some(id),
+                Err(response) => return *response,
+            },
+        };
+        let state = lock(&self.state);
+        let cursor = match state.store.event_replay(None) {
+            Ok(Ok(replay)) => replay.head,
+            Ok(Err(error)) => return Response::error(ErrorCode::EventHistoryLost, error),
+            Err(error) => {
+                return Response::error(
+                    ErrorCode::StorageUnavailable,
+                    format!("cannot read durable event history: {error}"),
+                );
+            }
+        };
+        let agents = state.registry.matching(all, project.as_ref(), &labels);
+        let ids: HashSet<_> = agents.iter().map(|agent| &agent.id).collect();
+        let aliases = state
+            .registry
+            .aliases()
+            .iter()
+            .filter(|(_, canonical)| ids.contains(canonical))
+            .map(|(old, canonical)| (old.clone(), canonical.clone()))
+            .collect();
+        Response::AgentsAt {
+            agents,
+            aliases,
+            cursor,
+        }
+    }
+
     async fn send(
         &self,
         from: String,
@@ -4478,6 +4560,74 @@ impl Daemon {
         let mut envelope = Envelope::new(from, to, kind, payload, reply_to, Utc::now());
         envelope.links = links;
         state.publish(envelope)
+    }
+
+    /// A send that a retry with the same key cannot repeat: the first
+    /// answer to this sender's key is recorded and returned again while it
+    /// is remembered. Only a send that was queued is recorded; a refusal is
+    /// not an answer to keep, so a retry after one is a fresh attempt. The
+    /// sender is resolved first, so a name and an id share their keys.
+    #[allow(clippy::too_many_arguments)]
+    async fn send_once(
+        &self,
+        from: String,
+        to: &str,
+        kind: String,
+        payload: Value,
+        reply_to: Option<MessageId>,
+        links: Vec<agentdocker_core::Link>,
+        key: String,
+    ) -> Response {
+        if let Err(reason) = agentdocker_core::idempotency::check(&key) {
+            return Response::error(ErrorCode::Invalid, reason);
+        }
+        // Only the sender keys the ledger. The destination is not resolved
+        // first: a recipient that has since gone, or a role that moved,
+        // must not turn a retry of a send that landed into a refusal. An
+        // unregistered sender's name is kept apart from agent ids, so a
+        // name that spells a removed agent's id cannot share its keys.
+        let sender = match lock(&self.state).registry.resolve(&from) {
+            Ok(id) => id.to_string(),
+            Err(RegistryError::NotFound(_)) => format!("name:{from}"),
+            Err(err) => return registry_error(err),
+        };
+        // Reserve the key before sending, under the lock, so that two
+        // sends racing with one key cannot both be queued.
+        let mut reservation = {
+            let mut state = lock(&self.state);
+            match state.send_keys.get(&sender, &key, Utc::now()) {
+                Some(Some(answer)) => return answer,
+                Some(None) => {
+                    return Response::error(
+                        ErrorCode::Conflict,
+                        "a send with this idempotency key is still being handled; retry once it is answered",
+                    );
+                }
+                None => {
+                    state.send_keys.record(&sender, &key, Utc::now(), None);
+                    KeyReservation {
+                        daemon: self,
+                        sender,
+                        key,
+                        settled: false,
+                    }
+                }
+            }
+        };
+        let mut answer = self.send(from, to, kind, payload, reply_to, links).await;
+        if let Response::Sent {
+            idempotency_key, ..
+        } = &mut answer
+        {
+            *idempotency_key = Some(reservation.key.clone());
+            lock(&self.state).send_keys.settle(
+                &reservation.sender,
+                &reservation.key,
+                Some(answer.clone()),
+            );
+            reservation.settled = true;
+        }
+        answer
     }
 
     /// Turn a sender name and a destination shorthand into what the bus
@@ -6962,6 +7112,7 @@ impl State {
             message: envelope.id,
             subscribers,
             recipient_readiness: Some(readiness),
+            idempotency_key: None,
         }
     }
 
@@ -8149,6 +8300,7 @@ mod tests {
                 payload: json!({"text": "still here?"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         assert!(matches!(delivered, Response::Sent { .. }), "{delivered:?}");
@@ -10102,6 +10254,7 @@ mod tests {
                 payload: json!({ "text": "look at this" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         let notice = notices.try_recv().expect("a person is worth interrupting");
@@ -10129,12 +10282,166 @@ mod tests {
                 payload: json!({ "text": "carry on" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         assert!(
             notices.try_recv().is_err(),
             "a program has no desktop to interrupt"
         );
+    }
+
+    // ----- keyed sends and snapshots -------------------------------------
+
+    /// A retry with the same key is the same send: the first answer comes
+    /// back and nothing is queued twice. Keys are per sender; a refused
+    /// send does not use its key up; a key of the wrong shape is invalid.
+    #[tokio::test]
+    async fn a_keyed_send_repeated_is_answered_once_and_queued_once() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let a = register(&daemon, "a", distinct_pid()).await;
+        let b = register(&daemon, "b", distinct_pid()).await;
+        let send = |from: &AgentRecord, text: &str, key: Option<&str>| Request::Send {
+            from: from.id.to_string(),
+            to: "b".into(),
+            kind: "chat".into(),
+            payload: json!({ "text": text }),
+            reply_to: None,
+            links: Vec::new(),
+            idempotency_key: key.map(str::to_owned),
+        };
+        let id = |response: Response| match response {
+            Response::Sent { message, .. } => message,
+            other => panic!("unexpected {other:?}"),
+        };
+        let first = id(daemon.handle(send(&a, "first", Some("k-1"))).await);
+        let again = id(daemon.handle(send(&a, "retry", Some("k-1"))).await);
+        assert_eq!(first, again, "the retry is answered with the first send");
+        let other = id(daemon.handle(send(&b, "mine", Some("k-1"))).await);
+        assert_ne!(first, other, "another sender's key is its own");
+        let fresh = id(daemon.handle(send(&a, "next", Some("k-2"))).await);
+        assert_ne!(first, fresh);
+        let Response::Messages { messages } = daemon
+            .handle(Request::Inbox {
+                agent: b.id.to_string(),
+                drain: false,
+            })
+            .await
+        else {
+            panic!("inbox")
+        };
+        let texts: Vec<&str> = messages
+            .iter()
+            .filter_map(|m| m.payload["text"].as_str())
+            .collect();
+        assert_eq!(texts, ["first", "mine", "next"], "nothing queued twice");
+
+        // A refusal is not an answer to keep: the same key works once the
+        // send can be made.
+        let mut refused = send(&a, "to nobody", Some("k-3"));
+        if let Request::Send { to, .. } = &mut refused {
+            *to = "nobody".into();
+        }
+        assert!(matches!(
+            daemon.handle(refused).await,
+            Response::Error { .. }
+        ));
+        id(daemon.handle(send(&a, "now", Some("k-3"))).await);
+
+        let Response::Error { code, .. } = daemon.handle(send(&a, "x", Some("has space"))).await
+        else {
+            panic!("a malformed key is refused")
+        };
+        assert_eq!(code, ErrorCode::Invalid);
+
+        // The answer says the key was applied, so a client can tell a
+        // daemon that ignores keys.
+        let Response::Sent {
+            idempotency_key, ..
+        } = daemon.handle(send(&a, "echo", Some("k-4"))).await
+        else {
+            panic!("sent")
+        };
+        assert_eq!(idempotency_key.as_deref(), Some("k-4"));
+        assert!(matches!(
+            daemon.handle(send(&a, "plain", None)).await,
+            Response::Sent {
+                idempotency_key: None,
+                ..
+            }
+        ));
+
+        // A retry after the recipient has gone is still the first send,
+        // not a refusal: only the sender keys the ledger.
+        let c = register(&daemon, "c", distinct_pid()).await;
+        let to_c = |text: &str| Request::Send {
+            from: a.id.to_string(),
+            to: "c".into(),
+            kind: "chat".into(),
+            payload: json!({ "text": text }),
+            reply_to: None,
+            links: Vec::new(),
+            idempotency_key: Some("k-5".into()),
+        };
+        let landed = id(daemon.handle(to_c("landed")).await);
+        daemon
+            .handle(Request::Deregister {
+                agent: c.id.to_string(),
+            })
+            .await;
+        let rm = daemon
+            .handle(Request::Remove {
+                agent: c.id.to_string(),
+            })
+            .await;
+        assert!(matches!(rm, Response::Ok), "{rm:?}");
+        assert_eq!(id(daemon.handle(to_c("retry")).await), landed);
+    }
+
+    /// A snapshot carries the cursor of the last event it reflects:
+    /// resuming from it gives exactly the events that came after.
+    #[tokio::test]
+    async fn a_snapshot_cursor_resumes_with_exactly_the_later_events() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "before", distinct_pid()).await;
+        let Response::AgentsAt { agents, cursor, .. } = daemon
+            .handle(Request::ListAt {
+                all: true,
+                project: None,
+                labels: Default::default(),
+            })
+            .await
+        else {
+            panic!("agents_at")
+        };
+        assert!(agents.iter().any(|a| a.spec.name == "before"));
+        assert!(cursor.is_valid());
+        let (_, replay) = daemon.resume_events(Some(&cursor)).unwrap();
+        assert!(replay.frames.is_empty(), "nothing after the snapshot yet");
+        register(&daemon, "after", distinct_pid()).await;
+        let (_, replay) = daemon.resume_events(Some(&cursor)).unwrap();
+        let joined: Vec<String> = replay
+            .frames
+            .iter()
+            .filter_map(|frame| match frame {
+                Response::EventAt {
+                    event:
+                        Event {
+                            kind: EventKind::AgentCreated { name, .. },
+                            ..
+                        },
+                    ..
+                } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(joined, ["after"], "only what the snapshot did not have");
+        assert!(replay.frames.iter().all(|frame| matches!(
+            frame,
+            Response::EventAt { cursor: at, .. } if at.seq > cursor.seq
+        )));
     }
 
     // ----- snapshot restore ----------------------------------------------
@@ -10233,6 +10540,7 @@ mod tests {
                 payload: json!({"text": "still for you"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await
         else {
@@ -10660,6 +10968,7 @@ mod tests {
                 payload: json!({"text": "waiting"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await
         else {
@@ -12994,6 +13303,7 @@ mod tests {
         spec.workdir = Some(dir.path().to_path_buf());
         spec.command = vec!["sh".into(), "-c".into(), "exit 7".into()];
         spec.restart = agentdocker_core::RestartPolicy::OnFailure { max: 2 };
+        let mut events = daemon.subscribe_events();
         let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
             panic!("run failed")
         };
@@ -13014,6 +13324,24 @@ mod tests {
             .unwrap();
         assert_eq!(after.restarts, 2, "and no more");
         assert!(!after.status.is_live());
+        // Giving up is said once, as an event, and reads so on the record.
+        let mut exhausted = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::AgentRestartsExhausted {
+                agent: id,
+                restarts,
+                policy,
+            } = event.kind
+                && id == agent.id
+            {
+                exhausted.push((restarts, policy));
+            }
+        }
+        assert_eq!(exhausted, [(2, "on-failure:2".to_owned())]);
+        assert_eq!(
+            after.restart_standing(Utc::now()),
+            Some(agentdocker_core::agent::RestartStanding::GaveUp { restarts: 2 })
+        );
         gone(after.pid).await;
     }
 
@@ -13267,6 +13595,7 @@ deny = ["send:all"]
                 payload: json!({ "text": "everyone!" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         assert!(matches!(
@@ -13290,6 +13619,7 @@ deny = ["send:all"]
                     payload: json!({ "text": "just you" }),
                     reply_to: None,
                     links: Vec::new(),
+                    idempotency_key: None,
                 })
                 .await,
             Response::Sent { .. }
@@ -14048,6 +14378,7 @@ deny = ["send:all"]
                     payload: json!({"text":"retain if removal fails"}),
                     reply_to: None,
                     links: Vec::new(),
+                    idempotency_key: None,
                 })
                 .await,
             Response::Sent { .. }
@@ -14109,6 +14440,7 @@ deny = ["send:all"]
                         payload: json!({"text":"retain after failed drain"}),
                         reply_to: None,
                         links: Vec::new(),
+                        idempotency_key: None,
                     })
                     .await,
                 Response::Sent { .. }
@@ -14172,6 +14504,7 @@ deny = ["send:all"]
                     payload: json!({"text":"retain after failed touch"}),
                     reply_to: None,
                     links: Vec::new(),
+                    idempotency_key: None,
                 })
                 .await,
             Response::Sent { .. }
@@ -14217,6 +14550,7 @@ deny = ["send:all"]
                         payload: json!({"text":text}),
                         reply_to: None,
                         links: Vec::new(),
+                        idempotency_key: None,
                     })
                     .await,
                 Response::Sent { .. }
@@ -14389,6 +14723,7 @@ deny = ["send:all"]
             payload,
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         };
         for _ in 0..7 {
             assert!(matches!(
@@ -14637,6 +14972,7 @@ deny = ["send:all"]
                     payload: json!({"text": text}),
                     reply_to: None,
                     links: Vec::new(),
+                    idempotency_key: None,
                 })
                 .await;
         }
@@ -14696,6 +15032,7 @@ deny = ["send:all"]
                 payload: json!({ "text": "hello" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         drop(daemon);
@@ -14772,6 +15109,7 @@ deny = ["send:all"]
                 payload: json!({ "text": "late" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         daemon
@@ -15433,6 +15771,7 @@ deny = ["send:all"]
                 payload: json!({ "text": "hi" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await
     }
@@ -15656,6 +15995,7 @@ deny = ["send:all"]
                     payload: json!({"text": "on it"}),
                     reply_to: Some(message.clone()),
                     links: Vec::new(),
+                    idempotency_key: None,
                 })
                 .await,
             Response::Sent { .. }

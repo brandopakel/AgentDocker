@@ -1549,6 +1549,7 @@ mod tests {
                 payload: serde_json::json!({ "text": text }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await
         {

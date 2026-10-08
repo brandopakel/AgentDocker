@@ -1027,6 +1027,7 @@ impl<B: Backend> McpServer<B> {
                     payload,
                     reply_to: args.reply_to.map(MessageId::from),
                     links: args.links,
+                    idempotency_key: args.idempotency_key,
                 })
                 .await
             }
@@ -1342,6 +1343,8 @@ struct SendMessageArgs {
     reply_to: Option<String>,
     #[serde(default)]
     links: Vec<agentdocker_core::Link>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1657,6 +1660,7 @@ fn render_whole(response: Response) -> Value {
             message,
             subscribers: _,
             recipient_readiness,
+            idempotency_key,
         } => {
             let readiness = recipient_readiness.as_ref().map(|report| json!({
                 "recipients": report.recipients, "needs_attention": report.needs_attention,
@@ -1669,7 +1673,8 @@ fn render_whole(response: Response) -> Value {
             }));
             text_result(
                 &json!({ "sent": true, "message_id": message,
-                "delivery": "accepted_by_agentdocker", "provider_receipt": "unconfirmed", "idle_wake": "unconfirmed", "recipient_readiness": readiness }),
+                "delivery": "accepted_by_agentdocker", "provider_receipt": "unconfirmed", "idle_wake": "unconfirmed", "recipient_readiness": readiness,
+                "idempotency_key": idempotency_key }),
                 false,
             )
         }
@@ -1911,7 +1916,8 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "payload": { "type": "object", "description": "Structured payload instead of text." },
                     "kind": { "type": "string", "description": "chat, task, handoff, question, answer, notice...", "default": "chat" },
                     "reply_to": { "type": "string", "description": "Id of the message this answers." },
-                    "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
+                    "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } },
+                    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": agentdocker_core::idempotency::KEY_MAX, "description": "Your own key for this message (a UUID, say). If a send timed out or you are unsure it landed, send again with the same key: within 24 hours (while the daemon runs, for its 4,096 most recent keys) you get the first send's answer and nothing is queued twice. The result echoes idempotency_key when the key was applied; without the echo the daemon ignores keys and a retry would be a second message." }
                 },
                 "required": ["to"],
                 "additionalProperties": false
@@ -2713,6 +2719,7 @@ mod tests {
             message: "posted-question".to_owned().into(),
             subscribers: 0,
             recipient_readiness: None,
+            idempotency_key: None,
         }]);
         channel.claude_channel = true;
         let definitions = channel
@@ -2887,6 +2894,7 @@ mod tests {
             message: MessageId::from("m1".to_owned()),
             subscribers: 1,
             recipient_readiness: None,
+            idempotency_key: None,
         }]);
         let reply = s
             .handle(rpc(
@@ -2912,7 +2920,37 @@ mod tests {
                 payload: json!({ "text": "hi" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             }
+        );
+    }
+
+    /// A key the model chooses travels with the send, so that the daemon
+    /// can answer a retry with the first send instead of a second message.
+    #[tokio::test]
+    async fn send_message_carries_the_idempotency_key() {
+        let s = server(vec![Response::Sent {
+            message: MessageId::from("m1".to_owned()),
+            subscribers: 1,
+            recipient_readiness: None,
+            idempotency_key: None,
+        }]);
+        let reply = s
+            .handle(rpc(
+                5,
+                "tools/call",
+                json!({ "name": "send_message", "arguments": {
+                    "to": "reviewer", "text": "hi", "idempotency_key": "run-42/step-3"
+                } }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reply["result"]["isError"], false);
+        let requests = s.backend.requests.lock().unwrap();
+        assert!(
+            matches!(&requests[0], Request::Send { idempotency_key: Some(key), .. } if key == "run-42/step-3"),
+            "{:?}",
+            requests[0]
         );
     }
 
@@ -2956,6 +2994,7 @@ mod tests {
             message: "m1".to_owned().into(),
             subscribers: 10,
             recipient_readiness: Some(report),
+            idempotency_key: None,
         });
         let text: Value =
             serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -2980,6 +3019,7 @@ mod tests {
                 message: "queued-message".to_owned().into(),
                 subscribers,
                 recipient_readiness: None,
+                idempotency_key: None,
             });
             let text: Value =
                 serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();

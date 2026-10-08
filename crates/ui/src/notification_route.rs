@@ -183,6 +183,7 @@ pub fn reply_request(to: String, message: &agentdocker_core::MessageId, text: &s
         payload: serde_json::json!({ "text": text }),
         reply_to: Some(message.clone()),
         links: Vec::new(),
+        idempotency_key: None,
     }
 }
 
@@ -725,6 +726,7 @@ mod tests {
                             message: MessageId::from("8".to_owned()),
                             subscribers: 1,
                             recipient_readiness: None,
+                            idempotency_key: None,
                         },
                         (1, Request::Send { .. }, Answer::Refused) => Response::Error {
                             code: agentdocker_core::ErrorCode::Forbidden,

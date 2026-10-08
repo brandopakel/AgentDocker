@@ -617,6 +617,11 @@ impl App {
                 },
                 super::in_browser_word(runtime, sessions.len(), self.connector.as_ref()),
             )
+        } else if agentdocker_core::runtime::spec(&runtime.name)
+            .is_some_and(|spec| spec.mcp == agentdocker_core::runtime::McpWiring::AgentConfig)
+        {
+            // Nothing for setup to write: each agent's YAML lists the toolset.
+            (c.cyan, "Installed · wired in each agent's YAML".to_owned())
         } else if !supported {
             (c.faint, "Installed · integration unavailable".to_owned())
         } else if unverified {
@@ -1094,6 +1099,9 @@ impl App {
             )));
         }
         let mut details = column![kv_list(facts, c)].spacing(16).width(Fill);
+        if let Some(spec) = agentdocker_core::runtime::spec(&runtime.name) {
+            details = details.push(self.capabilities_list(runtime, spec, c));
+        }
         if !state.sessions.is_empty() {
             let mut sessions = column![super::view::eyebrow("Sessions", c)].spacing(10);
             let now = Utc::now();
@@ -1184,6 +1192,52 @@ impl App {
             .wrap(),
         );
         details.into()
+    }
+
+    /// What AgentDocker can do for this tool's sessions, one line per
+    /// capability: how far it reaches, whether what it runs through is set
+    /// up here, and a sentence of how.
+    fn capabilities_list<'a>(
+        &self,
+        runtime: &RuntimeInfo,
+        spec: &agentdocker_core::runtime::RuntimeSpec,
+        c: Colors,
+    ) -> Element<'a, Message> {
+        use agentdocker_core::runtime::Reach;
+        let mut rows: Vec<(String, Element<'a, Message>)> = Vec::new();
+        for (_, label, capability) in spec.capabilities().rows() {
+            let pending = capability
+                .installed(runtime)
+                .is_some_and(|wiring| wiring != Wiring::Wired);
+            let (word, tone) = match capability.reach {
+                Reach::Automatic if pending => ("Automatic once set up", c.amber),
+                Reach::Automatic => ("Automatic", c.green),
+                Reach::Voluntary => ("When the agent uses the tools", c.cyan),
+                Reach::Conditional => ("With setup at launch", c.amber),
+                Reach::Unavailable => ("Not available", c.faint),
+            };
+            rows.push((
+                label.to_owned(),
+                column![status_word(word, tone, c), small(capability.how, c)]
+                    .spacing(4)
+                    .into(),
+            ));
+        }
+        let mut list = column![
+            super::view::eyebrow("What AgentDocker can do", c),
+            kv_list(rows, c)
+        ]
+        .spacing(10);
+        if spec.mcp == agentdocker_core::runtime::McpWiring::AgentConfig {
+            list = list.push(note(
+                format!(
+                    "{} reads MCP servers from each agent's YAML. `agentdocker setup {}` prints the toolset to add; each run that lists it joins as one agent.",
+                    runtime.label, runtime.name
+                ),
+                c,
+            ));
+        }
+        list.into()
     }
 
     /// The connection check, in words: one line per installed tool with
@@ -2783,6 +2837,43 @@ mod tests {
         assert_eq!(mark_letters("ChatGPT"), "Ch");
         assert_eq!(mark_letters("VS Code (editor)"), "VS");
         assert_eq!(mark_letters(""), "·");
+    }
+
+    /// Docker Agent has no file for setup to write: installed, it reads as
+    /// wired per agent YAML rather than as an integration that does not
+    /// exist, and its details say what AgentDocker can do for its runs.
+    #[test]
+    fn docker_agent_reads_as_wired_per_agent_yaml_with_its_capabilities() {
+        let (tx, _commands) = crate::app::queue::channel();
+        let (_sender, rx) = std::sync::mpsc::channel();
+        let app = crate::app::App::bare(tx, rx);
+        let runtime = RuntimeInfo {
+            name: "docker-agent".into(),
+            vendor: "Docker".into(),
+            label: "Docker Agent".into(),
+            cli: Some("/usr/local/lib/docker/cli-plugins/docker-agent".into()),
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: Wiring::Unsupported,
+            hooks: Wiring::Unsupported,
+            hooks_missing: vec![],
+            shell: Wiring::Unsupported,
+            running: 0,
+        };
+        let c = Colors::new(false);
+        assert_eq!(
+            app.tool_state(&runtime, c).word,
+            "Installed · wired in each agent's YAML"
+        );
+        let spec = agentdocker_core::runtime::spec("docker-agent").unwrap();
+        // Builds without panicking for every runtime, installed or not.
+        let _ = app.capabilities_list(&runtime, spec, c);
+        for spec in agentdocker_core::runtime::RUNTIMES {
+            let _ = app.capabilities_list(&runtime, spec, c);
+        }
     }
 
     #[test]

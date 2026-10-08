@@ -506,6 +506,7 @@ mod tests {
                 payload: json!({"text": "for the reviewer"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await
     }

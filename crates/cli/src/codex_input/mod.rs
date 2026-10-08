@@ -494,7 +494,8 @@ async fn session(
                 match line {
                     Ok(Some(text)) => {
                         ensure!(matches!(call(client, Request::Send { from: HUMAN.into(), to: agent.id.to_string(),
-                            kind: "chat".into(), payload: json!({"text":text}), reply_to: None, links: Vec::new() }).await?, Response::Sent { .. }), "message was not queued");
+                            kind: "chat".into(), payload: json!({"text":text}), reply_to: None, links: Vec::new(),
+                            idempotency_key: None, }).await?, Response::Sent { .. }), "message was not queued");
                     }
                     Ok(None) => (),
                     Err(error) => { input_open = false; eprintln!("Terminal input closed: {error}"); }

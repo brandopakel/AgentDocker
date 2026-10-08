@@ -1,0 +1,133 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/brandopakel/AgentDocker/main/crates/cli/schemas/agentfile.schema.json",
+  "title": "AgentDocker Agentfile",
+  "description": "Several agents described together and started with `agentdocker up`. Put `#:schema <this file's URL>` on the first line of an Agentfile.toml for completion and checking in a TOML editor. `agentdocker agentfile check` reads a file the way `up` will.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "description": "The Agentfile format version. Absent means 1, the format before versions. Version 2 adds the launch fields (prompt, effort, args, config, idle_messages, coordinate) and expands ${VAR}; `agentdocker agentfile upgrade` rewrites a version 1 file.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2,
+      "default": 1
+    },
+    "name": {
+      "description": "Team name: every agent gets the label team=<name>.",
+      "type": "string"
+    },
+    "agents": {
+      "description": "The agents, by name, started in the order written (dependencies first).",
+      "type": "object",
+      "propertyNames": { "minLength": 1 },
+      "additionalProperties": { "$ref": "#/$defs/agent" }
+    }
+  },
+  "$defs": {
+    "expandable": {
+      "description": "From version 2, ${VAR}, ${VAR:-default}, ${VAR-default}, ${VAR:?message} and ${VAR?message} are expanded from the environment, and $$ is one dollar sign; any other $ is an error.",
+      "type": "string"
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runtime": {
+          "description": "What hosts the agent. Commands can be built (from prompt, model, effort) for claude-code, codex, docker-agent and gemini-cli; any other runtime needs `command`.",
+          "type": "string",
+          "default": "custom",
+          "examples": ["claude-code", "codex", "docker-agent", "gemini-cli", "opencode", "cursor", "custom"]
+        },
+        "provider": {
+          "description": "The model provider, a label for `ps`.",
+          "$ref": "#/$defs/expandable"
+        },
+        "model": {
+          "description": "The model. Passed to the runtime when agentdocker builds the command; a label for `ps` on a written command.",
+          "$ref": "#/$defs/expandable"
+        },
+        "command": {
+          "description": "The command line, launched as written. Required in version 1; from version 2 it may be left out for a runtime agentdocker can build a command for, and then must be.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/expandable" },
+          "minItems": 1
+        },
+        "workdir": {
+          "description": "Where the agent runs; relative to the Agentfile's directory.",
+          "$ref": "#/$defs/expandable",
+          "default": "."
+        },
+        "isolate": {
+          "description": "Give the agent its own linked worktree and branch.",
+          "type": "boolean",
+          "default": false
+        },
+        "tty": {
+          "description": "Give the agent a terminal rather than pipes, for an interactive runtime; `agentdocker attach` reaches it.",
+          "type": "boolean",
+          "default": false
+        },
+        "restore": {
+          "description": "Bring the agent back under the same identity when agentd restarts.",
+          "type": "boolean",
+          "default": false
+        },
+        "in_pane": {
+          "description": "Run the agent in a tmux pane, reachable with `tmux attach`.",
+          "type": "boolean",
+          "default": false
+        },
+        "restart": {
+          "description": "When to start it again after it exits.",
+          "type": "string",
+          "pattern": "^(no|always|on-failure(:[0-9]+)?)$",
+          "default": "no"
+        },
+        "depends_on": {
+          "description": "Agents in this file that must be running before this one starts.",
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "env": {
+          "description": "Environment variables for the agent.",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/expandable" }
+        },
+        "labels": {
+          "description": "Labels on the agent's record.",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/expandable" }
+        },
+        "prompt": {
+          "description": "Version 2. The first instruction, for a command agentdocker builds. Without a terminal (tty, in_pane) it is required, except for Codex with idle_messages, which takes none on its command line.",
+          "$ref": "#/$defs/expandable"
+        },
+        "effort": {
+          "description": "Version 2. Reasoning effort in the runtime's words: claude-code low, medium, high, xhigh, max; codex minimal, low, medium, high, xhigh. A ${VAR} here is checked once expanded.",
+          "$ref": "#/$defs/expandable"
+        },
+        "args": {
+          "description": "Version 2. Provider arguments added to a built command, before the prompt.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/expandable" }
+        },
+        "config": {
+          "description": "Version 2, docker-agent only. The agent's YAML file (relative to the Agentfile) or its registry reference.",
+          "$ref": "#/$defs/expandable"
+        },
+        "idle_messages": {
+          "description": "Version 2. Let a message start a turn while the session is idle: Claude Code's channel (interactive sessions; Claude's consent applies) or Codex's input adapter. Experimental.",
+          "type": "boolean",
+          "default": false
+        },
+        "coordinate": {
+          "description": "Version 2. Wire AgentDocker into a built command: the MCP server (and, for Claude Code, the hooks) unless the runtime's own configuration already has them.",
+          "type": "boolean",
+          "default": true
+        }
+      }
+    }
+  }
+}

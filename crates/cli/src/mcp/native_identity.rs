@@ -527,6 +527,7 @@ mod tests {
                 message: "question".to_owned().into(),
                 subscribers: 0,
                 recipient_readiness: None,
+                idempotency_key: None,
             },
         ]);
         let mut server = McpServer::new(backend, context.unbound_identity());
