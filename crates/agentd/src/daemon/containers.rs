@@ -622,33 +622,27 @@ impl State {
         }
         let events: Vec<_> = kinds
             .into_iter()
-            .enumerate()
-            .map(|(i, kind)| {
-                let mut e = Event::new(kind, now);
-                e.seq = self.next_seq + i as u64;
-                e
-            })
+            .map(|kind| Event::new(kind, now))
             .collect();
         let leases: Vec<_> = released.iter().map(|l| l.id.clone()).collect();
-        let committed = self.persist("container transition", |store| {
-            store.container_transition(&record, &leases, &journal, &events)
-        });
+        let committed = self.commit(
+            "container transition",
+            events,
+            |store, events| store.container_transition(&record, &leases, &journal, events),
+            |state, _, ()| {
+                *state.registry.get_mut(&record.id).unwrap() = record.clone();
+                if exited {
+                    state.leases.release_all(&record.id);
+                }
+                for entry in &journal {
+                    state.cache_journal(entry.clone());
+                }
+            },
+        );
         if committed != Persisted::Committed {
             self.journal_seq = previous_journal_seq;
-            return committed;
         }
-        *self.registry.get_mut(&record.id).unwrap() = record.clone();
-        if exited {
-            self.leases.release_all(&record.id);
-        }
-        for entry in journal {
-            self.cache_journal(entry);
-        }
-        self.next_seq += events.len() as u64;
-        for event in events {
-            let _ = self.events.send(event);
-        }
-        Persisted::Committed
+        committed
     }
 }
 

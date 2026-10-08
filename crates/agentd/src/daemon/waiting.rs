@@ -155,7 +155,7 @@ impl State {
             return Response::Ok;
         }
         record.adapter_contacts.insert(adapter, contact.clone());
-        let mut event = agentdocker_core::Event::new(
+        let event = agentdocker_core::Event::new(
             agentdocker_core::EventKind::AdapterContactReported {
                 agent: id.clone(),
                 adapter,
@@ -163,15 +163,14 @@ impl State {
             },
             now,
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("adapter contact", |store| {
-            store.agent_transition(&record, &event)
-        });
-        if committed == Persisted::Committed {
-            *self.registry.get_mut(&id).expect("resolved agent") = record;
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "adapter contact",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                *state.registry.get_mut(&id).expect("resolved agent") = record.clone();
+            },
+        );
         self.write_failure().unwrap_or(Response::Ok)
     }
 
@@ -285,22 +284,21 @@ impl State {
             );
         }
         record.input_delivery = Some(delivery.clone());
-        let mut event = agentdocker_core::Event::new(
+        let event = agentdocker_core::Event::new(
             agentdocker_core::EventKind::InputDeliveryReported {
                 agent: id.clone(),
                 delivery,
             },
             now,
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("input delivery report", |store| {
-            store.agent_transition(&record, &event)
-        });
-        if committed == Persisted::Committed {
-            *self.registry.get_mut(&id).expect("resolved agent") = record;
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "input delivery report",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                *state.registry.get_mut(&id).expect("resolved agent") = record.clone();
+            },
+        );
         self.write_failure().unwrap_or(Response::Ok)
     }
 
@@ -338,22 +336,21 @@ impl State {
         // delayed idle report fall back to "working" after its own expiry.
         record.last_seen = record.last_seen.max(observation.observed_at);
         record.reported_activity = Some(observation.clone());
-        let mut event = agentdocker_core::Event::new(
+        let event = agentdocker_core::Event::new(
             agentdocker_core::EventKind::AgentActivityReported {
                 agent: id.clone(),
                 observation,
             },
             now,
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("activity report", |store| {
-            store.agent_transition(&record, &event)
-        });
-        if committed == Persisted::Committed {
-            *self.registry.get_mut(&id).expect("resolved agent") = record;
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "activity report",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                *state.registry.get_mut(&id).expect("resolved agent") = record.clone();
+            },
+        );
         self.write_failure().unwrap_or(Response::Ok)
     }
 

@@ -5366,6 +5366,35 @@ impl State {
         )
     }
 
+    /// [`State::commit`] for a store that composes the events itself from
+    /// the first sequence number it is given, when only it knows what
+    /// changed: how many archive rows a prune removed, which samples a scan
+    /// accounted. The events it returns are published on commit, in order,
+    /// and the sequence advances by their count.
+    fn commit_produced<T>(
+        &mut self,
+        what: &str,
+        write: impl FnOnce(&Store, u64) -> anyhow::Result<(Vec<Event>, T)>,
+        apply: impl FnOnce(&mut Self, &[Event], T),
+    ) -> Persisted {
+        let first = self.next_seq;
+        let mut produced = None;
+        let committed = self.persist(what, |store| {
+            produced = Some(write(store, first)?);
+            Ok(())
+        });
+        if committed == Persisted::Committed
+            && let Some((events, written)) = produced
+        {
+            self.next_seq += events.len() as u64;
+            apply(self, &events, written);
+            for event in events {
+                let _ = self.events.send(event);
+            }
+        }
+        committed
+    }
+
     pub fn emit(&mut self, kind: EventKind) {
         let _ = self.transition(
             "event",

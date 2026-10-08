@@ -233,17 +233,20 @@ impl Daemon {
 impl State {
     /// Commit archive retention and its event before publishing the transition.
     fn prune_message_archive(&mut self, cutoff: Option<DateTime<Utc>>, cap: usize, batch: usize) {
-        let seq = self.next_seq;
-        let event = self.store_op("messages", |store| {
-            store.prune_messages_with_event(cutoff, cap, batch, seq, Utc::now())
-        });
-        if let Some(Some(event)) = event {
-            if let EventKind::MessagesPruned { removed } = &event.kind {
-                info!(removed, "pruned the message archive");
-            }
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.commit_produced(
+            "messages",
+            |store, seq| {
+                let event = store.prune_messages_with_event(cutoff, cap, batch, seq, Utc::now())?;
+                Ok((event.into_iter().collect(), ()))
+            },
+            |_, events, ()| {
+                for event in events {
+                    if let EventKind::MessagesPruned { removed } = &event.kind {
+                        info!(removed, "pruned the message archive");
+                    }
+                }
+            },
+        );
     }
 
     /// Every conversation of a project that a reader could be shown: the
@@ -642,7 +645,7 @@ impl State {
             through,
             updated_at: now,
         };
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::ConversationRead {
                 reader: reader.clone(),
                 conversation: conversation.clone(),
@@ -650,29 +653,30 @@ impl State {
             },
             now,
         );
-        event.seq = self.next_seq;
-        if self.persist("read cursor", |store| {
-            store.mark_read(&cursor, &acknowledged, &event)
-        }) != Persisted::Committed
-        {
+        let committed = self.transition(
+            "read cursor",
+            event,
+            |store, event| store.mark_read(&cursor, &acknowledged, event),
+            |state| {
+                if !acknowledged.is_empty()
+                    && let Some(queue) = state.inboxes.get_mut(reader)
+                {
+                    let bytes = state.inbox_bytes.entry(reader.clone()).or_default();
+                    queue.retain(|message| {
+                        if acknowledged.contains(&message.id) {
+                            *bytes = bytes.saturating_sub(message_bytes(message));
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    state.forget_delivered(reader, &acknowledged);
+                }
+            },
+        );
+        if committed != Persisted::Committed {
             return self.write_failure().expect("refused read cursor write");
         }
-        if !acknowledged.is_empty()
-            && let Some(queue) = self.inboxes.get_mut(reader)
-        {
-            let bytes = self.inbox_bytes.entry(reader.clone()).or_default();
-            queue.retain(|message| {
-                if acknowledged.contains(&message.id) {
-                    *bytes = bytes.saturating_sub(message_bytes(message));
-                    false
-                } else {
-                    true
-                }
-            });
-            self.forget_delivered(reader, &acknowledged);
-        }
-        self.next_seq += 1;
-        let _ = self.events.send(event);
         Response::Ok
     }
 }
