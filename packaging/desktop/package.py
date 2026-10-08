@@ -319,7 +319,7 @@ def macos(args, stage, info):
     copy_licenses(resources / "licenses")
     with tempfile.TemporaryDirectory(prefix="ad-icons-") as scratch:
         # One mark, from one place. This used to render its own icon in
-        # Swift while a shell bundler (in git history) rendered a different one
+        # Swift while `scripts/bundle-macos.sh` rendered a different one
         # in Python, so the app you installed from a release and the app
         # this packaged wore different faces.
         run(sys.executable, ROOT / "scripts/icon.py", scratch)
