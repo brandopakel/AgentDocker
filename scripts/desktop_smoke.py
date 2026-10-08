@@ -82,11 +82,35 @@ def check_no_tcp(processes, deadline, capture=None):
                         continue
                     tcp_reported = True
                     result = subprocess.CompletedProcess(command, 0, "TCP socket observed by Linux proc tables", "")
-                elif process.poll() is not None:
-                    # A child can finish between polling and opening its proc
-                    # directory. Its exit status is checked by the caller; no
-                    # post-exit sample is claimed as a live observation.
-                    continue
+                else:
+                    try:
+                        error = json.loads(result.stderr)
+                    except (ValueError, TypeError):
+                        error = None
+                    missing = (result.returncode == 2 and not result.stdout and error == {
+                        "error": "FileNotFoundError", "detail": "kernel observation unavailable"})
+                    if missing:
+                        # Linux may remove a dying task's proc entries before
+                        # waitpid publishes its exit. Bound that teardown wait;
+                        # a still-live or otherwise unobservable child refuses.
+                        status = process.poll()
+                        allowance = min(0.1, max(0.0, deadline - time.monotonic()))
+                        if status is None and allowance > 0:
+                            try:
+                                status = process.wait(timeout=allowance)
+                            except subprocess.TimeoutExpired:
+                                pass
+                        if status is not None:
+                            observation.update(reason="owned child exited during proc observation",
+                                               process_status=status, live_transport_observation=False,
+                                               inspector_error=error, exit_wait_limit_seconds=allowance)
+                            if capture is not None:
+                                capture.mkdir(parents=True, exist_ok=True)
+                                with (capture / "transport-exit.jsonl").open("a") as stream:
+                                    stream.write(json.dumps(observation) + "\n")
+                            # wait_window separately rejects nonzero window exit
+                            # and any daemon exit; this is not a clean live sample.
+                            continue
             else:
                 if result.returncode == 1 and not result.stdout and not result.stderr:
                     continue
@@ -120,6 +144,8 @@ def wait_window(daemon, window, capture=None, timeout=WINDOW_DEADLINE + HARNESS_
         if daemon.poll() is not None:
             raise RuntimeError("fixture daemon exited during graphical acceptance")
         check_no_tcp([daemon, window], deadline, capture)
+        if daemon.poll() is not None:
+            raise RuntimeError("fixture daemon exited during graphical acceptance")
         samples += 1
         status = window.poll()
         if status is not None:

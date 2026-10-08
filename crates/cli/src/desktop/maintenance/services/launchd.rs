@@ -107,6 +107,7 @@ fn cached(text: &str, target: &str, definition: &definition::Definition) -> Resu
                     | "checked allocations reason"
                     | "checked allocations flags"
                     | "last exit code"
+                    | "last exit reason"
                     | "last terminating signal"
                     | "semaphores"
                     | "resource coalition"
@@ -241,6 +242,21 @@ mod tests {
         let text = "gui/501/dev.agentdocker.agentd = {\n\tprogram = /old/agentd\n\targuments = {\n\t\t/old/agentd\n\t\t--home\n\t\t/state\n\t}\n\tenvironment = {\n\t\tRUST_LOG => info\n\t}\n\tpid = 0\n\tstdout path = /state/agentd.log\n}\n";
         assert_eq!(
             cached(text, "gui/501/dev.agentdocker.agentd", &definition).unwrap(),
+            [PathBuf::from("/state/agentd.log")]
+        );
+        // Observed on a running production connector after its prior exit.
+        // This status field cannot introduce a filesystem dependency.
+        let with_exit_reason = text.replace(
+            "\tpid = 0",
+            "\tpid = 0\n\tlast exit reason = OS_REASON_EXEC",
+        );
+        assert_eq!(
+            cached(
+                &with_exit_reason,
+                "gui/501/dev.agentdocker.agentd",
+                &definition
+            )
+            .unwrap(),
             [PathBuf::from("/state/agentd.log")]
         );
         for changed in [
