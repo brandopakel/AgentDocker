@@ -2055,30 +2055,43 @@ impl Store {
 
     /// Append a ledger entry and return its `seq`.
     pub fn append_change(&self, change: &Change) -> Result<u64> {
+        let seqs = self.append_changes(std::slice::from_ref(change))?;
+        Ok(seqs[0])
+    }
+
+    /// Append a watcher batch as one transaction, so a batch costs one
+    /// sync however many paths it carries. The seqs come back in order.
+    pub fn append_changes(&self, changes: &[Change]) -> Result<Vec<u64>> {
         let tx = self.conn.unchecked_transaction()?;
-        self.conn.execute(
-            "INSERT INTO changes (project, path, by_agent, at, json) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                change.project.as_str(),
-                change.path.to_string_lossy(),
-                change.by.agent().map(AgentId::as_str),
-                change.at.to_rfc3339(),
-                serde_json::to_string(change)?,
-            ],
-        )?;
-        let seq = u64::try_from(self.conn.last_insert_rowid()).unwrap_or(0);
-        // The blob carries its own seq so a row reads back complete.
-        let mut stored = change.clone();
-        stored.seq = seq;
-        self.conn.execute(
-            "UPDATE changes SET json = ?1 WHERE seq = ?2",
-            params![
-                serde_json::to_string(&stored)?,
-                i64::try_from(seq).unwrap_or(i64::MAX)
-            ],
-        )?;
+        let mut seqs = Vec::with_capacity(changes.len());
+        {
+            let mut insert = self.conn.prepare_cached(
+                "INSERT INTO changes (project, path, by_agent, at, json) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            let mut complete = self
+                .conn
+                .prepare_cached("UPDATE changes SET json = ?1 WHERE seq = ?2")?;
+            for change in changes {
+                insert.execute(params![
+                    change.project.as_str(),
+                    change.path.to_string_lossy(),
+                    change.by.agent().map(AgentId::as_str),
+                    change.at.to_rfc3339(),
+                    serde_json::to_string(change)?,
+                ])?;
+                let seq = u64::try_from(self.conn.last_insert_rowid()).unwrap_or(0);
+                // The blob carries its own seq so a row reads back complete.
+                let mut stored = change.clone();
+                stored.seq = seq;
+                complete.execute(params![
+                    serde_json::to_string(&stored)?,
+                    i64::try_from(seq).unwrap_or(i64::MAX)
+                ])?;
+                seqs.push(seq);
+            }
+        }
         tx.commit()?;
-        Ok(seq)
+        Ok(seqs)
     }
 
     /// The newest `limit` entries matching the query, oldest first. A path
