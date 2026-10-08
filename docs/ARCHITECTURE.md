@@ -1083,7 +1083,7 @@ What the app must not become is a multiplexer: panes, layouts, and tiling are he
 
 #### Terminal multiplexers
 
-A tmux start commits the record and `agent_started` event before reporting success. A failed commit attempts cleanup only of the pane and process identity this request created. Attach reconnect failures return an error without claiming the agent exited.
+A tmux start commits the record and `agent_started` event before reporting success. A failed commit attempts cleanup only of the pane and process identity this request created. Attach reconnect failures return an error without claiming the agent exited. On Windows, attachment also recognizes a complete Win32 keyboard record for the local Ctrl-] detach key when nested console output enables mode 9001. Other input is preserved byte-for-byte; fragmented records have a 64-byte prefix bound and incomplete prefixes flush after 25 ms without new input, on EOF or before a read error.
 
 We should not write one. `tmux` exists, herdr exists, and a multiplexer is not the working set. What is worth having is an adapter — row 25 — and its first half is done: an agent living in a `tmux` pane, a `screen` window, a `zellij` session or a herdr session is recognised as such, and that is recorded beside its record, shown in `ps` and `discover`, and returned by `inspect`. That makes AgentDocker composable with whatever owns the terminal instead of competing for it: a person reaches the agent with the tool that already has it.
 

@@ -1406,7 +1406,12 @@ detaching. Corrected private capture passed the ten UI steps and four receipts,
 but Ctrl-] still failed before the detach acknowledgement. A provider-free
 `windows.yml` dispatch with `console_input_probe=true` compares raw control bytes
 and advertised Win32 keyboard transport in private Python consoles. It is
-diagnostic evidence, separate from extracted-product acceptance. A supported
+diagnostic evidence, separate from extracted-product acceptance. The extended probe
+reproduced mode 9001 changing Ctrl-] into a Win32 keyboard record. Windows
+attachment now recognizes its complete key-down record as the local detach key;
+other keyboard bytes remain unchanged. A split record is bounded to 64 bytes,
+and an incomplete Escape prefix is forwarded after 25 ms without further input,
+or immediately on EOF/error. Exact extracted-package validation remains pending. A supported
 managed terminal discards new typing without echo while a secret route is
 open. After it closes, Enter discards the suspended line and returns to the
 preexisting draft; buffered text cannot become an ordinary queued message. A possibly sent answer without a provider resolution stays

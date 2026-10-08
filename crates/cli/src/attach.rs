@@ -17,6 +17,9 @@ use crate::client::Client;
 #[cfg_attr(windows, path = "attach/input_windows.rs")]
 mod input;
 
+#[cfg(any(windows, test))]
+mod encoded_key;
+
 /// Ctrl-] detaches, the way `telnet` has always done it.
 const DETACH: u8 = 0x1d;
 
@@ -38,7 +41,9 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
     #[cfg(unix)]
     let mut keys = input::Input::open(stdin.as_fd()).context("cannot open terminal input")?;
     #[cfg(windows)]
-    let mut keys = input::Input::open(std_handle::input()).context("cannot read the console")?;
+    let mut keys = encoded_key::Input::new(
+        input::Input::open(std_handle::input()).context("cannot read the console")?,
+    );
     let mut retries = crate::client::StreamRetries::default();
     let outcome = loop {
         match pump(reader, write_half, &mut keys, tokio::io::stdout()).await {
