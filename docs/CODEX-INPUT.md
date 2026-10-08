@@ -1402,7 +1402,11 @@ extracted package's masked form, suspended typing, Unicode draft and oversized
 line with a private Codex model and synthetic ConPTY; acceptance remains pending
 until the exact native run passes. The initial run passed the kernel checks but
 refused its fixture report ancestry before UI rendering and separately timed out
-detaching; private capture and shutdown diagnostics preserve both failures. A supported
+detaching. Corrected private capture passed the ten UI steps and four receipts,
+but Ctrl-] still failed before the detach acknowledgement. A provider-free
+`windows.yml` dispatch with `console_input_probe=true` compares raw control bytes
+and advertised Win32 keyboard transport in private Python consoles. It is
+diagnostic evidence, separate from extracted-product acceptance. A supported
 managed terminal discards new typing without echo while a secret route is
 open. After it closes, Enter discards the suspended line and returns to the
 preexisting draft; buffered text cannot become an ordinary queued message. A possibly sent answer without a provider resolution stays

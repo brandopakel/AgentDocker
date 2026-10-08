@@ -6,6 +6,10 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      console_input_probe:
+        description: Only diagnose raw Ctrl-] and advertised Win32 console input (no product acceptance)
+        type: boolean
+        default: false
       hosted_tag:
         description: Published prerelease tag to test instead of building (optional)
         type: string
@@ -66,8 +70,27 @@ env:
   PYTHONUTF8: "1"
 
 jobs:
+  console-input-probe:
+    if: ${{ inputs.console_input_probe }}
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Prepare synthetic console transport
+        run: python -m pip install --disable-pip-version-check pywinpty==3.0.5 psutil==7.0.0
+      - name: Observe raw and Win32 keyboard transport
+        run: python scripts/windows_console_input_probe.py --output artifacts/console-input-probe.json
+      - name: Preserve bounded transport observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-console-input-probe
+          path: artifacts/console-input-probe.json
+          if-no-files-found: error
   native-foundations:
-    if: ${{ !inputs.capability_only && !inputs.hosted_tag }}
+    if: ${{ !inputs.console_input_probe && !inputs.capability_only && !inputs.hosted_tag }}
     runs-on: windows-latest
     # Extra diagnostic samples include bounded CLI capture and cleanup for
     # every home. Package-step budgets also leave room for build and artifact upload.
@@ -218,7 +241,7 @@ jobs:
           if-no-files-found: warn
 
   remote-tui:
-    if: ${{ inputs.capability_only && !inputs.hosted_tag }}
+    if: ${{ !inputs.console_input_probe && inputs.capability_only && !inputs.hosted_tag }}
     runs-on: windows-latest
     timeout-minutes: ${{ inputs.receiver_acceptance && 60 || 10 }}
     steps:
@@ -271,7 +294,7 @@ jobs:
           path: artifacts/capability/
           if-no-files-found: warn
   hosted-preview:
-    if: github.event_name == 'workflow_dispatch' && inputs.hosted_tag != ''
+    if: github.event_name == 'workflow_dispatch' && !inputs.console_input_probe && inputs.hosted_tag != ''
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
