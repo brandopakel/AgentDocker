@@ -979,6 +979,18 @@ mod tests {
             progress["cursor"] = old_cursor;
             conn.execute("UPDATE usage_files SET json=?1", [progress.to_string()])
                 .unwrap();
+            // Real older collectors also persisted unsupported-record gaps.
+            // Their hashed batch keys do not identify a safely clearable source;
+            // recovered counters must not silently claim historical coverage.
+            conn.execute(
+                "INSERT INTO usage_gaps VALUES (?1,NULL,?2,NULL,NULL,?3)",
+                rusqlite::params![
+                    "legacy-unsupported-batch-key",
+                    Utc::now().to_rfc3339(),
+                    "unsupported Claude transcript version"
+                ],
+            )
+            .unwrap();
             drop(conn);
             let daemon =
                 Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
@@ -988,7 +1000,11 @@ mod tests {
                 assert_eq!(report.rows[0].samples, 2);
                 assert_eq!(report.rows[0].counters.input_tokens.sum, Some(18));
                 assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
-                assert_eq!(report.coverage.source_gaps, 0);
+                assert_eq!(report.coverage.source_gaps, 1);
+                assert_eq!(
+                    report.rows[0].counters.input_tokens.coverage,
+                    usage::Coverage::Partial
+                );
                 assert!(
                     report
                         .coverage

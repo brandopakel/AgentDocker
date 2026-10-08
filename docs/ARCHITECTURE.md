@@ -1569,8 +1569,12 @@ Their response semantics and sample format identity match the existing family;
 nested cache details do not contribute a second time. Parser cursor v7 verifies
 and replays v3/v4/v5/v6 scans with the same stable
 source identities, allowing newly supported records to be collected without
-recounting earlier accepted samples. Existing historical gaps remain visible;
-this change does not claim their reconciliation or provider-billing accuracy.
+recounting earlier accepted samples. Existing historical gaps remain visible:
+older gaps contain hashed batch keys, not reversible file/record provenance, so
+a successful replay cannot safely identify which historical gap to clear. The
+upgrade regression seeds an older unsupported-record gap and requires it to
+remain partial across repeated collection. This change does not claim historical
+gap reconciliation or provider-billing accuracy.
 
 A release after the established compatibility floor, of the same major version,
 is counted as it reports: Claude Code after 2.1.280 and Codex after 0.160.0 (read with 0.160.0's
