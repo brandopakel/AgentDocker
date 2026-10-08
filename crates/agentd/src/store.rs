@@ -20,7 +20,7 @@ use chrono::{DateTime, Utc};
 /// One recipient of a followed message: who, when it was queued for them,
 /// and when they took it.
 pub type Delivery = (AgentId, DateTime<Utc>, Option<DateTime<Utc>>);
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 pub(crate) mod event_replay;
 pub(crate) mod reconcile;
@@ -231,6 +231,16 @@ const MESSAGES_FTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USIN
 /// Archived messages kept per conversation, whatever the retention window.
 pub const CONVERSATION_CAP: usize = 5_000;
 
+/// A write transaction that takes the database's write lock as it begins
+/// (`BEGIN IMMEDIATE`), so the connection's busy timeout covers the whole
+/// transaction: a deferred one would read first and meet a busy writer only
+/// at its first write, after the timeout no longer applies, and fail. The
+/// store has one connection and no nested transactions, so the unchecked
+/// form is sound here.
+pub(crate) fn write_transaction(conn: &Connection) -> rusqlite::Result<rusqlite::Transaction<'_>> {
+    rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+}
+
 pub struct Store {
     conn: Connection,
     /// Whether the SQLite build gave us FTS5; `--grep` falls back to LIKE.
@@ -302,7 +312,7 @@ impl Store {
         leases: &[Lease],
         events: &[Event],
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.put_document("restore_point", record.id.as_str(), point)?;
         self.upsert_agent(record)?;
         for lease in leases {
@@ -317,7 +327,7 @@ impl Store {
 
     /// Publish a lifecycle status and its replay evidence atomically.
     pub fn agent_transition(&self, record: &AgentRecord, event: &Event) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.upsert_agent(record)?;
         self.append_event(event)?;
         tx.commit()?;
@@ -333,7 +343,7 @@ impl Store {
         channels: &[agentdocker_core::channel::Channel],
         events: &[Event],
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.upsert_agent(record)?;
         for lease in leases {
             self.delete_lease(lease)?;
@@ -352,7 +362,7 @@ impl Store {
     }
 
     pub fn finish_restore(&self, record: &AgentRecord, event: &Event) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.upsert_agent(record)?;
         self.append_event(event)?;
         self.delete_document("restore_point", record.id.as_str())?;
@@ -368,7 +378,7 @@ impl Store {
         journal: &[JournalEntry],
         events: &[Event],
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.upsert_agent(record)?;
         for id in leases {
             self.conn
@@ -391,7 +401,7 @@ impl Store {
         value: &T,
         event: &Event,
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.put_document(kind, id, value)?;
         self.append_event(event)?;
         tx.commit()?;
@@ -410,7 +420,7 @@ impl Store {
         cursor: Option<(&str, &ProjectId, u64, DateTime<Utc>)>,
         events: &[Event],
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.put_document("checkpoint", &checkpoint.id, checkpoint)?;
         self.put_document("reads", agent.as_str(), &reads)?;
         for lease in transferred {
@@ -434,7 +444,7 @@ impl Store {
         bundle: &agentdocker_core::HandoffBundle,
         event: &Event,
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.put_document("checkpoint", &checkpoint.id, checkpoint)?;
         self.put_document("handoff", &bundle.id, bundle)?;
         self.append_event(event)?;
@@ -577,7 +587,7 @@ impl Store {
         transition: &TaskTransition<'_>,
         value: &T,
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         if let Some(holder) = transition.holder {
             self.upsert_agent(holder)?;
         }
@@ -610,7 +620,7 @@ impl Store {
     /// event that says so, in one transaction: either the rows and the
     /// announcement both land, or neither does.
     pub fn delete_checkpoints_with_event(&self, ids: &[String], event: &Event) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         for id in ids {
             self.delete_document("checkpoint", id)?;
             self.delete_document("handoff", id)?;
@@ -636,7 +646,7 @@ impl Store {
         ids: &[String],
         event: &Event,
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         for id in ids {
             self.delete_document(kind, id)?;
         }
@@ -853,7 +863,7 @@ impl Store {
         // table/index on a fresh home. On error the transaction rolls back
         // all preceding DDL; existing data and the compatibility checks stay
         // unchanged. Tracking initialization below owns its own transaction.
-        let schema = conn.unchecked_transaction()?;
+        let schema = write_transaction(&conn)?;
         conn.execute_batch(SCHEMA)?;
         schema.commit()?;
         usage::tracking_init(&conn)?;
@@ -867,7 +877,7 @@ impl Store {
             .filter_map(Result::ok)
             .any(|column| column == "summary");
         if !has_summary {
-            let tx = conn.unchecked_transaction()?;
+            let tx = write_transaction(&conn)?;
             conn.execute_batch(
                 "ALTER TABLE journal ADD COLUMN summary TEXT NOT NULL DEFAULT '';
                  UPDATE journal SET summary = COALESCE(json_extract(json, '$.summary'), '')",
@@ -893,7 +903,7 @@ impl Store {
                 // pending open in the acceptance transaction, so an aborted
                 // takeover leaves the rows as the predecessor wrote them.
                 if bump_version {
-                    let tx = conn.unchecked_transaction()?;
+                    let tx = write_transaction(&conn)?;
                     Self::migrate_data(&conn, found)?;
                     conn.execute(
                         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
@@ -934,7 +944,7 @@ impl Store {
                 )
                 .optional()?;
             if !had_fts || complete.as_deref() != Some("1") {
-                let tx = conn.unchecked_transaction()?;
+                let tx = write_transaction(&conn)?;
                 conn.execute(
                     "INSERT INTO journal_fts(journal_fts) VALUES('delete-all')",
                     [],
@@ -978,7 +988,7 @@ impl Store {
                 archived == indexed
             };
             if !had_messages_fts || complete.as_deref() != Some("1") || !counts_agree() {
-                let tx = conn.unchecked_transaction()?;
+                let tx = write_transaction(&conn)?;
                 conn.execute(
                     "INSERT INTO messages_fts(messages_fts) VALUES('delete-all')",
                     [],
@@ -1015,7 +1025,7 @@ impl Store {
         alias: &agentdocker_core::identity::AgentAlias,
         event: &Event,
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.conn.execute(
             "UPDATE inbox SET agent=?1 WHERE agent=?2",
             params![alias.canonical.as_str(), alias.retired.as_str()],
@@ -1132,7 +1142,7 @@ impl Store {
 
     /// Forget an agent, its old-ID routes and queued work in one transition.
     pub fn delete_agent(&self, id: &AgentId, event: &Event) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         tx.execute(
             "DELETE FROM documents WHERE kind = 'identity_alias'
              AND json_extract(json, '$.canonical') = ?1",
@@ -1190,7 +1200,7 @@ impl Store {
 
     /// A removed lease and its replay evidence must survive or roll back together.
     pub fn delete_lease_with_event(&self, id: &LeaseId, event: &Event) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.delete_lease(id)?;
         self.append_event(event)?;
         tx.commit()?;
@@ -1205,7 +1215,7 @@ impl Store {
         lease: Option<&Lease>,
         event: Option<&Event>,
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.upsert_agent(agent)?;
         if let Some(lease) = lease {
             self.upsert_lease(lease)?;
@@ -1261,7 +1271,7 @@ impl Store {
         document: Option<(&str, &str, Option<&serde_json::Value>)>,
         tracked: bool,
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         for recipient in recipients {
             self.insert_inbox(recipient, message, capacity)?;
             if tracked {
@@ -1306,7 +1316,7 @@ impl Store {
         questions: &[agentdocker_core::MessageId],
         events: &[Event],
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         for question in questions {
             self.delete_document("question", question.as_str())?;
         }
@@ -1327,7 +1337,7 @@ impl Store {
         capacity: usize,
         event: &Event,
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         for message in messages {
             self.insert_inbox(agent, message, capacity)?;
             self.record_delivery(agent, &message.id, event.at)?;
@@ -1339,7 +1349,7 @@ impl Store {
 
     #[cfg(test)]
     pub fn enqueue(&self, agent: &AgentId, message: &Envelope, capacity: usize) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.insert_inbox(agent, message, capacity)?;
         tx.commit()?;
         Ok(())
@@ -1685,7 +1695,7 @@ impl Store {
         acknowledged: &[MessageId],
         event: &Event,
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.conn.execute(
             "INSERT INTO read_cursors (reader, conversation, seq, updated_at) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(reader, conversation) DO UPDATE SET
@@ -1793,7 +1803,7 @@ impl Store {
         cap: usize,
         batch: usize,
     ) -> Result<usize> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         let removed = self.prune_messages_inner(cutoff, cap, batch)?;
         tx.commit()?;
         Ok(removed)
@@ -1808,7 +1818,7 @@ impl Store {
         seq: u64,
         now: DateTime<Utc>,
     ) -> Result<Option<Event>> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         let removed = self.prune_messages_inner(cutoff, cap, batch)?;
         let event = (removed > 0).then(|| {
             let mut event = Event::new(EventKind::MessagesPruned { removed }, now);
@@ -2005,7 +2015,7 @@ impl Store {
         messages: &[agentdocker_core::MessageId],
         event: &Event,
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         for message in messages {
             tx.execute(
                 "DELETE FROM inbox WHERE agent = ?1 AND message_id = ?2",
@@ -2062,7 +2072,7 @@ impl Store {
     /// Append a watcher batch as one transaction, so a batch costs one
     /// sync however many paths it carries. The seqs come back in order.
     pub fn append_changes(&self, changes: &[Change]) -> Result<Vec<u64>> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         let mut seqs = Vec::with_capacity(changes.len());
         {
             let mut insert = self.conn.prepare_cached(
@@ -2179,7 +2189,7 @@ impl Store {
     /// Append an entry (its `seq` already assigned) on its own.
     #[cfg(test)]
     pub fn append_journal(&self, entry: &JournalEntry) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.insert_journal(entry)?;
         tx.commit()?;
         Ok(())
@@ -2194,7 +2204,7 @@ impl Store {
         entry: Option<&JournalEntry>,
         events: &[Event],
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         for id in leases {
             self.conn
                 .execute("DELETE FROM leases WHERE id = ?1", params![id.as_str()])?;
@@ -2211,7 +2221,7 @@ impl Store {
 
     /// Journal and ordered replay event must survive or roll back together.
     pub fn append_journal_with_event(&self, entry: &JournalEntry, event: &Event) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.insert_journal(entry)?;
         self.append_event(event)?;
         tx.commit()?;
@@ -2226,7 +2236,7 @@ impl Store {
         seq: u64,
         event: &Event,
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         self.set_journal_cursor(key, project, seq, event.at)?;
         self.append_event(event)?;
         tx.commit()?;
@@ -2372,7 +2382,7 @@ impl Store {
     /// Drop a project's entries below `before_seq`, with their paths and
     /// search rows. Returns how many entries went.
     pub fn prune_journal(&self, project: &ProjectId, before_seq: u64) -> Result<usize> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         let before = i64::try_from(before_seq).unwrap_or(i64::MAX);
         if self.fts {
             self.conn.execute(
@@ -2482,7 +2492,7 @@ impl Store {
     /// Record an offer. Refused while another transfer is still offered:
     /// two successors must never be invited at once.
     pub fn offer_transfer(&self, transfer: &Transfer, event: &Event) -> Result<bool> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         if let Some(current) = self.transfer()?
             && current.state == TransferState::Offered
             && current.id != transfer.id
@@ -2501,7 +2511,7 @@ impl Store {
     /// Rewrite an offer's successor pid while it is still offered, with
     /// the event that says so in the same transaction.
     pub fn readdress_transfer(&self, id: &str, successor_pid: u32, event: &Event) -> Result<bool> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         let Some(mut current) = self.transfer()? else {
             return Ok(false);
         };
@@ -2549,7 +2559,7 @@ impl Store {
         settled_at: DateTime<Utc>,
         event: &Event,
     ) -> Result<bool> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         let Some(mut current) = self.transfer()? else {
             return Ok(false);
         };
@@ -3707,7 +3717,7 @@ mod tests {
         let old_seq = store.archived(&old.id).unwrap().unwrap().seq;
         // The index failure disables it in memory, while rollback restores
         // its table, archive rows and the old durable completeness marker.
-        let tx = store.conn.unchecked_transaction().unwrap();
+        let tx = write_transaction(&store.conn).unwrap();
         store
             .conn
             .execute("ALTER TABLE messages_fts RENAME TO messages_fts_away", [])
@@ -3733,7 +3743,7 @@ mod tests {
         store
             .publish_message(&new, &[], 1000, None, None, None, &[])
             .unwrap();
-        let tx = store.conn.unchecked_transaction().unwrap();
+        let tx = write_transaction(&store.conn).unwrap();
         store
             .delete_archived(&[i64::try_from(old_seq).unwrap()])
             .unwrap();

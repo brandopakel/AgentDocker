@@ -188,17 +188,24 @@ impl Daemon {
             },
             Utc::now(),
         );
-        let _ = state.transition(
+        let committed = state.transition(
             "workspace grant",
             event,
             |store, event| store.put_document_with_event("access", &id, &grant, event),
             |_| {},
         );
-        if let Some(error) = &state.storage_error {
-            return Err(ContainerError::with_code(
-                ErrorCode::StorageUnavailable,
-                error.clone(),
-            ));
+        // A fenced write is skipped, not failed: the grant is not recorded
+        // either way, and the token file must not be handed out for it.
+        if committed != Persisted::Committed {
+            return Err(match state.write_failure() {
+                Some(Response::Error { code, message, .. }) => {
+                    ContainerError::with_code(code, message)
+                }
+                _ => ContainerError::with_code(
+                    ErrorCode::StorageUnavailable,
+                    "workspace grant was not recorded".into(),
+                ),
+            });
         }
         access.grant = id;
         Ok(())

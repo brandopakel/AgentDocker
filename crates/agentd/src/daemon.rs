@@ -394,6 +394,10 @@ struct State {
     /// The last `agentd.toml` problem reported, so a broken file is logged
     /// once when it breaks and once when it is fixed, not every minute.
     config_notice: Option<String>,
+    /// The agent-retention notice, kept apart from `config_notice`: the
+    /// journal-retention tick clears that one, and would otherwise re-warn
+    /// here every minute for a problem that has not changed.
+    agent_config_notice: Option<String>,
     /// The last HEAD a commit entry was written for, per checkout, so a
     /// move seen through several agents is journaled once.
     last_head: HashMap<PathBuf, String>,
@@ -1644,6 +1648,7 @@ impl Daemon {
                 journal_seq: HashMap::new(),
                 journal_rings: HashMap::new(),
                 config_notice: None,
+                agent_config_notice: None,
                 last_head: HashMap::new(),
                 last_branch: HashMap::new(),
                 worktree_creators: HashMap::new(),
@@ -1756,11 +1761,14 @@ impl Daemon {
         let removed = {
             let mut state = lock(&self.state);
             let window = match read {
-                Ok(window) => window,
+                Ok(window) => {
+                    state.agent_config_notice = None;
+                    window
+                }
                 Err(notice) => {
-                    if state.config_notice.as_ref() != Some(&notice) {
-                        warn!(%notice, "daemon configuration ignored");
-                        state.config_notice = Some(notice);
+                    if state.agent_config_notice.as_ref() != Some(&notice) {
+                        warn!(%notice, "agent retention not applied");
+                        state.agent_config_notice = Some(notice);
                     }
                     return;
                 }
