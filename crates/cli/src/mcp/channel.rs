@@ -144,7 +144,13 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
     let mut look: Option<Pin<Box<dyn Future<Output = Option<String>> + '_>>> = None;
     let mut tick = tokio::time::interval(POLL_EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut offered: Option<(MessageId, tokio::time::Instant, bool)> = None;
+    // The head on offer: its id, when it was last written, whether the
+    // missing receipt has been said, and whether it has been repeated.
+    let mut offered: Option<(MessageId, tokio::time::Instant, bool, bool)> = None;
+    // Whether any offer has been received this session: the proof that
+    // Claude's channel handler is there. Until it is, the first offer may
+    // be the one written before the handler was registered.
+    let mut receipt_seen = false;
     let mut unavailable = false;
     let mut last_report = tokio::time::Instant::now();
     let mut readiness_unavailable = false;
@@ -299,15 +305,28 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                     }
                 };
                 let mut state_changed = false;
-                if let Some((id, since, warned)) = &mut offered {
-                    if messages.iter().any(|message| &message.id == id) {
-                        if !*warned && since.elapsed() >= RECEIPT_TIMEOUT {
+                if let Some((id, since, warned, repeated)) = &mut offered {
+                    if let Some(message) = messages.iter().find(|message| &message.id == id) {
+                        if !*repeated && !receipt_seen && since.elapsed() >= RECEIPT_TIMEOUT {
+                            // The one offer a session can lose is its first,
+                            // written before Claude registered its handler.
+                            // Until a receipt has proved the handler is
+                            // there, the head is offered a second time, once,
+                            // under the same id; from then on the no-replay
+                            // rule holds and a missing receipt pauses the
+                            // queue visibly.
+                            eprintln!("agentdocker channel: message {id} has no receipt after 30 seconds and no receipt has been seen yet this session; offering it once more");
+                            write(&mut output, &offer(message, true)?).await?;
+                            *repeated = true;
+                            *since = tokio::time::Instant::now();
+                        } else if !*warned && since.elapsed() >= RECEIPT_TIMEOUT {
                             eprintln!("agentdocker channel: message {id} has no receipt after 30 seconds; verify this session's channel opt-in and permissions");
                             *warned = true;
                             state_changed = true;
                         }
                     } else {
                         state_changed = *warned;
+                        receipt_seen = true;
                         offered = None;
                     }
                 }
@@ -316,7 +335,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                 // leaves the queue, including after failed diagnostic writes.
                 if state_changed || last_report.elapsed() >= Duration::from_secs(30) {
                     let observation = match &offered {
-                        Some((id, _, true)) => agentdocker_core::InputReport::Paused {
+                        Some((id, _, true, _)) => agentdocker_core::InputReport::Paused {
                             reason: format!("Waiting for a verified receipt for message {id}; following messages remain queued. Check live input, lifecycle hooks and provider limits. Missing or ambiguous transcript evidence is retained, not automatically resent."),
                         },
                         _ => agentdocker_core::InputReport::Ready,
@@ -333,22 +352,9 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                     continue;
                 }
                 if let Some(message) = messages.first() {
-                    let mut notification = json!({
-                        "jsonrpc": "2.0", "method": "notifications/claude/channel",
-                        "params": {"content": serde_json::to_string(&message.payload)?, "meta": {
-                            "message_id": message.id.as_str(), "from_agent": message.from,
-                            "kind": message.kind, "sent_at": message.sent_at.to_rfc3339(),
-                            "destination": serde_json::to_string(&message.to)?,
-                            "reply_destination": crate::format::reply_destination(message),
-                            "delivery_rule": "Acknowledge this message_id after receiving the full body. Reply using send_message to reply_destination with reply_to=message_id so the response appears in the original app conversation. A human pause request requires stopping work and reporting that actual state there; a terminal-only answer is not an app reply.",
-                        }}
-                    });
-                    if let Some(question) = &message.reply_to {
-                        notification["params"]["meta"]["reply_to"] = json!(question.as_str());
-                    }
-                    write(&mut output, &notification).await?;
+                    write(&mut output, &offer(message, false)?).await?;
                     first_offer_at = None;
-                    offered = Some((message.id.clone(), tokio::time::Instant::now(), false));
+                    offered = Some((message.id.clone(), tokio::time::Instant::now(), false, false));
                 }
             }
         }
@@ -385,6 +391,28 @@ mod priority_tests {
             assert!(!priority(&invalid));
         }
     }
+}
+
+/// The channel notification for one queued message. A repeat carries the
+/// same `message_id` and says so, so the model acknowledges it once.
+fn offer(message: &agentdocker_core::Envelope, repeat: bool) -> Result<Value> {
+    let mut notification = json!({
+        "jsonrpc": "2.0", "method": "notifications/claude/channel",
+        "params": {"content": serde_json::to_string(&message.payload)?, "meta": {
+            "message_id": message.id.as_str(), "from_agent": message.from,
+            "kind": message.kind, "sent_at": message.sent_at.to_rfc3339(),
+            "destination": serde_json::to_string(&message.to)?,
+            "reply_destination": crate::format::reply_destination(message),
+            "delivery_rule": "Acknowledge this message_id after receiving the full body. A repeated offer carries the same message_id and repeat=true: it is the same message, acknowledged once. Reply using send_message to reply_destination with reply_to=message_id so the response appears in the original app conversation. A human pause request requires stopping work and reporting that actual state there; a terminal-only answer is not an app reply.",
+        }}
+    });
+    if let Some(question) = &message.reply_to {
+        notification["params"]["meta"]["reply_to"] = json!(question.as_str());
+    }
+    if repeat {
+        notification["params"]["meta"]["repeat"] = json!(true);
+    }
+    Ok(notification)
 }
 
 async fn write(output: &mut impl stdio::Output, value: &Value) -> Result<()> {
@@ -634,7 +662,23 @@ mod tests {
                     receive(&mut reader).await["params"]["meta"]["message_id"],
                     ids[0].as_str()
                 );
+                // No receipt has been seen this session, so the first
+                // offer is repeated once after the receipt timeout, under
+                // the same id and saying it is a repeat; then nothing more.
                 let mut frame = Vec::new();
+                let repeated: Value = serde_json::from_slice(
+                    &tokio::time::timeout(
+                        Duration::from_secs(35),
+                        read_frame(&mut reader, &mut frame),
+                    )
+                    .await
+                    .expect("the first unreceived offer is repeated once")
+                    .unwrap()
+                    .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(repeated["params"]["meta"]["message_id"], ids[0].as_str());
+                assert_eq!(repeated["params"]["meta"]["repeat"], true);
                 assert!(
                     tokio::time::timeout(
                         Duration::from_secs(65),
@@ -1114,6 +1158,14 @@ mod tests {
             for expected in 2..=4 {
                 tokio::time::advance(Duration::from_secs(31)).await;
                 tokio::time::sleep(Duration::from_millis(300)).await;
+                if expected == 2 {
+                    // No receipt has been seen yet, so the head is offered
+                    // a second time at the receipt timeout, before anything
+                    // else is written.
+                    let repeat = receive(&mut reader).await;
+                    assert_eq!(repeat["params"]["meta"]["message_id"], head.as_str());
+                    assert_eq!(repeat["params"]["meta"]["repeat"], true);
+                }
                 write_line(
                     &mut writer,
                     &json!({"jsonrpc":"2.0","id":expected,"method":"ping"}),
@@ -1257,6 +1309,53 @@ mod tests {
         );
         result.unwrap();
         assert_eq!(server.backend.0.borrow()[0].id, ids[1]);
+    }
+
+    /// Once a receipt has been seen, the handler is known to be there: a
+    /// later offer that goes unreceived is never repeated, only reported.
+    #[tokio::test(start_paused = true)]
+    async fn a_later_unreceived_offer_is_not_repeated_once_a_receipt_has_been_seen() {
+        let server = server();
+        let ids: Vec<_> = server
+            .backend
+            .0
+            .borrow()
+            .iter()
+            .map(|m| m.id.clone())
+            .collect();
+        let (transport, client) = tokio::io::duplex(8192);
+        let (input, output) = tokio::io::split(transport);
+        let trial = async {
+            let (reader, mut writer) = tokio::io::split(client);
+            let mut reader = BufReader::new(reader);
+            write_line(
+                &mut writer,
+                &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            )
+            .await
+            .unwrap();
+            let first = receive(&mut reader).await;
+            assert_eq!(first["params"]["meta"]["message_id"], ids[0].as_str());
+            assert!(first["params"]["meta"].get("repeat").is_none());
+            write_line(&mut writer, &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"acknowledge_messages","arguments":{"messages":[ids[0]]}}})).await.unwrap();
+            assert_eq!(receive(&mut reader).await["id"], 1);
+            let second = receive(&mut reader).await;
+            assert_eq!(second["params"]["meta"]["message_id"], ids[1].as_str());
+            let mut frame = Vec::new();
+            assert!(
+                tokio::time::timeout(Duration::from_secs(95), read_frame(&mut reader, &mut frame))
+                    .await
+                    .is_err(),
+                "an unreceived offer after a seen receipt is not repeated"
+            );
+            assert_eq!(server.backend.0.borrow().len(), 1);
+            writer.shutdown().await.unwrap();
+        };
+        let (result, ()) = tokio::join!(
+            pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+            trial
+        );
+        result.unwrap();
     }
 
     #[tokio::test]
