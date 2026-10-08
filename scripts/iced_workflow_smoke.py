@@ -736,8 +736,11 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                      step("click", id="inbox"),
                                      step("wait_control", id="thread-back", present=True),
                                      step("click", id="thread-back"),
-                                     step("wait_control", id=f"thread-{receiver['id']}", present=True),
-                                     step("click", id=f"thread-{receiver['id']}"),
+                                     # An agent nobody has written to is not listed;
+                                     # + (New message) starts the conversation.
+                                     step("click", id="new-conversation"),
+                                     step("wait_control", id=f"new-direct-{receiver['id']}", present=True),
+                                     step("click", id=f"new-direct-{receiver['id']}"),
                                      step("wait_control", id="thread-back", present=True),
                                      step("wait_control", id=f"reply-{receiver['id']}", present=True),
                                      step("wait_text", text=input_status), *send_probe,
@@ -778,9 +781,12 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             assert rpc(endpoint, {"op": "delivery_queue", "agent": receiver["id"]})["type"] == "input_waiting"
             report["provider_limit_window"] = launch("provider-limit", [
                 step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
-                step("wait_text", text="readiness-fixture: Usage limit"),
-                step("wait_control", id=f"needs-you-review-{receiver['id']}", present=False),
-                step("click", id=f"needs-you-provider-{receiver['id']}"),
+                # The block is the row's status word, in amber.
+                step("wait_text", text="Usage limit"),
+                # A blocked provider is said on the session's row, not in
+                # Needs you: that is for questions to the person.
+                step("wait_control", id=f"needs-you-provider-{receiver['id']}", present=False),
+                step("click", id=f"session-{receiver['id']}"),
                 step("wait_control", id="review-delivery", present=False),
                 step("wait_text", text="Usage limit"),
                 step("click", id="session-message"), step("fill", id="session-message-text", text="Keep this draft during recovery"),
@@ -792,6 +798,42 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             assert rpc(endpoint, {"op": "delivery_queue", "agent": receiver["id"]})["messages"] == retained
             checks.append("provider_limit_resume_preserves_draft_receipts_and_retained_queue")
             rpc(endpoint, {"op": "deregister", "agent": receiver["id"]})
+            # One-click review: an agent in a worktree of a git project has a
+            # commit; its session's Changes list the file and open its diff,
+            # and Merge into main makes a merge commit in the main folder.
+            repo, login = root / "review-repo", root / "review-login"
+            repo.mkdir(mode=0o700)
+            def git(cwd, *args):
+                subprocess.run(["git", "-c", "user.email=smoke@example.com", "-c", "user.name=Smoke", *args],
+                               cwd=cwd, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            git(repo, "init", "-q", "-b", "main")
+            # The daemon's merge commit needs an identity of its own: a fresh
+            # runner has no global one.
+            git(repo, "config", "user.email", "smoke@example.com")
+            git(repo, "config", "user.name", "Smoke")
+            (repo / "README.md").write_text("fixture\n")
+            git(repo, "add", ".")
+            git(repo, "commit", "-qm", "initial")
+            git(repo, "worktree", "add", "-q", "-b", "feat/login", str(login))
+            (login / "login.rs").write_text("fn login() {}\n")
+            git(login, "add", ".")
+            git(login, "commit", "-qm", "Add login")
+            reviewer = rpc(endpoint, {"op": "register", "spec": {
+                "name": "review-fixture", "runtime": "claude-code", "workdir": str(login)}})["agent"]
+            report["review_window"] = launch("review-merge", [
+                step("click", id="projects"), step("click", id=f"project-{repo}"),
+                step("click", id="project-tab-Agents"),
+                step("click", id=f"session-{reviewer['id']}"),
+                step("wait_text", text="feat/login → main"), step("wait_text", text="work committed"),
+                step("click", id="changes-file-login.rs"), step("wait_text", text="+fn login() {}"),
+                step("capture", name="review-changes"),
+                step("click", id="merge-branch"), step("wait_text", text="Merged into main"),
+                step("capture", name="review-merged")])
+            parents = subprocess.run(["git", "rev-list", "--parents", "-n", "1", "HEAD"], cwd=repo, env=env,
+                                     capture_output=True, text=True, check=True).stdout.split()
+            assert len(parents) == 3 and (repo / "login.rs").exists(), parents
+            checks.append("session_changes_review_and_one_click_merge")
+            rpc(endpoint, {"op": "deregister", "agent": reviewer["id"]})
             # Ended, with a conversation id and its tool on PATH: the row in
             # the Earlier group carries Reconnect here itself. A rendered
             # control, not a relaunch: nothing is pressed.

@@ -491,6 +491,15 @@ pub fn event_line(event: &Event) -> String {
         EventKind::WorktreeCreated { agent, path } => {
             format!("{agent} created worktree {}", path.display())
         }
+        EventKind::BranchMerged {
+            agent,
+            branch,
+            target,
+            commit,
+        } => {
+            let short: String = commit.chars().take(7).collect();
+            format!("{branch} ({agent}) merged into {target} as {short}")
+        }
         EventKind::Committed {
             agent,
             head,
@@ -955,6 +964,63 @@ pub fn delivery(recipients: &[agentdocker_core::delivery::Recipient]) {
         })
         .collect();
     table(&["AGENT", "WHERE IT STANDS", "QUEUED", "TAKEN"], &rows);
+}
+
+/// An agent's branch against the main checkout's: what it brings, and
+/// what stops a merge now, then the diff when asked.
+pub fn review(review: &agentdocker_core::review::Review, patch: bool) {
+    let target = review
+        .target
+        .clone()
+        .unwrap_or_else(|| "(no branch)".to_owned());
+    let branch = review
+        .branch
+        .clone()
+        .unwrap_or_else(|| "(detached)".to_owned());
+    let (added, removed) = review.totals();
+    println!(
+        "{branch} into {target}: {} commit{} · {} file{} · +{added} -{removed}",
+        review.commits.len(),
+        if review.commits.len() == 1 { "" } else { "s" },
+        review.files.len(),
+        if review.files.len() == 1 { "" } else { "s" },
+    );
+    if let Some(head) = &review.head {
+        println!("head {head}");
+    }
+    for commit in &review.commits {
+        println!(
+            "  {} {}",
+            commit.sha.chars().take(7).collect::<String>(),
+            commit.subject
+        );
+    }
+    for file in &review.files {
+        let counts = match (file.added, file.removed) {
+            (Some(a), Some(r)) => format!("+{a} -{r}"),
+            _ => "binary".to_owned(),
+        };
+        println!("  {} {}  {counts}", file.status, file.path);
+    }
+    let blockers = review.blockers();
+    if blockers.is_empty() {
+        println!(
+            "Ready to merge: `agentdocker merge {} --head {}`",
+            review.agent,
+            review.head.clone().unwrap_or_default()
+        );
+    } else {
+        for blocker in blockers {
+            println!("not ready: {}", blocker.label(&target));
+        }
+    }
+    if patch {
+        println!();
+        print!("{}", review.patch);
+        if review.truncated {
+            println!("(diff cut short; the file list above is complete)");
+        }
+    }
 }
 
 /// The table of a usage report and, under it, what the totals cover:

@@ -16,6 +16,8 @@ pub(super) struct State {
     pub usage_since: &'static str,
     pub usage_by: agentdocker_core::usage::report::Group,
     pub session_details: bool,
+    /// The changed file whose diff is open in the session's Changes.
+    pub diff_file: Option<String>,
     pub review_delivery: bool,
     pub session_message: bool,
     pub session_drafts: BTreeMap<String, SessionDraft>,
@@ -70,17 +72,11 @@ pub(super) struct State {
     /// How many of the Earlier group's entries are on screen: a page, and
     /// a page more for each *Show older*; closing the group resets it.
     pub earlier_shown: usize,
-    /// The same two for the earlier conversations in Messages: its own
-    /// fold and page, so the two screens' groups do not move each other.
-    pub earlier_conversations_open: bool,
-    pub earlier_conversations_shown: usize,
     /// Whether the temporary projects (discovered under /tmp, unpinned)
     /// are unfolded in the sidebar: the person's choice once they have
     /// toggled it, until then automatic (open while one of them has a
     /// live session).
     pub temporary_open: Option<bool>,
-    /// Whether the conversations between agents are unfolded.
-    pub peers_open: bool,
     /// The project row whose menu is open.
     pub project_menu: Option<PathBuf>,
     /// The project row under the pointer: its menu button shows only
@@ -560,6 +556,12 @@ pub enum Message {
     SessionFilter(super::sessions::Filter),
     More,
     SessionDetails,
+    /// Read the session's branch against the main folder's again.
+    ReviewChanges(String),
+    /// Open or close one changed file's diff.
+    ToggleDiffFile(String),
+    /// Merge the session's branch at the head the person looked at.
+    MergeBranch(String, String),
     ReviewDelivery,
     /// The Needs-you strip's **Review**: open that session with its
     /// delivery review already unfolded, wherever the person was.
@@ -604,11 +606,7 @@ pub enum Message {
     ToggleEarlier,
     /// One page more of the Earlier group.
     MoreEarlier,
-    /// The earlier conversations in Messages: their own fold and page.
-    ToggleEarlierConversations,
-    MoreEarlierConversations,
     ToggleTemporary,
-    TogglePeers,
     /// A divider between the window's columns was dragged, in one grid.
     PaneResized(super::panes::Grid, iced::widget::pane_grid::ResizeEvent),
     /// Every conversation the person owes a read is read through its head.
@@ -1286,6 +1284,11 @@ impl App {
             }
             Message::SelectSession(id) => {
                 self.shell.unviewed_done.remove(&id);
+                if self.shell.selected.as_deref() != Some(id.as_str()) {
+                    self.shell.diff_file = None;
+                    self.merge_outcome = None;
+                }
+                self.request_review(&id);
                 self.shell.selected = Some(id);
                 self.shell.session_details = false;
                 self.shell.review_delivery = false;
@@ -1401,22 +1404,10 @@ impl App {
                     .max(EARLIER_PAGE)
                     .saturating_add(EARLIER_PAGE);
             }
-            Message::ToggleEarlierConversations => {
-                self.shell.earlier_conversations_open = !self.shell.earlier_conversations_open;
-                self.shell.earlier_conversations_shown = EARLIER_PAGE;
-            }
-            Message::MoreEarlierConversations => {
-                self.shell.earlier_conversations_shown = self
-                    .shell
-                    .earlier_conversations_shown
-                    .max(EARLIER_PAGE)
-                    .saturating_add(EARLIER_PAGE);
-            }
             Message::ToggleTemporary => {
                 let open = self.temporary_fold_open();
                 self.shell.temporary_open = Some(!open);
             }
-            Message::TogglePeers => self.shell.peers_open = !self.shell.peers_open,
             Message::PaneResized(grid, event) => {
                 if self.panes.resized(grid, event) {
                     self.shell.catalog.panes = self.panes.widths;
@@ -1685,6 +1676,21 @@ impl App {
                 }
             }
             Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
+            Message::ReviewChanges(id) => self.request_review(&id),
+            Message::ToggleDiffFile(path) => {
+                self.shell.diff_file = if self.shell.diff_file.as_deref() == Some(path.as_str()) {
+                    None
+                } else {
+                    Some(path)
+                };
+            }
+            Message::MergeBranch(id, head) => {
+                if self.merging.is_none() && self.connected.is_ok() {
+                    self.merging = Some(id.clone());
+                    self.merge_outcome = None;
+                    self.send(Cmd::MergeBranch { agent: id, head });
+                }
+            }
             Message::SelectThread(agent) => {
                 self.shell.inbox_thread = agent;
                 self.shell.inbox_open = true;
@@ -4323,6 +4329,13 @@ mod tests {
         ));
         let _ = app.update(Message::SessionDraft("other".into(), "other draft".into()));
         let _ = app.update(Message::SelectSession("other".into()));
+        // Selecting a session reads its Changes; that read is not part of
+        // what this test counts.
+        assert!(
+            commands
+                .try_iter()
+                .all(|cmd| matches!(cmd, Cmd::ReviewBranch(ref id) if id == "other"))
+        );
         messages
             .send(Msg::SessionSent(
                 "recipient".into(),
@@ -5026,8 +5039,8 @@ mod tests {
         assert!(app.status.contains("Copied"), "{}", app.status);
     }
 
-    /// The Earlier groups (ended sessions, earlier conversations) open on a
-    /// page of entries and grow a page per *Show older*; closing a group
+    /// The ended sessions' Earlier group opens on a page of entries and
+    /// grows a page per *Show older*; closing the group
     /// forgets how far it was opened, and the temporary projects fold
     /// opens and closes on its own toggle.
     #[test]
@@ -5044,16 +5057,6 @@ mod tests {
         assert!(!app.shell.earlier_open);
         let _ = app.update(Message::ToggleEarlier);
         assert_eq!(app.shell.earlier_shown, EARLIER_PAGE, "reopened at a page");
-        // The conversations' group is its own: untouched by the sessions'
-        // toggle and page, and the other way round.
-        assert!(!app.shell.earlier_conversations_open);
-        let _ = app.update(Message::ToggleEarlierConversations);
-        let _ = app.update(Message::MoreEarlierConversations);
-        assert!(app.shell.earlier_conversations_open);
-        assert_eq!(app.shell.earlier_conversations_shown, 2 * EARLIER_PAGE);
-        assert_eq!(app.shell.earlier_shown, EARLIER_PAGE);
-        let _ = app.update(Message::ToggleEarlier);
-        assert!(app.shell.earlier_conversations_open);
         // The temporary fold is automatic until toggled: closed with
         // nothing running in a scratch project, and a toggle is the
         // person's choice from then on — closable even while one runs.

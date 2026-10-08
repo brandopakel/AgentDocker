@@ -60,6 +60,7 @@ enum Key {
     Questions,
     SecretReviews,
     Delivery(agentdocker_core::MessageId),
+    ReviewBranch(String),
 }
 
 fn key(command: &Cmd) -> Option<Key> {
@@ -74,6 +75,7 @@ fn key(command: &Cmd) -> Option<Key> {
         Cmd::Pauses => Key::Pauses,
         Cmd::Me => Key::Me,
         Cmd::Questions => Key::Questions,
+        Cmd::ReviewBranch(agent) => Key::ReviewBranch(agent.clone()),
         Cmd::SecretReviews => Key::SecretReviews,
         Cmd::Delivery(message) => Key::Delivery(message.clone()),
         _ => return None,

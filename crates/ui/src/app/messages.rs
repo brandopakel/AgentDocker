@@ -21,8 +21,8 @@ use iced::{
     widget::{Space, column, container, responsive, row, scrollable, text},
 };
 use look::{
-    count_divider, day_divider, disc, group_header, guided, key_hint, link, section_label,
-    status_line, tinted, unread_divider, with_presence,
+    count_divider, day_divider, disc, key_hint, link, section_label, status_line, tinted,
+    unread_divider, with_presence,
 };
 
 pub(super) mod look;
@@ -146,8 +146,18 @@ impl App {
             // A pair of agents reads as the two names, so two pairs of the
             // same tools are told apart; what each is on belongs under
             // the header, not in the list.
+            // An agent reads with its project when more than one project
+            // is on view: the same tools run in several repositories.
             ConversationKind::Dm => match self.counterpart(summary) {
-                Some(id) => self.name_of(id),
+                Some(id) => match self
+                    .conversation_scope()
+                    .is_none()
+                    .then(|| self.project_name_of(id))
+                    .flatten()
+                {
+                    Some(project) => format!("{} · {project}", self.name_of(id)),
+                    None => self.name_of(id),
+                },
                 None => match summary.conversation.dm_parties() {
                     Some((a, b)) => format!("{} ↔ {}", self.name_of(a), self.name_of(b)),
                     None => summary.title.clone(),
@@ -540,30 +550,32 @@ impl App {
                 || label.to_lowercase().contains(&filter)
                 || summary.title.to_lowercase().contains(&filter)
         };
-        // Each project's chat, by its project's name; the person's own
-        // direct messages; what two agents said to each other, folded; and
-        // conversations with sessions that have ended, folded under
-        // Earlier. Nothing else is listed: `#all`, channels, contested
+        // Each kept project's chat, by its project's name, and the person's
+        // own direct messages: nothing else. A conversation nobody has
+        // written in is not listed (+ starts one), what two agents said to
+        // each other is theirs, and a conversation with a session that has
+        // ended is listed only while it holds something unread, so nothing
+        // waiting on the person is out of reach. `#all`, channels, contested
         // rooms and AgentDocker's notices to an agent are the CLI's.
         let mut projects: Vec<(String, &ConversationSummary)> = Vec::new();
         let mut direct: Vec<&ConversationSummary> = Vec::new();
-        let mut peers: Vec<&ConversationSummary> = Vec::new();
-        let mut earlier: Vec<&ConversationSummary> = Vec::new();
         for summary in &self.conversations {
             match summary.kind {
                 ConversationKind::Everyone => {
-                    let (name, _) = self.chat_row_project(summary);
-                    if matches(&name, summary) {
+                    let (name, root) = self.chat_row_project(summary);
+                    if root.is_some() && matches(&name, summary) {
                         projects.push((name, summary));
                     }
                 }
-                // The person's own direct messages are the list; what two
-                // agents said to each other is a group of its own, folded.
-                ConversationKind::Dm if matches(&self.conversation_label(summary), summary) => {
+                ConversationKind::Dm
+                    if summary.last_seq.is_some()
+                        && matches(&self.conversation_label(summary), summary) =>
+                {
                     match self.counterpart(summary) {
-                        Some(id) if self.agent_live(id) => direct.push(summary),
-                        Some(_) => earlier.push(summary),
-                        None => peers.push(summary),
+                        Some(id) if self.agent_live(id) || summary.unread > 0 => {
+                            direct.push(summary)
+                        }
+                        _ => {}
                     }
                 }
                 ConversationKind::Dm
@@ -573,12 +585,10 @@ impl App {
                 | ConversationKind::Notices => {}
             }
         }
-        // An identity's older conversations — keyed by a former id — are
-        // not hidden: they keep their unread, draft and history, so they
-        // sit under Earlier, reachable, while the list shows the identity
-        // once.
-        let (direct, folded) = self.fold_direct(direct);
-        earlier.extend(folded);
+        // An identity's older conversations, keyed by a former id, are kept
+        // while they hold something unread; the list shows the identity once.
+        let (mut direct, folded) = self.fold_direct(direct);
+        direct.extend(folded.into_iter().filter(|summary| summary.unread > 0));
         projects.sort_by_key(|(name, _)| name.to_lowercase());
         let mut list = column![].spacing(2);
         // A reply from a notification that did not go, whose conversation
@@ -709,81 +719,14 @@ impl App {
         }
         list = list.push(section_label("Direct messages", c));
         if direct.is_empty() {
-            list = list.push(container(note("No agent is running.", c).size(12)).padding([2, 8]));
+            list = list.push(
+                container(note("No direct messages yet. + writes to an agent.", c).size(12))
+                    .padding([2, 8]),
+            );
         }
         for summary in direct {
             list = list.push(self.conversation_row(summary, Some(true), row_width, c));
         }
-        // What is read rather than answered folds away under the lists.
-        let mut folds = column![].spacing(2);
-        if !peers.is_empty() {
-            let open = self.shell.peers_open;
-            folds = folds.push(group_header(
-                "peers-toggle",
-                "Between agents",
-                peers.len(),
-                open,
-                Message::TogglePeers,
-                c,
-            ));
-            if open {
-                folds = folds.push(guided(
-                    peers
-                        .into_iter()
-                        .map(|summary| self.conversation_row(summary, None, row_width - 21.0, c))
-                        .collect(),
-                    c,
-                ));
-            }
-        }
-        if !earlier.is_empty() {
-            // Its own fold and page: the ended sessions' Earlier group on
-            // the Agents screen is another list.
-            let open = self.shell.earlier_conversations_open;
-            folds = folds.push(group_header(
-                "earlier-toggle",
-                "Earlier",
-                earlier.len(),
-                open,
-                Message::ToggleEarlierConversations,
-                c,
-            ));
-            if open {
-                // A page of the earlier conversations at a time, newest
-                // first; the rest are a click away.
-                let shown = self
-                    .shell
-                    .earlier_conversations_shown
-                    .max(super::EARLIER_PAGE);
-                let older = earlier.len().saturating_sub(shown);
-                let mut rows: Vec<Element<'_, Message>> = earlier
-                    .into_iter()
-                    .take(shown)
-                    .map(|summary| self.conversation_row(summary, Some(false), row_width - 21.0, c))
-                    .collect();
-                if older > 0 {
-                    let words = format!("Show {} older", older.min(super::EARLIER_PAGE));
-                    rows.push(
-                        container(link(
-                            "earlier-more",
-                            words.clone(),
-                            words,
-                            Some(Message::MoreEarlierConversations),
-                            c.accent,
-                        ))
-                        .padding([4, 2])
-                        .into(),
-                    );
-                }
-                folds = folds.push(guided(rows, c));
-            }
-        }
-        list = list.push(container(folds).padding(iced::Padding {
-            top: 10.0,
-            right: 0.0,
-            bottom: 8.0,
-            left: 0.0,
-        }));
         container(
             scrollable(list)
                 .direction(look::slim_scrollbar(4.0))
