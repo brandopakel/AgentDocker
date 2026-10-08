@@ -2777,25 +2777,24 @@ impl Daemon {
                 return refused;
             }
             let now = Utc::now();
-            let mut event = Event::new(
+            let event = Event::new(
                 EventKind::SessionRelaunched {
                     agent: record.id.clone(),
                     session,
                 },
                 now,
             );
-            event.seq = state.next_seq;
-            let committed = state.persist("session relaunch", |store| {
-                store.agent_transition(&record, &event)
-            });
-            if committed == Persisted::Committed {
-                *state
-                    .registry
-                    .get_mut(&record.id)
-                    .expect("relaunched record retained") = record.clone();
-                state.next_seq += 1;
-                let _ = state.events.send(event);
-            }
+            let committed = state.transition(
+                "session relaunch",
+                event,
+                |store, event| store.agent_transition(&record, event),
+                |state| {
+                    *state
+                        .registry
+                        .get_mut(&record.id)
+                        .expect("relaunched record retained") = record.clone();
+                },
+            );
             match state.write_failure() {
                 Some(error) => Err(error),
                 None if committed == Persisted::Committed => Ok(()),
@@ -2858,24 +2857,25 @@ impl Daemon {
                         running.status = AgentStatus::Running;
                         running.started_at = Some(now);
                         running.last_seen = now;
-                        let mut event = Event::new(
+                        let event = Event::new(
                             EventKind::AgentStarted {
                                 agent: record.id.clone(),
                                 pid: Some(pid),
                             },
                             now,
                         );
-                        event.seq = state.next_seq;
-                        let committed = state.persist("launch completion", |store| {
-                            store.agent_transition(&running, &event)
-                        });
+                        let committed = state.transition(
+                            "launch completion",
+                            event,
+                            |store, event| store.agent_transition(&running, event),
+                            |state| {
+                                *state
+                                    .registry
+                                    .get_mut(&record.id)
+                                    .expect("launch identity retained") = running.clone();
+                            },
+                        );
                         if committed == Persisted::Committed {
-                            *state
-                                .registry
-                                .get_mut(&record.id)
-                                .expect("launch identity retained") = running.clone();
-                            state.next_seq += 1;
-                            let _ = state.events.send(event);
                             Some(running)
                         } else {
                             None
@@ -7009,64 +7009,64 @@ impl State {
         }
         let events: Vec<_> = kinds
             .into_iter()
-            .enumerate()
-            .map(|(index, kind)| {
-                let mut event = Event::new(kind, envelope.sent_at);
-                event.seq = self.next_seq + index as u64;
-                event
-            })
+            .map(|kind| Event::new(kind, envelope.sent_at))
             .collect();
         // The person's own messages are followed per recipient, so they can
         // see where each stands; agents' traffic is not.
         let tracked = self.is_human_id(&AgentId::from(envelope.from.as_str()));
-        let _ = self.persist("message", |store| {
-            store.publish_message_with_channel(
-                &envelope,
-                &recipients,
-                INBOX_CAPACITY,
-                sender.as_ref(),
-                question.as_ref(),
-                closed.as_ref(),
-                &events,
-                channel.as_ref().map(|channel| (channel, journal.as_ref())),
-                document
-                    .as_ref()
-                    .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
-                tracked,
-            )
-        });
+        let _ = self.commit(
+            "message",
+            events,
+            |store, events| {
+                store.publish_message_with_channel(
+                    &envelope,
+                    &recipients,
+                    INBOX_CAPACITY,
+                    sender.as_ref(),
+                    question.as_ref(),
+                    closed.as_ref(),
+                    events,
+                    channel.as_ref().map(|channel| (channel, journal.as_ref())),
+                    document
+                        .as_ref()
+                        .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
+                    tracked,
+                )
+            },
+            |state, _, ()| {
+                if let Some(channel) = &channel {
+                    state.channels.insert(channel.id.clone(), channel.clone());
+                }
+                if let Some(entry) = &journal {
+                    state
+                        .journal_seq
+                        .insert(entry.project.clone(), entry.seq + 1);
+                    state.cache_journal(entry.clone());
+                }
+                for id in &recipients {
+                    let queue = state.inboxes.entry(id.clone()).or_default();
+                    queue.push_back(envelope.clone());
+                    *state.inbox_bytes.entry(id.clone()).or_default() += bytes;
+                }
+                if let Some(sender) = &sender {
+                    let current = state
+                        .registry
+                        .get_mut(&sender.id)
+                        .expect("sender retained under lock");
+                    *current = sender.clone();
+                }
+                if let Some(question) = &question {
+                    state
+                        .questions
+                        .insert(question.id.clone(), question.clone());
+                }
+                if let Some(closed) = &closed {
+                    state.questions.remove(closed);
+                }
+            },
+        );
         if let Some(error) = self.write_failure() {
             return error;
-        }
-        if let Some(channel) = channel {
-            self.channels.insert(channel.id.clone(), channel);
-        }
-        if let Some(entry) = journal {
-            self.journal_seq
-                .insert(entry.project.clone(), entry.seq + 1);
-            self.cache_journal(entry);
-        }
-        for id in &recipients {
-            let queue = self.inboxes.entry(id.clone()).or_default();
-            queue.push_back(envelope.clone());
-            *self.inbox_bytes.entry(id.clone()).or_default() += bytes;
-        }
-        if let Some(sender) = sender {
-            let current = self
-                .registry
-                .get_mut(&sender.id)
-                .expect("sender retained under lock");
-            *current = sender;
-        }
-        if let Some(question) = question {
-            self.questions.insert(question.id.clone(), question);
-        }
-        if let Some(closed) = &closed {
-            self.questions.remove(closed);
-        }
-        self.next_seq += events.len() as u64;
-        for event in events {
-            let _ = self.events.send(event);
         }
         if let Some(question) = closed {
             if held {
@@ -7639,103 +7639,107 @@ impl State {
         // (the same broadcast reached more than one life), so a reopen
         // delivers exactly what memory does now.
         let merged = plan.queue.clone();
-        let mut event = Event::new(kind, now);
-        event.seq = self.next_seq;
         // Memory moves only on a committed write: a fenced daemon skips
         // the write and leaves the records as they were, and they stand
         // until a later attempt after the transfer folds them.
-        if self.persist("record fold", |store| store.write_resume(&plan, &event))
-            != Persisted::Committed
-        {
-            return Err("the store did not take the fold".into());
-        }
-        match self.registry.fold_into(retired, &kept) {
-            Ok(_) => {}
-            Err(error) => {
-                // Checked by the plan; the store has the aliases, memory
-                // must follow them.
-                error!(%error, "folding records into one");
-            }
-        }
-        *self.registry.get_mut(&kept).expect("canonical record") = canonical.clone();
-        let project = canonical.project.as_ref().map(ProjectRef::id);
-        for id in retired {
-            self.inboxes.remove(id);
-            self.inbox_bytes.remove(id);
-            self.live_subscribers.remove(id);
-            if let Some(project) = &project {
-                // A retired record's cursor goes with it — the fresh one's
-                // freshly seeded, an earlier life's long passed; the
-                // canonical record's own continues where it left off.
-                self.journal_cursors
-                    .remove(&(id.as_str().to_owned(), project.clone()));
-            }
-        }
-        // What the store rewrote, memory rewrites the same way: a question
-        // an earlier life asked is the canonical record's to cancel now,
-        // and channel membership names the record that is.
-        for question in self.questions.values_mut() {
-            if retired.iter().any(|id| id.as_str() == question.from) {
-                question.from = kept.to_string();
-            }
-            if let agentdocker_core::Destination::Agent(to) = &mut question.to
-                && retired.contains(to)
-            {
-                *to = kept.clone();
-            }
-        }
-        for channel in self.channels.values_mut() {
-            for member in &mut channel.members {
-                if retired.contains(member) {
-                    *member = kept.clone();
-                }
-            }
-            let mut seen = HashSet::new();
-            channel.members.retain(|id| seen.insert(id.clone()));
-            if let Some(opened_by) = &mut channel.opened_by
-                && retired.contains(opened_by)
-            {
-                *opened_by = kept.clone();
-            }
-            for review in &mut channel.reviews {
-                if retired.contains(&review.by) {
-                    review.by = kept.clone();
-                }
-                if retired.contains(&review.of) {
-                    review.of = kept.clone();
-                }
-            }
-        }
-        let moved: usize = merged.iter().map(message_bytes).sum();
-        self.inboxes
-            .insert(kept.clone(), merged.into_iter().collect());
-        self.inbox_bytes.insert(kept.clone(), moved);
-        // Anything retired that the daemon had created a worktree for is the
-        // canonical record's worktree now.
-        for creator in self.worktree_creators.values_mut() {
-            if retired.contains(creator) {
-                *creator = kept.clone();
-            }
-        }
-        // Stale notices owed for the observations that just joined are owed
-        // to the canonical record; one still queued moved with the queue.
-        for id in retired {
-            if let Some(pending) = self.pending_stale.remove(id) {
-                let owed = self.pending_stale.entry(kept.clone()).or_default();
-                for (path, change) in pending {
-                    if owed.get(&path).is_none_or(|known| known.at < change.at) {
-                        owed.insert(path, change);
+        let committed = self.transition(
+            "record fold",
+            Event::new(kind, now),
+            |store, event| store.write_resume(&plan, event),
+            |state| {
+                match state.registry.fold_into(retired, &kept) {
+                    Ok(_) => {}
+                    Err(error) => {
+                        // Checked by the plan; the store has the aliases, memory
+                        // must follow them.
+                        error!(%error, "folding records into one");
                     }
                 }
-            }
-            if let Some(message) = self.stale_outstanding.remove(id) {
-                self.stale_outstanding
-                    .entry(kept.clone())
-                    .or_insert(message);
-            }
+                *state.registry.get_mut(&kept).expect("canonical record") = canonical.clone();
+                let project = canonical.project.as_ref().map(ProjectRef::id);
+                for id in retired {
+                    state.inboxes.remove(id);
+                    state.inbox_bytes.remove(id);
+                    state.live_subscribers.remove(id);
+                    if let Some(project) = &project {
+                        // A retired record's cursor goes with it — the fresh one's
+                        // freshly seeded, an earlier life's long passed; the
+                        // canonical record's own continues where it left off.
+                        state
+                            .journal_cursors
+                            .remove(&(id.as_str().to_owned(), project.clone()));
+                    }
+                }
+                // What the store rewrote, memory rewrites the same way: a question
+                // an earlier life asked is the canonical record's to cancel now,
+                // and channel membership names the record that is.
+                for question in state.questions.values_mut() {
+                    if retired.iter().any(|id| id.as_str() == question.from) {
+                        question.from = kept.to_string();
+                    }
+                    if let agentdocker_core::Destination::Agent(to) = &mut question.to
+                        && retired.contains(to)
+                    {
+                        *to = kept.clone();
+                    }
+                }
+                for channel in state.channels.values_mut() {
+                    for member in &mut channel.members {
+                        if retired.contains(member) {
+                            *member = kept.clone();
+                        }
+                    }
+                    let mut seen = HashSet::new();
+                    channel.members.retain(|id| seen.insert(id.clone()));
+                    if let Some(opened_by) = &mut channel.opened_by
+                        && retired.contains(opened_by)
+                    {
+                        *opened_by = kept.clone();
+                    }
+                    for review in &mut channel.reviews {
+                        if retired.contains(&review.by) {
+                            review.by = kept.clone();
+                        }
+                        if retired.contains(&review.of) {
+                            review.of = kept.clone();
+                        }
+                    }
+                }
+                let moved: usize = merged.iter().map(message_bytes).sum();
+                state
+                    .inboxes
+                    .insert(kept.clone(), merged.into_iter().collect());
+                state.inbox_bytes.insert(kept.clone(), moved);
+                // Anything retired that the daemon had created a worktree for is the
+                // canonical record's worktree now.
+                for creator in state.worktree_creators.values_mut() {
+                    if retired.contains(creator) {
+                        *creator = kept.clone();
+                    }
+                }
+                // Stale notices owed for the observations that just joined are owed
+                // to the canonical record; one still queued moved with the queue.
+                for id in retired {
+                    if let Some(pending) = state.pending_stale.remove(id) {
+                        let owed = state.pending_stale.entry(kept.clone()).or_default();
+                        for (path, change) in pending {
+                            if owed.get(&path).is_none_or(|known| known.at < change.at) {
+                                owed.insert(path, change);
+                            }
+                        }
+                    }
+                    if let Some(message) = state.stale_outstanding.remove(id) {
+                        state
+                            .stale_outstanding
+                            .entry(kept.clone())
+                            .or_insert(message);
+                    }
+                }
+            },
+        );
+        if committed != Persisted::Committed {
+            return Err("the store did not take the fold".into());
         }
-        self.next_seq += 1;
-        let _ = self.events.send(event);
         Ok(canonical)
     }
 
