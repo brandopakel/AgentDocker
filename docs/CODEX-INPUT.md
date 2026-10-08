@@ -1408,7 +1408,8 @@ but Ctrl-] still failed before the detach acknowledgement. A provider-free
 and advertised Win32 keyboard transport in private Python consoles. It is
 diagnostic evidence, separate from extracted-product acceptance. The extended probe
 reproduced mode 9001 changing Ctrl-] into a Win32 keyboard record. Windows
-attachment now recognizes its complete key-down record as the local detach key;
+attachment now recognizes its complete key-down record as the local detach key,
+including the protocol defaults for omitted parameters;
 other keyboard bytes remain unchanged. A split record is bounded to 64 bytes,
 and an incomplete Escape prefix is forwarded after 25 ms without further input,
 or immediately on EOF/error. Exact extracted-package validation remains pending. A supported

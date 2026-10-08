@@ -61,12 +61,16 @@ impl Decoder {
 }
 
 fn is_detach(parameters: &[u8]) -> bool {
-    let mut values = [0u32; 6];
-    let mut fields = parameters.split(|byte| *byte == b';');
-    for value in &mut values {
-        let Some(field) = fields.next().filter(|field| !field.is_empty()) else {
+    // Win32 input permits omitted parameters: zero, except repeat count one.
+    let mut values = [0u32, 0, 0, 0, 0, 1];
+    for (index, field) in parameters.split(|byte| *byte == b';').enumerate() {
+        let Some(value) = values.get_mut(index) else {
             return false;
         };
+        if field.is_empty() {
+            continue;
+        }
+        *value = 0;
         for byte in field {
             let Some(next) = value
                 .checked_mul(10)
@@ -77,8 +81,7 @@ fn is_detach(parameters: &[u8]) -> bool {
             *value = next;
         }
     }
-    fields.next().is_none()
-        && values[0] <= u32::from(u16::MAX)
+    values[0] <= u32::from(u16::MAX)
         && values[1] <= u32::from(u16::MAX)
         && values[2] == u32::from(super::DETACH)
         && values[3] == 1
@@ -187,6 +190,29 @@ mod tests {
     }
 
     #[test]
+    fn documented_parameter_defaults_preserve_the_detach_key() {
+        let records: &[&[u8]] = &[
+            b"\x1b[;;29;1_",
+            b"\x1b[;27;29;1;8;1_",
+            b"\x1b[221;;29;1;_",
+            b"\x1b[;;29;1;;_",
+        ];
+        for record in records {
+            for split in 0..=record.len() {
+                let mut decoder = Decoder::default();
+                decoder.feed(&record[..split]);
+                decoder.feed(&record[split..]);
+                decoder.flush();
+                assert_eq!(
+                    Vec::from(decoder.output),
+                    b"\x1d",
+                    "{record:?}, split {split}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn other_keys_unicode_and_invalid_records_are_unchanged() {
         let mut bytes = "café_日本語_🙂\x1b[A\x1b".as_bytes().to_vec();
         bytes.extend_from_slice(b"\x1b[17;29;0;1;8;1_\x1b[221;27;29;0;8;1_\x1b[221;27;29;1;8;0_");
@@ -194,7 +220,7 @@ mod tests {
             b"\x1b[221;27;30;1;8;1_\x1b[221;27;29;2;8;1_\x1b[221;27;29;1;8;1;0_",
         );
         bytes.extend_from_slice(
-            b"\x1b[;27;29;1;8;1_\x1b[4294967296;27;29;1;8;1_\x1b[65536;27;29;1;8;1_",
+            b"\x1b[;27;29;;8;1_\x1b[4294967296;27;29;1;8;1_\x1b[65536;27;29;1;8;1_",
         );
         bytes.extend_from_slice(b"\x1b[221;27;-29;1;8;1_\x1b[221;27;29;1;8;1~\x1b[");
         bytes.extend(std::iter::repeat_n(b'9', 200));
