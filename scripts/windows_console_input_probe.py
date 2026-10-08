@@ -18,7 +18,7 @@ import threading
 import time
 
 
-def child(vt_input):
+def child(vt_input, output_vt, nested_output):
     from ctypes import wintypes
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.GetStdHandle.argtypes = [wintypes.DWORD]
@@ -28,6 +28,10 @@ def child(vt_input):
     kernel.ReadConsoleW.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
                                    ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
     handle = kernel.GetStdHandle(-10)
+    output_handle = kernel.GetStdHandle(-11)
+    output_mode = wintypes.DWORD()
+    assert kernel.GetConsoleMode(output_handle, ctypes.byref(output_mode))
+    saved_output = output_mode.value
     mode = wintypes.DWORD()
     assert kernel.GetConsoleMode(handle, ctypes.byref(mode)), ctypes.get_last_error()
     saved = mode.value
@@ -35,8 +39,12 @@ def child(vt_input):
     if vt_input:
         active |= 0x200
     assert kernel.SetConsoleMode(handle, active), ctypes.get_last_error()
+    if output_vt:
+        assert kernel.SetConsoleMode(output_handle, saved_output | 1 | 4)
     try:
-        print('#READY#' + json.dumps({'saved': saved, 'active': active}), flush=True)
+        if nested_output:
+            sys.stdout.write('\x1b[?9001h\x1b[?1004h'); sys.stdout.flush()
+        print('#READY#' + json.dumps({'saved': saved, 'active': active, 'saved_output': saved_output}), flush=True)
         while True:
             buffer = (ctypes.c_uint16 * 512)()
             read = wintypes.DWORD()
@@ -48,17 +56,19 @@ def child(vt_input):
     finally:
         assert kernel.SetConsoleMode(handle, saved), ctypes.get_last_error()
         assert kernel.GetConsoleMode(handle, ctypes.byref(mode)) and mode.value == saved
+        assert kernel.SetConsoleMode(output_handle, saved_output)
         print('#RESTORED#', flush=True)
 
 
-def observe(vt_input):
+def observe(vt_input, output_vt=False, nested_output=False):
     import psutil
     from winpty import PtyProcess
     from winpty.enums import Backend
     terminal = PtyProcess.spawn([sys.executable, str(Path(__file__).resolve()), '--child'] +
-                               (['--vt-input'] if vt_input else []), dimensions=(40, 160), backend=Backend.ConPTY)
+                               (['--vt-input'] if vt_input else []) + (['--output-vt'] if output_vt else []) +
+                               (['--nested-output'] if nested_output else []), dimensions=(40, 160), backend=Backend.ConPTY)
     process = psutil.Process(terminal.pid)
-    report = {'vt_input': vt_input, 'pid': process.pid, 'birth': process.create_time(), 'reader_errors': []}
+    report = {'vt_input': vt_input, 'output_vt': output_vt, 'nested_output': nested_output, 'pid': process.pid, 'birth': process.create_time(), 'reader_errors': []}
     output = []; closing = threading.Event()
     def read():
         try:
@@ -131,16 +141,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--child', action='store_true')
     parser.add_argument('--vt-input', action='store_true')
+    parser.add_argument('--output-vt', action='store_true')
+    parser.add_argument('--nested-output', action='store_true')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     if os.name != 'nt':
         parser.error('native Windows is required')
     if args.child:
-        child(args.vt_input); return 0
+        child(args.vt_input, args.output_vt, args.nested_output); return 0
     assert args.output is not None and not args.output.exists()
     report = {'scope': __doc__, 'at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
               'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
-              'cases': [observe(False), observe(True)]}
+              'cases': [observe(False), observe(True), observe(True, True), observe(True, True, True)]}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2)+'\n', encoding='utf-8')
     print(json.dumps(report))
