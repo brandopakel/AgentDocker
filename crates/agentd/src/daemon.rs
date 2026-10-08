@@ -5006,18 +5006,25 @@ impl State {
         let now = Utc::now();
         agent.status = AgentStatus::Stopping;
         agent.last_seen = now;
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::AgentStopping {
                 agent: agent.id.clone(),
                 force,
             },
             now,
         );
-        event.seq = self.next_seq;
-        if self.persist("stop intent", |store| {
-            store.agent_transition(&agent, &event)
-        }) != Persisted::Committed
-        {
+        let committed = self.transition(
+            "stop intent",
+            event,
+            |store, event| store.agent_transition(&agent, event),
+            |state| {
+                *state
+                    .registry
+                    .get_mut(&agent.id)
+                    .expect("stop identity retained") = agent.clone();
+            },
+        );
+        if committed != Persisted::Committed {
             return Err(Box::new(self.write_failure().unwrap_or_else(|| {
                 Response::error(
                     ErrorCode::StorageUnavailable,
@@ -5025,12 +5032,6 @@ impl State {
                 )
             })));
         }
-        *self
-            .registry
-            .get_mut(&agent.id)
-            .expect("stop identity retained") = agent.clone();
-        self.next_seq += 1;
-        let _ = self.events.send(event);
         Ok(agent)
     }
 
@@ -5314,17 +5315,64 @@ impl State {
         Persisted::Committed
     }
 
+    /// One durable transition, the way every state change is made: the
+    /// events take the next sequence numbers, `write` commits them with
+    /// the data they describe in one store transaction, and only on commit
+    /// does `apply` change memory and the events go out, in that order. A
+    /// write the fence skipped or the store refused leaves memory as it
+    /// was, and `write_failure()` says so. `write` may hand `apply` what
+    /// it computed, so nothing is computed twice.
+    fn commit<T>(
+        &mut self,
+        what: &str,
+        mut events: Vec<Event>,
+        write: impl FnOnce(&Store, &[Event]) -> anyhow::Result<T>,
+        apply: impl FnOnce(&mut Self, &[Event], T),
+    ) -> Persisted {
+        for (index, event) in events.iter_mut().enumerate() {
+            event.seq = self.next_seq + index as u64;
+        }
+        let mut written = None;
+        let committed = self.persist(what, |store| {
+            written = Some(write(store, &events)?);
+            Ok(())
+        });
+        if committed == Persisted::Committed
+            && let Some(written) = written
+        {
+            self.next_seq += events.len() as u64;
+            apply(self, &events, written);
+            for event in events {
+                let _ = self.events.send(event);
+            }
+        }
+        committed
+    }
+
+    /// [`State::commit`] for the common transition: one event, a write
+    /// that returns nothing, and the memory change that follows it.
+    fn transition(
+        &mut self,
+        what: &str,
+        event: Event,
+        write: impl FnOnce(&Store, &Event) -> anyhow::Result<()>,
+        apply: impl FnOnce(&mut Self),
+    ) -> Persisted {
+        self.commit(
+            what,
+            vec![event],
+            |store, events| write(store, &events[0]),
+            |state, _, ()| apply(state),
+        )
+    }
+
     pub fn emit(&mut self, kind: EventKind) {
-        if self.storage_error.is_some() {
-            return;
-        }
-        let mut event = Event::new(kind, Utc::now());
-        event.seq = self.next_seq;
-        let committed = self.persist("event", |store| store.append_event(&event));
-        if committed == Persisted::Committed {
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "event",
+            Event::new(kind, Utc::now()),
+            |store, event| store.append_event(event),
+            |_| {},
+        );
     }
 
     pub fn resolve(&mut self, reference: &str) -> Result<AgentId, Box<Response>> {
@@ -5464,7 +5512,7 @@ impl State {
                     .remove(agentdocker_core::agent::ROLE_LABEL);
             }
         }
-        let mut event = agentdocker_core::Event::new(
+        let event = agentdocker_core::Event::new(
             EventKind::RoleSet {
                 agent: id.clone(),
                 project: record
@@ -5475,13 +5523,14 @@ impl State {
             },
             now,
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("role", |store| store.agent_transition(&record, &event));
-        if committed == Persisted::Committed {
-            *self.registry.get_mut(&id).expect("resolved agent") = record.clone();
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "role",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                *state.registry.get_mut(&id).expect("resolved agent") = record.clone();
+            },
+        );
         self.write_failure()
             .unwrap_or(Response::Agent { agent: record })
     }
@@ -5523,7 +5572,7 @@ impl State {
             agentdocker_core::agent::NAME_LABEL.to_owned(),
             agentdocker_core::agent::CHOSEN_NAME.to_owned(),
         );
-        let mut event = agentdocker_core::Event::new(
+        let event = agentdocker_core::Event::new(
             EventKind::AgentRenamed {
                 agent: id.clone(),
                 project: record
@@ -5534,13 +5583,14 @@ impl State {
             },
             now,
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("rename", |store| store.agent_transition(&record, &event));
-        if committed == Persisted::Committed {
-            *self.registry.get_mut(&id).expect("resolved agent") = record.clone();
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "rename",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                *state.registry.get_mut(&id).expect("resolved agent") = record.clone();
+            },
+        );
         self.write_failure()
             .unwrap_or(Response::Agent { agent: record })
     }
@@ -5680,20 +5730,20 @@ impl State {
                 "resolve this agent's provider limit before removing its record",
             );
         }
-        let mut event = Event::new(EventKind::AgentRemoved { agent: id.clone() }, Utc::now());
-        event.seq = self.next_seq;
-        let _ = self.persist("agent removal", |store| store.delete_agent(&id, &event));
-        if let Some(error) = self.write_failure() {
-            return error;
-        }
-        self.registry.remove(&id);
-        self.inboxes.remove(&id);
-        self.inbox_bytes.remove(&id);
-        self.journal_cursors
-            .retain(|(reader, _), _| reader != id.as_str());
-        self.next_seq += 1;
-        let _ = self.events.send(event);
-        Response::Ok
+        let _ = self.transition(
+            "agent removal",
+            Event::new(EventKind::AgentRemoved { agent: id.clone() }, Utc::now()),
+            |store, event| store.delete_agent(&id, event),
+            |state| {
+                state.registry.remove(&id);
+                state.inboxes.remove(&id);
+                state.inbox_bytes.remove(&id);
+                state
+                    .journal_cursors
+                    .retain(|(reader, _), _| reader != id.as_str());
+            },
+        );
+        self.write_failure().unwrap_or(Response::Ok)
     }
 
     fn inspect(&mut self, reference: &str) -> Response {
@@ -5769,32 +5819,27 @@ impl State {
         });
         let events: Vec<_> = kinds
             .into_iter()
-            .enumerate()
-            .map(|(index, kind)| {
-                let mut event = Event::new(kind, now);
-                event.seq = self.next_seq + index as u64;
-                event
-            })
+            .map(|kind| Event::new(kind, now))
             .collect();
         let leases: Vec<_> = released.iter().map(|lease| lease.id.clone()).collect();
-        let committed = self.persist("agent exit", |store| {
-            store.agent_exit(&record, &leases, &journal, &channels, &events)
-        });
+        let committed = self.commit(
+            "agent exit",
+            events,
+            |store, events| store.agent_exit(&record, &leases, &journal, &channels, events),
+            |state, _, ()| {
+                *state.registry.get_mut(id).expect("exit identity retained") = record.clone();
+                state.leases.release_all(id);
+                for entry in &journal {
+                    state.cache_journal(entry.clone());
+                }
+                for channel in &channels {
+                    state.channels.insert(channel.id.clone(), channel.clone());
+                }
+            },
+        );
         if committed != Persisted::Committed {
             self.journal_seq = previous_seq;
             return self.registry.get(id).cloned();
-        }
-        *self.registry.get_mut(id).expect("exit identity retained") = record.clone();
-        self.leases.release_all(id);
-        for entry in journal {
-            self.cache_journal(entry);
-        }
-        for channel in channels {
-            self.channels.insert(channel.id.clone(), channel);
-        }
-        self.next_seq += events.len() as u64;
-        for event in events {
-            let _ = self.events.send(event);
         }
         info!(agent = %id.short(), name = %record.spec.name, %status, "agent finished");
         Some(record)
@@ -5826,29 +5871,22 @@ impl State {
             .expect("claim identity retained")
             .clone();
         record.last_seen = now;
-        let event = kind.map(|kind| {
-            let mut event = Event::new(kind, now);
-            event.seq = self.next_seq;
-            event
-        });
-        let committed = self.persist("lease activity", |store| {
-            store.lease_activity(&record, lease, event.as_ref())
-        });
-        if committed != Persisted::Committed {
-            return false;
-        }
-        *self
-            .registry
-            .get_mut(holder)
-            .expect("claim identity retained") = record;
-        if let Some(lease) = lease {
-            self.leases.restore(lease.clone());
-        }
-        if let Some(event) = event {
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
-        true
+        let events: Vec<Event> = kind.map(|kind| Event::new(kind, now)).into_iter().collect();
+        let committed = self.commit(
+            "lease activity",
+            events,
+            |store, events| store.lease_activity(&record, lease, events.first()),
+            |state, _, ()| {
+                *state
+                    .registry
+                    .get_mut(holder)
+                    .expect("claim identity retained") = record.clone();
+                if let Some(lease) = lease {
+                    state.leases.restore(lease.clone());
+                }
+            },
+        );
+        committed == Persisted::Committed
     }
 
     fn input_consumer(&mut self, reference: &str, provider: bool) -> Result<(), Box<Response>> {
@@ -5943,34 +5981,32 @@ impl State {
         if messages.is_empty() {
             return Response::Ok;
         }
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::InboxAcknowledged {
                 agent: id.clone(),
                 messages: messages.to_vec(),
             },
             Utc::now(),
         );
-        event.seq = self.next_seq;
-        let _ = self.persist("inbox acknowledgement", |store| {
-            store.ack_inbox(&id, &messages, &event)
-        });
-        if let Some(error) = self.write_failure() {
-            return error;
-        }
-        if let Some(queue) = self.inboxes.get_mut(&id) {
-            let bytes = self.inbox_bytes.entry(id.clone()).or_default();
-            queue.retain(|message| {
-                if messages.contains(&message.id) {
-                    *bytes = bytes.saturating_sub(message_bytes(message));
-                    false
-                } else {
-                    true
+        let _ = self.transition(
+            "inbox acknowledgement",
+            event,
+            |store, event| store.ack_inbox(&id, &messages, event),
+            |state| {
+                if let Some(queue) = state.inboxes.get_mut(&id) {
+                    let bytes = state.inbox_bytes.entry(id.clone()).or_default();
+                    queue.retain(|message| {
+                        if messages.contains(&message.id) {
+                            *bytes = bytes.saturating_sub(message_bytes(message));
+                            false
+                        } else {
+                            true
+                        }
+                    });
                 }
-            });
-        }
-        self.next_seq += 1;
-        let _ = self.events.send(event);
-        Response::Ok
+            },
+        );
+        self.write_failure().unwrap_or(Response::Ok)
     }
 
     fn inbox(&mut self, reference: &str, drain: bool) -> Response {
@@ -6173,45 +6209,40 @@ impl State {
         let now = Utc::now();
         let mut events: Vec<Event> = released
             .iter()
-            .enumerate()
-            .map(|(i, lease)| {
-                let mut event = Event::new(
+            .map(|lease| {
+                Event::new(
                     EventKind::LeaseReleased {
                         lease: lease.clone(),
                     },
                     now,
-                );
-                event.seq = self.next_seq + i as u64;
-                event
+                )
             })
             .collect();
         if let Some(entry) = &entry {
-            let mut event = Event::new(
+            events.push(Event::new(
                 EventKind::JournalAppended {
                     entry: entry.clone(),
                 },
                 now,
-            );
-            event.seq = self.next_seq + events.len() as u64;
-            events.push(event);
+            ));
         }
-        let committed = self.persist("release", |store| {
-            store.release_leases(&ids, entry.as_ref(), &events)
-        });
-        if committed == Persisted::Committed {
-            for lease in &released {
-                self.leases
-                    .release(&lease.id, &lease.holder)
-                    .expect("release protection retained until commit");
-            }
-            if let Some(entry) = entry {
-                self.cache_journal(entry);
-            }
-            self.next_seq += events.len() as u64;
-            for event in events {
-                let _ = self.events.send(event);
-            }
-        } else {
+        let committed = self.commit(
+            "release",
+            events,
+            |store, events| store.release_leases(&ids, entry.as_ref(), events),
+            |state, _, ()| {
+                for lease in &released {
+                    state
+                        .leases
+                        .release(&lease.id, &lease.holder)
+                        .expect("release protection retained until commit");
+                }
+                if let Some(entry) = &entry {
+                    state.cache_journal(entry.clone());
+                }
+            },
+        );
+        if committed != Persisted::Committed {
             self.journal_seq = previous_seq;
         }
         released
@@ -6345,21 +6376,18 @@ impl State {
     /// Assign a seq, persist (own transaction), ring, announce.
     fn append_journal(&mut self, mut entry: JournalEntry) -> JournalEntry {
         entry.seq = self.next_journal_seq(&entry.project);
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::JournalAppended {
                 entry: entry.clone(),
             },
             Utc::now(),
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("journal", |store| {
-            store.append_journal_with_event(&entry, &event)
-        });
-        if committed == Persisted::Committed {
-            self.cache_journal(entry.clone());
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "journal",
+            event,
+            |store, event| store.append_journal_with_event(&entry, event),
+            |state| state.cache_journal(entry.clone()),
+        );
         entry
     }
 
@@ -6671,7 +6699,7 @@ impl State {
         {
             return;
         }
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::JournalRead {
                 reader: key.to_owned(),
                 project: project.clone(),
@@ -6679,16 +6707,16 @@ impl State {
             },
             Utc::now(),
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("journal cursor", |store| {
-            store.set_journal_cursor_with_event(key, project, seq, &event)
-        });
-        if committed == Persisted::Committed {
-            self.journal_cursors
-                .insert((key.to_owned(), project.clone()), seq);
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "journal cursor",
+            event,
+            |store, event| store.set_journal_cursor_with_event(key, project, seq, event),
+            |state| {
+                state
+                    .journal_cursors
+                    .insert((key.to_owned(), project.clone()), seq);
+            },
+        );
     }
 
     /// The project's ring, loaded from the store on first use.
@@ -6760,15 +6788,12 @@ impl State {
                 lease: lease.clone(),
             }
         };
-        let mut event = Event::new(kind, Utc::now());
-        event.seq = self.next_seq;
-        let committed = self.persist("lease removal", |store| {
-            store.delete_lease_with_event(&lease.id, &event)
-        });
-        if committed == Persisted::Committed {
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "lease removal",
+            Event::new(kind, Utc::now()),
+            |store, event| store.delete_lease_with_event(&lease.id, event),
+            |_| {},
+        );
     }
 
     fn expire_leases_at(&mut self, now: DateTime<Utc>) {
@@ -7284,23 +7309,24 @@ impl State {
                     .spec
                     .labels
                     .insert("session_id".to_owned(), session.clone());
-                let mut event = Event::new(
+                let event = Event::new(
                     EventKind::AgentSessionBound {
                         agent: id.clone(),
                         session,
                     },
                     Utc::now(),
                 );
-                event.seq = self.next_seq;
-                let _ = self.persist("session binding", |store| {
-                    store.agent_transition(&updated, &event)
-                });
+                let _ = self.transition(
+                    "session binding",
+                    event,
+                    |store, event| store.agent_transition(&updated, event),
+                    |state| {
+                        *state.registry.get_mut(&id).expect("just found") = updated.clone();
+                    },
+                );
                 if let Some(error) = self.write_failure() {
                     return error;
                 }
-                *self.registry.get_mut(&id).expect("just found") = updated;
-                self.next_seq += 1;
-                let _ = self.events.send(event);
             }
             let agent = self.registry.get(&id).cloned().expect("just found");
             return Response::Agent {
@@ -7431,29 +7457,29 @@ impl State {
         if messages.is_empty() {
             return;
         }
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::MessagesCaughtUp {
                 agent: record.id.clone(),
                 messages: messages.iter().map(|m| m.id.clone()).collect(),
             },
             Utc::now(),
         );
-        event.seq = self.next_seq;
-        if self.persist("catch-up", |store| {
-            store.enqueue_late(&record.id, &messages, INBOX_CAPACITY, &event)
-        }) != Persisted::Committed
-        {
-            return;
-        }
-        self.next_seq += 1;
-        for message in messages {
-            *self.inbox_bytes.entry(record.id.clone()).or_default() += message_bytes(&message);
-            self.inboxes
-                .entry(record.id.clone())
-                .or_default()
-                .push_back(message);
-        }
-        let _ = self.events.send(event);
+        let _ = self.transition(
+            "catch-up",
+            event,
+            |store, event| store.enqueue_late(&record.id, &messages, INBOX_CAPACITY, event),
+            |state| {
+                for message in &messages {
+                    *state.inbox_bytes.entry(record.id.clone()).or_default() +=
+                        message_bytes(message);
+                    state
+                        .inboxes
+                        .entry(record.id.clone())
+                        .or_default()
+                        .push_back(message.clone());
+                }
+            },
+        );
     }
 
     /// A session that came back as a new process takes up the record it
