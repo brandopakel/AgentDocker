@@ -577,6 +577,37 @@ reported before the service definition is written.
 
 ---
 
+### Environment
+
+Everything the commands, the daemon and the app read from the environment, in
+one place. The first table is what a person might set; the second is set for
+you by AgentDocker itself and is listed so it can be recognised, not so it can
+be set.
+
+| Variable | Read by | Meaning |
+|---|---|---|
+| `AGENTDOCKER_HOME` | daemon, commands, app | The state directory (`~/.agentdocker`): socket, logs, `state.db`, `agentd.toml`, `policy.toml`. A different value is a different daemon. |
+| `AGENTDOCKER_SOCKET` | daemon, commands, app | The socket to serve or connect to (`<home>/agentd.sock`). |
+| `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` | commands, hooks, MCP | Who is speaking: the default for `--as` and `--from`. `run` sets both in a managed agent's environment. |
+| `AGENTDOCKER_NO_AUTOSTART=1` | commands, app | A client that cannot connect does not start a daemon. |
+| `AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1` | Claude Code hooks | On a session launched with the channel: hooks leave inbox delivery to the channel and only observe. `run --claude-channel` sets it. |
+| `AGENTDOCKER_CODEX_INPUT=1` | Codex hooks, bridge | On a Codex process AgentDocker launched with input: delivery goes through the bridge. `run --codex-input` and the app's **Idle messages: On** set it. |
+| `AGENTDOCKER_NO_NOTIFICATIONS=1` | daemon | Post no desktop notifications. |
+| `AGENTDOCKER_UPDATE_FEED` | `desktop update` | A feed other than the published one, as a URL or a file, for an offline trial. |
+| `AGENTDOCKER_STARTUP_TRACE=1` | daemon | Print each startup stage and its elapsed time to stderr before the log exists. |
+| `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` | daemon | Permit `daemon reload`, the live replacement that is still under acceptance. |
+| `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` | Codex bridge | Enable the temporary secret-input broker, likewise. |
+| `AGENTDOCKER_INSTALL`, `AGENTDOCKER_INSTALL_DIR`, `AGENTDOCKER_VERSION` | `install.sh` | Which route (`cli` or `desktop`), where, and which release to pin. |
+| `AGENTDOCKER_CAMPAIGN_LEASE`, `AGENTDOCKER_CAMPAIGN_WAIT`, `AGENTDOCKER_CAMPAIGN_RENEW_SECS`, `AGENTDOCKER_FUZZ_ROOT` | `scripts/verify.sh` | The build-campaign lease on a shared machine, and where a fuzz campaign keeps its fixtures. |
+
+| Variable | Set by | For |
+|---|---|---|
+| `AGENTDOCKER_TOKEN_FILE` | `grant-access` | The file holding a contained agent's scoped credential; a client with one talks to the restricted endpoint and never starts a daemon. |
+| `AGENTDOCKER_SETUP_RECEIPT` | guided setup | The receipt a provider's MCP entry was written under, so undo can find it. |
+| `AGENTDOCKER_RELOAD_CANDIDATE` | `daemon reload` | The successor daemon's handover. |
+| `AGENTDOCKER_NATIVE_CAPABILITY`, `AGENTDOCKER_NATIVE_LIFETIME`, `AGENTDOCKER_TRACE_NATIVE_STARTUP` | the experimental native Codex launcher | Its child's credential and lifetime, and a startup trace. |
+| `AGENTDOCKER_TEST_*`, `AGENTDOCKER_OWNER_IN_PROCESS`, `AGENTDOCKER_IMAGE_PATH_CHILD`, `AGENTDOCKER_BOOTSTRAP_FIXTURE_PARENT`, `AGENTDOCKER_MULTIPLEXER_TEST_CHILD`, `AGENTDOCKER_BENCH_DIAGNOSTICS` | the test suites and benchmarks | Fixture children and diagnostics; never read in ordinary use. |
+
 ## MCP tools
 
 `agentdocker setup` registers `agentdocker mcp` with every runtime that
@@ -731,6 +762,13 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- `agentdocker --help` lists the commands a person types. The ones only an
+  adapter or an administrator runs (`heartbeat`, `report-activity`,
+  `report-adapter`, `report-input`, `identity-repair`, `secret-review`,
+  `usage-storage`, `usage-scan`, the `codex-*` controllers) are hidden from
+  the list and still work by name; the guide's reference still names them.
+- Every environment variable AgentDocker reads is in one table under
+  **Environment** in the command reference.
 - A Claude channel session's first message is no longer lost to the moment
   before Claude's channel handler is registered: when no receipt has yet been
   seen on the channel, an offer without one after thirty seconds is made a
