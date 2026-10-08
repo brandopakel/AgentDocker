@@ -75,21 +75,21 @@ impl Daemon {
         }
         // The rows and their announcement are one transaction, so memory
         // never believes a deletion the store did not keep.
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::CheckpointsPruned {
                 checkpoints: gone.clone(),
             },
             Utc::now(),
         );
-        event.seq = state.next_seq;
-        let _ = state.persist("checkpoint prune", |store| {
-            store.delete_checkpoints_with_event(&gone, &event)
-        });
+        let _ = state.transition(
+            "checkpoint prune",
+            event,
+            |store, event| store.delete_checkpoints_with_event(&gone, event),
+            |_| {},
+        );
         if let Some(error) = state.write_failure() {
             return error;
         }
-        state.next_seq += 1;
-        let _ = state.events.send(event);
         info!(removed = gone.len(), "pruned checkpoints");
         Response::Pruned {
             removed: gone.len(),
@@ -204,22 +204,22 @@ impl Daemon {
             accepted_by: None,
             release_leases: release,
         };
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::CheckpointSaved {
                 agent: agent.clone(),
                 checkpoint: id.clone(),
             },
             Utc::now(),
         );
-        event.seq = state.next_seq;
-        let _ = state.persist("checkpoint", |store| {
-            store.put_document_with_event("checkpoint", &id, &checkpoint, &event)
-        });
+        let _ = state.transition(
+            "checkpoint",
+            event,
+            |store, event| store.put_document_with_event("checkpoint", &id, &checkpoint, event),
+            |_| {},
+        );
         if let Some(error) = state.write_failure() {
             return error;
         }
-        state.next_seq += 1;
-        let _ = state.events.send(event);
         if release {
             state.release_all(
                 agent.as_str(),
@@ -394,21 +394,29 @@ impl Daemon {
                         now,
                     ));
                 }
-                for (offset, event) in events.iter_mut().enumerate() {
-                    event.seq = state.next_seq + offset as u64;
-                }
-                let _ = state.persist("handoff acceptance", |store| {
-                    store.accept_handoff(
-                        &checkpoint,
-                        &agent,
-                        &reads.into_values().collect::<Vec<_>>(),
-                        &transferred,
-                        cursor
-                            .as_ref()
-                            .map(|(project, seq)| (agent.as_str(), project, *seq, now)),
-                        &events,
-                    )
-                });
+                let _ = state.commit(
+                    "handoff acceptance",
+                    events,
+                    |store, events| {
+                        store.accept_handoff(
+                            &checkpoint,
+                            &agent,
+                            &reads.into_values().collect::<Vec<_>>(),
+                            &transferred,
+                            cursor
+                                .as_ref()
+                                .map(|(project, seq)| (agent.as_str(), project, *seq, now)),
+                            events,
+                        )
+                    },
+                    |state, _, ()| {
+                        if let Some((project, seq)) = &cursor {
+                            state
+                                .journal_cursors
+                                .insert((agent.to_string(), project.clone()), *seq);
+                        }
+                    },
+                );
                 if let Some(error) = state.write_failure() {
                     // The table already moved these leases; put exactly
                     // them back so memory matches what was (not) written.
@@ -420,15 +428,6 @@ impl Daemon {
                         }
                     }
                     return error;
-                }
-                state.next_seq += events.len() as u64;
-                if let Some((project, seq)) = cursor {
-                    state
-                        .journal_cursors
-                        .insert((agent.to_string(), project), seq);
-                }
-                for event in events {
-                    let _ = state.events.send(event);
                 }
             }
         }
@@ -560,22 +559,22 @@ impl Daemon {
                     "agent stopped before validation started",
                 );
             }
-            let mut event = Event::new(
+            let event = Event::new(
                 EventKind::ValidationStarted {
                     agent: agent.clone(),
                     validation: id.clone(),
                 },
                 Utc::now(),
             );
-            event.seq = state.next_seq;
-            let _ = state.persist("validation start", |store| {
-                store.put_document_with_event("validation", &id, &validation, &event)
-            });
+            let _ = state.transition(
+                "validation start",
+                event,
+                |store, event| store.put_document_with_event("validation", &id, &validation, event),
+                |_| {},
+            );
             if let Some(error) = state.write_failure() {
                 return error;
             }
-            state.next_seq += 1;
-            let _ = state.events.send(event);
         }
         if let Some(record) = container_record {
             drop(output);
@@ -656,7 +655,7 @@ impl Daemon {
             .and_then(Result::ok);
         let passed = validation.passed();
         let mut state = lock(&self.state);
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::ValidationFinished {
                 agent,
                 validation: id.clone(),
@@ -664,15 +663,15 @@ impl Daemon {
             },
             Utc::now(),
         );
-        event.seq = state.next_seq;
-        let _ = state.persist("validation finish", |store| {
-            store.put_document_with_event("validation", &id, &validation, &event)
-        });
+        let _ = state.transition(
+            "validation finish",
+            event,
+            |store, event| store.put_document_with_event("validation", &id, &validation, event),
+            |_| {},
+        );
         if let Some(error) = state.write_failure() {
             return error;
         }
-        state.next_seq += 1;
-        let _ = state.events.send(event);
         Response::Validation { validation, passed }
     }
 }

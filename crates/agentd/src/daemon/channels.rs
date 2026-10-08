@@ -659,26 +659,27 @@ impl Daemon {
             return Response::Pruned { removed: 0 };
         }
         let ids: Vec<String> = gone.iter().map(|id| id.to_string()).collect();
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::ChannelsPruned {
                 channels: gone.clone(),
             },
             Utc::now(),
         );
-        event.seq = state.next_seq;
-        if state.persist("channel prune", |store| {
-            store.delete_documents_with_event("channel", &ids, &event)
-        }) != Persisted::Committed
-        {
+        let committed = state.transition(
+            "channel prune",
+            event,
+            |store, event| store.delete_documents_with_event("channel", &ids, event),
+            |state| {
+                for id in &gone {
+                    state.channels.remove(id);
+                }
+            },
+        );
+        if committed != Persisted::Committed {
             return state
                 .write_failure()
                 .expect("refused channel prune has a reason");
         }
-        for id in &gone {
-            state.channels.remove(id);
-        }
-        state.next_seq += 1;
-        let _ = state.events.send(event);
         Response::Pruned {
             removed: gone.len(),
         }

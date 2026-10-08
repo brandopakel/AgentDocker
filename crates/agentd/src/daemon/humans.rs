@@ -154,32 +154,26 @@ impl State {
         expired.sort();
         let events: Vec<_> = expired
             .iter()
-            .enumerate()
-            .map(|(index, question)| {
-                let mut event = Event::new(
+            .map(|question| {
+                Event::new(
                     EventKind::QuestionClosed {
                         question: question.clone(),
                         answer: None,
                     },
                     now,
-                );
-                event.seq = self.next_seq + index as u64;
-                event
+                )
             })
             .collect();
-        let committed = self.persist("question expiration", |store| {
-            store.close_questions(&expired, &events)
-        });
-        if committed != Persisted::Committed {
-            return;
-        }
-        for question in expired {
-            self.questions.remove(&question);
-        }
-        self.next_seq += events.len() as u64;
-        for event in events {
-            let _ = self.events.send(event);
-        }
+        let _ = self.commit(
+            "question expiration",
+            events,
+            |store, events| store.close_questions(&expired, events),
+            |state, _, ()| {
+                for question in &expired {
+                    state.questions.remove(question);
+                }
+            },
+        );
     }
 
     /// The questions still waiting, newest first.
@@ -417,7 +411,7 @@ impl Daemon {
                 record.project = project;
                 record.vcs = vcs;
                 record.last_seen = Utc::now();
-                let mut event = Event::new(
+                let event = Event::new(
                     EventKind::HumanLocationChanged {
                         agent: id.clone(),
                         workdir,
@@ -426,18 +420,19 @@ impl Daemon {
                     },
                     Utc::now(),
                 );
-                event.seq = state.next_seq;
-                if state.persist("human location", |store| {
-                    store.agent_transition(&record, &event)
-                }) != Persisted::Committed
-                {
+                let committed = state.transition(
+                    "human location",
+                    event,
+                    |store, event| store.agent_transition(&record, event),
+                    |state| {
+                        *state.registry.get_mut(&id).expect("human retained") = record.clone();
+                    },
+                );
+                if committed != Persisted::Committed {
                     return state
                         .write_failure()
                         .expect("refused human location has a reason");
                 }
-                *state.registry.get_mut(&id).expect("human retained") = record;
-                state.next_seq += 1;
-                let _ = state.events.send(event);
             }
         }
         let mut state = lock(&self.state);
@@ -608,23 +603,26 @@ impl Daemon {
                 "only the asker can cancel this question",
             );
         }
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::QuestionCancelled {
                 question: message.clone(),
                 agent,
             },
             Utc::now(),
         );
-        event.seq = state.next_seq;
-        let _ = state.persist("question cancellation", |store| {
-            store.close_questions(std::slice::from_ref(message), std::slice::from_ref(&event))
-        });
+        let _ = state.transition(
+            "question cancellation",
+            event,
+            |store, event| {
+                store.close_questions(std::slice::from_ref(message), std::slice::from_ref(event))
+            },
+            |state| {
+                state.questions.remove(message);
+            },
+        );
         if let Some(error) = state.write_failure() {
             return error;
         }
-        state.questions.remove(message);
-        state.next_seq += 1;
-        let _ = state.events.send(event);
         Response::Ok
     }
 
