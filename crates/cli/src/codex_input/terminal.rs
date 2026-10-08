@@ -7,6 +7,25 @@ mod editor;
 mod mode;
 pub(super) use mode::Mode;
 
+/// Read and discard exactly one line without retaining or echoing any bytes.
+/// Cancellation is safe: consumed bytes need no resumable draft state. A caller
+/// keeps suspension until a fresh Enter is observed after the review closes.
+pub(super) async fn discard<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<()> {
+    loop {
+        let bytes = reader.fill_buf().await?;
+        ensure!(
+            !bytes.is_empty(),
+            "terminal closed while input was suspended"
+        );
+        let end = bytes.iter().position(|byte| matches!(byte, b'\r' | b'\n'));
+        let count = end.map_or(bytes.len(), |n| n + 1);
+        reader.consume(count);
+        if end.is_some() {
+            return Ok(());
+        }
+    }
+}
+
 const MAX_TEXT: usize = 16_000;
 const MAX_LINE: usize = MAX_TEXT + 2; // Optional CRLF.
 
@@ -133,6 +152,40 @@ mod tests {
             input.read(&mut reader).await.unwrap().as_deref(),
             Some("valid")
         );
+    }
+
+    #[tokio::test]
+    async fn suspended_input_is_discarded_across_cancellation_without_touching_a_draft() {
+        let (mut writer, reader) = tokio::io::duplex(256);
+        let mut reader = BufReader::with_capacity(32, reader);
+        let mut input = Input::default();
+        writer.write_all(b"saved draft").await.unwrap();
+        assert!(
+            timeout(Duration::from_millis(10), input.read(&mut reader))
+                .await
+                .is_err()
+        );
+        writer.write_all(b"invented-secret-prefix").await.unwrap();
+        assert!(
+            timeout(Duration::from_millis(10), discard(&mut reader))
+                .await
+                .is_err()
+        );
+        writer.write_all(b"private-tail\n").await.unwrap();
+        discard(&mut reader).await.unwrap();
+        // The caller stays suspended through route closure. This Enter cannot
+        // submit text buffered while the request was open.
+        writer
+            .write_all(b"late-secret-before-resume\n")
+            .await
+            .unwrap();
+        discard(&mut reader).await.unwrap();
+        writer.write_all(b" suffix\n").await.unwrap();
+        assert_eq!(
+            input.read(&mut reader).await.unwrap().as_deref(),
+            Some("saved draft suffix")
+        );
+        assert!(input.bytes.is_empty());
     }
 
     #[tokio::test]

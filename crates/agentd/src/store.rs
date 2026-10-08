@@ -62,7 +62,9 @@ pub struct TaskTransition<'a> {
 // Schema 26 also gates the receiver's version-14 delivery ledger. Its idle MCP
 // reviews have no active turn; rolling the installed binaries back to schema 25
 // would leave those conversations with receivers that cannot read their state.
-pub(crate) const SCHEMA_VERSION: i64 = 26;
+// Schema 27 gates metadata-only temporary-input fences in delivery ledger 15.
+// A rollback must not select a receiver that cannot retain their no-replay rule.
+pub(crate) const SCHEMA_VERSION: i64 = 27;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (

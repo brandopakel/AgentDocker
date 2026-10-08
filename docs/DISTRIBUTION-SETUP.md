@@ -5,17 +5,25 @@ Apple signing/notarization still needs a private developer identity and actual
 release acceptance. Other engineering and platform work is tracked in
 [Remaining work](REMAINING-WORK.md); distribution setup is one part of delivery.
 
+The unpublished beta.10 source candidate uses ledger 15/state schema 27. Its
+beta.9/schema26 baseline cannot be selected by binary rollback; acceptance must
+verify exact refusal with the current selection and bytes preserved. Never
+restore an older delivery database over acknowledged input. The next publication
+requires final-source validation/review and new hosted download/install trials.
+
 ## Release workflow and retry policy
 
 A protected `v*` tag triggers `.github/workflows/release.yml`; editing the
 workflow does not publish anything. The tag version must match `Cargo.toml`
 and the recorded build must have clean source. The current published preview is
-`0.2.0-beta.8`; its protected workflow and bounded hosted checks passed in the
-scopes recorded below. Source version `0.2.0-beta.9` is an unpublished candidate
-for the reconnect and native receipt corrections; it still needs candidate
-validation, review, protected-tag publication and hosted acceptance. Both
-beta.8 and beta.9 use schema 26; same-schema rollback still needs an actual
-package lifecycle trial. Tags exclude `+build` metadata.
+`0.2.0-beta.9`, reviewed source `76dc915a`; its protected workflow and hosted
+asset/feed verification passed. Actual beta.8 → beta.9 → beta.8 → beta.9
+installation, update and same-schema rollback passed in private Mac ARM64,
+Oracle Ubuntu x86-64 and Windows x64 fixtures. Both versions use schema 26.
+The hosted beta.9 Mac daemon restart trial failed; its reviewed correction
+requires acceptance in a later hosted preview. Stable signing, fresh accounts,
+physical hardware and sleep/reboot remain open in [Remaining work](REMAINING-WORK.md).
+Tags exclude `+build` metadata.
 The workflow builds CLI archives and four native desktop targets: Apple
 Silicon, Intel Mac, Linux x86_64 and Linux ARM64. The graphical Linux packages
 use GNU libc; the separate CLI-only Linux archives use musl.

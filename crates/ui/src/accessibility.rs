@@ -55,6 +55,20 @@ impl Semantic {
             change: Some(change),
         }
     }
+    pub fn password(
+        id: String,
+        label: String,
+        change: Arc<dyn Fn(String) -> Message + Send + Sync>,
+    ) -> Self {
+        Self {
+            id,
+            label,
+            role: Role::PasswordInput,
+            value: None,
+            action: None,
+            change: Some(change),
+        }
+    }
     pub fn terminal(value: String) -> Self {
         Self {
             id: "terminal".into(),
@@ -168,7 +182,9 @@ impl Operation<Snapshot> for Collect {
             }
             let enabled = match semantic.role {
                 Role::Button => semantic.action.is_some(),
-                Role::TextInput | Role::MultilineTextInput => semantic.change.is_some(),
+                Role::TextInput | Role::MultilineTextInput | Role::PasswordInput => {
+                    semantic.change.is_some()
+                }
                 _ => true,
             };
             if enabled {
