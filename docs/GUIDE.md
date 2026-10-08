@@ -772,9 +772,10 @@ Newest first. Only what changes how the product is used.
 - A Claude channel session's first message is no longer lost to the moment
   before Claude's channel handler is registered: when no receipt has yet been
   seen on the channel, an offer without one after thirty seconds is made a
-  second time, once, under the same message id and marked `repeat`. After
-  the first receipt the no-replay rule holds as before, and a missing
-  receipt pauses the queue visibly.
+  second time, once, under the same message id and marked `repeat`. A
+  receipt the daemon accepted counts whichever message it names, one sent
+  before the first offer included. After the first receipt the no-replay
+  rule holds as before, and a missing receipt pauses the queue visibly.
 - Finished agents' records are forgotten by themselves. Thirty days after an
   agent ended, if it holds no lease, has no open question and no input
   binding, and is not set to restart or restore, its record goes the way
@@ -793,7 +794,9 @@ Newest first. Only what changes how the product is used.
 - A state database held for a moment by another connection (an offline
   repair, a successor opening it, a `sqlite3` shell) no longer puts the
   daemon into read-only `storage_unavailable` until restart: a write waits
-  up to a second for the lock first.
+  up to a second for the lock first, and every write transaction takes the
+  lock as it begins, so one that reads before it writes cannot meet a busy
+  database after the wait.
 - The app forgets the note it keeps about a failed answer once the question
   it belonged to is gone, instead of keeping it for the session.
 - Under your own messages in the app, one line per agent says where each

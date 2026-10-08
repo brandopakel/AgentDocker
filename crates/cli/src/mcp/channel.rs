@@ -189,8 +189,15 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                 // explicit receipts, even when all long-running slots are used.
                 if priority(&value) {
                     let id = value.get("id").cloned().unwrap_or(Value::Null);
+                    let receipt = carries_receipt(&value);
                     match tokio::time::timeout(IO_TIMEOUT, server.handle_incoming(value)).await {
-                        Ok(Some(response)) => write(&mut output, &response).await?,
+                        Ok(Some(response)) => {
+                            // A receipt the daemon accepted proves the
+                            // handler is there, whichever offer it names:
+                            // from here on no offer is repeated.
+                            if receipt && receipt_accepted(&response) { receipt_seen = true; }
+                            write(&mut output, &response).await?
+                        }
                         Ok(None) => {},
                         Err(_) => write(&mut output, &error_response(id, super::INTERNAL_ERROR, "receipt/control request timed out; inspect the retained inbox before retrying")).await?,
                     }
@@ -369,8 +376,35 @@ fn priority(value: &Value) -> bool {
 }
 
 fn priority_request(value: &Value) -> bool {
-    matches!(value["method"].as_str(), Some("initialize" | "ping"))
-        || (value["method"] == "tools/call" && value["params"]["name"] == "acknowledge_messages")
+    matches!(value["method"].as_str(), Some("initialize" | "ping")) || is_receipt(value)
+}
+
+fn is_receipt(value: &Value) -> bool {
+    value["method"] == "tools/call" && value["params"]["name"] == "acknowledge_messages"
+}
+
+/// Whether a control frame (one request or a legacy batch) carries a receipt.
+fn carries_receipt(value: &Value) -> bool {
+    match value {
+        Value::Array(requests) => requests.iter().any(is_receipt),
+        request => is_receipt(request),
+    }
+}
+
+/// Whether a control reply records at least one receipt the daemon
+/// accepted: a tool result that is neither a JSON-RPC error nor marked
+/// `isError`. A refused or failed receipt proves nothing about the handler.
+fn receipt_accepted(response: &Value) -> bool {
+    let accepted = |reply: &Value| {
+        reply.get("error").is_none()
+            && reply.get("result").is_some()
+            && reply["result"]["isError"] != true
+            && reply["result"].get("content").is_some()
+    };
+    match response {
+        Value::Array(replies) => replies.iter().any(accepted),
+        reply => accepted(reply),
+    }
 }
 
 #[cfg(test)]
@@ -390,6 +424,26 @@ mod priority_tests {
         for invalid in [json!([]), json!([null]), json!([[ack]])] {
             assert!(!priority(&invalid));
         }
+    }
+
+    #[test]
+    fn only_an_accepted_receipt_counts_as_one_seen() {
+        let ack = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"acknowledge_messages"}});
+        let ping = json!({"jsonrpc":"2.0","id":2,"method":"ping"});
+        assert!(carries_receipt(&ack));
+        assert!(carries_receipt(&json!([ping.clone(), ack.clone()])));
+        assert!(!carries_receipt(&ping));
+        assert!(!carries_receipt(&json!([ping.clone()])));
+        let accepted = json!({"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{}"}],"isError":false}});
+        let refused = json!({"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"no"}],"isError":true}});
+        let error = json!({"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid"}});
+        let pong = json!({"jsonrpc":"2.0","id":2,"result":{}});
+        assert!(receipt_accepted(&accepted));
+        assert!(!receipt_accepted(&refused));
+        assert!(!receipt_accepted(&error));
+        assert!(!receipt_accepted(&pong), "a pong is not a receipt");
+        assert!(receipt_accepted(&json!([pong.clone(), accepted])));
+        assert!(!receipt_accepted(&json!([pong, refused, error])));
     }
 }
 
@@ -1347,6 +1401,66 @@ mod tests {
                     .await
                     .is_err(),
                 "an unreceived offer after a seen receipt is not repeated"
+            );
+            assert_eq!(server.backend.0.borrow().len(), 1);
+            writer.shutdown().await.unwrap();
+        };
+        let (result, ()) = tokio::join!(
+            pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+            trial
+        );
+        result.unwrap();
+    }
+
+    /// A receipt is proof of the handler whichever message it names: one
+    /// the daemon accepts before the first offer (a session resumed with
+    /// a message it had already read, say) means no later offer is
+    /// repeated. The diagnostic path alone does not see that receipt,
+    /// because the message it names was never offered on this channel.
+    #[tokio::test(start_paused = true)]
+    async fn a_receipt_accepted_before_the_first_offer_counts_as_seen() {
+        let server = server();
+        let ids: Vec<_> = server
+            .backend
+            .0
+            .borrow()
+            .iter()
+            .map(|m| m.id.clone())
+            .collect();
+        let (transport, client) = tokio::io::duplex(8192);
+        let (input, output) = tokio::io::split(transport);
+        let trial = async {
+            let (reader, mut writer) = tokio::io::split(client);
+            let mut reader = BufReader::new(reader);
+            // A refused receipt proves nothing; it is served either way.
+            write_line(&mut writer, &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"acknowledge_messages","arguments":{"messages":[]}}})).await.unwrap();
+            let refused = receive(&mut reader).await;
+            assert_eq!(refused["id"], 1);
+            assert!(
+                refused.get("error").is_some() || refused["result"]["isError"] == true,
+                "{refused}"
+            );
+            assert_eq!(server.backend.0.borrow().len(), 2);
+            write_line(&mut writer, &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"acknowledge_messages","arguments":{"messages":[ids[0]]}}})).await.unwrap();
+            let accepted = receive(&mut reader).await;
+            assert_eq!(accepted["id"], 2);
+            assert!(accepted.get("error").is_none(), "{accepted}");
+            assert_eq!(server.backend.0.borrow().len(), 1);
+            write_line(
+                &mut writer,
+                &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            )
+            .await
+            .unwrap();
+            let first = receive(&mut reader).await;
+            assert_eq!(first["params"]["meta"]["message_id"], ids[1].as_str());
+            assert!(first["params"]["meta"].get("repeat").is_none());
+            let mut frame = Vec::new();
+            assert!(
+                tokio::time::timeout(Duration::from_secs(95), read_frame(&mut reader, &mut frame))
+                    .await
+                    .is_err(),
+                "no offer is repeated once a receipt has been accepted"
             );
             assert_eq!(server.backend.0.borrow().len(), 1);
             writer.shutdown().await.unwrap();

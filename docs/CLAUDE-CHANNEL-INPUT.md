@@ -255,7 +255,15 @@ delivery pause naming the outstanding message. That state appears in session
 details and send-readiness warnings. It stays paused through periodic refreshes
 until that message leaves the queue; fresh transport contact alone does not
 clear it. A failed or stalled diagnostic write is bounded and retried, without
-blocking the receipt/control path or offering the message again.
+blocking the receipt/control path or offering the message again. The one
+exception is a session's first offer, which may have been written before
+Claude registered its channel handler: while no receipt has been accepted on
+the channel, an offer 30 seconds without one is written a second time, once,
+under the same `message_id` and with `repeat: true` in its metadata, and the
+pause is reported only after the next 30 seconds pass without a receipt. A
+receipt the daemon accepts, whichever message it names and whether or not it
+was offered on this channel, ends the exception: later offers and diagnostic
+retries never repeat a message.
 The message remains recoverable through a non-draining CLI inbox read.
 The channel MCP hides and refuses `read_inbox` and `wait_for_messages` so the
 model receives input through the channel queue. Reconnects offer the same

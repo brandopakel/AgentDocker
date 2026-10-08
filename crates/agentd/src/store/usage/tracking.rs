@@ -39,7 +39,7 @@ fn size(table: &str, columns: &[&str], prefix: &str) -> String {
 /// these triggers. The accepted accounting rows and gap meanings do not change.
 /// Backfill and trigger installation commit together, including pending opens.
 pub(crate) fn init(conn: &Connection) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = write_transaction(conn)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS usage_tracking (
         singleton INTEGER PRIMARY KEY CHECK(singleton=1),
