@@ -38,6 +38,33 @@ fn profile_from_executable(executable: &Path) -> Result<PathBuf> {
         .to_owned())
 }
 
+/// Mark only backend I/O failures; identity checks keep their original causes.
+#[derive(Debug)]
+struct TransportError(anyhow::Error);
+
+impl std::fmt::Display for TransportError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, formatter)
+    }
+}
+
+impl std::error::Error for TransportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
+
+/// Preserve the established transport diagnostic without mislabelling bindings.
+pub(super) fn mcp_error(error: anyhow::Error) -> (i64, String) {
+    match error.downcast::<TransportError>() {
+        Ok(TransportError(cause)) => super::transport(cause),
+        Err(cause) => (
+            super::INTERNAL_ERROR,
+            format!("cannot resolve native Codex identity: {cause:#}"),
+        ),
+    }
+}
+
 pub(crate) struct Context {
     host: ProcessIdentity,
     executable: PathBuf,
@@ -117,6 +144,7 @@ impl Context {
         }
     }
 
+    /// Verify the host and select its existing binding, distinguishing backend I/O.
     pub(crate) async fn resolve<B: super::Backend>(
         &self,
         backend: &B,
@@ -133,7 +161,8 @@ impl Context {
                 project: None,
                 labels: Default::default(),
             })
-            .await?
+            .await
+            .map_err(TransportError)?
         else {
             anyhow::bail!("cannot inspect native Codex bindings");
         };
@@ -500,6 +529,78 @@ mod tests {
                 .select(vec![agent], &meta, |_| false, |_| Ok(()))
                 .is_err()
         );
+    }
+
+    /// Calls distinguish backend refusal, missing bindings and stale local hosts.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_call_keeps_transport_and_identity_failures_distinct() {
+        use crate::{client::Backend, mcp::McpServer};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Inventory {
+            unavailable: bool,
+            calls: AtomicUsize,
+        }
+        impl Backend for Inventory {
+            async fn call(&self, request: Request) -> Result<Response> {
+                assert!(matches!(request, Request::List { .. }));
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                if self.unavailable {
+                    Err(anyhow::anyhow!("fixture connection refused")
+                        .context("cannot read fixture inventory"))
+                } else {
+                    Ok(Response::Agents {
+                        agents: vec![],
+                        aliases: Default::default(),
+                    })
+                }
+            }
+        }
+        for (unavailable, stale) in [(true, false), (false, false), (true, true)] {
+            let (mut context, _, meta) = fixture();
+            let pid = std::process::id();
+            context.host = ProcessIdentity {
+                pid,
+                started_at: procinfo::start_time(pid).unwrap(),
+            };
+            context.executable = procinfo::executable_path().unwrap().canonicalize().unwrap();
+            if stale {
+                context.host.started_at += chrono::Duration::seconds(1);
+            }
+            let mut server = McpServer::new(
+                Inventory {
+                    unavailable,
+                    calls: AtomicUsize::new(0),
+                },
+                context.unbound_identity(),
+            );
+            server.native_context = Some(context);
+            let (code, message) = server
+                .call_tool(json!({"name":"whoami", "arguments":{}, "_meta":meta}))
+                .await
+                .unwrap_err();
+            assert_eq!(code, super::super::INTERNAL_ERROR);
+            assert_eq!(
+                server.backend.calls.load(Ordering::SeqCst),
+                usize::from(!stale)
+            );
+            if unavailable && !stale {
+                assert_eq!(
+                    message,
+                    "agentd unreachable: cannot read fixture inventory: fixture connection refused"
+                );
+            } else {
+                assert!(
+                    message.starts_with("cannot resolve native Codex identity: "),
+                    "{message}"
+                );
+                assert!(!message.contains("agentd unreachable"));
+                if stale {
+                    assert!(message.contains("detached Codex MCP host identity changed"));
+                }
+            }
+        }
     }
 
     #[cfg(unix)]

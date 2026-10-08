@@ -49,7 +49,12 @@ fields cannot fall back to the older representation. It verifies the app-server 
 birth and executable. The canonical package-cache path supplies the host profile
 when Codex filters `CODEX_HOME` from the MCP environment; an explicitly supplied
 profile must agree. It requires the root thread/session to agree and refuses
-missing, ambiguous, stale or child bindings. It creates no app-server agent and
+missing, ambiguous, stale or child bindings. Identity-resolution errors now say
+`cannot resolve native Codex identity` and retain their underlying cause. A
+missing live binding does not establish a daemon connection failure; the daemon
+may have answered successfully with only an exited provider generation.
+This diagnostic does not create a binding or reconnect a conversation.
+It creates no app-server agent and
 never derives a thread from history or a display name. The native receiver keeps
 ownership of input receipts. Once resolved, a native question cannot fall back
 to a blocking legacy call if a binding changes during the request. This source
@@ -58,6 +63,9 @@ change passed an actual Codex 0.160.0 macOS ARM64 loopback trial on
 and idle/draft/busy/recovery checks and private-process cleanup passed.
 Independent review and broader platform/version acceptance remain; this does
 not solve zero-prompt startup/reopen.
+Backend I/O failures while reading the binding inventory preserve the existing
+`agentd unreachable: <cause>` diagnostic and its cause chain. Local host or
+binding validation failures retain the native identity diagnostic.
 
 The receiver probes the read-only queue/history APIs before taking ownership.
 Hooks keep their normal delivery while that probe is pending or unsupported;

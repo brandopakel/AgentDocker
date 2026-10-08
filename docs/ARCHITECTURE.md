@@ -196,6 +196,17 @@ separately from definition/ownership tests in [remaining work](REMAINING-WORK.md
 
 The universal adapter. An MCP host spawns `agentdocker mcp` as a stdio server; the server registers the host as an agent (pid = the host's, so the liveness check cleans up after a crash) and translates tool calls into daemon requests. The JSON-RPC surface is deliberately minimal — `initialize`, `ping`, `tools/list`, `tools/call`, notifications ignored — and hand-rolled, because that is a few hundred lines with tests versus a dependency on a fast-moving SDK. Supported protocol versions: `2025-06-18`, `2025-03-26`, `2024-11-05` (the client's choice is echoed when supported).
 
+For native Codex, `tools/call` resolves the calling conversation against its
+live native binding before dispatch. Resolution failure returns JSON-RPC
+`error.code = -32603` (`INTERNAL_ERROR`) and
+`error.message = "cannot resolve native Codex identity: <cause>"`. Backend I/O failure while listing
+bindings instead preserves `agentd unreachable: <cause>`, including its cause
+chain; it is not a binding-selection failure. This includes
+missing, ended, child or ambiguous bindings; it does not by itself establish
+that the daemon is unreachable, create a binding or authorize another identity.
+Other backend transport errors retain the existing `agentd unreachable: <cause>`
+message. Daemon protocol errors remain tool results with `isError: true`.
+
 Design points:
 
 - **Identity.** If `AGENTDOCKER_AGENT_ID` is set the host was started by `agentdocker run` and already *is* an agent; the server adopts that identity and does not deregister on exit. Otherwise it registers a new agent and deregisters when stdin closes.
@@ -1569,8 +1580,12 @@ Their response semantics and sample format identity match the existing family;
 nested cache details do not contribute a second time. Parser cursor v7 verifies
 and replays v3/v4/v5/v6 scans with the same stable
 source identities, allowing newly supported records to be collected without
-recounting earlier accepted samples. Existing historical gaps remain visible;
-this change does not claim their reconciliation or provider-billing accuracy.
+recounting earlier accepted samples. Existing historical gaps remain visible:
+older gaps contain hashed batch keys, not reversible file/record provenance, so
+a successful replay cannot safely identify which historical gap to clear. The
+upgrade regression seeds an older unsupported-record gap and requires it to
+remain partial across repeated collection. This change does not claim historical
+gap reconciliation or provider-billing accuracy.
 
 A release after the established compatibility floor, of the same major version,
 is counted as it reports: Claude Code after 2.1.280 and Codex after 0.160.0 (read with 0.160.0's
