@@ -2068,7 +2068,11 @@ Secret review metadata events use `seq:0` and are live-only; clients list routes
 Managed secret input has a separate experimental producer, enabled only with
 `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`. Interactive sessions additionally
 require the bounded editor to control terminal echo; unsupported console modes
-retain the refusal. A whole mixed bundle uses the volatile
+retain the refusal. Windows duplicates the console input handle, disables
+`ENABLE_LINE_INPUT` and `ENABLE_ECHO_INPUT`, enables
+`ENABLE_VIRTUAL_TERMINAL_INPUT`, and restores the saved mode on guard drop.
+Processed input (Ctrl-C) and output settings remain unchanged; a failed mode
+change cannot authorize an interactive secret route. A whole mixed bundle uses the volatile
 broker. Delivery ledger 15 stores only the request/thread/turn identity and a
 possible-response flag before the provider write; it never stores the answer,
 question or capability. Normal queued input waits behind this fence. A matching

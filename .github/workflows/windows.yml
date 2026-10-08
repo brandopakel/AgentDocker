@@ -108,6 +108,8 @@ jobs:
         run: cargo nextest run --locked -p agentdocker --test usage_scan --profile ci
       - name: Native server log cancellation regression
         run: cargo test --locked -p agentdocker --test windows_log_reader -- --nocapture
+      - name: Native managed console echo and restoration regressions
+        run: cargo test --locked -p agentdocker --test windows_terminal_mode -- --nocapture
       - name: Native service reference path regression
         run: cargo test --locked -p agentdocker --test windows_service_references -- --nocapture
       - name: Native daemon and CLI lint
@@ -155,7 +157,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "service acceptance dependency failed" }
             $extra += '--service'
           }
-          python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES" --codex artifacts/codex.exe --codex-scenario automatic --queue-recovery --mcp-forms --mcp-urls --mcp-idle @extra
+          python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES" --codex artifacts/codex.exe --codex-scenario automatic --queue-recovery --mcp-forms --mcp-urls --mcp-idle --managed-secret @extra
       - name: Diagnose established-session native Codex after startup failure
         # A narrower pass never changes the failed strict startup outcome.
         if: ${{ !cancelled() && steps.package.outcome == 'failure' }}
@@ -206,6 +208,7 @@ jobs:
             artifacts/windows-desktop-package/mcp-urls/
             artifacts/windows-desktop-package/mcp-idle-forms/
             artifacts/windows-desktop-package/mcp-idle-urls/
+            artifacts/windows-desktop-package/managed-secret/
             artifacts/windows-established-package/package-acceptance.json
             artifacts/windows-established-package/smoke/
             artifacts/windows-established-package/native-codex/

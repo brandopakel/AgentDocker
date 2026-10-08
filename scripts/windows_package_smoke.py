@@ -50,6 +50,81 @@ def extract_checked(archive, destination, manifest):
     return app
 
 
+def validate_secret_report(observed, info, provider_sha256):
+    """Require the exact archive, masked review, terminal boundaries and retirement."""
+    def require(ok):
+        if not ok:
+            raise ValueError("Windows secret acceptance lacks exact UI, receipts, retention or cleanup")
+
+    require(observed.get("result") == "passed"
+            and observed.get("source_commit") == info["source_commit"]
+            and observed.get("source_tree") == info["source_tree"]
+            and observed.get("source_dirty") is False
+            and observed.get("binary_sha256") == info["binary_sha256"]
+            and observed.get("provider_sha256") == provider_sha256
+            and observed.get("cleanup_errors") == [] and observed.get("reader_errors") == []
+            and observed.get("remaining_processes") == []
+            and not observed.get("model_errors") and not observed.get("unexpected_get")
+            and observed.get("window_exit") == 0 and observed.get("terminal_canary_present") is False)
+    for flag in ("scratch_removed", "config_unchanged", "binaries_unchanged", "provider_unchanged",
+                 "draft_typed_before_question", "suspended_terminal_input_not_echoed",
+                 "queued_ordinary_message_held", "notice_required", "masked_app_submission",
+                 "secret_fence_closed", "draft_restored_and_delivered", "oversized_line_discarded",
+                 "suspended_and_late_input_never_delivered", "final_fence_closed", "stale_answer_refused"):
+        require(observed.get(flag) is True)
+    window = observed.get("window_report", {})
+    require(window.get("result") == "passed" and window.get("error") is None
+            and window.get("connected") is True
+            and window.get("scenario_steps_completed") == window.get("scenario_steps_total") == 10)
+    captures = observed.get("captures", {})
+    require(set(captures) == {"masked-before-consent.png", "masked-after-consent.png", "closed.png", "window.png"}
+            and all(isinstance(v, str) and len(v) == 64 and all(c in "0123456789abcdef" for c in v)
+                    for v in captures.values()))
+    processes = observed.get("watched_processes", [])
+    require(len(processes) >= 5 and all(isinstance(p.get("pid"), int) and p["pid"] > 0
+                                      and isinstance(p.get("birth"), (int, float)) and p["birth"] > 0 for p in processes))
+    require(len({(p["pid"], p["birth"]) for p in processes}) == len(processes))
+    require(observed.get("initial_generation", {}).get("pid") in {p["pid"] for p in processes})
+    rows = observed.get("completed_receipts", [])
+    require(len(rows) == 4 and all(isinstance(r.get("message"), str) and r["message"]
+                                  and isinstance(r.get("receipt"), dict) for r in rows))
+    require(len({r["message"] for r in rows}) == 4
+            and [r["message"] for r in rows[:2]] == observed.get("ordinary_message_ids"))
+    request = observed.get("review_metadata", {}).get("request", {})
+    require(isinstance(request.get("thread"), str) and bool(request["thread"])
+            and all(r["receipt"].get("thread") == request["thread"]
+                    and bool(r["receipt"].get("turn")) and bool(r["receipt"].get("item")) for r in rows))
+    require(len({(r["receipt"]["turn"], r["receipt"]["item"]) for r in rows}) == 4)
+    fence = observed.get("fence_before_answer", {})
+    require(fence.get("response_attempted") is False and fence.get("thread") == request["thread"]
+            and fence.get("turn") == request.get("turn") == rows[0]["receipt"]["turn"])
+    requests = observed.get("model_requests", [])
+    require(5 <= len(requests) <= 10 and all(r.get("path") == "/v1/responses"
+                                           and r.get("discarded_input_present") is False for r in requests))
+    ordinary = [r for r in requests if r.get("auxiliary") is False]
+    require(len(ordinary) >= 5 and ordinary[0].get("canary_present") is False
+            and ordinary[0].get("function_output_count") == 0)
+    require(all(r.get("canary_present") is True and r.get("canary_in_function_output") is True
+                and r.get("function_output_count") == 1 for r in ordinary[1:]))
+    require(any(r.get("saved_draft_present") is True for r in ordinary)
+            and ordinary[-1].get("after_bound_present") is True)
+    # Repeated function output is conversation history, not another submission.
+    # A supplied flag is recorded even when absent from the provider's schema.
+    require(observed.get("supplied_secret_flag") in ("is_secret", "isSecret")
+            and isinstance(observed.get("secret_flag_advertised"), bool))
+    scans = observed.get("scans", {})
+    require(set(scans) == {"agentdocker", "provider", "internal", "gui"})
+    for kind, scan in scans.items():
+        require(isinstance(scan.get("files"), int) and 0 < scan["files"] <= 10000
+                and isinstance(scan.get("bytes"), int) and 0 < scan["bytes"] <= 1024**3
+                and isinstance(scan.get("matches"), list))
+        if kind != "provider":
+            require(scan["matches"] == [])
+        else:
+            require(bool(scan["matches"]) and all(isinstance(m.get("occurrences"), int)
+                                                 and m["occurrences"] > 0 for m in scan["matches"]))
+
+
 def validate_mcp_review_report(observed, info, mode="form", idle=False):
     """Require exact archive identity, four decisions, receipts and clean retirement."""
     def require(ok):
@@ -385,13 +460,15 @@ def main():
                         help="also exercise managed Codex website decisions without opening a browser")
     parser.add_argument("--mcp-idle", action="store_true",
                         help="also exercise form and website decisions after the model turn ends")
+    parser.add_argument("--managed-secret", action="store_true",
+                        help="also test experimental masked input and synthetic ConPTY boundaries")
     args = parser.parse_args()
     if not 0 <= args.startup_samples <= 20:
         parser.error("--startup-samples must be between 0 and 20")
     if args.queue_recovery and (not args.codex or args.codex_scenario != "automatic"):
         parser.error("--queue-recovery requires --codex with --codex-scenario automatic")
-    if (args.mcp_forms or args.mcp_urls or args.mcp_idle) and not args.codex:
-        parser.error("--mcp-forms/--mcp-urls/--mcp-idle require --codex")
+    if (args.mcp_forms or args.mcp_urls or args.mcp_idle or args.managed_secret) and not args.codex:
+        parser.error("--mcp-forms/--mcp-urls/--mcp-idle/--managed-secret require --codex")
     if os.name != "nt":
         parser.error("the archive acceptance trial requires native Windows")
     build = json.loads(args.native_manifest.read_text(encoding="utf-8"))
@@ -465,6 +542,14 @@ def main():
                     reviewed = json.loads((destination / "result.json").read_text(encoding="utf-8"))
                     validate_mcp_review_report(reviewed, info, mode, idle)
                     report[key] = reviewed
+                if args.managed_secret:
+                    destination = output / "managed-secret"
+                    run_native_trial([sys.executable, str(ROOT / "scripts/windows_managed_secret_smoke.py"),
+                                      "--binary-dir", str(app), "--codex", str(args.codex.resolve(strict=True)),
+                                      "--output", str(destination)], scratch, report, "managed_secret")
+                    secret = json.loads((destination / "result.json").read_text(encoding="utf-8"))
+                    validate_secret_report(secret, info, PACKAGE.sha256(args.codex))
+                    report["managed_secret"] = secret
                 automatic = args.codex_scenario == "automatic"
                 driver = "windows_native_launcher_smoke.py" if automatic else "windows_native_codex_smoke.py"
                 run_native_trial([sys.executable, str(ROOT / "scripts" / driver),

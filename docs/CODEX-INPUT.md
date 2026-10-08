@@ -1392,12 +1392,28 @@ delivery through a private model, masked desktop entry and a synthetic PTY draft
 trial. No supplied value was found in AgentDocker state/logs; Codex retained it
 in its rollout. Broader lifecycle/fault, account, final-package and native-terminal
 parity remain open. Default sessions still refuse secret bundles. An interactive
-route additionally requires AgentDocker to control terminal echo; Windows console
-input remains refused until equivalent mode handling is implemented. A supported
+route additionally requires AgentDocker to control terminal echo. On Windows,
+the managed bridge now owns a duplicate console input handle, disables line
+buffering and echo, and enables virtual-terminal input for the bounded editor.
+It preserves Ctrl-C and output behavior and restores the saved input mode when
+the guard drops. Non-terminal/unsupported interactive handles still refuse.
+The native Windows workflow exercises actual console-mode restoration and the
+extracted package's masked form, suspended typing, Unicode draft and oversized
+line with a private Codex model and synthetic ConPTY; acceptance remains pending
+until the exact native run passes. A supported
 managed terminal discards new typing without echo while a secret route is
 open. After it closes, Enter discards the suspended line and returns to the
 preexisting draft; buffered text cannot become an ordinary queued message. A possibly sent answer without a provider resolution stays
 paused for inspection and is never resubmitted by restart.
+
+Installed hosted beta.11 (`47d06d3b`) separately passed all eleven masked UI/PTY
+steps on this Mac with Codex0.160.1 and a private model. Three exact receipts,
+retention acknowledgement, preserved draft and no suspended-input delivery were
+verified; all sixteen recorded process generations and private paths retired.
+AgentDocker state/logs contained no invented value; Codex retained it. The
+provider did not advertise the supplied `isSecret` field in its model schema,
+so this does not establish advertised tool support, real-account, physical-input
+or screen-reader acceptance. The experimental gate remains.
 
 An actual Codex0.160.1/private-model trial on `ecfffb22` dropped the exact
 `serverRequest/resolved` notification through a supported Node proxy after the
