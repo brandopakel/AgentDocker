@@ -4019,49 +4019,64 @@ impl Daemon {
         .await
         .unwrap_or_default();
         let now = Utc::now();
-        for (
-            Observed {
-                checkout,
-                path,
-                kind,
-            },
-            physical,
-        ) in observed
         {
+            // One hold of the lock and one durable transaction for the
+            // batch: a branch switch is thousands of paths, and a sync per
+            // path, each taking the coordination lock, held every claim and
+            // release up for as long as it lasted.
             let mut state = lock(&self.state);
-            let by = physical
-                .as_deref()
-                .map_or(Attribution::External, |path| state.attribute(path));
-            let mut change = Change {
-                seq: 0,
-                project: checkout.project.clone(),
-                checkout: Some(checkout.dir.clone()),
-                worktree: checkout.worktree.clone(),
-                path,
-                kind,
-                at: now,
-                by,
-                head: heads.get(&checkout.dir).cloned().flatten(),
-            };
-            let Some(seq) = state.store_op("change", |store| store.append_change(&change)) else {
-                continue;
-            };
-            change.seq = seq;
-            // The strongest "working" signal there is: a file changed
-            // under a lease this agent holds. Recording it keeps derived
-            // activity honest for a runtime with no hooks at all.
-            if let Attribution::Agent { agent, .. } = &change.by {
-                let agent = agent.clone();
-                state.registry.touch(&agent, now);
+            let mut changes = Vec::with_capacity(observed.len());
+            let mut physicals = Vec::with_capacity(observed.len());
+            for (
+                Observed {
+                    checkout,
+                    path,
+                    kind,
+                },
+                physical,
+            ) in observed
+            {
+                let by = physical
+                    .as_deref()
+                    .map_or(Attribution::External, |path| state.attribute(path));
+                changes.push(Change {
+                    seq: 0,
+                    project: checkout.project.clone(),
+                    checkout: Some(checkout.dir.clone()),
+                    worktree: checkout.worktree.clone(),
+                    path,
+                    kind,
+                    at: now,
+                    by,
+                    head: heads.get(&checkout.dir).cloned().flatten(),
+                });
+                physicals.push(physical);
             }
-            state.warn_readers(&change, physical.as_deref());
-            // A second checkout on this path means two agents are in the
-            // same work: give them a room.
-            state.note_contested(&change);
-            debug!(project = %change.project.short(), path = %change.path.display(), %kind, "file changed");
-            let _ = state
-                .events
-                .send(Event::new(EventKind::FileChanged { change }, now));
+            let seqs = if changes.is_empty() {
+                Some(Vec::new())
+            } else {
+                state.store_op("change", |store| store.append_changes(&changes))
+            };
+            if let Some(seqs) = seqs {
+                for ((mut change, physical), seq) in changes.into_iter().zip(physicals).zip(seqs) {
+                    change.seq = seq;
+                    // The strongest "working" signal there is: a file changed
+                    // under a lease this agent holds. Recording it keeps derived
+                    // activity honest for a runtime with no hooks at all.
+                    if let Attribution::Agent { agent, .. } = &change.by {
+                        let agent = agent.clone();
+                        state.registry.touch(&agent, now);
+                    }
+                    state.warn_readers(&change, physical.as_deref());
+                    // A second checkout on this path means two agents are in the
+                    // same work: give them a room.
+                    state.note_contested(&change);
+                    debug!(project = %change.project.short(), path = %change.path.display(), kind = %change.kind, "file changed");
+                    let _ = state
+                        .events
+                        .send(Event::new(EventKind::FileChanged { change }, now));
+                }
+            }
         }
         // A repository's refs are shared between its worktrees: a commit
         // made in a linked one writes `refs/heads/<branch>` under the
