@@ -1275,11 +1275,13 @@ date and date-time formats are validated without fetching or changing values.
 Unknown constraints, nested schemas, secret/extended formats and device
 verification fail explicitly. Explicit `null` schema fields are invalid, including
 constraints and defaults; only omission selects the documented fallback.
-Idle form and URL reviews require delivery-ledger version 14. Earlier records
-cannot introduce these receipts, and older bridges cannot read the new ledger.
-The package uses state schema 26, so binary rollback to schema-25 beta.7 is
-refused before activation. Keep a compatible receiver for these conversations;
-never restore an older delivery ledger over already acknowledged input. Pending
+Idle form and URL reviews require delivery-ledger version 14 or newer. Earlier
+records cannot introduce these receipts. The current package uses delivery-ledger
+version 15 and state schema 27, which also preserve secret-response metadata.
+Binary rollback to beta.9/schema 26 or earlier is refused before activation;
+older receivers also refuse ledger 15 without rewriting it. Keep a compatible
+receiver for these conversations, and never restore an older delivery ledger over
+already acknowledged input. Pending
 or uncertain reviews on restart still pause delivery; replies are never replayed.
 Requests are limited to 16 fields, 32 options,
 16,000-byte schemas/responses and 4,096-byte text fields. Schema text-length
