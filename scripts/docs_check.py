@@ -132,8 +132,16 @@ def docs_considered(base):
 
 
 def long_rows(lines, limit=ROW_LIMIT):
-    """The table rows among `lines` longer than `limit` characters."""
-    return [line for line in lines if line.startswith("| ") and not line.startswith("| Date") and len(line) > limit]
+    """The table rows among `lines` longer than `limit` characters: any line
+    that opens with a pipe, with or without a space after it, except the
+    header and its separator."""
+    def is_row(line):
+        cells = line.strip()
+        if not cells.startswith("|"):
+            return False
+        first = cells[1:].split("|", 1)[0].strip()
+        return first != "Date" and not set(first) <= set("-: ")
+    return [line for line in lines if is_row(line) and len(line) > limit]
 
 
 def verification_rows_concise(base):

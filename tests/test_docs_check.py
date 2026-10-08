@@ -15,8 +15,9 @@ class VerificationRows(unittest.TestCase):
         long = "| 2026-10-07 | Trial | `abc1234` | " + "word " * 120 + "| link |"
         header = "| Date | Trial | Source | Result | Record |"
         prose = "A paragraph " * 60
-        rows = DOCS_CHECK.long_rows([short, long, header, prose, "| --- | --- |"])
-        self.assertEqual(rows, [long])
+        tight = "|2026-10-07|Trial|`abc1234`|" + "word " * 120 + "|link|"
+        rows = DOCS_CHECK.long_rows([short, long, header, prose, "| --- | --- |", tight, "|---|---|"])
+        self.assertEqual(rows, [long, tight], "a row is a row with or without a space after the pipe")
         self.assertEqual(DOCS_CHECK.long_rows([long], limit=len(long)), [])
 
 
