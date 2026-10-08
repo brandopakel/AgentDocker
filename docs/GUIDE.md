@@ -451,7 +451,7 @@ each one by pid.
 | `deregister` / `rm` | Mark an external agent finished / forget a finished one |
 | `role <name>` | Give an agent (`--as`) a role — `reviewer`, `implementer` — so `send --to role:reviewer` and `handoff role:reviewer` reach it; `--clear` takes it away |
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
-| `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not |
+| `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not. A finished record that holds nothing is forgotten by itself thirty days on, or after `[agents] retention` in `~/.agentdocker/agentd.toml` (`"off"` keeps every record) |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml` |
 | `heartbeat` | Report that an agent is alive |
 
@@ -731,6 +731,23 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- A Claude channel session's first message is no longer lost to the moment
+  before Claude's channel handler is registered: when no receipt has yet been
+  seen on the channel, an offer without one after thirty seconds is made a
+  second time, once, under the same message id and marked `repeat`. After
+  the first receipt the no-replay rule holds as before, and a missing
+  receipt pauses the queue visibly.
+- Finished agents' records are forgotten by themselves. Thirty days after an
+  agent ended, if it holds no lease, has no open question and no input
+  binding, and is not set to restart or restore, its record goes the way
+  `rm` would take it (`agent_removed`, and the batch as `agents_pruned`);
+  `[agents] retention = "90d"` in `~/.agentdocker/agentd.toml` changes the
+  window and `"off"` keeps every record. The journal and the ledger keep a
+  forgotten agent's id. Before this, every session ever registered stayed in
+  memory and on disk for the life of the installation.
+- A branch switch no longer stalls claims and releases: the ledger entries
+  for one batch of file changes are written in one transaction instead of
+  one durable write per path, each taking the coordination lock.
 - The daemon keeps serving through a momentary accept failure on its socket
   (descriptors exhausted under a burst of clients, a handshake the client
   dropped): it retries with a short backoff instead of stopping, which used
