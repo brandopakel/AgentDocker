@@ -207,6 +207,27 @@ enum Coordination {
     },
 }
 
+/// A keyed send's place in the ledger while it is being handled. Dropped
+/// unsettled — the send was refused, or its future was dropped or panicked
+/// before answering — it forgets the key, so the key is never left
+/// answering "still being handled" for the rest of its window.
+struct KeyReservation<'a> {
+    daemon: &'a Daemon,
+    sender: String,
+    key: String,
+    settled: bool,
+}
+
+impl Drop for KeyReservation<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            lock(&self.daemon.state)
+                .send_keys
+                .forget(&self.sender, &self.key);
+        }
+    }
+}
+
 /// Whether a request would write coordination state. Reads are served
 /// throughout a transfer from the projection this process still holds;
 /// everything else answers `transferring` until a coordinator owns the
@@ -4560,13 +4581,17 @@ impl Daemon {
         if let Err(reason) = agentdocker_core::idempotency::check(&key) {
             return Response::error(ErrorCode::Invalid, reason);
         }
-        let sender = match self.endpoints(from.clone(), to).await {
-            Ok((sender, _)) => sender,
-            Err(response) => return *response,
+        // Only the sender keys the ledger. The destination is not resolved
+        // first: a recipient that has since gone, or a role that moved,
+        // must not turn a retry of a send that landed into a refusal.
+        let sender = match lock(&self.state).registry.resolve(&from) {
+            Ok(id) => id.to_string(),
+            Err(RegistryError::NotFound(_)) => from.clone(),
+            Err(err) => return registry_error(err),
         };
         // Reserve the key before sending, under the lock, so that two
         // sends racing with one key cannot both be queued.
-        {
+        let mut reservation = {
             let mut state = lock(&self.state);
             match state.send_keys.get(&sender, &key, Utc::now()) {
                 Some(Some(answer)) => return answer,
@@ -4578,15 +4603,27 @@ impl Daemon {
                 }
                 None => {
                     state.send_keys.record(&sender, &key, Utc::now(), None);
+                    KeyReservation {
+                        daemon: self,
+                        sender,
+                        key,
+                        settled: false,
+                    }
                 }
             }
-        }
-        let answer = self.send(from, to, kind, payload, reply_to, links).await;
-        let mut state = lock(&self.state);
-        if matches!(answer, Response::Sent { .. }) {
-            state.send_keys.settle(&sender, &key, Some(answer.clone()));
-        } else {
-            state.send_keys.forget(&sender, &key);
+        };
+        let mut answer = self.send(from, to, kind, payload, reply_to, links).await;
+        if let Response::Sent {
+            idempotency_key, ..
+        } = &mut answer
+        {
+            *idempotency_key = Some(reservation.key.clone());
+            lock(&self.state).send_keys.settle(
+                &reservation.sender,
+                &reservation.key,
+                Some(answer.clone()),
+            );
+            reservation.settled = true;
         }
         answer
     }
@@ -7073,6 +7110,7 @@ impl State {
             message: envelope.id,
             subscribers,
             recipient_readiness: Some(readiness),
+            idempotency_key: None,
         }
     }
 
@@ -10314,6 +10352,49 @@ mod tests {
             panic!("a malformed key is refused")
         };
         assert_eq!(code, ErrorCode::Invalid);
+
+        // The answer says the key was applied, so a client can tell a
+        // daemon that ignores keys.
+        let Response::Sent {
+            idempotency_key, ..
+        } = daemon.handle(send(&a, "echo", Some("k-4"))).await
+        else {
+            panic!("sent")
+        };
+        assert_eq!(idempotency_key.as_deref(), Some("k-4"));
+        assert!(matches!(
+            daemon.handle(send(&a, "plain", None)).await,
+            Response::Sent {
+                idempotency_key: None,
+                ..
+            }
+        ));
+
+        // A retry after the recipient has gone is still the first send,
+        // not a refusal: only the sender keys the ledger.
+        let c = register(&daemon, "c", distinct_pid()).await;
+        let to_c = |text: &str| Request::Send {
+            from: a.id.to_string(),
+            to: "c".into(),
+            kind: "chat".into(),
+            payload: json!({ "text": text }),
+            reply_to: None,
+            links: Vec::new(),
+            idempotency_key: Some("k-5".into()),
+        };
+        let landed = id(daemon.handle(to_c("landed")).await);
+        daemon
+            .handle(Request::Deregister {
+                agent: c.id.to_string(),
+            })
+            .await;
+        let rm = daemon
+            .handle(Request::Remove {
+                agent: c.id.to_string(),
+            })
+            .await;
+        assert!(matches!(rm, Response::Ok), "{rm:?}");
+        assert_eq!(id(daemon.handle(to_c("retry")).await), landed);
     }
 
     /// A snapshot carries the cursor of the last event it reflects:

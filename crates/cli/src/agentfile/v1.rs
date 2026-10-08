@@ -66,6 +66,7 @@ impl Agentfile {
         };
         super::Agentfile {
             version: 2,
+            declared: 1,
             name: self.name,
             agents: self
                 .agents

@@ -192,9 +192,14 @@ pub fn check(file: Option<&Path>, only: &[String], json: bool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{} (version {} as read; {} agent(s))",
+        "{} (version {}{}; {} agent(s))",
         path.display(),
-        agentfile.version,
+        agentfile.declared,
+        if agentfile.declared == agentfile.version {
+            String::new()
+        } else {
+            format!(", read as version {}", agentfile.version)
+        },
         built.len()
     );
     for spec in order(built.iter().map(|(s, _)| s.clone()).collect()) {

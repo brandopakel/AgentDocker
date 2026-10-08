@@ -152,13 +152,17 @@ fn idle_unsupported(name: &str, runtime: &str) -> String {
     )
 }
 
+/// A value with `${VAR}` in it is judged once it is expanded: [`check`]
+/// runs again on the expanded entry before anything is launched.
 fn effort_in(name: &str, entry: &AgentEntry, levels: &[&str]) -> Result<(), String> {
     match &entry.effort {
-        Some(effort) if !levels.contains(&effort.as_str()) => Err(format!(
-            "agent `{name}` has effort = \"{effort}\"; {} takes {}",
-            entry.runtime,
-            levels.join(", ")
-        )),
+        Some(effort) if !effort.contains('$') && !levels.contains(&effort.as_str()) => {
+            Err(format!(
+                "agent `{name}` has effort = \"{effort}\"; {} takes {}",
+                entry.runtime,
+                levels.join(", ")
+            ))
+        }
         _ => Ok(()),
     }
 }

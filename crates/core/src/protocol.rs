@@ -1325,6 +1325,11 @@ pub enum Response {
         /// Older daemons omit it; clients must keep that state unknown.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         recipient_readiness: Option<crate::SendReadiness>,
+        /// The idempotency key this answer is kept under, echoed when the
+        /// daemon applied one. A send with a key whose answer lacks it went
+        /// to a daemon that ignores keys: a retry there is a second message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
     },
     Message {
         message: Envelope,

@@ -726,6 +726,7 @@ mod tests {
                             message: MessageId::from("8".to_owned()),
                             subscribers: 1,
                             recipient_readiness: None,
+                            idempotency_key: None,
                         },
                         (1, Request::Send { .. }, Answer::Refused) => Response::Error {
                             code: agentdocker_core::ErrorCode::Forbidden,

@@ -85,6 +85,10 @@ pub const AGENT_FIELDS: &[(&str, u32)] = &[
 pub struct Agentfile {
     #[serde(default = "latest")]
     pub version: u32,
+    /// The version the file declared, before any upgrade: what `check`
+    /// reports.
+    #[serde(skip)]
+    pub declared: u32,
     /// Team name; every agent gets a `team=<name>` label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -319,12 +323,13 @@ impl Agentfile {
         let raw: toml::Table = toml::from_str(text)?;
         let version = declared_version(&raw)?;
         check_fields(&raw, version)?;
-        let file = match version {
+        let mut file = match version {
             1 => toml::Value::Table(raw)
                 .try_into::<v1::Agentfile>()?
                 .upgrade(),
             _ => toml::Value::Table(raw).try_into::<Agentfile>()?,
         };
+        file.declared = version;
         for (name, entry) in &file.agents {
             if name.is_empty() {
                 bail!("agent names must not be empty");
@@ -431,6 +436,11 @@ impl Agentfile {
             .into_iter()
             .map(|name| {
                 let entry = self.agents[&name].expanded(&name, &lookup)?;
+                // What expansion produced is checked as written text was.
+                launch::check(&name, &entry).map_err(anyhow::Error::msg)?;
+                if entry.command.first().is_some_and(String::is_empty) {
+                    bail!("agent `{name}` has an empty command once expanded");
+                }
                 let workdir = PathBuf::from(entry.workdir.clone().unwrap_or_else(|| ".".into()));
                 let workdir = if workdir.is_absolute() {
                     workdir
@@ -651,7 +661,9 @@ labels = { role = "review" }
         assert!(Agentfile::parse("version = 0\n").is_err());
         assert!(Agentfile::parse("version = \"2\"\n").is_err());
         assert_eq!(Agentfile::parse("version = 1\n").unwrap().version, LATEST);
-        assert_eq!(Agentfile::parse("version = 2\n").unwrap().version, 2);
+        assert_eq!(Agentfile::parse("version = 1\n").unwrap().declared, 1);
+        assert_eq!(Agentfile::parse("").unwrap().declared, 1);
+        assert_eq!(Agentfile::parse("version = 2\n").unwrap().declared, 2);
     }
 
     /// Version 1 never expanded `$`, so upgrading doubles it and the agent
@@ -1064,6 +1076,33 @@ args = ["--permission-mode", "acceptEdits"]
                 .to_string();
             assert!(error.contains(expect), "{text}\n→ {error}");
         }
+    }
+
+    /// A value from the environment is checked once expanded: an effort
+    /// written as `${VAR:-high}` is accepted when the file is read, and an
+    /// expanded effort the runtime does not take is refused before launch.
+    #[test]
+    fn expanded_launch_fields_are_checked_after_expansion() {
+        let text = "version = 2\n[agents.w]\nruntime = \"claude-code\"\nprompt = \"go\"\neffort = \"${EFFORT:-high}\"\n";
+        let file = Agentfile::parse(text).expect("an expandable effort reads");
+        let (spec, _) = file
+            .specs(Path::new("/repo/Agentfile.toml"), &[], &Fake::default())
+            .unwrap()
+            .remove(0);
+        assert!(spec.command.windows(2).any(|w| w == ["--effort", "high"]));
+        let mut host = Fake::default();
+        host.vars.insert("EFFORT", "huge");
+        let error = file
+            .specs(Path::new("/repo/Agentfile.toml"), &[], &host)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("huge"), "{error}");
+        let empty = Agentfile::parse("version = 2\n[agents.a]\ncommand = [\"${NOTHING-}\"]\n")
+            .unwrap()
+            .specs(Path::new("/x/A.toml"), &[], &Fake::default())
+            .unwrap_err()
+            .to_string();
+        assert!(empty.contains("empty command"), "{empty}");
     }
 
     /// The published schema and this parser describe the same file: every

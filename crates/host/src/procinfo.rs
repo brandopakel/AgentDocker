@@ -345,16 +345,28 @@ fn codex_runtime(arguments: &[String]) -> Option<&'static str> {
     codex_helper(arguments).is_none().then_some("codex")
 }
 
-/// Docker Agent's subcommand: the first word that is not a flag, past the
-/// `agent` the Docker CLI passes its plugin (`docker agent run x.yaml` runs
-/// `docker-agent agent run x.yaml`).
+/// Docker Agent's global flags that take a value as the next word.
+const DOCKER_AGENT_VALUE_FLAGS: &[&str] =
+    &["--log-file", "--cache-dir", "--config-dir", "--data-dir"];
+
+/// Docker Agent's subcommand: the first word that is neither a flag nor a
+/// global flag's value, past the `agent` the Docker CLI passes its plugin
+/// (`docker agent run x.yaml` runs `docker-agent agent run x.yaml`).
 fn docker_agent_mode(arguments: &[String]) -> Option<&str> {
-    let mut words = arguments
-        .iter()
-        .map(String::as_str)
-        .filter(|word| !word.starts_with('-'));
-    match words.next()? {
-        "agent" => words.next(),
+    let mut words = Vec::new();
+    let mut arguments = arguments.iter().map(String::as_str);
+    while let Some(word) = arguments.next() {
+        if DOCKER_AGENT_VALUE_FLAGS.contains(&word) {
+            arguments.next();
+        } else if !word.starts_with('-') {
+            words.push(word);
+            if words.len() == 2 {
+                break;
+            }
+        }
+    }
+    match words.first()? {
+        &"agent" => words.get(1).copied(),
         mode => Some(mode),
     }
 }
@@ -927,6 +939,9 @@ mod tests {
             "cagent run --tui=false team.yaml hello",
             "/Users/a/.docker/cli-plugins/docker-agent agent run ./agent.yaml",
             "docker-agent --debug run agent.yaml",
+            "docker-agent --log-file /tmp/da.log --data-dir /tmp/d run agent.yaml",
+            "docker-agent agent --config-dir /c run agent.yaml",
+            "docker-agent --log-file=/tmp/da.log run agent.yaml",
             "docker-agent new",
         ] {
             assert_eq!(

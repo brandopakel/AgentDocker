@@ -14,8 +14,8 @@
 //!
 //! Any other `$` is an error that says to write `$$`: a shell command such as
 //! `echo $HOME` would otherwise reach the agent with the variable silently
-//! taken out, or left in, depending on a guess. A default is literal text; it
-//! does not nest.
+//! taken out, or left in, depending on a guess. A default is literal text: it
+//! does not nest, and a `$` or `{` in it is refused rather than half-read.
 
 /// Expand `text`, reading variables through `lookup`. `field` names where
 /// the text came from, for the error.
@@ -76,6 +76,9 @@ fn substitute(
         ));
     };
     match op {
+        _ if argument.contains(['$', '{']) => Err(format!(
+            "{field}: the default or message in `${{{inside}}}` is literal text; it cannot hold `$` or `{{`"
+        )),
         "" => value.ok_or_else(|| {
             format!(
                 "{field}: `{name}` is not set; set it, or write `${{{name}:-default}}` to give a value when it is not"
@@ -167,6 +170,11 @@ mod tests {
         assert!(run("${1X}").is_err());
         assert!(run("${HOME:+x}").is_err());
         assert!(run("${HO ME}").is_err());
+        let nested = run("${NOPE:-${HOME}}").unwrap_err();
+        assert!(
+            nested.contains("literal text"),
+            "defaults do not nest: {nested}"
+        );
     }
 
     #[test]

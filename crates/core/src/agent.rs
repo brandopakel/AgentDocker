@@ -493,7 +493,9 @@ impl AgentRecord {
         {
             return Some(RestartStanding::GaveUp { restarts });
         }
-        if restarts < CRASH_LOOP_RESTARTS {
+        // A clean exit is a job that finished, however soon: a periodic
+        // task under `always` is not crashing.
+        if restarts < CRASH_LOOP_RESTARTS || (!self.status.is_live() && !failed(&self.status)) {
             return None;
         }
         let started = self.started_at?;
@@ -774,6 +776,11 @@ mod restart_tests {
         // A clean exit with on-failure is a finish, not a give-up.
         record.status = exited(0);
         assert_eq!(record.restart_standing(secs(700)), None);
+        // A quick clean exit under `always` is a periodic job, not a loop.
+        record.spec.restart = RestartPolicy::Always;
+        record.finished_at = Some(secs(1));
+        assert_eq!(record.restart_standing(secs(2)), None);
+        record.spec.restart = RestartPolicy::OnFailure { max: 5 };
         // Stopped on purpose: the policy is cleared, and nothing is said.
         record.status = exited(1);
         record.spec.restart = RestartPolicy::No;

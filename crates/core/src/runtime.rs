@@ -603,21 +603,32 @@ impl RuntimeSpec {
                 ),
             },
             _ if self.mcp != McpWiring::None => {
+                // An MCP registration is checked by the inventory, so it can
+                // say "automatic once set up"; a toolset in each agent's YAML
+                // is per file, which nothing here reads, so it is conditional.
                 let (via, joins, guard) = if self.mcp == McpWiring::AgentConfig {
                     (
                         A::AgentConfig,
-                        "each run whose YAML lists the agentdocker toolset joins when the toolset starts; its sub-agents share that identity",
+                        c(
+                            Conditional,
+                            A::AgentConfig,
+                            "each run whose YAML lists the agentdocker toolset joins when the toolset starts; its sub-agents share that identity",
+                        ),
                         "only when the model claims before editing; a harness sub-agent running Claude Code or Codex is that runtime's own session, with its guard",
                     )
                 } else {
                     (
                         A::Mcp,
-                        "the MCP server registers the session when the host starts it",
+                        c(
+                            Automatic,
+                            A::Mcp,
+                            "the MCP server registers the session when the host starts it",
+                        ),
                         "only when the model claims before editing",
                     )
                 };
                 Capabilities {
-                    joins: c(Automatic, via, joins),
+                    joins,
                     tools: c(Voluntary, via, TOOLS),
                     edits: c(Voluntary, via, guard),
                     reads: c(
@@ -759,7 +770,8 @@ impl Capability {
     /// Whether the adapter this capability runs through is installed, as
     /// far as the inventory can tell: `Some` for the hooks and the MCP
     /// registration, which it reads; `None` for what is chosen per launch,
-    /// per file or per consent, or not looked at.
+    /// per file or per consent, or not looked at (OpenCode's plugin is a
+    /// file the client checks for itself).
     pub fn installed(&self, info: &RuntimeInfo) -> Option<Wiring> {
         match self.via {
             Adapter::Hooks => Some(info.hooks),
@@ -903,6 +915,11 @@ mod tests {
         }
         let docker = spec("docker-agent").unwrap().capabilities();
         assert_eq!(docker.joins.via, Adapter::AgentConfig);
+        assert_eq!(
+            docker.joins.reach,
+            Reach::Conditional,
+            "per agent YAML, unread here"
+        );
         assert_eq!(docker.edits.reach, Reach::Voluntary);
         assert!(docker.edits.how.contains("harness"));
         let claude = spec("claude-code").unwrap().capabilities();

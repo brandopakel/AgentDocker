@@ -1208,7 +1208,8 @@ struct SendArgs {
     links: Vec<agentdocker_core::Link>,
     /// Your own key for this message (a UUID, say): sending again with the
     /// same key within 24 hours answers with the first send's message id
-    /// and queues nothing, so a retry after a timeout is safe.
+    /// and queues nothing, so a retry after a timeout is safe. Keys are
+    /// held while the daemon runs, its 4,096 most recent across senders.
     #[arg(long, value_name = "KEY")]
     idempotency_key: Option<String>,
 }
@@ -2812,13 +2813,28 @@ async fn run() -> Result<()> {
                 links: args.links,
                 idempotency_key: args.idempotency_key,
             };
+            let keyed = matches!(
+                &request,
+                Request::Send {
+                    idempotency_key: Some(_),
+                    ..
+                }
+            );
             if let Response::Sent {
                 message,
                 subscribers: _,
                 recipient_readiness,
+                idempotency_key,
             } = client.call(&request).await?
             {
                 println!("{message}");
+                // An older daemon queues the message and ignores the key:
+                // say so, rather than let a retry quietly send it twice.
+                if keyed && idempotency_key.is_none() {
+                    eprintln!(
+                        "this daemon does not apply idempotency keys: the message was sent once, but a retry would send it again"
+                    );
+                }
                 eprintln!(
                     "accepted by AgentDocker; provider receipt unconfirmed (`agentdocker delivery {message}` shows where it stands)"
                 );
@@ -4276,6 +4292,23 @@ fn runtimes_json(runtimes: &[&agentdocker_core::RuntimeInfo]) -> Vec<serde_json:
         .collect()
 }
 
+/// What the inventory says of a capability's adapter, and for OpenCode's
+/// plugin, which the inventory does not read, whether its file is there.
+fn adapter_installed(
+    capability: agentdocker_core::runtime::Capability,
+    runtime: &agentdocker_core::RuntimeInfo,
+) -> Option<agentdocker_core::Wiring> {
+    if capability.via == agentdocker_core::runtime::Adapter::Plugin && runtime.name == "opencode" {
+        let roots = agentdocker_host::runtimes::Roots::from_env();
+        return Some(if opencode_plugin::path(&roots).is_file() {
+            agentdocker_core::Wiring::Wired
+        } else {
+            agentdocker_core::Wiring::Missing
+        });
+    }
+    capability.installed(runtime)
+}
+
 /// The capability matrix: one row per installed runtime (every runtime
 /// when none is installed), one column per capability.
 fn print_capabilities(runtimes: &[agentdocker_core::RuntimeInfo]) {
@@ -4297,8 +4330,7 @@ fn print_capabilities(runtimes: &[agentdocker_core::RuntimeInfo]) {
                 // "auto" through an adapter that is not installed is a
                 // promise setup has not kept yet.
                 if capability.reach == agentdocker_core::runtime::Reach::Automatic
-                    && capability
-                        .installed(runtime)
+                    && adapter_installed(capability, runtime)
                         .is_some_and(|wiring| wiring != agentdocker_core::Wiring::Wired)
                 {
                     cell.push_str(" (setup)");
@@ -4313,7 +4345,7 @@ fn print_capabilities(runtimes: &[agentdocker_core::RuntimeInfo]) {
     }
     format::table(&headings, &rows);
     println!(
-        "\nauto: the adapter does it whatever the model decides; (setup): its hooks or MCP entry are not installed yet, see `agentdocker setup --preview`.\ntools: the model can, through the MCP tools. if set up: needs a launch option, the provider's consent, `adopt` or the connector. -: not from this machine.\n`agentdocker runtimes <name>` explains one."
+        "\nauto: the adapter does it whatever the model decides; (setup): its hooks, MCP entry or plugin are not installed yet, see `agentdocker setup --preview`.\ntools: the model can, through the MCP tools. if set up: needs a launch option, the provider's consent, `adopt` or the connector. -: not from this machine.\n`agentdocker runtimes <name>` explains one."
     );
 }
 
@@ -4345,7 +4377,7 @@ fn print_runtime_detail(runtime: &agentdocker_core::RuntimeInfo) {
     };
     println!();
     for (_, label, capability) in spec.capabilities().rows() {
-        let state = match capability.installed(runtime) {
+        let state = match adapter_installed(capability, runtime) {
             Some(agentdocker_core::Wiring::Wired) => " (installed)",
             Some(agentdocker_core::Wiring::Missing) => " (not installed: `agentdocker setup`)",
             Some(agentdocker_core::Wiring::Unverified) => {

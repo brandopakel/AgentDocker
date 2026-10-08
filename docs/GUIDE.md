@@ -474,14 +474,14 @@ each one by pid.
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml`; an agent whose `depends_on` never came up is not started |
-| `agentfile check` / `upgrade` / `schema` | Show what `up` would start — every version upgraded, `${VAR}` expanded, commands built — without starting it (`--json`; environment variable names only, never values); print the file rewritten as the latest version (the file is left alone, comments are not kept); print the JSON Schema for editors |
+| `agentfile check` / `upgrade` / `schema` | Show what `up` would start — every version upgraded, `${VAR}` expanded, commands built — without starting it (`--json` too). `env` shows names only, never values; command arguments are shown as they will run, so a secret belongs in `env`, not in `args` or `prompt`; print the file rewritten as the latest version (the file is left alone, comments are not kept); print the JSON Schema for editors |
 | `heartbeat` | Report that an agent is alive |
 
 ### Talk
 
 | Command | What it does |
 |---|---|
-| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. An agent reaches only its own project and you; its `all` means its project, and you can still send anywhere. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. `--idempotency-key <key>` makes a retry safe: the same sender sending the same key again within 24 hours gets the first message id back and nothing is queued twice (the daemon remembers keys until it restarts). |
+| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. An agent reaches only its own project and you; its `all` means its project, and you can still send anywhere. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. `--idempotency-key <key>` makes a retry safe: the same sender sending the same key again within 24 hours gets the first message id back and nothing is queued twice (the daemon keeps its 4,096 most recent keys until it restarts; an older daemon that ignores keys is named on stderr). |
 | `delivery <message>` | Where one of your messages stands with each agent it was queued for: answered, delivered, received by the model, shown to its session, or why it is still waiting (next prompt, a browser agent's check-in, paused, blocked, ended). Never "read": nothing says a model read it. `send` prints the id; `--json` |
 | `watch` | Stream messages for an agent or matching topics |
 | `inbox` | Messages queued while an agent was not watching |

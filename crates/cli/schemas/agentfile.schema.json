@@ -101,11 +101,11 @@
           "additionalProperties": { "$ref": "#/$defs/expandable" }
         },
         "prompt": {
-          "description": "Version 2. The first instruction, for a command agentdocker builds. Without a terminal (tty, in_pane) it is required.",
+          "description": "Version 2. The first instruction, for a command agentdocker builds. Without a terminal (tty, in_pane) it is required, except for Codex with idle_messages, which takes none on its command line.",
           "$ref": "#/$defs/expandable"
         },
         "effort": {
-          "description": "Version 2. Reasoning effort in the runtime's words: claude-code low, medium, high, xhigh, max; codex minimal, low, medium, high, xhigh.",
+          "description": "Version 2. Reasoning effort in the runtime's words: claude-code low, medium, high, xhigh, max; codex minimal, low, medium, high, xhigh. A ${VAR} here is checked once expanded.",
           "$ref": "#/$defs/expandable"
         },
         "args": {
