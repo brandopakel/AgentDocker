@@ -4261,6 +4261,13 @@ mod tests {
         ));
         let _ = app.update(Message::SessionDraft("other".into(), "other draft".into()));
         let _ = app.update(Message::SelectSession("other".into()));
+        // Selecting a session reads its Changes; that read is not part of
+        // what this test counts.
+        assert!(
+            commands
+                .try_iter()
+                .all(|cmd| matches!(cmd, Cmd::ReviewBranch(ref id) if id == "other"))
+        );
         messages
             .send(Msg::SessionSent(
                 "recipient".into(),
