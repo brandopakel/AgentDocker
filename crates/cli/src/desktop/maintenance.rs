@@ -274,7 +274,9 @@ pub(super) fn run(
     preview: bool,
     expected: Option<&str>,
 ) -> Result<()> {
-    run_with(layout, keep, preview, expected, || service_installed(layout))
+    run_with(layout, keep, preview, expected, || {
+        service_installed(layout)
+    })
 }
 
 /// `run` with the service inventory supplied by the caller, so a test can
