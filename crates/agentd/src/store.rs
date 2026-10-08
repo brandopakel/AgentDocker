@@ -838,6 +838,13 @@ impl Store {
         }
 
         crate::startup_checkpoint("store_compatibility_ready");
+        // Another connection may hold the database for a moment: a
+        // successor opening it pending, an offline repair, somebody's
+        // sqlite3 shell. A write that meets that lock waits for it rather
+        // than failing, because a failed write latches the daemon
+        // read-only until it is restarted. The wait is bounded so a
+        // request never holds the coordination lock for long.
+        conn.busy_timeout(std::time::Duration::from_secs(1))?;
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
         crate::startup_checkpoint("store_wal_ready");
         conn.pragma_update(None, "synchronous", "FULL")?;

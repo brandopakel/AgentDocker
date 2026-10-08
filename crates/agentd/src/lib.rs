@@ -370,6 +370,9 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         }
         daemon.restore_agents().await;
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
+        // After a stall (a slow git sweep, a long store write) the missed
+        // ticks are skipped, not run back to back.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut ticks: u64 = 0;
         loop {
             ticker.tick().await;
