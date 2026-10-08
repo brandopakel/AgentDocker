@@ -442,8 +442,9 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                     "claude-transcript-2.1.268-270-v1".into(),
                     "claude-transcript-2.1.271-276-v1".into(),
                     "claude-transcript-2.1.277-278-280-v1".into(),
+                    "claude-transcript-2.1.287-v1".into(),
                     "claude-transcript-2.1.246-247-248-251-259-260-261-263-267-v1".into(),
-                    // Releases after the newest checked, counted as they report.
+                    // Releases beyond the compatibility floor, counted as they report.
                     "codex-rollout-after-0.160.0-unchecked-v1".into(),
                     "claude-transcript-after-2.1.280-unchecked-v1".into(),
                 ],
@@ -947,6 +948,7 @@ mod tests {
             (3, "2.1.280"),
             (4, "2.1.263"),
             (5, "2.1.263"),
+            (6, "2.1.287"),
             (6, "2.1.292"),
         ] {
             let (temp, daemon, config, root) = fixture();
@@ -1006,6 +1008,15 @@ mod tests {
                         .any(|format| {
                             format == "claude-transcript-2.1.246-247-248-251-259-260-261-263-267-v1"
                         })
+                );
+                assert!(
+                    report
+                        .coverage
+                        .collection
+                        .scope
+                        .formats
+                        .iter()
+                        .any(|format| format == "claude-transcript-2.1.287-v1")
                 );
             }
         }

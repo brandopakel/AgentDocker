@@ -267,6 +267,46 @@ impl Store {
         Ok(event)
     }
 
+    /// Normalize sorted standalone metadata with the same dedupe and baseline
+    /// rules as collection. This is used only by a fresh temporary Store and
+    /// never writes a live daemon cursor or imports attribution by display name.
+    pub(crate) fn usage_scan_ingest(
+        &self,
+        samples: &[(Sample, Attribution)],
+        retained_since: DateTime<Utc>,
+        now: DateTime<Utc>,
+        seq: u64,
+    ) -> Result<u64> {
+        anyhow::ensure!(
+            samples.len() <= 256,
+            "standalone ingestion batch exceeds bounds"
+        );
+        let tx = self.conn.unchecked_transaction()?;
+        let mut accepted = 0;
+        let mut gaps = 0;
+        for (sample, attribution) in samples {
+            let (count, missing) = self
+                .usage_bounded_write(|| {
+                    self.usage_ingest_sample(sample, attribution, retained_since)
+                })?
+                .context("standalone accounting capacity exceeded; select fewer inputs")?;
+            accepted += count;
+            gaps += missing;
+        }
+        let mut event = Event::new(
+            EventKind::UsageRecorded {
+                generation: 1,
+                samples: accepted,
+                gaps,
+            },
+            now,
+        );
+        event.seq = seq;
+        self.append_event(&event)?;
+        tx.commit()?;
+        Ok(accepted)
+    }
+
     fn usage_ingest_sample(
         &self,
         sample: &Sample,

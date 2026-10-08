@@ -33,7 +33,7 @@ It runs on the host: a native per-user daemon, CLI and desktop using local IPC �
 
 If you know [herdr](https://github.com/herdrdev/herdr), the two are complements rather than rivals: herdr owns the terminals agents live in, AgentDocker owns what they may touch, what they changed, and who else needs to know. See [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits). The same goes for [Dax](https://getdax.app/) (a macOS menu-bar companion whose Shepherd window embeds herdr) and [Paprika](https://paprika.ai/) (a hosted Kanban board where agents pull cards over MCP): they say what the work is and where it lives; AgentDocker helps agents coordinate their work, surfaces conflicts, and records what happened. What is shared today, what is designed and what is only an idea is in [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits) (the deeper focus/prompt bridge was measured and deferred; HERDR-BRIDGE.md in git history): a herdr, tmux, screen or zellij session is recognised and shown with the agent; a local board of cards with acceptance text, pulled once over a `task:<id>` lease, is in the app (the shape taken from Paprika); the herdr prompt/focus bridge and a Paprika card-to-lease bridge are proposals.
 
-> Status: **beta, single host.** The native desktop, messaging, agent terminals, reconnect, task board and usage collection are implemented. The published [v0.2.0-beta.8 preview](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.8) includes the macOS/Linux desktop and an unsigned Windows portable ZIP. The stable download and Homebrew formula remain v0.1.0. First-run and sustained acceptance remain open; the full Windows product is unfinished.
+> Status: **beta, single host.** The native desktop, messaging, agent terminals, reconnect, task board and usage collection are implemented. The published [v0.2.0-beta.10 preview](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.10) includes the macOS/Linux desktop and an unsigned Windows portable ZIP. The stable download and Homebrew formula remain v0.1.0. First-run and sustained acceptance remain open; the full Windows product is unfinished.
 
 The first coworker rollout targets **macOS, Linux and native Windows**. Each
 platform needs a downloadable candidate and its own first-run acceptance; the
@@ -70,24 +70,31 @@ Idle message delivery needs a provider input adapter as well. Managed Claude cha
 ## Install
 
 **Trying the desktop preview with coworkers:** download
-[v0.2.0-beta.8](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.8)
+[v0.2.0-beta.10](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.10)
 explicitly. The default installer and Homebrew commands below still select the
 stable v0.1.0 release. For a source trial, follow
 [the local build instructions](docs/LOCAL-BUILD.md) at an agreed commit. The
 release checklist is in [Remaining work](docs/REMAINING-WORK.md).
 
-Published **0.2.0-beta.8** adds owned-thread idle MCP website/nonsecret form
-review and a bounded Windows service-management allowance for cold PowerShell
-startup. Actual beta.7 → beta.8 installation and update passed on Mac ARM64,
-Oracle Ubuntu x86-64 and a Windows x64 runner. Beta.8 raises the state schema
-to 26: rollback to beta.7 deliberately refuses and preserves the installation. Never restore an
-older delivery ledger over already acknowledged input. Hosted Mac/Linux terminal
-and graphical checks, Mac daemon service checks, and Linux/Windows installed
-service checks passed in private fixtures. Packages target macOS and Linux on
-ARM64/x86-64, plus an unsigned Windows x64 ZIP with per-user installation and
-Task Scheduler startup. Native Codex launch and live daemon replacement remain
-experimental. Fresh-account, physical hardware, accessibility and sleep/reboot
-acceptance remain open; [the trial requirements](docs/LOCAL-TRIAL.md#stage-5--other-machines-and-systems)
+Published **0.2.0-beta.10** adds accounting inspection/scanning, service-build
+retention and experimental managed secret input. Actual beta.9 → beta.10 update
+and explicit-version installation passed on Mac ARM64, Oracle Ubuntu x86-64 and
+a Windows x64 runner. Beta.10 uses state schema 27; rollback to beta.9/schema 26
+deliberately refuses and preserves the installation. Never restore an older
+delivery ledger over already acknowledged input.
+
+Hosted Mac/Linux terminal and graphical checks and installed-service checks
+passed in private fixtures; Linux graphical acceptance used a corrected test
+observer against unchanged download bytes. Published Mac pruning conservatively
+retains all builds for one legitimate cached launchd status field. A corrected
+candidate passed selective pruning and retained-service startup, but that fix
+still needs a subsequent hosted preview. Oracle's downloaded beta.10 also passed
+existing-account Codex idle/busy delivery, receiver replacement and a synthetic
+draft trial. Packages target macOS and Linux on ARM64/x86-64, plus an unsigned
+Windows x64 ZIP with per-user installation and Task Scheduler startup. Native
+Codex launch, managed secret input and live daemon replacement remain experimental.
+Fresh-account, physical hardware, accessibility and sleep/reboot acceptance remain
+open; [the trial requirements](docs/LOCAL-TRIAL.md#stage-5--other-machines-and-systems)
 distinguish a preview from completed platform acceptance.
 
 End users download native executables; Rust build caches are development files.

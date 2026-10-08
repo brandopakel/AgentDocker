@@ -17,6 +17,7 @@ mod palette;
 pub(crate) mod panes;
 mod project_chat;
 pub(crate) mod queue;
+mod secret_reviews;
 mod send_readiness;
 mod sessions;
 mod shell;
@@ -186,6 +187,9 @@ enum Cmd {
     Me,
     Questions,
     Answer(MessageId, String),
+    SecretReviews,
+    SecretAnswer(String, agentdocker_core::secret::SecretAnswers),
+    SecretCancel(String),
     DismissMessages(Vec<MessageId>),
     Adopt(u32),
     AdoptAll,
@@ -336,6 +340,8 @@ enum Msg {
     Paused(PauseRequest, Result<(), String>),
     SessionLog(String, Result<String, String>),
     Questions(Vec<Question>),
+    SecretReviews(Vec<agentdocker_core::secret::SecretReview>),
+    SecretCompleted,
     /// An answer came back: `Ok` means it was delivered, `Err` carries
     /// why it was not, so what the person typed is not thrown away.
     Answered(MessageId, Result<(), String>),
@@ -488,6 +494,7 @@ pub struct App {
     home: std::path::PathBuf,
     /// Open questions put to the human; saved answer text lives in the shell.
     questions: Vec<Question>,
+    secrets: secret_reviews::State,
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
@@ -577,6 +584,7 @@ impl App {
             Cmd::Runtimes,
             Cmd::Connector,
             Cmd::Questions,
+            Cmd::SecretReviews,
             Cmd::Activity,
         ] {
             let _ = cmd_tx.send(cmd);
@@ -653,6 +661,7 @@ impl App {
             settings,
             home,
             questions: Vec::new(),
+            secrets: secret_reviews::State::default(),
             sending: std::collections::BTreeSet::new(),
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
@@ -735,6 +744,7 @@ impl App {
             settings: crate::theme::Settings::default(),
             home: std::path::PathBuf::new(),
             questions: Vec::new(),
+            secrets: secret_reviews::State::default(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             tasks: None,
@@ -784,6 +794,10 @@ impl App {
     fn rejected(&mut self, command: Cmd, reason: &'static str) {
         {
             match command {
+                Cmd::SecretAnswer(..) | Cmd::SecretCancel(_) => {
+                    self.say("Temporary input action was not queued. Edits were cleared; cancel this request rather than submitting it again.");
+                    return;
+                }
                 Cmd::Answer(id, _) => {
                     self.sending.remove(&id);
                     if self.shell.pending_answer_reveal.as_ref() == Some(&id) {
@@ -952,6 +966,7 @@ impl App {
 
     /// Take everything the threads sent since the last frame.
     fn drain(&mut self) {
+        self.secrets.expire(Utc::now());
         // Long enough ago that it is no longer what just happened.
         if !self.status.is_empty() && self.status_at.elapsed() >= STATUS_FOR {
             self.status.clear();
@@ -1181,6 +1196,15 @@ impl App {
                     self.note_completions(&fresh);
                     self.activity = fresh;
                 }
+                Msg::SecretReviews(reviews) => {
+                    if self.connected.is_ok() {
+                        self.secrets.refresh(reviews, Utc::now());
+                    }
+                }
+                Msg::SecretCompleted => {
+                    self.say("Temporary input action acknowledged by AgentDocker; this is not a provider receipt.");
+                    self.send(Cmd::SecretReviews);
+                }
                 Msg::Questions(questions) => {
                     if self
                         .shell
@@ -1248,6 +1272,7 @@ impl App {
                             Cmd::Runtimes,
                             Cmd::Connector,
                             Cmd::Questions,
+                            Cmd::SecretReviews,
                             Cmd::Activity,
                             Cmd::Inbox,
                             Cmd::Pauses,
@@ -1265,6 +1290,7 @@ impl App {
                     }
                 }
                 Msg::Disconnected(reason) => {
+                    self.secrets.disconnect();
                     self.connected = Err(reason);
                     // A page asked for will not come: a notification's
                     // search ends rather than wait on it, and a usage read
@@ -1528,6 +1554,7 @@ impl App {
                 Cmd::Leases,
                 Cmd::Discovered,
                 Cmd::Questions,
+                Cmd::SecretReviews,
                 Cmd::Activity,
                 Cmd::Inbox,
             ] {
@@ -1652,6 +1679,7 @@ impl App {
                 }
                 self.on_conversation_activity();
             }
+            EventKind::SecretReviewChanged { .. } => self.send(Cmd::SecretReviews),
             EventKind::QuestionClosed { .. } | EventKind::QuestionCancelled { .. } => {
                 self.send(Cmd::Questions)
             }
@@ -2892,6 +2920,48 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Questions { questions } => Some(Msg::Questions(questions)),
             _ => None,
         },
+        Cmd::SecretReviews => {
+            match client.call(&Request::SecretReviews {
+                recipient: agentdocker_core::HUMAN.into(),
+            }) {
+                Ok(Response::SecretReviews { reviews }) => Some(Msg::SecretReviews(reviews)),
+                Ok(_) => Some(Msg::SecretReviews(Vec::new())),
+                Err(error)
+                    if error.downcast_ref::<RemoteError>().is_some_and(|remote| {
+                        remote.code == agentdocker_core::ErrorCode::Invalid
+                    }) =>
+                {
+                    Some(Msg::SecretReviews(Vec::new()))
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Cmd::SecretAnswer(review, answers) => {
+            let response = client
+                .call(&Request::AnswerSecretReview {
+                    from: agentdocker_core::HUMAN.into(),
+                    review,
+                    answers,
+                    retention_acknowledged: true,
+                })
+                .context("Temporary submission was not confirmed; do not resubmit it")?;
+            anyhow::ensure!(
+                matches!(response, Response::Ok),
+                "Temporary submission was not confirmed; do not resubmit it"
+            );
+            Some(Msg::SecretCompleted)
+        }
+        Cmd::SecretCancel(review) => {
+            let response = client.call(&Request::CancelSecretReview {
+                from: agentdocker_core::HUMAN.into(),
+                review,
+            })?;
+            anyhow::ensure!(
+                matches!(response, Response::Ok),
+                "Temporary request cancellation was not confirmed"
+            );
+            Some(Msg::SecretCompleted)
+        }
         Cmd::Answer(message, text) => {
             client.call(&Request::Answer {
                 from: None,
@@ -4980,6 +5050,48 @@ pub(crate) mod tests {
         disconnected_command(Cmd::Stop("owned-fixture".into()));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn temporary_review_failures_remain_visible_except_for_older_daemons() {
+        use serde_json::json;
+        for code in ["invalid", "forbidden", "unavailable", "internal"] {
+            let messages = command_with_replies(
+                Cmd::SecretReviews,
+                vec![(
+                    json!({"op":"secret_reviews", "recipient":agentdocker_core::HUMAN}),
+                    Some(json!({"type":"error", "code":code, "message":"review lookup refused"})),
+                )],
+            );
+            if code == "invalid" {
+                assert!(
+                    messages
+                        .iter()
+                        .any(|m| matches!(m, Msg::SecretReviews(v) if v.is_empty()))
+                );
+            } else {
+                assert!(
+                    messages.iter().any(
+                        |m| matches!(m, Msg::Status(s) if s.contains("review lookup refused"))
+                    )
+                );
+                assert!(!messages.iter().any(|m| matches!(m, Msg::SecretReviews(_))));
+            }
+            assert!(!messages.iter().any(|m| matches!(m, Msg::Disconnected(_))));
+        }
+        let messages = command_with_replies(
+            Cmd::SecretReviews,
+            vec![(
+                json!({"op":"secret_reviews"}),
+                Some(json!({"type":"secret_reviews", "reviews":[]})),
+            )],
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| matches!(m, Msg::SecretReviews(v) if v.is_empty()))
+        );
+    }
+
     #[test]
     fn failed_inventory_preserves_previous_rows_and_daemon_connection() {
         let (tx, requests) = queue::channel();
@@ -5786,7 +5898,7 @@ pub(crate) mod tests {
         app.drain();
         let received: Vec<_> = requests.try_iter().collect();
         assert!(app.connected.is_ok());
-        assert_eq!(received.len(), 12);
+        assert_eq!(received.len(), 13);
         assert!(
             received.iter().any(|cmd| matches!(cmd, Cmd::Ping)),
             "which daemon serves is asked on every connection"
@@ -5800,6 +5912,7 @@ pub(crate) mod tests {
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Discovered)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Runtimes)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Questions)));
+        assert!(received.iter().any(|cmd| matches!(cmd, Cmd::SecretReviews)));
         assert!(
             received
                 .iter()

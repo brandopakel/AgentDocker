@@ -31,11 +31,15 @@ impl Plan {
 /// Validating an inactive payload uses its recorded content identity, not a
 /// new signing/notarization decision. Changed or unrecognized files stay put.
 fn checked_version(layout: &Layout, directory: &Path) -> Result<u32> {
+    checked_version_at(&layout.root, directory)
+}
+
+fn checked_version_at(root: &Path, directory: &Path) -> Result<u32> {
     let id = directory
         .file_name()
         .and_then(|n| n.to_str())
         .context("invalid release name")?;
-    installation::pin_path(&layout.root, id)?;
+    installation::pin_path(root, id)?;
     ensure!(
         directory.symlink_metadata()?.is_dir(),
         "release directory is not a regular directory"
@@ -79,11 +83,11 @@ fn checked_version(layout: &Layout, directory: &Path) -> Result<u32> {
         .unwrap_or(0))
 }
 
-fn plan(
+fn plan<T: Into<services::References>>(
     layout: &Layout,
     keep: Option<usize>,
     applying: bool,
-    inspect_services: impl FnOnce() -> Result<bool>,
+    inspect_services: impl FnOnce() -> Result<T>,
 ) -> Result<(Plan, installation::VersionInventoryGuard)> {
     layout.preflight()?;
     let active = layout.active()?;
@@ -96,8 +100,9 @@ fn plan(
     };
     let pins = installation::VersionInventoryGuard::default();
     let Some(keep) = keep else {
+        let references: services::References = inspect_services()?.into();
         ensure!(
-            !inspect_services()?,
+            !references.any,
             "a daemon or connector user service is installed; remove its registration before removing desktop launchers"
         );
         for (path, _) in layout.links() {
@@ -157,7 +162,7 @@ fn plan(
         })
         .collect();
     let pins = installation::reserve_versions_for_inventory(&layout.root, &candidates, applying)?;
-    let service_installed = inspect_services()?;
+    let service_references: services::References = inspect_services()?.into();
     for entry in directories {
         let path = entry.path();
         let id = entry.file_name().to_string_lossy().into_owned();
@@ -168,7 +173,7 @@ fn plan(
             Some("active or rollback version")
         } else if launcher.as_deref() == Some(&id) {
             Some("visible application supplies the managed launcher")
-        } else if service_installed {
+        } else if service_references.retains(&id) {
             Some("installed user service may reference retained binaries")
         } else if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
             Some("unrecognized directory; preserved")
@@ -226,46 +231,8 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
     Ok(())
 }
 
-fn service_installed(layout: &Layout) -> Result<bool> {
-    let mut homes = vec![layout.prefix.clone()];
-    if let Some(home) = std::env::home_dir() {
-        homes.push(home);
-    }
-    service_installed_in(&homes, services::manager_references)
-}
-
-fn service_installed_in(
-    homes: &[PathBuf],
-    manager_references: impl FnOnce() -> Result<bool>,
-) -> Result<bool> {
-    use crate::connector::service::{LABEL as CONNECTOR_LABEL, UNIT as CONNECTOR_UNIT};
-    use crate::service::{LABEL as DAEMON_LABEL, UNIT as DAEMON_UNIT};
-    let names = if cfg!(target_os = "macos") {
-        [
-            format!("Library/LaunchAgents/{DAEMON_LABEL}.plist"),
-            format!("Library/LaunchAgents/{CONNECTOR_LABEL}.plist"),
-        ]
-    } else {
-        [
-            format!(".config/systemd/user/{DAEMON_UNIT}"),
-            format!(".config/systemd/user/{CONNECTOR_UNIT}"),
-        ]
-    };
-    for home in homes {
-        for name in &names {
-            // A stopped service has no lifetime pin, but still needs its
-            // executable at its next start. Even a redirected or unreadable
-            // definition protects retained versions; do not guess its target.
-            match home.join(name).symlink_metadata() {
-                Ok(_) => return Ok(true),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-    }
-    // Removing a file does not unload the manager's cached registration.
-    // Unknown/unavailable manager state cannot authorize deleting binaries.
-    manager_references()
+fn service_installed(layout: &Layout) -> Result<services::References> {
+    services::inventory(layout)
 }
 
 /// The caller still holds the activation's installation lock. Cleanup is
@@ -290,9 +257,9 @@ pub(super) fn after_activation(layout: &Layout, _install_lock: &lock::Lock) -> s
     }
 }
 
-fn prune_activated(
+fn prune_activated<T: Into<services::References>>(
     layout: &Layout,
-    service: impl FnOnce() -> Result<bool>,
+    service: impl FnOnce() -> Result<T>,
 ) -> Result<(usize, usize)> {
     let (plan, _pins) = plan(layout, Some(0), true, service)?;
     if !plan.remove.is_empty() {
@@ -432,6 +399,40 @@ mod tests {
     }
 
     #[test]
+    fn exact_stopped_service_keeps_only_its_version_through_unrelated_deletion() {
+        let (_temp, layout) = fixture();
+        let needed = retained(&layout, "stopped-service", 1);
+        let unrelated = retained(&layout, "unused-version", 1);
+        let current = retained(&layout, "active", 1);
+        layout.activate(current, None).unwrap();
+        let selected = layout
+            .payload(&needed)
+            .join(layout.binary_subdir())
+            .join("agentd");
+        let (review, reservations) = plan(&layout, Some(0), true, || {
+            let mut refs = services::References::default();
+            refs.include(&layout.root, &selected)?;
+            Ok(refs)
+        })
+        .unwrap();
+        assert_eq!(
+            review.remove,
+            [layout.root.join("versions").join(&unrelated.id)]
+        );
+        assert!(
+            lock::try_shared(&installation::pin_path(&layout.root, &unrelated.id).unwrap())
+                .unwrap()
+                .is_none()
+        );
+        apply(&layout, &review).unwrap();
+        assert!(selected.is_file());
+        assert!(!layout.payload(&unrelated).exists());
+        drop(reservations);
+        let (next, _) = plan(&layout, Some(0), false, || Ok(false)).unwrap();
+        assert_eq!(next.remove, [layout.root.join("versions").join(&needed.id)]);
+    }
+
+    #[test]
     fn repeated_activation_prunes_only_unused_owned_builds() {
         let (_temp, layout) = fixture();
         let legacy = retained(&layout, "legacy", 0);
@@ -495,33 +496,34 @@ mod tests {
     }
 
     #[test]
-    fn a_stopped_connector_registration_protects_its_unpinned_executable() {
+    fn a_stopped_connector_registration_protects_only_its_unpinned_executable() {
         let (_temp, layout) = fixture();
-        let other_home = tempfile::tempdir().unwrap();
-        let homes = [layout.prefix.clone(), other_home.path().to_owned()];
         let old = retained(&layout, "connector-executable", 1);
+        let unused = retained(&layout, "unrelated", 1);
         let current = retained(&layout, "active", 1);
         layout.activate(current, None).unwrap();
-        let name = if cfg!(target_os = "macos") {
-            "Library/LaunchAgents/dev.agentdocker.connector.plist"
-        } else {
-            ".config/systemd/user/agentdocker-connector.service"
-        };
-        assert!(!service_installed_in(&homes, || Ok(false)).unwrap());
-        for home in &homes {
-            let unit = home.join(name);
-            std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
-            std::fs::write(&unit, "stopped fixture connector").unwrap();
-            let service = service_installed_in(&homes, || panic!("file already protects")).unwrap();
-            assert!(service);
-            assert_eq!(prune_activated(&layout, || Ok(service)).unwrap(), (0, 2));
-            assert!(layout.payload(&old).exists());
-            assert!(plan(&layout, None, false, || Ok(service)).is_err());
-            std::fs::remove_file(&unit).unwrap();
-            assert!(!service_installed_in(&homes, || Ok(false)).unwrap());
-        }
-        assert_eq!(prune_activated(&layout, || Ok(false)).unwrap(), (1, 1));
-        assert!(!layout.payload(&old).exists());
+        let mut references = services::References::default();
+        references
+            .include(&layout.root, &layout.payload(&old))
+            .unwrap();
+        assert!(references.any && references.retains(&old.id));
+        assert!(!references.retains(&unused.id));
+        assert!(plan(&layout, None, false, || Ok(references)).is_err());
+        assert_eq!(
+            prune_activated(&layout, || {
+                let mut references = services::References::default();
+                references.include(&layout.root, &layout.payload(&old))?;
+                Ok(references)
+            })
+            .unwrap(),
+            (1, 2)
+        );
+        assert!(layout.payload(&old).exists());
+        assert!(!layout.payload(&unused).exists());
+        assert_eq!(
+            prune_activated(&layout, || Ok(services::References::default())).unwrap(),
+            (1, 1)
+        );
     }
 
     #[test]
@@ -530,19 +532,28 @@ mod tests {
         let old = retained(&layout, "stopped-loaded-service", 1);
         let current = retained(&layout, "active", 1);
         layout.activate(current, None).unwrap();
-        let homes = [layout.prefix.clone()];
-        assert!(!service_installed_in(&homes, || Ok(false)).unwrap());
-        let loaded = service_installed_in(&homes, || Ok(true)).unwrap();
-        assert_eq!(prune_activated(&layout, || Ok(loaded)).unwrap(), (0, 2));
+        assert_eq!(
+            prune_activated(&layout, || Ok(services::References::from(true))).unwrap(),
+            (0, 2)
+        );
         assert!(layout.payload(&old).exists());
-        assert!(plan(&layout, None, false, || Ok(loaded)).is_err());
-
-        // A failed query is neither an empty inventory nor permission to
-        // delete. Only a positively empty manager releases the protection.
-        assert!(service_installed_in(&homes, || bail!("manager unavailable")).is_err());
+        assert!(
+            plan(&layout, None, false, || Ok(services::References::from(
+                true
+            )))
+            .is_err()
+        );
+        // A failed query does not authorize deletion. Only a positively empty
+        // inventory releases the protection; exercise the production planner.
+        assert!(
+            prune_activated::<services::References>(&layout, || bail!("manager unavailable"))
+                .is_err()
+        );
         assert!(layout.payload(&old).exists());
-        let absent = service_installed_in(&homes, || Ok(false)).unwrap();
-        assert_eq!(prune_activated(&layout, || Ok(absent)).unwrap(), (1, 1));
+        assert_eq!(
+            prune_activated(&layout, || Ok(services::References::default())).unwrap(),
+            (1, 1)
+        );
         assert!(!layout.payload(&old).exists());
     }
 
@@ -556,21 +567,11 @@ mod tests {
         let registrar = lock::try_shared(&installation::pin_path(&layout.root, &old.id).unwrap())
             .unwrap()
             .unwrap();
-        let definition = layout.prefix.join(if cfg!(target_os = "macos") {
-            "Library/LaunchAgents/dev.agentdocker.agentd.plist"
-        } else {
-            ".config/systemd/user/agentd.service"
-        });
-        std::fs::create_dir_all(definition.parent().unwrap()).unwrap();
-        let homes = [layout.prefix.clone()];
         let (review, pins) = plan(&layout, Some(0), true, || {
-            // The inventory sees absence, then the older registrar publishes
-            // and exits. Acquiring pins AFTER this read would miss both its
-            // registration and the shared pin it has now released.
-            let snapshot = service_installed_in(&homes, || Ok(false))?;
-            std::fs::write(&definition, "stopped legacy registration")?;
+            // Inventory sees absence, then the older registrar finishes and
+            // releases its pin. Reservation must precede this observation.
             drop(registrar);
-            Ok(snapshot)
+            Ok(services::References::default())
         })
         .unwrap();
         assert!(pins.is_busy(&old.id));
@@ -578,7 +579,9 @@ mod tests {
         assert!(layout.payload(&old).exists());
         drop(pins);
         let (next, _) = plan(&layout, Some(0), true, || {
-            service_installed_in(&homes, || Ok(false))
+            let mut references = services::References::default();
+            references.include(&layout.root, &layout.payload(&old))?;
+            Ok(references)
         })
         .unwrap();
         assert!(next.remove.is_empty());

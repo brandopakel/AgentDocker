@@ -61,6 +61,7 @@ mod relay;
 pub mod reload;
 mod restarts;
 mod restore;
+mod secret_reviews;
 mod tasks;
 mod transport;
 mod usage;
@@ -465,6 +466,7 @@ struct State {
     /// Questions somebody is blocked on, by message id: an answer names
     /// one and only the question knows who is waiting for it.
     questions: HashMap<MessageId, agentdocker_core::Question>,
+    secret_reviews: HashMap<String, secret_reviews::Entry>,
     /// The projects told to hold, and why; kept as documents.
     pauses: HashMap<ProjectId, agentdocker_core::Pause>,
     /// Claims waiting for a resource, in arrival order. Connection-scoped
@@ -1328,6 +1330,7 @@ impl Daemon {
         let mut state = lock(&self.state);
         state.expire_leases();
         state.expire_questions(Utc::now());
+        state.expire_secret_reviews();
     }
     /// Send the stale and contested notices that accumulated since the
     /// last tick, one message per reader and per channel.
@@ -1660,6 +1663,7 @@ impl Daemon {
                 channels,
                 contested: HashMap::new(),
                 questions,
+                secret_reviews: HashMap::new(),
                 pauses,
                 waiting: agentdocker_core::WaitQueue::new(),
                 notifier: None,
@@ -2147,6 +2151,37 @@ impl Daemon {
                 links,
             } => self.send(from, &to, kind, payload, reply_to, links).await,
             Request::Me { workdir } => self.me(workdir).await,
+            Request::OpenSecretReview {
+                agent,
+                owner,
+                recipient,
+                request,
+                token,
+            } => lock(&self.state).open_secret_review(&agent, owner, &recipient, request, token),
+            Request::SecretReviews { recipient } => {
+                lock(&self.state).list_secret_reviews(&recipient)
+            }
+            Request::AnswerSecretReview {
+                from,
+                review,
+                answers,
+                retention_acknowledged,
+            } => lock(&self.state).answer_secret_review(
+                &from,
+                &review,
+                answers,
+                retention_acknowledged,
+            ),
+            Request::CancelSecretReview { from, review } => {
+                lock(&self.state).cancel_secret_review(&from, &review)
+            }
+            Request::PollSecretReview {
+                agent,
+                owner,
+                review,
+                token,
+                close,
+            } => lock(&self.state).poll_secret_review(&agent, &owner, &review, &token, close),
             Request::Ask {
                 from,
                 to,

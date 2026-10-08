@@ -167,6 +167,17 @@ pub(super) async fn recover(
             terminal(&status),
             "the retained Codex turn has no terminal outcome; input remains paused"
         );
+        if let Some(fence) = &ledger.record().secret_review {
+            ensure!(
+                fence.thread == receipt.thread && fence.turn == receipt.turn,
+                "temporary input fence belongs to another retained turn"
+            );
+            ensure!(
+                !fence.response_attempted,
+                "temporary input may have reached Codex without a confirmed resolution; inspect the provider conversation before continuing"
+            );
+            ledger.close_secret_review()?;
+        }
         super::mcp_answers::reconcile(provider, client, ledger).await?;
         ledger.finish(&receipt.turn)?;
         println!("Recovered the accepted Codex input ({status}); it was not submitted again.");
