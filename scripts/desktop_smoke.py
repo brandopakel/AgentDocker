@@ -50,6 +50,17 @@ def bounded_output(value):
     return value[:2048] + (" [truncated]" if len(value) > 2048 else "")
 
 
+# What proc_tcp.py reports when the kernel tears a dying task's proc entries
+# down before waitpid publishes its exit: the entries vanish (ENOENT), or,
+# once the task's memory is released, read as root's, so a non-root observer
+# is refused (EACCES). Excused only for a child that has then exited; a live
+# child that cannot be observed, or any other error, still refuses.
+TEARDOWN_ERRORS = (
+    {"error": "FileNotFoundError", "detail": "kernel observation unavailable"},
+    {"error": "PermissionError", "detail": "kernel observation unavailable"},
+)
+
+
 def check_no_tcp(processes, deadline, capture=None):
     linux = sys.platform.startswith("linux")
     if not linux and not shutil.which("lsof"):
@@ -87,10 +98,10 @@ def check_no_tcp(processes, deadline, capture=None):
                         error = json.loads(result.stderr)
                     except (ValueError, TypeError):
                         error = None
-                    missing = (result.returncode == 2 and not result.stdout and error == {
-                        "error": "FileNotFoundError", "detail": "kernel observation unavailable"})
-                    if missing:
-                        # Linux may remove a dying task's proc entries before
+                    teardown = (result.returncode == 2 and not result.stdout
+                                and error in TEARDOWN_ERRORS)
+                    if teardown:
+                        # Linux tears a dying task's proc entries down before
                         # waitpid publishes its exit. Bound that teardown wait;
                         # a still-live or otherwise unobservable child refuses.
                         status = process.poll()

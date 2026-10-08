@@ -32,8 +32,14 @@ transport acceptance did not. The original report remains failed. A controlled
 100 ms. The corrected `5e388c9f` test driver passed startup, eight terminal and
 31 graphical checks against the unchanged hosted beta.10 binaries. Thirteen
 bounded exit observations were recorded separately from live transport samples;
-live children, malformed output, permission failures, TCP and daemon exit still
-refuse acceptance. This demonstrates the observer boundary, not the sole cause
+live children (whether their proc entries are missing or refuse the observer),
+malformed output, any other inspector error, TCP and daemon exit still refuse
+acceptance. An exiting child's proc entries can also turn root-owned once its
+memory is released, refusing a non-root observer (`PermissionError`) rather than
+vanishing; hosted ubuntu-24.04-arm hit that on #328 and a non-root probe here
+reproduced it 28,481 times in 300 exits, so the observer excuses it exactly as
+it excuses missing entries: only for a child that has then exited, recorded as
+an exit observation. This demonstrates the observer boundary, not the sole cause
 of the original failure. Separate hosted Oracle service and pruning trials passed
 17 and five checks, with cleanup and the pre-existing startup link independently
 verified. Hosted beta.10 also passed five existing-account Codex 0.155.1 checks:
