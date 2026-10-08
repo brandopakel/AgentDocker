@@ -213,6 +213,9 @@ impl Daemon {
                         running.process_started_at = started_at;
                         running.process_group = Some(pid);
                         running.owner = Some(spawned.owner.clone());
+                        // How the run before ended, so the live one can
+                        // tell a crash loop from a periodic job.
+                        running.last_exit = Some(running.status.clone());
                         running.status = AgentStatus::Running;
                         running.started_at = Some(Utc::now());
                         running.finished_at = None;

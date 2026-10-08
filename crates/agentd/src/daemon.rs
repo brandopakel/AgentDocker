@@ -4583,10 +4583,12 @@ impl Daemon {
         }
         // Only the sender keys the ledger. The destination is not resolved
         // first: a recipient that has since gone, or a role that moved,
-        // must not turn a retry of a send that landed into a refusal.
+        // must not turn a retry of a send that landed into a refusal. An
+        // unregistered sender's name is kept apart from agent ids, so a
+        // name that spells a removed agent's id cannot share its keys.
         let sender = match lock(&self.state).registry.resolve(&from) {
             Ok(id) => id.to_string(),
-            Err(RegistryError::NotFound(_)) => from.clone(),
+            Err(RegistryError::NotFound(_)) => format!("name:{from}"),
             Err(err) => return registry_error(err),
         };
         // Reserve the key before sending, under the lock, so that two
