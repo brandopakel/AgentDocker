@@ -196,6 +196,15 @@ separately from definition/ownership tests in [remaining work](REMAINING-WORK.md
 
 The universal adapter. An MCP host spawns `agentdocker mcp` as a stdio server; the server registers the host as an agent (pid = the host's, so the liveness check cleans up after a crash) and translates tool calls into daemon requests. The JSON-RPC surface is deliberately minimal — `initialize`, `ping`, `tools/list`, `tools/call`, notifications ignored — and hand-rolled, because that is a few hundred lines with tests versus a dependency on a fast-moving SDK. Supported protocol versions: `2025-06-18`, `2025-03-26`, `2024-11-05` (the client's choice is echoed when supported).
 
+For native Codex, `tools/call` resolves the calling conversation against its
+live native binding before dispatch. Resolution failure returns JSON-RPC
+`error.code = -32603` (`INTERNAL_ERROR`) and
+`error.message = "cannot resolve native Codex identity: <cause>"`. This includes
+missing, ended, child or ambiguous bindings; it does not by itself establish
+that the daemon is unreachable, create a binding or authorize another identity.
+Other backend transport errors retain the existing `agentd unreachable: <cause>`
+message. Daemon protocol errors remain tool results with `isError: true`.
+
 Design points:
 
 - **Identity.** If `AGENTDOCKER_AGENT_ID` is set the host was started by `agentdocker run` and already *is* an agent; the server adopts that identity and does not deregister on exit. Otherwise it registers a new agent and deregisters when stdin closes.

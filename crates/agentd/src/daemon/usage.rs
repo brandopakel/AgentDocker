@@ -942,6 +942,7 @@ mod tests {
         }
     }
 
+    /// Replaying new parser support preserves accepted counters and legacy gaps.
     #[tokio::test]
     async fn usage_parser_upgrade_replays_skipped_patch_records_without_recounting() {
         for (version, patch) in [

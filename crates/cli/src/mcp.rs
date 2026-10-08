@@ -707,6 +707,7 @@ impl<B: Backend> McpServer<B> {
         result
     }
 
+    /// Resolve the native caller when needed, then dispatch its authorized tool.
     async fn call_tool(&self, params: Value) -> Result<Value, (i64, String)> {
         let name = params
             .get("name")
