@@ -721,12 +721,7 @@ impl<B: Backend> McpServer<B> {
             let agent = context
                 .resolve(&self.backend, &params["_meta"])
                 .await
-                .map_err(|err| {
-                    (
-                        INTERNAL_ERROR,
-                        format!("cannot resolve native Codex identity: {err:#}"),
-                    )
-                })?;
+                .map_err(native_identity::mcp_error)?;
             let identity = Identity {
                 id: agent.id.to_string(),
                 name: agent.spec.name,
