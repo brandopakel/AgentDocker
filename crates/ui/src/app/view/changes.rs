@@ -95,17 +95,36 @@ impl App {
                 ),
             ]
             .align_y(Center),
-            text(format!(
-                "{branch} → {target} · {} · {} · +{added} −{removed}",
-                plural(review.commits.len(), "commit"),
-                plural(review.files.len(), "file"),
-            ))
+            text(if review.commits.is_empty() {
+                format!("{branch} → {target}")
+            } else {
+                format!(
+                    "{branch} → {target} · {} · {} · +{added} −{removed}",
+                    plural(review.commits.len(), "commit"),
+                    plural(review.files.len(), "file"),
+                )
+            })
             .size(13)
             .color(c.text),
         ]
         .spacing(8)
         .width(Fill);
+        // What the last merge said stays under the section, also once
+        // there is nothing left to merge.
+        let outcome = self
+            .merge_outcome
+            .as_ref()
+            .filter(|(outcome_for, _)| outcome_for == id)
+            .map(|(_, outcome)| -> Element<'_, Message> {
+                match outcome {
+                    Ok(said) => text(said.clone()).size(12.5).color(c.green).into(),
+                    Err(reason) => text(reason.clone()).size(12.5).color(c.amber).into(),
+                }
+            });
         if review.commits.is_empty() {
+            if let Some(outcome) = outcome {
+                section = section.push(outcome);
+            }
             section = section.push(small(
                 format!("Nothing on {branch} that {target} does not have."),
                 c,
@@ -175,13 +194,8 @@ impl App {
             },
             ready.then(|| Message::MergeBranch(id.clone(), head)),
         ));
-        if let Some((outcome_for, outcome)) = &self.merge_outcome
-            && outcome_for == id
-        {
-            section = section.push(match outcome {
-                Ok(said) => text(said.clone()).size(12.5).color(c.green),
-                Err(reason) => text(reason.clone()).size(12.5).color(c.amber),
-            });
+        if let Some(outcome) = outcome {
+            section = section.push(outcome);
         }
         Some(section.into())
     }
@@ -223,7 +237,7 @@ impl App {
                         .size(11.5)
                         .font(Font::MONOSPACE)
                         .color(tone)
-                        .wrapping(iced::widget::text::Wrapping::None),
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 )
                 .padding([1, 8])
                 .width(Fill)
@@ -242,22 +256,15 @@ impl App {
                 .padding([4, 8]),
             );
         }
-        container(
-            scrollable(body)
-                .direction(scrollable::Direction::Both {
-                    vertical: scrollable::Scrollbar::default(),
-                    horizontal: scrollable::Scrollbar::default(),
-                })
-                .height(iced::Length::Shrink),
-        )
-        .max_height(360)
-        .padding(iced::Padding {
-            top: 2.0,
-            right: 0.0,
-            bottom: 6.0,
-            left: 18.0,
-        })
-        .into()
+        container(scrollable(body).height(iced::Length::Shrink))
+            .max_height(360)
+            .padding(iced::Padding {
+                top: 2.0,
+                right: 0.0,
+                bottom: 6.0,
+                left: 18.0,
+            })
+            .into()
     }
 
     /// What a merge needs, each said as done or as what is in the way.
