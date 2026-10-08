@@ -295,6 +295,63 @@ delete accounting tables to make space: doing so can invalidate deduplication.
 AgentDocker's own injected overhead remains **not measured** until that separate
 instrumentation is implemented.
 
+### Accounting storage
+
+Run `agentdocker usage-storage --home /path/to/agentdocker-state` to inspect an
+existing private state directory. The command prints JSON and starts no daemon.
+It opens a separate read-only connection and does not initialize, migrate,
+checkpoint or vacuum the database. SQLite may maintain shared-memory read locks
+in its WAL sidecar. It does not change accounting retention or
+recover records omitted at capacity.
+
+The logical tracking budget is separate from allocated SQLite table/index pages.
+The report measures all `usage_` tables and their indexes in one read snapshot,
+including discovery and tracking metadata. Payload and unused space are included
+in those pages; do not add them again. Whole-database page/free-page totals also
+cover unrelated coordination state. Main-file, WAL and shared-memory lengths are
+separate before/after observations; a changing WAL cannot be attributed entirely
+to accounting. These measurements do not estimate injected tokens or billing.
+
+Inspection refuses unsupported state and stops without partial totals if it
+exceeds 128 accounting btrees, 131,072 pages or ten seconds between page steps.
+Operating-system I/O itself has no hard timing guarantee. Use this on demand;
+the normal Usage screen and report do not scan database pages automatically.
+Missing state and refused scans produce an error with no partial JSON report.
+
+### Standalone transcript scans
+
+`agentdocker usage-scan --codex /path/to/rollouts --claude /path/to/transcript.jsonl`
+prints token accounting for explicitly selected local files or directories.
+Repeat either provider flag for up to sixteen inputs. Directories discover JSONL
+files using the same bounded walker as collection; missing/unreadable inputs or
+incomplete enumeration refuse the report. No provider, authentication or daemon
+connection is used. Daemon configuration, accepted records and cursors are unchanged.
+
+Records from the selected snapshots are ordered globally before the shared
+accounting logic deduplicates copied logs, handles cumulative baselines and marks
+conflicting records. Unknown counters stay unknown. `--by model|provider|hour`
+selects grouping; `--since` accepts a duration or RFC3339 timestamp and `--until`
+accepts RFC3339. Without a lower bound, the scan includes the earliest selected
+sample. The upper bound defaults to the captured scan start. Ranges use UTC-hour
+rounding, shown explicitly in the JSON report.
+
+`scan_complete` describes the selected file snapshots. Unsupported records,
+conflicts and partial tails leave visible gaps/partial coverage. Nonempty inputs
+without recognized accounting records add a gap; an empty or entirely unrecognized
+selection reports unknown counts. Supported format families are listed. Complete coverage
+applies only to those snapshots, not all account activity or the remaining current
+hour. The output contains paths and accounting metadata, never prompt/response
+text. Injected-byte overhead is still unknown.
+
+Each parser pass reads at most 4 MiB/4,096 records; prefix validation is separate.
+Records above the 1 MiB parser limit produce gaps. The whole operation limits captured input to 8 GiB,
+100,000 parsed samples, a 64 MiB metadata allowance, 1,024 reader gaps and five
+minutes between operations; discovery retains its 10,000-file limit. These are
+operation limits, not a hard RSS or OS-I/O deadline. Changing files or exhausted
+limits refuse without a partial JSON report. Temporary private accounting state
+is removed before success; cleanup failure is an error. This command has no saved
+progress and does not reconcile gaps in the daemon's retained history.
+
 ### Terminal and settings
 
 **Project terminal** in the project header opens a shell in that project’s folder.
@@ -881,3 +938,26 @@ These Messages additions merged in PR #170 and have been installed since the
 September 17 `d14610b7` preview (the current installation is `652cf6a3`). Native workflows and a targeted
 synthetic Enter event passed; physical keyboard and IME acceptance remain in
 [Remaining work](REMAINING-WORK.md).
+
+### Temporary review administration
+
+The local `agentdocker secret-review list` command lists pending temporary review
+metadata for the person. `secret-review cancel <id>` closes a route; it cannot
+recall an answer already taken. `secret-review answer <id>
+--acknowledge-provider-retention` accepts a complete JSON object of field IDs and
+text values through a pipe, never command-line values or an echoing terminal.
+It prints no answer. A failed or uncertain submission must not be resent
+without inspecting the request state. Codex and its selected model receive the
+answers and may retain or repeat them into ordinary output history.
+
+Managed Codex can use this broker through the development switch
+`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`; default and native-input sessions still
+refuse secret bundles. Interactive managed terminals also require AgentDocker to
+control echo, so Windows console secret input remains refused.
+
+The experimental managed secret route also has masked desktop entry with a
+provider-retention acknowledgement. Submit once removes the local edits before
+sending; a missing acknowledgement never restores the answer or resubmits it.
+A source-built Mac trial passed masked entry, explicit consent and actual Codex
+delivery through a private model. Broader lifecycle, account, platform and
+final-package acceptance remain open.

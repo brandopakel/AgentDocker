@@ -17,6 +17,9 @@ pub(super) async fn open(
     event: Value,
     files: &mut super::file_changes::Reviews,
 ) -> Result<Option<Value>> {
+    if ledger.record().secret_review.is_some() {
+        return Ok(Some(super::secret_requests::overlap_response(&event["id"])));
+    }
     let planned = if event["method"] == "item/fileChange/requestApproval" {
         files
             .presentation(&event, &ledger.record().binding.cwd)

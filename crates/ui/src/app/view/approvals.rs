@@ -1821,6 +1821,55 @@ mod tests {
     /// as its value; the written answer stays beside them; choosing one
     /// leaves only the chosen row, as the receipt, until the answer lands.
     #[test]
+    fn secret_form_renders_without_exposing_values_in_accessible_control_metadata() {
+        use agentdocker_core::{
+            ProcessIdentity,
+            secret::{SecretField, SecretReview, SecretReviewSpec, SecretText},
+        };
+        let (mut app, _commands) = app();
+        let now = Utc::now();
+        app.secrets.refresh(
+            vec![SecretReview {
+                id: "secret-view".into(),
+                agent: "asker".into(),
+                recipient: "human".into(),
+                owner: ProcessIdentity {
+                    pid: 1,
+                    started_at: now,
+                },
+                expires_at: now + chrono::Duration::minutes(5),
+                request: SecretReviewSpec {
+                    thread: "thread".into(),
+                    turn: "turn".into(),
+                    fields: vec![SecretField {
+                        id: "value".into(),
+                        question: "Temporary value?".into(),
+                        is_secret: true,
+                    }],
+                },
+            }],
+            now,
+        );
+        app.secrets.edit(
+            "secret-view",
+            "value",
+            SecretText::new("invented-render-canary".into()).unwrap(),
+            now,
+        );
+        let rendered = seen(app.secret_review_panel(Colors::new(false)));
+        let field = rendered.control("temporary-secret-view-value").unwrap();
+        assert!(
+            field.2.is_none(),
+            "accessibility must not publish plaintext"
+        );
+        assert!(!rendered.reads("invented-render-canary"));
+        assert!(!rendered.control("temporary-submit-secret-view").unwrap().3);
+        app.secrets.acknowledge("secret-view", true, now);
+        let rendered = seen(app.secret_review_panel(Colors::new(false)));
+        assert!(rendered.control("temporary-submit-secret-view").unwrap().3);
+    }
+
+    #[test]
     fn mcp_form_edits_validate_before_one_explicit_submission() {
         let (mut app, commands) = app();
         let question = asked(

@@ -530,6 +530,39 @@ pub enum Request {
         token: Option<String>,
     },
 
+    /// Local-only volatile route; only an exact live managed Codex owner may open it.
+    OpenSecretReview {
+        agent: String,
+        owner: crate::ProcessIdentity,
+        recipient: String,
+        request: crate::secret::SecretReviewSpec,
+        token: crate::secret::SecretText,
+    },
+    /// Public metadata for the named human; no capability or answers.
+    SecretReviews {
+        recipient: String,
+    },
+    /// Complete mixed bundle, never an ordinary question answer or message.
+    AnswerSecretReview {
+        from: String,
+        review: String,
+        answers: crate::secret::SecretAnswers,
+        retention_acknowledged: bool,
+    },
+    CancelSecretReview {
+        from: String,
+        review: String,
+    },
+    /// Pending polls renew a fifteen-second owner lease. An answer is taken
+    /// before the reply is written; lost replies are never replayed.
+    PollSecretReview {
+        agent: String,
+        owner: crate::ProcessIdentity,
+        review: String,
+        token: crate::secret::SecretText,
+        close: bool,
+    },
+
     /// Register the person at the keyboard as a persistent agent named
     /// `user`, or return the one already registered. Idempotent, and the
     /// record is never expired by liveness: there is no process to watch.
@@ -1353,6 +1386,15 @@ pub enum Response {
     },
     Questions {
         questions: Vec<crate::Question>,
+    },
+    SecretReview {
+        review: crate::secret::SecretReview,
+    },
+    SecretReviews {
+        reviews: Vec<crate::secret::SecretReview>,
+    },
+    SecretReply {
+        reply: crate::secret::SecretReply,
     },
     Activity {
         activity: Vec<crate::AgentActivity>,

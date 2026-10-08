@@ -88,7 +88,7 @@ does not change an existing owner or ACL. Initialization fails closed if the
 expected VFS syscall slot is unavailable. Library embedders must initialize
 storage before opening any raw SQLite connection in the process.
 
-Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`, `journal` with its `journal_paths` and `journal_fts` indexes and `journal_cursors`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 26 supports upgrades from schemas 1 through 25 and idempotently translates old `file:` leases using each holder's recorded checkout. Ordinary opens commit data migrations and the schema-version update immediately; a successor opened pending during live replacement defers both to its acceptance transaction. Schema 8 made a restore point durable launch intent, including an interrupted `created` restore. Schema 9 retains pending question routes across restart. Schema 10 protects retained live deliveries and non-evicting inboxes from older daemons that would drain or discard accepted work. Schema 11 adds durable exact-ID aliases and an explicit offline identity repair (`agentdocker identity-repair`; IDENTITY-REPAIR.md in git history) with atomic operational moves and retained before-images; older daemons must refuse this state. Schema 12 reserves managed Codex input queues for their provider controller, preventing older inbox consumers from competing with ordinary input turns; see [managed Codex input](CODEX-INPUT.md). Schema 13 retains provider input receipts and paused delivery on the agent record so restart cannot discard that evidence. Legacy records have no inferred receipt. Schema 14 adds a durable event-log identity and preserves the SQLite event sequence high-water mark after complete history pruning; an older daemon could reuse those positions and must refuse this state. Schema 15 persists file-review directory, reason, ordered operations/paths, rename destinations and complete diffs as `codex_files` presentations. Schema 16 persists concrete filesystem/network permission requests as `codex_permissions` presentations, with the same exact fallback text and bounded human review. Schema 17 preserves the session-owner process binding; schema 18 preserves provider availability blocks so an older daemon cannot erase a limit during a record update. Schema 19 keeps input bindings and legacy offers on the agent record, so an older daemon that does not know a queue belongs to a bound controller cannot open the database and drain it; opening a database written before v19 marks every message then queued as offered at the upgrade, because nothing older recorded which of them a hook or MCP read had already put in front of a model, so a controller that binds afterwards gets them as `uncertain` to reconcile rather than as new input to submit. Schema 20 settles answer routes (`answer_routed`, `answers_routed`); a v19 daemon could hand a synchronous `ask` its answer and leave the row queued unrecorded, so opening a database written before v20 marks every queued correlated reply as offered, on the record and in a standing binding's `uncertain` set, rather than let this build deliver it as fresh input. Schema 21 adds the message archive and read cursors (the `messages`, `messages_fts` and `read_cursors` tables), backfilled once from the queued rows. Existing queues above the new byte limit remain intact; admission resumes after acknowledgement frees capacity. Image-bound validation, runner deadlines, container lifetime and process-group tracking remain supported. Compatibility is checked before schema DDL or journal-mode changes. A downgrade requires the matching pre-upgrade state backup, not opening newer state with an older daemon.
+Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`, `journal` with its `journal_paths` and `journal_fts` indexes and `journal_cursors`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 27 supports upgrades from schemas 1 through 26 and idempotently translates old `file:` leases using each holder's recorded checkout. It also protects delivery-ledger version 15 secret-response metadata: older receivers refuse ledger 15, and package rollback to schema 26 refuses before changing the selected binaries. Ordinary opens commit data migrations and the schema-version update immediately; a successor opened pending during live replacement defers both to its acceptance transaction. Schema 8 made a restore point durable launch intent, including an interrupted `created` restore. Schema 9 retains pending question routes across restart. Schema 10 protects retained live deliveries and non-evicting inboxes from older daemons that would drain or discard accepted work. Schema 11 adds durable exact-ID aliases and an explicit offline identity repair (`agentdocker identity-repair`; IDENTITY-REPAIR.md in git history) with atomic operational moves and retained before-images; older daemons must refuse this state. Schema 12 reserves managed Codex input queues for their provider controller, preventing older inbox consumers from competing with ordinary input turns; see [managed Codex input](CODEX-INPUT.md). Schema 13 retains provider input receipts and paused delivery on the agent record so restart cannot discard that evidence. Legacy records have no inferred receipt. Schema 14 adds a durable event-log identity and preserves the SQLite event sequence high-water mark after complete history pruning; an older daemon could reuse those positions and must refuse this state. Schema 15 persists file-review directory, reason, ordered operations/paths, rename destinations and complete diffs as `codex_files` presentations. Schema 16 persists concrete filesystem/network permission requests as `codex_permissions` presentations, with the same exact fallback text and bounded human review. Schema 17 preserves the session-owner process binding; schema 18 preserves provider availability blocks so an older daemon cannot erase a limit during a record update. Schema 19 keeps input bindings and legacy offers on the agent record, so an older daemon that does not know a queue belongs to a bound controller cannot open the database and drain it; opening a database written before v19 marks every message then queued as offered at the upgrade, because nothing older recorded which of them a hook or MCP read had already put in front of a model, so a controller that binds afterwards gets them as `uncertain` to reconcile rather than as new input to submit. Schema 20 settles answer routes (`answer_routed`, `answers_routed`); a v19 daemon could hand a synchronous `ask` its answer and leave the row queued unrecorded, so opening a database written before v20 marks every queued correlated reply as offered, on the record and in a standing binding's `uncertain` set, rather than let this build deliver it as fresh input. Schema 21 adds the message archive and read cursors (the `messages`, `messages_fts` and `read_cursors` tables), backfilled once from the queued rows. Existing queues above the new byte limit remain intact; admission resumes after acknowledgement frees capacity. Image-bound validation, runner deadlines, container lifetime and process-group tracking remain supported. Compatibility is checked before schema DDL or journal-mode changes. An older-build trial requires isolated, compatible state; never restore an older delivery ledger over already acknowledged input.
 
 An unresolved Codex hook offer may be settled only by exact provider evidence or
 explicit `codex-queue-resolve` readback. The latter is receiver-local administration,
@@ -380,6 +380,11 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `unbind_input {agent, token?, force?}` | `ok`, `error(forbidden\|conflict)` | release a binding with its token, or by `force` only once the bound controller process has ended; a running controller is `conflict`. The queue stays; a process the daemon launched that has not bound yet is sent SIGTERM, and the installation pin is dropped. Emits `input_unbound`. |
 | `me {workdir?}` | `agent` | register the person at the keyboard as the agent `user`, runtime `human`, or return the one already registered; `workdir` moves them to that project. No pid, so liveness never expires it |
 | `ask {from, to, question, timeout_secs?}` | `answer {message, from, text}` or `error(timeout/cancelled)` | sends a `question` message and waits for the exact answer confirmed by its committed closure; timeout defaults to 300 s and is clamped to 1–86,400. While it waits, an answer to its question is held: queued durably but shown to no read of the asker's queue, and nothing queued behind it is shown either, so the queue keeps its order for an answer that comes back to it. On hand-over the daemon does not take its written reply for a receipt: the answer is released to the queue recorded as offered (`legacy_offers`, and `binding.uncertain` for a bound asker, durable), so a controller settles it against the provider's own record of the tool call before delivering or acknowledging it, and a legacy reader gets it again rather than never. An `ask` that ends without the answer (timeout, cancel, a client that went away) releases it to the queue. |
+| `open_secret_review {agent, owner, recipient, request: {thread, turn, fields}, token}` | `secret_review {review}`, `error(invalid\|forbidden\|conflict)` | Volatile local broker for an exact live managed Codex bridge generation and its registered thread, addressed to a human. At most 32 routes/one per agent, eight fields/32 KiB prompt text. Capability is 64 hex characters, hashed only in RAM; it is separate from the public daemon-generated route ID. Five-minute monotonic lifetime and 15-second owner heartbeat. No ordinary message, stored question or durable event; emits live-only `secret_review_changed` with opaque ID/agent only. Restricted endpoints refuse it. Managed-provider routing, a durable metadata fence and masked desktop entry are connected behind `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`; default/native refusal and unsupported-console refusal remain. Overlapping reviews reject only the new request, preserving the first route and held queue. Final-package/account/platform acceptance remains open. |
+| `secret_reviews {recipient}` | `secret_reviews {reviews}` | Human-recipient metadata only; submitted answers are omitted. Expired, replaced or ended owners are removed before observation. |
+| `answer_secret_review {from, review, answers, retention_acknowledged}` | `ok`, `error(invalid\|forbidden\|conflict\|not_found)` | Exact human recipient, explicit provider-retention acknowledgment and every field in the mixed bundle required. Up to 16,000 bytes/field and 64 KiB total; duplicate IDs/unknown fields/partial bundles refused. Answers exist only in bounded memory and debug/errors are redacted. Already-submitted answers cannot be replaced or automatically resubmitted. |
+| `cancel_secret_review {from, review}` | `ok`, `error(forbidden)` | Recipient removes the volatile route/answer; already-closed IDs are idempotent. Cannot recall an answer already taken. |
+| `poll_secret_review {agent, owner, review, token, close}` | `secret_reply {reply: {state: waiting\|answered\|closed, answers?}}` | Exact owner generation/capability required. Pending poll renews heartbeat. Answer is removed before the socket reply; a lost reply is not replayable. `close` cancels without returning values. Restart/replacement loses all routes; no migration or persisted payload. The local socket's same-OS-user trust boundary is unchanged; capability protects against accidental cross-route consumption, not a malicious same-user process. |
 | `post_question {from, to, question, presentation?, timeout_secs?}` | `sent` | creates the same durable question and returns its ID immediately; optional structured command/choice controls must exactly match the full fallback text; answers use the shared inbox; CLI `ask --no-wait` |
 | `cancel_question {agent, message}` | `ok` | only the asker closes an open question; repeats are no-ops; accepted answers and original inbox messages remain; emits `question_cancelled` and finishes an active ask with `error(cancelled)`; CLI `cancel-question` |
 | `answer {from?, message, text}` | `sent` | an addressed recipient may reply once to an unexpired question by its id, including after restart; atomically closes its route; `from` defaults to `user`; an unrelated peer comment in Send remains an ordinary message and does not close the question. Emits `answer_routed {question, answer, route: queue}` at once when no `ask` is waiting, else `tool_result` or `queue` once the wait settles: one answer travels one way. |
@@ -867,6 +872,13 @@ registrations: launchd GUI/user domain services, and systemd's typed loaded-unit
 and unit-file inventories. A removed definition does not erase a cached service
 reference. Unavailable or unrecognized manager output preserves the installation;
 queries are bounded and never include service arguments/environment in errors.
+Systemd cached working-directory references decode its D-Bus missing-ok `!`
+flag and retain the resulting absolute dependency even if it does not yet exist.
+Home-relative `~`, malformed flags and other ambiguous paths preserve all builds.
+Systemd may cache a negative lookup after a status query for an absent unit.
+Maintenance ignores it only when typed cached state confirms not-found/inactive,
+no definition or overrides, no command, no job or process and no resource settings.
+A missing file on a real cached registration still preserves the installation.
 Windows task inspection recognizes only the exact encoded daemon and connector
 scripts emitted by the shared registration renderers, using literal extraction
 and byte-for-byte reconstruction without executing task content. It verifies
@@ -884,11 +896,19 @@ publishes a service and exits during that query; versions pinned only after the
 query could otherwise lose both protections in that interval. Preview opens
 only existing version pins; apply creates missing pins and recomputes inventory.
 Dry-run registration creates no guard, and maintenance preview opens only an
-existing one. Unix inventory still conservatively protects whole stores; exact
-Unix references and legacy portable registrars selecting a separate daemon need
-further acceptance.
+existing one. Unix inventory recognizes exact emitted service definitions and
+compares cached manager arguments and environment before selecting named
+versions. It validates the selected executable's immutable payload, including
+recognized services in other installation prefixes without interpreting their
+launcher-placement settings, then retains explicit
+program, tunnel, project/feed, state/log, working-directory and environment
+paths with both literal and physical alias dependencies. Unknown definitions,
+missing fragments, overrides, unknown environment settings and unavailable or
+conflicting cached data preserve whole stores. Source-specific Mac `53696dab` and
+Oracle `05582d3a` stopped-service retention/restart trials are indexed; hosted-current
+acceptance and legacy portable registrars selecting a separate daemon remain open.
 
-Windows maintenance recognizes only exact rendered actions around a content-verified same-store controller and daemon or receipt-checked stable bootstrap. It retains every explicitly referenced immutable version, including connector tunnel/project/feed paths, state/log paths and Task Scheduler working directories. Literal and resolved aliases both count. Unknown programs/options, relative or parent-traversing paths and unreadable inventory conservatively retain the store; no arbitrary script is executed to discover paths. Native selective-deletion acceptance remains open.
+Windows maintenance recognizes only exact rendered actions around a content-verified same-store controller and daemon or receipt-checked stable bootstrap. It retains every explicitly referenced immutable version, including connector tunnel/project/feed paths, state/log paths and Task Scheduler working directories. Literal and resolved aliases both count. Unknown programs/options, relative or parent-traversing paths and unreadable inventory conservatively retain the store; no arbitrary script is executed to discover paths. Source-specific native selective-deletion acceptance is recorded in the verification index; final-package and physical acceptance remain open.
 Windows desktop activation under implementation uses a private JSON snapshot in
 `AgentDocker/desktop`, pointing only to a hash-named immutable version. Launcher
 contract 2 denotes receipt-checked Windows bootstrap forwarding and lifetime
@@ -1166,7 +1186,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 31 | ✅ notification routing: a click opens the message — question, inbox row or archived conversation — with the routing action in the notification itself, a running app receiving it directly and a cold start carrying it; an archived message is scrolled to, paging back a bounded number of pages | 5 | 14, 30 |
 | 32 | ✅ session reconnect: a provider session that comes back as a new process is folded into its ended record by `session_id` under the transfer fence (`session_resumed`); eligible observations, open channel membership and typed task references are preserved by #179; conflicting state, live holders and initialized input still refuse; live duplicates of one named session in one process are folded the same way by the liveness sweep (`session_duplicates_folded`), and a registration matches two named halves of a session without comparing their directories | 5 | 27 |
 | 33 | ✅ project pause: the person tells a project's agents to hold with a reason (`pause`, `resume_project`, `pauses`), the daemon refuses their new leases while it holds, and the reason reaches every live agent as a reserved `pause` message; schema 23 | 5 | 13 |
-| 34 | ⏳ token usage: reader merged (#165/#167); initial collector, store, protocol, CLI/MCP and responsive Usage screen merged in #194 with bounded real-binary acceptance; installed activation, persistent discovery, long-term resources, standalone scans and overhead remain | 5 | — |
+| 34 | ⏳ token usage: reader merged (#165/#167); initial collector, store, protocol, CLI/MCP and responsive Usage screen merged in #194 with bounded real-binary acceptance; collection, persistent discovery, bounded tracking and standalone scans are implemented; installed/current-platform endurance and overhead remain | 5 | — |
 | 35 | ✅ a board of work: cards with acceptance text pulled once over a `task:<id>` lease, moved by their holder or the person, paged; PR #176 merged and installed; actual card creation verified | 5 | 13 |
 | 36 | ✅ persisted message drafts: text-only, bounded, restored as unsent; PR #178 merged and installed; actual conversation draft close/reopen verified; question-answer drafts retain original IDs with no restored approval/send state (#185: full gate and native reopen passed at `13dd72c`; merged through #191); Board-card text now joins the shared private snapshot under its original project, with version-1/2 migration to version 3, shared storage limits and no restored filing state (full gate and 507 native steps/30 checks passed at `720fa72`; merged through #191); other forms remain window-local | 5 | 30 |
 | 37 | ✅ command-line exit statuses: the `agentdocker` command ends with a status by the class of the daemon's answer (2 invalid, 3 not found/ambiguous, 4 held, 5 refused/paused, 6 unavailable, 1 unexpected); PR #181 merged | 5 | — |
@@ -1247,10 +1267,29 @@ work. Existing stores already above budget remain intact and may shrink, but
 cannot grow through accounting admission. Increasing usable storage beyond the
 fixed budget or safely compacting long-lived dedupe evidence is not implemented.
 Older daemons retain their own admission policy; the new metadata does not change
-schema-23 accounting meanings. Sustained resource acceptance, standalone scans
-and overhead instrumentation remain open. The collector's ephemeral prefix session handles large/growing
-files in bounded passes; the standalone reader retains its 16 MiB validation
-limit. Overhead is returned as unknown until instrumented.
+schema-23 accounting meanings. The read-only `usage-storage --home` diagnostic measures accounting table/index
+pages, payload and unused bytes in a single SQLite read snapshot, including
+discovery/tracking metadata outside the logical admission counter. It uses the
+bundled SQLite [DBSTAT interface](https://www.sqlite.org/dbstat.html) in page mode
+with object/page/time bounds and returns no partial totals on refusal. Database
+page/free-page totals cover all state; file/WAL/shared-memory lengths are separate
+before/after observations. It starts no daemon, performs no migrations or
+checkpoint/vacuum, and changes no schema, events, retention or admission policy.
+Normal usage queries do not perform this scan.
+
+The explicit `usage-scan` command now discovers selected local files/directories,
+reads fixed snapshots with the collector's bounded Session reader, globally sorts
+normalized metadata and uses the same Store dedupe/baseline logic in temporary
+private state. It does not open daemon state, contact providers or change daemon
+cursors. Its bounded metadata buffer and whole-command limits refuse resource
+exhaustion; parser gaps/partial tails remain visible. Input changes and temporary
+cleanup failures refuse the report. Complete coverage means only the selected
+snapshots. Standalone output has no retained-history promise or agent/project
+attribution; source paths and accounting metadata are included, transcript text
+is not. See [the command limits](GUIDE.md#standalone-transcript-scans).
+Sustained resource acceptance and overhead instrumentation remain open. The collector's ephemeral prefix session handles large/growing
+files in bounded passes; direct stateless reader calls retain their 16 MiB validation
+limit, while `usage-scan` uses the Session reader across larger snapshots. Overhead is returned as unknown until instrumented.
 
 **Token usage by agent, model and provider** (requested September 15;
 the bounded log reader is merged in #165/#167; initial collector/protocol/CLI/MCP/UI are merged in #194 with bounded acceptance; the remaining engineering and activation above stay open). The initial adapters read local Codex rollouts
@@ -1460,8 +1499,8 @@ finish, and retries the full old-prefix proof on the next pass or after restart.
 Growth alone proves neither corruption nor append-only content; a rewrite that
 also grows must still fail the new prefix proof. Repeated growth stays pending,
 never caught up or a permanent source gap solely because its snapshot advanced.
-No discovery schema or transcript storage changes are required. A version-3, version-4 or version-5 parser cursor first verifies its old
-prefix, then replays from zero using version 6 without inventing a source-change
+No discovery schema or transcript storage changes are required. A version-3, version-4, version-5 or version-6 parser cursor first verifies its old
+prefix, then replays from zero using version 7 without inventing a source-change
 gap. Unknown cursor versions and failed prefix verification still record gaps. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
 Collector parsing batches stop after 128 complete source records, including
@@ -1518,25 +1557,25 @@ installed/provider-billing acceptance and sustained resource trials remain open.
 Only accounting metadata was retained; temporary raw transcript copies and the
 private trial databases were removed.
 
-Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278 and
-2.1.280 transcripts, Codex 0.155.1 rollouts and observed Codex 0.160.0
+Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278,
+2.1.280 and 2.1.287 transcripts, Codex 0.155.1 rollouts and observed Codex 0.160.0
 loopback rollouts extend that explicit version coverage. Codex 0.160.0 retains
 cumulative counters, optional cache/reasoning fields and stable replay identities;
 its sample format is named separately. Top-level Claude counters remain authoritative: nested iteration/cache
 details are not added again, zero counters stay zero and absent reasoning remains
-unknown. Codex still reports cumulative snapshots. Unobserved patch versions are
-not assumed compatible. Accounting-only observations also cover historical Claude
+unknown. Codex still reports cumulative snapshots. Other versions follow the
+compatibility rule below. Accounting-only observations also cover historical Claude
 2.1.246, 2.1.247, 2.1.248, 2.1.251, 2.1.259, 2.1.260, 2.1.261, 2.1.263 and
 2.1.267. These are explicit supported patches, not an accepted version range.
 Their response semantics and sample format identity match the existing family;
-nested cache details do not contribute a second time. Parser cursor v6 verifies
-and replays v3/v4/v5 scans with the same stable
+nested cache details do not contribute a second time. Parser cursor v7 verifies
+and replays v3/v4/v5/v6 scans with the same stable
 source identities, allowing newly supported records to be collected without
 recounting earlier accepted samples. Existing historical gaps remain visible;
 this change does not claim their reconciliation or provider-billing accuracy.
 
-A release after the newest checked one, of the same major version, is counted as
-it reports: Claude Code after 2.1.280 and Codex after 0.160.0 (read with 0.160.0's
+A release after the established compatibility floor, of the same major version,
+is counted as it reports: Claude Code after 2.1.280 and Codex after 0.160.0 (read with 0.160.0's
 semantics and format). Both ship every few days, and an exact list left a person
 on the current release with no usage at all — this Mac's Claude Code 2.1.292
 sessions recorded 30,778 gaps and no samples. Each counter is still checked field
@@ -1545,6 +1584,12 @@ and `codex-rollout-after-0.160.0-unchecked-v1` so a report says unchecked releas
 may be in it. An older unchecked release, another major version or a pre-release
 stays refused. Parser cursor v7 replays v3–v6 scans, which skipped those releases;
 replay deduplicates sources already accepted.
+
+Accounting forward compatibility retains the established floors (Codex 0.160.0
+and Claude Code 2.1.280) when another release gains checked fixtures. Adding
+Claude Code 2.1.287 fixtures therefore keeps 2.1.281–2.1.286 readable. Cursor
+version 7 and verified replay of versions 3–6 are unchanged by this integration;
+existing coverage gaps and conflicting response counters are not erased.
 
 Collection configuration is separate from scan progress: enabling collection or
 changing roots can leave a scan waiting to start, without meaning collection is
@@ -1993,12 +2038,12 @@ service is unaffected.
 Schema 25 retains `mcp_form` presentations with the requesting server, message and
 complete bounded flat schema. Form answers are nonsecret JSON objects, or exact
 Decline/Cancel choices. The shared publish route validates every correlated
-answer before persistence, including generic send replies. Managed Codex uses
-ledger version 14; pre-13 records cannot introduce form review receipts, and
+answer before persistence, including generic send replies. Form reviews require
+delivery-ledger version 13 or newer; pre-13 records cannot introduce form review receipts, and
 pre-14 records cannot introduce idle MCP reviews. A nullable stored turn is
 valid only for an idle form/URL review; its pending record cannot coexist with
 active or uncertain input. Older turn-scoped records retain their correlation
-and upgrade without replacing input. Schema 26 extends the installation's
+and upgrade without replacing input. Schema 26 introduced the installation's
 compatibility boundary to that version-14 delivery ledger: package rollback
 to schema 25 refuses before changing the selected binaries. An older receiver
 invoked outside the installer also refuses the newer ledger without rewriting
@@ -2006,3 +2051,18 @@ it. Never restore an older delivery ledger over already acknowledged input.
 The
 response is stored before writing and acknowledged only after provider resolution,
 using the same exact human-answer and no-replay contract as other reviews.
+
+Secret review metadata events use `seq:0` and are live-only; clients list routes after reconnect. Checked durable-event streams exclude them, just like file/staleness notifications, so a temporary question cannot break receipt recovery. These types carry wire values but are never stored in SQLite or delivery ledgers. Routes close when either their monotonic deadline or displayed UTC expiry is reached, including after sleep or a forward clock adjustment. Memory is bounded, not locked or guaranteed zeroized. Provider output can repeat supplied values and enter ordinary output history.
+
+Managed secret input has a separate experimental producer, enabled only with
+`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`. Interactive sessions additionally
+require the bounded editor to control terminal echo; unsupported console modes
+retain the refusal. A whole mixed bundle uses the volatile
+broker. Delivery ledger 15 stores only the request/thread/turn identity and a
+possible-response flag before the provider write; it never stores the answer,
+question or capability. Normal queued input waits behind this fence. A matching
+provider resolution removes it. Restart never reopens a secret route or resends
+an answer; a confirmed terminal turn can retire an unanswered request, while an
+unconfirmed attempted response remains paused for inspection. Schema 27 extends
+the installation rollback boundary to this ledger. Older ledgers remain readable
+without being rewritten on open; older receivers refuse version 15.

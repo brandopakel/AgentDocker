@@ -807,6 +807,10 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 subprocess.run(["git", "-c", "user.email=smoke@example.com", "-c", "user.name=Smoke", *args],
                                cwd=cwd, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             git(repo, "init", "-q", "-b", "main")
+            # The daemon's merge commit needs an identity of its own: a fresh
+            # runner has no global one.
+            git(repo, "config", "user.email", "smoke@example.com")
+            git(repo, "config", "user.name", "Smoke")
             (repo / "README.md").write_text("fixture\n")
             git(repo, "add", ".")
             git(repo, "commit", "-qm", "initial")

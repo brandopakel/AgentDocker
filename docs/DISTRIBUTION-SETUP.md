@@ -5,17 +5,30 @@ Apple signing/notarization still needs a private developer identity and actual
 release acceptance. Other engineering and platform work is tracked in
 [Remaining work](REMAINING-WORK.md); distribution setup is one part of delivery.
 
+The unpublished beta.11 candidate keeps ledger 15/state schema 27 and includes
+the reviewed Mac cached-status pruning correction. Its beta.10/schema27 baseline
+supports binary rollback; acceptance must verify the exact selected payload and
+previous pointer through update, rollback and reapply. Beta.9/schema26 still
+cannot replace schema27. Never restore an older delivery database over
+acknowledged input. The next publication requires final-source validation/review
+and new hosted download/install trials.
+
 ## Release workflow and retry policy
 
 A protected `v*` tag triggers `.github/workflows/release.yml`; editing the
 workflow does not publish anything. The tag version must match `Cargo.toml`
 and the recorded build must have clean source. The current published preview is
-`0.2.0-beta.8`; its protected workflow and bounded hosted checks passed in the
-scopes recorded below. Source version `0.2.0-beta.9` is an unpublished candidate
-for the reconnect and native receipt corrections; it still needs candidate
-validation, review, protected-tag publication and hosted acceptance. Both
-beta.8 and beta.9 use schema 26; same-schema rollback still needs an actual
-package lifecycle trial. Tags exclude `+build` metadata.
+`0.2.0-beta.10`, reviewed source `e2ea4a7`; all 31 hosted assets and both preview
+feeds passed verification. Mac ARM64, Oracle Ubuntu and Windows runner fixtures
+passed beta.9/schema26 → beta.10/schema27 update, explicit-version installation
+and exact rollback refusal preserving selection and bytes. Mac daemon acceptance
+passed twelve restarts; Oracle graphical acceptance passed with a corrected test
+observer on unchanged hosted bytes. Published Mac pruning remains partial: a
+legitimate cached launchd status preserves all builds. The corrected candidate
+passed selective pruning and retained-service startup, and now requires hosted
+beta.11 acceptance. Stable signing, fresh accounts, independent physical hardware
+and sleep/reboot remain open in [Remaining work](REMAINING-WORK.md).
+Tags exclude `+build` metadata.
 The workflow builds CLI archives and four native desktop targets: Apple
 Silicon, Intel Mac, Linux x86_64 and Linux ARM64. The graphical Linux packages
 use GNU libc; the separate CLI-only Linux archives use musl.

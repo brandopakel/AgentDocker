@@ -719,6 +719,42 @@ Provider `requestUserInput` bundles reject `isSecret: true` before opening any
 ordinary question route. A supplied flag must be a boolean; malformed values,
 including strings and null, cannot fall back to persisted ordinary answers.
 
+A private Codex 0.160.1 probe delivered an invented answer to an actual
+`isSecret: true` callback. The request resolved and the answer reached the
+scripted loopback model; the driver also found it twice in the provider's private
+rollout JSONL. `thread/read` did not expose it in that observation. Masking a
+question is therefore not proof that Codex or its model does not retain its
+answer. The initial fixture was rejected for missing choices; both outcomes and
+cleanup are indexed. This is provider behavior evidence, not AgentDocker secret
+input acceptance.
+
+The remaining AgentDocker route must keep answers out of its messages, database,
+events, delivery-ledger payloads, logs and ordinary drafts. It needs dedicated
+masked entry, exact live request/turn/recipient ownership, bounded in-memory
+storage, explicit cancellation/expiry and no replay after a disconnect or crash.
+Before entry it must explain that Codex and the selected model receive the value
+and may retain it. Mixed bundles must not send their secret fields through the
+ordinary persisted answer route. The bounded local daemon broker, pipe-only
+administration commands, managed-provider producer, durable metadata fence and
+masked desktop entry are connected behind `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`.
+Default and native sessions, plus unsupported interactive console modes, still
+refuse secret bundles. While either kind of review is pending, a conflicting
+secret/ordinary request gets an error without replacing the first review or
+changing its held input queue. Final-package, account, Windows/native parity and
+other crash-boundary acceptance remain open. The broker does not save submitted
+values, but cannot prevent Codex or its model from repeating them into ordinary
+output history.
+
+Source `9b88c488` passed an actual Codex 0.160.1/private-model trial with a proxy
+injecting one secret and one ordinary request during a real secret review. Both
+injected requests were refused; the original secret was answered once, two
+ordinary receipts completed in order, and the controller did not restart. Four
+recorded controller/proxy/provider processes and the private scratch retired;
+production services were unchanged. The initial fixture stopped before answering
+because it expected a serialized zero restart counter; that failure is retained.
+Natural provider parallelism, ordinary-first runtime and final-package/account
+acceptance remain open.
+
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
 Allow becomes available after opening the complete diff; Deny remains available
@@ -1239,11 +1275,13 @@ date and date-time formats are validated without fetching or changing values.
 Unknown constraints, nested schemas, secret/extended formats and device
 verification fail explicitly. Explicit `null` schema fields are invalid, including
 constraints and defaults; only omission selects the documented fallback.
-Idle form and URL reviews require delivery-ledger version 14. Earlier records
-cannot introduce these receipts, and older bridges cannot read the new ledger.
-The package uses state schema 26, so binary rollback to schema-25 beta.7 is
-refused before activation. Keep a compatible receiver for these conversations;
-never restore an older delivery ledger over already acknowledged input. Pending
+Idle form and URL reviews require delivery-ledger version 14 or newer. Earlier
+records cannot introduce these receipts. The current package uses delivery-ledger
+version 15 and state schema 27, which also preserve secret-response metadata.
+Binary rollback to beta.9/schema 26 or earlier is refused before activation;
+older receivers also refuse ledger 15 without rewriting it. Keep a compatible
+receiver for these conversations, and never restore an older delivery ledger over
+already acknowledged input. Pending
 or uncertain reviews on restart still pause delivery; replies are never replayed.
 Requests are limited to 16 fields, 32 options,
 16,000-byte schemas/responses and 4,096-byte text fields. Schema text-length
@@ -1341,3 +1379,28 @@ Invalid answers refused and peers stayed held until the exact review resolved;
 controller/configuration were unchanged. The CI reports record clean retirement
 of 58 form/54 URL process generations for 0.160 and 30 form/28 URL generations
 for 0.155.1. Both original failed URL reports remain indexed.
+
+A managed-only secret producer and metadata-only restart fence are implemented
+behind `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`. This development switch does not
+establish full acceptance. Source `0433147b` passed actual Mac Codex0.160.1
+delivery through a private model, masked desktop entry and a synthetic PTY draft
+trial. No supplied value was found in AgentDocker state/logs; Codex retained it
+in its rollout. Broader lifecycle/fault, account, final-package and native-terminal
+parity remain open. Default sessions still refuse secret bundles. An interactive
+route additionally requires AgentDocker to control terminal echo; Windows console
+input remains refused until equivalent mode handling is implemented. A supported
+managed terminal discards new typing without echo while a secret route is
+open. After it closes, Enter discards the suspended line and returns to the
+preexisting draft; buffered text cannot become an ordinary queued message. A possibly sent answer without a provider resolution stays
+paused for inspection and is never resubmitted by restart.
+
+An actual Codex0.160.1/private-model trial on `ecfffb22` dropped the exact
+`serverRequest/resolved` notification through a supported Node proxy after the
+provider received the invented answer. The terminal turn and one bounded
+controller restart retained the metadata-only uncertainty fence and original
+input receipt; the waiting ordinary message stayed queued. Read-only history
+recovery did not send the secret again or start another model turn. Independent
+cleanup checks passed. This is scoped confirmation-loss acceptance, not a manual
+inspection/reconciliation workflow, other crash boundaries or final-package,
+account, native-terminal or Windows acceptance. The first Python proxy failed
+its MCP handshake before model input; that failure remains in the trial index.

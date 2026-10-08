@@ -47,11 +47,16 @@ pub struct Codex {
 const CODEX_CHECKED: [&str; 4] = ["0.153.4", "0.154.0", "0.155.1", "0.160.0"];
 
 /// Claude Code releases whose transcripts were checked against a fixture.
-const CLAUDE_CHECKED: [&str; 20] = [
+const CLAUDE_CHECKED: [&str; 21] = [
     "2.1.246", "2.1.247", "2.1.248", "2.1.251", "2.1.259", "2.1.260", "2.1.261", "2.1.263",
     "2.1.267", "2.1.268", "2.1.270", "2.1.271", "2.1.272", "2.1.273", "2.1.274", "2.1.275",
-    "2.1.276", "2.1.277", "2.1.278", "2.1.280",
+    "2.1.276", "2.1.277", "2.1.278", "2.1.280", "2.1.287",
 ];
+
+// Keep the initially accepted forward-compatibility floors fixed when adding
+// checked fixtures, so those additions cannot revoke already counted releases.
+const CODEX_FORWARD_COMPATIBLE_AFTER: (u32, u32, u32) = (0, 160, 0);
+const CLAUDE_FORWARD_COMPATIBLE_AFTER: (u32, u32, u32) = (2, 1, 280);
 
 /// `major.minor.patch`, and nothing else: a pre-release or a build suffix
 /// is not a release this reads as one.
@@ -62,21 +67,14 @@ fn release(version: &str) -> Option<(u32, u32, u32)> {
     parts.next().is_none().then_some(release)
 }
 
-/// Whether a release is counted: one that was checked, or a later release
-/// of the same major version than the newest checked. Both providers ship
-/// every few days, and a release nobody had checked yet read as no usage at
-/// all, so a person on the current release saw zero. A later release is
-/// counted as it reports, its counters still checked field by field; an
-/// older or other unchecked release stays refused.
-fn counted(version: &str, checked: &[&str]) -> bool {
+/// Whether a release is checked, or newer within the same major version than
+/// the established compatibility floor. Adding checked fixtures must not raise
+/// that floor and stop counting releases previously admitted by the parser.
+fn counted(version: &str, checked: &[&str], floor: (u32, u32, u32)) -> bool {
     if checked.contains(&version) {
         return true;
     }
-    let newest = checked.iter().filter_map(|v| release(v)).max();
-    match (release(version), newest) {
-        (Some(this), Some(newest)) => this.0 == newest.0 && this > newest,
-        _ => false,
-    }
+    release(version).is_some_and(|this| this.0 == floor.0 && this > floor)
 }
 
 fn label(value: &Value) -> Option<String> {
@@ -171,7 +169,7 @@ impl Codex {
                     label(&payload["cli_version"]).ok_or("Codex log version is missing")?;
                 // Fixtures establish these local formats; a later release is
                 // read with the newest checked one's semantics (`counted`).
-                if !counted(&version, &CODEX_CHECKED) {
+                if !counted(&version, &CODEX_CHECKED, CODEX_FORWARD_COMPATIBLE_AFTER) {
                     return Err("unsupported Codex rollout version".into());
                 }
                 if self.session.as_ref().is_some_and(|old| old != &session) {
@@ -247,7 +245,7 @@ pub fn claude(record: &Value) -> Result<Option<Sample>, String> {
     }
     if !record["version"]
         .as_str()
-        .is_some_and(|version| counted(version, &CLAUDE_CHECKED))
+        .is_some_and(|version| counted(version, &CLAUDE_CHECKED, CLAUDE_FORWARD_COMPATIBLE_AFTER))
     {
         return Err("unsupported Claude transcript version".into());
     }
@@ -332,7 +330,7 @@ mod tests {
 
     #[test]
     fn observed_claude_patch_records_keep_top_level_accounting_authoritative() {
-        // Accounting-only records from installed 2.1.277/278/280 transcripts.
+        // Accounting-only records from installed 2.1.277/278/280/287 transcripts.
         // Identifiers, timestamps and model names are synthetic; no content is
         // retained. Nested cache/iteration totals must not be counted again,
         // including a 2.1.278 record whose top-level counters are all zero.
@@ -342,6 +340,8 @@ mod tests {
             [Some(41759), Some(24649), Some(17108), Some(276), Some(61)],
             [Some(0), Some(0), Some(0), Some(0), Some(0)],
             [Some(31131), Some(0), Some(31129), Some(6), None],
+            [Some(35138), Some(17227), Some(17909), Some(8), None],
+            [Some(44729), Some(43498), Some(1229), Some(120), Some(0)],
         ];
         assert_eq!(records.lines().count(), expected.len());
         for (line, expected) in records.lines().zip(expected) {
@@ -359,13 +359,19 @@ mod tests {
     }
 
     /// Checked releases count; so does a later release of the same major
-    /// version than the newest checked, since both providers ship every few
+    /// version than the established floor, since both providers ship every few
     /// days. An older unchecked release, another major version, a
     /// pre-release or something that is not a version stays refused.
     #[test]
-    fn a_release_after_the_newest_checked_counts_and_others_stay_refused() {
-        for version in ["2.1.280", "2.1.281", "2.1.292", "2.2.0", "2.10.0"] {
-            assert!(counted(version, &CLAUDE_CHECKED), "{version}");
+    fn later_checked_fixtures_preserve_the_previously_counted_release_range() {
+        for version in [
+            "2.1.280", "2.1.281", "2.1.282", "2.1.283", "2.1.284", "2.1.285", "2.1.286", "2.1.287",
+            "2.1.292", "2.2.0", "2.10.0",
+        ] {
+            assert!(
+                counted(version, &CLAUDE_CHECKED, CLAUDE_FORWARD_COMPATIBLE_AFTER),
+                "{version}"
+            );
         }
         for version in [
             "2.1.279",
@@ -378,13 +384,22 @@ mod tests {
             "future",
             "",
         ] {
-            assert!(!counted(version, &CLAUDE_CHECKED), "{version}");
+            assert!(
+                !counted(version, &CLAUDE_CHECKED, CLAUDE_FORWARD_COMPATIBLE_AFTER),
+                "{version}"
+            );
         }
         for version in ["0.160.0", "0.160.1", "0.161.0", "0.200.3"] {
-            assert!(counted(version, &CODEX_CHECKED), "{version}");
+            assert!(
+                counted(version, &CODEX_CHECKED, CODEX_FORWARD_COMPATIBLE_AFTER),
+                "{version}"
+            );
         }
         for version in ["0.159.9", "0.152.0", "1.0.0", "0.160.1-alpha.2"] {
-            assert!(!counted(version, &CODEX_CHECKED), "{version}");
+            assert!(
+                !counted(version, &CODEX_CHECKED, CODEX_FORWARD_COMPATIBLE_AFTER),
+                "{version}"
+            );
         }
     }
 
