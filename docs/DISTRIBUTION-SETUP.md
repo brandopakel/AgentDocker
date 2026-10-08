@@ -5,24 +5,29 @@ Apple signing/notarization still needs a private developer identity and actual
 release acceptance. Other engineering and platform work is tracked in
 [Remaining work](REMAINING-WORK.md); distribution setup is one part of delivery.
 
-The unpublished beta.10 source candidate uses ledger 15/state schema 27. Its
-beta.9/schema26 baseline cannot be selected by binary rollback; acceptance must
-verify exact refusal with the current selection and bytes preserved. Never
-restore an older delivery database over acknowledged input. The next publication
-requires final-source validation/review and new hosted download/install trials.
+The unpublished beta.11 candidate keeps ledger 15/state schema 27 and includes
+the reviewed Mac cached-status pruning correction. Its beta.10/schema27 baseline
+supports binary rollback; acceptance must verify the exact selected payload and
+previous pointer through update, rollback and reapply. Beta.9/schema26 still
+cannot replace schema27. Never restore an older delivery database over
+acknowledged input. The next publication requires final-source validation/review
+and new hosted download/install trials.
 
 ## Release workflow and retry policy
 
 A protected `v*` tag triggers `.github/workflows/release.yml`; editing the
 workflow does not publish anything. The tag version must match `Cargo.toml`
 and the recorded build must have clean source. The current published preview is
-`0.2.0-beta.9`, reviewed source `76dc915a`; its protected workflow and hosted
-asset/feed verification passed. Actual beta.8 → beta.9 → beta.8 → beta.9
-installation, update and same-schema rollback passed in private Mac ARM64,
-Oracle Ubuntu x86-64 and Windows x64 fixtures. Both versions use schema 26.
-The hosted beta.9 Mac daemon restart trial failed; its reviewed correction
-requires acceptance in a later hosted preview. Stable signing, fresh accounts,
-physical hardware and sleep/reboot remain open in [Remaining work](REMAINING-WORK.md).
+`0.2.0-beta.10`, reviewed source `e2ea4a7`; all 31 hosted assets and both preview
+feeds passed verification. Mac ARM64, Oracle Ubuntu and Windows runner fixtures
+passed beta.9/schema26 → beta.10/schema27 update, explicit-version installation
+and exact rollback refusal preserving selection and bytes. Mac daemon acceptance
+passed twelve restarts; Oracle graphical acceptance passed with a corrected test
+observer on unchanged hosted bytes. Published Mac pruning remains partial: a
+legitimate cached launchd status preserves all builds. The corrected candidate
+passed selective pruning and retained-service startup, and now requires hosted
+beta.11 acceptance. Stable signing, fresh accounts, independent physical hardware
+and sleep/reboot remain open in [Remaining work](REMAINING-WORK.md).
 Tags exclude `+build` metadata.
 The workflow builds CLI archives and four native desktop targets: Apple
 Silicon, Intel Mac, Linux x86_64 and Linux ARM64. The graphical Linux packages
