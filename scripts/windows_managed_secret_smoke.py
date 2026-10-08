@@ -29,6 +29,15 @@ import time
 import traceback
 
 
+def terminal_chunks(terminal, closing):
+    """Drain buffered output to EOF even after the native child has exited."""
+    while not closing.is_set():
+        try:
+            yield terminal.read(65536)
+        except EOFError:
+            return
+
+
 def sha(path):
     digest = hashlib.sha256()
     with path.open('rb') as source:
@@ -296,9 +305,9 @@ def main():
         def read_terminal():
             tail = ''
             try:
-                while terminal.isalive():
-                    chunk = terminal.read(65536); output.append(chunk)
-                    if '\x1b[6n' in tail + chunk:
+                for chunk in terminal_chunks(terminal, closing):
+                    output.append(chunk)
+                    if '\x1b[6n' in tail + chunk and terminal.isalive():
                         terminal.write('\x1b[1;1R')
                     tail = (tail + chunk)[-3:]
                     assert sum(map(len, output)) < 4*1024*1024, 'terminal output exceeded its bound'

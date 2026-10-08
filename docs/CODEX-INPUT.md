@@ -1412,7 +1412,10 @@ attachment now recognizes its complete key-down record as the local detach key,
 including the protocol defaults for omitted parameters;
 other keyboard bytes remain unchanged. A split record is bounded to 64 bytes,
 and an incomplete Escape prefix is forwarded after 25 ms without further input,
-or immediately on EOF/error. Exact extracted-package validation remains pending. A supported
+or immediately on EOF/error. The first corrected native run retired the attachment
+and ConPTY but its observer stopped before the buffered farewell finished. The
+fixture now drains output to EOF; complete farewell and retention checks remain
+required. Exact extracted-package validation remains pending. A supported
 managed terminal discards new typing without echo while a secret route is
 open. After it closes, Enter discards the suspended line and returns to the
 preexisting draft; buffered text cannot become an ordinary queued message. A possibly sent answer without a provider resolution stays

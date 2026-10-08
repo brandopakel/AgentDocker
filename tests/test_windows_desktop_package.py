@@ -19,6 +19,33 @@ RELEASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RELEASE)
 
 
+class WindowsTerminalCapture(unittest.TestCase):
+    def test_child_exit_does_not_discard_buffered_farewell(self):
+        import threading
+        spec = importlib.util.spec_from_file_location(
+            "windows_secret_capture", ROOT / "scripts/windows_managed_secret_smoke.py")
+        capture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(capture)
+
+        class ExitedTerminal:
+            def __init__(self):
+                self.chunks = iter(["detached from ", "fixture; it is still running\r\n"])
+
+            def isalive(self):
+                return False
+
+            def read(self, size):
+                try:
+                    return next(self.chunks)
+                except StopIteration:
+                    raise EOFError("drained") from None
+
+        terminal = ExitedTerminal()
+        self.assertFalse(terminal.isalive())
+        self.assertEqual("".join(capture.terminal_chunks(terminal, threading.Event())),
+                         "detached from fixture; it is still running\r\n")
+
+
 class WindowsDesktopPackaging(unittest.TestCase):
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory()
