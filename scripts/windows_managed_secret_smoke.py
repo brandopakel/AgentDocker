@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import socket
 import stat
 import subprocess
@@ -132,6 +133,10 @@ def main():
               'cleanup_errors': [], 'reader_errors': [], 'model_requests': []}
     root = Path(tempfile.mkdtemp(prefix='AgentDocker managed secret ü ')).resolve()
     report['scratch'] = str(root)
+    # The checkout drive may have NETWORK SERVICE ancestry. Keep smoke
+    # output under the same private user-owned root as the isolated state,
+    # then export only after the window retires; ownership checks stay intact.
+    window_capture = root/'window-capture'
     canary = 'SYNTHETIC_NOT_A_CREDENTIAL_' + secrets.token_hex(12)
     draft = 'SYNTHETIC_DRAFT_café_日本語_' + secrets.token_hex(8)
     suspended = 'SYNTHETIC_DISCARD_' + secrets.token_hex(8)
@@ -140,7 +145,7 @@ def main():
     after_bound = 'SYNTHETIC_AFTER_BOUND_' + secrets.token_hex(8)
     report['canary_sha256'] = hashlib.sha256(canary.encode()).hexdigest()
     lock = threading.Lock(); tool_sent = False
-    receiver = terminal = reader = window = server = agent = None
+    receiver = terminal = reader = window = server = agent = attach = None
     output = []; closing = threading.Event(); owned = {}; window_log = None; console_closed = False
 
     def capture():
@@ -236,6 +241,8 @@ def main():
                         'canary_present': canary in rendered, 'function_output_count': len(outputs),
                         'canary_in_function_output': canary in json.dumps(outputs),
                         'saved_draft_present': draft + '_COMPLETED' in rendered,
+                        'original_input_present': 'Run the private synthetic secret question fixture.' in rendered,
+                        'queued_input_present': 'A separate ordinary message after temporary input.' in rendered,
                         'after_bound_present': after_bound in rendered,
                         'discarded_input_present': any(v in rendered for v in [suspended, late, overlong])})
                     emit = not auxiliary and not tool_sent
@@ -285,6 +292,7 @@ def main():
         initial = wait(ready); report['initial_generation'] = {'pid': initial['pid'], 'birth': initial['process_started_at']}
         terminal = PtyProcess.spawn([str(cli), 'attach', agent], cwd=str(project), env=receiver.env, dimensions=(40,160), backend=Backend.ConPTY)
         attach = psutil.Process(terminal.pid); receiver.owned.append(attach); capture()
+        report['attachment_generation'] = {'pid': attach.pid, 'birth': attach.create_time()}
         def read_terminal():
             tail = ''
             try:
@@ -311,7 +319,11 @@ def main():
         wait(lambda: 'waiting for temporary input' in text(), 10)
         terminal.write(suspended+'\r'); time.sleep(.5); assert suspended not in text()
         report['suspended_terminal_input_not_echoed'] = True
-        report['fence_before_answer'] = ledger()['secret_review']; assert not report['fence_before_answer']['response_attempted']
+        held = ledger()
+        report['fence_before_answer'] = held['secret_review']; assert not report['fence_before_answer']['response_attempted']
+        assert held['attempt']['message'] == first and held['attempt']['acknowledged']
+        report['initial_receipt_before_answer'] = held['attempt']['receipt']
+        assert report['initial_receipt_before_answer']['turn'] == view['request']['turn']
         second = send('A separate ordinary message after temporary input.')
         report['ordinary_message_ids'] = [first, second]
         time.sleep(1); assert not ledger()['completed'] and len(reviews()) == 1
@@ -326,16 +338,16 @@ def main():
                     {'op': 'wait_control', 'id': field, 'present': False}, {'op': 'capture', 'name': 'closed'}]
         scenario_path = root/'scenario.json'; scenario_path.write_text(json.dumps(scenario), encoding='utf-8')
         window_log = (internal/'window.log').open('wb')
-        window = subprocess.Popen([str(binary/'agentdocker-ui.exe'), '--smoke-test', str(out/'window'), '--smoke-deadline', '60', '--smoke-scenario', str(scenario_path)],
+        window = subprocess.Popen([str(binary/'agentdocker-ui.exe'), '--smoke-test', str(window_capture), '--smoke-deadline', '60', '--smoke-scenario', str(scenario_path)],
                                   cwd=project, env=receiver.env, stdin=subprocess.DEVNULL, stdout=window_log, stderr=subprocess.STDOUT)
         receiver.children.append(window); receiver.owned.append(psutil.Process(window.pid)); capture()
         wait(lambda: window.poll() is not None, 70); report['window_exit'] = window.returncode
-        w = json.loads((out/'window/result.json').read_text(encoding='utf-8')); report['window_report'] = w
+        w = json.loads((window_capture/'result.json').read_text(encoding='utf-8')); report['window_report'] = w
         assert window.returncode == 0 and w['result'] == 'passed' and w['scenario_steps_completed'] == len(scenario)
         report['masked_app_submission'] = True
         wait(lambda: len(ledger()['completed']) == 2)
         current = ledger(); assert current['secret_review'] is None and current['attempt'] is None and not reviews()
-        assert [v['message'] for v in current['completed']] == [first, second]
+        assert {v['message'] for v in current['completed']} == {first, second}
         report['secret_fence_closed'] = True
         terminal.write(late+'\r'); wait(lambda: 'Terminal input resumed; your earlier draft is preserved.' in text(), 10)
         assert late not in text()
@@ -350,8 +362,16 @@ def main():
         assert not any(v['discarded_input_present'] for v in report['model_requests'])
         report['suspended_and_late_input_never_delivered'] = True
         current = ledger(); report['completed_receipts'] = current['completed']
-        assert len({v['message'] for v in current['completed']}) == 4 and [v['message'] for v in current['completed'][:2]] == [first, second]
+        assert len({v['message'] for v in current['completed']}) == 4 and {v['message'] for v in current['completed'][:2]} == {first, second}
         assert current['secret_review'] is None and current['attempt'] is None
+        receipts = {v['message']: v['receipt'] for v in current['completed']}
+        assert receipts[first] == report['initial_receipt_before_answer']
+        assert all(v['thread'] == view['request']['thread'] for v in receipts.values())
+        assert len({(v['turn'], v['item']) for v in receipts.values()}) == 4
+        requests = report['model_requests']
+        assert requests[0]['original_input_present'] and not requests[0]['queued_input_present']
+        assert any(v['queued_input_present'] for v in requests)
+        assert all(not v['queued_input_present'] or v['canary_in_function_output'] for v in requests)
         report['final_fence_closed'] = True
         replay = rpc({'op': 'answer_secret_review', 'from': human, 'review': route, 'answers': {'synthetic_secret': canary}, 'retention_acknowledged': True}, True)
         assert replay.get('type') == 'error' and replay.get('code') == 'not_found'; report['stale_answer_refused'] = True
@@ -365,7 +385,18 @@ def main():
             capture()
             report['watched_processes'] = [{'pid': pid, 'birth': birth} for pid, birth in owned]
             if terminal is not None and terminal.isalive():
-                terminal.write('\x1d'); wait(lambda: not terminal.isalive(), 10)
+                report['detach'] = {'sent': True}
+                terminal.write('\x1d')
+                try:
+                    wait(lambda: not terminal.isalive(), 10)
+                    wait(lambda: ('detached from '+agent+'; it is still running') in text(), 2)
+                finally:
+                    report['detach'].update(native_process_alive=attach.is_running(),
+                        conpty_alive=terminal.isalive(),
+                        farewell_observed=('detached from '+agent+'; it is still running') in text())
+                assert not attach.is_running(), 'attachment process survived ConPTY exit'
+                assert report['detach']['farewell_observed'], 'detach acknowledgement missing'
+                report['attachment_detached'] = True
             close_console()
             if agent:
                 rpc({'op': 'stop', 'agent': agent, 'force': False})
@@ -378,7 +409,7 @@ def main():
             report['terminal_canary_present'] = canary in ''.join(output); assert not report['terminal_canary_present']
             report['terminal_sha256'] = hashlib.sha256(''.join(output).encode()).hexdigest()
             report['scans'] = {}
-            for category, base in [('agentdocker', root/'state'), ('provider', root/'profile'), ('internal', root/'internal'), ('gui', out/'window')]:
+            for category, base in [('agentdocker', root/'state'), ('provider', root/'profile'), ('internal', root/'internal'), ('gui', window_capture)]:
                 if base.exists():
                     report['scans'][category] = scan_private(base, canary, codex)
                     if category != 'provider':
@@ -406,7 +437,20 @@ def main():
                 close_console()
             except BaseException:
                 report['cleanup_errors'].append(traceback.format_exc().replace(canary, '[synthetic value]')); report['result'] = 'failed'
+        report['remaining_processes'] = [{'pid': pid, 'birth': birth} for (pid, birth), process in owned.items() if process.is_running()]
+        if report['remaining_processes']:
+            report['result'] = 'failed'
+        if window_capture.exists():
+            try:
+                assert window is not None and window.poll() is not None, 'window still owns capture'
+                shutil.copytree(window_capture, out/'window')
+            except BaseException:
+                report['cleanup_errors'].append(traceback.format_exc().replace(canary, '[synthetic value]')); report['result'] = 'failed'
+        # Keep diagnostic output even if retirement failed before the scans.
+        report['terminal_canary_present'] = canary in ''.join(output)
+        report['terminal_sha256'] = hashlib.sha256(''.join(output).encode()).hexdigest()
         if report['result'] != 'passed':
+            report['sanitized_terminal_tail'] = ''.join(output)[-6000:].replace(canary, '[synthetic value]')
             try:
                 paths = list((root/'internal').glob('*.log')) + list((root/'state/logs').glob('*'))
                 report['sanitized_diagnostics'] = []

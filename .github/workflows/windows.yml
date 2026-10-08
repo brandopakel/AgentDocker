@@ -141,7 +141,7 @@ jobs:
         # This changes no daemon/client readiness deadline.
         # The idle-review precursor passed this step in 5m53s; services plus
         # forty startups took 9m16s on final beta.7. Healthy runs stay short,
-        # but eight sequential native/MCP/recovery trials each allow 300s,
+        # but nine sequential native/MCP/secret/recovery trials each allow 300s,
         # installation allows 900s, and smoke/cleanup also need headroom.
         # Active/idle forms and URLs each require four explicit decisions.
         # Optional services add two 600s bounds. These are aggregate CI budgets;

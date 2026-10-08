@@ -59,18 +59,22 @@ class WindowsDesktopPackaging(unittest.TestCase):
                   "binary_sha256": dict(self.manifest["binary_sha256"]), "provider_sha256": "d" * 64,
                   "cleanup_errors": [], "reader_errors": [], "remaining_processes": [],
                   "window_exit": 0, "terminal_canary_present": False,
+                  "attachment_detached": True, "detach": {"sent": True, "farewell_observed": True,
+                  "native_process_alive": False, "conpty_alive": False},
                   "window_report": {"result": "passed", "error": None, "connected": True,
                                     "scenario_steps_completed": 10, "scenario_steps_total": 10},
                   "captures": {n + ".png": "e" * 64 for n in ["masked-before-consent", "masked-after-consent", "closed", "window"]},
                   "watched_processes": [{"pid": n, "birth": n * 10} for n in range(1, 6)],
                   "initial_generation": {"pid": 1, "birth": "recorded-process-generation"},
                   "completed_receipts": [{"message": str(n), "receipt": {"thread": "thread", "turn": str(n), "item": str(n)}} for n in range(4)],
+                  "initial_receipt_before_answer": {"thread": "thread", "turn": "0", "item": "0"},
                   "ordinary_message_ids": ["0", "1"], "review_metadata": {"request": {"thread": "thread", "turn": "0"}},
                   "fence_before_answer": {"thread": "thread", "turn": "0", "response_attempted": False},
                   "supplied_secret_flag": "isSecret", "secret_flag_advertised": False,
                   "model_requests": [{"path": "/v1/responses", "auxiliary": False,
                                       "discarded_input_present": False, "canary_present": n > 0,
                                       "canary_in_function_output": n > 0, "function_output_count": int(n > 0),
+                                      "original_input_present": True, "queued_input_present": n >= 2,
                                       "saved_draft_present": n >= 3, "after_bound_present": n == 4} for n in range(5)],
                   "scans": {n: {"files": 2, "bytes": 100, "matches": [{"occurrences": 2}] if n == "provider" else []}
                             for n in ["agentdocker", "provider", "internal", "gui"]}}
@@ -84,6 +88,13 @@ class WindowsDesktopPackaging(unittest.TestCase):
     def test_secret_acceptance_rejects_wrong_bytes_leaks_incomplete_ui_and_duplicate_receipts(self):
         valid = self.secret_report()
         SMOKE.validate_secret_report(valid, self.manifest, "d" * 64)
+        steered = copy.deepcopy(valid)
+        steered["completed_receipts"][1]["receipt"]["turn"] = "0"
+        steered["completed_receipts"][:2] = reversed(steered["completed_receipts"][:2])
+        # A queued message can share the response request in the original turn.
+        steered["model_requests"][1]["queued_input_present"] = True
+        del steered["model_requests"][2]
+        SMOKE.validate_secret_report(steered, self.manifest, "d" * 64)
         corruptions = [lambda r: r.update(source_tree="foreign"),
                        lambda r: r["binary_sha256"].update({"agentdocker-ui.exe": "f" * 64}),
                        lambda r: r.update(provider_sha256="f" * 64),
@@ -101,7 +112,11 @@ class WindowsDesktopPackaging(unittest.TestCase):
                        lambda r: r["completed_receipts"][3].update(receipt=r["completed_receipts"][2]["receipt"]),
                        lambda r: r["completed_receipts"][2]["receipt"].update(thread="foreign"),
                        lambda r: r["model_requests"][-1].update(discarded_input_present=True),
-                       lambda r: r["model_requests"][-1].update(function_output_count=2)]
+                       lambda r: r["model_requests"][-1].update(function_output_count=2),
+                       lambda r: r["initial_receipt_before_answer"].update(item="foreign"),
+                       lambda r: r["model_requests"][0].update(queued_input_present=True),
+                       lambda r: r["detach"].update(native_process_alive=True),
+                       lambda r: r["detach"].update(farewell_observed=False)]
         for number, change in enumerate(corruptions):
             with self.subTest(corruption=number):
                 invalid = copy.deepcopy(valid); change(invalid)

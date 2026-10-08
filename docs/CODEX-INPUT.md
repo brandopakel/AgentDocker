@@ -1400,7 +1400,9 @@ the guard drops. Non-terminal/unsupported interactive handles still refuse.
 The native Windows workflow exercises actual console-mode restoration and the
 extracted package's masked form, suspended typing, Unicode draft and oversized
 line with a private Codex model and synthetic ConPTY; acceptance remains pending
-until the exact native run passes. A supported
+until the exact native run passes. The initial run passed the kernel checks but
+refused its fixture report ancestry before UI rendering and separately timed out
+detaching; private capture and shutdown diagnostics preserve both failures. A supported
 managed terminal discards new typing without echo while a secret route is
 open. After it closes, Enter discards the suspended line and returns to the
 preexisting draft; buffered text cannot become an ordinary queued message. A possibly sent answer without a provider resolution stays
@@ -1425,3 +1427,9 @@ cleanup checks passed. This is scoped confirmation-loss acceptance, not a manual
 inspection/reconciliation workflow, other crash boundaries or final-package,
 account, native-terminal or Windows acceptance. The first Python proxy failed
 its MCP handshake before model input; that failure remains in the trial index.
+
+The installed beta.11 Linux private-model/Xvfb trial separately passed ten masked
+UI steps, held input, draft restoration and stale-answer refusal. Receipts are
+correlated by message ID: same-turn steering may finish before the original
+turn and share its post-answer model request. A prior observer that assumed
+completion order matched submission order failed and remains indexed.

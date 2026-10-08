@@ -70,8 +70,11 @@ def validate_secret_report(observed, info, provider_sha256):
                  "draft_typed_before_question", "suspended_terminal_input_not_echoed",
                  "queued_ordinary_message_held", "notice_required", "masked_app_submission",
                  "secret_fence_closed", "draft_restored_and_delivered", "oversized_line_discarded",
-                 "suspended_and_late_input_never_delivered", "final_fence_closed", "stale_answer_refused"):
+                 "suspended_and_late_input_never_delivered", "final_fence_closed", "stale_answer_refused", "attachment_detached"):
         require(observed.get(flag) is True)
+    detach = observed.get("detach", {})
+    require(detach.get("sent") is True and detach.get("farewell_observed") is True
+            and detach.get("native_process_alive") is False and detach.get("conpty_alive") is False)
     window = observed.get("window_report", {})
     require(window.get("result") == "passed" and window.get("error") is None
             and window.get("connected") is True
@@ -89,25 +92,36 @@ def validate_secret_report(observed, info, provider_sha256):
     require(len(rows) == 4 and all(isinstance(r.get("message"), str) and r["message"]
                                   and isinstance(r.get("receipt"), dict) for r in rows))
     require(len({r["message"] for r in rows}) == 4
-            and [r["message"] for r in rows[:2]] == observed.get("ordinary_message_ids"))
+            and len(observed.get("ordinary_message_ids", [])) == 2
+            and {r["message"] for r in rows[:2]} == set(observed["ordinary_message_ids"]))
     request = observed.get("review_metadata", {}).get("request", {})
     require(isinstance(request.get("thread"), str) and bool(request["thread"])
             and all(r["receipt"].get("thread") == request["thread"]
                     and bool(r["receipt"].get("turn")) and bool(r["receipt"].get("item")) for r in rows))
     require(len({(r["receipt"]["turn"], r["receipt"]["item"]) for r in rows}) == 4)
+    initial = {r["message"]: r["receipt"] for r in rows}[observed["ordinary_message_ids"][0]]
+    require(initial == observed.get("initial_receipt_before_answer"))
     fence = observed.get("fence_before_answer", {})
     require(fence.get("response_attempted") is False and fence.get("thread") == request["thread"]
-            and fence.get("turn") == request.get("turn") == rows[0]["receipt"]["turn"])
+            and fence.get("turn") == request.get("turn") == initial["turn"])
     requests = observed.get("model_requests", [])
-    require(5 <= len(requests) <= 10 and all(r.get("path") == "/v1/responses"
+    require(4 <= len(requests) <= 10 and all(r.get("path") == "/v1/responses"
                                            and r.get("discarded_input_present") is False for r in requests))
     ordinary = [r for r in requests if r.get("auxiliary") is False]
-    require(len(ordinary) >= 5 and ordinary[0].get("canary_present") is False
+    require(len(ordinary) >= 4 and ordinary[0].get("canary_present") is False
             and ordinary[0].get("function_output_count") == 0)
     require(all(r.get("canary_present") is True and r.get("canary_in_function_output") is True
                 and r.get("function_output_count") == 1 for r in ordinary[1:]))
     require(any(r.get("saved_draft_present") is True for r in ordinary)
             and ordinary[-1].get("after_bound_present") is True)
+    require(ordinary[0].get("original_input_present") is True
+            and ordinary[0].get("queued_input_present") is False
+            and any(r.get("queued_input_present") is True for r in ordinary)
+            and all(r.get("queued_input_present") is False
+                    or (r.get("queued_input_present") is True and r.get("canary_in_function_output") is True)
+                    for r in ordinary))
+    # Completion-list order can differ from submission order: a same-turn
+    # steering receipt retires before the original turn's completion.
     # Repeated function output is conversation history, not another submission.
     # A supplied flag is recorded even when absent from the provider's schema.
     require(observed.get("supplied_secret_flag") in ("is_secret", "isSecret")
