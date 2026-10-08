@@ -88,7 +88,6 @@ fn message_bytes(message: &Envelope) -> usize {
 const MAX_LEASE_TTL_SECS: u64 = 24 * 60 * 60;
 /// Stored event history is trimmed to this many entries.
 const EVENT_HISTORY: usize = 10_000;
-/// The ledger keeps this many entries per project.
 /// Change observations kept per project. The ledger answers "who touched
 /// what lately" (`changes`, `blame`, stale reads), not history; a hundred
 /// thousand rows a project was fifty megabytes of database on a busy
@@ -4126,11 +4125,11 @@ impl Daemon {
         }
     }
 
-    /// Trim the ledger. Called occasionally from the reaper.
     pub fn evict_journal_rings(&self) {
         lock(&self.state).evict_journal_rings();
     }
 
+    /// Trim the ledger. Called occasionally from the reaper.
     pub fn prune_changes(&self) {
         if let Some(removed) = lock(&self.state).store_op("ledger retention", |store| {
             store.prune_changes(CHANGE_HISTORY)
@@ -4548,7 +4547,6 @@ impl Daemon {
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     async fn claim(
         self: &Arc<Self>,

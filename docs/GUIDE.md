@@ -731,6 +731,16 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- The daemon keeps serving through a momentary accept failure on its socket
+  (descriptors exhausted under a burst of clients, a handshake the client
+  dropped): it retries with a short backoff instead of stopping, which used
+  to stop every managed agent with it.
+- A state database held for a moment by another connection (an offline
+  repair, a successor opening it, a `sqlite3` shell) no longer puts the
+  daemon into read-only `storage_unavailable` until restart: a write waits
+  up to a second for the lock first.
+- The app forgets the note it keeps about a failed answer once the question
+  it belonged to is gone, instead of keeping it for the session.
 - Under your own messages in the app, one line per agent says where each
   message stands: answered, delivered, received by the model, shown to its
   session, or why it is still waiting.
