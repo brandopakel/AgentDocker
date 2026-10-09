@@ -1721,8 +1721,6 @@ impl Ledger {
         self.save(next)
     }
 
-    /// Called only for a definitive precondition rejection of turn/steer.
-    /// Transport failures and unknown provider errors retain the attempt.
     /// The server's word that the prepared input never became a turn: the
     /// attempt is dropped and the message stays queued for a later turn.
     /// An attempt with a receipt, or one acknowledged, is not prepared.
@@ -1741,6 +1739,8 @@ impl Ledger {
         self.save(next)
     }
 
+    /// Called only for a definitive precondition rejection of turn/steer.
+    /// Transport failures and unknown provider errors retain the attempt.
     pub fn reject_steering(&mut self) -> Result<()> {
         let pending = self
             .record

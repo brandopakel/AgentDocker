@@ -69,6 +69,32 @@ fn preview(store: &Store, a: &AgentId, b: &AgentId) -> RepairPreview {
         .unwrap()
 }
 
+/// A preview opens the database read-only, where no write transaction
+/// can begin; it still produces the plan that apply, opened exclusively,
+/// then carries out under a write transaction.
+#[test]
+fn a_preview_on_a_read_only_open_plans_and_apply_takes_the_write_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let (a, b) = {
+        let store = Store::open(&path).unwrap();
+        seed(&store)
+    };
+    let plan = {
+        let inspection = Store::open_repair(&path, false).unwrap();
+        assert!(inspection.conn.is_readonly(rusqlite::MAIN_DB).unwrap());
+        preview(&inspection, &a, &b)
+    };
+    assert!(!plan.plan_sha256.is_empty());
+    let applying = Store::open_repair(&path, true).unwrap();
+    applying
+        .repair(&a, &b, Some(&plan.plan_sha256), now(), |_| Ok(()))
+        .unwrap();
+    let remaining = applying.load_agents().unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, a);
+}
+
 fn snapshot(store: &Store) -> Vec<Vec<String>> {
     [
         "agents",
