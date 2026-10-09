@@ -64,18 +64,20 @@ pub const READY_WITHIN: Duration = Duration::from_secs(30);
 pub const FORMAT: u32 = 2;
 
 /// The environment variable that lets `reload` actually replace the
-/// daemon, when set to exactly `1`. Otherwise `reload` refuses as it
-/// always has: the mechanism is complete but its acceptance matrix is
+/// daemon, when set to exactly `1`; `[experimental] reload = true` in the
+/// daemon's `agentd.toml` is its home now. Otherwise `reload` refuses as
+/// it always has: the mechanism is complete but its acceptance matrix is
 /// still being run, and nobody should be replaced by accident.
-pub const ENABLE: &str = "AGENTDOCKER_EXPERIMENTAL_RELOAD";
+pub const ENABLE: &str = agentdocker_core::config::ExperimentalConfig::RELOAD_ENV;
 
 /// How long a candidate gets to answer `--build-info`. A candidate that
 /// hangs there would otherwise hold the reload, and its thread, for ever.
 pub const BUILD_INFO_WITHIN: Duration = Duration::from_secs(10);
 
-/// Whether the gate is open: exactly `1`, as the documentation says.
-pub fn enabled() -> bool {
-    std::env::var(ENABLE).ok().as_deref() == Some("1")
+/// Whether the gate is open: the file's switch, or the variable set to
+/// exactly `1`, as the documentation says.
+pub fn enabled(home: &Path) -> bool {
+    crate::config::experimental(home).reload
 }
 
 /// The executable a reload hands over to. Absent, the release the
@@ -369,7 +371,7 @@ impl Daemon {
 #[cfg(unix)]
 impl Daemon {
     pub(super) async fn hand_over(self: &Arc<Self>) -> Response {
-        if !enabled() {
+        if !enabled(&self.home) {
             // The mechanism is in place; its acceptance matrix is still
             // being run. Refusing is not a failure: the daemon and its
             // agents keep running, which is exactly what the earliest
@@ -379,7 +381,8 @@ impl Daemon {
                 format!(
                     "live daemon reload is unavailable: session owners, the coordinator fence and the \
                      successor handover are in place, but their acceptance matrix is still being recorded; \
-                     set {ENABLE}=1 on the daemon to allow it; the current daemon and agents remain running"
+                     set `[experimental] reload = true` in the daemon's agentd.toml (or {ENABLE}=1 on the daemon) to allow it; \
+                     the current daemon and agents remain running"
                 ),
             );
         }

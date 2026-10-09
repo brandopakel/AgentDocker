@@ -9,6 +9,7 @@
 //! binary beside the CLI — one `cargo install agentdocker` gets both. The
 //! binary is [`main`] and nothing else.
 
+mod config;
 pub mod daemon;
 mod owner;
 pub mod reconcile;

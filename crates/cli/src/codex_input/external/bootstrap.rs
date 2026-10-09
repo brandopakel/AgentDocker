@@ -70,6 +70,11 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
     if agent.managed || agent.spec.runtime != "codex" {
         return Ok(false);
     }
+    // `[experimental] native_codex = false` leaves an existing session to
+    // its hooks: messages at tool boundaries, nothing started for it.
+    if !super::super::experimental(client).await.native_codex {
+        return Ok(false);
+    }
     // Installing a CLI does not replace an older active daemon. Probe a new
     // read-only operation before suppressing its still-working hook delivery.
     let capability = tokio::time::timeout(

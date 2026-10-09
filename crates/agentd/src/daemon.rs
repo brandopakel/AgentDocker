@@ -1744,20 +1744,13 @@ impl Daemon {
     /// daemon that kept them all would slow down for as long as it was
     /// used; the journal and the ledger keep a forgotten agent's id.
     pub fn apply_agent_retention(&self) {
-        use agentdocker_core::config::{AGENT_RETENTION_BATCH, DaemonConfig, FILE_NAME};
-        use agentdocker_host::policy_file::{self, ReadPolicy};
+        use agentdocker_core::config::{AGENT_RETENTION_BATCH, FILE_NAME};
         let path = self.home.join(FILE_NAME);
-        let read = policy_file::read_changed(&path, None)
-            .map_err(|error| format!("cannot read {}: {}", path.display(), error.kind()))
-            .and_then(|read| match read {
-                ReadPolicy::Absent | ReadPolicy::Unchanged => {
-                    DaemonConfig::default().agents_retention()
-                }
-                ReadPolicy::Text { text, .. } => toml::from_str::<DaemonConfig>(&text)
-                    .map_err(|error| error.to_string())
-                    .and_then(|config| config.agents_retention())
-                    .map_err(|error| format!("{}: {error}", path.display())),
-            });
+        let read = crate::config::read(&self.home).and_then(|config| {
+            config
+                .agents_retention()
+                .map_err(|error| format!("{}: {error}", path.display()))
+        });
         let removed = {
             let mut state = lock(&self.state);
             let window = match read {
@@ -2067,6 +2060,7 @@ impl Daemon {
                 },
                 pid: Some(std::process::id()),
                 executable: agentdocker_host::procinfo::executable_path().ok(),
+                experimental: Some(crate::config::experimental(&self.home)),
             },
             Request::Run { spec } => self.run(spec).await,
             Request::RunContainer {
@@ -4377,18 +4371,13 @@ impl Daemon {
     /// holding the state lock for one long delete. The file is read outside
     /// the lock; absence means keep everything.
     pub fn apply_journal_retention(&self) {
-        use agentdocker_core::config::{DaemonConfig, FILE_NAME, RETENTION_BATCH};
-        use agentdocker_host::policy_file::{self, ReadPolicy};
+        use agentdocker_core::config::{FILE_NAME, RETENTION_BATCH};
         let path = self.home.join(FILE_NAME);
-        let read = policy_file::read_changed(&path, None)
-            .map_err(|error| format!("cannot read {}: {}", path.display(), error.kind()))
-            .and_then(|read| match read {
-                ReadPolicy::Absent | ReadPolicy::Unchanged => Ok(None),
-                ReadPolicy::Text { text, .. } => toml::from_str::<DaemonConfig>(&text)
-                    .map_err(|error| error.to_string())
-                    .and_then(|config| config.journal_retention())
-                    .map_err(|error| format!("{}: {error}", path.display())),
-            });
+        let read = crate::config::read(&self.home).and_then(|config| {
+            config
+                .journal_retention()
+                .map_err(|error| format!("{}: {error}", path.display()))
+        });
         let mut state = lock(&self.state);
         let window = match read {
             Ok(window) => {
@@ -8049,6 +8038,45 @@ mod tests {
             name: name.to_owned(),
             ..AgentSpec::default()
         }
+    }
+
+    /// `daemon status` says how each experimental switch stands, from
+    /// the daemon's own file, so a bridge or hook follows the daemon's
+    /// word; the reload gate reads the same switch.
+    #[tokio::test]
+    async fn ping_reports_the_experimental_switches_the_daemon_applies() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(agentdocker_core::config::FILE_NAME),
+            "[experimental]\nreload = true\nnative_codex = false\n",
+        )
+        .unwrap();
+        let daemon = open(&dir);
+        let Response::Pong {
+            experimental: Some(switches),
+            ..
+        } = daemon.handle(Request::Ping).await
+        else {
+            panic!("ping reports the switches");
+        };
+        assert!(switches.reload && !switches.secret_input && !switches.native_codex);
+        assert!(reload::enabled(dir.path()));
+        std::fs::write(
+            dir.path().join(agentdocker_core::config::FILE_NAME),
+            "[experimental]\nsecret_input = true\n",
+        )
+        .unwrap();
+        let Response::Pong {
+            experimental: Some(switches),
+            ..
+        } = daemon.handle(Request::Ping).await
+        else {
+            panic!("ping reports the switches");
+        };
+        assert!(
+            switches.secret_input && switches.native_codex,
+            "the file is read as it stands"
+        );
     }
 
     /// A spec that says where it is working.

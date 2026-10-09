@@ -5,7 +5,7 @@
 //! Reading the file is host work; what it means is decided here.
 
 use chrono::Duration;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The file's name inside the daemon's home.
 pub const FILE_NAME: &str = "agentd.toml";
@@ -29,6 +29,82 @@ pub struct DaemonConfig {
     /// posted anywhere unless the person writes a sink here.
     #[serde(default)]
     pub webhooks: Vec<WebhookConfig>,
+    /// What is in source and complete but still under acceptance on real
+    /// binaries, switched here; `daemon status` says how each stands.
+    #[serde(default)]
+    pub experimental: ExperimentalConfig,
+}
+
+/// The experimental switches. Each is off until the file turns it on,
+/// except the receiver for an existing Codex session, which every such
+/// session has had since it shipped and which `native_codex = false`
+/// turns off. The daemon reports the switches as it applies them, so a
+/// bridge or hook follows the daemon's word rather than its own
+/// environment; the environment variables each switch had before the
+/// file still turn it on, for one process, so an installation that set
+/// them keeps working.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentalConfig {
+    /// `daemon reload`: the live replacement of the serving daemon by the
+    /// activated release, with every agent kept running.
+    #[serde(default)]
+    pub reload: bool,
+    /// The managed Codex bridge's secret-input broker, which answers a
+    /// provider's request for a secret through the person without the
+    /// value passing through a message or a ledger.
+    #[serde(default)]
+    pub secret_input: bool,
+    /// The receiver that feeds an existing Codex terminal session (one
+    /// AgentDocker did not start) through Codex's native queue. Off, such
+    /// a session gets its messages at tool boundaries through its hooks,
+    /// as an existing Claude session without the channel does.
+    #[serde(default = "on")]
+    pub native_codex: bool,
+}
+
+fn on() -> bool {
+    true
+}
+
+impl Default for ExperimentalConfig {
+    fn default() -> Self {
+        Self {
+            reload: false,
+            secret_input: false,
+            native_codex: true,
+        }
+    }
+}
+
+impl ExperimentalConfig {
+    /// The environment variable that turned `reload` on before the file
+    /// existed; `1` still does, for the process that carries it.
+    pub const RELOAD_ENV: &str = "AGENTDOCKER_EXPERIMENTAL_RELOAD";
+    /// Likewise for `secret_input`.
+    pub const SECRET_INPUT_ENV: &str = "AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT";
+
+    /// These switches with one process's environment on top: a variable
+    /// set to exactly `1` turns its switch on, as it has since the switch
+    /// existed. The file is where a switch is meant to live; the
+    /// environment cannot turn one off.
+    pub fn with_env(mut self, var: impl Fn(&str) -> Option<String>) -> Self {
+        let on = |name: &str| var(name).as_deref() == Some("1");
+        self.reload |= on(Self::RELOAD_ENV);
+        self.secret_input |= on(Self::SECRET_INPUT_ENV);
+        self
+    }
+
+    /// One line for a person: which switches are on.
+    pub fn summary(&self) -> String {
+        let word = |on: bool| if on { "on" } else { "off" };
+        format!(
+            "reload {}, secret input {}, native codex {}",
+            word(self.reload),
+            word(self.secret_input),
+            word(self.native_codex)
+        )
+    }
 }
 
 /// How many finished agents one retention tick forgets, so the
@@ -476,6 +552,57 @@ secret_file = {secret:?}
                 .starts_with("agents.retention:")
         );
         assert!(parse("[agents]\nkeep = \"7d\"\n").is_err());
+    }
+
+    #[test]
+    fn experimental_switches_default_off_except_native_codex_and_the_environment_only_turns_on() {
+        let defaults = DaemonConfig::default().experimental;
+        assert_eq!(
+            defaults,
+            ExperimentalConfig {
+                reload: false,
+                secret_input: false,
+                native_codex: true
+            }
+        );
+        let file: DaemonConfig =
+            toml::from_str("[experimental]\nreload = true\nnative_codex = false\n").unwrap();
+        assert_eq!(
+            file.experimental,
+            ExperimentalConfig {
+                reload: true,
+                secret_input: false,
+                native_codex: false
+            }
+        );
+        assert!(
+            toml::from_str::<DaemonConfig>("[experimental]\nreplay = true\n").is_err(),
+            "an unknown switch is refused, not ignored"
+        );
+        let env = |name: &str| match name {
+            ExperimentalConfig::SECRET_INPUT_ENV => Some("1".to_owned()),
+            ExperimentalConfig::RELOAD_ENV => Some("0".to_owned()),
+            _ => None,
+        };
+        let applied = file.experimental.with_env(env);
+        assert_eq!(
+            applied,
+            ExperimentalConfig {
+                reload: true,
+                secret_input: true,
+                native_codex: false
+            },
+            "exactly `1` turns a switch on; nothing in the environment turns one off"
+        );
+        assert_eq!(
+            applied.summary(),
+            "reload on, secret input on, native codex off"
+        );
+        assert_eq!(
+            serde_json::from_str::<ExperimentalConfig>("{}").unwrap(),
+            defaults,
+            "an older daemon's empty report reads as the defaults"
+        );
     }
 
     #[test]
