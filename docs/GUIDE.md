@@ -783,6 +783,12 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- Codex input refuses an app-server older than 0.154.0 when it attaches, naming
+  both versions, instead of failing in the middle of a turn. A turn Codex
+  refuses outright leaves the message queued with the provider's reason on the
+  record, where before the input was retained as a lost receipt and searched
+  for every half second. Both Codex loops are now tested end to end against a
+  mock app-server.
 - The experimental switches have one home: `[experimental]` in
   `~/.agentdocker/agentd.toml` (`reload`, `secret_input`, `native_codex`),
   reported by `daemon status`. The environment variables they had still turn
