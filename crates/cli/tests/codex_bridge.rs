@@ -346,6 +346,23 @@ mod fixture {
         }
     }
 
+    /// A root short enough for the Unix sockets made under it. The
+    /// receiver listens at `<home>/codex-queue/<32 hex>/resolve.sock`,
+    /// which under macOS's per-user temporary directory (`/var/folders/…`)
+    /// runs past the 104 bytes a socket path may have; `/tmp` keeps it
+    /// well within, on every Unix.
+    pub fn root() -> tempfile::TempDir {
+        let base = if cfg!(target_os = "macos") {
+            PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        tempfile::Builder::new()
+            .prefix("codex-")
+            .tempdir_in(base)
+            .expect("a temporary root")
+    }
+
     pub fn rpc(socket: &Path, request: Value) -> std::io::Result<Value> {
         let mut stream = UnixStream::connect(socket)?;
         stream.set_read_timeout(Some(Duration::from_secs(15)))?;
@@ -405,7 +422,7 @@ impl Bridge {
     /// when given, and wait for nothing.
     fn launch(version: Option<&str>) -> Self {
         use std::os::unix::fs::PermissionsExt;
-        let root = tempfile::tempdir().unwrap();
+        let root = fixture::root();
         let home = root.path().join("home");
         let socket = root.path().join("agentd.sock");
         let checkout = root.path().join("checkout");
@@ -656,7 +673,7 @@ fn an_app_server_older_than_the_floor_is_refused_before_any_thread_is_touched() 
 #[cfg(unix)]
 fn an_existing_codex_session_is_fed_through_its_native_queue_with_a_proved_receipt() {
     use std::process::{Command, Stdio};
-    let root = tempfile::tempdir().unwrap();
+    let root = fixture::root();
     let home = root.path().join("home");
     let socket = root.path().join("agentd.sock");
     let checkout = root.path().join("checkout");
