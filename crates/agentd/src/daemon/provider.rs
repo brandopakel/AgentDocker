@@ -154,7 +154,7 @@ impl State {
         now: DateTime<Utc>,
     ) -> Response {
         let id = record.id.clone();
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::ProviderAvailabilityReported {
                 agent: id.clone(),
                 availability,
@@ -162,15 +162,14 @@ impl State {
             },
             now,
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("provider availability", |store| {
-            store.agent_transition(&record, &event)
-        });
-        if committed == Persisted::Committed {
-            *self.registry.get_mut(&id).expect("resolved") = record;
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "provider availability",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                *state.registry.get_mut(&id).expect("resolved") = record.clone();
+            },
+        );
         self.write_failure().unwrap_or(Response::Ok)
     }
 }

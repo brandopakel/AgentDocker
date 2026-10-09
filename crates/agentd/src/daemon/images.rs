@@ -36,7 +36,7 @@ impl Daemon {
 
 impl State {
     fn save_image_build(&mut self, build: ImageBuild) -> Response {
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::ImageBuilt {
                 build: build.id.clone(),
                 engine: build.spec.engine,
@@ -44,15 +44,15 @@ impl State {
             },
             Utc::now(),
         );
-        event.seq = self.next_seq;
-        let _ = self.persist("image build", |store| {
-            store.put_document_with_event("image_build", &build.id, &build, &event)
-        });
+        let _ = self.transition(
+            "image build",
+            event,
+            |store, event| store.put_document_with_event("image_build", &build.id, &build, event),
+            |_| {},
+        );
         if let Some(error) = self.write_failure() {
             return error;
         }
-        self.next_seq += 1;
-        let _ = self.events.send(event);
         Response::ImageBuild { build }
     }
 }

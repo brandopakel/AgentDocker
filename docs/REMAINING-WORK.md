@@ -6,82 +6,48 @@ failed trials, subsequent corrections and raw evidence locations remain in
 publication and installed acceptance are separate: use `agentdocker desktop
 status` and `agentdocker daemon status` to identify what a machine runs.
 
-Published `0.2.0-beta.10` is reviewed, integrated source `e2ea4a7` (#322).
-All 31 hosted assets, nine archives, five manifests and both preview feeds passed
-hash/source verification; stable `v0.1.0` and Homebrew remain unchanged. Actual
-beta.9 → beta.10 update and explicit-version installation passed on Mac ARM64,
-Oracle Ubuntu and a Windows x64 runner. Ledger 15/state schema 27 preserves
-uncertain secret-response metadata: rollback to beta.9/schema 26 correctly
-refuses without changing installed bytes or selection. Never restore an older
-delivery ledger over acknowledged input; older-version trials need isolated state.
+## Where it stands
 
-**Hosted acceptance is partial.** Mac passed eight terminal, 31 graphical and
-21 daemon-service checks, including 12 consecutive restarts. Windows passed
-15 hosted lifecycle checks and 13 daemon/24 connector checks through its retained
-bootstrap launchers. Published Mac pruning preserved both inactive builds because
-production launchd status included an unrecognized `last exit reason`. The exact
-regression failed before the correction. A separately built candidate at
-`5e388c9f` passed five pruning/startup checks: only the unrelated build was removed,
-the registered build restarted, both fixture generations retired, and production
-services were unchanged. This correction is not in the published beta.10 bytes.
+- **Published.** `0.2.0-beta.11` (source `47d06d3`, #326) is the current
+  preview; stable `v0.1.0` and the Homebrew formula are unchanged. Beta.11
+  carries the cached-launchd-status correction and the bounded Linux test
+  observation over beta.10; ledger 15 and state schema 27 are unchanged, so a
+  beta.10 ↔ beta.11 rollback is same-schema. Beta.10 passed hosted asset and
+  feed verification, beta.9 → beta.10 update on Mac ARM64, Oracle Ubuntu and a
+  Windows x64 runner, and schema-change rollback refusal (to beta.9/schema 26)
+  without changing installed bytes. Never restore an older delivery ledger over
+  acknowledged input; older-version trials need isolated state.
+- **Hosted acceptance is partial.** Mac passed terminal, graphical and
+  daemon-service checks, including twelve consecutive restarts; selective
+  pruning passed only in the separately built corrected candidate whose fix
+  beta.11 now carries. Oracle passed terminal, graphical, service and pruning
+  checks with a corrected test observer against unchanged hosted bytes; its
+  original graphical run failed when `/proc` vanished before the wait status
+  reported exit, and that failure stays recorded. Hosted Oracle also passed
+  existing-account Codex 0.155.1 idle/busy delivery, receiver replacement and
+  one synthetic draft. Windows passed hosted lifecycle, daemon and connector
+  checks; an extended run rebuilt from source passed 40 fresh-home startups,
+  22 Codex checks and 60 installer checks, which is CI evidence rather than
+  hosted-byte, physical-machine or real-account acceptance, and does not
+  explain the historical intermittent startup failures.
+- **Experimental.** Native Codex launch, managed secret input and live daemon
+  replacement. Preview distribution establishes none of: stable signing,
+  independent hardware, fresh accounts, physical accessibility, sleep/reboot.
+  The installed 48-hour Oracle accounting trial verified all 48 receipts and
+  token totals; it remains partial overall because three model echoes added a
+  trailing period.
+- **Gates for every change.** Exact-source local validation
+  (`bash scripts/verify.sh check`), CI, included review and hosted acceptance of
+  the published bytes. No earlier trial substitutes for them.
+- **Beta.11 still needs.** Hosted beta.10 → beta.11 update, successful
+  same-schema rollback and reapply against the published bytes.
 
-Oracle's original graphical workflow failed after 22 checks when `/proc` vanished
-before the process wait status reported exit. Its rendered report passed, but
-transport acceptance did not. The original report remains failed. A controlled
-16-child probe reproduced that timing boundary; all children retired within
-100 ms. The corrected `5e388c9f` test driver passed startup, eight terminal and
-31 graphical checks against the unchanged hosted beta.10 binaries. Thirteen
-bounded exit observations were recorded separately from live transport samples;
-live children, malformed output, permission failures, TCP and daemon exit still
-refuse acceptance. This demonstrates the observer boundary, not the sole cause
-of the original failure. Separate hosted Oracle service and pruning trials passed
-17 and five checks, with cleanup and the pre-existing startup link independently
-verified. Hosted beta.10 also passed five existing-account Codex 0.155.1 checks:
-ordered idle/busy delivery, same-provider receiver replacement and one preserved
-synthetic draft submission. Three provider turns and exact receipts/timing were
-independently verified; all 41 recorded generations and private scratch retired.
-
-An extended Windows run rebuilt the published source and passed 40 fresh-home
-startups, 22 actual Codex 0.155.1/private-model checks, 60 installer checks and
-portable/installed service trials. It is separately built CI evidence, not a
-hosted-byte, physical-machine or real-account result, and does not explain the
-historical intermittent startup failures.
-
-Beta.10 includes offline accounting inspection/scanning, stopped-service retention
-and experimental managed secret input. Native Codex launch, managed secret input
-and live daemon replacement remain experimental. Preview distribution does not
-establish stable signing, independent hardware, fresh accounts or physical
-accessibility. The installed Oracle 48-hour accounting trial verified all 48
-receipts and token totals; its overall result remains partial because three model
-echoes added a trailing period. Sleep/reboot and idle-performance acceptance remain
-open. Exact-source local validation, CI, included review and hosted trials remain
-release gates for subsequent changes.
-
-Review corrections reject overlapping secret/ordinary requests without replacing
-the first review, expose operational secret-lookup errors in the desktop app and
-preserve builds when unloaded systemd units have unit, dash-prefix or type-wide
-drop-ins anywhere in the manager's active search path. Focused regressions cover
-these boundaries. Source `9b88c488` also passed actual Mac Codex 0.160.1/private-model
-acceptance with two proxy-injected overlapping requests: both refused, the first
-secret answered once, two ordered ordinary receipts delivered, and no controller
-restart. Oracle's matching source tree passed seven unloaded-override retention,
-selective-pruning and subsequent-startup checks. All fixture generations and
-scratch were removed; the pre-existing startup link was restored. Initial test
-harness failures remain indexed. Natural provider parallelism, ordinary-first
-runtime, other platforms, real accounts and hosted acceptance remain open.
-
-The next source candidate is `0.2.0-beta.11`, not yet published. It includes the
-reviewed cached-launchd-status correction and bounded Linux test observation.
-Ledger 15/state schema 27 is unchanged. The new hosted lifecycle must prove
-beta.10 → beta.11 update, successful same-schema rollback and reapply against
-immutable bytes. Full local validation, CI, included review and new hosted
-package acceptance remain gates; no earlier trial substitutes for them.
 
 ## Release and first run
 
 | Requirement | Current evidence | Remaining work |
 | --- | --- | --- |
-| Publish and verify the preview | Beta.10/source `e2ea4a7` is published after local checks, CI and included review. All 31 hosted assets and both preview feeds passed; Mac/Oracle/Windows update and schema-change rollback refusal passed. Mac graphical/service, Windows service and corrected-driver Oracle graphical/service/pruning sub-scopes passed. Mac pruning passed only in the separately built corrected candidate; original failures remain recorded. Stable and Homebrew are unchanged. | The Mac pruning correction is reviewed and integrated; publish beta.11 after its final gates, then verify the hosted package. Keep Windows preview, Mac/Linux preview, stable and Homebrew separate. Stable signing, fresh accounts and independent hardware remain gates. [Distribution contract](DISTRIBUTION-SETUP.md). |
+| Publish and verify the preview | Beta.11 (source `47d06d3`, #326) is published after local checks, CI and included review, carrying the reviewed Mac pruning correction over beta.10 on the same ledger 15 and schema 27. Beta.10/source `e2ea4a7` passed all 31 hosted assets and both preview feeds; Mac/Oracle/Windows update and schema-change rollback refusal passed; Mac graphical/service, Windows service and corrected-driver Oracle graphical/service/pruning sub-scopes passed; Mac pruning passed only in the separately built corrected candidate, whose fix beta.11 now carries. Stable and Homebrew are unchanged. | Verify the hosted beta.11 package: beta.10 → beta.11 update, same-schema rollback and reapply against the published bytes, and Mac selective pruning on the hosted binaries. Keep Windows preview, Mac/Linux preview, stable and Homebrew separate. Stable signing, fresh accounts and independent hardware remain gates. [Distribution contract](DISTRIBUTION-SETUP.md). |
 | First run on every supported platform | Hosted beta.10 passed Mac ARM64/Oracle installation, update, schema rollback refusal and explicit-version CLI installation. Mac passed eight terminal/31 graphical checks and twelve daemon restarts; Oracle passed eight terminal/31 graphical checks with the corrected observer against unchanged hosted bytes. Windows hosted lifecycle/default feed and both installed service trials passed. Hosted Oracle Codex 0.155.1 passed five existing-account idle/busy/draft/replacement checks. Physical AWBP Claude receipts remain source-specific. | Complete hosted Mac pruning acceptance, fresh provider authentication, trust/consent and broader provider/platform idle/busy, draft and restart/reopen trials. Existing accounts, synthetic providers and CI do not prove fresh-account acceptance. |
 | Independent machines and distributions | Oracle is Ubuntu 24.04.4 x86_64 with private graphical dependencies/Xvfb. AWBP is Windows 11 Home build 26200 x64. Local Mac, Intel/ARM CI and Rosetta evidence is separately pinned. | Independent second Mac, physical Intel, normal target Linux desktop prerequisites, physical Linux input and current-candidate physical Windows service/provider trials. AWBP testing is currently deferred at the user's request. [Trial procedure](LOCAL-TRIAL.md). |
 | Stable macOS signing | Previews are ad-hoc signed; Developer ID/notarization is not configured. | Configure private signing/notary credentials, sign/notarize/staple the final app and DMG, and test Gatekeeper on an independent Mac. |
@@ -92,7 +58,7 @@ package acceptance remain gates; no earlier trial substitutes for them.
 
 | Requirement | Current evidence | Remaining work |
 | --- | --- | --- |
-| Idle delivery and existing sessions | Managed Claude/Codex trials and physical Windows Claude 2.1.280 idle/busy/draft/restart receipts passed for their exact revisions. Claude development-channel consent can recur on reconnect. CLI/app reconnect now reconstruct recorded supported launch options and explicit environment instead of losing tool/permission restrictions or profile selection; original positional input is omitted, ambiguous options refuse, and invalid stored conversation selectors cannot become provider options. Plain hooks/MCP alone do not wake a model. | Current hosted-package acceptance, broader runtime/version coverage, restart/reopen and supported adapter parity. [Claude](CLAUDE-CHANNEL-INPUT.md), [Codex](CODEX-INPUT.md). |
+| Idle delivery and existing sessions | Managed Claude/Codex trials and physical Windows Claude 2.1.280 idle/busy/draft/restart receipts passed for their exact revisions. Claude development-channel consent can recur on reconnect. CLI/app reconnect now reconstruct recorded supported launch options and explicit environment instead of losing tool/permission restrictions or profile selection; original positional input is omitted, ambiguous options refuse, and invalid stored conversation selectors cannot become provider options. Plain hooks/MCP alone do not wake a model. The channel now repeats its first unreceived offer once while no receipt has been seen on the session (source and unit tests only; no real-provider trial of the repeat yet). Since the audit, in source and CI only: both Codex loops (the managed bridge and the existing-session receiver) run end to end against a mock app-server and a fixture daemon; a `turn/start` the server refuses leaves the message queued instead of retained for inspection; an app-server older than 0.154.0 is refused at attach; and the experimental switches have one home in `[experimental]`, reported by `daemon status`. None of that is tried on real Codex binaries yet. | Current hosted-package acceptance, broader runtime/version coverage, restart/reopen and supported adapter parity. [Claude](CLAUDE-CHANNEL-INPUT.md), [Codex](CODEX-INPUT.md). |
 | Native Codex startup and identity | A private Mac Codex 0.160 probe reproduced accepted first input before readable history (exact receipt at 0.103s). The exact first-page history-not-ready refusal now permits a two-second read-only wait; rejected history never becomes empty history or a delivery receipt. The separate Windows rejection lacks its original provider error detail and remains unexplained. Reviewed startup, descendant containment and capability-lifetime fixes have actual Codex/private-model acceptance on Mac, Oracle and Windows for their indexed sources. Explicit existing-entry recovery passed prepared-intent, lost-client/journal-reply and pause/rate-hold trials; possibly transmitted intents remain read-only. Windows `8a249fde` passed both Codex 0.160 and 0.155.1, including draft/replacement/reopen and three recovery scenarios. Hosted beta.8 Mac 0.160 and Oracle 0.160/0.155.1 now separately passed startup, receiver replacement, draft and orderly explicit reopen; private-model scopes and verifier corrections are indexed. Oracle source `9b88c488` separately passed five existing-account Codex 0.155.1 checks: ordered idle/busy delivery, same-provider receiver replacement and one preserved synthetic draft submission, independently matched to provider receipts/timing. Its initial fixture history precondition failed before input; corrected evidence and cleanup are indexed. The actual hosted beta.10 binaries separately passed the same five existing-account checks with three verified provider turns and 41 recorded generations retired. A separately rebuilt beta.10 Windows package passed 22 Codex 0.155.1/private-model checks, including three exit probes with no survivors or extra requests. | Keep native launch experimental pending broader current-package/platform, real-account/physical input, desktop adoption, broader versions/startup races, lost-provider replies, Windows journal-boundary faults and unsent drafts through crashes. Recovery never overrides interruption or resends uncertain input automatically. Birth admission requires an owned empty thread; reopen requires persisted history. See [native input](CODEX-INPUT.md). |
 | Identity and uncertain delivery | Exact native TUI attribution, detached-helper refusal, lost-output readback and stale-confirmation refusal have bounded regressions/trials. Oracle passed a 90-second question wait with peer/human steering. Reviewed #286 folds only verified helper records into their session. | Broader native version/platform review, longer waits, sustained queues, receiver replacement and uncertain-write recovery. Preserve original IDs, conversation, questions and ownership; never replay consumed input or merge by display name. Managed zero-prompt reopen remains unaccepted; native explicit UUID reopen has the scoped draft evidence above. |
 | Project pause/resume | Oracle actual Codex `b334cc70` passed two recipients (busy and idle), four lifecycle receipts/replies in the original project, held/lifted leases and exclusion of an unrelated project. Required local MCP startup prevents the earlier fallback to an account cloud connector; the misplaced replies remain recorded. | Every intended recipient must reach a safe boundary, reply in the original chat and resume across idle, busy and account-limited states. Queued routing alone proves neither pause nor receipt. |
@@ -119,7 +85,7 @@ package acceptance remain gates; no earlier trial substitutes for them.
 | Mac service retirement | Hosted beta.9 restart reproduced a launchd removal race. Merged `7a87b038` bounds removal confirmation and rejects unknown query failures. Hosted beta.10 now passed 12 consecutive restarts/21 checks; all 14 recorded generations independently retired, the owned label was removed and production daemon/connector identities stayed unchanged. Desktop uninstall preserved its private installation because an unrelated connector service remains registered. | Preserve the original failure; automatic crash recovery, login/reboot and independent hardware remain open. |
 | Linux service removal | Reviewed #289 stops/disables before removal, preserves the definition on stop failure and reloads afterward. Hosted beta.8 passed all 17 Oracle systemd lifecycle checks; six generations independently retired and pre-existing links were restored. | Broader distributions and logon/reboot. The original beta.5 uninstall failure and fixture restoration correction remain indexed; later passes do not erase them. |
 | Mac cached service status | Hosted beta.10 pruning retained both inactive fixture builds before starting any service. Read-only diagnosis matched the production payload, definition, command and environment, but found cached `last exit reason` outside the parser allowlist. The targeted regression reproduces the refusal; source now recognizes that status field. Original failure/unchanged production generations and cleanup are retained. | Candidate `5e388c9f` independently passed five real pruning/startup checks: only the unrelated build was removed, the retained daemon restarted, both generations/scratch retired and production services stayed unchanged. Reviewed/integrated correction still needs beta.11 hosted-package acceptance; unknown settings must continue preserving the store. |
-| Storage and sustained operation | Registration protects explicit executable, project/feed, tunnel and state/log dependencies across stores. Maintenance recognizes exact persisted and cached service references, retaining named builds; unknown definitions, paths or environment preserve whole stores. Systemd rendering preserves literal expansion characters. Accepted Windows cleanup runtime `5c21c06e` passed 58 installation/22 actual Codex-private-model/two kernel checks, exact retained-daemon startup and complete recorded task/process/scratch cleanup. Five injected cleanup regressions failed before correction and passed afterward. Earlier `81eb35a3` and original failures remain indexed. Mac `53696dab` and corrected Oracle `05582d3a` each passed five real stopped-service checks: unrelated inactive payload removed, selected daemon retained and restarted, owned jobs/tasks/processes/scratch removed. Oracle corrections recognize empty negative-lookup objects and decode the cached working-directory missing-ok flag. All original failures and source-specific evidence remain in the verification index. Reviewed `fcaa22f9` separately completed 48h with three actual Codex sessions/ten projects, 48 exact receipts, matched counters, zero gaps and 110 watches; cleanup passed. | Hosted-current acceptance; legacy portable registrars selecting a separate daemon; installed accounting endurance and CPU/watch/storage behavior through sleep/wake/reboot on every platform. Prior endurance overlapped other work and provider retries. The separate `8778a67f` idle observation measured 1.113323% of one core with sampling overhead; it establishes no CPU threshold. |
+| Storage and sustained operation | Registration protects explicit executable, project/feed, tunnel and state/log dependencies across stores. Maintenance recognizes exact persisted and cached service references, retaining named builds; unknown definitions, paths or environment preserve whole stores. Systemd rendering preserves literal expansion characters. Accepted Windows cleanup runtime `5c21c06e` passed 58 installation/22 actual Codex-private-model/two kernel checks, exact retained-daemon startup and complete recorded task/process/scratch cleanup. Five injected cleanup regressions failed before correction and passed afterward. Earlier `81eb35a3` and original failures remain indexed. Mac `53696dab` and corrected Oracle `05582d3a` each passed five real stopped-service checks: unrelated inactive payload removed, selected daemon retained and restarted, owned jobs/tasks/processes/scratch removed. Oracle corrections recognize empty negative-lookup objects and decode the cached working-directory missing-ok flag. All original failures and source-specific evidence remain in the verification index. Reviewed `fcaa22f9` separately completed 48h with three actual Codex sessions/ten projects, 48 exact receipts, matched counters, zero gaps and 110 watches; cleanup passed. In source since the audit, untried on real binaries: the records of non-human agents that ended before `[agents] retention` (thirty days by default) and hold nothing — no lease, open question, queued message, input binding, restart or restore policy, or provider limit — are forgotten, up to a hundred per tick, a watcher batch's ledger entries commit in one transaction, the daemon's write connection waits up to a second for a busy database, and the host socket's accept loop retries transient failures instead of ending the daemon. | Hosted-current acceptance; legacy portable registrars selecting a separate daemon; installed accounting endurance and CPU/watch/storage behavior through sleep/wake/reboot on every platform. Prior endurance overlapped other work and provider retries. The separate `8778a67f` idle observation measured 1.113323% of one core with sampling overhead; it establishes no CPU threshold. |
 | Terminal shutdown and retained failures | A later full-gate run at `65cd73ef` exposed the same Mac environment parser truncating PATH at spaces; source now reads self environment directly and rejects ambiguous peer command text, preserving reported/ancestry discovery. Both controlled child regressions failed before correction and passed in `460a3671`; that exact host module is included here. Dependency `85bfee86` passed its full 1,609-Rust/200-Python gate and all applicable CI. Accepted parent cleanup runtime `5c21c06e` passed its 1,623-Rust/205-Python full gate and all 19 CI jobs (16 passed, three expected skips); the final reviewed documentation revision was merged without runtime changes. The prior Intel registry-DNS failure and one fresh-runner recovery remain indexed. Integrated Unix runtime `05582d3a` passed all 1,632 Rust/200 Python tests, formatting, strict Clippy, packaging and optimized builds with zero retries; evidence source `285c1985` also passed the complete local gate and all applicable CI. The Darwin blocked-receive cause was corrected by bounded poll/nonblocking receive; four 45-minute stress lanes passed and #273 shipped in beta.4. The separate Oracle graphical fixture lifetime error was corrected and rerun against identical hosted bytes. | Final-package/sustained acceptance remains open. Unexplained retained failures: Linux managed-group/owned-child shutdown, controller-upgrade injected-storage assertion, Iced capture, benchmark socket timeout and Linux ARM transport refusal. Receiver-upgrade refusals now retain the exact executable lookup results and refuse two unavailable paths rather than treating them as equal. The repeated coverage failure remains unexplained; diagnostics and later passes do not establish its cause or those of the other retained failures. |
 | Watcher limits | Removed-checkout recovery passed repeated regressions and installed recovery with providers unchanged. | Overnight/many-project acceptance of one FSEvents stream per checkout and resource behavior around removal/recreation. |
 | Live daemon replacement | Experimental Ubuntu same-binary and actual-provider beta.2 ↔ beta.3 handovers preserved threads/receipts. `8778a67f` passed eight pending-form handovers on each of Mac/Linux with 32 stable seconds between replacements; the earlier rapid reconnect exhaustion remains failed. | Keep `AGENTDOCKER_EXPERIMENTAL_RELOAD` until sustained service handovers, Claude/other providers, attached drafts, other pending questions, output drain and uncertainty recovery pass. Coordinator restart alone is insufficient. |

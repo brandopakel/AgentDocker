@@ -1228,6 +1228,11 @@ impl App {
                     self.shell.forms.retain(|id, draft| questions.iter().any(|q| q.id == *id
                         && !q.expired(Utc::now()) && matches!(&q.presentation,
                             Some(agentdocker_core::QuestionPresentation::McpForm { schema, .. }) if schema == &draft.schema)));
+                    // A failed answer's reason is shown beside its question;
+                    // once the question is gone there is nowhere to show it.
+                    self.shell.answer_errors.retain(|id, _| {
+                        self.sending.contains(id) || questions.iter().any(|q| q.id == *id)
+                    });
                     self.questions = questions;
                 }
                 Msg::Answered(id, result) => {

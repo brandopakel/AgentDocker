@@ -88,7 +88,7 @@ does not change an existing owner or ACL. Initialization fails closed if the
 expected VFS syscall slot is unavailable. Library embedders must initialize
 storage before opening any raw SQLite connection in the process.
 
-Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`, `journal` with its `journal_paths` and `journal_fts` indexes and `journal_cursors`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 27 supports upgrades from schemas 1 through 26 and idempotently translates old `file:` leases using each holder's recorded checkout. It also protects delivery-ledger version 15 secret-response metadata: older receivers refuse ledger 15, and package rollback to schema 26 refuses before changing the selected binaries. Ordinary opens commit data migrations and the schema-version update immediately; a successor opened pending during live replacement defers both to its acceptance transaction. Schema 8 made a restore point durable launch intent, including an interrupted `created` restore. Schema 9 retains pending question routes across restart. Schema 10 protects retained live deliveries and non-evicting inboxes from older daemons that would drain or discard accepted work. Schema 11 adds durable exact-ID aliases and an explicit offline identity repair (`agentdocker identity-repair`; IDENTITY-REPAIR.md in git history) with atomic operational moves and retained before-images; older daemons must refuse this state. Schema 12 reserves managed Codex input queues for their provider controller, preventing older inbox consumers from competing with ordinary input turns; see [managed Codex input](CODEX-INPUT.md). Schema 13 retains provider input receipts and paused delivery on the agent record so restart cannot discard that evidence. Legacy records have no inferred receipt. Schema 14 adds a durable event-log identity and preserves the SQLite event sequence high-water mark after complete history pruning; an older daemon could reuse those positions and must refuse this state. Schema 15 persists file-review directory, reason, ordered operations/paths, rename destinations and complete diffs as `codex_files` presentations. Schema 16 persists concrete filesystem/network permission requests as `codex_permissions` presentations, with the same exact fallback text and bounded human review. Schema 17 preserves the session-owner process binding; schema 18 preserves provider availability blocks so an older daemon cannot erase a limit during a record update. Schema 19 keeps input bindings and legacy offers on the agent record, so an older daemon that does not know a queue belongs to a bound controller cannot open the database and drain it; opening a database written before v19 marks every message then queued as offered at the upgrade, because nothing older recorded which of them a hook or MCP read had already put in front of a model, so a controller that binds afterwards gets them as `uncertain` to reconcile rather than as new input to submit. Schema 20 settles answer routes (`answer_routed`, `answers_routed`); a v19 daemon could hand a synchronous `ask` its answer and leave the row queued unrecorded, so opening a database written before v20 marks every queued correlated reply as offered, on the record and in a standing binding's `uncertain` set, rather than let this build deliver it as fresh input. Schema 21 adds the message archive and read cursors (the `messages`, `messages_fts` and `read_cursors` tables), backfilled once from the queued rows. Existing queues above the new byte limit remain intact; admission resumes after acknowledgement frees capacity. Image-bound validation, runner deadlines, container lifetime and process-group tracking remain supported. Compatibility is checked before schema DDL or journal-mode changes. An older-build trial requires isolated, compatible state; never restore an older delivery ledger over already acknowledged input.
+Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode, a one-second busy timeout and write transactions that take the write lock as they begin — `BEGIN IMMEDIATE`, so the timeout covers a transaction that reads before it writes — so a moment's contention from another connection waits rather than latching the daemon) before the response goes out. Every agent record is loaded at startup and looked at on every tick, so finished ones are not kept for ever: the once-a-minute tick forgets, at most a hundred at a time and oldest first, the records of agents that ended before `[agents] retention` in `agentd.toml` (thirty days unless set; `off` keeps them all) and hold nothing — no lease, no open question, no queued message, no input binding, no restart or restore policy, no provider limit; never the person's record — exactly as `rm` would (`agent_removed` each, `agents_pruned` for the batch). The journal and the ledger keep a forgotten agent's id. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`, `journal` with its `journal_paths` and `journal_fts` indexes and `journal_cursors`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 27 supports upgrades from schemas 1 through 26 and idempotently translates old `file:` leases using each holder's recorded checkout. It also protects delivery-ledger version 15 secret-response metadata: older receivers refuse ledger 15, and package rollback to schema 26 refuses before changing the selected binaries. Ordinary opens commit data migrations and the schema-version update immediately; a successor opened pending during live replacement defers both to its acceptance transaction. Schema 8 made a restore point durable launch intent, including an interrupted `created` restore. Schema 9 retains pending question routes across restart. Schema 10 protects retained live deliveries and non-evicting inboxes from older daemons that would drain or discard accepted work. Schema 11 adds durable exact-ID aliases and an explicit offline identity repair (`agentdocker identity-repair`; IDENTITY-REPAIR.md in git history) with atomic operational moves and retained before-images; older daemons must refuse this state. Schema 12 reserves managed Codex input queues for their provider controller, preventing older inbox consumers from competing with ordinary input turns; see [managed Codex input](CODEX-INPUT.md). Schema 13 retains provider input receipts and paused delivery on the agent record so restart cannot discard that evidence. Legacy records have no inferred receipt. Schema 14 adds a durable event-log identity and preserves the SQLite event sequence high-water mark after complete history pruning; an older daemon could reuse those positions and must refuse this state. Schema 15 persists file-review directory, reason, ordered operations/paths, rename destinations and complete diffs as `codex_files` presentations. Schema 16 persists concrete filesystem/network permission requests as `codex_permissions` presentations, with the same exact fallback text and bounded human review. Schema 17 preserves the session-owner process binding; schema 18 preserves provider availability blocks so an older daemon cannot erase a limit during a record update. Schema 19 keeps input bindings and legacy offers on the agent record, so an older daemon that does not know a queue belongs to a bound controller cannot open the database and drain it; opening a database written before v19 marks every message then queued as offered at the upgrade, because nothing older recorded which of them a hook or MCP read had already put in front of a model, so a controller that binds afterwards gets them as `uncertain` to reconcile rather than as new input to submit. Schema 20 settles answer routes (`answer_routed`, `answers_routed`); a v19 daemon could hand a synchronous `ask` its answer and leave the row queued unrecorded, so opening a database written before v20 marks every queued correlated reply as offered, on the record and in a standing binding's `uncertain` set, rather than let this build deliver it as fresh input. Schema 21 adds the message archive and read cursors (the `messages`, `messages_fts` and `read_cursors` tables), backfilled once from the queued rows. Existing queues above the new byte limit remain intact; admission resumes after acknowledgement frees capacity. Image-bound validation, runner deadlines, container lifetime and process-group tracking remain supported. Compatibility is checked before schema DDL or journal-mode changes. An older-build trial requires isolated, compatible state; never restore an older delivery ledger over already acknowledged input.
 
 An unresolved Codex hook offer may be settled only by exact provider evidence or
 explicit `codex-queue-resolve` readback. The latter is receiver-local administration,
@@ -168,7 +168,7 @@ A thin client. Each invocation opens one connection, sends one request, and prin
 
 Nobody has to start `agentd` by hand. A client that cannot connect — no socket file, or nothing listening — starts the daemon itself, the way `ssh-agent` and `buildkitd` are started by their clients, then waits for the socket (3 s for the CLI and the MCP server, 1 s for the entire hook operation, which fails open past that). `AGENTDOCKER_NO_AUTOSTART=1` turns this off. The daemon it starts is the activated release's `agentd` when the client runs from a managed release that is no longer the activated one (an app left open across `desktop install` would otherwise bring its own older daemon back the moment the old one stopped), else the `agentd` beside the client's own binary when there is one, so a build in `target/` starts the matching daemon, else `agentd` on `PATH`; it runs in its own process group with stdout and stderr appended to `<home>/agentd.log`, plain text when that is not a terminal. The daemon trims its own log on the minute tick: past 4 MiB the file is copied to `agentd.log.1` and truncated in place (the writers hold it in append mode, so the next line lands at the start; a line written between the copy and the truncation is lost, which a diagnostic log can afford), and the two together never exceed 8 MiB.
 
-Exactly one daemon serves a socket, guaranteed by an advisory lock beside it (`agentd.sock` → `agentd.lock`). The daemon takes the lock for its lifetime before touching the socket, and exits at once, successfully, if it cannot. A client decides whether to spawn by taking the same lock for an instant: getting it means no daemon exists; not getting it means one is up or starting, so the client only waits. Two clients racing may both spawn a daemon, and the loser exits on the lock. The daemon's stale-socket check (remove the file if nothing answers on it) stays as a second line of defence.
+Exactly one daemon serves a socket, guaranteed by an advisory lock beside it (`agentd.sock` → `agentd.lock`). The daemon takes the lock for its lifetime before touching the socket, and exits at once, successfully, if it cannot. A client decides whether to spawn by taking the same lock for an instant: getting it means no daemon exists; not getting it means one is up or starting, so the client only waits. Two clients racing may both spawn a daemon, and the loser exits on the lock. The daemon's stale-socket check (remove the file if nothing answers on it) stays as a second line of defence. A transient accept failure on the socket (no descriptor free under a burst of clients, a connection the client dropped before it was taken) is retried with a short backoff; only a persistent listener failure ends the daemon, since ending it stops every managed agent.
 
 **As a service.** On-demand start is enough for a laptop; `agentdocker daemon install` additionally runs `agentd` as a login service so it survives reboots and crashes and belongs to no terminal — a launchd agent (`~/Library/LaunchAgents/dev.agentdocker.agentd.plist`) on macOS, a systemd user unit (`~/.config/systemd/user/agentd.service`) on Linux, or a limited per-user Task Scheduler login task on Windows. The Unix managers restart the daemon after a *failure* only, because a clean exit is what a service daemon does when an on-demand one already holds the lock; `install` therefore first asks any running daemon to exit (the `shutdown` request, which SIGTERMs managed agents exactly as Ctrl-C does) and then hands the socket to the service. `daemon uninstall`, `start`, `stop`, `restart`, and `status` do what they say, with `start` and `stop` falling back to the on-demand daemon when no service is installed; `--dry-run` on `install` and `uninstall` prints the files and commands instead. The service definition bakes in `--home` (and `--socket` when overridden) so it serves the same paths the CLI that installed it used. Files and command sequences are pure and unit-tested; only the final execution touches the system.
 
@@ -274,7 +274,7 @@ Agents are grouped by the project they work in, and the project is **derived, ne
 
 The daemon watches the filesystem of every checkout a live agent works in and keeps a ledger of what changed and who held it. This is the substrate for staleness notices and the change journal (Phase 3), and it is what makes branch tracking event-driven.
 
-**Watching.** `notify` (FSEvents on macOS, inotify on Linux) covers each distinct checkout — the main root or a linked worktree — of every live agent whose project is a repository or an `Agentfile.toml` root. macOS uses a separate FSEvents stream for each checkout and its Git metadata: adding or removing a path restarts that stream, so sharing it could discard pending edits from surviving checkouts. Other Unix hosts retain one shared watcher. Plain directories are not watched: a recursive watch on a home directory is exactly what inotify cannot afford. Watches are reconciled against the registry once a second and on registration. Normal `run` waits up to 500 ms for checkout coverage before spawning; failed attachment prevents launch. `register` waits before reporting successful coverage, but an externally started process may already be writing. Snapshot restore uses the same coverage barrier, with the host listener bound and serving concurrently before restored commands run. An agent leaving needs no hook. Raw events are debounced for 100 ms and duplicates within a batch collapse; each path is filtered through the checkout's `.gitignore` so `target/` and `node_modules/` never reach the ledger; directories are skipped; and `.git/` is ignored except the files that say where HEAD is (`HEAD`, `refs/heads/**`, `packed-refs`, a worktree's `HEAD`), which trigger a branch re-read for the agents in that checkout instead of an entry. A linked worktree's own git directory, which lives under the main root, is watched too so its `HEAD` is seen.
+**Watching.** `notify` (FSEvents on macOS, inotify on Linux) covers each distinct checkout — the main root or a linked worktree — of every live agent whose project is a repository or an `Agentfile.toml` root. macOS uses a separate FSEvents stream for each checkout and its Git metadata: adding or removing a path restarts that stream, so sharing it could discard pending edits from surviving checkouts. Other Unix hosts retain one shared watcher. Plain directories are not watched: a recursive watch on a home directory is exactly what inotify cannot afford. Watches are reconciled against the registry once a second and on registration. Normal `run` waits up to 500 ms for checkout coverage before spawning; failed attachment prevents launch. `register` waits before reporting successful coverage, but an externally started process may already be writing. Snapshot restore uses the same coverage barrier, with the host listener bound and serving concurrently before restored commands run. An agent leaving needs no hook. Raw events are debounced for 100 ms and duplicates within a batch collapse; a batch's ledger entries are attributed and written under one hold of the state lock and in one transaction, so a branch switch costs one durable write rather than one per path; each path is filtered through the checkout's `.gitignore` so `target/` and `node_modules/` never reach the ledger; directories are skipped; and `.git/` is ignored except the files that say where HEAD is (`HEAD`, `refs/heads/**`, `packed-refs`, a worktree's `HEAD`), which trigger a branch re-read for the agents in that checkout instead of an entry. A linked worktree's own git directory, which lives under the main root, is watched too so its `HEAD` is seen.
 
 **The ledger.** Each surviving change becomes a `Change`: project, worktree, checkout-relative path, kind (created, modified, removed, renamed), time, the checkout's HEAD, and an **attribution** — the holder of an unexpired exclusive lease on the physical checkout path (shared leases are not authorship evidence), else `external`: the user's editor, a git command, a build. Attribution is best-effort by construction and every rendering says so. Entries are persisted in the `changes` table (`seq`, indexed by project and by project + path, so "everything under `src/`" is a prefix range) and announced live as `file_changed`, which is deliberately *not* kept in the event history: change volume would crowd out everything else in that 10,000-event window. The newest 20,000 entries per project are kept, pruned once a minute: the ledger answers who touched what lately, not history (the journal is history), and five times that was fifty megabytes of database on one busy checkout.
 
@@ -314,7 +314,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `grant_access {agent, container_root, ttl_secs?}` | `access {grant, token, socket, expires_at}` | host-only; TTL 1–86400 seconds, default 3600; CLI writes token privately and prints grant ID |
 | `revoke_access {grant}` | `ok` | host-only; deny new requests, preserve leases |
 | `authenticate {token}` | `ok` | restricted endpoint only; precedes one scoped request |
-| `ping` | `pong` | version, uptime, restricted endpoint while serving, and the serving process's pid and executable, which after a reload say which release actually serves |
+| `ping` | `pong` | version, uptime, restricted endpoint while serving, the serving process's pid and executable, which after a reload say which release actually serves, and the experimental switches as the daemon applies them (`experimental`: `reload`, `secret_input`, `native_codex`, from `[experimental]` in `agentd.toml` with the environment's word on top), which `daemon status` prints and the Codex bridge and hooks follow |
 | `build_image {spec: {engine, connection?, context, recipe, timeout_secs?}}` | `image_build {build}` | host-only Docker/Podman build from captured inputs; timeout defaults to 600 seconds, valid range 1–3600; immutable image ID and atomic provenance/event |
 | `images` | `image_builds {builds}` | retained build evidence, including after restart |
 | `run {spec}` | `agent` | spawns `spec.command`; a supplied `spec.workdir` must resolve to an existing directory and is stored as its physical path before policy loading or launch side effects (also for pane/container launches); unresolved paths, files and symlink cycles return `invalid`, and a resolver task failure returns `internal`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME`; `spec.restart` starts it again after it exits (`no` by default, cleared by `stop`); `spec.restore` brings it back under the same id after a daemon restart; `spec.in_pane` starts it in a new `tmux` session and registers it instead, so tmux owns the process and there is no captured log — it requires `spec.workdir` (tmux needs a directory to start in) and tmux 3.2 or newer (`new-session -e`, which is how the agent is told its own id), and is refused with `run_container` |
@@ -363,7 +363,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `overlap {project, since_seq?, agent?}` | `overlap {overlaps: Overlap[]}` | paths changed in more than one physical checkout of the project, from the newest 50,000 ledger rows: per path, each checkout with the agents attributed there, the count, the last change and its HEAD; with `agent`, only overlaps involving its checkout, and an empty `project` means its own |
 | `changes {project, since_seq?, path?, agent?, limit?}` | `changes {changes: Change[]}` | the ledger, newest `limit` entries oldest first; `since_seq` is exclusive (`seq > since_seq`); `limit` defaults to 50 and is clamped to 1–10,000; empty, `.` and absolute checkout-root paths select all paths |
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
-| `reload` | `ok`, `unavailable`, `backpressure`, `conflict`, `storage_unavailable` | with `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` on the daemon: reads the candidate executable's `--build-info` (`AGENTDOCKER_RELOAD_CANDIDATE`, else the release its managed installation has activated since it started, else its own executable), refuses another host or an older state schema before offering anything, offers the coordinator transfer, hands the listening socket, the daemon lock and the container endpoint to the successor, and answers `ok` once the successor says it is serving, then exits without touching agents; a refusal, a death, or no readiness within 30 s answers `unavailable` with the reason and leaves this daemon serving; without the gate, refuses without changing the daemon or agents |
+| `reload` | `ok`, `unavailable`, `backpressure`, `conflict`, `storage_unavailable` | with `[experimental] reload = true` in the daemon's `agentd.toml` (or `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` on the daemon): reads the candidate executable's `--build-info` (`AGENTDOCKER_RELOAD_CANDIDATE`, else the release its managed installation has activated since it started, else its own executable), refuses another host or an older state schema before offering anything, offers the coordinator transfer, hands the listening socket, the daemon lock and the container endpoint to the successor, and answers `ok` once the successor says it is serving, then exits without touching agents; a refusal, a death, or no readiness within 30 s answers `unavailable` with the reason and leaves this daemon serving; without the gate, refuses without changing the daemon or agents |
 | `vacuum {force?}` | `vacuumed {before_bytes, after_bytes}` | SQLite `VACUUM` on the state database; nothing else is answered while it runs, so it is a `conflict` while sessions are live unless `force` |
 | `send {from, to, kind, payload, reply_to?, links?}` | `sent {message, subscribers, recipient_readiness?}` or `error(backpressure\|forbidden)` | `pause` and `resume` are reserved for committed project lifecycle requests and are refused here, including on the restricted endpoint; `to` is an agent ref or `role:<name>`, `project:<id prefix or absolute path>`, `topic:<name>`, or `all`; an agent is refused `forbidden` for another project's agent, project or channel, and its `all` is its own project (see [Messaging](#messaging)); a full addressed inbox rejects the entire send without publishing or evicting previously accepted messages |
 | `subscribe {agent?, topics?}` | stream of `message` or `lagged {skipped: u64}` | replays unacknowledged inbox messages, then streams live; neither step consumes the inbox |
@@ -378,7 +378,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `unbind_input {agent, token?, force?}` | `ok`, `error(forbidden\|conflict)` | release a binding with its token, or by `force` only once the bound controller process has ended; a running controller is `conflict`. The queue stays; a process the daemon launched that has not bound yet is sent SIGTERM, and the installation pin is dropped. Emits `input_unbound`. |
 | `me {workdir?}` | `agent` | register the person at the keyboard as the agent `user`, runtime `human`, or return the one already registered; `workdir` moves them to that project. No pid, so liveness never expires it |
 | `ask {from, to, question, timeout_secs?}` | `answer {message, from, text}` or `error(timeout/cancelled)` | sends a `question` message and waits for the exact answer confirmed by its committed closure; timeout defaults to 300 s and is clamped to 1–86,400. While it waits, an answer to its question is held: queued durably but shown to no read of the asker's queue, and nothing queued behind it is shown either, so the queue keeps its order for an answer that comes back to it. On hand-over the daemon does not take its written reply for a receipt: the answer is released to the queue recorded as offered (`legacy_offers`, and `binding.uncertain` for a bound asker, durable), so a controller settles it against the provider's own record of the tool call before delivering or acknowledging it, and a legacy reader gets it again rather than never. An `ask` that ends without the answer (timeout, cancel, a client that went away) releases it to the queue. |
-| `open_secret_review {agent, owner, recipient, request: {thread, turn, fields}, token}` | `secret_review {review}`, `error(invalid\|forbidden\|conflict)` | Volatile local broker for an exact live managed Codex bridge generation and its registered thread, addressed to a human. At most 32 routes/one per agent, eight fields/32 KiB prompt text. Capability is 64 hex characters, hashed only in RAM; it is separate from the public daemon-generated route ID. Five-minute monotonic lifetime and 15-second owner heartbeat. No ordinary message, stored question or durable event; emits live-only `secret_review_changed` with opaque ID/agent only. Restricted endpoints refuse it. Managed-provider routing, a durable metadata fence and masked desktop entry are connected behind `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`; default/native refusal and unsupported-console refusal remain. Overlapping reviews reject only the new request, preserving the first route and held queue. Final-package/account/platform acceptance remains open. |
+| `open_secret_review {agent, owner, recipient, request: {thread, turn, fields}, token}` | `secret_review {review}`, `error(invalid\|forbidden\|conflict)` | Volatile local broker for an exact live managed Codex bridge generation and its registered thread, addressed to a human. At most 32 routes/one per agent, eight fields/32 KiB prompt text. Capability is 64 hex characters, hashed only in RAM; it is separate from the public daemon-generated route ID. Five-minute monotonic lifetime and 15-second owner heartbeat. No ordinary message, stored question or durable event; emits live-only `secret_review_changed` with opaque ID/agent only. Restricted endpoints refuse it. Managed-provider routing, a durable metadata fence and masked desktop entry are connected behind `[experimental] secret_input = true` in `agentd.toml` (the bridge asks the daemon; `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` on the bridge still turns it on); default/native refusal and unsupported-console refusal remain. Overlapping reviews reject only the new request, preserving the first route and held queue. Final-package/account/platform acceptance remains open. |
 | `secret_reviews {recipient}` | `secret_reviews {reviews}` | Human-recipient metadata only; submitted answers are omitted. Expired, replaced or ended owners are removed before observation. |
 | `answer_secret_review {from, review, answers, retention_acknowledged}` | `ok`, `error(invalid\|forbidden\|conflict\|not_found)` | Exact human recipient, explicit provider-retention acknowledgment and every field in the mixed bundle required. Up to 16,000 bytes/field and 64 KiB total; duplicate IDs/unknown fields/partial bundles refused. Answers exist only in bounded memory and debug/errors are redacted. Already-submitted answers cannot be replaced or automatically resubmitted. |
 | `cancel_secret_review {from, review}` | `ok`, `error(forbidden)` | Recipient removes the volatile route/answer; already-closed IDs are idempotent. Cannot recall an answer already taken. |
@@ -1032,7 +1032,7 @@ terminal settings on completion.
 
 A pending managed-agent stop is dispatched before further terminal reports, keystrokes or resizes. An in-flight frame still has its existing five-second write bound; a failed stop write enters reconnection with the desired stop retained. Reconnection must deliver that stop before reattaching terminal output or resuming input; a failed retry discards the connection and remains in recovery. The owner preserves its two-second graceful-stop interval. This scheduling rule prevents ready terminal traffic from starving control dispatch; it does not by itself prove a wall-clock shutdown bound on a loaded host.
 
-Terminal continuity through daemon replacement rides on the session owner: the master stays with the owner, so neither a daemon death nor a `daemon reload` closes it, and `attach` follows: a connection that closes with nothing said, while a daemon still answers on the socket, is a replaced daemon, and the client attaches again to the same terminal through the successor, saying so on the terminal; a connection the daemon ends with `end` is the agent's terminal closing. `watch` and plain `events` subscribe again the same way (live messages and events between the two subscriptions are not replayed; `events --resumable` is the gapless form), and `daemon reload` waits up to 30 s for a mutation still executing rather than handing its `backpressure` to the user. `daemon reload` hands over only behind the `AGENTDOCKER_EXPERIMENTAL_RELOAD` gate while its acceptance matrix is recorded; otherwise it returns `unavailable` without touching the daemon or agents. Snapshot restore creates a new process and terminal.
+Terminal continuity through daemon replacement rides on the session owner: the master stays with the owner, so neither a daemon death nor a `daemon reload` closes it, and `attach` follows: a connection that closes with nothing said, while a daemon still answers on the socket, is a replaced daemon, and the client attaches again to the same terminal through the successor, saying so on the terminal; a connection the daemon ends with `end` is the agent's terminal closing. `watch` and plain `events` subscribe again the same way (live messages and events between the two subscriptions are not replayed; `events --resumable` is the gapless form), and `daemon reload` waits up to 30 s for a mutation still executing rather than handing its `backpressure` to the user. `daemon reload` hands over only behind the `[experimental] reload` gate (`AGENTDOCKER_EXPERIMENTAL_RELOAD=1` on the daemon still opens it) while its acceptance matrix is recorded; otherwise it returns `unavailable` without touching the daemon or agents. Snapshot restore creates a new process and terminal.
 
 Native launch uses a stateless host gate around `Command`: the forked child establishes its process group/terminal, reports its PID over an inherited private socket, and waits using only async-signal-safe syscalls. The daemon verifies its birth identity, commits the Running identity and event, then authorizes exec. Until authorization, EOF, cancellation or the 30-second child deadline denies exec. A worker completes Command's exec-error handshake; an owned child wrapper kills/reaps a launch whose asynchronous activation is dropped. No command, shell wrapper or helper application runs before the durable transaction. Normal exit supervision polls the owned child and drains its process group before releasing protection.
 
@@ -1054,7 +1054,7 @@ What restore still cannot give back is the *same* process: it relaunches a store
 
 Row 28, **live daemon replacement**, is now in progress. Its boundaries through installation integration are in source (the rest of this section says how; what remains is the safe live daemon replacement row of [REMAINING-WORK.md](REMAINING-WORK.md)): the session owners above, and the **coordinator fence**. A daemon that is about to hand over calls `offer_transfer(successor_pid)`: the last write it makes is a `coordinator` row (one row, the fence) naming the transfer, itself and the successor, with a `daemon_transfer_offered` event in the same transaction. From then on every mutating request answers `ErrorCode::Transferring` before anything is applied, every tick writer (liveness, lease expiry, pruning, retention, policy reload) skips its turn, and reads keep being served from the projection this process still holds. Settling is a compare-and-set on that row: the successor's first act on the same database is `accept_transfer`, which succeeds only for the offer addressed to its pid and still offered; the predecessor's `abort_transfer` succeeds only while the offer is still open. Whichever lands first wins and the other learns it lost, so two coordinators never both write: an accepted predecessor stays fenced and leaves without touching agents, an aborted successor exits without writing. An offer is refused while any admitted mutation is still executing, so its final write follows every side effect that was already under way; a mutation that has written what it will write and now only waits, an `ask` for its answer or a `claim --wait` for its lease, gives its place up first and takes one back before writing again, so a pending question never holds an offer back; every offer, accept and abort is written in the same transaction as the row, so the durable state never lacks its event. A daemon that opens the database while an offer is pending starts fenced: startup recovery corrects memory but every recovery write is held back and runs only as the named successor's first act after acceptance, so a stranger that opens the same database never writes it. A store that has latched a failure cannot offer, because there is nothing trustworthy to hand over. A write the fence skipped is reported to the writer that asked for it, never to a read: `ping`, `inspect` and `list` keep answering from memory while an offer is open.
 
-The third boundary, **successor readiness**, is in source behind the `AGENTDOCKER_EXPERIMENTAL_RELOAD` gate (exactly `1`). `reload` runs the candidate executable's `--build-info` (`AGENTDOCKER_RELOAD_CANDIDATE` when set; otherwise the release the managed installation has activated since this daemon started, found through `current/payload` from the kernel's resolved path of the running executable; otherwise the daemon's own), bounded to 10 s through the host's process-group runner, and refuses another host or an older state schema before offering anything. It then offers the transfer, and the offer's own refusal keeps its code: `backpressure` while a mutation is still executing, `conflict` over another offer. It spawns the candidate with `--take-over` in its own session holding one end of a socketpair, and sends a FORMAT 2 handover over `SCM_RIGHTS` naming the listening socket, the daemon lock and the container endpoint's listener; the successor holds all three for its life, so no autostart finds the lock vacant and no client finds the socket gone. A daemon whose container listener could not be kept for a handover refuses `reload` rather than hand over a daemon without container access. The successor opens the database *pending*: its schema comes forward, the recorded version does not, so an aborted takeover leaves a database the predecessor still opens. It reattaches every session owner while still fenced, and only then makes its first write, `accept_transfer`, which brings the recorded version forward in the same transaction; acceptance and readiness are one moment, and the *serving* answer follows at once. Only that answer, within 30 s, lets the predecessor go, and it goes without stopping anything: the agents, socket and lock are the successor's. A fenced daemon does not compete for owners: its supervisors stop reconnecting while an offer is open, so the successor's attachment is not superseded, and take the owners back if the offer is aborted. Any other outcome, a refusal, a death, silence, kills the successor's session and takes authority back, unless the store says the successor accepted, in which case it was already serving and the predecessor leaves rather than write beside it; a successor that dies after that is a serving daemon that crashed, which the service manager restarts with the session owners intact. Real-binary coverage reloads three daemons in a row with a batch and a PTY agent keeping their processes and logs; recorded failure trials cover an older-schema candidate, a candidate that dies, and one that never answers. `desktop install`, `update --apply` and `rollback` ask a running daemon to reload once a release is activated and report its answer, so an installation switches the serving daemon in place when the gate allows and says what keeps serving when it does not. A lost or unexpected reload reply is not treated as a refusal: the installer probes again without replaying the mutation and reports `reloaded: null`, the prior `before` observation, and the newly observed `serving` daemon (or `null` when no daemon answers). What remains is in the safe live daemon replacement row of [REMAINING-WORK.md](REMAINING-WORK.md) (boundaries 5 and 6 of LIVE-DAEMON-UPGRADES.md, in git history), and the gate itself. Before owners, actual binary tests at integrated source `63c6fbf66dbd2668acda2da138f64744f66ad864` reproduced `reload` returning success, the old daemon exiting, and both a batch and a PTY agent dying before their next instruction. The earlier in-process test kept the Tokio runtime alive and did not test that boundary. That historical unsafe exit path was removed. The current implementation requires the experimental gate described above; requests without the gate return `unavailable` without mutation.
+The third boundary, **successor readiness**, is in source behind the `[experimental] reload` gate in `agentd.toml` (`AGENTDOCKER_EXPERIMENTAL_RELOAD=1` on the daemon still opens it). `reload` runs the candidate executable's `--build-info` (`AGENTDOCKER_RELOAD_CANDIDATE` when set; otherwise the release the managed installation has activated since this daemon started, found through `current/payload` from the kernel's resolved path of the running executable; otherwise the daemon's own), bounded to 10 s through the host's process-group runner, and refuses another host or an older state schema before offering anything. It then offers the transfer, and the offer's own refusal keeps its code: `backpressure` while a mutation is still executing, `conflict` over another offer. It spawns the candidate with `--take-over` in its own session holding one end of a socketpair, and sends a FORMAT 2 handover over `SCM_RIGHTS` naming the listening socket, the daemon lock and the container endpoint's listener; the successor holds all three for its life, so no autostart finds the lock vacant and no client finds the socket gone. A daemon whose container listener could not be kept for a handover refuses `reload` rather than hand over a daemon without container access. The successor opens the database *pending*: its schema comes forward, the recorded version does not, so an aborted takeover leaves a database the predecessor still opens. It reattaches every session owner while still fenced, and only then makes its first write, `accept_transfer`, which brings the recorded version forward in the same transaction; acceptance and readiness are one moment, and the *serving* answer follows at once. Only that answer, within 30 s, lets the predecessor go, and it goes without stopping anything: the agents, socket and lock are the successor's. A fenced daemon does not compete for owners: its supervisors stop reconnecting while an offer is open, so the successor's attachment is not superseded, and take the owners back if the offer is aborted. Any other outcome, a refusal, a death, silence, kills the successor's session and takes authority back, unless the store says the successor accepted, in which case it was already serving and the predecessor leaves rather than write beside it; a successor that dies after that is a serving daemon that crashed, which the service manager restarts with the session owners intact. Real-binary coverage reloads three daemons in a row with a batch and a PTY agent keeping their processes and logs; recorded failure trials cover an older-schema candidate, a candidate that dies, and one that never answers. `desktop install`, `update --apply` and `rollback` ask a running daemon to reload once a release is activated and report its answer, so an installation switches the serving daemon in place when the gate allows and says what keeps serving when it does not. A lost or unexpected reload reply is not treated as a refusal: the installer probes again without replaying the mutation and reports `reloaded: null`, the prior `before` observation, and the newly observed `serving` daemon (or `null` when no daemon answers). What remains is in the safe live daemon replacement row of [REMAINING-WORK.md](REMAINING-WORK.md) (boundaries 5 and 6 of LIVE-DAEMON-UPGRADES.md, in git history), and the gate itself. Before owners, actual binary tests at integrated source `63c6fbf66dbd2668acda2da138f64744f66ad864` reproduced `reload` returning success, the old daemon exiting, and both a batch and a PTY agent dying before their next instruction. The earlier in-process test kept the Tokio runtime alive and did not test that boundary. That historical unsafe exit path was removed. The current implementation requires the experimental gate described above; requests without the gate return `unavailable` without mutation.
 
 A complete replacement must preserve child ownership, batch stdout/stderr, PTY input/output and scrollback, append logging, process identities and protection. It must quiesce writes, select the intended installed binary, validate compatibility, and receive successor readiness before retiring the predecessor, with bounded failure recovery. Descriptor transfer alone proves none of these properties. The host's `SCM_RIGHTS` helper remains a mechanism, not delivery evidence.
 
@@ -1175,7 +1175,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 22 | ✅ contests: passing, provenance-matched `validate` evidence as the entry; a measure fixed before anyone starts, taken by the daemon where it can be; a declared noise floor, inside which the ranking refuses to decide and channel review settles it | 5 | 21, 14 |
 | 23 | ✅ PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run`, `attach` and detach, window size, scrollback on attach | 5 | — |
 | 27 | ✅ snapshot restore with transactional preparation, watcher/socket readiness and failed-launch cleanup: `run --restore` brings an agent back under its own id after a daemon restart, with its leases re-taken from a restore point and a `restored` brief naming its checkpoint, what it had read, what changed while it was down, and its journal cursor | 5 | 23 |
-| 28 | ⏳ live daemon replacement: the session owner (below) keeps each managed agent's child, terminal, pipes and log outside the daemon, so a daemon can die or restart and reattach; the coordinator fence, the successor handover, connected clients that follow a replaced daemon and installations that reload the running daemon to the activated release are in source behind `AGENTDOCKER_EXPERIMENTAL_RELOAD`, with the input bindings fenced and a successor's pending open deferring data migrations to its acceptance; what remains is broader provider input acceptance and an attached terminal's draft across a switch, uncertain-write reconciliation, replay retention limits, Windows, and the gate itself, without which `reload` still refuses without mutation | 5 | 23 |
+| 28 | ⏳ live daemon replacement: the session owner (below) keeps each managed agent's child, terminal, pipes and log outside the daemon, so a daemon can die or restart and reattach; the coordinator fence, the successor handover, connected clients that follow a replaced daemon and installations that reload the running daemon to the activated release are in source behind the `[experimental] reload` switch, with the input bindings fenced and a successor's pending open deferring data migrations to its acceptance; what remains is broader provider input acceptance and an attached terminal's draft across a switch, uncertain-write reconciliation, replay retention limits, Windows, and the gate itself, without which `reload` still refuses without mutation | 5 | 23 |
 | 24 | ✅ derived activity: working, idle, starting, finished, or blocked on a named resource held by named agents — from the working set, never from terminal output; `activity`, `ps` DOING, MCP `activity`, and the app's agent list | 5 | 13 |
 | 25 | ✅ multiplexer adapters: `tmux`/`screen`/`zellij`/herdr sessions recognised from the environment (reported first-hand at registration, since macOS does not expose another process's environment) or from ancestry, recorded on the agent and shown in `ps`/`discover`; `run --in-pane` starts an agent in a new tmux session and registers what tmux started, so the human attaches with the tool that owns the terminal | 5 | 18, 23 |
 | 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said; both draw on a chosen terminal palette, with text sizes and row density, kept in `ui.json` per home | 5 | 19, 23 |
@@ -1195,11 +1195,11 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 42 | ✅ per-recipient delivery readiness on `sent` (`recipient_readiness`): which queued sessions cannot be woken and how to relaunch them; PR #188 merged through #191 (`abec6ec`) | 5 | 30 |
 | 43 | ✅ app-guided Claude reconnect: **Reconnect here** (#199) resumes an eligible ended session under its own record and opens the terminal for provider consent; CLI alternative retained. #196 repairs missing channel receipts; actual installed consent and peer-only idle input passed for the recorded session. Other provider/version acceptance remains | 5 | 42 |
 
-The road to v1 is [REMAINING-WORK.md](REMAINING-WORK.md): verify restore/privacy through the staged trial, complete native packaging and onboarding, then deliver Linux desktop and native Windows parity. Policy/quotas (15), restart policy (16), `commit` (10) and the rtk view (26) are implemented and covered by the integrated verification recorded on PR #119; what is still open is in [REMAINING-WORK.md](REMAINING-WORK.md). Live daemon replacement (28) has process/I/O ownership in the session owner, the coordinator fence, successor handover, connected-client resumption and installation-triggered reload in source behind `AGENTDOCKER_EXPERIMENTAL_RELOAD`. Broader provider input acceptance, attached-terminal drafts across a switch, uncertain-write reconciliation, replay retention limits, Windows and removal of the gate remain open. Windows (20) requires full native process, terminal, IPC, service and installer acceptance. Federation (17) follows a dependable single-host product.
+The road to v1 is [REMAINING-WORK.md](REMAINING-WORK.md): verify restore/privacy through the staged trial, complete native packaging and onboarding, then deliver Linux desktop and native Windows parity. Policy/quotas (15), restart policy (16), `commit` (10) and the rtk view (26) are implemented and covered by the integrated verification recorded on PR #119; what is still open is in [REMAINING-WORK.md](REMAINING-WORK.md). Live daemon replacement (28) has process/I/O ownership in the session owner, the coordinator fence, successor handover, connected-client resumption and installation-triggered reload in source behind the `[experimental] reload` switch. Broader provider input acceptance, attached-terminal drafts across a switch, uncertain-write reconciliation, replay retention limits, Windows and removal of the gate remain open. Windows (20) requires full native process, terminal, IPC, service and installer acceptance. Federation (17) follows a dependable single-host product.
 
 ### Planned protocol and event additions
 
-Listed here so the wire-protocol table above stays a description of what exists. Handoff and scoped authentication are already implemented with the request shapes above; the older design of a token field on every host request was superseded by the separate authenticated endpoint.
+Listed here so the wire-protocol table above stays a description of what exists, together with the contracts behind rows the table only names. Handoff and scoped authentication are implemented with the request shapes above; the older design of a token field on every host request was superseded by the separate authenticated endpoint.
 
 Of the original list, `diff` shipped as `worktree_diff {agent}` → `diff` and `commit` as `commit {agent, message?, all?, push?}` → `committed` (row 10); a `--stat`-only diff and opening a pull request from `commit` were not taken up. `report {…, reads?, writes?}` was superseded: reads are durable content observations (`observe`), and writes come from the watcher ledger rather than from an agent's own report.
 
@@ -1207,527 +1207,41 @@ Of the original list, `diff` shipped as `worktree_diff {agent}` → `diff` and `
 |---|---|---|
 | Additional execution adapters (Apple `container`, others) | capability-specific | 4 |
 
-Initial collector and CLI/MCP/UI are merged in #194 (`615ae79`). Clean source `889ea35` passed 1,219 Rust tests
-(seven skipped), 94 Python checks (one skipped), lint, packaging and release.
-Final source review and integration are complete; activation on the serving
-coordinator and broader acceptance remain. The opt-in `[usage]` section in
-`agentd.toml` accepts `enabled = true`, `retention_days = 30` (1–3650), and
-optional absolute `codex_roots` / `claude_roots` without parent (`..`) path
-components. Root validation is shared by configuration, queries and discovery;
-invalid roots return an explanatory `invalid` query error. Empty lists use the standard
-provider log directories. Disabled collection reports unknown coverage and never
-scans transcripts in a private test daemon implicitly.
+**Token usage by agent, model and provider.** The `usage` request (table above), its collector, store, CLI/MCP commands and the Usage screen are in source; row 34 and [REMAINING-WORK.md](REMAINING-WORK.md) say what is still open, and trials on real binaries are indexed in [verification/INDEX.md](verification/INDEX.md). The adapters read local Codex rollouts and Claude Code transcripts. These are versioned runtime formats: an adapter must identify a supported usage record and model context rather than assume every turn or runtime reports every counter. Missing or unsupported counters are unknown, never zero. No prompt, response or tool-result text is retained: only paths, accounting metadata and fingerprints persist, and reading a transcript never means keeping its message text.
 
-A separate worker discovers at most 100,000 entries and 10,000 files per
-snapshot, with bounded directory pages/depth, prioritizes filenames matching
-live session IDs, captures each file generation, and reads outside the daemon
-state lock. File cursors, dedupe fingerprints, cumulative baselines, hourly
-buckets, gaps and `usage_recorded {generation, samples, gaps}` commit together
-under the coordinator fence. `usage_reconciled {agent, samples}` moves retained
-unattributed contributions only after runtime/session resolution: a session
-resumed under a new agent has several registrations, and each takes the
-samples made while it was current (from its first registration until the
-next; the first also takes earlier ones; simultaneous registrations take none);
-previously attributed history does not follow a moved agent. Replay fingerprints
-and baselines survive aggregate retention. New tables are additive and preserve
-the existing schema-23 meanings. No transcript text is retained.
+- **Configuration.** The opt-in `[usage]` section of `agentd.toml` accepts `enabled = true`, `retention_days = 30` (1–3650) and optional absolute `codex_roots` / `claude_roots` without parent (`..`) path components; empty lists use the standard provider log directories. Root validation is shared by configuration, queries and discovery, and an invalid root is an explanatory `invalid` query error. The 16-root, absolute-path limit applies after environment and default roots are expanded as well as to explicit settings. Disabled collection reports unknown coverage, retains existing totals and never scans transcripts implicitly. Configuration is separate from scan progress: enabling collection or changing roots can leave a scan waiting to start, which does not mean collection is off; the CLI and desktop read the optional `enabled` field and keep unknown for an older report. The `[experimental]` section (`reload`, `secret_input`, `native_codex`) is the one home of the experimental switches; `ping` reports them as the daemon applies them, and the Codex bridge and hooks follow that report rather than their own environment.
+- **Collection outside the state lock.** A bounded host collector reads complete JSONL records from the configured runtime directories, including unregistered sessions, with per-file byte/time budgets and persistent scan progress, off the daemon state lock. Files whose names match live session IDs come first; a bounded rotating scan also catches new files, finished sessions and late usage records. The same parsers serve the standalone CLI. Discovery visits at most 16 roots, 100,000 entries, 10,000 files per snapshot and 32 directory levels, in cooperative pages of 512 entries / 25 ms. Each pass records a durable discovery generation and, per file, a fixed generation identity, captured-prefix validation data and a high-water byte offset at the end of the last complete JSONL record within the captured length. A trailing partial record stays beyond that boundary: its start offset is retained, it is reread when complete, and the pending tail is exposed in collection coverage; a cursor never advances over an incomplete record or claims its unparsed bytes. The completion watermark advances only after every discovered file in the generation is scanned to that offset and its samples and cursor commit. Files appearing or growing later belong to a later generation; scan failures and unsupported formats are explicit gaps. A bounded or unfinished enumeration cannot claim that no more files exist, and empty aggregates during discovery do not prove zero usage. A path alone is not a generation identity: each adapter validates the same opened file generation and captured prefix before committing coverage, and truncation, replacement, rotation or an in-place rewrite invalidates that file's coverage even when its path and length are unchanged. Validation reads share the scan budget; changed content becomes an explicit source gap or a new generation and cannot complete the earlier snapshot.
+- **Resumable discovery.** Discovery persists its directory frontier (at most 4 MiB) and a manifest of at most 10,000 captured files. Each page, its coverage and its event commit together; consuming a file removes its manifest entry in the same transaction as its samples and cursor. A daemon restart resumes the same generation and snapshot watermark, including remaining files, rather than starting discovery again; changed configured roots or malformed restart metadata (including invalid saved counts) start a new generation and clear the stale manifest atomically. Real SQLite read failures still fence storage. A saved frontier must match the configured root order and runtime, with its remaining roots the matching suffix; a rewritten frontier cannot select unrelated directories. On restart, open directories replay their saved entry-name/type fingerprints in bounded passes, ancestors first; a changed prefix, redirected directory or unreadable frontier leaves coverage incomplete and never authorizes skipping unverified entries. Directory order need not be stable: a different order refuses that snapshot and the next generation retries. Replaying a large directory takes time proportional to its saved entry count (roughly 25 s for 100,000 entries with the inter-page waits, before filesystem I/O). Completed file-prefix proofs are ephemeral and reverified after restart. Terminal capture/scan gaps are not pending jobs and keep token coverage partial even when the collector is caught up. The pending-file lookup is indexed by priority; completion clears the frontier and manifest. Long-term sample/baseline retention is separate.
+- **The reader and its cursor.** `usage::reader` is a bounded per-file JSONL reader. A batch proposes samples, explicit malformed/unsupported-record gaps and a serializable parser cursor; it never commits progress. The cursor holds native file identity, length and change metadata, a complete-record prefix digest and accounting context, never transcript text. Reads reject final symlinks and special files, cap bytes (including read-ahead and prefetch), record size and result count, and check a cooperative deadline between bounded reads; both the open object and the current path are checked after reading, and the caller validates again before committing. Metadata alone cannot establish unchanged content — a same-length rewrite can restore the modification time — so the complete-record prefix is rehashed before parser state is restored and again in `Cursor::validate` immediately before commit, each rehash limited to 16 MiB and a cooperative one-second deadline, bytes reported separately in `Batch::validation_bytes_read` (at most 32 MiB across both checks); exhaustion returns `ValidationIncomplete` with no new cursor or coverage claim, and a caller must not trust metadata to bypass that refusal. These are bounded observations, not a filesystem snapshot or a lock against writes after validation. The reader itself rejects any changed generation, including append: the caller retains the old cursor, records the generation gap and starts a new scan with source-ID deduplication; keeping parser state across a growing file is the collector's work (next). The parser budget reserves the restored boundary byte so the smallest accepted resumed budget can identify an oversized record. The standalone reader API keeps a 16 MiB whole-prefix limit and defaults to 4,096 records, accepting smaller validated budgets.
+- **Oversized records.** A complete record whose newline fits in the byte budget advances as an explicit gap, so later supported records are still collected; a missing newline within that budget preserves the prior cursor. A record whose newline cannot fit returns `Stop::Quarantined`, retaining only the verified complete records before it and recording the attempted budget in the cursor; those samples, gaps and the quarantined cursor commit together and the unfinished record is not covered. Reopening at the same or a smaller budget validates the prefix and returns `Error::Oversized` without reparsing accepted records; a larger budget may recover from the quarantined offset without replaying the accepted prefix, and a changed generation takes the new-scan path. A completed prefix that received only the remainder of a batch returns ordinary budget exhaustion so the next record gets one full bounded pass; only failure with the full allowance quarantines. The collector makes at most one escalation to the 16 MiB maximum and then keeps the source quarantined until it changes or the person intervenes; ingestion preserves a quarantine rather than retrying it as ordinary `Stop::Budget`. I/O, generation and validation errors return no proposed progress. Complete oversized non-accounting JSON envelopes (observed `response_item`, `compacted` and `event_msg/item_completed` bodies) are skipped after the whole JSON structure is validated, unknown fields discarded; accounting and unknown event types are never silently skipped, and malformed or accounting envelopes create gaps. Skipped records reset Codex context and contribute once to the prefix digest.
+- **Growing files and batches.** The collector holds an ephemeral reader session that verifies a saved prefix in bounded passes (up to 4 MiB / 100 ms each) before parsing; a scan rechecks its new bounded suffix and generation before committing, and a restart discards the proof and rehashes the saved prefix. An appended generation of the same file retains parser state only after all accepted prefix bytes match; rewrites, replacement and truncation keep coverage incomplete and require an explicit gap or replay. Growth during verification invalidates the current proposal: the collector atomically refreshes that pending job's captured high-water mark with the existing `usage_recorded` event, keeping its accepted cursor and pending count, visits each job at most once per pass so other files can finish, and retries the full old-prefix proof on the next pass or after restart. Growth alone proves neither corruption nor append-only content; a rewrite that also grows must still fail the new prefix proof, and repeated growth stays pending, never caught up or a permanent source gap merely because its snapshot advanced. At most one incomplete verification record is buffered in memory, at most 16 MiB; no transcript bytes enter durable cursors. Parsing batches stop after 128 complete source records, including ignored records and gaps; their samples and cursor commit atomically under the coordination mutex with a 100 ms off-lock wait between batches, which bounds accounting work per transaction but is not a wall-clock I/O guarantee. Parser cursor version 7 first verifies the old prefix of a version-3 to version-6 cursor, then replays from zero through source-ID deduplication without inventing a source-change gap, so newly supported records are collected without recounting accepted samples; unknown cursor versions and failed prefix verification record gaps.
+- **Explicit token semantics.** A normalized sample keeps `runtime`, `provider?`, `model?`, `session_id`, timestamp and separate optional counters for total input, cache-read input, cache-write input, total output and reasoning output. Each adapter documents whether its raw counters overlap: a reported cache hit is not added again to an inclusive input total, reasoning is not added again to an inclusive output total, and cache reads and writes stay separate. Cumulative snapshots become deltas against a durable baseline; per-response and cumulative usage are never both counted. A decrease starts a new counter epoch: the reset value becomes the baseline, no negative delta is emitted and the interval is a gap; later increases in that epoch count normally. A newly discovered complete session may use a zero baseline only when its adapter proves the snapshot covers the session from its start; otherwise the first snapshot establishes a baseline with unknown prior coverage, persisted as a source gap from session start (or unknown earlier history) through the baseline timestamp. A query overlapping it reports partial coverage when later contributions are known, otherwise unknown; it cannot report complete coverage merely because every collected delta has a counter, while ranges wholly after the baseline may be complete when every other coverage condition holds. Reset/rewrite identities distinguish new epochs from replay. Unsupported versions or malformed counters report a gap rather than zero, and restored aggregate state rejects impossible known/sample counts or nonzero sums without known contributions. Counter normalization follows [OpenAI usage breakdowns](https://developers.openai.com/api/reference/cli/resources/responses/methods/retrieve) and [Claude cache input semantics](https://platform.claude.com/docs/en/build-with-claude/prompt-caching): Codex input/output totals include their cache/reasoning components and are cumulative snapshots; Claude total input combines uncached input, cache reads and cache creation once, and top-level Claude counters are authoritative (nested iteration/cache details are not added again, a zero counter stays zero, absent reasoning is unknown).
+- **Supported formats.** The observed local rollout/transcript formats, not API compatibility, decide which adapter versions are supported, and each supported format needs restart, truncation, rotation, partial-tail completion and rewrite fixtures. Checked Codex rollouts: 0.153.4, 0.154.0, 0.155.1 and 0.160.0 (0.160.0 keeps cumulative counters, optional cache/reasoning fields and stable replay identities, under its own sample-format name). Checked Claude Code transcripts: 2.1.246, 2.1.247, 2.1.248, 2.1.251, 2.1.259, 2.1.260, 2.1.261, 2.1.263, 2.1.267, 2.1.268, 2.1.270, 2.1.271–2.1.278, 2.1.280 and 2.1.287 — explicit patches sharing one accounting-family identity, not an accepted range. A later release of the same major version past the compatibility floor is counted as it reports — Claude Code after 2.1.280, and Codex after 0.160.0 read with 0.160.0's semantics and format — because both ship every few days and an exact list left a person on the current release with no usage at all; each counter is still checked field by field, and coverage lists `claude-transcript-after-2.1.280-unchecked-v1` and `codex-rollout-after-0.160.0-unchecked-v1` so a report says unchecked releases may be in it. An older unchecked release, another major version or a pre-release stays refused. The floors stay put when a later release gains checked fixtures (adding 2.1.287 keeps 2.1.281–2.1.286 readable). Cursor version 7 replays version 3–6 scans, which skipped those releases, deduplicating already accepted sources; existing gaps and conflicting response counters are not erased.
+- **Restart-safe ingestion.** The collector returns samples with stable source identities plus the proposed next file cursor. One daemon transaction accepts previously unseen samples, updates aggregates and durable cursor/baseline state, and appends `usage_recorded {generation, samples, gaps}`; only then may in-memory progress move. File cursors, dedupe fingerprints, cumulative baselines, hourly buckets and gaps commit together under the coordinator fence. Retries, rotation, truncation, copied logs and partial final lines must not duplicate counts or skip complete records. Provider event/message identifiers are used when available — Claude content-record UUIDs are not distinct responses; dedupe uses the provider message ID with runtime and session — and each fallback identity and rewrite rule needs a format-specific regression fixture before that format is supported. Sample fingerprints exclude the contextual prefix proof, so an identical snapshot replayed under a different proof is a replay, not an accounting conflict; the first accepted observation determines baseline accounting, replay cannot manufacture missing history, response replay ignores fragment observation times and keeps the first accepted hour, and a genuinely changed counter still reports a gap. Replay fingerprints and baselines survive aggregate retention, so rereading old files cannot resurrect expired usage. Standalone scans deduplicate within their selected input set and do not alter daemon cursors.
+- **Historical attribution.** Match by runtime plus provider session, following registered identity aliases. The resulting `agent_id?` and `project_id?` are stored on the usage bucket at ingestion; deleting, moving or retiring a current agent cannot move its history into another project. A session with several registrations (resumed after its agent ended) attributes each sample to the registration current at the sample's time — from its first registration until the next, the first also taking earlier samples, simultaneous registrations taking none — and previously attributed history does not follow a moved agent. Unmatched or ambiguous sessions stay unattributed, with unknown project, until an explicit idempotent reconciliation has enough evidence after runtime/session resolution. `usage_reconciled {agent, samples}` works from the retained sample identities and their bucket contributions, not a second ingestion: in one transaction it subtracts each still-unattributed contribution from its original hourly bucket, merges it into the resolved agent/project bucket, updates its attribution, saves its scheduling cursor and emits the event, so any failure leaves all of them unchanged; counter sums and known/sample counts move together, no separate totals may lag, repeating it is a no-op, and re-ingestion uses the same dedupe identity. Unresolved contributions are kept through the retention window; expired ones cannot recreate totals. Runtime names are not billing companies: provider comes from reliable runtime metadata or explicit configuration, otherwise it is unknown; model names are retained as reported.
+- **Bounded aggregation and retention.** Rows are keyed by agent/project attribution, runtime, provider, model and UTC hour, with separate sums and coverage counts for every counter; dedupe/cursor state and bucket changes commit together. Hour buckets follow the configured retention window, and the UI says *Available history*, never an unqualified all-time total. A committed retention cutoff survives configuration expansion: discarded history stays explicitly truncated, and newly found older logs do not make that interval appear restored. The usage tables are additive over the schema-23 meanings.
+- **Tracking budget.** Persistent accounting tracking has a 256 MiB admission budget: UTF-8 bytes in fingerprints/contributions, baselines, file cursors, buckets and gaps, plus a 128-byte allowance per row. SQLite indexes, page/WAL overhead and unrelated coordination state are additional; this is not a 256 MiB limit on the database file. One additive counter row and transactional insert/update/delete triggers maintain the total, with a one-time backfill for old stores; the discovery manifest keeps its own 10,000-file / 4 MiB-frontier bounds. A sample's baseline, bucket and fingerprint either all fit or roll back to a savepoint. Cursor metadata is admitted separately under the same budget and can advance over capacity-refused samples while a durable gap keeps their coverage partial; scan completion neither erases that gap nor recovers those records automatically. A refused file cursor can be rediscovered, and preserved dedupe evidence prevents recounting. Reconciliation that cannot fit leaves the old attribution and total intact; its first capacity gap emits an event, and unchanged refusals on later ticks append nothing. A single reserved, constant-size capacity gap keeps affected reports partial and appears in the CLI and desktop. Ordinary SQLite errors still propagate as storage failures. Retention can free contribution/bucket/gap space; accepted fingerprints and baselines are never discarded merely to admit new work. A store already above budget stays intact and may shrink but cannot grow through accounting admission. Raising the budget and compacting long-lived dedupe evidence are not implemented. Older daemons keep their own admission policy; the metadata does not change schema-23 accounting meanings.
+- **Reading it.** `usage` groups by agent (the default), model, provider, project or hour: `agentdocker usage [--project <id>] [--agent <id>] [--since <RFC3339|duration>] [--until <RFC3339>] [--by agent|model|provider|project|hour]`. `--agent` (`--as` is an alias) is an explicit filter; the calling identity does not silently narrow a project-wide report. A duration is a positive decimal integer and one lowercase unit (`s`, `m`, `h`, `d`), such as `24h`; fractions, signs, whitespace, compound units, zero and overflow are rejected. It resolves backward from the query's captured UTC `as_of`, before the bounds are validated or rounded. Omitted `since` is 24 hours before `as_of`; omitted `until` is `as_of`. Reversed or empty ranges and a `since` later than `as_of` are rejected before rounding; a future `until` is clamped to `as_of`. Only hourly aggregates exist, so `since` rounds down and `until` rounds up to UTC hours, aligned bounds unchanged; the lower bound is clamped to the oldest retained hour, and wholly expired history returns no rows with equal effective bounds at the retention boundary. Buckets use the half-open `[effective_since, effective_until)`; an upper bound rounded past `as_of` includes only observed data, never predicted usage. More than 10,000 buckets or an overflowing grouped total refuses the query without disabling coordination. Responses and the UI show the effective bounds, requested-history truncation and whether the current hour is included; retention loss and an incomplete current hour are separate from missing parser fields or ingestion gaps. The Usage screen shows day/week/available-history totals, per-agent model and provider totals, project filters and explicit unknown/partial coverage, with the collection watermark beside totals so an ongoing scan cannot look finished. It shows tokens; monetary cost is out of scope.
+- **Response schema.** `usage` returns `rows`, `by`, `as_of`, `effective_since`, `effective_until` (UTC RFC3339), `coverage` and `overhead`. `coverage` holds `retained_since` (UTC hour), the booleans `history_truncated`, `future_until_clamped` and `includes_current_hour`, and `source_gaps` (count of known unreadable/unsupported/reset intervals in the requested scope). Optional `coverage.tracking` holds `logical_bytes`, `capacity_bytes` and `capacity_gap` (whether the range overlaps capacity-refused accounting); its absence on an older daemon does not establish bounded tracking. `coverage.collection` holds `enabled` (boolean, or null for an older report; read from current configuration), `state` (`unknown`, `scanning`, `caught_up`), `discovery_generation` (u64 or null), `snapshot_at` and `completed_at` (UTC or null), `discovery_complete`, `pending_files` (null while enumeration is incomplete), `pending_tail_files` (null while discovery is incomplete) and `scope` (configured runtime roots and supported format versions). `caught_up` requires completed discovery, committed scans through every fixed high-water offset in that generation or an explicit source gap for each terminal failure, and `pending_tail_files: 0`; a captured partial tail keeps it `scanning` until it completes or becomes a gap. It is coverage of the declared snapshot and scope, not of logs that appeared later or of all provider accounts: missing or incomplete discovery is `unknown`, complete discovery with outstanding files is `scanning`, a query outside the covered scope/range cannot borrow a global watermark, and a known gap stays visible after the scan finishes. Each row has `key` (string; null for unattributed; the UTC hour when `by=hour`), `samples` (contribution count) and `counters` with exactly `input_tokens`, `cache_read_input_tokens`, `cache_write_input_tokens`, `output_tokens` and `reasoning_output_tokens`, each `{sum: u64|null, known_samples: u64, coverage: "complete"|"partial"|"unknown"}`. `sum` counts known contributions only (null when none are known; a reported zero stays zero); `known_samples` cannot exceed `samples`; counter coverage is unknown when none report it, partial when some do or relevant collection is unfinished, and complete only when all report it and collection for that row's scope/range is caught up without gaps — unknown discovery prevents a complete counter even when every known sample has the field. An empty query returns `rows: []` with collection status present, never a fabricated zero row. Complete snapshot coverage does not override retention truncation, data after the snapshot or the current hour's partial duration. The top-level `overhead` object uses the same filters and effective range independently of `by`: `injected_bytes` (UTF-8 bytes recorded as emitted by AgentDocker; null means uninstrumented, not zero), `known_events`, `coverage` for the instrumentation of the selected scope, and `estimated_tokens` (null until estimated, otherwise `{value, algorithm, version, parameters}`). Injected hook/MCP/message bytes are recorded apart from provider-reported usage; a token conversion is a labelled estimate that neither measures billed tokens nor proves the provider consumed the bytes, is shown as emitted bytes and estimated tokens rather than a provider-row sum, and is never added to the provider total. Overhead is unknown until instrumented.
+- **Standalone commands.** `agentdocker usage-storage --home <state dir>` is read-only: it measures accounting table/index pages, payload and unused bytes in one SQLite read snapshot, including discovery/tracking metadata outside the logical admission counter, through the bundled SQLite [DBSTAT interface](https://www.sqlite.org/dbstat.html) in page mode with object/page/time bounds, and returns no partial totals on refusal. Database page/free-page totals cover all state; file/WAL/shared-memory lengths are separate before/after observations. It starts no daemon, runs no migration, checkpoint or vacuum, and changes no schema, events, retention or admission policy; ordinary usage queries never perform this scan. `agentdocker usage-scan` discovers selected local files or directories, reads fixed snapshots with the collector's bounded Session reader, globally sorts normalized metadata and applies the same Store dedupe/baseline logic in temporary private state; it does not open daemon state, contact providers or change daemon cursors. Its bounded metadata buffer and whole-command limits refuse resource exhaustion; parser gaps and partial tails stay visible; input changes and temporary-cleanup failures refuse the report; complete coverage means only the selected snapshots; the output carries no retained-history promise or agent/project attribution, and includes source paths and accounting metadata but no transcript text. Its limits are in [the guide](GUIDE.md#standalone-transcript-scans).
 
-Private real binaries processed a 24,494,890-byte Claude fixture, deduplicated
-copied logs and identical Codex snapshots, resumed after append/restart, and
-preserved the committed retention cutoff through shrink/restart/expansion.
-Four discovery generations completed with no source gaps. The native Usage
-screen passed 25 rendered steps at 1440/720 pixels and increased text size.
-These are supported-format fixtures, not actual provider billing acceptance.
-See the [existing integrated record](verification/INDEX.md)
-for exact source, failures, hashes and short coordination observations.
-Discovery restarts after a daemon restart; file scan progress is durable.
-Persistent discovery resumption is implemented. Persistent accounting tracking
-now has a 256 MiB admission budget: UTF-8 bytes in fingerprints/contributions,
-baselines, file cursors, buckets and gaps, plus a 128-byte allowance per row.
-SQLite indexes, page/WAL overhead and unrelated coordination state are additional;
-this is not a 256 MiB limit on the entire database file. One additive counter row
-and transactional insert/update/delete triggers maintain the total, with a one-time
-backfill for old stores. The separate discovery manifest retains its existing
-10,000-file/4 MiB-frontier bounds.
+**Registration resumption** refuses a fresh record once it has input-delivery evidence: a receiver may already have offered its head, and merging older backlog would reorder that offer. A pre-initialization fold is protected by Claude channel locks for both the agent ID and the provider PID/birth generation, so changing to a canonical agent ID cannot admit a duplicate adapter; hooks check that process lock too. A refusal retains both queues and is not reported as a completed handover.
 
-A sample's baseline, bucket and fingerprint either all fit or are rolled back to
-a savepoint. Cursor metadata is admitted separately under the same byte budget;
-it can advance over capacity-refused samples while the durable gap keeps their
-accounting coverage partial. Scan completion does not erase that gap or recover
-those uncounted records automatically. A refused file cursor can be rediscovered;
-preserved dedupe evidence prevents recounting. Reconciliation that cannot fit leaves the old attribution
-and total intact. Its first capacity gap emits an event; unchanged refusals
-on later reconciliation ticks do not append empty accounting events. A single reserved, constant-size capacity gap keeps affected
-reports partial and appears in the CLI and desktop. Ordinary SQLite errors still
-propagate as storage failures. Retention can free contribution/bucket/gap space;
-accepted fingerprints and baselines are never discarded merely to admit new
-work. Existing stores already above budget remain intact and may shrink, but
-cannot grow through accounting admission. Increasing usable storage beyond the
-fixed budget or safely compacting long-lived dedupe evidence is not implemented.
-Older daemons retain their own admission policy; the new metadata does not change
-schema-23 accounting meanings. The read-only `usage-storage --home` diagnostic measures accounting table/index
-pages, payload and unused bytes in a single SQLite read snapshot, including
-discovery/tracking metadata outside the logical admission counter. It uses the
-bundled SQLite [DBSTAT interface](https://www.sqlite.org/dbstat.html) in page mode
-with object/page/time bounds and returns no partial totals on refusal. Database
-page/free-page totals cover all state; file/WAL/shared-memory lengths are separate
-before/after observations. It starts no daemon, performs no migrations or
-checkpoint/vacuum, and changes no schema, events, retention or admission policy.
-Normal usage queries do not perform this scan.
+**Events the sections above do not name** (every variant and payload is in [`EventKind`](../crates/core/src/event.rs)):
 
-The explicit `usage-scan` command now discovers selected local files/directories,
-reads fixed snapshots with the collector's bounded Session reader, globally sorts
-normalized metadata and uses the same Store dedupe/baseline logic in temporary
-private state. It does not open daemon state, contact providers or change daemon
-cursors. Its bounded metadata buffer and whole-command limits refuse resource
-exhaustion; parser gaps/partial tails remain visible. Input changes and temporary
-cleanup failures refuse the report. Complete coverage means only the selected
-snapshots. Standalone output has no retained-history promise or agent/project
-attribution; source paths and accounting metadata are included, transcript text
-is not. See [the command limits](GUIDE.md#standalone-transcript-scans).
-Sustained resource acceptance and overhead instrumentation remain open. The collector's ephemeral prefix session handles large/growing
-files in bounded passes; direct stateless reader calls retain their 16 MiB validation
-limit, while `usage-scan` uses the Session reader across larger snapshots. Overhead is returned as unknown until instrumented.
+- Policy and supervision: `policy_updated` (effective rules or load diagnostic changed), `policy_denied` (what was asked and which rule refused it), `agent_restarted` (a managed agent started again by its policy, with the attempt number), `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `agent_renamed` (a person gave a live agent a name; the id is unchanged).
+- Leases and contests: `lease_waiting`, `lease_wait_ended`, `lease_deadlock` (row 13); `contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`.
+- Containers and the ledger: `container_updated` (durable container transitions), `image_built`; `file_changed` (ledger observations) and `agent_stale` (stale readers) are live-only (`seq:0`) and cannot be recovered through event replay, and the inbox notification for them uses the separate message kind `stale`.
+- Journal and messaging: `journal_appended`, `journal_read`, `journal_pruned` (a project's entries below a sequence were deleted, on request or by retention), `checkpoints_pruned`, `answer_routed` (which way an answer reached its asker: the waiting `ask` or the queue), `conversation_read` (a reader's cursor moved), `messages_pruned`, `agents_pruned` (retention forgot the records of agents that ended before its window and held nothing, each said as `agent_removed` first) (the archive dropped rows by retention or the cap).
+- Input bindings: `input_bound` (an external controller became, or resumed being, the sole consumer of an agent's queued input), `input_unbound`, `input_controller_ended` (the bound controller, or a process launched to replace it, is gone), `input_controller_launched` (the daemon started the binding's launch descriptor, with the attempt number), `input_controller_launch_failed`, `input_restarts_exhausted` (the episode's launches are used up), `input_restarts_reset` (a person asked for the controller to be started again), `input_resumed` (a provider session that came back as a new process was joined to the record holding its thread's queue; the new record's id is an alias of it).
+- Sessions: `session_resumed` (the same for a session without an input binding, matched by its `session_id` at registration: the ended record that finished last took up the new process, with every retired id — the fresh one and any earlier ended life — the session and the pid); `session_duplicates_folded` (live records of one provider session in one process — the same birth, runtime, project and `session_id`, which a hook registering from a moved shell could leave before registration stopped comparing the directory — folded by the liveness sweep into the one that stays exactly as `session_resumed` folds, with the retired ids, the session and the pid; stale notices owed to a retired record are owed to the one that stays, and when a receiver or subscriber on the kept record may have offered its queue's head the retired records' messages queue behind that queue, taking new sequence numbers, rather than in sequence order; a retired record that holds a lease, waits for one, has an `ask` blocked on an answer, a subscriber, receiver or binding, or an unresolved provider usage block refuses the fold, said once and planned again each minute; a claim that resolved a record the sweep has since folded is granted to the one that stays; the same event carries a record an older Codex MCP server registered for the detached app-server, folded into the session it serves); `session_relaunched` (an ended session's record was made managed again, with its conversation id, before the daemon started its tool with `--resume`).
+- Projects and the board: `project_paused` (the person told a project's agents to hold, with the reason), `project_resumed`; `task_created`, `task_pulled` (with the `task:<id>` lease the pull took and, for a takeover of a card whose holder's lease lapsed, `from` whom), `task_moved`, `task_updated` and `task_archived` (each with the card, its project and who).
+- Coordinator transfer: `daemon_transfer_offered`, `daemon_transfer_readdressed` (the offer now names the successor process that was actually started), `daemon_transfer_accepted`, `daemon_transfer_aborted`.
+- Usage: `usage_recorded` and `usage_reconciled` (above).
 
-**Token usage by agent, model and provider** (requested September 15;
-the bounded log reader is merged in #165/#167; initial collector/protocol/CLI/MCP/UI are merged in #194 with bounded acceptance; the remaining engineering and activation above stay open). The initial adapters read local Codex rollouts
-and Claude Code transcripts. These are versioned runtime formats: an adapter
-must identify a supported usage record and model context, rather than assume
-every turn or runtime reports every counter. Missing or unsupported counters
-are unknown, never zero. The design:
+Error codes `Timeout` (`ask`), `Deadlock` (`claim --wait`) and `Transferring` (any mutating request while the daemon has offered coordination to a successor: nothing was applied, retry against the daemon that answers next) are shipped.
 
-- **Collection outside the state lock.** A bounded host collector reads complete
-  JSONL records from the configured runtime directories, including unregistered
-  sessions, with per-file byte/time budgets and persistent scan progress. Live
-  sessions get priority; a bounded rotating scan also catches new files, finished
-  sessions and late usage records. The same parsers serve the standalone CLI.
-  Reading transcript files does not mean retaining their message text.
-  Each collection pass records a durable discovery generation and a fixed
-  per-file generation identity, captured-prefix validation data and a high-water
-  byte offset at the end of the last complete JSONL record
-  within the captured file length. A trailing partial record remains beyond
-  that boundary: retain its start offset, reread it when completed, and expose
-  the pending tail in collection coverage. Never advance a cursor over an
-  incomplete record or claim coverage of its unparsed bytes. Its completion
-  watermark advances only after
-  every discovered file in that generation is scanned to that offset and its
-  samples/cursor commit. Files appearing or growing later belong to a later
-  generation; scan failures and unsupported formats remain explicit gaps.
-  A bounded or unfinished directory enumeration cannot claim that no more files
-  exist. Empty aggregates during discovery do not prove zero usage.
-  A path alone is not a generation identity. Each adapter must validate the same
-  opened file generation and captured prefix before committing snapshot coverage;
-  truncation, replacement, rotation or an in-place rewrite invalidates that
-  file's coverage even if its path and length are unchanged. Validation reads
-  share the scan budget. Changed content becomes an explicit source gap or a new
-  generation; it cannot complete the earlier snapshot.
-- **Explicit token semantics.** A normalized sample keeps `runtime`,
-  `provider?`, `model?`, `session_id`, timestamp and separate optional counters
-  for total input, cache-read input, cache-write input, total output and reasoning
-  output. Each adapter documents whether its raw counters overlap: a reported
-  cache hit is not added again to an inclusive input total, and reasoning is not
-  added again to an inclusive output total. Cache reads and cache writes remain
-  separate. Cumulative snapshots become deltas against a durable baseline;
-  per-response usage and cumulative usage are never both counted. A decrease
-  starts a new counter epoch: store the reset value as the baseline, emit no
-  negative delta and mark that interval as a gap. Subsequent increases in that
-  epoch count normally. A newly discovered complete session may use a zero
-  baseline only when its adapter proves the snapshot covers that session from
-  its start; otherwise the first snapshot establishes a baseline with unknown
-  prior coverage. Persist that initial unknown interval as a source gap from
-  session start (or unknown earlier history) through the baseline timestamp.
-  A query overlapping it reports partial coverage when later contributions are
-  known, otherwise unknown; it cannot report complete coverage merely because
-  every collected delta has a counter. Ranges wholly after the baseline may be
-  complete if all other coverage conditions hold. Reset/rewrite identities must
-  distinguish new epochs from replay. Each supported format needs restart,
-  truncation, rotation, partial-tail completion and rewrite
-  fixtures. Unsupported fields stay unknown, with coverage beside aggregates.
-- **Restart-safe ingestion.** The collector returns samples with stable source
-  identities plus the proposed next file cursor. One daemon transaction accepts
-  previously unseen samples, updates aggregates and durable cursor/baseline
-  state, and appends `usage_recorded`; only then may in-memory progress move.
-  Retries, rotation, truncation, copied logs and partial final lines must not
-  duplicate counts or skip complete records. Provider event/message identifiers
-  are used when available; each fallback identity and rewrite rule needs a
-  format-specific regression fixture before that format is supported. A replay
-  cursor survives aggregate retention so rereading old files cannot resurrect
-  expired usage. Standalone scans deduplicate within their selected input set
-  and do not alter daemon cursors.
-- **Historical attribution.** Match by runtime plus provider session, following
-  registered identity aliases. Store the resulting `agent_id?` and `project_id?`
-  on the usage bucket at ingestion; deleting, moving or retiring a current agent
-  cannot move its historical usage into another project. A session with several
-  registrations (resumed after its agent ended) attributes each sample to the
-  registration current at the sample's time. Unmatched or ambiguous
-  sessions remain unattributed, with unknown project, until an explicit
-  idempotent reconciliation has enough evidence. Reconciliation uses the
-  retained sample identities and their bucket contributions, not a second
-  ingestion: in one transaction it subtracts each still-unattributed contribution
-  from its original hourly bucket, merges it into the resolved agent/project
-  bucket, updates its attribution and emits the reconciliation event. Counter
-  sums and known/sample counts move together; no separate agent/project totals
-  may lag this transaction. Repeating the operation is a no-op, and re-ingestion
-  uses the same dedupe identity. Preserve unresolved contributions through the
-  usage retention window; expired contributions cannot recreate totals. Runtime
-  names are not billing companies: provider comes from reliable runtime metadata or explicit user
-  configuration, otherwise it is unknown. Model names are retained as reported.
-- **Bounded aggregation.** Rows are keyed by agent/project attribution, runtime,
-  provider, model and UTC hour, with separate sums and coverage counts for every
-  counter. Dedupe/cursor state and bucket changes commit together. Hour buckets
-  follow the configured retention window; the UI says *Available history*, not
-  an unqualified all-time total. No prompt, response or tool-result text is
-  stored in the usage tables.
-- **Reading it.** `usage` groups by agent (the default), model, provider, project
-  or hour. The proposed CLI is `agentdocker usage [--project <id>]
-  [--agent <id>] [--since <RFC3339|duration>] [--until <RFC3339>]
-  [--by agent|model|provider|project|hour]`. A duration is a positive decimal
-  integer followed by one lowercase unit (`s`, `m`, `h`, `d`), such as `24h`;
-  fractions, signs, whitespace, compound units, zero and overflow are rejected.
-  Resolve it backward from the query's captured UTC `as_of`, before validating
-  or rounding the bounds. Omitted `since` means 24 hours before `as_of`;
-  omitted `until` means `as_of`. Reversed or
-  empty requested ranges and a `since` later than `as_of` are rejected before
-  rounding. Future `until` is clamped to `as_of`. Since only hourly aggregates
-  are retained, `since` rounds down and `until` rounds up to UTC hours; aligned
-  bounds stay unchanged. Clamp the lower bound to the configured oldest retained
-  hour. If the requested history is wholly expired, return no rows and equal
-  effective bounds at that retention boundary. Otherwise buckets use the
-  half-open interval `[effective_since, effective_until)`. An upper bound rounded
-  past `as_of` includes only observed data, never predicted future usage.
-  Responses and the UI show the effective bounds, requested-history truncation
-  and whether the current hour is included. Retention loss and an incomplete
-  current hour are separate from missing parser fields or ingestion gaps.
-  The Usage screen shows day/week/available-history totals, per-agent model and
-  provider totals, project filters and explicit unknown/partial coverage. It
-  shows tokens; monetary cost is outside this initial proposal.
-- **Proposed response schema.** `usage` returns `rows` (array), `by` (one of the
-  grouping values above), `as_of`, `effective_since`, `effective_until` (UTC
-  RFC3339 strings), and `coverage` (object). `coverage` contains
-  `retained_since` (UTC hour), `history_truncated`, `future_until_clamped` and
-  `includes_current_hour` (booleans), plus `source_gaps` (a nonnegative integer
-  count of known unreadable/unsupported/reset intervals in the requested scope).
-  Optional `coverage.tracking` contains `logical_bytes`, `capacity_bytes` and
-  `capacity_gap` (whether this range overlaps capacity-refused accounting).
-  Absence on an older daemon does not establish bounded tracking.
-  `coverage.collection` contains `enabled` (boolean or null for an older report,
-  read from current configuration), `state` (`unknown`, `scanning`, `caught_up`),
-  `discovery_generation` (u64 or null), `snapshot_at` and `completed_at` (UTC
-  timestamps or null), `discovery_complete` (boolean), `pending_files` (u64 or
-  null while enumeration is incomplete), `pending_tail_files` (nonnegative
-  integer, null while discovery is incomplete), and `scope` (configured runtime
-  roots and supported format versions). `caught_up` requires completed discovery,
-  committed scans through every fixed high-water offset in that generation or
-  an explicit source gap for each terminal failure, and
-  `pending_tail_files: 0`. A captured partial tail keeps collection `scanning`
-  until it completes or becomes an explicit source gap;
-  it is coverage of that declared snapshot/scope, not of logs that appeared
-  later or of all provider accounts. Missing/incomplete discovery is `unknown`;
-  complete discovery with outstanding known files is `scanning`. A query outside
-  that covered scope/range cannot borrow a global completion watermark. A known
-  source gap remains visible even after the scan finishes. Every row has `key`
-  (string, or null for unknown/unattributed; UTC hour string when `by=hour`),
-  `samples` (nonnegative integer contribution count), and `counters` (object with
-  exactly `input_tokens`, `cache_read_input_tokens`, `cache_write_input_tokens`,
-  `output_tokens`, `reasoning_output_tokens`). Each counter is
-  `{sum: u64|null, known_samples: u64, coverage: "complete"|"partial"|"unknown"}`.
-  `sum` is tokens from known contributions only; null means none are known,
-  whereas a reported zero remains zero. `known_samples` cannot exceed `samples`;
-  counter coverage is unknown when none report it, partial when some report it
-  or relevant collection is unfinished, and complete only when all contributions
-  report it and collection for that row's scope/range is caught up without source
-  gaps. Unknown discovery prevents a complete counter even if every currently
-  known sample has that field. An empty query returns `rows: []`, not a fabricated
-  zero row, with collection status still present. Complete snapshot coverage does
-  not override retention truncation, new data after the snapshot, or the current
-  hour's partial duration. CLI and desktop display that collection watermark
-  beside totals so an ongoing scan cannot appear finished.
-  The separate top-level `overhead` object uses the same project/agent filters
-  and effective time range, independently of `by`: `injected_bytes` (u64 or null,
-  UTF-8 bytes recorded as emitted by AgentDocker), `known_events` (u64),
-  `coverage` (`complete`, `partial`, `unknown` for instrumentation of the selected
-  scope), and `estimated_tokens` (null when unestimated; otherwise
-  `{value: u64, algorithm: string, version: string, parameters: object}`).
-  Null bytes mean unavailable instrumentation, not zero. Each estimate identifies
-  its conversion method and parameters; it does not measure billed tokens or
-  prove the provider consumed emitted bytes. The Usage screen labels these as
-  separate emitted-byte counts and estimated tokens, never a provider-row sum.
-- **AgentDocker overhead.** Record injected hook/MCP/message byte counts apart
-  from provider-reported usage, with any token conversion labelled as an
-  estimate. These estimates are neither additional provider tokens nor a precise
-  measure of billed overhead; never add them to the provider total.
-
-Usage discovery persists its directory frontier and a manifest of at most 10,000
-captured files. Each page, its coverage and its event commit together; consuming
-a file removes its manifest entry in the same transaction as its samples and
-file cursor. A daemon restart resumes the same generation and snapshot watermark,
-including any remaining files, rather than starting directory discovery again.
-Changed configured roots or malformed restart metadata (including invalid saved
-counts) start a new generation and atomically clear the stale manifest. Actual
-SQLite read failures still fence storage. Terminal capture/scan gaps do not count
-as pending jobs; gaps independently keep token coverage partial even when the
-collector is caught up. A saved frontier must match the
-configured root order and runtime, and its remaining roots must be the matching
-suffix; a rewritten frontier cannot select unrelated directories. On restart, open directories
-replay their saved entry-name/type fingerprints in bounded passes, ancestors
-first. A changed prefix, redirected directory or unreadable frontier leaves
-coverage incomplete; it never authorizes skipping unverified entries. Directory
-ordering need not be stable: a different order conservatively refuses that
-snapshot, and the next generation retries. Completed file-prefix proofs remain
-ephemeral and are reverified after restart. Only paths, accounting metadata and
-fingerprints persist, never transcript contents. Discovery keeps its existing
-16-root, 100,000-entry, 32-depth and 512-entry/25 ms cooperative page bounds;
-replaying a large directory takes time proportional to its saved entry count
-and can take seconds after each restart (up to roughly 25 seconds for 100,000
-entries with the collector's inter-page waits, excluding slower filesystem I/O). The
-pending-file lookup uses an indexed priority order; completion clears the frontier
-and remaining manifest state. Long-term sample/baseline retention is separate.
-
-The collector now holds an ephemeral reader session that verifies a saved prefix
-in bounded passes (up to 4 MiB / 100 ms each) before parsing. A scan rechecks its
-new bounded suffix and generation before committing; a restart discards the
-proof and rehashes the saved prefix. An appended generation of the same file may
-retain parser state only after all accepted prefix bytes match. Rewrites,
-replacement and truncation keep coverage incomplete and require an explicit
-gap/replay. Growth during verification instead invalidates the current proposal:
-the collector atomically refreshes that pending job's captured high-water mark
-with the existing `usage_recorded` event, retaining its accepted cursor and
-pending count. It visits each job at most once per pass, allowing other files to
-finish, and retries the full old-prefix proof on the next pass or after restart.
-Growth alone proves neither corruption nor append-only content; a rewrite that
-also grows must still fail the new prefix proof. Repeated growth stays pending,
-never caught up or a permanent source gap solely because its snapshot advanced.
-No discovery schema or transcript storage changes are required. A version-3, version-4, version-5 or version-6 parser cursor first verifies its old
-prefix, then replays from zero using version 7 without inventing a source-change
-gap. Unknown cursor versions and failed prefix verification still record gaps. No transcript bytes enter durable cursors; only
-one incomplete verification record is buffered in memory, at most 16 MiB.
-Collector parsing batches stop after 128 complete source records, including
-ignored records and gaps. Their samples and cursor still commit atomically under
-the coordination mutex, with a 100 ms off-lock wait between batches. This limits
-accounting work per transaction; it is not a hard wall-clock I/O guarantee. The
-standalone reader defaults to 4,096 records and accepts smaller validated budgets.
-The standalone reader API retains its earlier 16 MiB whole-prefix limit.
-The 22+ MiB reader regression and the updated daemon partial-tail/restart trial
-passed in the 29-test host/daemon usage campaign. The later real-binary
-restart/append/copy trial passed; sustained resource acceptance remains open. The CLI uses `--agent` (with `--as` accepted as an
-alias) as an explicit filter; the calling agent identity does not silently
-filter an otherwise project-wide report.
-
-The private real-daemon trial on `a238d4f` processed a 22+ MiB Claude fixture
-but found that replaying an identical Codex snapshot with different prefix
-proof falsely reported an accounting conflict. Sample fingerprints now exclude
-that contextual proof; the first accepted observation still determines baseline
-accounting, and replay cannot retroactively manufacture missing history. The
-restart regression covers both proof directions, earlier draft fingerprints and
-a genuine changed-counter conflict. Its targeted test, the corrected
-real-binary trial and the 1,219-Rust-test combined gate passed.
-
-The frozen 602 MB Codex corpus exposed a quarantine error: an oversized record
-that received only the remainder of a batch was marked as unable to fit that
-entire budget. At the maximum budget this permanently stalled collection.
-A completed prefix now returns ordinary budget exhaustion so the next record
-gets one full bounded pass; only failure with that full allowance quarantines.
-Complete oversized non-accounting JSON envelopes can be skipped without losing
-Codex session metadata: the whole JSON structure is validated while unknown
-fields are discarded. This includes observed `response_item`, `compacted` and
-`event_msg/item_completed` bodies; accounting and unknown event types are not
-silently skipped. Malformed or accounting envelopes still create gaps.
-Cursor format 3 causes old cursors to replay through source-ID deduplication,
-revisiting both old quarantine decisions and previously unsupported Claude
-versions. The original 152-second failed corpus trial is retained privately.
-Thirty-two focused reader/store/collector regressions pass after integration
-with #191's final review fixes. Clean runtime `e6d95f8` then passed the full gate
-(1,225 Rust tests, seven skipped; 94 Python checks, one skipped), the repeated
-runtime/native fixtures and a frozen 692 MB two-session corpus. Collection
-finished in 13.8 seconds; all 4,703 unique Claude responses matched their counters,
-and one Codex counter-reset/history gap remained explicit. The existing integrated
-verification record retains the source, binaries, failed trials and scope limits.
-
-Actual-session metadata follow-up found equal Claude response counters repeated
-under different content-record timestamps (1,916 repeated message IDs), and the
-installed provider now writes versions 2.1.271–2.1.276 with the same supported
-counter shape. The adapter accepts those observed patch versions while keeping
-its original accounting-family identity stable. Response replay ignores fragment
-observation times and keeps the first accepted hour, including earlier draft
-fingerprints; genuinely changed counters still report a gap. The validation
-above covers these format, replay and cursor changes. Final source review,
-installed/provider-billing acceptance and sustained resource trials remain open.
-Only accounting metadata was retained; temporary raw transcript copies and the
-private trial databases were removed.
-
-Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278,
-2.1.280 and 2.1.287 transcripts, Codex 0.155.1 rollouts and observed Codex 0.160.0
-loopback rollouts extend that explicit version coverage. Codex 0.160.0 retains
-cumulative counters, optional cache/reasoning fields and stable replay identities;
-its sample format is named separately. Top-level Claude counters remain authoritative: nested iteration/cache
-details are not added again, zero counters stay zero and absent reasoning remains
-unknown. Codex still reports cumulative snapshots. Other versions follow the
-compatibility rule below. Accounting-only observations also cover historical Claude
-2.1.246, 2.1.247, 2.1.248, 2.1.251, 2.1.259, 2.1.260, 2.1.261, 2.1.263 and
-2.1.267. These are explicit supported patches, not an accepted version range.
-Their response semantics and sample format identity match the existing family;
-nested cache details do not contribute a second time. Parser cursor v7 verifies
-and replays v3/v4/v5/v6 scans with the same stable
-source identities, allowing newly supported records to be collected without
-recounting earlier accepted samples. Existing historical gaps remain visible;
-this change does not claim their reconciliation or provider-billing accuracy.
-
-A release after the established compatibility floor, of the same major version,
-is counted as it reports: Claude Code after 2.1.280 and Codex after 0.160.0 (read with 0.160.0's
-semantics and format). Both ship every few days, and an exact list left a person
-on the current release with no usage at all — this Mac's Claude Code 2.1.292
-sessions recorded 30,778 gaps and no samples. Each counter is still checked field
-by field, and the coverage lists `claude-transcript-after-2.1.280-unchecked-v1`
-and `codex-rollout-after-0.160.0-unchecked-v1` so a report says unchecked releases
-may be in it. An older unchecked release, another major version or a pre-release
-stays refused. Parser cursor v7 replays v3–v6 scans, which skipped those releases;
-replay deduplicates sources already accepted.
-
-Accounting forward compatibility retains the established floors (Codex 0.160.0
-and Claude Code 2.1.280) when another release gains checked fixtures. Adding
-Claude Code 2.1.287 fixtures therefore keeps 2.1.281–2.1.286 readable. Cursor
-version 7 and verified replay of versions 3–6 are unchanged by this integration;
-existing coverage gaps and conflicting response counters are not erased.
-
-Collection configuration is separate from scan progress: enabling collection or
-changing roots can leave a scan waiting to start, without meaning collection is
-off. The CLI and desktop use the explicit optional `enabled` field, and preserve
-unknown for older reports. A disabled collector retains existing totals.
-
-Collector follow-up preserves the committed retention cutoff when configuration
-expands: discarded history stays explicitly truncated, and newly found older
-logs do not make that interval appear restored. Attribution reconciliation saves
-its scheduling cursor, moved contributions and event in one transaction, so any
-failure leaves all three unchanged. The sixteen-root/absolute-path limit applies
-after environment/default roots are expanded as well as to explicit settings.
-
-The following dated reader milestones preserve their original acceptance scope;
-the integrated collector/presentation status is recorded above.
-
-Initial source work adds pure optional counters, reset-aware deltas and strict
-hourly query bounds and checked aggregates that move sums and coverage together,
-plus local format normalization for Codex 0.153.4/0.154.0 and
-Claude Code 2.1.268/2.1.270. These parsers emit metadata and counters only; they do
-not yet scan, persist or display usage. Claude content-record UUIDs do not count
-as distinct responses: dedupe uses the provider message ID with runtime/session.
-Persistable cumulative baselines keep initial unknown history and reset intervals
-as explicit gaps; replay and out-of-order snapshots cannot add a second delta.
-Missing fields stay unknown. Unsupported versions or malformed counters report
-a gap rather than zero. Restored aggregate state rejects impossible known/sample
-counts or nonzero sums without known contributions. Ten focused core/host tests
-pass, covering replay/restart, counter resets, initial unknown history, aggregate
-moves and overflow, stored coverage, range bounds, supported local formats,
-cache/reasoning overlap and missing fields. Source `63f1dd3` also passed the full
-1,026-Rust/77-Python gate (seven Rust tests skipped), strict lint, packaging and
-release compilation. File scanning and ingestion acceptance remain separate.
-
-The next source step adds `usage::reader`, a bounded per-file JSONL reader.
-A batch proposes samples, explicit malformed/unsupported-record gaps and a
-serializable parser cursor; it never commits progress itself. The cursor holds
-native file identity, length and change metadata, a complete-record prefix digest
-and accounting context, never transcript text. Reads reject final symlinks and
-special files, cap byte reads (including read-ahead), record size and result count,
-and check a cooperative time deadline between bounded reads. A trailing partial
-record does not advance the offset. Both the open object and current path are
-checked after reading, and the caller must validate again before committing.
-
-The earlier cursor format was version 2. An oversized record whose newline cannot
-fit in the bounded batch returns `Stop::Quarantined`, retaining only verified
-complete records before it and recording the attempted byte budget in the
-cursor. Commit those samples, gaps and the quarantined cursor together; the
-unfinished record is not covered. Reopening that cursor at the same or a smaller
-budget validates the prefix and then returns `Error::Oversized`, without
-reparsing accepted records or retrying the oversized record.
-A larger bounded budget may recover from the quarantined offset without replaying
-the accepted prefix; a changed file generation requires the existing new-scan
-path. Collector policy should make at most one escalation to the 16 MiB maximum
-and then keep the source quarantined until it changes or the person intervenes.
-I/O, generation and validation errors still return no proposed progress.
-This explicit partial-result contract is distinct from ordinary budget stopping;
-the future ingestion transaction must preserve its quarantine, rather than retry
-it as ordinary `Stop::Budget`. Runtime `344516e` passed all 13 reader
-regressions and the combined `be3086d` full gate (1,142 Rust tests, seven
-skipped; 92 Python checks, one Linux-only skip). The earlier quarantine
-fixture failed on Linux and Windows because its budget omitted the valid
-prefix length; that failure and the correction remain in the
-[integrated evidence](verification/INDEX.md). Final
-platform CI was pending at that checkpoint. PR #167 subsequently merged as
-`34ac70a` on September 17 and is included in the recorded installed `d14610b7`
-source. The parser budget also reserves the restored boundary byte, ensuring
-the smallest accepted resumed budget can identify an oversized record.
-
-September 17 Windows CI exposed a same-length, restored-mtime rewrite that
-matched the captured change metadata (PR #167, job `105082608981`). Metadata
-alone therefore cannot establish unchanged content. The follow-up rehashes the
-complete-record prefix before restoring parser state and before returning a
-proposal; `Cursor::validate` repeats that check immediately before commit. Each
-rehash is limited to 16 MiB and a cooperative one-second deadline, with byte
-counts reported separately as `Batch::validation_bytes_read` (at most 32 MiB
-across the two checks). Exhaustion returns `ValidationIncomplete`, without a
-new cursor or coverage claim. Larger-prefix incremental validation remains
-open; a caller must not silently trust metadata to bypass this refusal. These
-are bounded observations, not a filesystem snapshot or a lock against writes
-after validation. The original failed Windows log is retained at
-`/private/tmp/agentdocker-167-failure-105082608981.log`. Follow-up runtime
-`d643275` passed all ten focused reader tests plus strict host/daemon Clippy on
-combined validation source `c833fb0`; the same campaign passed the deterministic
-terminal-fence regression. Windows run `35185667187` on head `63ea3ca` passed
-238 tests (two skipped), including the original restored-mtime failure and the
-new forced-equal-metadata and validation-budget regressions. Logs are
-`/private/tmp/agentdocker-prefix-fence-targeted1-20260917.log` and
-`/private/tmp/agentdocker-167-windows-prefix-success-20260917.log`. The later
-PR #167 merge closes that source-integration requirement; larger-prefix validation
-and collector acceptance below remain open.
-
-This primitive conservatively rejects any changed generation, including append,
-so a caller must retain the old cursor, record the generation gap and start a
-new scan with source-ID deduplication. It does not yet reuse validated prefixes
-across growing-file generations. That optimization, bounded directory discovery,
-atomic ingestion and collection watermarks remain open; file completion alone
-never means collection is caught up. Source `a989ebf` passed seven focused reader
-tests and the full 1,033-Rust/77-Python gate (seven Rust tests skipped), strict
-lint, packaging and release compilation. Fixtures cover restart/replay, parser
-context across batches, malformed context, partial-tail completion, copied logs,
-replacement, truncation, same-length rewrites with restored modification times,
-special files, result limits and byte bounds. Initial fixture compilation and lint
-failures are retained at `/private/tmp/agentdocker-usage-reader-targeted1-2026-09-16.log`
-and `/private/tmp/agentdocker-usage-reader-gate1-2026-09-16.log`; passing logs are
-`/private/tmp/agentdocker-usage-reader-targeted2-2026-09-16.log` and
-`/private/tmp/agentdocker-usage-reader-gate2-2026-09-16.log`. These are local host
-fixtures, not an actual runtime collection or installed Usage-screen trial.
-
-Counter normalization follows [OpenAI usage breakdowns](https://developers.openai.com/api/reference/cli/resources/responses/methods/retrieve)
-and [Claude cache input semantics](https://platform.claude.com/docs/en/build-with-claude/prompt-caching):
-Codex input/output totals include their cache/reasoning components; Claude total
-input combines uncached input, cache reads and cache creation once. The observed
-local rollout/transcript formats, rather than API compatibility alone, determine
-which adapter versions are supported.
-
-Completion requires parser fixtures for supported versions and missing fields;
-crash/replay/rotation/truncation and partial-line trials; cache/reasoning overlap
-checks; unfinished/failed discovery and bounded scans with growing files;
-unregistered and retired-session attribution; hour-boundary/retention
-checks; and actual CLI/desktop acceptance showing coverage and effective ranges.
-The original proposal does not itself establish completion; the current source
-and bounded acceptance are recorded above, with remaining work kept open.
-
-Registration resumption refuses a fresh record once it has input-delivery
-evidence: a receiver may already have offered its head, and merging older
-backlog would reorder that offer. A pre-initialization fold is protected by
-Claude channel locks for both the agent ID and the provider PID/birth generation;
-changing to a canonical agent ID cannot admit a duplicate adapter. Hooks check
-that process lock as well. Actual provider startup ordering remains acceptance
-work; refusal retains both queues and is not reported as a completed handover.
-
-Shipped events include `policy_updated` (effective rules or load diagnostic changed), `policy_denied` (what was asked and which rule refused it), `agent_restarted` (a managed agent started again by its policy, with the attempt number), `contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`, `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended`, `journal_read`, `journal_pruned` (a project's entries below a sequence were deleted, on request or by retention) and `checkpoints_pruned`, `answer_routed` (which way an answer reached its asker: the waiting `ask` or the queue), `conversation_read` (a reader's cursor moved) and `messages_pruned` (the archive dropped rows by retention or the cap), and the input binding events `input_bound` (an external controller became, or resumed being, the sole consumer of an agent's queued input), `input_unbound`, `input_controller_ended` (the bound controller, or a process launched to replace it, is gone), `input_controller_launched` (the daemon started the binding's launch descriptor, with the attempt number), `input_controller_launch_failed`, `input_restarts_exhausted` (the episode's launches are used up), `agent_renamed` (a person gave a live agent a name; the id is unchanged), `input_restarts_reset` (a person asked for the controller to be started again) and `input_resumed` (a provider session that came back as a new process was joined to the record holding its thread's queue; the new record's id is an alias of it), `session_resumed` (the same for a session without an input binding, matched by its `session_id` at registration: the ended record that finished last took up the new process, with every retired id — the fresh one and any earlier ended life — the session and the pid), `session_duplicates_folded` (live records of one provider session in one process — the same birth, runtime, project and `session_id`, which a hook registering from a moved shell could leave before registration stopped comparing the directory — folded by the liveness sweep into the one that stays exactly as `session_resumed` folds, with the retired ids, the session and the pid; stale notices owed to a retired record are owed to the one that stays, and when a receiver or subscriber on the kept record may have offered its queue's head the retired records' messages queue behind that queue, taking new sequence numbers, rather than in sequence order; a retired record that holds a lease, waits for one, has an `ask` blocked on an answer, a subscriber, receiver or binding, or an unresolved provider usage block refuses the fold, said once and planned again each minute; a claim that resolved a record the sweep has since folded is granted to the one that stays; the same event carries a record an older Codex MCP server registered for the detached app-server, folded into the session it serves), `session_relaunched` (an ended session's record was made managed again, with its conversation id, before the daemon started its tool with `--resume`), `project_paused` (the person told a project's agents to hold, with the reason) and `project_resumed`, the board events `task_created`, `task_pulled` (with the `task:<id>` lease the pull took and, for a takeover of a card whose holder's lease lapsed, `from` whom), `task_moved`, `task_updated` and `task_archived` (each with the card, its project and who), and the coordinator transfer events `daemon_transfer_offered`, `daemon_transfer_readdressed` (the offer now names the successor process that was actually started), `daemon_transfer_accepted` and `daemon_transfer_aborted`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
-
-`lease_waiting`, `lease_wait_ended` and `lease_deadlock` are shipped with row 13. Error codes `Timeout` (`ask`), `Deadlock` (`claim --wait`) and `Transferring` (any mutating request while the daemon has offered coordination to a successor: nothing was applied, retry against the daemon that answers next) are shipped.
-
-Attached terminal input and resize, including an initial requested size, take
-transfer admission through their enqueue operation. Fenced frames are refused
-without applying them, using the client's advertised handover error capability;
-read-only terminal output keeps flowing. This does not promise automatic replay
-of typed input after a refused or uncertain write.
+Attached terminal input and resize, including an initial requested size, take transfer admission through their enqueue operation. Fenced frames are refused without applying them, using the client's advertised handover error capability; read-only terminal output keeps flowing. This does not promise automatic replay of typed input after a refused or uncertain write.
 
 ## Open questions
 
@@ -1736,331 +1250,68 @@ of typed input after a refused or uncertain write.
 - Whether `from` should be verified for *unsandboxed* agents too. Per-agent tokens (Phase 4) settle it for sandboxed runtimes, where it matters; requiring them from local shells and hooks would cost ergonomics for little, so they stay optional until there is a reason.
 - Read-set capacity and eviction: 1,000 marks per agent is a guess; measure a long Claude Code session before tuning.
 
-What exists is described above; the contracts and hardening decisions behind it — delivery boundaries, content observations, durable recovery, the verification workstream, and the journal's event barrier — are recorded in IMPLEMENTATION-NOTES.md (in git history).
+What exists is described above; the contracts and hardening decisions behind it — delivery boundaries, content observations, durable recovery, the verification workstream, and the journal's event barrier — are recorded in IMPLEMENTATION-NOTES.md (in git history). The subsections below are the contracts for input adapters, desktop distribution and reviews that have no section of their own above; what is still open for each is in [REMAINING-WORK.md](REMAINING-WORK.md).
 
 Configuration references: [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli), [Codex state locations and CODEX_HOME](https://learn.chatgpt.com/docs/config-file/config-advanced), [Claude Desktop local MCP configuration](https://py.sdk.modelcontextprotocol.io/get-started/real-host/). Setup respects an explicit CODEX_HOME for the calling host; inventory uses the daemon's configuration environment. Model and provider details are not inferred from an installed app or process name.
 
-The desktop exposes **Dismiss** on received messages. It acknowledges exact human-inbox IDs only after a click, disables duplicate submissions while waiting, retains messages on failure, and removes them after successful acknowledgement. **Dismiss shown** batches only the received messages in the current transcript window; older unseen messages and new arrivals remain. Pending questions appear once and retain their answer action; dismissal does not submit or erase drafts. Inbox refreshes remain non-destructive.
+The desktop's **Dismiss** on a received message acknowledges exact human-inbox IDs only after a click, disables duplicate submissions while waiting, retains messages on failure and removes them after successful acknowledgement. **Dismiss shown** batches only the received messages in the current transcript window; older unseen messages and new arrivals remain. Pending questions appear once and keep their answer action; dismissal does not submit or erase drafts, and inbox refreshes are non-destructive.
 
 ### Opt-in Claude channel input
 
-`agentdocker mcp --runtime claude-code --claude-channel` requires an explicitly selected parent input mode and a freshly enabled Claude channel. It offers one retained inbox envelope at a time, with stable sender/message metadata, and advances only after an explicit model receipt removes that ID. Writes are unconfirmed; reconnect replays unacknowledged IDs. Eight ordinary RPC slots and a separate bounded receipt/control path prevent long waits from starving acknowledgements. A held private ownership lock prevents duplicate adapters and suppresses competing hook inbox delivery. Parent-session opt-in preserves that suppression across disconnects; activity/lease hooks still run. Dedicated bounded stdio workers avoid blocking Tokio shutdown on pipes. The [adapter guide](CLAUDE-CHANNEL-INPUT.md) records actual Claude idle/busy/mixed-input evidence and the remaining acceptance.
+`agentdocker mcp --runtime claude-code --claude-channel` requires an explicitly selected parent input mode and a freshly enabled Claude channel. It offers one retained inbox envelope at a time, with stable sender/message metadata, and advances only after an explicit model receipt removes that ID. One exception, bounded to the startup window: while no receipt has yet been seen on the channel, an offer without one after thirty seconds is written a second time, once, under the same id with `repeat: true` in its metadata, because the first offer of a session can be written before Claude registers its handler; after the first receipt nothing is ever offered twice. Writes are unconfirmed; reconnect replays unacknowledged IDs. Eight ordinary RPC slots and a separate bounded receipt/control path keep long waits from starving acknowledgements. A held private ownership lock prevents duplicate adapters and suppresses competing hook inbox delivery; parent-session opt-in preserves that suppression across disconnects, while activity/lease hooks still run. Dedicated bounded stdio workers keep Tokio shutdown from blocking on pipes. The adapter's limits are in [CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md).
 
 ### Downloaded desktop updates
 
-`agentdocker desktop update` reads the published feed, verifies archive bytes and
-SHA-256, audits entries before extraction, and inspects the extracted payload
-through the existing installer. It requires the version/source/schema/target
-described by the feed and a version newer than the managed installation. Applying
-pins both candidate and current release identities and never restarts the daemon.
-Settings exposes check, download/preview and apply through the same CLI path.
-The release workflow (`.github/workflows/release.yml`, set up as [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md) says) produces installable archives and a
-verified feed for all four native targets; stable Mac assets require Developer ID
-signing and notarization before publication.
+`agentdocker desktop update` reads the published feed, verifies archive bytes and SHA-256, audits entries before extraction, and inspects the extracted payload through the existing installer. It requires the version/source/schema/target the feed describes and a version newer than the managed installation. Applying pins both candidate and current release identities and never restarts the daemon. Settings exposes check, download/preview and apply through the same CLI path. The release workflow (`.github/workflows/release.yml`, set up as [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md) says) produces installable archives and a verified feed for the four native Mac/Linux targets; stable Mac assets require Developer ID signing and notarization before publication.
 
+Windows preview publication emits `updates-preview-windows.json` only after the exact archive passes native installation, maintenance, loaded-launcher removal and installed Task Scheduler lifecycle checks, with source/binary hashes verified and fixtures cleaned. Its fixed `channel-preview-windows` release has an independent ownership marker and a monotonic promotion record; a failed upload can be repaired only with the recorded bytes/version. Older releases without a Windows installer feed leave the channel unchanged, the four-target feed is unchanged for older clients, and no unsigned Windows stable feed is published: default Windows checks use the preview feed, and `updates-windows.json` is reserved for a stable distribution.
+
+On Windows, the per-user desktop store is `%LOCALAPPDATA%/AgentDocker/desktop` (or below an explicit trial prefix). Private `activation.json` atomically records the current and previous immutable payloads. Receipt-verified executable copies in `bin` select and lifetime-pin the current release without symlinks; their process wrapper preserves native provider parent identity only after kernel-image, receipt and process-birth checks, and provider/service registrations keep those stable paths. Install and rollback require native launcher contract 2, lifetime pins, explicit preview consent and compatible stored state. Update archives admit only the exact seven-file Windows ZIP layout, bounded expansion and a verified feed hash/source/schema; Windows feeds are preview-only, and activation leaves existing processes running. Maintenance holds the install lock and exclusive per-version pins before retiring verified unused payloads; stopped service actions retain explicit version references, and services on stable launchers do not prevent pruning unrelated versions. Uninstall refuses service references, atomically deactivates and moves only receipt-verified bootstrap names into private `retired-launchers/<uuid>` directories with a handle-verified rename, because a loaded image cannot be deleted in place on Windows: it finishes there, and ordinary deletion removes it once closed, during the next changed activation, prune or uninstall. Each retirement keeps the original hash receipt and preserves unexpected or changed contents; a new retirement refuses before deactivation if it would exceed eight directories or 256 MiB. Partial cleanup retains an inactive record and can be resumed without removing provider settings or pinned releases. See [the Windows port](WINDOWS-PORT.md).
+
+The Windows connector task supervises failed native exits with a two-second backoff and at most three retries; a run lasting ten minutes resets that budget, and a zero exit stays stopped. Scheduler-level failure retries are disabled so they cannot multiply the local budget. Each child verifies the exact owned action, nonce and current/previous receipt before serving; graceful stop targets the running child generation and then retires the owned task. The separate daemon service is unaffected.
+
+Setup receipt staging uses exclusive private-state creation: the current user owns the file even in an elevated Windows process, and an existing path is never reused. Setup receipts and configuration replacements flush their staged file before publication through `host::files::publish_staged` (Unix renames and syncs the parent directory; Windows requests a same-directory write-through move). Windows setup does not open a directory as a regular file after publication or undo deletion. A failed publication returns an error and leaves the saved recovery phase available; no receipt failure is reported as applied. Provider setup and health recognize the native Windows `agentdocker.exe` basename (case-insensitive on Windows) as the direct MCP or hook executable; Unix keeps exact executable-name matching, and wrappers and extra suffixes are unverified. MCP onboarding reads bundled skill frontmatter and section boundaries from either LF or CRLF checkouts; the bundled bytes and skill installation stamps are unchanged, only instruction slicing accepts both forms.
 
 ### Delivery review in the desktop
 
-Schema-13 `AgentRecord.input_delivery` persists the latest provider receipt and
-pause reason; `activity.queued_inputs` is a current durable inbox count and
-`activity.awaiting_receipt` the part of it no current receipt covers. Missing
-legacy fields remain unknown, and disconnected windows label cached status.
-Paused sessions stay in Needs input after process exit. Review is read-only and
-does not navigate to questions unless one actually exists. It preserves drafts
-and loads at most 100 retained log lines with a five-second deadline, bounded
-frames and total output, and either an explicit stream End or a visible output
-truncation marker. The fixed read timeout is
-set before transmitting Logs: macOS may reject socket-option changes after a
-fast peer has written and closed, despite a readable buffered response. Partial
-frames, including split UTF-8, survive timeout polling.
+Schema-13 `AgentRecord.input_delivery` persists the latest provider receipt and pause reason; `activity.queued_inputs` is the current durable inbox count and `activity.awaiting_receipt` the part of it no current receipt covers. Missing legacy fields remain unknown, and disconnected windows label cached status. Paused sessions stay in Needs input after process exit. Review is read-only and does not navigate to questions unless one exists. It preserves drafts and loads at most 100 retained log lines with a five-second deadline, bounded frames and total output, and either an explicit stream End or a visible truncation marker. The fixed read timeout is set before transmitting Logs, because macOS may reject socket-option changes after a fast peer has written and closed; partial frames, including split UTF-8, survive timeout polling.
+
+Managed Claude receipt binding: a root `SessionStart` hook joins its provider session ID to the existing managed record through `Register` after PID, process birth, runtime and physical checkout verification. The existing `AgentSessionBound` transaction preserves its ID, owner and queue. A child hook or conflicting session cannot bind or recover the root channel receipt. Native Windows ancestry uses the host process table rather than Unix `ps`.
+
+Session resumption treats an unreadable observation record as a daemon storage failure. Identity lists are SQL parameters; accepted empty observation documents for retired identities are removed in the same resume transaction, and canonical and retired observations join by stored path, keeping the latest capture. Conflicting versions or heads at the same capture time refuse the fold, even for older captures. The combined input is bounded to 4 MiB and the joined working set to 1,000 paths. One transaction commits the canonical agent, removal of retired records and their journal cursors, the deduplicated queue, observations, aliases, eligible typed documents and the `session_resumed` event. Those documents include channel memberships, `opened_by` and review `by`/`of` references, task assignees and creators, and eligible question, checkpoint, validation, handoff and contest references. A rewrite that would create self-review or otherwise violate a typed document guard refuses the fold. Card text, column, timestamps and archive state stay unchanged, and the transaction creates no task lease. A fenced or failed write preserves all records.
+
+Named channel creation publishes the room, opening event, journal entry and first notice in one transaction, using the new membership for routing. A failure leaves no room or notice after reopen, and the journal entry belongs to the explicitly selected project. The channel-form queue budget includes retained member-list allocations.
 
 ### Provider availability and retained input
 
-The external Codex receiver's read-only history sidecar does not own the live
-TUI. Codex 0.154.0 can reconstruct an active turn as `interrupted` while its
-thread status is `notLoaded`; these historical states cannot establish live
-idleness. A verified pending native queue entry therefore stays under the
-original TUI's scheduler without an inferred idle deadline. The receiver keeps
-one outstanding offer and acknowledges only an exact provider receipt. Loss of
-both the entry and receipt still pauses for reconciliation without resubmission.
+The external Codex receiver's read-only history sidecar does not own the live TUI. Codex 0.154.0 can reconstruct an active turn as `interrupted` while its thread status is `notLoaded`; these historical states cannot establish live idleness, so a verified pending native queue entry stays under the original TUI's scheduler without an inferred idle deadline. The receiver keeps one outstanding offer and acknowledges only an exact provider receipt. Loss of both the entry and receipt pauses for reconciliation without resubmission.
 
-Schema 18 persists `AgentRecord.provider_availability` separately from input
-readiness, activity and process liveness. Usage, rate, budget, billing,
-concurrency, context, authentication, transport and unknown interruptions all
-pause adapter delivery. A heartbeat, a receipt, process exit/restart, or an
-expired reset time cannot clear a block. Raw provider prose is not stored.
+Schema 18 persists `AgentRecord.provider_availability` separately from input readiness, activity and process liveness. Usage, rate, budget, billing, concurrency, context, authentication, transport and unknown interruptions all pause adapter delivery. A heartbeat, a receipt, process exit/restart or an expired reset time cannot clear a block. Raw provider prose is not stored. Scope defaults to the reporting session; a shared quota requires an explicit non-secret `provider-quota` label on both records and the same provider value, optionally narrowed by model, and unknown account scope is never inferred from runtime/model names. Unresolved blocks prevent record removal and offline identity repair. Recovery names the exact blocked observation, so a delayed success cannot erase a newer block, and does not replay an uncertain Codex attempt or mark a task complete.
 
-Scope defaults to the reporting session. A shared quota requires an explicit
-non-secret `provider-quota` label on both records and the same provider value;
-an optional model further restricts it. Unknown account scope is never inferred
-from runtime/model names. Unresolved blocks prevent record removal and offline
-identity repair. Recovery names the exact blocked observation, so a delayed
-success cannot erase a newer block. Recovery does not replay an uncertain Codex
-attempt or mark a task complete.
-
-Claude's asynchronous `StopFailure` records typed errors without releasing
-leases or waking the model; normal `Stop` can report recovery. Managed Codex
-normalizes structured app-server errors, keeps the owned provider alive when
-`turn/start` returns an error, and reconciles retained attempts before new input. Within
-one active turn, a generic error retains the most recent structured failure kind;
-a newer recognized kind replaces it. Unbound or other-turn errors cannot affect
-that turn, and the retained detail is discarded when the turn finishes. A generic
-terminal error therefore cannot replace an observed authentication rejection with
-unknown availability. This retains normalized status only; it does not clear a
-block, replay received input, parse error prose or infer successful recovery.
-MCP-only and custom adapters can report the same state explicitly. Missing
-signals remain unverified; discovery alone is not provider-limit detection.
-The desktop shows the reason and queue count, suppresses Done for known blocked
-turns and preserves drafts. See [CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md), [CODEX-INPUT.md](CODEX-INPUT.md)
-and [REMAINING-WORK.md](REMAINING-WORK.md) for adapter coverage and remaining actual-provider acceptance.
+Claude's asynchronous `StopFailure` records typed errors without releasing leases or waking the model; normal `Stop` can report recovery. Managed Codex normalizes structured app-server errors, keeps the owned provider alive when `turn/start` returns an error, and reconciles retained attempts before new input. Within one active turn a generic error retains the most recent structured failure kind and a newer recognized kind replaces it; unbound or other-turn errors cannot affect that turn, and the retained detail is discarded when the turn finishes, so a generic terminal error cannot replace an observed authentication rejection with unknown availability. This retains normalized status only: it does not clear a block, replay received input, parse error prose or infer successful recovery. MCP-only and custom adapters can report the same state explicitly; missing signals remain unverified, and discovery alone is not provider-limit detection. The desktop shows the reason and queue count, suppresses Done for known blocked turns and preserves drafts. Adapter coverage is in [CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md) and [CODEX-INPUT.md](CODEX-INPUT.md).
 
 ### Owned Codex active-turn input
 
-The managed Codex bridge uses the same `Send` queue for terminal, desktop, CLI
-and peer input. After the starting input is received, another queued message may
-enter its owned turn through `turn/steer(expectedTurnId)`. A separate durable
-steering attempt holds the exact input and receipt; the starting attempt remains
-the turn and MCP-answer ownership anchor. Acknowledged steering receipts rotate
-through the existing bounded completed history. Active-turn steering was introduced in bridge ledger version 10;
-this does not change the daemon wire protocol or SQLite schema. Uncertain
-submissions require exact history reconciliation, not retry. A definite provider
-active-turn precondition refusal alone permits a later ordinary submission.
-Provider questions hold ordinary messages until resolved. This contract does
-not give the external native-queue sidecar control of a standalone TUI turn.
-Bounded source and actual-Codex/local-model busy and lost-reply trials passed at
-`13c3e40`; hosted-model and existing-session acceptance remain open.
+The managed Codex bridge uses the same `Send` queue for terminal, desktop, CLI and peer input. After the starting input is received, another queued message may enter its owned turn through `turn/steer(expectedTurnId)`. A separate durable steering attempt holds the exact input and receipt; the starting attempt remains the turn and MCP-answer ownership anchor, and acknowledged steering receipts rotate through the existing bounded completed history. Active-turn steering is bridge ledger version 10; it changes neither the daemon wire protocol nor the SQLite schema. Uncertain submissions require exact history reconciliation, not retry; only the server's own refusal permits a later ordinary submission: for `turn/steer`, its structured `activeTurnNotSteerable` (a review or a compaction is running) or the two documented active-turn preconditions it still says only in words; for `turn/start`, any error reply, which is its word that no turn started, so the prepared input is dropped, the message stays queued and the provider's structured reason goes on the record, while a timeout or a closed pipe is retained for receipt recovery. Both loops read the app-server's version from `initialize` (`userAgent`) and refuse one older than 0.154.0, the release their calls and the structured errors they read were tried on, before touching a thread; a server that does not say its version proceeds, each call refusing for itself what it needs. Provider questions hold ordinary messages until resolved. This gives the external native-queue sidecar no control of a standalone TUI turn. Both loops run end to end in CI against a mock app-server and a fixture daemon (`crates/cli/tests/codex_bridge.rs`): a message becomes a turn or a native queue entry, the receipt is proved from the provider's own user item, a refused turn stays queued, and an old server is refused.
 
-Usage reader review follow-up (September 17 UTC): complete oversized records now
-advance as explicit gaps when their newline fits in the byte budget, allowing
-later supported records to be collected. A missing newline within that budget
-still preserves the prior cursor. The same bounded buffered reader counts
-prefetched bytes; skipped records reset Codex context and contribute once to the
-prefix digest. A regression covers a record larger than the maximum parser
-limit, subsequent supported usage, resumed digest equivalence and insufficient
-budget. Source `89ceabe` passed eight focused reader tests and the full 1,034-Rust/77-Python gate (seven skipped). After integration with merged main, `a05a751` passed the full 1,095-Rust/84-Python gate (seven skipped), formatting, strict Clippy, doctests, packaging and release build. Logs are `/private/tmp/agentdocker-usage-scan-targeted2-2026-09-17.log` and `/private/tmp/agentdocker-usage-scan-gate2-2026-09-17.log`; matching JUnit reports are retained in the corresponding `-nextest-` directories. The initial targeted command selected the wrong module and ran zero tests; that failed log remains as `targeted1`. These are file-fixture tests; daemon collection, persistence, CLI and screen acceptance remain open.
+Managed Codex bridges bind their first accepted provider thread through the existing `register`/`AgentSessionBound` transaction after turn acceptance. Reconciliation preserves the managed ID, ownership, project and process birth; conflicting known threads and mismatching replies fail closed, and no session label is learned for an empty unused thread. Resumed prepared/history sessions confirm the same mapping before receipt recovery, which is what lets the usage collector's runtime/session attribution and late reconciliation work without a new schema. Initial binding runs after the accepted `turn/start` response, so a daemon binding failure cannot add a pre-submission uncertainty window; samples collected before binding are reassigned by usage reconciliation, and receipt recovery is still required for uncertain provider submissions.
 
-Session resumption treats an unreadable observation record as a daemon storage failure. Identity lists are SQL parameters, and accepted empty observation documents for retired identities are removed in the same resume transaction; canonical and retired observations now join by stored path, retaining the latest capture. Conflicting versions or heads at the same capture time refuse the fold, even for older captures. The combined input is bounded to 4 MiB and the joined working set to 1,000 paths. One transaction commits the canonical agent, removal of retired records and their journal cursors, the deduplicated queue, observations, aliases, eligible typed documents and the `SessionResumed` event. Those documents include channel memberships, `opened_by` and review `by`/`of` references; task assignees and creators; and eligible question, checkpoint, validation, handoff and contest references. A rewrite that would create self-review or otherwise violate a typed document guard refuses the fold. Card text, column, timestamps and archive state stay unchanged, and this transaction creates no task lease. A fenced or failed write preserves all records.
+The experimental existing-Codex receiver also offers bounded input at verified PreToolUse/PostToolUse boundaries through a private local hook endpoint, a Unix socket or a Windows named pipe. Both authenticate the kernel peer PID and current user before reading protocol input; the generation, birth and ancestry checks still apply. Windows carries deadlines with GetTickCount64 and retains transcript volume/file identity from an open handle. Ledger and bootstrap marker publication use private staged files and the shared durable publication helper. The controller reserves the offer in private ledger version 3 before removing its own native-queue entry, and uses an exact persisted provider hook context as the Codex thread/turn/item receipt (bounded tagged transcript records on CLI 0.154, or hookPrompt fragments when exposed by history); writing hook stdout is not an acknowledgment, and lost removal/output confirmation keeps the original message for reconciliation. The daemon protocol and schema are unchanged. Its limits are in [Codex input](CODEX-INPUT.md#active-input-in-an-existing-terminal-candidate-september-17-utc). `[experimental] native_codex = false` in `agentd.toml` leaves an existing session to its hooks: the hook starts no receiver for it.
 
-The experimental existing-Codex receiver also offers bounded input at verified
-PreToolUse/PostToolUse boundaries through a private local hook endpoint: a Unix
-socket or a Windows named pipe. Both authenticate the kernel peer PID and current
-user before reading protocol input; the generation, birth and ancestry checks
-still apply. Windows carries deadlines with GetTickCount64 and retains transcript
-volume/file identity from an open handle. Ledger and bootstrap marker publication
-use private staged files and the shared durable publication helper. The same
-controller reserves the offer in private ledger version 3 before removing its
-own native-queue entry. It uses an exact persisted provider hook context as the
-Codex thread/turn/item receipt (bounded tagged transcript records on CLI 0.154,
-or hookPrompt fragments when exposed by history); writing hook stdout is not an acknowledgment.
-Lost removal/output confirmation keeps the original message for reconciliation.
-The daemon protocol and database schema are unchanged. See
-[Codex input](CODEX-INPUT.md#active-input-in-an-existing-terminal-candidate-september-17-utc)
-for limits and acceptance status.
+The external native Codex receiver prefers read-only item pagination. Only the provider's exact `-32601` “thread/items/list is not supported yet” refusal on the first page enables a fallback to `thread/turns/list`, one complete turn per page. If that first turn-page request returns the exact `-32601` “list_turns is not supported yet” refusal, the receiver retries only that read every 100 ms for at most two additional seconds, including response time, which covers a first input accepted before its history store exists; a successful page is still required, and expiration retains the refusal and original input for recovery. Other errors, and failures after an accepted page, are not retried. It preserves exact turn/item receipts and anchors, rejects cursor cycles, and bounds each lookup to 100 pages, 5,000 items, 8 MiB and one minute; transport frames stay limited to 4 MiB. Errors after partial pagination, absent/partial items, limits and missing receipts retain delivery for recovery and never cause a resubmission or resume the TUI.
 
-Named channel creation now publishes the room, opening event, journal entry and first notice in one transaction, using the new membership for routing. A failure must leave no room or notice after reopen, and the journal belongs to the explicitly selected project. The channel-form queue budget includes retained member-list allocations. The follow-up passed 1,103 Rust tests and 84 Python checks at `3646efb`, recorded in `messaging_controls_review_2026_09_17.atomic_creation_followup` in the existing integrated-desktop record; #170 merged as `7df165e2`.
+Explicit native queued-entry recovery persists one version-7 prepared start intent before journaling and starting the existing submission ID. Before transmission, explicit retries reuse that intent ID and repeat live checks and journaling; a durable transmission marker immediately before `thread/queue/start` makes later retries read-only. Only an ordinary exact provider receipt acknowledges input; a start response does not. Recovery checks daemon ownership, uncertainty and provider limits before persistence and again after journaling, and separately checks project pause at both boundaries because `provider_inbox` intentionally keeps lifecycle messages visible during pause. A new hold or loss of admission observed after persistence leaves the prepared intent retained without transmission or automatic retry; these cross-process checks are snapshots, not an atomic pause lock on the provider. After the transmission marker, read-only retries can report an existing intent while paused but cannot start it again; once the ordinary receipt retires the pending attempt, a repeated start is refused and the retained completed receipt is its delivery evidence.
 
-The receiver-upgrade candidate adds `upgrade_controller`: token-authenticated
-comparison of the provider generation, old controller and launch descriptor,
-changing only the executable. It acquires the new installation pin and commits
-the descriptor plus `ControllerRestart.upgrade_requested_at` before the normal
-tick stops the old receiver. Schema 22 excludes older readers of that intent;
-schema 23 does the same for a project's pause.
-A fenced or failed write cannot signal; a persisted intent survives daemon loss.
-The normal restart path takes the existing ledger lock and keeps queued IDs,
-token and provider receipts. The hidden CLI command preflights the existing
-provider and waits for the successor's fresh readiness. Bounded actual-client
-replacement with a pending offer passes at `5b3d688`; PR #171 is merged after
-review and CI, and installed source `8d42db5` passed same-provider replacement
-and fresh active-turn CLI/peer input. Exact receipts and limits are recorded in
-[Codex input](CODEX-INPUT.md#receiver-upgrade-candidate).
+The receiver-upgrade path adds `upgrade_controller` (table above): token-authenticated comparison of the provider generation, old controller and launch descriptor, changing only the executable. It acquires the new installation pin and commits the descriptor plus `ControllerRestart.upgrade_requested_at` before the normal tick stops the old receiver; schema 22 excludes older readers of that intent, and schema 23 does the same for a project's pause. A fenced or failed write cannot signal, and a persisted intent survives daemon loss. The normal restart path takes the existing ledger lock and keeps queued IDs, token and provider receipts. The hidden CLI command preflights the existing provider and waits for the successor's fresh readiness. Receipts and limits are in [Codex input](CODEX-INPUT.md#receiver-upgrade-candidate).
 
-Setup receipt staging uses exclusive private-state creation: the current user owns the file even in an elevated Windows process, and an existing path is never reused.
-Setup receipts and configuration replacements flush their staged file before
-publication through `host::files::publish_staged`: Unix renames and syncs the
-parent directory, while Windows requests a same-directory write-through move.
-Windows setup does not open a directory as a regular file after publication or
-undo deletion. A failed publication still returns an error and leaves the
-saved recovery phase available; no receipt failure is reported as applied.
+The native receiver's optional authenticated WebSocket transport attaches only to numeric IPv4 loopback after validating a private immutable server record that binds both native TUI/server PID births, kernel executable paths, server checkout, thread/profile and capability file/digest; both server and TUI arguments must select the same exact loopback endpoint without duplicate options. Ledger version 7 retains the record's absolute path and SHA-256. Migration preserves delivery state: versions 2/3/4 cannot contain a preexisting remote descriptor, version 5 cannot contain a queued-start intent, version-6 start intents migrate as possibly transmitted, and unknown legacy transmission markers or missing version-7 markers refuse. Reconnect revalidates generations and capability before and after connection and checks the initialized profile and thread. The WebSocket implementation bounds frames to 4 MiB and connection/write/close to five seconds; each 30-second RPC discards at most 512 notifications / 4 MiB and never buffers unbounded broadcasts or answers native approval requests. Unexpected requests, foreign responses and limits fail closed; socket shutdown never terminates the shared native server. The hidden record argument is an internal integration point.
 
-Provider setup and health recognize the native Windows `agentdocker.exe` basename
-(case insensitive on Windows) as the direct MCP or hook executable. Unix keeps
-exact executable-name matching; wrappers and extra suffixes remain unverified.
+The experimental `codex-native` launcher owns the dedicated server and native TUI. Its child owner verifies the exact live front-end parent and image, authenticates a private loopback lifetime connection and owns the provider children. Nonce reads run concurrently with at most 64 pending peers, a one-second per-peer deadline and a ten-second overall startup deadline; accepting the owner closes the remaining unauthenticated sockets. EOF retires those children through the ordinary bounded cleanup and revokes the capability, even after front-end SIGKILL. On Unix the front end reserves a dedicated owner process group until cleanup, even after the owner exits, and restores inherited controlling-terminal foreground and modes across stop/continue and cleanup. On Windows the authenticated internal owner joins its own unnamed, non-inheritable job after daemon startup but before any provider/receiver spawn, with no breakaway; one job handle lasts until owner exit, when Windows closes it and terminates surviving descendants. The front end and shared daemon stay outside that job, and Windows provider descendants inherit disabled daemon autostart so a later MCP/hook reconnect cannot place a replacement shared daemon inside the provider job; recovery belongs to the daemon service or an outside client. The front end also owns the capability path and revokes it if the owner dies first; on Windows the owner keeps a private, non-inheritable delete-on-close handle so kernel handle closure revokes the file even when console shutdown terminates both cleanup processes, and readers share deletion. Exclusive creation and the existing owner, ACL, ancestor and file-type checks still apply; the internal invitation is removed from provider and receiver environments. Existing birth records name the owner; v1/v2 record formats, provider history and receipt semantics are unchanged. An observed empty server and unique new root thread permit a private version-2 birth record, usable only with a pristine ledger before the first durable input attempt; explicit UUID reopen instead requires ordinary persisted history and a version-1 record, and the daemon hands the unique dead predecessor's canonical queue to the new generation and starts its receiver. The launcher reaps its initial receiver while the TUI runs so Linux zombies cannot prevent daemon-owned replacement.
 
-MCP onboarding extracts bundled skill frontmatter and section boundaries from
-either LF or Windows checkout CRLF. The original bundled bytes and skill
-installation stamps are unchanged; only instruction slicing accepts both forms.
+### Form, URL and secret reviews
 
-Managed Claude receipt binding: a root `SessionStart` hook joins its provider
-session ID to the existing managed record through `Register` after PID, process
-birth, runtime and physical checkout verification. The existing
-`AgentSessionBound` transaction preserves its ID, owner and queue. A child hook
-or conflicting session cannot bind or recover the root channel receipt. Native
-Windows ancestry uses the host process table rather than Unix `ps`.
+Schema 25 retains `mcp_form` presentations with the requesting server, message and complete bounded flat schema. Form answers are nonsecret JSON objects, or exact Decline/Cancel choices. The shared publish route validates every correlated answer before persistence, including generic send replies. Form reviews require delivery-ledger version 13 or newer: pre-13 records cannot introduce form review receipts, and pre-14 records cannot introduce idle MCP reviews. A nullable stored turn is valid only for an idle form/URL review, and its pending record cannot coexist with active or uncertain input; older turn-scoped records keep their correlation and upgrade without replacing input. Schema 26 ties the installation's compatibility boundary to that version-14 delivery ledger: package rollback to schema 25 refuses before changing the selected binaries, and an older receiver invoked outside the installer refuses the newer ledger without rewriting it. An older delivery ledger is never restored over already acknowledged input. The response is stored before writing and acknowledged only after provider resolution, under the same exact human-answer and no-replay contract as other reviews.
 
-On Windows, the per-user desktop store is `%LOCALAPPDATA%/AgentDocker/desktop`
-(or below an explicit trial prefix). Private `activation.json` atomically records
-the current and previous immutable payloads. Receipt-verified executable copies
-in `bin` select and lifetime-pin the current release without symlinks; their
-process wrapper preserves native provider parent identity only after kernel-image,
-receipt and process-birth checks. Provider/service registrations keep those stable
-paths. Install and rollback require native launcher contract 2, lifetime pins,
-explicit preview consent and compatible stored state. Update archives admit only
-the exact seven-file Windows ZIP layout, bounded expansion and verified feed
-hash/source/schema. Windows feeds remain preview-only; activation leaves existing
-processes running. Maintenance holds the install lock and exclusive per-version
-pins before retiring verified unused payloads. Stopped service actions retain
-explicit version references; services using stable launchers do not prevent
-pruning unrelated versions. Uninstall refuses service references, atomically
-deactivates and moves only receipt-verified bootstrap names into private
-`retired-launchers/<uuid>` directories using handle-verified Windows rename.
-Loaded images finish there; ordinary deletion removes them once closed during
-the next changed activation, prune or uninstall. Each retirement retains the
-original hash receipt; unexpected/changed contents are preserved. A new retirement
-refuses before deactivation if it would exceed eight directories or 256 MiB.
-Direct POSIX deletion of the loaded image failed on native Windows and is not
-used. Partial cleanup retains an
-inactive record and can be resumed without removing provider settings or pinned
-releases. Native acceptance and remaining lifecycle work are tracked in
-[the Windows port](WINDOWS-PORT.md).
+Secret review metadata events use `seq:0` and are live-only; clients list routes after reconnect. Checked durable-event streams exclude them, like file/staleness notifications, so a temporary question cannot break receipt recovery. These types carry wire values but are never stored in SQLite or delivery ledgers. Routes close when either their monotonic deadline or displayed UTC expiry is reached, including after sleep or a forward clock adjustment. Memory is bounded, not locked or guaranteed zeroized. Provider output can repeat supplied values and enter ordinary output history.
 
-Windows preview publication emits `updates-preview-windows.json` only after the
-exact archive passes native installation, maintenance, loaded-launcher removal
-and installed Task Scheduler lifecycle checks, with source/binary hashes and
-clean fixture cleanup verified. Its fixed `channel-preview-windows` release has
-an independent ownership marker and monotonic promotion record; a failed upload
-can be repaired only with the recorded bytes/version. Older releases without a
-Windows installer feed leave this channel unchanged. The four-target Mac/Linux
-feed remains unchanged for older client compatibility; no unsigned Windows
-stable feed is published. Default Windows checks use the separate preview feed
-and reserve `updates-windows.json` for a future stable distribution.
-
-Managed Codex bridges bind their first accepted provider thread through the
-existing `register`/`AgentSessionBound` transaction after turn acceptance.
-Reconciliation preserves the managed ID, ownership, project and process birth;
-conflicting known threads and mismatching replies fail closed. No session label
-is learned for an empty unused thread. Resumed prepared/history sessions confirm
-the same mapping before receipt recovery, enabling the usage collector's existing
-runtime/session attribution and late reconciliation without a new schema.
-Initial binding runs after the accepted `turn/start` response so daemon binding
-failure cannot introduce a new pre-submission uncertainty window. Samples
-collected before binding are reassigned by existing usage reconciliation;
-receipt recovery remains required for uncertain provider submissions.
-
-The external native Codex receiver prefers read-only item pagination. Only the
-provider's exact `-32601` “thread/items/list is not supported yet” refusal on
-the first page enables a fallback to `thread/turns/list`, one complete turn per
-page. If that first turn-page request returns the exact `-32601` “list_turns is not supported yet” refusal, the receiver retries only that read every 100 ms for at most two additional seconds, including response time. This covers a first input accepted before its history store exists. A successful page is still required; expiration retains the refusal and original input for recovery. Other errors and failures after an accepted page are not retried. It preserves exact turn/item receipts and anchors, rejects cursor cycles,
-and bounds each lookup to 100 pages, 5,000 items, 8 MiB and one minute. Transport
-frames remain limited to 4 MiB. Errors after partial pagination, absent/partial
-items, limits and missing receipts retain delivery for recovery; they never
-cause a resubmission or resume the TUI.
-
-Explicit native queued-entry recovery persists one version-7 prepared start intent
-before journaling and starting the existing submission ID. Before transmission,
-explicit retries reuse that intent ID and repeat live checks and journaling. A
-durable transmission marker immediately before `thread/queue/start` makes later
-retries read-only. Only an ordinary exact provider receipt acknowledges input;
-a start response does not. Recovery checks
-daemon ownership, uncertainty and provider limits before persistence and again
-after journaling. It separately checks project pause at both boundaries because
-`provider_inbox` intentionally keeps lifecycle messages visible during pause. A
-new hold or loss of admission observed after persistence leaves the prepared
-intent retained without provider transmission or automatic retry. These
-cross-process checks are snapshots, not an atomic pause lock on the provider.
-After the transmission marker, read-only retries can report an existing intent
-while paused, but cannot start it again. Once the ordinary receipt retires
-the pending attempt, a repeated start is refused; the retained completed receipt
-is its delivery evidence.
-
-The native receiver's optional authenticated WebSocket transport attaches only
-to numeric IPv4 loopback after validating a private immutable server record.
-That record binds both native TUI/server PID births, kernel executable paths,
-server checkout, thread/profile and capability file/digest. Both server and TUI
-arguments must select the same exact loopback endpoint without duplicate options.
-Ledger version 7
-retains its absolute path and SHA-256. Migration preserves delivery state: versions
-2/3/4 cannot contain a preexisting remote descriptor, and version 5 cannot contain
-a queued-start intent. Version-6 start intents migrate as possibly transmitted;
-unknown legacy transmission markers and missing version-7 markers refuse.
-Reconnect
-revalidates generations and capability before and after connection, and checks
-the initialized profile and thread. A maintained WebSocket implementation bounds
-frames to 4 MiB and connection/write/close to five seconds. Each 30-second RPC
-discards at most 512 notifications/4 MiB; it never buffers unbounded broadcasts
-or answers native approval requests. Unexpected requests, foreign responses and
-limits fail closed. Socket shutdown never terminates the shared native server.
-The hidden record argument is an internal integration point. The experimental
-`codex-native` launcher owns the dedicated server and native TUI. Its child owner
-verifies the exact live front-end parent and image, authenticates a private
-loopback lifetime connection and owns the provider children. Nonce reads run
-concurrently with at most 64 pending peers, a one-second per-peer deadline and
-a ten-second overall startup deadline; accepting the owner closes the remaining
-unauthenticated sockets. EOF retires those
-children using the ordinary bounded cleanup and revokes the capability, even
-after front-end SIGKILL. On Unix the front end reserves a dedicated owner
-process group until cleanup, even after the owner exits, and restores inherited
-controlling-terminal foreground and modes across stop/continue and cleanup.
-On Windows the authenticated internal owner joins its own unnamed, non-inheritable
-job after daemon startup but before any provider/receiver spawn. No breakaway is
-enabled. One job handle lasts until owner process exit; Windows then closes it
-and terminates any surviving descendants, including after owner termination.
-The front end and shared daemon stay outside that job. Windows provider descendants
-inherit disabled daemon autostart, so later MCP/hook reconnects cannot accidentally
-place a replacement shared daemon inside the provider job; recovery belongs to
-the daemon service or an outside client. Front-end death still allows the owner
-to revoke the capability through ordinary EOF cleanup. The front
-end also owns the capability path and revokes it if the owner dies first.
-On Windows the owner retains a private, non-inheritable delete-on-close file
-handle for the capability. Kernel handle closure revokes the file even when
-console shutdown terminates both cleanup processes; readers share deletion.
-Exclusive creation and the existing owner, ACL, ancestor and file-type checks
-still apply. The
-internal invitation is removed from provider and receiver environments. Existing birth records name the owner; v1/v2 record
-formats, provider history and receipt semantics are unchanged. An observed
-empty server and unique new root thread permit a private version-2 birth record,
-usable only with a pristine ledger before the first durable input attempt.
-Explicit UUID reopen instead requires ordinary persisted history and a version-1
-record; the daemon hands the unique dead predecessor's canonical queue to the
-new generation and starts its receiver. The launcher reaps its initial receiver
-while the TUI runs so Linux zombies cannot prevent daemon-owned replacement.
-Desktop/default-launch integration remains unfinished.
-
-The Windows connector task supervises failed native exits with a two-second
-backoff and at most three retries; a run lasting ten minutes resets that budget.
-A zero exit stays stopped. Scheduler-level failure retries are disabled so they
-cannot multiply the local budget. Each child still verifies the exact owned
-action, nonce and current/previous receipt before serving; graceful stop targets
-the running child generation and then retires the owned task. The separate daemon
-service is unaffected.
-
-Schema 25 retains `mcp_form` presentations with the requesting server, message and
-complete bounded flat schema. Form answers are nonsecret JSON objects, or exact
-Decline/Cancel choices. The shared publish route validates every correlated
-answer before persistence, including generic send replies. Form reviews require
-delivery-ledger version 13 or newer; pre-13 records cannot introduce form review receipts, and
-pre-14 records cannot introduce idle MCP reviews. A nullable stored turn is
-valid only for an idle form/URL review; its pending record cannot coexist with
-active or uncertain input. Older turn-scoped records retain their correlation
-and upgrade without replacing input. Schema 26 introduced the installation's
-compatibility boundary to that version-14 delivery ledger: package rollback
-to schema 25 refuses before changing the selected binaries. An older receiver
-invoked outside the installer also refuses the newer ledger without rewriting
-it. Never restore an older delivery ledger over already acknowledged input.
-The
-response is stored before writing and acknowledged only after provider resolution,
-using the same exact human-answer and no-replay contract as other reviews.
-
-Secret review metadata events use `seq:0` and are live-only; clients list routes after reconnect. Checked durable-event streams exclude them, just like file/staleness notifications, so a temporary question cannot break receipt recovery. These types carry wire values but are never stored in SQLite or delivery ledgers. Routes close when either their monotonic deadline or displayed UTC expiry is reached, including after sleep or a forward clock adjustment. Memory is bounded, not locked or guaranteed zeroized. Provider output can repeat supplied values and enter ordinary output history.
-
-Managed secret input has a separate experimental producer, enabled only with
-`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`. Interactive sessions additionally
-require the bounded editor to control terminal echo; unsupported console modes
-retain the refusal. A whole mixed bundle uses the volatile
-broker. Delivery ledger 15 stores only the request/thread/turn identity and a
-possible-response flag before the provider write; it never stores the answer,
-question or capability. Normal queued input waits behind this fence. A matching
-provider resolution removes it. Restart never reopens a secret route or resends
-an answer; a confirmed terminal turn can retire an unanswered request, while an
-unconfirmed attempted response remains paused for inspection. Schema 27 extends
-the installation rollback boundary to this ledger. Older ledgers remain readable
-without being rewritten on open; older receivers refuse version 15.
+Managed secret input has a separate experimental producer, enabled only with `[experimental] secret_input = true` in `agentd.toml` (or `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` on the bridge). Interactive sessions additionally require the bounded editor to control terminal echo; unsupported console modes keep the refusal. A whole mixed bundle uses the volatile broker. Delivery ledger 15 stores only the request/thread/turn identity and a possible-response flag before the provider write; it never stores the answer, question or capability. Normal queued input waits behind this fence, and a matching provider resolution removes it. Restart never reopens a secret route or resends an answer; a confirmed terminal turn can retire an unanswered request, while an unconfirmed attempted response stays paused for inspection. Schema 27 extends the installation rollback boundary to this ledger; older ledgers stay readable without being rewritten on open, and older receivers refuse version 15.

@@ -451,7 +451,7 @@ each one by pid.
 | `deregister` / `rm` | Mark an external agent finished / forget a finished one |
 | `role <name>` | Give an agent (`--as`) a role — `reviewer`, `implementer` — so `send --to role:reviewer` and `handoff role:reviewer` reach it; `--clear` takes it away |
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
-| `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not |
+| `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not. A finished record that holds nothing is forgotten by itself thirty days on, or after `[agents] retention` in `~/.agentdocker/agentd.toml` (`"off"` keeps every record) |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml` |
 | `heartbeat` | Report that an agent is alive |
 
@@ -576,6 +576,37 @@ Those configured paths must exist when installing; a missing feed or program is
 reported before the service definition is written.
 
 ---
+
+### Environment
+
+Everything the commands, the daemon and the app read from the environment, in
+one place. The first table is what a person might set; the second is set for
+you by AgentDocker itself and is listed so it can be recognised, not so it can
+be set.
+
+| Variable | Read by | Meaning |
+|---|---|---|
+| `AGENTDOCKER_HOME` | daemon, commands, app | The state directory (`~/.agentdocker`): socket, logs, `state.db`, `agentd.toml`, `policy.toml`. A different value is a different daemon. |
+| `AGENTDOCKER_SOCKET` | daemon, commands, app | The socket to serve or connect to (`<home>/agentd.sock`). |
+| `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` | commands, hooks, MCP | Who is speaking: the default for `--as` and `--from`. `run` sets both in a managed agent's environment. |
+| `AGENTDOCKER_NO_AUTOSTART=1` | commands, app | A client that cannot connect does not start a daemon. |
+| `AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1` | Claude Code hooks | On a session launched with the channel: hooks leave inbox delivery to the channel and only observe. `run --claude-channel` sets it. |
+| `AGENTDOCKER_CODEX_INPUT=1` | Codex hooks, bridge | On a Codex process AgentDocker launched with input: delivery goes through the bridge. `run --codex-input` and the app's **Idle messages: On** set it. |
+| `AGENTDOCKER_NO_NOTIFICATIONS=1` | daemon | Post no desktop notifications. |
+| `AGENTDOCKER_UPDATE_FEED` | `desktop update` | A feed other than the published one, as a URL or a file, for an offline trial. |
+| `AGENTDOCKER_STARTUP_TRACE=1` | daemon | Print each startup stage and its elapsed time to stderr before the log exists. |
+| `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` | daemon | The same as `[experimental] reload = true` in `agentd.toml`, for one daemon process: permit `daemon reload`, the live replacement that is still under acceptance. |
+| `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` | Codex bridge | The same as `[experimental] secret_input = true`, for one bridge process: enable the temporary secret-input broker. |
+| `AGENTDOCKER_INSTALL`, `AGENTDOCKER_INSTALL_DIR`, `AGENTDOCKER_VERSION` | `install.sh` | Which route (`cli` or `desktop`), where, and which release to pin. |
+| `AGENTDOCKER_CAMPAIGN_LEASE`, `AGENTDOCKER_CAMPAIGN_WAIT`, `AGENTDOCKER_CAMPAIGN_RENEW_SECS`, `AGENTDOCKER_FUZZ_ROOT` | `scripts/verify.sh` | The build-campaign lease on a shared machine, and where a fuzz campaign keeps its fixtures. |
+
+| Variable | Set by | For |
+|---|---|---|
+| `AGENTDOCKER_TOKEN_FILE` | `grant-access` | The file holding a contained agent's scoped credential; a client with one talks to the restricted endpoint and never starts a daemon. |
+| `AGENTDOCKER_SETUP_RECEIPT` | guided setup | The receipt a provider's MCP entry was written under, so undo can find it. |
+| `AGENTDOCKER_RELOAD_CANDIDATE` | `daemon reload` | The successor daemon's handover. |
+| `AGENTDOCKER_NATIVE_CAPABILITY`, `AGENTDOCKER_NATIVE_LIFETIME`, `AGENTDOCKER_TRACE_NATIVE_STARTUP` | the experimental native Codex launcher | Its child's credential and lifetime, and a startup trace. |
+| `AGENTDOCKER_TEST_*`, `AGENTDOCKER_OWNER_IN_PROCESS`, `AGENTDOCKER_IMAGE_PATH_CHILD`, `AGENTDOCKER_BOOTSTRAP_FIXTURE_PARENT`, `AGENTDOCKER_MULTIPLEXER_TEST_CHILD`, `AGENTDOCKER_BENCH_DIAGNOSTICS` | the test suites and benchmarks | Fixture children and diagnostics; never read in ordinary use. |
 
 ## MCP tools
 
@@ -712,11 +743,32 @@ The log on disk is never rewritten. A validation log is evidence:
 `integrate` refuses source that has not passed, and the log is how
 somebody checks that claim later. Evidence is kept whole.
 
+### Experimental switches
+
+What is in source and complete but still under acceptance on real binaries is
+switched in one place, `[experimental]` in `~/.agentdocker/agentd.toml`:
+
+```toml
+[experimental]
+reload = false        # `daemon reload`, the live replacement of the daemon
+secret_input = false  # the managed Codex bridge's secret-input broker
+native_codex = true   # the receiver for an existing Codex terminal session
+```
+
+`daemon status` says how each stands. The first two are off until the file
+turns them on; the variables they had before the file
+(`AGENTDOCKER_EXPERIMENTAL_RELOAD=1` on the daemon,
+`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` on a bridge) still turn one on for
+that process. The third is on, as it has been since it shipped: with
+`native_codex = false`, an existing Codex session gets its messages at tool
+boundaries through its hooks and no receiver is started for it. The file is
+read by the daemon; a bridge or a hook asks the daemon how the switches stand.
+
 ### Planned daemon replacement
 
-`agentdocker daemon reload` requires `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` on the
-running daemon; without that gate it returns `unavailable` and leaves the daemon
-and agents running. The gated implementation transfers coordinator ownership to
+`agentdocker daemon reload` requires `[experimental] reload = true` in the running
+daemon's `agentd.toml` (or `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` in its environment);
+without that gate it returns `unavailable` and leaves the daemon and agents running. The gated implementation transfers coordinator ownership to
 a checked successor while session owners retain managed processes and I/O.
 Broader actual-provider, attached-draft and uncertain-delivery acceptance remains
 open, so the gate stays experimental. See the
@@ -731,6 +783,54 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- Codex input refuses an app-server older than 0.154.0 when it attaches, naming
+  both versions, instead of failing in the middle of a turn. A turn Codex
+  refuses outright leaves the message queued with the provider's reason on the
+  record, where before the input was retained as a lost receipt and searched
+  for every half second. Both Codex loops are now tested end to end against a
+  mock app-server.
+- The experimental switches have one home: `[experimental]` in
+  `~/.agentdocker/agentd.toml` (`reload`, `secret_input`, `native_codex`),
+  reported by `daemon status`. The environment variables they had still turn
+  one on for a process; `native_codex = false` leaves an existing Codex
+  session to its hooks, with no receiver started for it.
+- `agentdocker --help` lists the commands a person types. The ones only an
+  adapter or an administrator runs (`heartbeat`, `report-activity`,
+  `report-adapter`, `report-input`, `identity-repair`, `secret-review`,
+  `usage-storage`, `usage-scan`, the `codex-*` controllers) are hidden from
+  the list and still work by name; the guide's reference still names them.
+- Every environment variable AgentDocker reads is in one table under
+  **Environment** in the command reference.
+- A Claude channel session's first message is no longer lost to the moment
+  before Claude's channel handler is registered: when no receipt has yet been
+  seen on the channel, an offer without one after thirty seconds is made a
+  second time, once, under the same message id and marked `repeat`. A
+  receipt the daemon accepted counts whichever message it names, one sent
+  before the first offer included. After the first receipt the no-replay
+  rule holds as before, and a missing receipt pauses the queue visibly.
+- Finished agents' records are forgotten by themselves. Thirty days after an
+  agent ended, if it holds no lease, has no open question, no queued message
+  and no input binding, and is not set to restart or restore, its record goes the way
+  `rm` would take it (`agent_removed`, and the batch as `agents_pruned`);
+  `[agents] retention = "90d"` in `~/.agentdocker/agentd.toml` changes the
+  window and `"off"` keeps every record. The journal and the ledger keep a
+  forgotten agent's id. Before this, every session ever registered stayed in
+  memory and on disk for the life of the installation.
+- A branch switch no longer stalls claims and releases: the ledger entries
+  for one batch of file changes are written in one transaction instead of
+  one durable write per path, each taking the coordination lock.
+- The daemon keeps serving through a momentary accept failure on its socket
+  (descriptors exhausted under a burst of clients, a handshake the client
+  dropped): it retries with a short backoff instead of stopping, which used
+  to stop every managed agent with it.
+- A state database held for a moment by another connection (an offline
+  repair, a successor opening it, a `sqlite3` shell) no longer puts the
+  daemon into read-only `storage_unavailable` until restart: a write waits
+  up to a second for the lock first, and every write transaction takes the
+  lock as it begins, so one that reads before it writes cannot meet a busy
+  database after the wait.
+- The app forgets the note it keeps about a failed answer once the question
+  it belonged to is gone, instead of keeping it for the session.
 - Under your own messages in the app, one line per agent says where each
   message stands: answered, delivered, received by the model, shown to its
   session, or why it is still waiting.
@@ -937,9 +1037,9 @@ It prints no answer. A failed or uncertain submission must not be resent
 without inspecting the request state. Codex and its selected model receive the
 answers and may retain or repeat them into ordinary output history.
 
-Managed Codex can use this broker through the development switch
-`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`; default and native-input sessions still
-refuse secret bundles. Interactive managed terminals also require AgentDocker to
+Managed Codex can use this broker once `[experimental] secret_input = true` is in
+the daemon's `agentd.toml` (or `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` is in the
+bridge's environment); default and native-input sessions still refuse secret bundles. Interactive managed terminals also require AgentDocker to
 control echo, so Windows console secret input remains refused.
 
 The experimental managed secret route also has masked desktop entry with a

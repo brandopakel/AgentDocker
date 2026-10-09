@@ -164,44 +164,42 @@ impl State {
         });
         let events: Vec<Event> = kinds
             .into_iter()
-            .enumerate()
-            .map(|(i, kind)| {
-                let mut event = Event::new(kind, now);
-                event.seq = self.next_seq + i as u64;
-                event
-            })
+            .map(|kind| Event::new(kind, now))
             .collect();
         let ended: Vec<LeaseId> = released.iter().map(|l| l.id.clone()).collect();
-        let transition = crate::store::TaskTransition {
-            holder: record.as_ref(),
-            claimed: claimed.as_ref(),
-            released: &ended,
-            kind: DOCUMENT,
-            id: task.id.as_str(),
-            events: &events,
-        };
-        if self.persist("task", |store| store.task_transition(&transition, task))
-            != Persisted::Committed
-        {
+        let committed = self.commit(
+            "task",
+            events,
+            |store, events| {
+                let transition = crate::store::TaskTransition {
+                    holder: record.as_ref(),
+                    claimed: claimed.as_ref(),
+                    released: &ended,
+                    kind: DOCUMENT,
+                    id: task.id.as_str(),
+                    events,
+                };
+                store.task_transition(&transition, task)
+            },
+            |state, _, ()| {
+                if let (Some(id), Some(record)) = (&holder, &record) {
+                    *state
+                        .registry
+                        .get_mut(id)
+                        .expect("holder identity retained") = record.clone();
+                }
+                for lease in &released {
+                    let _ = state.leases.release(&lease.id, &lease.holder);
+                }
+                if let Some(lease) = &claimed {
+                    state.leases.restore(lease.clone());
+                }
+            },
+        );
+        if committed != Persisted::Committed {
             return Some(self.write_failure().unwrap_or_else(|| {
                 Response::error(ErrorCode::Internal, "the card was not recorded")
             }));
-        }
-        if let (Some(id), Some(record)) = (holder, record) {
-            *self
-                .registry
-                .get_mut(&id)
-                .expect("holder identity retained") = record;
-        }
-        for lease in &released {
-            let _ = self.leases.release(&lease.id, &lease.holder);
-        }
-        if let Some(lease) = claimed {
-            self.leases.restore(lease);
-        }
-        self.next_seq += events.len() as u64;
-        for event in events {
-            let _ = self.events.send(event);
         }
         None
     }

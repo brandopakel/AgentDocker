@@ -101,27 +101,25 @@ impl Daemon {
                 windows
             };
             for (attribution, from, until) in windows {
-                let mut event = None;
-                let seq = state.next_seq;
                 let now = Utc::now();
-                let result = state.persist("usage attribution", |store| {
-                    event = store.usage_reconcile(
-                        &runtime,
-                        &session,
-                        Some(&attribution),
-                        (from, until),
-                        retained(now, config),
-                        now,
-                        seq,
-                    )?;
-                    Ok(())
-                });
+                let result = state.commit_produced(
+                    "usage attribution",
+                    |store, seq| {
+                        let event = store.usage_reconcile(
+                            &runtime,
+                            &session,
+                            Some(&attribution),
+                            (from, until),
+                            retained(now, config),
+                            now,
+                            seq,
+                        )?;
+                        Ok((event.into_iter().collect(), ()))
+                    },
+                    |_, _, ()| {},
+                );
                 if result != Persisted::Committed {
                     return;
-                }
-                if let Some(event) = event {
-                    state.next_seq += 1;
-                    let _ = state.events.send(event);
                 }
             }
         }
@@ -226,18 +224,15 @@ impl Daemon {
         change: Option<Change<'_>>,
     ) -> bool {
         let mut state = lock(&self.state);
-        let seq = state.next_seq;
-        let mut event = None;
-        let result = state.persist("usage coverage", |store| {
-            event = Some(store.usage_snapshot(collection, gaps, Utc::now(), seq, change)?);
-            Ok(())
-        });
-        if result != Persisted::Committed {
-            return false;
-        }
-        state.next_seq += 1;
-        let _ = state.events.send(event.expect("committed usage event"));
-        true
+        let result = state.commit_produced(
+            "usage coverage",
+            |store, seq| {
+                let event = store.usage_snapshot(collection, gaps, Utc::now(), seq, change)?;
+                Ok((vec![event], ()))
+            },
+            |_, _, ()| {},
+        );
+        result == Persisted::Committed
     }
 
     fn usage_batch(
@@ -266,28 +261,25 @@ impl Daemon {
             cursor: batch.cursor.clone(),
             stop: batch.stop,
         };
-        let mut event = None;
-        let seq = state.next_seq;
-        let result = state.persist("usage accounting", |store| {
-            event = Some(store.usage_ingest(Ingest {
-                key,
-                progress: &progress,
-                samples: &samples,
-                gaps: &batch.gaps,
-                collection,
-                retained_since: retained(now, config),
-                now,
-                event_seq: seq,
-                finished_job,
-            })?);
-            Ok(())
-        });
-        if result != Persisted::Committed {
-            return false;
-        }
-        state.next_seq += 1;
-        let _ = state.events.send(event.expect("committed usage event"));
-        true
+        let result = state.commit_produced(
+            "usage accounting",
+            |store, seq| {
+                let event = store.usage_ingest(Ingest {
+                    key,
+                    progress: &progress,
+                    samples: &samples,
+                    gaps: &batch.gaps,
+                    collection,
+                    retained_since: retained(now, config),
+                    now,
+                    event_seq: seq,
+                    finished_job,
+                })?;
+                Ok((vec![event], ()))
+            },
+            |_, _, ()| {},
+        );
+        result == Persisted::Committed
     }
 }
 

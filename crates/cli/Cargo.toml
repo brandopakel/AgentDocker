@@ -50,3 +50,7 @@ rusqlite.workspace = true
 zip.workspace = true
 filetime.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+
+[[test]]
+name = "codex_bridge"
+harness = false

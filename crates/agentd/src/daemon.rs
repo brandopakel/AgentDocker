@@ -88,7 +88,6 @@ fn message_bytes(message: &Envelope) -> usize {
 const MAX_LEASE_TTL_SECS: u64 = 24 * 60 * 60;
 /// Stored event history is trimmed to this many entries.
 const EVENT_HISTORY: usize = 10_000;
-/// The ledger keeps this many entries per project.
 /// Change observations kept per project. The ledger answers "who touched
 /// what lately" (`changes`, `blame`, stale reads), not history; a hundred
 /// thousand rows a project was fifty megabytes of database on a busy
@@ -395,6 +394,10 @@ struct State {
     /// The last `agentd.toml` problem reported, so a broken file is logged
     /// once when it breaks and once when it is fixed, not every minute.
     config_notice: Option<String>,
+    /// The agent-retention notice, kept apart from `config_notice`: the
+    /// journal-retention tick clears that one, and would otherwise re-warn
+    /// here every minute for a problem that has not changed.
+    agent_config_notice: Option<String>,
     /// The last HEAD a commit entry was written for, per checkout, so a
     /// move seen through several agents is journaled once.
     last_head: HashMap<PathBuf, String>,
@@ -1645,6 +1648,7 @@ impl Daemon {
                 journal_seq: HashMap::new(),
                 journal_rings: HashMap::new(),
                 config_notice: None,
+                agent_config_notice: None,
                 last_head: HashMap::new(),
                 last_branch: HashMap::new(),
                 worktree_creators: HashMap::new(),
@@ -1715,14 +1719,80 @@ impl Daemon {
         };
         let response = lock(&self.state).remove(&id.to_string());
         if matches!(response, Response::Ok) {
-            let log = self.log_path(&id);
-            let _ = std::fs::remove_file(&log);
-            let _ = std::fs::remove_file(paths::rotated_log(&log));
-            let controller = controller_log(&self.home, &id);
-            let _ = std::fs::remove_file(&controller);
-            let _ = std::fs::remove_file(paths::rotated_log(&controller));
+            self.forget_logs(&id);
         }
         response
+    }
+
+    /// The logs of a record that is gone: its own and its controller's.
+    fn forget_logs(&self, id: &AgentId) {
+        let log = self.log_path(id);
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_file(paths::rotated_log(&log));
+        let controller = controller_log(&self.home, id);
+        let _ = std::fs::remove_file(&controller);
+        let _ = std::fs::remove_file(paths::rotated_log(&controller));
+    }
+
+    /// Apply `[agents] retention` from `agentd.toml`, thirty days unless
+    /// the file says otherwise: the records of agents that ended before
+    /// the window and hold nothing — no lease, no open question, no input
+    /// binding, no restart or restore policy, no provider limit — are
+    /// forgotten the way `rm` forgets one, a bounded batch per tick, each
+    /// said as `agent_removed` and the batch as `agents_pruned`. Every
+    /// record is loaded at startup and looked at on every tick, so a
+    /// daemon that kept them all would slow down for as long as it was
+    /// used; the journal and the ledger keep a forgotten agent's id.
+    pub fn apply_agent_retention(&self) {
+        use agentdocker_core::config::{AGENT_RETENTION_BATCH, FILE_NAME};
+        let path = self.home.join(FILE_NAME);
+        let read = crate::config::read(&self.home).and_then(|config| {
+            config
+                .agents_retention()
+                .map_err(|error| format!("{}: {error}", path.display()))
+        });
+        let removed = {
+            let mut state = lock(&self.state);
+            let window = match read {
+                Ok(window) => {
+                    state.agent_config_notice = None;
+                    window
+                }
+                Err(notice) => {
+                    if state.agent_config_notice.as_ref() != Some(&notice) {
+                        warn!(%notice, "agent retention not applied");
+                        state.agent_config_notice = Some(notice);
+                    }
+                    return;
+                }
+            };
+            let Some(cutoff) = window.and_then(|window| Utc::now().checked_sub_signed(window))
+            else {
+                return;
+            };
+            let mut removed = Vec::new();
+            for id in state.retirable_agents(cutoff, AGENT_RETENTION_BATCH) {
+                // A refusal is a write that failed or was fenced: nothing
+                // more lands this tick either.
+                if !matches!(state.remove(id.as_str()), Response::Ok) {
+                    break;
+                }
+                removed.push(id);
+            }
+            if !removed.is_empty() {
+                info!(
+                    count = removed.len(),
+                    "forgot the records of agents that ended before the retention window"
+                );
+                state.emit(EventKind::AgentsPruned {
+                    removed: removed.len(),
+                });
+            }
+            removed
+        };
+        for id in &removed {
+            self.forget_logs(id);
+        }
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<Event> {
@@ -1990,6 +2060,7 @@ impl Daemon {
                 },
                 pid: Some(std::process::id()),
                 executable: agentdocker_host::procinfo::executable_path().ok(),
+                experimental: Some(crate::config::experimental(&self.home)),
             },
             Request::Run { spec } => self.run(spec).await,
             Request::RunContainer {
@@ -2708,25 +2779,24 @@ impl Daemon {
                 return refused;
             }
             let now = Utc::now();
-            let mut event = Event::new(
+            let event = Event::new(
                 EventKind::SessionRelaunched {
                     agent: record.id.clone(),
                     session,
                 },
                 now,
             );
-            event.seq = state.next_seq;
-            let committed = state.persist("session relaunch", |store| {
-                store.agent_transition(&record, &event)
-            });
-            if committed == Persisted::Committed {
-                *state
-                    .registry
-                    .get_mut(&record.id)
-                    .expect("relaunched record retained") = record.clone();
-                state.next_seq += 1;
-                let _ = state.events.send(event);
-            }
+            let committed = state.transition(
+                "session relaunch",
+                event,
+                |store, event| store.agent_transition(&record, event),
+                |state| {
+                    *state
+                        .registry
+                        .get_mut(&record.id)
+                        .expect("relaunched record retained") = record.clone();
+                },
+            );
             match state.write_failure() {
                 Some(error) => Err(error),
                 None if committed == Persisted::Committed => Ok(()),
@@ -2789,24 +2859,25 @@ impl Daemon {
                         running.status = AgentStatus::Running;
                         running.started_at = Some(now);
                         running.last_seen = now;
-                        let mut event = Event::new(
+                        let event = Event::new(
                             EventKind::AgentStarted {
                                 agent: record.id.clone(),
                                 pid: Some(pid),
                             },
                             now,
                         );
-                        event.seq = state.next_seq;
-                        let committed = state.persist("launch completion", |store| {
-                            store.agent_transition(&running, &event)
-                        });
+                        let committed = state.transition(
+                            "launch completion",
+                            event,
+                            |store, event| store.agent_transition(&running, event),
+                            |state| {
+                                *state
+                                    .registry
+                                    .get_mut(&record.id)
+                                    .expect("launch identity retained") = running.clone();
+                            },
+                        );
                         if committed == Persisted::Committed {
-                            *state
-                                .registry
-                                .get_mut(&record.id)
-                                .expect("launch identity retained") = running.clone();
-                            state.next_seq += 1;
-                            let _ = state.events.send(event);
                             Some(running)
                         } else {
                             None
@@ -4020,49 +4091,64 @@ impl Daemon {
         .await
         .unwrap_or_default();
         let now = Utc::now();
-        for (
-            Observed {
-                checkout,
-                path,
-                kind,
-            },
-            physical,
-        ) in observed
         {
+            // One hold of the lock and one durable transaction for the
+            // batch: a branch switch is thousands of paths, and a sync per
+            // path, each taking the coordination lock, held every claim and
+            // release up for as long as it lasted.
             let mut state = lock(&self.state);
-            let by = physical
-                .as_deref()
-                .map_or(Attribution::External, |path| state.attribute(path));
-            let mut change = Change {
-                seq: 0,
-                project: checkout.project.clone(),
-                checkout: Some(checkout.dir.clone()),
-                worktree: checkout.worktree.clone(),
-                path,
-                kind,
-                at: now,
-                by,
-                head: heads.get(&checkout.dir).cloned().flatten(),
-            };
-            let Some(seq) = state.store_op("change", |store| store.append_change(&change)) else {
-                continue;
-            };
-            change.seq = seq;
-            // The strongest "working" signal there is: a file changed
-            // under a lease this agent holds. Recording it keeps derived
-            // activity honest for a runtime with no hooks at all.
-            if let Attribution::Agent { agent, .. } = &change.by {
-                let agent = agent.clone();
-                state.registry.touch(&agent, now);
+            let mut changes = Vec::with_capacity(observed.len());
+            let mut physicals = Vec::with_capacity(observed.len());
+            for (
+                Observed {
+                    checkout,
+                    path,
+                    kind,
+                },
+                physical,
+            ) in observed
+            {
+                let by = physical
+                    .as_deref()
+                    .map_or(Attribution::External, |path| state.attribute(path));
+                changes.push(Change {
+                    seq: 0,
+                    project: checkout.project.clone(),
+                    checkout: Some(checkout.dir.clone()),
+                    worktree: checkout.worktree.clone(),
+                    path,
+                    kind,
+                    at: now,
+                    by,
+                    head: heads.get(&checkout.dir).cloned().flatten(),
+                });
+                physicals.push(physical);
             }
-            state.warn_readers(&change, physical.as_deref());
-            // A second checkout on this path means two agents are in the
-            // same work: give them a room.
-            state.note_contested(&change);
-            debug!(project = %change.project.short(), path = %change.path.display(), %kind, "file changed");
-            let _ = state
-                .events
-                .send(Event::new(EventKind::FileChanged { change }, now));
+            let seqs = if changes.is_empty() {
+                Some(Vec::new())
+            } else {
+                state.store_op("change", |store| store.append_changes(&changes))
+            };
+            if let Some(seqs) = seqs {
+                for ((mut change, physical), seq) in changes.into_iter().zip(physicals).zip(seqs) {
+                    change.seq = seq;
+                    // The strongest "working" signal there is: a file changed
+                    // under a lease this agent holds. Recording it keeps derived
+                    // activity honest for a runtime with no hooks at all.
+                    if let Attribution::Agent { agent, .. } = &change.by {
+                        let agent = agent.clone();
+                        state.registry.touch(&agent, now);
+                    }
+                    state.warn_readers(&change, physical.as_deref());
+                    // A second checkout on this path means two agents are in the
+                    // same work: give them a room.
+                    state.note_contested(&change);
+                    debug!(project = %change.project.short(), path = %change.path.display(), kind = %change.kind, "file changed");
+                    let _ = state
+                        .events
+                        .send(Event::new(EventKind::FileChanged { change }, now));
+                }
+            }
         }
         // A repository's refs are shared between its worktrees: a commit
         // made in a linked one writes `refs/heads/<branch>` under the
@@ -4126,11 +4212,11 @@ impl Daemon {
         }
     }
 
-    /// Trim the ledger. Called occasionally from the reaper.
     pub fn evict_journal_rings(&self) {
         lock(&self.state).evict_journal_rings();
     }
 
+    /// Trim the ledger. Called occasionally from the reaper.
     pub fn prune_changes(&self) {
         if let Some(removed) = lock(&self.state).store_op("ledger retention", |store| {
             store.prune_changes(CHANGE_HISTORY)
@@ -4285,18 +4371,13 @@ impl Daemon {
     /// holding the state lock for one long delete. The file is read outside
     /// the lock; absence means keep everything.
     pub fn apply_journal_retention(&self) {
-        use agentdocker_core::config::{DaemonConfig, FILE_NAME, RETENTION_BATCH};
-        use agentdocker_host::policy_file::{self, ReadPolicy};
+        use agentdocker_core::config::{FILE_NAME, RETENTION_BATCH};
         let path = self.home.join(FILE_NAME);
-        let read = policy_file::read_changed(&path, None)
-            .map_err(|error| format!("cannot read {}: {}", path.display(), error.kind()))
-            .and_then(|read| match read {
-                ReadPolicy::Absent | ReadPolicy::Unchanged => Ok(None),
-                ReadPolicy::Text { text, .. } => toml::from_str::<DaemonConfig>(&text)
-                    .map_err(|error| error.to_string())
-                    .and_then(|config| config.journal_retention())
-                    .map_err(|error| format!("{}: {error}", path.display())),
-            });
+        let read = crate::config::read(&self.home).and_then(|config| {
+            config
+                .journal_retention()
+                .map_err(|error| format!("{}: {error}", path.display()))
+        });
         let mut state = lock(&self.state);
         let window = match read {
             Ok(window) => {
@@ -4548,7 +4629,6 @@ impl Daemon {
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     async fn claim(
         self: &Arc<Self>,
@@ -4923,18 +5003,25 @@ impl State {
         let now = Utc::now();
         agent.status = AgentStatus::Stopping;
         agent.last_seen = now;
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::AgentStopping {
                 agent: agent.id.clone(),
                 force,
             },
             now,
         );
-        event.seq = self.next_seq;
-        if self.persist("stop intent", |store| {
-            store.agent_transition(&agent, &event)
-        }) != Persisted::Committed
-        {
+        let committed = self.transition(
+            "stop intent",
+            event,
+            |store, event| store.agent_transition(&agent, event),
+            |state| {
+                *state
+                    .registry
+                    .get_mut(&agent.id)
+                    .expect("stop identity retained") = agent.clone();
+            },
+        );
+        if committed != Persisted::Committed {
             return Err(Box::new(self.write_failure().unwrap_or_else(|| {
                 Response::error(
                     ErrorCode::StorageUnavailable,
@@ -4942,12 +5029,6 @@ impl State {
                 )
             })));
         }
-        *self
-            .registry
-            .get_mut(&agent.id)
-            .expect("stop identity retained") = agent.clone();
-        self.next_seq += 1;
-        let _ = self.events.send(event);
         Ok(agent)
     }
 
@@ -5231,17 +5312,93 @@ impl State {
         Persisted::Committed
     }
 
+    /// One durable transition, the way every state change is made: the
+    /// events take the next sequence numbers, `write` commits them with
+    /// the data they describe in one store transaction, and only on commit
+    /// does `apply` change memory and the events go out, in that order. A
+    /// write the fence skipped or the store refused leaves memory as it
+    /// was, and `write_failure()` says so. `write` may hand `apply` what
+    /// it computed, so nothing is computed twice.
+    fn commit<T>(
+        &mut self,
+        what: &str,
+        mut events: Vec<Event>,
+        write: impl FnOnce(&Store, &[Event]) -> anyhow::Result<T>,
+        apply: impl FnOnce(&mut Self, &[Event], T),
+    ) -> Persisted {
+        for (index, event) in events.iter_mut().enumerate() {
+            event.seq = self.next_seq + index as u64;
+        }
+        let mut written = None;
+        let committed = self.persist(what, |store| {
+            written = Some(write(store, &events)?);
+            Ok(())
+        });
+        if committed == Persisted::Committed
+            && let Some(written) = written
+        {
+            self.next_seq += events.len() as u64;
+            apply(self, &events, written);
+            for event in events {
+                let _ = self.events.send(event);
+            }
+        }
+        committed
+    }
+
+    /// [`State::commit`] for the common transition: one event, a write
+    /// that returns nothing, and the memory change that follows it.
+    fn transition(
+        &mut self,
+        what: &str,
+        event: Event,
+        write: impl FnOnce(&Store, &Event) -> anyhow::Result<()>,
+        apply: impl FnOnce(&mut Self),
+    ) -> Persisted {
+        self.commit(
+            what,
+            vec![event],
+            |store, events| write(store, &events[0]),
+            |state, _, ()| apply(state),
+        )
+    }
+
+    /// [`State::commit`] for a store that composes the events itself from
+    /// the first sequence number it is given, when only it knows what
+    /// changed: how many archive rows a prune removed, which samples a scan
+    /// accounted. The events it returns are published on commit, in order,
+    /// and the sequence advances by their count.
+    fn commit_produced<T>(
+        &mut self,
+        what: &str,
+        write: impl FnOnce(&Store, u64) -> anyhow::Result<(Vec<Event>, T)>,
+        apply: impl FnOnce(&mut Self, &[Event], T),
+    ) -> Persisted {
+        let first = self.next_seq;
+        let mut produced = None;
+        let committed = self.persist(what, |store| {
+            produced = Some(write(store, first)?);
+            Ok(())
+        });
+        if committed == Persisted::Committed
+            && let Some((events, written)) = produced
+        {
+            self.next_seq += events.len() as u64;
+            apply(self, &events, written);
+            for event in events {
+                let _ = self.events.send(event);
+            }
+        }
+        committed
+    }
+
     pub fn emit(&mut self, kind: EventKind) {
-        if self.storage_error.is_some() {
-            return;
-        }
-        let mut event = Event::new(kind, Utc::now());
-        event.seq = self.next_seq;
-        let committed = self.persist("event", |store| store.append_event(&event));
-        if committed == Persisted::Committed {
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "event",
+            Event::new(kind, Utc::now()),
+            |store, event| store.append_event(event),
+            |_| {},
+        );
     }
 
     pub fn resolve(&mut self, reference: &str) -> Result<AgentId, Box<Response>> {
@@ -5381,7 +5538,7 @@ impl State {
                     .remove(agentdocker_core::agent::ROLE_LABEL);
             }
         }
-        let mut event = agentdocker_core::Event::new(
+        let event = agentdocker_core::Event::new(
             EventKind::RoleSet {
                 agent: id.clone(),
                 project: record
@@ -5392,13 +5549,14 @@ impl State {
             },
             now,
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("role", |store| store.agent_transition(&record, &event));
-        if committed == Persisted::Committed {
-            *self.registry.get_mut(&id).expect("resolved agent") = record.clone();
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "role",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                *state.registry.get_mut(&id).expect("resolved agent") = record.clone();
+            },
+        );
         self.write_failure()
             .unwrap_or(Response::Agent { agent: record })
     }
@@ -5440,7 +5598,7 @@ impl State {
             agentdocker_core::agent::NAME_LABEL.to_owned(),
             agentdocker_core::agent::CHOSEN_NAME.to_owned(),
         );
-        let mut event = agentdocker_core::Event::new(
+        let event = agentdocker_core::Event::new(
             EventKind::AgentRenamed {
                 agent: id.clone(),
                 project: record
@@ -5451,13 +5609,14 @@ impl State {
             },
             now,
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("rename", |store| store.agent_transition(&record, &event));
-        if committed == Persisted::Committed {
-            *self.registry.get_mut(&id).expect("resolved agent") = record.clone();
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "rename",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                *state.registry.get_mut(&id).expect("resolved agent") = record.clone();
+            },
+        );
         self.write_failure()
             .unwrap_or(Response::Agent { agent: record })
     }
@@ -5530,6 +5689,45 @@ impl State {
         }
     }
 
+    /// The agents retention may forget, oldest first: ended before
+    /// `cutoff`, not the person, and holding or owed nothing: no lease,
+    /// no open question, no queued message, no input binding, no restart
+    /// or restore, no provider limit.
+    fn retirable_agents(&self, cutoff: DateTime<Utc>, limit: usize) -> Vec<AgentId> {
+        let mut retirable: Vec<&AgentRecord> = self
+            .registry
+            .all()
+            .filter(|record| {
+                !record.status.is_live()
+                    && record.id.as_str() != agentdocker_core::HUMAN
+                    && record.spec.runtime != agentdocker_core::HUMAN_RUNTIME
+                    && record.finished_at.unwrap_or(record.last_seen) < cutoff
+                    && record.last_seen < cutoff
+                    && record.input_binding.is_none()
+                    && !record.spec.restore
+                    && record.spec.restart.is_no()
+                    && record
+                        .provider_availability
+                        .as_ref()
+                        .is_none_or(|availability| availability.issue.is_none())
+                    && self.leases.by_holder(&record.id).is_empty()
+                    && self.inboxes.get(&record.id).is_none_or(VecDeque::is_empty)
+                    && !self.pending_restarts.contains(&record.id)
+                    && !self.supervised.contains_key(&record.id)
+                    && !self.questions.values().any(|question| {
+                        question.from == record.id.as_str()
+                            || matches!(&question.to, Destination::Agent(to) if to == &record.id)
+                    })
+            })
+            .collect();
+        retirable.sort_by_key(|record| record.finished_at.unwrap_or(record.last_seen));
+        retirable
+            .into_iter()
+            .take(limit)
+            .map(|record| record.id.clone())
+            .collect()
+    }
+
     fn remove(&mut self, reference: &str) -> Response {
         let id = match self.resolve(reference) {
             Ok(id) => id,
@@ -5561,20 +5759,20 @@ impl State {
                 "resolve this agent's provider limit before removing its record",
             );
         }
-        let mut event = Event::new(EventKind::AgentRemoved { agent: id.clone() }, Utc::now());
-        event.seq = self.next_seq;
-        let _ = self.persist("agent removal", |store| store.delete_agent(&id, &event));
-        if let Some(error) = self.write_failure() {
-            return error;
-        }
-        self.registry.remove(&id);
-        self.inboxes.remove(&id);
-        self.inbox_bytes.remove(&id);
-        self.journal_cursors
-            .retain(|(reader, _), _| reader != id.as_str());
-        self.next_seq += 1;
-        let _ = self.events.send(event);
-        Response::Ok
+        let _ = self.transition(
+            "agent removal",
+            Event::new(EventKind::AgentRemoved { agent: id.clone() }, Utc::now()),
+            |store, event| store.delete_agent(&id, event),
+            |state| {
+                state.registry.remove(&id);
+                state.inboxes.remove(&id);
+                state.inbox_bytes.remove(&id);
+                state
+                    .journal_cursors
+                    .retain(|(reader, _), _| reader != id.as_str());
+            },
+        );
+        self.write_failure().unwrap_or(Response::Ok)
     }
 
     fn inspect(&mut self, reference: &str) -> Response {
@@ -5650,32 +5848,27 @@ impl State {
         });
         let events: Vec<_> = kinds
             .into_iter()
-            .enumerate()
-            .map(|(index, kind)| {
-                let mut event = Event::new(kind, now);
-                event.seq = self.next_seq + index as u64;
-                event
-            })
+            .map(|kind| Event::new(kind, now))
             .collect();
         let leases: Vec<_> = released.iter().map(|lease| lease.id.clone()).collect();
-        let committed = self.persist("agent exit", |store| {
-            store.agent_exit(&record, &leases, &journal, &channels, &events)
-        });
+        let committed = self.commit(
+            "agent exit",
+            events,
+            |store, events| store.agent_exit(&record, &leases, &journal, &channels, events),
+            |state, _, ()| {
+                *state.registry.get_mut(id).expect("exit identity retained") = record.clone();
+                state.leases.release_all(id);
+                for entry in &journal {
+                    state.cache_journal(entry.clone());
+                }
+                for channel in &channels {
+                    state.channels.insert(channel.id.clone(), channel.clone());
+                }
+            },
+        );
         if committed != Persisted::Committed {
             self.journal_seq = previous_seq;
             return self.registry.get(id).cloned();
-        }
-        *self.registry.get_mut(id).expect("exit identity retained") = record.clone();
-        self.leases.release_all(id);
-        for entry in journal {
-            self.cache_journal(entry);
-        }
-        for channel in channels {
-            self.channels.insert(channel.id.clone(), channel);
-        }
-        self.next_seq += events.len() as u64;
-        for event in events {
-            let _ = self.events.send(event);
         }
         info!(agent = %id.short(), name = %record.spec.name, %status, "agent finished");
         Some(record)
@@ -5707,29 +5900,22 @@ impl State {
             .expect("claim identity retained")
             .clone();
         record.last_seen = now;
-        let event = kind.map(|kind| {
-            let mut event = Event::new(kind, now);
-            event.seq = self.next_seq;
-            event
-        });
-        let committed = self.persist("lease activity", |store| {
-            store.lease_activity(&record, lease, event.as_ref())
-        });
-        if committed != Persisted::Committed {
-            return false;
-        }
-        *self
-            .registry
-            .get_mut(holder)
-            .expect("claim identity retained") = record;
-        if let Some(lease) = lease {
-            self.leases.restore(lease.clone());
-        }
-        if let Some(event) = event {
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
-        true
+        let events: Vec<Event> = kind.map(|kind| Event::new(kind, now)).into_iter().collect();
+        let committed = self.commit(
+            "lease activity",
+            events,
+            |store, events| store.lease_activity(&record, lease, events.first()),
+            |state, _, ()| {
+                *state
+                    .registry
+                    .get_mut(holder)
+                    .expect("claim identity retained") = record.clone();
+                if let Some(lease) = lease {
+                    state.leases.restore(lease.clone());
+                }
+            },
+        );
+        committed == Persisted::Committed
     }
 
     fn input_consumer(&mut self, reference: &str, provider: bool) -> Result<(), Box<Response>> {
@@ -5824,34 +6010,32 @@ impl State {
         if messages.is_empty() {
             return Response::Ok;
         }
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::InboxAcknowledged {
                 agent: id.clone(),
                 messages: messages.to_vec(),
             },
             Utc::now(),
         );
-        event.seq = self.next_seq;
-        let _ = self.persist("inbox acknowledgement", |store| {
-            store.ack_inbox(&id, &messages, &event)
-        });
-        if let Some(error) = self.write_failure() {
-            return error;
-        }
-        if let Some(queue) = self.inboxes.get_mut(&id) {
-            let bytes = self.inbox_bytes.entry(id.clone()).or_default();
-            queue.retain(|message| {
-                if messages.contains(&message.id) {
-                    *bytes = bytes.saturating_sub(message_bytes(message));
-                    false
-                } else {
-                    true
+        let _ = self.transition(
+            "inbox acknowledgement",
+            event,
+            |store, event| store.ack_inbox(&id, &messages, event),
+            |state| {
+                if let Some(queue) = state.inboxes.get_mut(&id) {
+                    let bytes = state.inbox_bytes.entry(id.clone()).or_default();
+                    queue.retain(|message| {
+                        if messages.contains(&message.id) {
+                            *bytes = bytes.saturating_sub(message_bytes(message));
+                            false
+                        } else {
+                            true
+                        }
+                    });
                 }
-            });
-        }
-        self.next_seq += 1;
-        let _ = self.events.send(event);
-        Response::Ok
+            },
+        );
+        self.write_failure().unwrap_or(Response::Ok)
     }
 
     fn inbox(&mut self, reference: &str, drain: bool) -> Response {
@@ -6054,45 +6238,40 @@ impl State {
         let now = Utc::now();
         let mut events: Vec<Event> = released
             .iter()
-            .enumerate()
-            .map(|(i, lease)| {
-                let mut event = Event::new(
+            .map(|lease| {
+                Event::new(
                     EventKind::LeaseReleased {
                         lease: lease.clone(),
                     },
                     now,
-                );
-                event.seq = self.next_seq + i as u64;
-                event
+                )
             })
             .collect();
         if let Some(entry) = &entry {
-            let mut event = Event::new(
+            events.push(Event::new(
                 EventKind::JournalAppended {
                     entry: entry.clone(),
                 },
                 now,
-            );
-            event.seq = self.next_seq + events.len() as u64;
-            events.push(event);
+            ));
         }
-        let committed = self.persist("release", |store| {
-            store.release_leases(&ids, entry.as_ref(), &events)
-        });
-        if committed == Persisted::Committed {
-            for lease in &released {
-                self.leases
-                    .release(&lease.id, &lease.holder)
-                    .expect("release protection retained until commit");
-            }
-            if let Some(entry) = entry {
-                self.cache_journal(entry);
-            }
-            self.next_seq += events.len() as u64;
-            for event in events {
-                let _ = self.events.send(event);
-            }
-        } else {
+        let committed = self.commit(
+            "release",
+            events,
+            |store, events| store.release_leases(&ids, entry.as_ref(), events),
+            |state, _, ()| {
+                for lease in &released {
+                    state
+                        .leases
+                        .release(&lease.id, &lease.holder)
+                        .expect("release protection retained until commit");
+                }
+                if let Some(entry) = &entry {
+                    state.cache_journal(entry.clone());
+                }
+            },
+        );
+        if committed != Persisted::Committed {
             self.journal_seq = previous_seq;
         }
         released
@@ -6226,21 +6405,18 @@ impl State {
     /// Assign a seq, persist (own transaction), ring, announce.
     fn append_journal(&mut self, mut entry: JournalEntry) -> JournalEntry {
         entry.seq = self.next_journal_seq(&entry.project);
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::JournalAppended {
                 entry: entry.clone(),
             },
             Utc::now(),
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("journal", |store| {
-            store.append_journal_with_event(&entry, &event)
-        });
-        if committed == Persisted::Committed {
-            self.cache_journal(entry.clone());
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "journal",
+            event,
+            |store, event| store.append_journal_with_event(&entry, event),
+            |state| state.cache_journal(entry.clone()),
+        );
         entry
     }
 
@@ -6552,7 +6728,7 @@ impl State {
         {
             return;
         }
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::JournalRead {
                 reader: key.to_owned(),
                 project: project.clone(),
@@ -6560,16 +6736,16 @@ impl State {
             },
             Utc::now(),
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("journal cursor", |store| {
-            store.set_journal_cursor_with_event(key, project, seq, &event)
-        });
-        if committed == Persisted::Committed {
-            self.journal_cursors
-                .insert((key.to_owned(), project.clone()), seq);
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "journal cursor",
+            event,
+            |store, event| store.set_journal_cursor_with_event(key, project, seq, event),
+            |state| {
+                state
+                    .journal_cursors
+                    .insert((key.to_owned(), project.clone()), seq);
+            },
+        );
     }
 
     /// The project's ring, loaded from the store on first use.
@@ -6641,15 +6817,12 @@ impl State {
                 lease: lease.clone(),
             }
         };
-        let mut event = Event::new(kind, Utc::now());
-        event.seq = self.next_seq;
-        let committed = self.persist("lease removal", |store| {
-            store.delete_lease_with_event(&lease.id, &event)
-        });
-        if committed == Persisted::Committed {
-            self.next_seq += 1;
-            let _ = self.events.send(event);
-        }
+        let _ = self.transition(
+            "lease removal",
+            Event::new(kind, Utc::now()),
+            |store, event| store.delete_lease_with_event(&lease.id, event),
+            |_| {},
+        );
     }
 
     fn expire_leases_at(&mut self, now: DateTime<Utc>) {
@@ -6865,64 +7038,64 @@ impl State {
         }
         let events: Vec<_> = kinds
             .into_iter()
-            .enumerate()
-            .map(|(index, kind)| {
-                let mut event = Event::new(kind, envelope.sent_at);
-                event.seq = self.next_seq + index as u64;
-                event
-            })
+            .map(|kind| Event::new(kind, envelope.sent_at))
             .collect();
         // The person's own messages are followed per recipient, so they can
         // see where each stands; agents' traffic is not.
         let tracked = self.is_human_id(&AgentId::from(envelope.from.as_str()));
-        let _ = self.persist("message", |store| {
-            store.publish_message_with_channel(
-                &envelope,
-                &recipients,
-                INBOX_CAPACITY,
-                sender.as_ref(),
-                question.as_ref(),
-                closed.as_ref(),
-                &events,
-                channel.as_ref().map(|channel| (channel, journal.as_ref())),
-                document
-                    .as_ref()
-                    .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
-                tracked,
-            )
-        });
+        let _ = self.commit(
+            "message",
+            events,
+            |store, events| {
+                store.publish_message_with_channel(
+                    &envelope,
+                    &recipients,
+                    INBOX_CAPACITY,
+                    sender.as_ref(),
+                    question.as_ref(),
+                    closed.as_ref(),
+                    events,
+                    channel.as_ref().map(|channel| (channel, journal.as_ref())),
+                    document
+                        .as_ref()
+                        .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
+                    tracked,
+                )
+            },
+            |state, _, ()| {
+                if let Some(channel) = &channel {
+                    state.channels.insert(channel.id.clone(), channel.clone());
+                }
+                if let Some(entry) = &journal {
+                    state
+                        .journal_seq
+                        .insert(entry.project.clone(), entry.seq + 1);
+                    state.cache_journal(entry.clone());
+                }
+                for id in &recipients {
+                    let queue = state.inboxes.entry(id.clone()).or_default();
+                    queue.push_back(envelope.clone());
+                    *state.inbox_bytes.entry(id.clone()).or_default() += bytes;
+                }
+                if let Some(sender) = &sender {
+                    let current = state
+                        .registry
+                        .get_mut(&sender.id)
+                        .expect("sender retained under lock");
+                    *current = sender.clone();
+                }
+                if let Some(question) = &question {
+                    state
+                        .questions
+                        .insert(question.id.clone(), question.clone());
+                }
+                if let Some(closed) = &closed {
+                    state.questions.remove(closed);
+                }
+            },
+        );
         if let Some(error) = self.write_failure() {
             return error;
-        }
-        if let Some(channel) = channel {
-            self.channels.insert(channel.id.clone(), channel);
-        }
-        if let Some(entry) = journal {
-            self.journal_seq
-                .insert(entry.project.clone(), entry.seq + 1);
-            self.cache_journal(entry);
-        }
-        for id in &recipients {
-            let queue = self.inboxes.entry(id.clone()).or_default();
-            queue.push_back(envelope.clone());
-            *self.inbox_bytes.entry(id.clone()).or_default() += bytes;
-        }
-        if let Some(sender) = sender {
-            let current = self
-                .registry
-                .get_mut(&sender.id)
-                .expect("sender retained under lock");
-            *current = sender;
-        }
-        if let Some(question) = question {
-            self.questions.insert(question.id.clone(), question);
-        }
-        if let Some(closed) = &closed {
-            self.questions.remove(closed);
-        }
-        self.next_seq += events.len() as u64;
-        for event in events {
-            let _ = self.events.send(event);
         }
         if let Some(question) = closed {
             if held {
@@ -7165,23 +7338,24 @@ impl State {
                     .spec
                     .labels
                     .insert("session_id".to_owned(), session.clone());
-                let mut event = Event::new(
+                let event = Event::new(
                     EventKind::AgentSessionBound {
                         agent: id.clone(),
                         session,
                     },
                     Utc::now(),
                 );
-                event.seq = self.next_seq;
-                let _ = self.persist("session binding", |store| {
-                    store.agent_transition(&updated, &event)
-                });
+                let _ = self.transition(
+                    "session binding",
+                    event,
+                    |store, event| store.agent_transition(&updated, event),
+                    |state| {
+                        *state.registry.get_mut(&id).expect("just found") = updated.clone();
+                    },
+                );
                 if let Some(error) = self.write_failure() {
                     return error;
                 }
-                *self.registry.get_mut(&id).expect("just found") = updated;
-                self.next_seq += 1;
-                let _ = self.events.send(event);
             }
             let agent = self.registry.get(&id).cloned().expect("just found");
             return Response::Agent {
@@ -7312,29 +7486,29 @@ impl State {
         if messages.is_empty() {
             return;
         }
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::MessagesCaughtUp {
                 agent: record.id.clone(),
                 messages: messages.iter().map(|m| m.id.clone()).collect(),
             },
             Utc::now(),
         );
-        event.seq = self.next_seq;
-        if self.persist("catch-up", |store| {
-            store.enqueue_late(&record.id, &messages, INBOX_CAPACITY, &event)
-        }) != Persisted::Committed
-        {
-            return;
-        }
-        self.next_seq += 1;
-        for message in messages {
-            *self.inbox_bytes.entry(record.id.clone()).or_default() += message_bytes(&message);
-            self.inboxes
-                .entry(record.id.clone())
-                .or_default()
-                .push_back(message);
-        }
-        let _ = self.events.send(event);
+        let _ = self.transition(
+            "catch-up",
+            event,
+            |store, event| store.enqueue_late(&record.id, &messages, INBOX_CAPACITY, event),
+            |state| {
+                for message in &messages {
+                    *state.inbox_bytes.entry(record.id.clone()).or_default() +=
+                        message_bytes(message);
+                    state
+                        .inboxes
+                        .entry(record.id.clone())
+                        .or_default()
+                        .push_back(message.clone());
+                }
+            },
+        );
     }
 
     /// A session that came back as a new process takes up the record it
@@ -7494,103 +7668,107 @@ impl State {
         // (the same broadcast reached more than one life), so a reopen
         // delivers exactly what memory does now.
         let merged = plan.queue.clone();
-        let mut event = Event::new(kind, now);
-        event.seq = self.next_seq;
         // Memory moves only on a committed write: a fenced daemon skips
         // the write and leaves the records as they were, and they stand
         // until a later attempt after the transfer folds them.
-        if self.persist("record fold", |store| store.write_resume(&plan, &event))
-            != Persisted::Committed
-        {
-            return Err("the store did not take the fold".into());
-        }
-        match self.registry.fold_into(retired, &kept) {
-            Ok(_) => {}
-            Err(error) => {
-                // Checked by the plan; the store has the aliases, memory
-                // must follow them.
-                error!(%error, "folding records into one");
-            }
-        }
-        *self.registry.get_mut(&kept).expect("canonical record") = canonical.clone();
-        let project = canonical.project.as_ref().map(ProjectRef::id);
-        for id in retired {
-            self.inboxes.remove(id);
-            self.inbox_bytes.remove(id);
-            self.live_subscribers.remove(id);
-            if let Some(project) = &project {
-                // A retired record's cursor goes with it — the fresh one's
-                // freshly seeded, an earlier life's long passed; the
-                // canonical record's own continues where it left off.
-                self.journal_cursors
-                    .remove(&(id.as_str().to_owned(), project.clone()));
-            }
-        }
-        // What the store rewrote, memory rewrites the same way: a question
-        // an earlier life asked is the canonical record's to cancel now,
-        // and channel membership names the record that is.
-        for question in self.questions.values_mut() {
-            if retired.iter().any(|id| id.as_str() == question.from) {
-                question.from = kept.to_string();
-            }
-            if let agentdocker_core::Destination::Agent(to) = &mut question.to
-                && retired.contains(to)
-            {
-                *to = kept.clone();
-            }
-        }
-        for channel in self.channels.values_mut() {
-            for member in &mut channel.members {
-                if retired.contains(member) {
-                    *member = kept.clone();
-                }
-            }
-            let mut seen = HashSet::new();
-            channel.members.retain(|id| seen.insert(id.clone()));
-            if let Some(opened_by) = &mut channel.opened_by
-                && retired.contains(opened_by)
-            {
-                *opened_by = kept.clone();
-            }
-            for review in &mut channel.reviews {
-                if retired.contains(&review.by) {
-                    review.by = kept.clone();
-                }
-                if retired.contains(&review.of) {
-                    review.of = kept.clone();
-                }
-            }
-        }
-        let moved: usize = merged.iter().map(message_bytes).sum();
-        self.inboxes
-            .insert(kept.clone(), merged.into_iter().collect());
-        self.inbox_bytes.insert(kept.clone(), moved);
-        // Anything retired that the daemon had created a worktree for is the
-        // canonical record's worktree now.
-        for creator in self.worktree_creators.values_mut() {
-            if retired.contains(creator) {
-                *creator = kept.clone();
-            }
-        }
-        // Stale notices owed for the observations that just joined are owed
-        // to the canonical record; one still queued moved with the queue.
-        for id in retired {
-            if let Some(pending) = self.pending_stale.remove(id) {
-                let owed = self.pending_stale.entry(kept.clone()).or_default();
-                for (path, change) in pending {
-                    if owed.get(&path).is_none_or(|known| known.at < change.at) {
-                        owed.insert(path, change);
+        let committed = self.transition(
+            "record fold",
+            Event::new(kind, now),
+            |store, event| store.write_resume(&plan, event),
+            |state| {
+                match state.registry.fold_into(retired, &kept) {
+                    Ok(_) => {}
+                    Err(error) => {
+                        // Checked by the plan; the store has the aliases, memory
+                        // must follow them.
+                        error!(%error, "folding records into one");
                     }
                 }
-            }
-            if let Some(message) = self.stale_outstanding.remove(id) {
-                self.stale_outstanding
-                    .entry(kept.clone())
-                    .or_insert(message);
-            }
+                *state.registry.get_mut(&kept).expect("canonical record") = canonical.clone();
+                let project = canonical.project.as_ref().map(ProjectRef::id);
+                for id in retired {
+                    state.inboxes.remove(id);
+                    state.inbox_bytes.remove(id);
+                    state.live_subscribers.remove(id);
+                    if let Some(project) = &project {
+                        // A retired record's cursor goes with it — the fresh one's
+                        // freshly seeded, an earlier life's long passed; the
+                        // canonical record's own continues where it left off.
+                        state
+                            .journal_cursors
+                            .remove(&(id.as_str().to_owned(), project.clone()));
+                    }
+                }
+                // What the store rewrote, memory rewrites the same way: a question
+                // an earlier life asked is the canonical record's to cancel now,
+                // and channel membership names the record that is.
+                for question in state.questions.values_mut() {
+                    if retired.iter().any(|id| id.as_str() == question.from) {
+                        question.from = kept.to_string();
+                    }
+                    if let agentdocker_core::Destination::Agent(to) = &mut question.to
+                        && retired.contains(to)
+                    {
+                        *to = kept.clone();
+                    }
+                }
+                for channel in state.channels.values_mut() {
+                    for member in &mut channel.members {
+                        if retired.contains(member) {
+                            *member = kept.clone();
+                        }
+                    }
+                    let mut seen = HashSet::new();
+                    channel.members.retain(|id| seen.insert(id.clone()));
+                    if let Some(opened_by) = &mut channel.opened_by
+                        && retired.contains(opened_by)
+                    {
+                        *opened_by = kept.clone();
+                    }
+                    for review in &mut channel.reviews {
+                        if retired.contains(&review.by) {
+                            review.by = kept.clone();
+                        }
+                        if retired.contains(&review.of) {
+                            review.of = kept.clone();
+                        }
+                    }
+                }
+                let moved: usize = merged.iter().map(message_bytes).sum();
+                state
+                    .inboxes
+                    .insert(kept.clone(), merged.into_iter().collect());
+                state.inbox_bytes.insert(kept.clone(), moved);
+                // Anything retired that the daemon had created a worktree for is the
+                // canonical record's worktree now.
+                for creator in state.worktree_creators.values_mut() {
+                    if retired.contains(creator) {
+                        *creator = kept.clone();
+                    }
+                }
+                // Stale notices owed for the observations that just joined are owed
+                // to the canonical record; one still queued moved with the queue.
+                for id in retired {
+                    if let Some(pending) = state.pending_stale.remove(id) {
+                        let owed = state.pending_stale.entry(kept.clone()).or_default();
+                        for (path, change) in pending {
+                            if owed.get(&path).is_none_or(|known| known.at < change.at) {
+                                owed.insert(path, change);
+                            }
+                        }
+                    }
+                    if let Some(message) = state.stale_outstanding.remove(id) {
+                        state
+                            .stale_outstanding
+                            .entry(kept.clone())
+                            .or_insert(message);
+                    }
+                }
+            },
+        );
+        if committed != Persisted::Committed {
+            return Err("the store did not take the fold".into());
         }
-        self.next_seq += 1;
-        let _ = self.events.send(event);
         Ok(canonical)
     }
 
@@ -7863,6 +8041,45 @@ mod tests {
             name: name.to_owned(),
             ..AgentSpec::default()
         }
+    }
+
+    /// `daemon status` says how each experimental switch stands, from
+    /// the daemon's own file, so a bridge or hook follows the daemon's
+    /// word; the reload gate reads the same switch.
+    #[tokio::test]
+    async fn ping_reports_the_experimental_switches_the_daemon_applies() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(agentdocker_core::config::FILE_NAME),
+            "[experimental]\nreload = true\nnative_codex = false\n",
+        )
+        .unwrap();
+        let daemon = open(&dir);
+        let Response::Pong {
+            experimental: Some(switches),
+            ..
+        } = daemon.handle(Request::Ping).await
+        else {
+            panic!("ping reports the switches");
+        };
+        assert!(switches.reload && !switches.secret_input && !switches.native_codex);
+        assert!(reload::enabled(dir.path()));
+        std::fs::write(
+            dir.path().join(agentdocker_core::config::FILE_NAME),
+            "[experimental]\nsecret_input = true\n",
+        )
+        .unwrap();
+        let Response::Pong {
+            experimental: Some(switches),
+            ..
+        } = daemon.handle(Request::Ping).await
+        else {
+            panic!("ping reports the switches");
+        };
+        assert!(
+            switches.secret_input && switches.native_codex,
+            "the file is read as it stands"
+        );
     }
 
     /// A spec that says where it is working.
@@ -9782,6 +9999,107 @@ mod tests {
             Response::Agent { agent } => agent,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn retention_forgets_finished_agents_that_hold_nothing() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let gone = register(&daemon, "gone", None).await;
+        let holder = register(&daemon, "holder", None).await;
+        let owed = register(&daemon, "owed", None).await;
+        let live = register(&daemon, "live", None).await;
+        for agent in [&gone, &holder, &owed] {
+            assert!(matches!(
+                daemon
+                    .handle(Request::Deregister {
+                        agent: agent.id.to_string()
+                    })
+                    .await,
+                Response::Agent { .. }
+            ));
+        }
+        let inspect = |daemon: &Arc<Daemon>, id: &AgentId| lock(&daemon.state).inspect(id.as_str());
+        // Fresh records stay, however they ended.
+        daemon.apply_agent_retention();
+        assert!(matches!(inspect(&daemon, &gone.id), Response::Agent { .. }));
+        // Forty days on, the default window has passed for both finished
+        // records; the one that is to come back under its id after a
+        // restart stays (its leases went when it ended; what it holds is
+        // its restore), and the live one stays.
+        {
+            let mut state = lock(&daemon.state);
+            for id in [&gone.id, &holder.id, &owed.id] {
+                let record = state.registry.get_mut(id).unwrap();
+                record.finished_at = Some(Utc::now() - Duration::days(40));
+                record.last_seen = Utc::now() - Duration::days(40);
+            }
+            state.registry.get_mut(&holder.id).unwrap().spec.restore = true;
+            // A message nobody has delivered is owed to the record: a
+            // session resumed under this id would still get it.
+            state
+                .inboxes
+                .entry(owed.id.clone())
+                .or_default()
+                .push_back(Envelope::new(
+                    "user",
+                    Destination::Agent(owed.id.clone()),
+                    "chat",
+                    serde_json::json!({"text": "still waiting"}),
+                    None,
+                    Utc::now() - Duration::days(41),
+                ));
+        }
+        daemon.apply_agent_retention();
+        assert!(matches!(
+            inspect(&daemon, &gone.id),
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+        assert!(matches!(
+            inspect(&daemon, &holder.id),
+            Response::Agent { .. }
+        ));
+        assert!(
+            matches!(inspect(&daemon, &owed.id), Response::Agent { .. }),
+            "a record with a queued message is owed that message and stays"
+        );
+        assert!(matches!(inspect(&daemon, &live.id), Response::Agent { .. }));
+        assert_eq!(
+            daemon
+                .recent_events(50)
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::AgentsPruned { removed: 1 }))
+                .count(),
+            1
+        );
+        // Its restore given up, `off` still keeps the record; a shorter
+        // window forgets it.
+        lock(&daemon.state)
+            .registry
+            .get_mut(&holder.id)
+            .unwrap()
+            .spec
+            .restore = false;
+        let config = daemon.home.join("agentd.toml");
+        std::fs::write(&config, "[agents]\nretention = \"off\"\n").unwrap();
+        daemon.apply_agent_retention();
+        assert!(matches!(
+            inspect(&daemon, &holder.id),
+            Response::Agent { .. }
+        ));
+        std::fs::write(&config, "[agents]\nretention = \"7d\"\n").unwrap();
+        daemon.apply_agent_retention();
+        assert!(matches!(
+            inspect(&daemon, &holder.id),
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+        assert!(matches!(inspect(&daemon, &live.id), Response::Agent { .. }));
     }
 
     // ----- the human as an agent -----------------------------------------

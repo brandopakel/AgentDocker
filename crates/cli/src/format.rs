@@ -592,6 +592,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::MessagesPruned { removed } => {
             format!("messages pruned  {removed} archived messages")
         }
+        EventKind::AgentsPruned { removed } => {
+            format!("agents pruned    {removed} finished agents past retention")
+        }
         EventKind::ChannelClosed {
             channel,
             resolution,

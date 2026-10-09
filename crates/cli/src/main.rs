@@ -59,6 +59,7 @@ enum Command {
     /// Report provider availability or resume delivery after checking a limit.
     Provider(provider_status::ProviderArgs),
     /// Preview a legacy identity repair; apply its exact plan only with daemon and sessions stopped.
+    #[command(hide = true)]
     IdentityRepair {
         #[arg(long)]
         home: PathBuf,
@@ -531,6 +532,7 @@ enum Command {
         compress: bool,
     },
     /// Report that an agent is alive.
+    #[command(hide = true)]
     Heartbeat {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
@@ -538,6 +540,7 @@ enum Command {
     /// Send a message to an agent, this project (`project`), a topic (`topic:name`), or everyone (`all`; sent by an agent, only its own project).
     Send(SendArgs),
     /// Report an observed provider turn state (expires after five minutes).
+    #[command(hide = true)]
     ReportActivity {
         /// Agent ID or name (defaults to AGENTDOCKER_AGENT_ID).
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -621,12 +624,15 @@ enum Command {
         text: String,
     },
     /// Inspect, cancel or submit a temporary secret review through local IPC.
+    #[command(hide = true)]
     SecretReview(secret_review::Args),
     /// Tokens the providers reported, with what the totals cover.
     Usage(UsageArgs),
     /// Measure accounting SQLite storage in an existing home without starting a daemon.
+    #[command(hide = true)]
     UsageStorage(UsageStorageArgs),
     /// Scan selected local transcripts without starting a daemon or changing its accounting.
+    #[command(hide = true)]
     UsageScan(UsageScanArgs),
     /// What each agent is doing: working, idle, or blocked on a named
     /// resource held by a named agent.
@@ -745,6 +751,7 @@ enum Command {
     #[command(hide = true)]
     CodexQueueUpgrade(codex_input::external::upgrade::Args),
     /// Review retained Codex input and explicitly confirm readback or start its queued entry.
+    #[command(hide = true)]
     CodexQueueResolve(codex_input::external::resolve::Args),
     /// Start the agents in an Agentfile.toml that are not already running.
     Up {

@@ -218,7 +218,7 @@ impl Daemon {
             created_at: checkpoint.created_at,
             imported_at: None,
         };
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::HandoffSent {
                 from: from.clone(),
                 to: bundle.to.clone(),
@@ -226,15 +226,15 @@ impl Daemon {
             },
             Utc::now(),
         );
-        event.seq = state.next_seq;
-        let _ = state.persist("handoff", |store| {
-            store.put_document_with_event("handoff", &id, &bundle, &event)
-        });
+        let _ = state.transition(
+            "handoff",
+            event,
+            |store, event| store.put_document_with_event("handoff", &id, &bundle, event),
+            |_| {},
+        );
         if let Some(error) = state.write_failure() {
             return error;
         }
-        state.next_seq += 1;
-        let _ = state.events.send(event);
         let headline = bundle.headline(recipient.as_ref().map(|r| r.spec.name.as_str()));
         if let Some(recipient) = &recipient {
             state.send(
@@ -392,22 +392,22 @@ impl Daemon {
             accepted_by: None,
             release_leases: true,
         };
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::HandoffImported {
                 agent: agent.clone(),
                 handoff: bundle.id.clone(),
             },
             now,
         );
-        event.seq = state.next_seq;
-        let _ = state.persist("handoff import", |store| {
-            store.import_handoff(&checkpoint, &bundle, &event)
-        });
+        let _ = state.transition(
+            "handoff import",
+            event,
+            |store, event| store.import_handoff(&checkpoint, &bundle, event),
+            |_| {},
+        );
         if let Some(error) = state.write_failure() {
             return error;
         }
-        state.next_seq += 1;
-        let _ = state.events.send(event);
         state.send(
             USER_READER.to_owned(),
             Destination::Agent(agent.clone()),

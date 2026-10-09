@@ -1266,6 +1266,12 @@ pub enum Response {
         pid: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         executable: Option<std::path::PathBuf>,
+        /// The experimental switches as this daemon applies them, from its
+        /// `agentd.toml` and environment, so `daemon status` can say how
+        /// each stands and a bridge or hook follows the daemon's word.
+        /// Absent from a daemon older than the switches.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        experimental: Option<crate::config::ExperimentalConfig>,
     },
     Agent {
         agent: AgentRecord,

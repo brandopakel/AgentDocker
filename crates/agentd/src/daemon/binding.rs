@@ -536,18 +536,15 @@ impl State {
             return false;
         }
         let mut record = record.clone();
-        let mut event = Event::new(change(&mut record), now);
-        event.seq = self.next_seq;
-        if self.persist("controller restart", |store| {
-            store.agent_transition(&record, &event)
-        }) != Persisted::Committed
-        {
-            return false;
-        }
-        *self.registry.get_mut(id).expect("resolved agent") = record;
-        self.next_seq += 1;
-        let _ = self.events.send(event);
-        true
+        let event = Event::new(change(&mut record), now);
+        self.transition(
+            "controller restart",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                *state.registry.get_mut(id).expect("resolved agent") = record.clone();
+            },
+        ) == Persisted::Committed
     }
 
     pub(super) fn bind_input(
@@ -718,7 +715,7 @@ impl State {
             .collect();
         binding.uncertain.retain(|m| queued.contains(m));
         record.input_binding = Some(binding.clone());
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::InputBound {
                 agent: id.clone(),
                 controller,
@@ -726,18 +723,19 @@ impl State {
             },
             now,
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("input binding", |store| {
-            store.agent_transition(&record, &event)
-        });
+        let committed = self.transition(
+            "input binding",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                *state.registry.get_mut(&id).expect("resolved agent") = record.clone();
+            },
+        );
         if committed != Persisted::Committed {
             return self
                 .write_failure()
                 .expect("refused input binding write has a reason");
         }
-        *self.registry.get_mut(&id).expect("resolved agent") = record;
-        self.next_seq += 1;
-        let _ = self.events.send(event);
         Response::InputBound {
             agent: id,
             binding,
@@ -870,7 +868,7 @@ impl State {
             agentdocker_core::input::PAUSE_RECEIVER_UPGRADING,
             now,
         );
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::InputControllerUpgraded {
                 agent: id.clone(),
                 controller: controller.clone(),
@@ -879,21 +877,22 @@ impl State {
             },
             now,
         );
-        event.seq = self.next_seq;
-        if self.persist("controller upgrade", |store| {
-            store.agent_transition(&record, &event)
-        }) != Persisted::Committed
-        {
+        let committed = self.transition(
+            "controller upgrade",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                *state.registry.get_mut(&id).expect("resolved agent") = record.clone();
+                if let Some(pin) = next_pin {
+                    state.controller_pins.insert(id.clone(), pin);
+                } else {
+                    state.controller_pins.remove(&id);
+                }
+            },
+        );
+        if committed != Persisted::Committed {
             return self.write_failure().expect("refused upgrade has a reason");
         }
-        *self.registry.get_mut(&id).expect("resolved agent") = record;
-        self.next_seq += 1;
-        if let Some(pin) = next_pin {
-            self.controller_pins.insert(id.clone(), pin);
-        } else {
-            self.controller_pins.remove(&id);
-        }
-        let _ = self.events.send(event);
         // The durable descriptor now names the successor. Normal supervision
         // waits for the old process to end and for its ledger lock to be free.
         // The next supervision tick executes the persisted stop intent. Keeping
@@ -951,29 +950,30 @@ impl State {
         let launched = binding.restart.launched.clone();
         let mut record = record.clone();
         record.input_binding = None;
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::InputUnbound {
                 agent: id.clone(),
                 reason: reason.to_owned(),
             },
             now,
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("input unbinding", |store| {
-            store.agent_transition(&record, &event)
-        });
+        let committed = self.transition(
+            "input unbinding",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                *state.registry.get_mut(&id).expect("resolved agent") = record.clone();
+                state.controller_pins.remove(&id);
+                if let Some(launched) = &launched {
+                    signal(launched, false);
+                }
+            },
+        );
         if committed != Persisted::Committed {
             return self
                 .write_failure()
                 .expect("refused input unbinding write has a reason");
         }
-        *self.registry.get_mut(&id).expect("resolved agent") = record;
-        self.controller_pins.remove(&id);
-        if let Some(launched) = launched {
-            signal(&launched, false);
-        }
-        self.next_seq += 1;
-        let _ = self.events.send(event);
         Response::Ok
     }
 
@@ -1220,7 +1220,7 @@ impl State {
             retired_name: Some(caller.spec.name.clone()),
             reconciled_at: now,
         };
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::InputResumed {
                 agent: prior.id.clone(),
                 retired: caller.id.clone(),
@@ -1228,10 +1228,25 @@ impl State {
             },
             now,
         );
-        event.seq = self.next_seq;
-        let committed = self.persist("input resume", |store| {
-            store.resume_input(&canonical, &alias, &event)
-        });
+        let committed = self.transition(
+            "input resume",
+            event,
+            |store, event| store.resume_input(&canonical, &alias, event),
+            |state| {
+                if let Err(error) = state.registry.retire_into(&caller.id, &prior.id) {
+                    // Checked above; the store has the alias, memory must follow.
+                    error!(%error, "retiring a resumed record");
+                }
+                *state.registry.get_mut(&prior.id).expect("prior record") = canonical.clone();
+                let moved: usize = merged.iter().map(message_bytes).sum();
+                state.inboxes.remove(&caller.id);
+                state.inbox_bytes.remove(&caller.id);
+                state
+                    .inboxes
+                    .insert(prior.id.clone(), merged.into_iter().collect());
+                state.inbox_bytes.insert(prior.id.clone(), moved);
+            },
+        );
         if committed != Persisted::Committed {
             self.controller_pins.remove(&prior.id);
             if let Some(pin) = previous_pin {
@@ -1241,19 +1256,6 @@ impl State {
                 .write_failure()
                 .expect("refused input resume write has a reason");
         }
-        if let Err(error) = self.registry.retire_into(&caller.id, &prior.id) {
-            // Checked above; the store has the alias, memory must follow.
-            error!(%error, "retiring a resumed record");
-        }
-        *self.registry.get_mut(&prior.id).expect("prior record") = canonical;
-        let moved: usize = merged.iter().map(message_bytes).sum();
-        self.inboxes.remove(&caller.id);
-        self.inbox_bytes.remove(&caller.id);
-        self.inboxes
-            .insert(prior.id.clone(), merged.into_iter().collect());
-        self.inbox_bytes.insert(prior.id.clone(), moved);
-        self.next_seq += 1;
-        let _ = self.events.send(event);
         Response::InputResumed {
             agent: prior.id,
             retired: caller.id,

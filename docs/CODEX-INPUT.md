@@ -736,7 +736,7 @@ Before entry it must explain that Codex and the selected model receive the value
 and may retain it. Mixed bundles must not send their secret fields through the
 ordinary persisted answer route. The bounded local daemon broker, pipe-only
 administration commands, managed-provider producer, durable metadata fence and
-masked desktop entry are connected behind `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`.
+masked desktop entry are connected behind `[experimental] secret_input = true` in `agentd.toml` (or `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` on the bridge).
 Default and native sessions, plus unsupported interactive console modes, still
 refuse secret bundles. While either kind of review is pending, a conflicting
 secret/ordinary request gets an error without replacing the first review or
@@ -1054,8 +1054,15 @@ The owned bridge now retains one additional steering attempt independently of
 the message that started the turn. Its complete input is persisted before the
 provider call; only an exact item receipt permits queue acknowledgement. Lost
 replies retain the attempt for history reconciliation. A definite active-turn
-precondition refusal leaves the message eligible for a later ordinary turn.
-Other errors do not permit resubmission. Active-turn steering was introduced in bridge ledger version 10;
+precondition refusal leaves the message eligible for a later ordinary turn: the
+server's structured `activeTurnNotSteerable` (a review or compaction turn), or
+the two documented preconditions it still states only in words.
+Other errors do not permit resubmission. A `turn/start` the server answers with
+an error of its own is its word that no turn started: the prepared input is
+dropped and the message stays queued with the provider's structured reason on
+the record; a timeout or a closed pipe is retained for receipt recovery. Both
+loops refuse an app-server older than 0.154.0 at `initialize`, naming both
+versions, before any thread is touched. Active-turn steering was introduced in bridge ledger version 10;
 existing version 1–9 records retain their inputs when upgraded.
 
 The installed Codex 0.154.0 API passed an isolated local-model trial: the second
@@ -1381,7 +1388,7 @@ of 58 form/54 URL process generations for 0.160 and 30 form/28 URL generations
 for 0.155.1. Both original failed URL reports remain indexed.
 
 A managed-only secret producer and metadata-only restart fence are implemented
-behind `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`. This development switch does not
+behind `[experimental] secret_input = true` in `agentd.toml` (or `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` on the bridge). This development switch does not
 establish full acceptance. Source `0433147b` passed actual Mac Codex0.160.1
 delivery through a private model, masked desktop entry and a synthetic PTY draft
 trial. No supplied value was found in AgentDocker state/logs; Codex retained it
