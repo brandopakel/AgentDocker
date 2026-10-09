@@ -112,6 +112,36 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_prepared_input_leaves_the_message_queued_and_an_accepted_one_stays() {
+        let home = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(home.path(), binding(home.path())).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        assert!(ledger.reject_prepared().is_err(), "nothing is prepared yet");
+        let message = message();
+        let input = ledger.prepare(&message).unwrap();
+        ledger.reject_prepared().unwrap();
+        assert!(ledger.record().attempt.is_none());
+        let again = ledger.prepare(&message).unwrap();
+        assert_eq!(input, again, "the same message can be prepared again later");
+        ledger.accept(&again, receipt()).unwrap();
+        assert!(
+            ledger.reject_prepared().is_err(),
+            "a receipt is the provider's word that the input was taken"
+        );
+        drop(ledger);
+        let reopened = Ledger::open(home.path(), binding(home.path())).unwrap();
+        assert!(
+            reopened
+                .record()
+                .attempt
+                .as_ref()
+                .unwrap()
+                .receipt
+                .is_some()
+        );
+    }
+
+    #[test]
     fn rejected_steering_leaves_the_message_eligible_for_a_later_ordinary_turn() {
         let home = tempfile::tempdir().unwrap();
         let mut ledger = Ledger::open(home.path(), binding(home.path())).unwrap();
@@ -1693,6 +1723,24 @@ impl Ledger {
 
     /// Called only for a definitive precondition rejection of turn/steer.
     /// Transport failures and unknown provider errors retain the attempt.
+    /// The server's word that the prepared input never became a turn: the
+    /// attempt is dropped and the message stays queued for a later turn.
+    /// An attempt with a receipt, or one acknowledged, is not prepared.
+    pub fn reject_prepared(&mut self) -> Result<()> {
+        let pending = self
+            .record
+            .attempt
+            .as_ref()
+            .context("no prepared input to reject")?;
+        ensure!(
+            pending.receipt.is_none() && !pending.acknowledged,
+            "accepted input cannot be rejected"
+        );
+        let mut next = self.record.clone();
+        next.attempt = None;
+        self.save(next)
+    }
+
     pub fn reject_steering(&mut self) -> Result<()> {
         let pending = self
             .record

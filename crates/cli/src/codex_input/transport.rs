@@ -22,13 +22,43 @@ impl std::error::Error for RpcRejection {}
 pub(super) enum SteeringRefusal {
     NoActiveTurn,
     ChangedTurn,
+    /// The active turn is a review or a compaction, which takes no
+    /// steering: the server says so in its structured error data.
+    NotSteerable,
 }
 
-/// Only documented active-turn preconditions prove non-submission. A different
-/// active turn additionally means ownership changed and delivery must pause.
+/// Whether the server answered a request with an error of its own: its
+/// word that the request did nothing, as opposed to a timeout or a closed
+/// pipe, after which what the request did is unknown.
+pub(super) fn rejected(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<RpcRejection>().is_some()
+}
+
+/// The server's structured error information, wherever it carries it.
+fn error_info(error: &Value) -> Option<&Value> {
+    error.get("codexErrorInfo").or_else(|| {
+        error
+            .get("data")
+            .and_then(|data| data.get("codexErrorInfo"))
+    })
+}
+
+/// Only the server's own refusals prove non-submission: the structured
+/// `activeTurnNotSteerable`, and the two documented active-turn
+/// preconditions, which it still says only in words. A different active
+/// turn additionally means ownership changed and delivery must pause.
+/// Any other error is unconfirmed, and the caller pauses rather than
+/// submits again.
 pub(super) fn steering_refusal(error: &anyhow::Error, expected: &str) -> Option<SteeringRefusal> {
     let rejection = error.downcast_ref::<RpcRejection>()?;
-    if rejection.method != "turn/steer" || rejection.error["code"].as_i64() != Some(-32600) {
+    if rejection.method != "turn/steer" {
+        return None;
+    }
+    if error_info(&rejection.error).is_some_and(|info| info.get("activeTurnNotSteerable").is_some())
+    {
+        return Some(SteeringRefusal::NotSteerable);
+    }
+    if rejection.error["code"].as_i64() != Some(-32600) {
         return None;
     }
     let message = rejection.error["message"].as_str()?;
@@ -60,6 +90,41 @@ pub(super) fn turns_list_not_ready(error: &anyhow::Error) -> bool {
             && r.error["code"].as_i64() == Some(-32601)
             && r.error["message"].as_str() == Some("list_turns is not supported yet")
     })
+}
+
+/// The oldest Codex app-server this input path was built against. What
+/// the bridge's preflight asks (`config/read` with layers, `hooks/list`),
+/// the receipt it proves from a `userMessage` item, the receiver's native
+/// queue (`thread/queue/*`) and the structured errors both read were tried
+/// on 0.154.0 (CODEX-INPUT.md). An older server is refused before any
+/// thread is touched, with what to do, rather than failing in the middle
+/// of a turn.
+pub(super) const OLDEST_SUPPORTED: semver::Version = semver::Version::new(0, 154, 0);
+
+/// The server's version from `initialize`'s `userAgent`
+/// (`codex_cli_rs/0.160.0 (Mac OS 15; arm64) Terminal`), when it says one
+/// this reader understands.
+pub(super) fn server_version(initialized: &Value) -> Option<semver::Version> {
+    let agent = initialized["userAgent"].as_str()?;
+    let (_, rest) = agent.split_once('/')?;
+    let token = rest
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ';')
+        .next()?;
+    semver::Version::parse(token).ok()
+}
+
+/// Refuse a server older than [`OLDEST_SUPPORTED`]. One that does not say
+/// its version proceeds: every call that needs a capability refuses for
+/// itself, and a newer server that dropped one is caught there.
+pub(super) fn check_supported(initialized: &Value) -> Result<()> {
+    if let Some(version) = server_version(initialized) {
+        ensure!(
+            version >= OLDEST_SUPPORTED,
+            "Codex {version} is older than the {OLDEST_SUPPORTED} this input path was built against; \
+             update Codex, or run it without AgentDocker input"
+        );
+    }
+    Ok(())
 }
 
 use std::{collections::VecDeque, path::Path, process::Stdio, time::Duration};
@@ -416,5 +481,96 @@ mod tests {
         );
         let mut partial = std::io::Cursor::new(b"{\"unterminated\":true}");
         assert!(read_frame(&mut partial, &mut Vec::new()).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod support_tests {
+    use super::*;
+
+    fn rejection(method: &str, error: Value) -> anyhow::Error {
+        anyhow::Error::new(crate::provider_status::Failure(
+            crate::provider_status::codex(&error),
+        ))
+        .context(RpcRejection {
+            method: method.into(),
+            error,
+        })
+    }
+
+    #[test]
+    fn the_version_floor_reads_the_user_agent_and_refuses_only_what_it_understands() {
+        let agent = |text: &str| json!({"userAgent": text, "codexHome": "/x"});
+        assert_eq!(
+            server_version(&agent("codex_cli_rs/0.160.0 (Mac OS 15.1; arm64) Terminal")),
+            Some(semver::Version::new(0, 160, 0))
+        );
+        assert_eq!(
+            server_version(&agent("codex_cli_rs/0.154.0")),
+            Some(semver::Version::new(0, 154, 0))
+        );
+        assert_eq!(server_version(&agent("Codex Desktop")), None);
+        assert_eq!(server_version(&json!({})), None);
+        assert!(check_supported(&agent("codex_cli_rs/0.154.0 (x)")).is_ok());
+        assert!(check_supported(&agent("codex_cli_rs/1.2.3 (x)")).is_ok());
+        assert!(
+            check_supported(&agent("something else")).is_ok(),
+            "an unreadable version proceeds; the capability probes refuse for themselves"
+        );
+        let refused = check_supported(&agent("codex_cli_rs/0.153.4 (Linux; x86_64) Terminal"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("0.153.4") && refused.contains("0.154.0"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn steering_refusals_are_the_servers_own_structured_or_documented_words() {
+        let structured = rejection(
+            "turn/steer",
+            json!({"code": -32600, "message": "cannot steer a review turn",
+                "data": {"message": "cannot steer a review turn",
+                    "codexErrorInfo": {"activeTurnNotSteerable": {"turnKind": "review"}}}}),
+        );
+        assert_eq!(
+            steering_refusal(&structured, "turn-1"),
+            Some(SteeringRefusal::NotSteerable)
+        );
+        let none = rejection(
+            "turn/steer",
+            json!({"code": -32600, "message": "no active turn to steer"}),
+        );
+        assert_eq!(
+            steering_refusal(&none, "turn-1"),
+            Some(SteeringRefusal::NoActiveTurn)
+        );
+        let changed = rejection(
+            "turn/steer",
+            json!({"code": -32600, "message": "expected active turn id `turn-1` but found `turn-2`"}),
+        );
+        assert_eq!(
+            steering_refusal(&changed, "turn-1"),
+            Some(SteeringRefusal::ChangedTurn)
+        );
+        let other = rejection(
+            "turn/steer",
+            json!({"code": -32603, "message": "failed to submit turn input: Busy"}),
+        );
+        assert_eq!(
+            steering_refusal(&other, "turn-1"),
+            None,
+            "unconfirmed: the caller pauses"
+        );
+        let started = rejection(
+            "turn/start",
+            json!({"code": -32600, "message": "no active turn to steer"}),
+        );
+        assert_eq!(steering_refusal(&started, "turn-1"), None);
+        assert!(rejected(&other) && rejected(&started));
+        assert!(!rejected(&anyhow::anyhow!(
+            "Codex turn/start reply timed out"
+        )));
     }
 }
