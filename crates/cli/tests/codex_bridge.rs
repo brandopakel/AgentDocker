@@ -51,17 +51,53 @@ fn main() {
             an_existing_codex_session_is_fed_through_its_native_queue_with_a_proved_receipt,
         ),
     ];
-    let filter = std::env::args()
-        .skip(1)
-        .find(|argument| !argument.starts_with("--"));
-    let (mut passed, mut failed) = (0, 0);
-    for (name, test) in tests {
-        if filter
-            .as_deref()
-            .is_some_and(|wanted| !name.contains(wanted))
-        {
-            continue;
+    // The libtest command line that `cargo test` and nextest speak:
+    // `--list --format terse` wants one `name: test` line per test and
+    // nothing else; `--exact <name> --nocapture` runs that test alone;
+    // `--ignored` selects ignored tests, of which there are none.
+    let mut arguments = std::env::args().skip(1);
+    let (mut list, mut exact, mut ignored_only) = (false, false, false);
+    let mut filters = Vec::new();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--list" => list = true,
+            "--exact" => exact = true,
+            "--ignored" => ignored_only = true,
+            "--format" | "--test-threads" | "--skip" | "--logfile" | "-Z" | "--color" => {
+                arguments.next();
+            }
+            other if other.starts_with('-') => {}
+            other => filters.push(other.to_owned()),
         }
+    }
+    let selected: Vec<&(&str, fn())> = tests
+        .iter()
+        .filter(|(name, _)| {
+            filters.is_empty()
+                || filters.iter().any(|wanted| {
+                    if exact {
+                        name == wanted
+                    } else {
+                        name.contains(wanted.as_str())
+                    }
+                })
+        })
+        .collect();
+    if list {
+        if !ignored_only {
+            for (name, _) in &selected {
+                println!("{name}: test");
+            }
+        }
+        return;
+    }
+    if ignored_only {
+        println!("\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed");
+        return;
+    }
+    println!("\nrunning {} tests", selected.len());
+    let (mut passed, mut failed) = (0, 0);
+    for (name, test) in selected {
         print!("test {name} ... ");
         match std::panic::catch_unwind(test) {
             Ok(()) => {
