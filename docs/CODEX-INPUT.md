@@ -1054,8 +1054,15 @@ The owned bridge now retains one additional steering attempt independently of
 the message that started the turn. Its complete input is persisted before the
 provider call; only an exact item receipt permits queue acknowledgement. Lost
 replies retain the attempt for history reconciliation. A definite active-turn
-precondition refusal leaves the message eligible for a later ordinary turn.
-Other errors do not permit resubmission. Active-turn steering was introduced in bridge ledger version 10;
+precondition refusal leaves the message eligible for a later ordinary turn: the
+server's structured `activeTurnNotSteerable` (a review or compaction turn), or
+the two documented preconditions it still states only in words.
+Other errors do not permit resubmission. A `turn/start` the server answers with
+an error of its own is its word that no turn started: the prepared input is
+dropped and the message stays queued with the provider's structured reason on
+the record; a timeout or a closed pipe is retained for receipt recovery. Both
+loops refuse an app-server older than 0.154.0 at `initialize`, naming both
+versions, before any thread is touched. Active-turn steering was introduced in bridge ledger version 10;
 existing version 1–9 records retain their inputs when upgraded.
 
 The installed Codex 0.154.0 API passed an isolated local-model trial: the second
