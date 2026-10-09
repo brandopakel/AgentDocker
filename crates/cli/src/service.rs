@@ -788,6 +788,7 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                     restricted,
                     pid,
                     executable,
+                    experimental,
                 }) => {
                     println!(
                         "daemon    agentd {version} up {} at {}{}",
@@ -797,6 +798,16 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                     );
                     if let Some(executable) = executable {
                         println!("serving   {}", executable.display());
+                    }
+                    if let Some(switches) = experimental {
+                        println!(
+                            "switches  experimental: {} ([experimental] in {})",
+                            switches.summary(),
+                            layout
+                                .home
+                                .join(agentdocker_core::config::FILE_NAME)
+                                .display()
+                        );
                     }
                     match restricted {
                         Some(path) => println!("container {}", path.display()),

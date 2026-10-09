@@ -20,7 +20,7 @@ use std::path::Path;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use agentdocker_core::config::{DaemonConfig, WebhookConfig, WebhookFormat};
+use agentdocker_core::config::{WebhookConfig, WebhookFormat};
 use agentdocker_core::{Event, EventKind, ProjectId};
 use hmac::{Hmac, Mac};
 use serde::Serialize;
@@ -562,16 +562,6 @@ fn digest(secret: &[u8]) -> [u8; 32] {
 
 /// A TOML problem without its snippet: the file may hold an address
 /// whose query carries a credential, and a log is not the place for it.
-fn redacted(error: &toml::de::Error) -> String {
-    match error.span() {
-        Some(span) => format!(
-            "agentd.toml is not valid TOML at bytes {}..{}",
-            span.start, span.end
-        ),
-        None => "agentd.toml is not valid TOML".to_owned(),
-    }
-}
-
 impl Daemon {
     /// Start, restart or stop the sinks from `agentd.toml`. Called at
     /// start and every few seconds: an unchanged configuration and
@@ -579,23 +569,12 @@ impl Daemon {
     /// and starts anew under the next generation; an unreadable file or
     /// secret keeps the last good sinks running and says so once.
     pub async fn reload_webhooks(self: &Arc<Self>) {
-        use agentdocker_core::config::FILE_NAME;
-        let path = self.home.join(FILE_NAME);
+        let home = self.home.clone();
         // Everything that touches the disk happens off the runtime: the
         // file, and every secret through a verified handle.
         let read = tokio::task::spawn_blocking(
             move || -> Result<Vec<(WebhookConfig, Vec<u8>)>, String> {
-                let text = match std::fs::read_to_string(&path) {
-                    Ok(text) => text,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        return Ok(Vec::new());
-                    }
-                    Err(error) => {
-                        return Err(format!("cannot read {}: {}", path.display(), error.kind()));
-                    }
-                };
-                let config: DaemonConfig =
-                    toml::from_str(&text).map_err(|error| redacted(&error))?;
+                let config = crate::config::read(&home)?;
                 let sinks = config.webhooks()?;
                 sinks
                     .iter()

@@ -36,6 +36,23 @@ pub struct Args {
     command: Vec<String>,
 }
 
+/// The experimental switches as the daemon applies them, with this
+/// process's environment on top. A daemon older than the switches, or one
+/// that does not answer in time, leaves the defaults.
+pub(crate) async fn experimental(client: &Client) -> agentdocker_core::config::ExperimentalConfig {
+    let reported =
+        match tokio::time::timeout(Duration::from_millis(250), client.call_raw(&Request::Ping))
+            .await
+        {
+            Ok(Ok(Response::Pong {
+                experimental: Some(switches),
+                ..
+            })) => switches,
+            _ => Default::default(),
+        };
+    reported.with_env(|name| std::env::var(name).ok())
+}
+
 async fn call(client: &Client, request: Request) -> Result<Response> {
     timeout(Duration::from_secs(5), client.call(&request))
         .await
@@ -371,8 +388,7 @@ async fn session(
     let mut secrets = secret_requests::Session::new(agent)?;
     // Interactive routes require the bounded editor to own terminal echo.
     // Windows console input keeps refusing until it has equivalent mode control.
-    let secret_input = std::env::var("AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT").as_deref() == Ok("1")
-        && (!input_open || terminal_editing);
+    let secret_input = experimental(client).await.secret_input && (!input_open || terminal_editing);
     loop {
         tokio::select! {
             event = question_events.next() => { requests::observe(ledger, &event?)?; }

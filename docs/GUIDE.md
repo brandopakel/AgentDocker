@@ -595,8 +595,8 @@ be set.
 | `AGENTDOCKER_NO_NOTIFICATIONS=1` | daemon | Post no desktop notifications. |
 | `AGENTDOCKER_UPDATE_FEED` | `desktop update` | A feed other than the published one, as a URL or a file, for an offline trial. |
 | `AGENTDOCKER_STARTUP_TRACE=1` | daemon | Print each startup stage and its elapsed time to stderr before the log exists. |
-| `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` | daemon | Permit `daemon reload`, the live replacement that is still under acceptance. |
-| `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` | Codex bridge | Enable the temporary secret-input broker, likewise. |
+| `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` | daemon | The same as `[experimental] reload = true` in `agentd.toml`, for one daemon process: permit `daemon reload`, the live replacement that is still under acceptance. |
+| `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` | Codex bridge | The same as `[experimental] secret_input = true`, for one bridge process: enable the temporary secret-input broker. |
 | `AGENTDOCKER_INSTALL`, `AGENTDOCKER_INSTALL_DIR`, `AGENTDOCKER_VERSION` | `install.sh` | Which route (`cli` or `desktop`), where, and which release to pin. |
 | `AGENTDOCKER_CAMPAIGN_LEASE`, `AGENTDOCKER_CAMPAIGN_WAIT`, `AGENTDOCKER_CAMPAIGN_RENEW_SECS`, `AGENTDOCKER_FUZZ_ROOT` | `scripts/verify.sh` | The build-campaign lease on a shared machine, and where a fuzz campaign keeps its fixtures. |
 
@@ -743,11 +743,32 @@ The log on disk is never rewritten. A validation log is evidence:
 `integrate` refuses source that has not passed, and the log is how
 somebody checks that claim later. Evidence is kept whole.
 
+### Experimental switches
+
+What is in source and complete but still under acceptance on real binaries is
+switched in one place, `[experimental]` in `~/.agentdocker/agentd.toml`:
+
+```toml
+[experimental]
+reload = false        # `daemon reload`, the live replacement of the daemon
+secret_input = false  # the managed Codex bridge's secret-input broker
+native_codex = true   # the receiver for an existing Codex terminal session
+```
+
+`daemon status` says how each stands. The first two are off until the file
+turns them on; the variables they had before the file
+(`AGENTDOCKER_EXPERIMENTAL_RELOAD=1` on the daemon,
+`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` on a bridge) still turn one on for
+that process. The third is on, as it has been since it shipped: with
+`native_codex = false`, an existing Codex session gets its messages at tool
+boundaries through its hooks and no receiver is started for it. The file is
+read by the daemon; a bridge or a hook asks the daemon how the switches stand.
+
 ### Planned daemon replacement
 
-`agentdocker daemon reload` requires `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` on the
-running daemon; without that gate it returns `unavailable` and leaves the daemon
-and agents running. The gated implementation transfers coordinator ownership to
+`agentdocker daemon reload` requires `[experimental] reload = true` in the running
+daemon's `agentd.toml` (or `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` in its environment);
+without that gate it returns `unavailable` and leaves the daemon and agents running. The gated implementation transfers coordinator ownership to
 a checked successor while session owners retain managed processes and I/O.
 Broader actual-provider, attached-draft and uncertain-delivery acceptance remains
 open, so the gate stays experimental. See the
@@ -762,6 +783,11 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- The experimental switches have one home: `[experimental]` in
+  `~/.agentdocker/agentd.toml` (`reload`, `secret_input`, `native_codex`),
+  reported by `daemon status`. The environment variables they had still turn
+  one on for a process; `native_codex = false` leaves an existing Codex
+  session to its hooks, with no receiver started for it.
 - `agentdocker --help` lists the commands a person types. The ones only an
   adapter or an administrator runs (`heartbeat`, `report-activity`,
   `report-adapter`, `report-input`, `identity-repair`, `secret-review`,
@@ -1005,9 +1031,9 @@ It prints no answer. A failed or uncertain submission must not be resent
 without inspecting the request state. Codex and its selected model receive the
 answers and may retain or repeat them into ordinary output history.
 
-Managed Codex can use this broker through the development switch
-`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`; default and native-input sessions still
-refuse secret bundles. Interactive managed terminals also require AgentDocker to
+Managed Codex can use this broker once `[experimental] secret_input = true` is in
+the daemon's `agentd.toml` (or `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` is in the
+bridge's environment); default and native-input sessions still refuse secret bundles. Interactive managed terminals also require AgentDocker to
 control echo, so Windows console secret input remains refused.
 
 The experimental managed secret route also has masked desktop entry with a
