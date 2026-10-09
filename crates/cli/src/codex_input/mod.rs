@@ -303,7 +303,8 @@ async fn session(
     // Checking this before starting a thread keeps old daemons from launching
     // an input mode whose consumer reservation they do not understand.
     queue(client, ledger, Vec::new()).await?;
-    provider.initialize().await?;
+    let initialized = provider.initialize().await?;
+    transport::check_supported(&initialized)?;
     let effective = preflight(provider, &ledger.record().binding.cwd).await?;
     let overrides = config::overrides(
         &effective,
@@ -537,14 +538,16 @@ async fn session(
                                 "Codex steering response named another turn; input retained"),
                             Err(error) => match transport::steering_refusal(&error, active) {
                                 Some(refusal) => {
-                                    // Both preconditions prove non-submission, so the
+                                    // Each refusal proves non-submission, so the
                                     // message stays queued without an uncertain receipt.
                                     ledger.reject_steering()?;
                                     if refusal == transport::SteeringRefusal::ChangedTurn {
                                         bail!("Codex has a different active turn; input delivery paused and the message remains queued until conversation recovery");
                                     }
                                     // A just-finished turn may still have its completion
-                                    // buffered. Do not offer again until it is observed.
+                                    // buffered, and a review or compaction takes no
+                                    // steering: do not offer again until this turn's
+                                    // completion is observed.
                                     refused_steering = Some(active.to_owned());
                                 }
                                 None => return Err(error.context("Codex steering is unconfirmed; input retained for receipt recovery")),
@@ -570,6 +573,14 @@ async fn session(
                         "input":[{"type":"text","text":input,"text_elements":[]}]})).await {
                         Ok(result) => result,
                         Err(error) => {
+                            // An error reply is the server's word that no turn
+                            // started: the prepared input is dropped and the
+                            // message stays queued for a later turn. Anything
+                            // else (a timeout, a closed pipe) is uncertain and
+                            // retained for receipt recovery.
+                            if transport::rejected(&error) {
+                                ledger.reject_prepared()?;
+                            }
                             if let Some(failure) = error.downcast_ref::<crate::provider_status::Failure>() {
                                 crate::provider_status::report(client, agent, agentdocker_core::ProviderReport::Blocked {
                                     issue: failure.0.clone(),

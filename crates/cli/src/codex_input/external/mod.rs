@@ -210,6 +210,7 @@ async fn verify_provider_with_birth(
     pristine: bool,
 ) -> Result<()> {
     let initialized = provider.initialize().await?;
+    super::transport::check_supported(&initialized)?;
     if binding.remote.is_some() {
         ensure!(
             initialized["codexHome"]
