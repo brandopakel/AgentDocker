@@ -1,16 +1,16 @@
 //! One durable provider input attempt. Queue acknowledgement follows an exact
 //! provider receipt; a prepared attempt can never be submitted automatically again.
 use super::{
+    durable::Durable,
     mcp_answers::{Answer, Origin},
     review::{self, Closed, Pending},
 };
 use agentdocker_core::{Envelope, MessageId};
-use agentdocker_host::{dirs, lock};
+use agentdocker_host::dirs;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
-    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -33,6 +33,7 @@ pub(super) struct Binding {
 mod tests {
     use super::*;
     use agentdocker_core::Destination;
+    use std::io::Read;
     fn binding(home: &Path) -> Binding {
         Binding {
             agent: "owned-agent".into(),
@@ -74,7 +75,7 @@ mod tests {
         assert!(ledger.prepare_steering(&first, "turn").is_err());
         assert!(ledger.prepare_steering(&next, "wrong").is_err());
         let steering = ledger.prepare_steering(&next, "turn").unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         let prepared = std::fs::read(&path).unwrap();
         drop(ledger);
         let mut ledger = Ledger::open(home.path(), binding).unwrap();
@@ -135,7 +136,7 @@ mod tests {
         ledger.bind_thread("thread".into()).unwrap();
         let first = message();
         let input = ledger.prepare(&first).unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         drop(ledger);
         let mut old: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -167,7 +168,7 @@ mod tests {
         let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
         ledger.bind_thread("thread".into()).unwrap();
         let input = ledger.prepare(&message).unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         let before = std::fs::read(&path).unwrap();
         assert!(ledger.acknowledge(message.id.as_str()).is_err());
         assert!(ledger.prepare(&message).is_err());
@@ -198,7 +199,7 @@ mod tests {
         let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
         assert!(Ledger::open(home.path(), binding.clone()).is_err());
         ledger.bind_thread("thread".into()).unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         drop(ledger);
         let mut other = binding.clone();
         other.provider_home = home.path().join("different");
@@ -222,12 +223,12 @@ mod tests {
         let binding = binding(home.path());
         let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
         ledger.bind_thread("thread".into()).unwrap();
-        let before = std::fs::read(&ledger.path).unwrap();
-        let mut reader = agentdocker_host::files::open_regular(&ledger.path).unwrap();
+        let before = std::fs::read(ledger.file.path()).unwrap();
+        let mut reader = agentdocker_host::files::open_regular(ledger.file.path()).unwrap();
         let message = message();
         let input = ledger.prepare(&message).unwrap();
         let mut after = Vec::new();
-        dirs::read_private_file(&ledger.path)
+        dirs::read_private_file(ledger.file.path())
             .unwrap()
             .read_to_end(&mut after)
             .unwrap();
@@ -242,7 +243,7 @@ mod tests {
         assert_eq!(attempt.message, message.id.as_str());
         assert_eq!(attempt.input, input);
         assert!(reopened.prepare(&message).is_err());
-        assert_eq!(std::fs::read(&reopened.path).unwrap(), after);
+        assert_eq!(std::fs::read(reopened.file.path()).unwrap(), after);
     }
 
     #[test]
@@ -256,9 +257,9 @@ mod tests {
         ledger.bind_thread("thread".into()).unwrap();
         let message = message();
         let input = ledger.prepare(&message).unwrap();
-        let before = std::fs::read(&ledger.path).unwrap();
+        let before = std::fs::read(ledger.file.path()).unwrap();
         assert!(ledger.discard_unused_thread().is_err());
-        assert_eq!(std::fs::read(&ledger.path).unwrap(), before);
+        assert_eq!(std::fs::read(ledger.file.path()).unwrap(), before);
         ledger.accept(&input, receipt()).unwrap();
         ledger.acknowledge(message.id.as_str()).unwrap();
         ledger.finish("turn").unwrap();
@@ -280,11 +281,11 @@ mod tests {
                 item: format!("item-{index}"),
             };
             ledger.accept(&input, receipt.clone()).unwrap();
-            let before = std::fs::read(&ledger.path).unwrap();
+            let before = std::fs::read(ledger.file.path()).unwrap();
             let mut wrong = receipt.clone();
             wrong.item.push('x');
             assert!(ledger.accept(&input, wrong).is_err());
-            assert_eq!(std::fs::read(&ledger.path).unwrap(), before);
+            assert_eq!(std::fs::read(ledger.file.path()).unwrap(), before);
             ledger.acknowledge(message.id.as_str()).unwrap();
             ledger.finish(&receipt.turn).unwrap();
         }
@@ -301,7 +302,7 @@ mod tests {
             ledger.bind_thread("thread".into()).unwrap();
             let message = message();
             let input = ledger.prepare(&message).unwrap();
-            let path = ledger.path.clone();
+            let path = ledger.file.path().to_path_buf();
             drop(ledger);
             let mut legacy: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -356,7 +357,7 @@ mod tests {
                 Ok(true)
             })
             .unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         drop(ledger);
         let original = std::fs::read(&path).unwrap();
         let mut old: serde_json::Value = serde_json::from_slice(&original).unwrap();
@@ -414,7 +415,7 @@ mod tests {
                 Ok(true)
             })
             .unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         drop(ledger);
         let original = std::fs::read(&path).unwrap();
         let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
@@ -459,7 +460,7 @@ mod tests {
                 Ok(true)
             })
             .unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         drop(ledger);
         let original = std::fs::read(&path).unwrap();
         let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
@@ -510,7 +511,7 @@ mod tests {
                     Ok(true)
                 })
                 .unwrap();
-            let path = ledger.path.clone();
+            let path = ledger.file.path().to_path_buf();
             drop(ledger);
             let original = std::fs::read(&path).unwrap();
             let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
@@ -561,7 +562,7 @@ mod tests {
                     Ok(true)
                 })
                 .unwrap();
-            let path = ledger.path.clone();
+            let path = ledger.file.path().to_path_buf();
             drop(ledger);
             let original = std::fs::read(&path).unwrap();
             let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
@@ -615,7 +616,7 @@ mod tests {
                         Ok(true)
                     })
                     .unwrap();
-                let path = ledger.path.clone();
+                let path = ledger.file.path().to_path_buf();
                 let original = std::fs::read(&path).unwrap();
                 if !closed {
                     assert!(ledger.prepare(&message()).is_err());
@@ -691,7 +692,7 @@ mod tests {
                     Ok(true)
                 })
                 .unwrap();
-            let path = ledger.path.clone();
+            let path = ledger.file.path().to_path_buf();
             drop(ledger);
             let original = std::fs::read(&path).unwrap();
             let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
@@ -736,7 +737,7 @@ mod tests {
                 Ok(true)
             })
             .unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         drop(ledger);
         let original = std::fs::read(&path).unwrap();
         let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
@@ -781,7 +782,7 @@ mod tests {
                 Ok(true)
             })
             .unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         drop(ledger);
         let mut legacy: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -817,7 +818,7 @@ mod tests {
                 Ok(true)
             })
             .unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         drop(ledger);
         let mut legacy: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -956,12 +957,12 @@ mod tests {
             .unwrap();
         drop(ledger);
         let mut ledger = Ledger::open(home.path(), binding).unwrap();
-        let before = std::fs::read(&ledger.path).unwrap();
+        let before = std::fs::read(ledger.file.path()).unwrap();
         assert!(
             ledger.prepare(&answer).is_err(),
             "retired question replies cannot become new input"
         );
-        assert_eq!(std::fs::read(&ledger.path).unwrap(), before);
+        assert_eq!(std::fs::read(ledger.file.path()).unwrap(), before);
         assert!(ledger.prepare(&message()).is_ok());
     }
 }
@@ -1017,8 +1018,7 @@ pub(super) struct Record {
 }
 
 pub(super) struct Ledger {
-    _owner: lock::Lock,
-    path: PathBuf,
+    file: Durable,
     record: Record,
 }
 
@@ -1346,24 +1346,16 @@ impl Ledger {
         dirs::secure_state_dir(&parent)?;
         let directory = parent.join(&binding.agent);
         dirs::secure_state_dir(&directory)?;
-        let lock_path = directory.join("owner.lock");
-        dirs::private_file(&lock_path, true, false)?;
-        let owner = lock::try_exclusive_existing(&lock_path)?
-            .context("another Codex input bridge already owns this agent")?;
-        let path = directory.join("delivery.json");
-        let mut record = match dirs::read_private_file(&path) {
-            Ok(file) => {
-                let mut data = Vec::new();
-                file.take((MAX_STATE_BYTES + 1) as u64)
-                    .read_to_end(&mut data)?;
-                ensure!(
-                    data.len() <= MAX_STATE_BYTES,
-                    "Codex delivery record exceeds its size limit"
-                );
-                serde_json::from_slice::<Record>(&data)
-                    .context("cannot read the retained Codex delivery record")?
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Record {
+        let file = Durable::open(
+            &directory,
+            "delivery.json",
+            MAX_STATE_BYTES,
+            "Codex delivery record",
+            "another Codex input bridge already owns this agent",
+        )?;
+        let mut record = match file.read::<Record>()? {
+            Some(record) => record,
+            None => Record {
                 version: VERSION,
                 binding: binding.clone(),
                 thread: None,
@@ -1376,15 +1368,10 @@ impl Ledger {
                 retired_questions: Vec::new(),
                 mcp_answers: VecDeque::new(),
             },
-            Err(error) => return Err(error.into()),
         };
         record.validate(&binding)?;
         record.version = VERSION;
-        Ok(Self {
-            _owner: owner,
-            path,
-            record,
-        })
+        Ok(Self { file, record })
     }
 
     pub fn record(&self) -> &Record {
@@ -1519,30 +1506,7 @@ impl Ledger {
 
     fn save(&mut self, next: Record) -> Result<()> {
         next.validate(&self.record.binding)?;
-        let bytes = serde_json::to_vec(&next)?;
-        ensure!(
-            bytes.len() <= MAX_STATE_BYTES,
-            "Codex delivery record exceeds its size limit"
-        );
-        // Validate an existing destination before replacing it. The private
-        // directory and lifetime ownership lock are shared by all bridge writers.
-        match dirs::read_private_file(&self.path) {
-            Ok(_) => (),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(error) => return Err(error.into()),
-        }
-        let directory = self
-            .path
-            .parent()
-            .context("delivery record has no directory")?;
-        let mut temporary =
-            tempfile::Builder::new().make_in(directory, dirs::create_private_file)?;
-        temporary.write_all(&bytes)?;
-        temporary.as_file().sync_all()?;
-        // Windows cannot open a directory as an ordinary file to sync it.
-        // The shared snapshot publisher also preserves concurrent readers of
-        // the prior ledger while replacing the flushed private record.
-        agentdocker_host::files::publish_snapshot(&temporary.into_temp_path(), &self.path)?;
+        self.file.publish(&next)?;
         // Failed persistence never advances the in-memory submission state.
         self.record = next;
         Ok(())
@@ -1828,7 +1792,7 @@ mod secret_fence_tests {
         other.turn = "other".into();
         assert!(ledger.open_secret_review(other).is_err());
         ledger.open_secret_review(fence.clone()).unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         let queued = Envelope::new(
             "peer",
             Destination::Agent("owned".into()),

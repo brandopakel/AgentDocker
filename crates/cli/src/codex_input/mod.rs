@@ -2,6 +2,7 @@
 mod availability;
 mod config;
 mod daemon_io;
+mod durable;
 pub mod external;
 mod file_changes;
 mod ledger;
