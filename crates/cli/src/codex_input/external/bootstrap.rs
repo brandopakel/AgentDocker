@@ -70,11 +70,6 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
     if agent.managed || agent.spec.runtime != "codex" {
         return Ok(false);
     }
-    // `[experimental] native_codex = false` leaves an existing session to
-    // its hooks: messages at tool boundaries, nothing started for it.
-    if !super::super::experimental(client).await.native_codex {
-        return Ok(false);
-    }
     // Installing a CLI does not replace an older active daemon. Probe a new
     // read-only operation before suppressing its still-working hook delivery.
     let capability = tokio::time::timeout(
@@ -94,6 +89,12 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
             return Ok(false);
         }
         _ => anyhow::bail!("daemon input ownership capability is unavailable"),
+    }
+    // `[experimental] native_codex = false` leaves an existing session to
+    // its hooks: messages at tool boundaries, nothing started for it. The
+    // daemon is asked only once it has shown it owns input at all.
+    if !super::super::experimental(client).await.native_codex {
+        return Ok(false);
     }
     let pid = agent.pid.context("Codex provider PID is unavailable")?;
     let birth = agent
@@ -311,5 +312,70 @@ mod tests {
             }
             task.await.unwrap();
         }
+    }
+
+    /// A daemon whose file says `native_codex = false` gets no receiver
+    /// started for an existing session: the hook asks it, after the
+    /// daemon has shown it owns input, and stands down.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_switch_off_leaves_an_existing_session_to_its_hooks() {
+        use agentdocker_core::{AgentSpec, Request, Response, config::ExperimentalConfig};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let home = tempfile::tempdir().unwrap();
+        let socket = home.path().join("agentd.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let task = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut stream = BufReader::new(stream);
+                let mut line = String::new();
+                stream.read_line(&mut line).await.unwrap();
+                let request: Request = serde_json::from_str(&line).unwrap();
+                let response = match &request {
+                    Request::PeekInput { .. } => Response::Messages {
+                        messages: Vec::new(),
+                    },
+                    Request::Ping => Response::Pong {
+                        version: "test".into(),
+                        uptime_secs: 1,
+                        restricted: None,
+                        pid: None,
+                        executable: None,
+                        experimental: Some(ExperimentalConfig {
+                            native_codex: false,
+                            ..ExperimentalConfig::default()
+                        }),
+                    },
+                    other => panic!("unexpected request {other:?}"),
+                };
+                seen.push(std::mem::discriminant(&request));
+                let mut reply = serde_json::to_vec(&response).unwrap();
+                reply.push(b'\n');
+                stream.get_mut().write_all(&reply).await.unwrap();
+            }
+            assert_eq!(
+                seen,
+                [
+                    std::mem::discriminant(&Request::PeekInput {
+                        agent: String::new()
+                    }),
+                    std::mem::discriminant(&Request::Ping)
+                ],
+                "the capability probe comes first, the switch second"
+            );
+        });
+        let client = Client::new(Some(socket)).with_start_timeout(None);
+        let agent = AgentRecord::new(
+            AgentSpec {
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            chrono::Utc::now(),
+        );
+        assert!(!ensure_started(&client, &agent).await.unwrap());
+        task.await.unwrap();
     }
 }
