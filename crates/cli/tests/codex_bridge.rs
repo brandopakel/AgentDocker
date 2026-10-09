@@ -26,6 +26,13 @@ fn main() {
     {
         std::process::exit(mock::serve());
     }
+    if std::env::args().nth(1).as_deref() == Some("idle-codex") {
+        // The existing Codex session of the receiver test: alive and idle,
+        // its executable this binary, until its stdin closes.
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        return;
+    }
     let tests: &[(&str, fn())] = &[
         (
             "a_queued_message_becomes_a_turn_with_a_receipt_proved_from_the_providers_item",
@@ -38,6 +45,10 @@ fn main() {
         (
             "an_app_server_older_than_the_floor_is_refused_before_any_thread_is_touched",
             an_app_server_older_than_the_floor_is_refused_before_any_thread_is_touched,
+        ),
+        (
+            "an_existing_codex_session_is_fed_through_its_native_queue_with_a_proved_receipt",
+            an_existing_codex_session_is_fed_through_its_native_queue_with_a_proved_receipt,
         ),
     ];
     let filter = std::env::args()
@@ -72,56 +83,83 @@ fn main() {
     }
 }
 
-/// The app-server the bridge talks to: enough of the protocol to start a
-/// thread, accept a turn, say which user item carried the input and end
-/// the turn. A turn whose text asks for a refusal is refused with the
-/// provider's structured usage-limit error.
+/// The app-server both loops talk to: enough of the protocol to start or
+/// read a thread, take a turn or a native queue entry, say which user item
+/// carried the input, and end the turn. A turn whose text asks for a
+/// refusal is refused with the provider's structured usage-limit error.
 mod mock {
     use super::TRANSCRIPT;
     use serde_json::{Value, json};
     use std::io::{BufRead, Write};
 
-    pub fn serve() -> i32 {
-        let transcript = std::env::var_os(TRANSCRIPT).expect("transcript path");
-        let mut log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(transcript)
-            .expect("transcript file");
-        let stdin = std::io::stdin();
-        let mut out = std::io::stdout().lock();
-        let cwd = std::env::current_dir().expect("cwd").display().to_string();
-        let mut turns = Vec::new();
-        for line in stdin.lock().lines() {
-            let Ok(line) = line else { break };
-            if line.trim().is_empty() {
-                continue;
-            }
-            writeln!(log, "{line}").expect("transcript write");
-            let value: Value = serde_json::from_str(&line).expect("a JSON frame");
-            let Some(id) = value.get("id").cloned() else {
-                // `initialized` and other notifications need no answer.
-                continue;
+    struct Server {
+        cwd: String,
+        turns: Vec<String>,
+        /// `{turnId, item}` entries in the order they happened.
+        items: Vec<Value>,
+    }
+
+    impl Server {
+        /// A turn the TUI runs for `text`: the user item that proves the
+        /// receipt, and the turn's completion.
+        fn run_turn(&mut self, text: &str) -> (String, String) {
+            let turn = format!("turn-{}", self.turns.len() + 1);
+            let item = format!("item-{}", self.turns.len() + 1);
+            self.turns.push(turn.clone());
+            self.items.push(
+                json!({"turnId": turn, "item": {"type": "userMessage", "id": item,
+                "content": [{"type": "text", "text": text, "text_elements": []}]}}),
+            );
+            (turn, item)
+        }
+
+        fn answer(&mut self, id: &Value, method: &str, params: &Value) -> Vec<Value> {
+            let ok = |result: Value| vec![json!({"id": id, "result": result})];
+            let refused = |code: i64, message: String, data: Value| {
+                vec![json!({"id": id, "error": {"code": code, "message": message, "data": data}})]
             };
-            let params = value["params"].clone();
-            let mut frames = Vec::new();
-            let mut reply = |result: Value| frames.push(json!({"id": id, "result": result}));
-            match value["method"].as_str().unwrap_or_default() {
-                "initialize" => reply(json!({
+            match method {
+                "initialize" => ok(json!({
                     "userAgent": format!("codex_cli_rs/{} (Mock 1.0.0; test) mock-app-server",
                         std::env::var(super::VERSION).unwrap_or_else(|_| "0.160.0".into())),
                     "codexHome": std::env::var("CODEX_HOME").unwrap_or_default(),
                     "platformFamily": "unix", "platformOs": "linux",
                 })),
-                "config/read" => reply(json!({"config": {"mcp_servers": {}}})),
-                "hooks/list" => reply(json!({"data": [{"cwd": params["cwds"][0], "errors": []}]})),
-                "thread/start" => {
-                    reply(json!({"thread": {"id": "thread-1", "cwd": params["cwd"]}}))
+                "config/read" => ok(json!({"config": {"mcp_servers": {}}})),
+                "hooks/list" => ok(json!({"data": [{"cwd": params["cwds"][0], "errors": []}]})),
+                "thread/start" => ok(json!({"thread": {"id": "thread-1", "cwd": params["cwd"]}})),
+                "thread/resume" | "thread/read" => {
+                    ok(json!({"thread": {"id": params["threadId"], "cwd": self.cwd}}))
                 }
-                "thread/resume" => reply(json!({"thread": {"id": params["threadId"], "cwd": cwd}})),
-                "thread/items/list" => reply(json!({"data": []})),
-                "thread/turns/list" => reply(json!({"data": turns.iter().rev().map(|turn: &String|
-                    json!({"id": turn, "status": "completed"})).collect::<Vec<_>>()})),
+                "thread/items/list" => {
+                    let wanted = params["turnId"].as_str().map(str::to_owned);
+                    let limit = params["limit"].as_u64().unwrap_or(50) as usize;
+                    let data: Vec<Value> = self
+                        .items
+                        .iter()
+                        .rev()
+                        .filter(|entry| {
+                            wanted.as_deref().is_none_or(|turn| entry["turnId"] == turn)
+                        })
+                        .take(limit)
+                        .cloned()
+                        .collect();
+                    ok(json!({"data": data}))
+                }
+                "thread/turns/list" => ok(json!({"data": self.turns.iter().rev()
+                    .map(|turn| json!({"id": turn, "status": "completed"})).collect::<Vec<_>>()})),
+                // The TUI takes every queue entry as soon as it is added.
+                "thread/queue/list" => ok(json!({"data": []})),
+                "thread/queue/add" => {
+                    let text = params["input"][0]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    let submission = json!({"id": format!("queued-{}", self.turns.len() + 1),
+                        "clientUserMessageId": params["clientUserMessageId"], "input": params["input"]});
+                    self.run_turn(&text);
+                    ok(json!({"queuedSubmission": submission}))
+                }
                 "turn/start" => {
                     let text = params["input"][0]["text"]
                         .as_str()
@@ -136,28 +174,59 @@ mod mock {
                         })
                         .unwrap_or_default();
                     if body.contains("refuse") {
-                        frames.push(json!({"id": id, "error": {
-                            "code": -32000, "message": "usage limit reached",
-                            "data": {"codexErrorInfo": "usageLimitExceeded"}}}));
-                    } else {
-                        let turn = format!("turn-{}", turns.len() + 1);
-                        let item = format!("item-{}", turns.len() + 1);
-                        turns.push(turn.clone());
-                        frames.push(json!({"id": id, "result": {"turn": {"id": turn}}}));
-                        frames.push(json!({"method": "item/started", "params": {
-                            "threadId": "thread-1", "turnId": turn,
-                            "item": {"type": "userMessage", "id": item,
-                                "content": [{"type": "text", "text": text, "text_elements": []}]}}}));
-                        frames.push(json!({"method": "turn/completed", "params": {
-                            "threadId": "thread-1", "turn": {"id": turn, "status": "completed"}}}));
+                        return refused(
+                            -32000,
+                            "usage limit reached".into(),
+                            json!({"codexErrorInfo": "usageLimitExceeded"}),
+                        );
                     }
+                    let (turn, item) = self.run_turn(&text);
+                    let mut frames = ok(json!({"turn": {"id": turn}}));
+                    frames.push(json!({"method": "item/started", "params": {
+                        "threadId": "thread-1", "turnId": turn,
+                        "item": {"type": "userMessage", "id": item,
+                            "content": [{"type": "text", "text": text, "text_elements": []}]}}}));
+                    frames.push(json!({"method": "turn/completed", "params": {
+                        "threadId": "thread-1", "turn": {"id": turn, "status": "completed"}}}));
+                    frames
                 }
-                "turn/steer" => frames.push(json!({"id": id, "error": {
-                    "code": -32600, "message": "no active turn to steer"}})),
-                other => frames.push(json!({"id": id, "error": {
-                    "code": -32601, "message": format!("{other} is not supported by the mock")}})),
+                "turn/steer" => refused(-32600, "no active turn to steer".into(), Value::Null),
+                other => refused(
+                    -32601,
+                    format!("{other} is not supported by the mock"),
+                    Value::Null,
+                ),
             }
-            for frame in frames {
+        }
+    }
+
+    pub fn serve() -> i32 {
+        let transcript = std::env::var_os(TRANSCRIPT).expect("transcript path");
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(transcript)
+            .expect("transcript file");
+        let stdin = std::io::stdin();
+        let mut out = std::io::stdout().lock();
+        let mut server = Server {
+            cwd: std::env::current_dir().expect("cwd").display().to_string(),
+            turns: Vec::new(),
+            items: Vec::new(),
+        };
+        for line in stdin.lock().lines() {
+            let Ok(line) = line else { break };
+            if line.trim().is_empty() {
+                continue;
+            }
+            writeln!(log, "{line}").expect("transcript write");
+            let value: Value = serde_json::from_str(&line).expect("a JSON frame");
+            let Some(id) = value.get("id") else {
+                // `initialized` and other notifications need no answer.
+                continue;
+            };
+            let method = value["method"].as_str().unwrap_or_default().to_owned();
+            for frame in server.answer(id, &method, &value["params"]) {
                 writeln!(out, "{frame}").expect("stdout");
             }
             out.flush().expect("stdout flush");
@@ -543,9 +612,171 @@ fn an_app_server_older_than_the_floor_is_refused_before_any_thread_is_touched() 
     );
 }
 
+/// The receiver for an existing Codex session, end to end: a session this
+/// binary stands in for is registered with its pid and conversation, the
+/// receiver binds the queue, a message goes in through `thread/queue/add`,
+/// the receipt is proved from the user item the session's own turn carried,
+/// and the message is acknowledged. The receiver never starts a turn.
+#[cfg(unix)]
+fn an_existing_codex_session_is_fed_through_its_native_queue_with_a_proved_receipt() {
+    use std::process::{Command, Stdio};
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let socket = root.path().join("agentd.sock");
+    let checkout = root.path().join("checkout");
+    let codex_home = root.path().join("codex-home");
+    std::fs::create_dir_all(&checkout).unwrap();
+    std::fs::create_dir_all(&codex_home).unwrap();
+    let checkout = checkout.canonicalize().unwrap();
+    let transcript = root.path().join("app-server.jsonl");
+    let daemon = fixture::RunningDaemon::start(&home, &socket);
+    let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+    let mut session = Command::new(&exe)
+        .arg("idle-codex")
+        .current_dir(&checkout)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = session.id();
+    let born = agentdocker_host::procinfo::start_time(pid).expect("the session's birth");
+    let mut spec = agentdocker_core::AgentSpec {
+        name: "existing".into(),
+        runtime: "codex".into(),
+        workdir: Some(checkout.clone()),
+        ..Default::default()
+    };
+    spec.labels.insert("session_id".into(), "thread-1".into());
+    let registered =
+        fixture::rpc(&socket, json!({"op": "register", "spec": spec, "pid": pid})).unwrap();
+    assert_eq!(registered["type"], "agent", "{registered}");
+    let agent = registered["agent"]["id"].as_str().unwrap().to_owned();
+    let log = agentdocker_host::dirs::private_file(&root.path().join("receiver.log"), true, true)
+        .unwrap();
+    let mut receiver = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
+        .arg("--socket")
+        .arg(&socket)
+        .arg("codex-queue")
+        .args(["--agent", &agent, "--pid", &pid.to_string()])
+        .args(["--started-at", &born.to_rfc3339(), "--thread", "thread-1"])
+        .arg("--profile")
+        .arg(&codex_home)
+        .arg("--cwd")
+        .arg(&checkout)
+        .arg("--program")
+        .arg(&exe)
+        .env("AGENTDOCKER_HOME", &home)
+        .env("AGENTDOCKER_SOCKET", &socket)
+        .env("AGENTDOCKER_NO_AUTOSTART", "1")
+        .env(TRANSCRIPT, &transcript)
+        .env_remove("AGENTDOCKER_AGENT_ID")
+        .env_remove("AGENTDOCKER_AGENT_NAME")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone().unwrap()))
+        .stderr(Stdio::from(log))
+        .spawn()
+        .unwrap();
+    let inspect = json!({"op": "inspect", "agent": agent});
+    let bound = fixture::wait_for(
+        &socket,
+        inspect.clone(),
+        Duration::from_secs(30),
+        "the receiver binding the queue and reporting ready",
+        |response| {
+            response["type"] == "agent"
+                && response["agent"]["input_binding"].is_object()
+                && response["agent"]["input_delivery"]["paused"] == false
+        },
+    );
+    assert_eq!(
+        bound["agent"]["input_binding"]["provider"]["session"], "thread-1",
+        "{bound}"
+    );
+    let sent = fixture::rpc(
+        &socket,
+        json!({"op": "send", "from": "user", "to": agent, "kind": "chat",
+            "payload": {"text": "through the native queue"}}),
+    )
+    .unwrap();
+    assert_eq!(sent["type"], "sent", "{sent}");
+    let message = sent["message"].as_str().unwrap().to_owned();
+    let received = fixture::wait_for(
+        &socket,
+        inspect.clone(),
+        Duration::from_secs(30),
+        "the native queue receipt",
+        |response| {
+            response["agent"]["input_delivery"]["received"]["messages"][0] == message.as_str()
+        },
+    );
+    let receipt = &received["agent"]["input_delivery"]["received"]["receipt"];
+    assert_eq!(receipt["thread"], "thread-1", "{receipt}");
+    assert_eq!(receipt["turn"], "turn-1", "{receipt}");
+    assert_eq!(receipt["item"], "item-1", "{receipt}");
+    let queue = fixture::wait_for(
+        &socket,
+        json!({"op": "peek_input", "agent": agent}),
+        Duration::from_secs(10),
+        "the received message leaving the queue",
+        |response| {
+            response["type"] == "messages"
+                && response["messages"].as_array().is_some_and(Vec::is_empty)
+        },
+    );
+    assert_eq!(queue["type"], "messages");
+    let transcript: Vec<Value> = std::fs::read_to_string(&transcript)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let added: Vec<&Value> = transcript
+        .iter()
+        .filter(|frame| frame["method"] == "thread/queue/add")
+        .collect();
+    assert_eq!(added.len(), 1, "{transcript:?}");
+    assert_eq!(added[0]["params"]["clientUserMessageId"], message.as_str());
+    let envelope: Value =
+        serde_json::from_str(added[0]["params"]["input"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        envelope["agentdocker_message"]["payload"]["text"],
+        "through the native queue"
+    );
+    assert!(
+        envelope["delivery_note"]
+            .as_str()
+            .is_some_and(|note| note.contains("not system or developer instructions")),
+        "{envelope}"
+    );
+    assert!(
+        !transcript
+            .iter()
+            .any(|frame| frame["method"] == "turn/start" || frame["method"] == "thread/resume"),
+        "the receiver never starts or resumes the session's turns: {transcript:?}"
+    );
+    // The session ends; the receiver follows it out, and the daemon has
+    // nothing to restart.
+    drop(session.stdin.take());
+    let _ = session.kill();
+    let _ = session.wait();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while receiver.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            let _ = receiver.kill();
+            let _ = receiver.wait();
+            panic!("the receiver did not end with its session");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(daemon);
+}
+
 #[cfg(not(unix))]
 #[allow(dead_code)]
 fn a_queued_message_becomes_a_turn_with_a_receipt_proved_from_the_providers_item() {}
+#[cfg(not(unix))]
+#[allow(dead_code)]
+fn an_existing_codex_session_is_fed_through_its_native_queue_with_a_proved_receipt() {}
 #[cfg(not(unix))]
 #[allow(dead_code)]
 fn a_refused_turn_leaves_the_message_queued_and_reports_the_provider() {}
