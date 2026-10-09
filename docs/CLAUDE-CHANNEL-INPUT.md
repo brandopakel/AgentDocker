@@ -250,8 +250,9 @@ separately from the earlier tool-call trials.
 
 A stdout write never removes an inbox message. Until a verified receipt,
 delivery is unconfirmed. Claude may silently ignore a channel that was not
-enabled; after 30 seconds without a receipt the adapter reports a durable
-delivery pause naming the outstanding message. That state appears in session
+enabled; after 30 seconds without a receipt (a session's first offer excepted,
+below) the adapter reports a durable delivery pause naming the outstanding
+message. That state appears in session
 details and send-readiness warnings. It stays paused through periodic refreshes
 until that message leaves the queue; fresh transport contact alone does not
 clear it. A failed or stalled diagnostic write is bounded and retried, without

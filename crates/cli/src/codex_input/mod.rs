@@ -579,7 +579,9 @@ async fn session(
                             // else (a timeout, a closed pipe) is uncertain and
                             // retained for receipt recovery.
                             if transport::rejected(&error) {
-                                ledger.reject_prepared()?;
+                                ledger.reject_prepared().with_context(|| format!(
+                                    "Codex refused turn/start ({error:#}); the refused input could not be cleared and is retained"
+                                ))?;
                             }
                             if let Some(failure) = error.downcast_ref::<crate::provider_status::Failure>() {
                                 crate::provider_status::report(client, agent, agentdocker_core::ProviderReport::Blocked {

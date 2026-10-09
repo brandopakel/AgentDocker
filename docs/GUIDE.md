@@ -809,8 +809,8 @@ Newest first. Only what changes how the product is used.
   before the first offer included. After the first receipt the no-replay
   rule holds as before, and a missing receipt pauses the queue visibly.
 - Finished agents' records are forgotten by themselves. Thirty days after an
-  agent ended, if it holds no lease, has no open question and no input
-  binding, and is not set to restart or restore, its record goes the way
+  agent ended, if it holds no lease, has no open question, no queued message
+  and no input binding, and is not set to restart or restore, its record goes the way
   `rm` would take it (`agent_removed`, and the batch as `agents_pruned`);
   `[agents] retention = "90d"` in `~/.agentdocker/agentd.toml` changes the
   window and `"off"` keeps every record. The journal and the ledger keep a

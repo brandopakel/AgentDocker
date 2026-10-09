@@ -5690,7 +5690,9 @@ impl State {
     }
 
     /// The agents retention may forget, oldest first: ended before
-    /// `cutoff`, not the person, and holding or owed nothing.
+    /// `cutoff`, not the person, and holding or owed nothing: no lease,
+    /// no open question, no queued message, no input binding, no restart
+    /// or restore, no provider limit.
     fn retirable_agents(&self, cutoff: DateTime<Utc>, limit: usize) -> Vec<AgentId> {
         let mut retirable: Vec<&AgentRecord> = self
             .registry
@@ -5709,6 +5711,7 @@ impl State {
                         .as_ref()
                         .is_none_or(|availability| availability.issue.is_none())
                     && self.leases.by_holder(&record.id).is_empty()
+                    && self.inboxes.get(&record.id).is_none_or(VecDeque::is_empty)
                     && !self.pending_restarts.contains(&record.id)
                     && !self.supervised.contains_key(&record.id)
                     && !self.questions.values().any(|question| {
@@ -10004,8 +10007,9 @@ mod tests {
         let daemon = open(&dir);
         let gone = register(&daemon, "gone", None).await;
         let holder = register(&daemon, "holder", None).await;
+        let owed = register(&daemon, "owed", None).await;
         let live = register(&daemon, "live", None).await;
-        for agent in [&gone, &holder] {
+        for agent in [&gone, &holder, &owed] {
             assert!(matches!(
                 daemon
                     .handle(Request::Deregister {
@@ -10025,12 +10029,26 @@ mod tests {
         // its restore), and the live one stays.
         {
             let mut state = lock(&daemon.state);
-            for id in [&gone.id, &holder.id] {
+            for id in [&gone.id, &holder.id, &owed.id] {
                 let record = state.registry.get_mut(id).unwrap();
                 record.finished_at = Some(Utc::now() - Duration::days(40));
                 record.last_seen = Utc::now() - Duration::days(40);
             }
             state.registry.get_mut(&holder.id).unwrap().spec.restore = true;
+            // A message nobody has delivered is owed to the record: a
+            // session resumed under this id would still get it.
+            state
+                .inboxes
+                .entry(owed.id.clone())
+                .or_default()
+                .push_back(Envelope::new(
+                    "user",
+                    Destination::Agent(owed.id.clone()),
+                    "chat",
+                    serde_json::json!({"text": "still waiting"}),
+                    None,
+                    Utc::now() - Duration::days(41),
+                ));
         }
         daemon.apply_agent_retention();
         assert!(matches!(
@@ -10044,6 +10062,10 @@ mod tests {
             inspect(&daemon, &holder.id),
             Response::Agent { .. }
         ));
+        assert!(
+            matches!(inspect(&daemon, &owed.id), Response::Agent { .. }),
+            "a record with a queued message is owed that message and stays"
+        );
         assert!(matches!(inspect(&daemon, &live.id), Response::Agent { .. }));
         assert_eq!(
             daemon
