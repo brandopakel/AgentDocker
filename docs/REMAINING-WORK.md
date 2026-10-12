@@ -39,7 +39,10 @@ in the verification index; the tables below track the work still required.
 
 The next source candidate is `0.2.0-beta.12`, not yet published. It adds Windows
 managed-console echo control and encoded Ctrl-] detachment, plus native identity
-diagnostics. The exact Windows precursor passed its extracted-package acceptance;
+diagnostics. After integrating the reviewed one-click branch-review feature,
+the candidate also bounds large diff previews at UTF-8 character boundaries;
+the previous byte slice could panic when the 512 KiB limit split a character.
+The exact Windows precursor passed its extracted-package acceptance;
 final candidate validation/review and hosted beta.11 → beta.12 update, same-schema
 rollback and reapply remain gates. Ledger 15/state schema 27 is unchanged.
 

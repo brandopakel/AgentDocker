@@ -21,6 +21,20 @@ fn line(text: Option<String>) -> Option<String> {
     text.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty())
 }
 
+/// Keep a large patch within its byte budget without splitting a UTF-8 character.
+/// Prefer a complete line; a single oversized line still gets a safe prefix.
+fn patch_prefix(patch: &str) -> &str {
+    if patch.len() <= review::PATCH_LIMIT {
+        return patch;
+    }
+    let mut boundary = review::PATCH_LIMIT;
+    while !patch.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    let cut = patch[..boundary].rfind('\n').unwrap_or(boundary);
+    &patch[..cut]
+}
+
 /// Read the review for an agent's checkout `dir` in the repository whose
 /// main checkout is `root`. `held` names what someone holds in `root`.
 async fn gather(
@@ -74,10 +88,7 @@ async fn gather(
         .await
         {
             Some(patch) if patch.len() > review::PATCH_LIMIT => {
-                let cut = patch[..review::PATCH_LIMIT]
-                    .rfind('\n')
-                    .unwrap_or(review::PATCH_LIMIT);
-                review.patch = patch[..cut].to_owned();
+                review.patch = patch_prefix(&patch).to_owned();
                 review.truncated = true;
             }
             Some(patch) => review.patch = patch,
@@ -291,6 +302,27 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn patch_budget_handles_every_utf8_boundary_and_complete_lines() {
+        assert_eq!(patch_prefix("a short λ diff\n"), "a short λ diff\n");
+        let exact = "x".repeat(review::PATCH_LIMIT);
+        assert_eq!(patch_prefix(&exact), exact);
+        for character in ['é', '界', '🦀'] {
+            for split in 1..character.len_utf8() {
+                let prefix = "x".repeat(review::PATCH_LIMIT - split);
+                let patch = format!("{prefix}{character}tail");
+                assert!(!patch.is_char_boundary(review::PATCH_LIMIT));
+                assert_eq!(patch_prefix(&patch), prefix);
+
+                let line = "complete header\n";
+                let prefix = "x".repeat(review::PATCH_LIMIT - split - line.len());
+                let patch = format!("{line}{prefix}{character}tail");
+                assert!(!patch.is_char_boundary(review::PATCH_LIMIT));
+                assert_eq!(patch_prefix(&patch), "complete header");
+            }
+        }
+    }
 
     async fn run(dir: &Path, args: &[&str]) {
         let output = git(
