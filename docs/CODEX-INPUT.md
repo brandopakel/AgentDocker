@@ -1399,8 +1399,9 @@ It preserves Ctrl-C and output behavior and restores the saved input mode when
 the guard drops. Non-terminal/unsupported interactive handles still refuse.
 The native Windows workflow exercises actual console-mode restoration and the
 extracted package's masked form, suspended typing, Unicode draft and oversized
-line with a private Codex model and synthetic ConPTY; acceptance remains pending
-until the exact native run passes. The initial run passed the kernel checks but
+line with a private Codex model and synthetic ConPTY. Source `e0f5d577` passed
+the exact extracted-package trial with Codex0.160.0; its scope is recorded below.
+The initial run passed the kernel checks but
 refused its fixture report ancestry before UI rendering and separately timed out
 detaching. Corrected private capture passed the ten UI steps and four receipts,
 but Ctrl-] still failed before the detach acknowledgement. A provider-free
@@ -1415,8 +1416,17 @@ and an incomplete Escape prefix is forwarded after 25 ms without further input,
 or immediately on EOF/error. The first corrected native run retired the attachment
 and ConPTY but its observer stopped before the buffered farewell finished. The
 fixture now drains output to EOF; complete farewell and retention checks remain
-required. Exact extracted-package validation remains pending. A supported
-managed terminal discards new typing without echo while a secret route is
+required. The corrected `e0f5d577` package passed all ten masked UI steps, four
+unique receipts, Unicode draft restoration, discarded suspended/late typing,
+oversized-line refusal and subsequent valid input, and the complete detach
+farewell. All 56 watched process generations retired without forced cleanup;
+private scratch was removed. Independent scans found no invented value in
+AgentDocker state, internal logs or GUI reports; the provider retained it twice
+after explicit consent. This is a native runner/private-model/synthetic-input
+result, not hosted publication, account, physical keyboard/IME, screen-reader or
+logon/reboot acceptance. The supplied secret field remains unadvertised and the
+experimental gate stays. Original failed reports remain in the trial index.
+A supported managed terminal discards new typing without echo while a secret route is
 open. After it closes, Enter discards the suspended line and returns to the
 preexisting draft; buffered text cannot become an ordinary queued message. A possibly sent answer without a provider resolution stays
 paused for inspection and is never resubmitted by restart.
