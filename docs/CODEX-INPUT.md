@@ -560,8 +560,12 @@ terminal input. All three use the daemon's ordinary `Send` queue. The bridge pol
 while idle and starts one ordinary input turn. Once that input has an exact
 receipt, busy arrivals use `turn/steer` with the owned active turn's ID. Terminal,
 CLI, UI and peer input all follow the same daemon queue; a pending provider
-question retains ordinary input until its answer is resolved. This route applies
-to the owned bridge, not an independently running native TUI. Peer content carries its original sender and message ID in an
+approval or elicitation request retains ordinary input until its answer is resolved.
+A synchronous AgentDocker MCP `ask_human` call is separate: ordinary busy input
+may steer into its active turn while the human question remains open. Its answer
+still requires the exact tool receipt and must not become another user input.
+This route applies to the owned bridge, not an independently running native TUI.
+Peer content carries its original sender and message ID in an
 `agentdocker_message` envelope. Model text is shown in the session terminal;
 AgentDocker MCP `send_message` supplies a correlated peer reply.
 
@@ -912,6 +916,16 @@ unmatched human answers stay queued and pause input instead of becoming new turn
 Up to 128 detailed MCP receipts rotate only after acknowledgement and a later
 turn; their older question routes share the 10,000-ID bound above.
 
+Hosted beta.12 (`d48c0ab6`) on Oracle with authenticated Codex 0.160.0 and its
+complete upstream package passed a 600-second MCP question through Code Mode.
+The exact tool answer was acknowledged once without another user input; two
+busy messages retained their order and the original terminal draft submitted
+once afterward. Four ordinary receipts and one MCP receipt matched provider
+history. All 13 process generations retired, with configuration and terminal
+settings unchanged. This used a synthetic managed PTY, not a provider approval,
+native TUI, physical keyboard or restart test. The earlier missing-helper and
+incorrect no-steering fixture failures remain in the verification index.
+
 The [MCP receipt trial](verification/INDEX.md) retains
 the failed extra-input baseline and passing actual Codex normal/crash recovery
 cases at `f42a8b0`. The crash cut let Codex consume the tool answer while its
@@ -960,8 +974,9 @@ provider trial. Browser interaction, final packages, Windows/other versions,
 pending restart and real-account waits remain open.
 
 Unknown callbacks,
-session-wide file grants, unsupported permission selectors, extended MCP forms/device-verification elicitation, secret inputs
-and oversized requests currently return an explicit provider error. Complete
+session-wide file grants, unsupported permission selectors, extended MCP forms/device-verification elicitation,
+secret inputs without the development switch, and oversized requests currently
+return an explicit provider error. Complete
 those review surfaces before treating the adapter as a general replacement for
 the provider terminal. Automatic provider review and configured approval policy
 are not overridden.
