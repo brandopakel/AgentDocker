@@ -524,6 +524,8 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `worktree-create --branch <name> [--from <ref>]` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours |
 | `worktree-diff` | Tracked changes in an agent's checkout |
+| `review-branch <agent>` | What an agent's branch would bring to the branch in the project's main checkout: commits, files and lines, and what stops a merge now (uncommitted work, uncommitted changes in the main checkout, conflicts, held files); `--patch` prints the diff, `--json` the whole review |
+| `merge-branch <agent> --head <sha>` | Merge that branch into the main checkout's branch with a merge commit, if its head is still the one `review-branch` printed and nothing stops it; refused with nothing changed otherwise. It does not push |
 | `commit` | Commit the agent's checkout, journaled and attributed to it |
 | `validate` | Run a check and retain its command, log and content fingerprints |
 | `validations` | Retained validation evidence |
@@ -731,6 +733,17 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- One-click review: a session's details show **Changes** — its branch against
+  the branch in the project's main folder, the commits and files, each file's
+  diff, and what a merge needs — and **Merge into main** merges it with a
+  merge commit, or says why not with nothing changed. `agentdocker
+  review-branch` and `merge-branch` do the same from the CLI. Nothing is
+  pushed.
+- Needs you holds only questions waiting on you, each naming its project. A
+  session that is blocked, not receiving messages or ended with messages
+  queued says so on its own row instead. Messages lists only conversations
+  with something in them: no Between agents or Earlier folds, and an ended
+  session's conversation only while it holds something unread.
 - Under your own messages in the app, one line per agent says where each
   message stands: answered, delivered, received by the model, shown to its
   session, or why it is still waiting.
