@@ -3,7 +3,7 @@ use super::*;
 use agentdocker_core::Validation;
 use agentdocker_host::{command, content};
 
-async fn git(root: PathBuf, args: Vec<String>) -> anyhow::Result<command::Output> {
+pub(super) async fn git(root: PathBuf, args: Vec<String>) -> anyhow::Result<command::Output> {
     tokio::task::spawn_blocking(move || {
         let argv = std::iter::once("git".to_owned())
             .chain(args)
@@ -24,13 +24,13 @@ fn failure(e: impl std::fmt::Display) -> Response {
 
 /// Holds a checkout marked as "the daemon is committing here" for as
 /// long as it lives, and lets go however the commit ends.
-struct Committing<'a> {
+pub(super) struct Committing<'a> {
     daemon: &'a Daemon,
     root: PathBuf,
 }
 
 impl<'a> Committing<'a> {
-    fn mark(daemon: &'a Daemon, root: PathBuf) -> Self {
+    pub(super) fn mark(daemon: &'a Daemon, root: PathBuf) -> Self {
         lock(&daemon.state).committing.insert(root.clone());
         Self { daemon, root }
     }

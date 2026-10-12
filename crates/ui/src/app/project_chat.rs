@@ -105,10 +105,10 @@ impl App {
             .collect()
     }
 
-    /// An agent's presence tone: amber while it waits on the person, green
+    /// An agent's presence tone: amber while a question waits on the person, green
     /// while it reports work, quiet while all that is known is that it runs.
     fn chat_agent_tone(&self, agent: &agentdocker_core::AgentRecord, c: Colors) -> iced::Color {
-        if self.needs_input(agent.id.as_str()) || self.delivery_needs_you(agent) {
+        if self.needs_input(agent.id.as_str()) {
             c.amber
         } else if agent.status.is_live() {
             match self.activity.get(agent.id.as_str()) {
