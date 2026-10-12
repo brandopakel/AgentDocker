@@ -63,6 +63,9 @@ change passed an actual Codex 0.160.0 macOS ARM64 loopback trial on
 and idle/draft/busy/recovery checks and private-process cleanup passed.
 Independent review and broader platform/version acceptance remain; this does
 not solve zero-prompt startup/reopen.
+Backend I/O failures while reading the binding inventory preserve the existing
+`agentd unreachable: <cause>` diagnostic and its cause chain. Local host or
+binding validation failures retain the native identity diagnostic.
 
 The receiver probes the read-only queue/history APIs before taking ownership.
 Hooks keep their normal delivery while that probe is pending or unsupported;

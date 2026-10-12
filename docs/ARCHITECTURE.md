@@ -199,7 +199,9 @@ The universal adapter. An MCP host spawns `agentdocker mcp` as a stdio server; t
 For native Codex, `tools/call` resolves the calling conversation against its
 live native binding before dispatch. Resolution failure returns JSON-RPC
 `error.code = -32603` (`INTERNAL_ERROR`) and
-`error.message = "cannot resolve native Codex identity: <cause>"`. This includes
+`error.message = "cannot resolve native Codex identity: <cause>"`. Backend I/O failure while listing
+bindings instead preserves `agentd unreachable: <cause>`, including its cause
+chain; it is not a binding-selection failure. This includes
 missing, ended, child or ambiguous bindings; it does not by itself establish
 that the daemon is unreachable, create a binding or authorize another identity.
 Other backend transport errors retain the existing `agentd unreachable: <cause>`
