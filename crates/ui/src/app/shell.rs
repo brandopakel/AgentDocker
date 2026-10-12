@@ -45,6 +45,8 @@ pub(super) struct State {
     /// Provider input is on for supported new sessions by default. The launch
     /// control can turn it off; provider consent and policy still apply.
     pub launch_channel: bool,
+    /// Whether the launched session gets its own worktree and branch.
+    pub launch_worktree: bool,
     pub launching: bool,
     /// The session whose resume is on its way to the daemon, so its
     /// button alone says "Reconnecting…" (a launch from the Launch form
@@ -562,6 +564,8 @@ pub enum Message {
     ToggleDiffFile(String),
     /// Merge the session's branch at the head the person looked at.
     MergeBranch(String, String),
+    /// Remove an ended session's own worktree once its work is merged.
+    RemoveWorktree(String),
     ReviewDelivery,
     /// The Needs-you strip's **Review**: open that session with its
     /// delivery review already unfolded, wherever the person was.
@@ -692,6 +696,7 @@ pub enum Message {
     LaunchName(String),
     LaunchArguments(String),
     LaunchChannel(bool),
+    LaunchWorktree(bool),
     Launch,
     /// Relaunch an ended Claude Code session here, with its conversation
     /// and the AgentDocker channel, so it takes messages live.
@@ -1684,6 +1689,13 @@ impl App {
                     Some(path)
                 };
             }
+            Message::RemoveWorktree(id) => {
+                if self.removing_worktree.is_none() && self.connected.is_ok() {
+                    self.removing_worktree = Some(id.clone());
+                    self.merge_outcome = None;
+                    self.send(Cmd::WorktreeRemove(id));
+                }
+            }
             Message::MergeBranch(id, head) => {
                 if self.merging.is_none() && self.connected.is_ok() {
                     self.merging = Some(id.clone());
@@ -2121,6 +2133,9 @@ impl App {
                     self.shell.launch_runtime.as_deref(),
                     Some("claude-code" | "codex")
                 );
+                // A git project starts each session on its own branch in
+                // its own worktree unless the person says otherwise.
+                self.shell.launch_worktree = self.launch_project_is_git();
                 if self.shell.launch {
                     self.shell.selected = None;
                     self.shell.session_filter = super::sessions::Filter::Current;
@@ -2146,6 +2161,7 @@ impl App {
                 self.shell.launch_arguments = args.chars().take(8192).collect()
             }
             Message::LaunchChannel(on) => self.shell.launch_channel = on,
+            Message::LaunchWorktree(on) => self.shell.launch_worktree = on,
             Message::Launch => {
                 if self.connected.is_ok() && !self.shell.launching {
                     match self
@@ -2897,6 +2913,23 @@ impl App {
             .map_err(|error| format!("Cannot reconstruct the Claude session launch: {error}"))
     }
 
+    /// Whether the project the launch form is for is a git repository:
+    /// only then can a session have a worktree of its own.
+    pub(crate) fn launch_project_is_git(&self) -> bool {
+        self.shell
+            .catalog
+            .selected
+            .as_ref()
+            .and_then(|root| {
+                self.shell
+                    .catalog
+                    .projects
+                    .iter()
+                    .find(|e| &e.project.root == root)
+            })
+            .is_some_and(|entry| entry.project.source == agentdocker_core::ProjectSource::Git)
+    }
+
     fn launch_spec(&self) -> Result<agentdocker_core::AgentSpec, String> {
         let entry = self
             .shell
@@ -2938,7 +2971,8 @@ impl App {
             } else {
                 BTreeMap::new()
             },
-            isolate: false,
+            isolate: self.shell.launch_worktree
+                && entry.project.source == agentdocker_core::ProjectSource::Git,
             tty: true,
             restore: false,
             in_pane: false,
@@ -2994,6 +3028,59 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    /// In a git project the launch form starts a session in its own
+    /// worktree unless told otherwise; a plain folder has no branches to
+    /// give, so it is never asked for one.
+    #[test]
+    fn a_git_project_launches_into_its_own_worktree_by_default() {
+        let (mut app, _, _) = app();
+        let runtimes = |name: &str| {
+            vec![agentdocker_core::runtime::RuntimeInfo {
+                name: name.into(),
+                vendor: "fixture".into(),
+                label: runtime_label(name),
+                cli: Some("/fixture/provider".into()),
+                version: None,
+                apps: vec![],
+                extensions: vec![],
+                incomplete: vec![],
+                config_dir: None,
+                mcp: agentdocker_core::runtime::Wiring::Missing,
+                hooks: agentdocker_core::runtime::Wiring::Missing,
+                hooks_missing: vec![],
+                shell: agentdocker_core::runtime::Wiring::Unsupported,
+                running: 0,
+            }]
+        };
+        app.runtimes = runtimes("claude-code");
+        app.shell.launch_runtime = Some("claude-code".into());
+        let git = ProjectRef {
+            root: "/repo".into(),
+            worktree: None,
+            fingerprint: None,
+            source: agentdocker_core::ProjectSource::Git,
+        };
+        app.shell.catalog.pin(git).unwrap();
+        let _ = app.update(Message::ShowLaunch);
+        assert!(app.shell.launch_worktree);
+        assert!(app.launch_spec().unwrap().isolate);
+        let _ = app.update(Message::LaunchWorktree(false));
+        assert!(!app.launch_spec().unwrap().isolate);
+        let _ = app.update(Message::ShowLaunch);
+
+        app.shell
+            .catalog
+            .pin(ProjectRef::directory("/plain"))
+            .unwrap();
+        let _ = app.update(Message::ShowLaunch);
+        assert!(!app.shell.launch_worktree);
+        let _ = app.update(Message::LaunchWorktree(true));
+        assert!(
+            !app.launch_spec().unwrap().isolate,
+            "a folder has no branches"
+        );
     }
 
     #[test]

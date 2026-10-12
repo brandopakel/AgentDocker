@@ -129,6 +129,21 @@ impl App {
                 format!("Nothing on {branch} that {target} does not have."),
                 c,
             ));
+            // Merged and ended: the worktree has done its work. Removing
+            // it is the person's call, here where they merged it.
+            if !agent.status.is_live() && review.checkout != review.target_checkout {
+                let removing = self.removing_worktree.as_deref() == Some(id.as_str());
+                section = section.push(ghost(
+                    "remove-worktree",
+                    if removing {
+                        "Removing…"
+                    } else {
+                        "Remove its worktree"
+                    },
+                    (!removing && self.connected.is_ok())
+                        .then(|| Message::RemoveWorktree(id.clone())),
+                ));
+            }
             return Some(section.into());
         }
         let diffs = file_diffs(&review.patch);
