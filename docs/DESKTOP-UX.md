@@ -64,21 +64,15 @@ agents open their existing Terminal tab without sending any input. If the agent
 belongs to another app, the action explains that the original app is needed.
 This does not start a second copy of an agent.
 
-**Needs you** shows unanswered questions (**Answer**; a question from a session
-that has since ended says so before you write), live sessions that are not
-receiving messages (**Review**, which opens that session with its delivery
-review already unfolded, the reason in plain words, and its log requested —
-also when the session was already selected; while the app is disconnected it
-opens the session instead), and ended sessions that still hold messages no
-model took (*Codex · … ended with 2 messages not delivered*). Opening one of
-those says how many are kept and that resuming the conversation delivers them;
-**Dismiss** puts the notice away for that process without touching the
-messages, and a resumed session is a new notice. An ended session held by a
-provider limit can be dismissed the same way, since it can report no recovery.
-The count is the larger of the queue and the input the receiver could not
-prove it handed over, never their sum. Right after launch, before the first
-activity snapshot, nothing is shown rather than a guess. An ended session with
-nothing waiting is simply ended: it sits in Earlier, not in Needs you.
+**Needs you** shows only questions waiting on you (**Answer**; a question from
+a session that has since ended says so before you write). Seen across
+projects, each row starts with its project's name (*keel · Claude Code · Badger
+asks: …*). A session that is blocked by its provider, not receiving messages,
+or ended with messages no model took is not a decision for you, so it is not
+here: its row says so in amber, and opening it shows the details — how many
+messages are kept, that resuming the conversation delivers them, **Review** for
+a live session's delivery and **Dismiss** for an ended one's notice, which
+leaves the messages as they are.
 Finished sessions keep their **Done** badge on the row. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
@@ -151,12 +145,11 @@ waiting one. Copy buttons say *Copied to the clipboard*.
 
 **Current** shows live sessions; **Needs input** shows this project's
 unanswered, unexpired questions, including questions from a session that has
-since finished, and the same delivery items as Needs you. Ended sessions are not a tab: they sit in one collapsed
+since finished; nothing else. Ended sessions are not a tab: they sit in one collapsed
 **Earlier (n)** group under the current ones, including previous runs with the
 same name, and a search that finds one opens the group. The group opens on
 its newest eight; **Show older** adds eight more each time, and closing the
-group forgets how far it was opened. The Earlier group of conversations in
-Messages has its own fold and page: neither moves the other. When only an earlier
+group forgets how far it was opened. When only an earlier
 session matches, its result appears without a contradictory empty-state card.
 Search applies to the
 selected project, both filters and the Earlier group. Switching projects
@@ -176,7 +169,17 @@ come back carries **Reconnect here** on its row itself (the same action as in
 Details, which still says why a session cannot be reconnected yet); while its
 resume is on its way the row says **Reconnecting…**. Select a row for terminal access, reply, or stop. On a narrow
 window, the session replaces the list; **Back to sessions** returns to it. On a
-wide window, it opens beside the list. **Details** reveals the session ID, process,
+wide window, it opens beside the list. A session working on its own branch (in a
+worktree) shows **Changes** above Details: its branch and the branch it would be
+merged into (the one checked out in the project's main folder), its commits,
+files and lines, each file opening its own coloured diff (300 lines at most),
+a checklist — work committed, the main folder has nothing uncommitted, no
+conflicts, nobody holding files there — and **Merge into main**, enabled only
+when the checklist is clear. It makes a merge commit in the main folder and
+says so (*Merged into main as abc1234.*), or says why not, with nothing changed;
+a branch that moved since it was read is never merged unseen. Nothing is pushed.
+Changes are read again when the session commits or its branch moves, and with
+**Refresh**. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
 **More → Board** is the project's work: five
 columns — Backlog, Ready, In progress, Review, Done — of cards with a title
@@ -330,17 +333,16 @@ conversation, and **Conversations** returns to the list.
 **Messages** is what the rail item (named Messages then, Inbox otherwise)
 opens against a daemon that keeps conversations (schema 21 and later); an
 older daemon still gets the inbox below. It is shaped like a chat workspace.
-The sidebar lists **Projects** — each project's chat (its `#everyone`), named
-for the project and opening that project's **Chat** — then **Direct
-messages** with a presence dot for a live session — one row per live agent,
-by its stable name, and one row for an identity however many ids it has had:
-the conversation written in last is the row, and its conversations under
-former ids sit under **Earlier**, each with its own unread, draft and
-history; conversations two agents had with each other sit behind **Between
-agents** (read as `Codex · Heron ↔ Claude Code · Otter`, so two pairs of the
-same tools are told apart); a search box filters by name. Ended sessions'
-conversations sit behind **Earlier (n)**, eight at a time with **Show
-older**. Every row is one line each for the name and the latest line.
+The sidebar lists **Projects** — the chat (`#everyone`) of each project in your
+sidebar, named for the project and opening that project's **Chat** — then
+**Direct messages**: your conversations with agents that have something in
+them, one row per agent by its stable name (with its project's name while every
+project is on view), a presence dot for a live session, and one row for an
+identity however many ids it has had. A conversation with a session that has
+ended stays listed only while it holds something unread; a search box filters
+by name, and **+** starts a conversation. Every row is one line each for the
+name and the latest line. What two agents said to each other is theirs, and is
+not listed.
 Nothing else is listed: `#all`, channels, the rooms AgentDocker opens when
 two checkouts change the same files, and AgentDocker's notices to an agent
 are the CLI's (`agentdocker conversations`, `agentdocker history

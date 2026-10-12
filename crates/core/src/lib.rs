@@ -81,6 +81,7 @@ pub use working_set::{ReadMark, StalePath};
 
 pub mod delivery;
 pub mod recovery;
+pub mod review;
 pub mod send_readiness;
 pub mod session;
 pub use recovery::{Checkpoint, Recovery, Validation};

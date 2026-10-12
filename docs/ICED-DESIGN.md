@@ -235,8 +235,9 @@ control does, its id or its accessible label:
   monogram, named for the project, opening that project's Chat — then
   **Direct messages**, rows of a 28-point mark with a presence dot, the name
   over one line of preview, cut with an ellipsis, and a quiet unread count
-  (the `@n` count in the accent); **Between agents** and **Earlier** fold
-  behind a chevron with their rows on a guide rail. `#all`, channels, the
+  (the `@n` count in the accent). Only conversations with something in them
+  are listed, an ended session's only while it holds something unread, and
+  nothing folds: what two agents said to each other is not listed. `#all`, channels, the
   daemon's contested-path rooms and its notices to an agent are not listed
   (`messages::hidden_kind`); their unread is read through as each list
   arrives (`App::read_hidden_conversations`, once per newest message), and
