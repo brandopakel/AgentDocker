@@ -588,9 +588,16 @@ The source-identical `6394a081` CI archive also passed on independent Oracle
 Ubuntu x86_64: a normal managed PTY visibly rejected the 20,028-byte paste, then
 queued the exact Unicode-edited 16,000-byte line in the same thread, with graceful
 cleanup and the unrelated runner/endurance trial unchanged. These empty-profile
-trials establish the terminal/bridge boundary. Authenticated model turns, physical
-Mac/Linux keyboard/IME input and broader terminal/platform coverage remain open;
-the original normal-PTY failures are retained.
+trials establish the terminal/bridge boundary. Hosted beta.12 separately passed
+an existing-account Oracle Codex 0.160.0 trial through a normal managed PTY: the
+20,028-byte line and its edited tail were refused without a receipt, then an
+exactly 16,000-byte Unicode-edited line and a following short input each produced
+one real model reply. Independent provider history matched both message IDs and
+thread/turn/item receipts. All nine watched generations retired without force;
+configuration remained unchanged and terminal settings were restored. This is
+synthetic managed-bridge input, not the native TUI. Authenticated acceptance on
+other platforms, physical keyboard/IME and broader terminal coverage remain
+open; the original normal-PTY failures are retained.
 
 The provider profile, authentication, hooks, trust and approval policy are
 inherited. No profile is rewritten. The session's AgentDocker MCP entry is bound
@@ -1403,7 +1410,7 @@ the guard drops. Non-terminal/unsupported interactive handles still refuse.
 The native Windows workflow exercises actual console-mode restoration and the
 extracted package's masked form, suspended typing, Unicode draft and oversized
 line with a private Codex model and synthetic ConPTY. Source `e0f5d577` passed
-the exact extracted-package trial with Codex0.160.0; its scope is recorded below.
+the exact extracted-package trial with Codex 0.160.0; its scope is recorded below.
 The initial run passed the kernel checks but
 refused its fixture report ancestry before UI rendering and separately timed out
 detaching. Corrected private capture passed the ten UI steps and four receipts,
