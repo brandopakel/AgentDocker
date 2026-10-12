@@ -3036,7 +3036,8 @@ mod tests {
     #[test]
     fn a_git_project_launches_into_its_own_worktree_by_default() {
         let (mut app, _, _) = app();
-        let runtimes = |name: &str| {
+        app.runtimes = {
+            let name = "claude-code";
             vec![agentdocker_core::runtime::RuntimeInfo {
                 name: name.into(),
                 vendor: "fixture".into(),
@@ -3054,7 +3055,6 @@ mod tests {
                 running: 0,
             }]
         };
-        app.runtimes = runtimes("claude-code");
         app.shell.launch_runtime = Some("claude-code".into());
         let git = ProjectRef {
             root: "/repo".into(),
