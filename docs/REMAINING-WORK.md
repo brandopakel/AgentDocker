@@ -6,29 +6,33 @@ failed trials, subsequent corrections and raw evidence locations remain in
 publication and installed acceptance are separate: use `agentdocker desktop
 status` and `agentdocker daemon status` to identify what a machine runs.
 
-Published `0.2.0-beta.11` is reviewed, integrated source `47d06d3b` (#326).
+Published `0.2.0-beta.12` is reviewed, integrated source `d48c0ab6` (#330).
 All 31 hosted assets, nine archives, five manifests and both preview feeds passed
 hash/source verification; stable `v0.1.0` and Homebrew remain unchanged.
-Actual beta.10 → beta.11 update, same-schema rollback to beta.10 and reapply passed
-on Mac ARM64, Oracle Ubuntu and a Windows x64 runner. Ledger 15/state schema 27
-is unchanged. Beta.9/schema 26 remains incompatible; never restore an older
-delivery ledger over acknowledged input.
+Mac ARM64 and Windows x64 passed actual beta.11 → beta.12 update, same-schema
+rollback and reapply. Mac passed 21 daemon-service checks/12 restarts and five
+pruning checks; Windows passed 15 hosted, 13 daemon and 24 connector checks.
+The Mac graphical campaign passed 32 checks; combined independent Unix
+verification remains pending. Ledger 15/state schema 27 is unchanged.
+Beta.9/schema 26 remains incompatible; never restore an older delivery ledger
+over acknowledged input.
 
-**Bounded hosted acceptance passed.** Mac and Oracle each passed nine lifecycle,
-eight terminal and 31 graphical checks. Mac passed 21 daemon-service checks,
-including 12 consecutive restarts; Oracle passed 17 systemd checks. Both passed
-five stopped-service pruning/startup checks. Windows passed 15 hosted lifecycle
-checks and 13 daemon/24 connector checks through retained beta.10 bootstrap
-launchers. Independent verification matched published bytes, process retirement,
-owned-service removal and preserved production/runner state.
+**Linux hosted acceptance remains incomplete.** Oracle passed nine lifecycle,
+startup and eight terminal checks, then stopped after 25 graphical checks when
+its proc observer returned a permission error for a window that exited zero.
+Services/pruning have not run for beta.12. The observer now records an
+independently confirmed owned-child exit separately from live transport samples;
+live permission failures, malformed replies and timeouts still refuse. Corrected
+hosted acceptance is pending; the original failed campaign remains retained.
+Earlier beta.11 bounded acceptance remains valid only for its indexed source.
 
-Beta.11 includes the reviewed cached-launchd-status correction and bounded Linux
-child-exit observer. Original beta.10 Mac pruning and Oracle graphical failures
-remain indexed; later passes do not establish every original failure's cause.
 Trials use private state, synthetic input and a Windows runner. Fresh accounts,
 physical hardware/input/accessibility, automatic Mac crash recovery, sleep/reboot
 and stable Developer ID signing remain unaccepted. Native Codex launch, managed
-secret input and live daemon replacement remain experimental.
+secret input and live daemon replacement remain experimental. An existing-account
+Mac Claude 2.1.296 trial reached project trust/MCP/hooks, but the provider reported
+channels unavailable. No test messages were sent; provider/channel delivery
+acceptance remains open without requesting a separate account or profile.
 
 Installed Mac beta.9 → beta.11 accounting replay recovered 145 Claude responses,
 preserved 592 Codex records and stayed unchanged through restart. The 277 legacy
@@ -37,7 +41,7 @@ This proves bounded collection/replay, not historical-gap reconciliation or
 provider-billing completeness. Detailed scopes and all original failures remain
 in the verification index; the tables below track the work still required.
 
-The next source candidate is `0.2.0-beta.12`, not yet published. It adds Windows
+Published `0.2.0-beta.12` adds Windows
 managed-console echo control and encoded Ctrl-] detachment, plus native identity
 diagnostics. After integrating the reviewed one-click branch-review feature,
 the candidate also bounds large diff previews at UTF-8 character boundaries;
