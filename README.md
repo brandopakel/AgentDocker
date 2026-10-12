@@ -33,7 +33,7 @@ It runs on the host: a native per-user daemon, CLI and desktop using local IPC �
 
 If you know [herdr](https://github.com/herdrdev/herdr), the two are complements rather than rivals: herdr owns the terminals agents live in, AgentDocker owns what they may touch, what they changed, and who else needs to know. See [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits). The same goes for [Dax](https://getdax.app/) (a macOS menu-bar companion whose Shepherd window embeds herdr) and [Paprika](https://paprika.ai/) (a hosted Kanban board where agents pull cards over MCP): they say what the work is and where it lives; AgentDocker helps agents coordinate their work, surfaces conflicts, and records what happened. What is shared today, what is designed and what is only an idea is in [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits) (the deeper focus/prompt bridge was measured and deferred; HERDR-BRIDGE.md in git history): a herdr, tmux, screen or zellij session is recognised and shown with the agent; a local board of cards with acceptance text, pulled once over a `task:<id>` lease, is in the app (the shape taken from Paprika); the herdr prompt/focus bridge and a Paprika card-to-lease bridge are proposals.
 
-> Status: **beta, single host.** The native desktop, messaging, agent terminals, reconnect, task board and usage collection are implemented. The published [v0.2.0-beta.11 preview](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.11) includes the macOS/Linux desktop and an unsigned Windows portable ZIP. The stable download and Homebrew formula remain v0.1.0. First-run and sustained acceptance remain open; the full Windows product is unfinished.
+> Status: **beta, single host.** The native desktop, messaging, agent terminals, reconnect, task board and usage collection are implemented. The published [v0.2.0-beta.12 preview](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.12) includes the macOS/Linux desktop and an unsigned Windows portable ZIP. The stable download and Homebrew formula remain v0.1.0. First-run and sustained acceptance remain open; the full Windows product is unfinished.
 
 The first coworker rollout targets **macOS, Linux and native Windows**. Each
 platform needs a downloadable candidate and its own first-run acceptance; the
@@ -70,24 +70,27 @@ Idle message delivery needs a provider input adapter as well. Managed Claude cha
 ## Install
 
 **Trying the desktop preview with coworkers:** download
-[v0.2.0-beta.11](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.11)
+[v0.2.0-beta.12](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.12)
 explicitly. The default installer and Homebrew commands below still select the
 stable v0.1.0 release. For a source trial, follow
 [the local build instructions](docs/LOCAL-BUILD.md) at an agreed commit. The
 release checklist is in [Remaining work](docs/REMAINING-WORK.md).
 
-Published **0.2.0-beta.11** includes accounting inspection/scanning, service-build
-retention and experimental managed secret input. Actual beta.10 → beta.11 update,
-same-schema rollback and reapply passed on Mac ARM64, Oracle Ubuntu x86-64 and a
-Windows x64 runner. Both releases use state schema 27; beta.9/schema 26 remains
-incompatible. Never restore an older delivery ledger over acknowledged input.
+Published **0.2.0-beta.12** adds Windows console echo/detach fixes, native
+identity diagnostics, and Unicode-safe branch-change previews. Actual beta.11 →
+beta.12 update, same-schema rollback and reapply passed on Mac ARM64, Oracle
+Ubuntu x86-64 and a Windows x64 runner. Both releases use state schema 27;
+beta.9/schema 26 remains incompatible. Never restore an older delivery ledger
+over acknowledged input.
 
 Hosted Mac/Linux terminal, graphical, installed-service and selective pruning
-checks passed in private fixtures. Windows hosted installation, daemon and
-connector service checks also passed. The installed Oracle 48-hour trial matched
-48 delivery receipts and three provider counter sets with no accounting gaps;
-its strict exact-answer check remains partial because three replies added a
-period. Original failures and scope limits remain in the verification index.
+checks passed in private fixtures. The Linux graphical rerun used a corrected
+test observer against unchanged published binaries; its original refusal remains
+recorded. Windows hosted installation, daemon and connector service checks passed.
+The earlier installed beta.11 Oracle 48-hour trial matched 48 delivery receipts
+and three provider counter sets with no accounting gaps; its strict exact-answer
+check remains partial because three replies added a period. Original failures
+and scope limits remain in the verification index.
 
 Packages target macOS and Linux on ARM64/x86-64, plus an unsigned Windows x64 ZIP
 with per-user installation and Task Scheduler startup. Native Codex launch,

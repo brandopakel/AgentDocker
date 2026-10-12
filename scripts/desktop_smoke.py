@@ -87,12 +87,14 @@ def check_no_tcp(processes, deadline, capture=None):
                         error = json.loads(result.stderr)
                     except (ValueError, TypeError):
                         error = None
-                    missing = (result.returncode == 2 and not result.stdout and error == {
-                        "error": "FileNotFoundError", "detail": "kernel observation unavailable"})
-                    if missing:
-                        # Linux may remove a dying task's proc entries before
-                        # waitpid publishes its exit. Bound that teardown wait;
-                        # a still-live or otherwise unobservable child refuses.
+                    unavailable = (result.returncode == 2 and not result.stdout and error in [
+                        {"error": name, "detail": "kernel observation unavailable"}
+                        for name in ("FileNotFoundError", "PermissionError")])
+                    if unavailable:
+                        # A proc refusal can race with an owned child's exit.
+                        # Independently confirm that exit with waitpid; record
+                        # it separately without claiming a clean live sample.
+                        # A still-live child, malformed reply or timeout refuses.
                         status = process.poll()
                         allowance = min(0.1, max(0.0, deadline - time.monotonic()))
                         if status is None and allowance > 0:
