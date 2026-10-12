@@ -1,5 +1,8 @@
 //! One durable provider input attempt. Queue acknowledgement follows an exact
-//! provider receipt; a prepared attempt can never be submitted automatically again.
+//! provider receipt. A prepared attempt is submitted once; it is never resubmitted
+//! on uncertainty. Only the server's own word that it never became a turn (an
+//! error reply to `turn/start`, `reject_prepared`) drops the attempt and lets the
+//! message queue again for a later turn.
 use super::{
     durable::Durable,
     mcp_answers::{Answer, Origin},
