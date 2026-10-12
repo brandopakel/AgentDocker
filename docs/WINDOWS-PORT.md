@@ -32,6 +32,16 @@ service acceptance remain open. Release workflows include a Windows portable
 prerelease target. A successful cross-compile alone is not runtime acceptance.
 Unix CI remains required.
 
+The current `e0f5d577` source package passed 58 installation, 62 baseline package,
+22 native Codex checks, three queue-recovery cases, four MCP review paths and
+ten masked secret-input UI steps on a native runner. Ctrl-] detached with its
+complete farewell, all watched generations retired, and AgentDocker retention
+scans found no invented secret. Provider retention was acknowledged explicitly.
+These source-package/private-model/synthetic-input results are indexed separately
+from hosted beta.11 installer/service acceptance. Physical input, real-account
+Windows testing, logon/reboot and historical startup diagnosis remain open;
+experimental native-launch and secret-input gates stay.
+
 File observations on Windows track native read-only attributes and change
 metadata; Windows has no Unix executable permission bits. Captured Windows
 container build inputs normalize files to 644, or 444 when read-only. An image

@@ -196,6 +196,18 @@ separately from definition/ownership tests in [remaining work](REMAINING-WORK.md
 
 The universal adapter. An MCP host spawns `agentdocker mcp` as a stdio server; the server registers the host as an agent (pid = the host's, so the liveness check cleans up after a crash) and translates tool calls into daemon requests. The JSON-RPC surface is deliberately minimal — `initialize`, `ping`, `tools/list`, `tools/call`, notifications ignored — and hand-rolled, because that is a few hundred lines with tests versus a dependency on a fast-moving SDK. Supported protocol versions: `2025-06-18`, `2025-03-26`, `2024-11-05` (the client's choice is echoed when supported).
 
+For native Codex, `tools/call` resolves the calling conversation against its
+live native binding before dispatch. Resolution failure returns JSON-RPC
+`error.code = -32603` (`INTERNAL_ERROR`) and
+`error.message = "cannot resolve native Codex identity: <cause>"`. Backend I/O failure while listing
+bindings instead preserves `agentd unreachable: <cause>`, including its cause
+chain; it is not a binding-selection failure.
+Missing, ended, child or ambiguous bindings are identity-resolution failures.
+They do not by themselves establish daemon unreachability, create a binding
+or authorize another identity.
+Other backend transport errors retain the existing `agentd unreachable: <cause>`
+message. Daemon protocol errors remain tool results with `isError: true`.
+
 Design points:
 
 - **Identity.** If `AGENTDOCKER_AGENT_ID` is set the host was started by `agentdocker run` and already *is* an agent; the server adopts that identity and does not deregister on exit. Otherwise it registers a new agent and deregisters when stdin closes.
@@ -1076,7 +1088,7 @@ What the app must not become is a multiplexer: panes, layouts, and tiling are he
 
 #### Terminal multiplexers
 
-A tmux start commits the record and `agent_started` event before reporting success. A failed commit attempts cleanup only of the pane and process identity this request created. Attach reconnect failures return an error without claiming the agent exited.
+A tmux start commits the record and `agent_started` event before reporting success. A failed commit attempts cleanup only of the pane and process identity this request created. Attach reconnect failures return an error without claiming the agent exited. On Windows, attachment also recognizes a complete Win32 keyboard record for the local Ctrl-] detach key when nested console output enables mode 9001. Other input is preserved byte-for-byte; fragmented records have a 64-byte prefix bound and incomplete prefixes flush after 25 ms without new input, on EOF or before a read error.
 
 We should not write one. `tmux` exists, herdr exists, and a multiplexer is not the working set. What is worth having is an adapter — row 25 — and its first half is done: an agent living in a `tmux` pane, a `screen` window, a `zellij` session or a herdr session is recognised as such, and that is recorded beside its record, shown in `ps` and `discover`, and returned by `inspect`. That makes AgentDocker composable with whatever owns the terminal instead of competing for it: a person reaches the agent with the tool that already has it.
 
@@ -1571,8 +1583,12 @@ Their response semantics and sample format identity match the existing family;
 nested cache details do not contribute a second time. Parser cursor v7 verifies
 and replays v3/v4/v5/v6 scans with the same stable
 source identities, allowing newly supported records to be collected without
-recounting earlier accepted samples. Existing historical gaps remain visible;
-this change does not claim their reconciliation or provider-billing accuracy.
+recounting earlier accepted samples. Existing historical gaps remain visible:
+older gaps contain hashed batch keys, not reversible file/record provenance, so
+a successful replay cannot safely identify which historical gap to clear. The
+upgrade regression seeds an older unsupported-record gap and requires it to
+remain partial across repeated collection. This change does not claim historical
+gap reconciliation or provider-billing accuracy.
 
 A release after the established compatibility floor, of the same major version,
 is counted as it reports: Claude Code after 2.1.280 and Codex after 0.160.0 (read with 0.160.0's
@@ -2057,7 +2073,11 @@ Secret review metadata events use `seq:0` and are live-only; clients list routes
 Managed secret input has a separate experimental producer, enabled only with
 `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1`. Interactive sessions additionally
 require the bounded editor to control terminal echo; unsupported console modes
-retain the refusal. A whole mixed bundle uses the volatile
+retain the refusal. Windows duplicates the console input handle, disables
+`ENABLE_LINE_INPUT` and `ENABLE_ECHO_INPUT`, enables
+`ENABLE_VIRTUAL_TERMINAL_INPUT`, and restores the saved mode on guard drop.
+Processed input (Ctrl-C) and output settings remain unchanged; a failed mode
+change cannot authorize an interactive secret route. A whole mixed bundle uses the volatile
 broker. Delivery ledger 15 stores only the request/thread/turn identity and a
 possible-response flag before the provider write; it never stores the answer,
 question or capability. Normal queued input waits behind this fence. A matching

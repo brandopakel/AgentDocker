@@ -181,6 +181,10 @@ a branch that moved since it was read is never merged unseen. Nothing is pushed.
 Changes are read again when the session commits or its branch moves, and with
 **Refresh**. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
+
+Diff previews stay within 512 KiB, ending on a complete line when possible and
+always on a complete character. Large Unicode patches remain readable without
+interrupting review; merge guards are unchanged.
 **More → Board** is the project's work: five
 columns — Backlog, Ready, In progress, Review, Done — of cards with a title
 and when it counts as done. **Add a task**, at the foot of the Ready lane, takes a title and

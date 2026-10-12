@@ -3,6 +3,11 @@
 //! the bounded editor supplies input echo and editing while this guard lives.
 use std::io;
 
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use std::{io::IsTerminal, os::windows::io::AsHandle};
+
 #[cfg(unix)]
 use std::{
     io::IsTerminal,
@@ -12,6 +17,8 @@ use std::{
 pub(in crate::codex_input) struct Mode {
     #[cfg(unix)]
     saved: Option<(OwnedFd, libc::termios)>,
+    #[cfg(windows)]
+    saved: Option<windows::ConsoleMode>,
 }
 
 impl Mode {
@@ -24,7 +31,19 @@ impl Mode {
             }
             Ok(Self { saved: None })
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let stdin = io::stdin();
+            let saved = if enabled && stdin.is_terminal() {
+                Some(windows::ConsoleMode::enter(
+                    stdin.as_handle().try_clone_to_owned()?,
+                )?)
+            } else {
+                None
+            };
+            Ok(Self { saved })
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = enabled;
             Ok(Self {})
@@ -32,11 +51,11 @@ impl Mode {
     }
 
     pub fn editing(&self) -> bool {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.saved.is_some()
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             false
         }
