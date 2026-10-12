@@ -524,6 +524,7 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `worktree-create --branch <name> [--from <ref>]` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours |
 | `worktree-diff` | Tracked changes in an agent's checkout |
+| `worktree-remove <agent>` | Remove an ended session's own worktree once its branch is merged or no longer wanted; the worktree must be clean, and the branch is deleted only when git considers it merged |
 | `review-branch <agent>` | What an agent's branch would bring to the branch in the project's main checkout: commits, files and lines, and what stops a merge now (uncommitted work, uncommitted changes in the main checkout, conflicts, held files); `--patch` prints the diff, `--json` the whole review |
 | `merge-branch <agent> --head <sha>` | Merge that branch into the main checkout's branch with a merge commit, if its head is still the one `review-branch` printed and nothing stops it; refused with nothing changed otherwise. It does not push |
 | `commit` | Commit the agent's checkout, journaled and attributed to it |
@@ -833,6 +834,13 @@ Newest first. Only what changes how the product is used.
   database after the wait.
 - The app forgets the note it keeps about a failed answer once the question
   it belonged to is gone, instead of keeping it for the session.
+- Sessions start in their own worktree. In a git project, **Launch agent…**
+  has **Own worktree: On** by default: the session works on a branch of its
+  own in its own folder, its changes are reviewed and merged from Changes, and
+  once merged and ended, **Remove its worktree** (or `agentdocker
+  worktree-remove`) cleans up. Files git ignores that the project lists in
+  `.worktreeinclude` (one pathspec per line, e.g. `.env`) are copied into each
+  new worktree.
 - One-click review: a session's details show **Changes** — its branch against
   the branch in the project's main folder, the commits and files, each file's
   diff, and what a merge needs — and **Merge into main** merges it with a

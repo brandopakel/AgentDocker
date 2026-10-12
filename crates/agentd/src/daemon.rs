@@ -2015,6 +2015,7 @@ impl Daemon {
                 from,
             } => self.worktree_create(&agent, path, branch, from).await,
             Request::WorktreeDiff { agent } => self.worktree_diff(&agent).await,
+            Request::WorktreeRemove { agent } => self.worktree_remove(&agent).await,
             Request::ReviewBranch { agent } => self.review_branch(&agent).await,
             Request::MergeBranch { from, agent, head } => {
                 self.merge_branch(&from, &agent, &head).await
@@ -3153,7 +3154,12 @@ impl Daemon {
             }
             match worktrees::add_worktree(root.clone(), &path, &branch, None).await {
                 Ok(()) => {
-                    info!(agent = %record.id.short(), path = %path.display(), %branch, "isolated in a worktree");
+                    let (copied, trouble) =
+                        worktrees::copy_includes(root.clone(), path.clone()).await;
+                    if let Some(trouble) = trouble {
+                        warn!(agent = %record.id.short(), %trouble, "worktree includes copied in part");
+                    }
+                    info!(agent = %record.id.short(), path = %path.display(), %branch, copied, "isolated in a worktree");
                     lock(&self.state)
                         .worktree_creators
                         .insert(path.clone(), record.id.clone());

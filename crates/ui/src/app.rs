@@ -153,6 +153,8 @@ enum Cmd {
         agent: String,
         head: String,
     },
+    /// Remove an ended session's own worktree.
+    WorktreeRemove(String),
     /// The person files a card.
     TaskCreate {
         project: String,
@@ -343,6 +345,8 @@ enum Msg {
     BranchReview(String, Result<agentdocker_core::review::Review, String>),
     /// A merge made (into which branch, as which commit), or why not.
     BranchMerged(String, Result<(String, String), String>),
+    /// A worktree removed (with its branch?), or why not.
+    WorktreeRemoved(String, Result<bool, String>),
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
     Pauses(Vec<agentdocker_core::Pause>),
@@ -524,6 +528,8 @@ pub struct App {
     branch_review: Option<(String, Result<agentdocker_core::review::Review, String>)>,
     merging: Option<String>,
     merge_outcome: Option<(String, Result<String, String>)>,
+    /// A worktree removal on its way, by agent id.
+    removing_worktree: Option<String>,
     usage_error: Option<String>,
     usage_requests: u64,
     usage_pending: Option<(
@@ -688,6 +694,7 @@ impl App {
             branch_review: None,
             merging: None,
             merge_outcome: None,
+            removing_worktree: None,
             usage_error: None,
             usage_requests: 0,
             usage_pending: None,
@@ -773,6 +780,7 @@ impl App {
             branch_review: None,
             merging: None,
             merge_outcome: None,
+            removing_worktree: None,
             usage_error: None,
             usage_requests: 0,
             usage_pending: None,
@@ -1173,6 +1181,19 @@ impl App {
                     if self.shell.selected.as_deref() == Some(agent.as_str()) {
                         self.branch_review = Some((agent, result));
                     }
+                }
+                Msg::WorktreeRemoved(agent, result) => {
+                    self.removing_worktree = None;
+                    let said = result.map(|branch| {
+                        if branch {
+                            "Worktree and branch removed.".to_owned()
+                        } else {
+                            "Worktree removed; its branch is kept.".to_owned()
+                        }
+                    });
+                    self.merge_outcome = Some((agent.clone(), said));
+                    self.send(Cmd::Agents);
+                    self.request_review(&agent);
                 }
                 Msg::BranchMerged(agent, result) => {
                     self.merging = None;
@@ -2827,6 +2848,17 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::BranchReview(agent, result))
+        }
+        Cmd::WorktreeRemove(agent) => {
+            let result = match client.call(&Request::WorktreeRemove {
+                agent: agent.clone(),
+            }) {
+                Ok(Response::WorktreeRemoved { branch_removed, .. }) => Ok(branch_removed),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::WorktreeRemoved(agent, result))
         }
         Cmd::MergeBranch { agent, head } => {
             let result = match client.call(&Request::MergeBranch {

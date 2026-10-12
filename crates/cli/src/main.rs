@@ -131,6 +131,13 @@ enum Command {
         /// Agent id, name or unique prefix (defaults to this session).
         agent: String,
     },
+    /// Remove an ended session's own worktree once its branch is merged or
+    /// no longer wanted: the worktree must be clean, and its branch is
+    /// deleted only when git considers it merged.
+    WorktreeRemove {
+        /// Agent id, name or unique prefix.
+        agent: String,
+    },
     /// What an agent's branch would bring to the branch in the project's
     /// main checkout: its commits and files, and what stops a merge now.
     ReviewBranch {
@@ -1731,6 +1738,25 @@ async fn run() -> Result<()> {
         }
         Command::WorktreeDiff { agent } => {
             print_json(&client.call(&Request::WorktreeDiff { agent }).await?)?
+        }
+        Command::WorktreeRemove { agent } => {
+            match client.call(&Request::WorktreeRemove { agent }).await? {
+                Response::WorktreeRemoved {
+                    path,
+                    branch_removed,
+                    note,
+                } => println!(
+                    "removed {}{}{}",
+                    path.display(),
+                    if branch_removed {
+                        " and its branch"
+                    } else {
+                        ""
+                    },
+                    note.map(|n| format!(" ({n})")).unwrap_or_default()
+                ),
+                other => bail!("unexpected worktree-remove response: {other:?}"),
+            }
         }
         Command::ReviewBranch { agent, patch, json } => {
             match client.call(&Request::ReviewBranch { agent }).await? {

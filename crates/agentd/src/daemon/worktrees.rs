@@ -102,6 +102,159 @@ pub(super) async fn add_worktree(
     }
 }
 
+/// The file a project keeps its worktree includes in: one git pathspec per
+/// line of files git ignores that a worktree still needs (`.env`, local
+/// settings). The name is the one other session managers read.
+pub const INCLUDE_FILE: &str = ".worktreeinclude";
+/// At most this much is copied into one worktree.
+const INCLUDE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Copy the files `.worktreeinclude` names from `root` into `path`: only
+/// files git ignores or does not track there (tracked files are in the
+/// worktree already), each under the same relative path. Says how many
+/// were copied and the first failure, and never fails the worktree: a
+/// missing `.env` is the agent's to notice, a half-made worktree is not.
+pub(super) async fn copy_includes(root: PathBuf, path: PathBuf) -> (usize, Option<String>) {
+    let Ok(text) = std::fs::read_to_string(root.join(INCLUDE_FILE)) else {
+        return (0, None);
+    };
+    let specs: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('-'))
+        .map(str::to_owned)
+        .collect();
+    if specs.is_empty() {
+        return (0, None);
+    }
+    let mut args = vec![
+        "ls-files".to_owned(),
+        "-z".to_owned(),
+        "--others".to_owned(),
+        "--ignored".to_owned(),
+        "--exclude-standard".to_owned(),
+        "--".to_owned(),
+    ];
+    args.extend(specs);
+    let listed = match git(root.clone(), args).await {
+        Ok(output) if output.success => output.stdout,
+        Ok(output) => return (0, Some(output.text)),
+        Err(e) => return (0, Some(e.to_string())),
+    };
+    let (mut copied, mut bytes, mut trouble) = (0usize, 0u64, None);
+    for relative in listed.split('\0').filter(|r| !r.is_empty()) {
+        let from = root.join(relative);
+        let to = path.join(relative);
+        // A symlink is left out: it could point anywhere.
+        let Ok(meta) = std::fs::symlink_metadata(&from) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        bytes += meta.len();
+        if bytes > INCLUDE_BYTES {
+            trouble.get_or_insert_with(|| {
+                format!("{INCLUDE_FILE} names more than 256 MiB; the rest was not copied")
+            });
+            break;
+        }
+        if let Some(parent) = to.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            trouble.get_or_insert_with(|| format!("{}: {e}", parent.display()));
+            continue;
+        }
+        match std::fs::copy(&from, &to) {
+            Ok(_) => copied += 1,
+            Err(e) => {
+                trouble.get_or_insert_with(|| format!("{relative}: {e}"));
+            }
+        }
+    }
+    (copied, trouble)
+}
+
+/// Remove a session's linked worktree once it is done with it: the session
+/// has ended, the worktree is clean (untracked files included), and git
+/// agrees to a non-force removal. The branch is deleted only when git
+/// says it is merged (`branch -d`); otherwise it stays, and the reply
+/// says so.
+pub(super) async fn remove_finished(
+    root: PathBuf,
+    path: PathBuf,
+) -> Result<(bool, Option<String>), String> {
+    match git(
+        path.clone(),
+        vec![
+            "status".into(),
+            "--porcelain".into(),
+            "--untracked-files=all".into(),
+        ],
+    )
+    .await
+    {
+        Ok(output) if output.success && output.stdout.trim().is_empty() => {}
+        Ok(output) if output.success => {
+            return Err(
+                "the worktree has uncommitted or untracked files; commit or discard them first"
+                    .into(),
+            );
+        }
+        Ok(output) => return Err(output.text),
+        Err(e) => return Err(e.to_string()),
+    }
+    let branch = match git(
+        path.clone(),
+        vec![
+            "symbolic-ref".into(),
+            "--short".into(),
+            "-q".into(),
+            "HEAD".into(),
+        ],
+    )
+    .await
+    {
+        Ok(output) if output.success => {
+            Some(output.stdout.trim().to_owned()).filter(|b| !b.is_empty())
+        }
+        _ => None,
+    };
+    match git(
+        root.clone(),
+        vec![
+            "worktree".into(),
+            "remove".into(),
+            "--".into(),
+            path.to_string_lossy().into_owned(),
+        ],
+    )
+    .await
+    {
+        Ok(output) if output.success => {}
+        Ok(output) => return Err(output.text),
+        Err(e) => return Err(e.to_string()),
+    }
+    let Some(branch) = branch else {
+        return Ok((false, Some("the worktree had no branch of its own".into())));
+    };
+    match git(
+        root,
+        vec!["branch".into(), "-d".into(), "--".into(), branch.clone()],
+    )
+    .await
+    {
+        Ok(output) if output.success => Ok((true, None)),
+        Ok(_) => Ok((
+            false,
+            Some(format!(
+                "branch {branch} is kept: git does not consider it merged"
+            )),
+        )),
+        Err(e) => Ok((false, Some(e.to_string()))),
+    }
+}
+
 /// Remove only a clean, unstarted isolated checkout whose branch did not advance.
 /// Git's normal (non-force) removal/deletion checks remain authoritative.
 pub(super) async fn cleanup_unstarted(record: &AgentRecord) -> (bool, bool, Option<String>) {
@@ -229,6 +382,63 @@ impl Daemon {
             path: path.clone(),
         });
         Response::Worktree { path, branch }
+    }
+
+    /// Remove an ended session's linked worktree once its branch is merged
+    /// or no longer wanted; the worktree must be clean. Emits
+    /// `worktree_cleanup` as the unstarted cleanup does.
+    pub(super) async fn worktree_remove(&self, reference: &str) -> Response {
+        let (id, path, root) = {
+            let mut state = lock(&self.state);
+            let id = match state.resolve(reference) {
+                Ok(id) => id,
+                Err(e) => return *e,
+            };
+            let record = state.registry.get(&id).expect("resolved").clone();
+            if record.status.is_live() {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    "the session is still running; stop it before removing its worktree",
+                );
+            }
+            let Some(project) = &record.project else {
+                return Response::error(ErrorCode::Invalid, "this session works in no project");
+            };
+            let Some(worktree) = &project.worktree else {
+                return Response::error(
+                    ErrorCode::Invalid,
+                    "this session works in the project's main folder, which is not removed",
+                );
+            };
+            (
+                id,
+                project::canonical(worktree),
+                project::canonical(&project.root),
+            )
+        };
+        if !path.exists() {
+            return Response::error(
+                ErrorCode::NotFound,
+                format!("{} is already gone", path.display()),
+            );
+        }
+        match remove_finished(root, path.clone()).await {
+            Ok((branch_removed, reason)) => {
+                lock(&self.state).emit(EventKind::WorktreeCleanup {
+                    agent: id,
+                    path: path.clone(),
+                    worktree_removed: true,
+                    branch_removed,
+                    reason: reason.clone(),
+                });
+                Response::WorktreeRemoved {
+                    path,
+                    branch_removed,
+                    note: reason,
+                }
+            }
+            Err(reason) => Response::error(ErrorCode::Conflict, reason),
+        }
     }
 
     pub(super) async fn worktree_diff(&self, reference: &str) -> Response {
@@ -848,5 +1058,70 @@ mod tests {
             root.join(".git/MERGE_HEAD").exists(),
             "review and commit remain explicit"
         );
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    async fn run(dir: &Path, args: &[&str]) {
+        let output = git(
+            dir.to_path_buf(),
+            args.iter().map(|a| (*a).to_owned()).collect(),
+        )
+        .await
+        .unwrap();
+        assert!(output.success, "git {args:?}: {}", output.text);
+    }
+
+    /// A new worktree gets the ignored files `.worktreeinclude` names and
+    /// nothing else; once its branch is merged and it is clean it can be
+    /// removed with its branch, and a dirty one is refused.
+    #[tokio::test]
+    async fn includes_are_copied_in_and_a_finished_worktree_is_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        run(&root, &["init", "-q", "-b", "main"]).await;
+        run(&root, &["config", "user.email", "t@example.com"]).await;
+        run(&root, &["config", "user.name", "T"]).await;
+        std::fs::write(root.join(".gitignore"), ".env\nlocal/\n").unwrap();
+        std::fs::write(
+            root.join(INCLUDE_FILE),
+            "# secrets the agent needs\n.env\nlocal/\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("README.md"), "hello\n").unwrap();
+        run(&root, &["add", "."]).await;
+        run(&root, &["commit", "-qm", "initial"]).await;
+        std::fs::write(root.join(".env"), "KEY=1\n").unwrap();
+        std::fs::create_dir(root.join("local")).unwrap();
+        std::fs::write(root.join("local/settings.json"), "{}").unwrap();
+        std::fs::write(root.join("scratch.txt"), "not listed").unwrap();
+
+        let wt = tmp.path().join("wt");
+        add_worktree(root.clone(), &wt, "agent/one", None)
+            .await
+            .unwrap();
+        let (copied, trouble) = copy_includes(root.clone(), wt.clone()).await;
+        assert_eq!((copied, trouble), (2, None));
+        assert_eq!(std::fs::read_to_string(wt.join(".env")).unwrap(), "KEY=1\n");
+        assert!(wt.join("local/settings.json").exists());
+        assert!(!wt.join("scratch.txt").exists(), "only what is listed");
+
+        // Dirty: refused. Committed and merged: removed with its branch.
+        std::fs::write(wt.join("new.rs"), "fn x() {}\n").unwrap();
+        assert!(remove_finished(root.clone(), wt.clone()).await.is_err());
+        run(&wt, &["add", "new.rs"]).await;
+        run(&wt, &["commit", "-qm", "work"]).await;
+        // The include files are ignored, so the worktree is clean; the
+        // branch is not merged yet, so it is kept.
+        let (branch_removed, note) = remove_finished(root.clone(), wt.clone()).await.unwrap();
+        assert!(!branch_removed);
+        assert!(note.unwrap().contains("kept"));
+        assert!(!wt.exists());
+        run(&root, &["merge", "-q", "--no-ff", "-m", "m", "agent/one"]).await;
+        run(&root, &["branch", "-d", "agent/one"]).await;
     }
 }

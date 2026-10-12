@@ -179,8 +179,14 @@ when the checklist is clear. It makes a merge commit in the main folder and
 says so (*Merged into main as abc1234.*), or says why not, with nothing changed;
 a branch that moved since it was read is never merged unseen. Nothing is pushed.
 Changes are read again when the session commits or its branch moves, and with
-**Refresh**. **Details** reveals the session ID, process,
+**Refresh**. Once nothing is left to merge and the session has ended,
+**Remove its worktree** removes the folder (only when it is clean) and its branch
+when git considers it merged; the branch is kept, and the section says so, when not. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
+
+Diff previews stay within 512 KiB, ending on a complete line when possible and
+always on a complete character. Large Unicode patches remain readable without
+interrupting review; merge guards are unchanged.
 **More → Board** is the project's work: five
 columns — Backlog, Ready, In progress, Review, Done — of cards with a title
 and when it counts as done. **Add a task**, at the foot of the Ready lane, takes a title and
@@ -223,7 +229,7 @@ to hold: they read the reason as a `pause` message, the daemon refuses their
 new leases until **Resume**, and the header shows **Paused · reason** while
 it holds (what an agent already holds, it keeps; your own actions are not
 held; only you can pause or resume, an agent asks with a message).
-**Launch agent…** opens the form (pressing it again leaves it open; **Cancel**
+**Launch agent…** opens the form. In a git project it offers **Own worktree**, on by default: the session works on a branch of its own (`agent/<name>`) in its own folder under AgentDocker's worktree directory, with the files the project's `.worktreeinclude` lists copied in; off, it works in the project folder on its current branch. Pressing the button again leaves the form open; **Cancel**
 or a press outside the dialog closes it) to choose an installed CLI and start it at the project root shown
 in the header. Claude and Codex launches default to **Idle messages: On**;
 turning it off visibly warns that messages may wait. Claude still requires its
