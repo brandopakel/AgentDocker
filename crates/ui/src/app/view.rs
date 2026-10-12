@@ -3107,7 +3107,11 @@ impl App {
         let header = column![
             heading("Launch an agent", 16),
             note(
-                "Start a tool in this project's folder. Nothing else is changed.",
+                if self.shell.launch_worktree && self.launch_project_is_git() {
+                "Start a tool on a branch of its own, in its own folder; merge its work from Changes."
+            } else {
+                "Start a tool in this project's folder. Nothing else is changed."
+            },
                 c
             )
         ]
