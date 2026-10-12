@@ -2894,6 +2894,9 @@ impl App {
                 _ => {}
             }
         }
+        if let Some(changes) = self.changes_section(agent, c) {
+            body = body.push(changes);
+        }
         let mut footer = column![].spacing(10);
         let mut footer_line = row![].spacing(4).align_y(Center);
         footer_line = footer_line.push(custom_sized(
@@ -3640,6 +3643,7 @@ pub(super) fn plain_pause_reason(reason: &str) -> String {
 
 // Questions, approvals, the Inbox without conversations and Needs you.
 mod approvals;
+mod changes;
 mod secret_reviews;
 
 /// Keep full question bodies in the review screen, with a bounded first line here.

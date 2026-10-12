@@ -9,7 +9,7 @@ use crate::app::Message;
 use crate::controls::{Kind, custom};
 use iced::{
     Center, Color, Element, Fill,
-    widget::{Space, column, container, row, stack, text},
+    widget::{Space, container, row, stack, text},
 };
 
 /// A mark with a presence dot at its lower right: the dot sits in a ring
@@ -106,67 +106,6 @@ pub(in crate::app) fn section_label<'a>(
         bottom: 4.0,
         left: 8.0,
     })
-    .into()
-}
-
-/// The header of a group that folds: its label, how many it holds, and a
-/// chevron that points where it opens. The spoken label is the whole of
-/// it, `From AgentDocker (3)`.
-pub(in crate::app) fn group_header<'a>(
-    id: &str,
-    label: &str,
-    count: usize,
-    open: bool,
-    message: Message,
-    c: Colors,
-) -> Element<'a, Message> {
-    custom(
-        id.to_owned(),
-        format!("{label} ({count})"),
-        row![
-            text(label.to_owned())
-                .size(12)
-                .font(weight(iced::font::Weight::Medium))
-                .color(c.muted),
-            text(count.to_string()).size(12).color(c.faint),
-            Space::new().width(Fill),
-            icon(
-                if open {
-                    Icon::ChevronDown
-                } else {
-                    Icon::ChevronRight
-                },
-                c.faint,
-                12.0,
-            ),
-        ]
-        .spacing(6)
-        .align_y(Center),
-        Some(message),
-        false,
-        Kind::Quiet,
-        [6, 8],
-    )
-}
-
-/// An open group's rows, indented behind a one-point guide rail.
-pub(in crate::app) fn guided<'a>(
-    rows: Vec<Element<'a, Message>>,
-    c: Colors,
-) -> Element<'a, Message> {
-    let mut list = column![].spacing(2).width(Fill);
-    for item in rows {
-        list = list.push(item);
-    }
-    row![
-        Space::new().width(14),
-        container(Space::new().width(1).height(Fill))
-            .width(1)
-            .height(Fill)
-            .style(move |_| c.rule()),
-        list,
-    ]
-    .spacing(6)
     .into()
 }
 
