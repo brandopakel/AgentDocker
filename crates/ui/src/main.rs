@@ -12,6 +12,7 @@ mod client;
 mod color;
 mod controls;
 mod desktop;
+mod dock;
 mod drafts;
 mod native_terminal;
 mod notification_route;

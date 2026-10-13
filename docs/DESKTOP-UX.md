@@ -549,12 +549,16 @@ and notarization; locally signed builds are explicit previews.
   The focus ring is the keyboard's: a click focuses a control without one, and
   the next key press shows it on whatever is focused.
 - Command/Ctrl+1–4 switch Projects, Inbox, Tools and Settings.
+- Command/Ctrl+N opens **Launch agent…** for the project on screen.
 - Escape closes session details or an add/launch form.
 - F6 moves focus out of terminal input. Control+] detaches.
 - Drag across terminal cells to select text. Command+C on macOS, or Ctrl+Shift+C
   elsewhere, copies the selection (the visible screen when no range is selected).
   Selected text stays stable while new output drains; copy or resumed input
   releases it. Command+V/Ctrl+Shift+V pastes using the agent's bracketed-paste mode.
+
+On macOS the dock icon shows how many questions are waiting on you, in every
+project: the rows Needs you holds. It shows nothing when none are waiting.
 
 Text inputs and the terminal support native input methods. Focus indicators and
 status words complement color. Native accessibility adapters expose control

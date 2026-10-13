@@ -836,6 +836,8 @@ Newest first. Only what changes how the product is used.
   database after the wait.
 - The app forgets the note it keeps about a failed answer once the question
   it belonged to is gone, instead of keeping it for the session.
+- The dock icon counts the questions waiting on you, across projects, and
+  Command/Ctrl+N opens Launch agent.
 - Sessions start in their own worktree. In a git project, **Launch agent…**
   has **Own worktree: On** by default: the session works on a branch of its
   own in its own folder, its changes are reviewed and merged from Changes, and
