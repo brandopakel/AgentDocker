@@ -1,13 +1,15 @@
 //! Private, generation-bound write-ahead ledger for an external native queue.
-use super::super::ledger::Receipt;
+use super::super::{
+    durable::{self, Durable},
+    ledger::Receipt,
+};
 use agentdocker_core::{Envelope, InputBinding, ProcessIdentity, ProviderGeneration};
-use agentdocker_host::{dirs, lock, procinfo};
+use agentdocker_host::{dirs, procinfo};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
-    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -122,8 +124,7 @@ pub(super) struct Record {
 }
 
 pub(super) struct Ledger {
-    _owner: lock::Lock,
-    path: PathBuf,
+    file: Durable,
     record: Record,
 }
 
@@ -168,17 +169,11 @@ pub(super) fn upgrade_credential(
     let directory = directory_path(home, agent)?;
     dirs::check_private_dir(&home.join("codex-queue"))?;
     dirs::check_private_dir(&directory)?;
-    let path = directory.join("delivery.json");
-    let mut data = Vec::new();
-    dirs::open_private_snapshot(&path)?
-        .take((MAX_STATE + 1) as u64)
-        .read_to_end(&mut data)?;
-    ensure!(
-        data.len() <= MAX_STATE,
-        "native queue ledger exceeds its size limit"
-    );
-    let mut record: Record =
-        serde_json::from_slice(&data).context("invalid retained native queue ledger")?;
+    let mut record: Record = durable::snapshot(
+        &directory.join("delivery.json"),
+        MAX_STATE,
+        "native queue ledger",
+    )?;
     record.migrate()?;
     record.validate(&record.binding)?;
     ensure!(
@@ -193,23 +188,16 @@ pub(super) fn upgrade_credential(
 impl Ledger {
     pub fn open(home: &Path, binding: Binding, accepted: Option<&InputBinding>) -> Result<Self> {
         let directory = directory(home, &binding.agent)?;
-        let lock_path = directory.join("owner.lock");
-        dirs::private_file(&lock_path, true, false)?;
-        let owner = lock::try_exclusive_existing(&lock_path)?
-            .context("native queue controller already owns this agent")?;
-        let path = directory.join("delivery.json");
-        let mut record = match dirs::read_private_file(&path) {
-            Ok(file) => {
-                let mut data = Vec::new();
-                file.take((MAX_STATE + 1) as u64).read_to_end(&mut data)?;
-                ensure!(
-                    data.len() <= MAX_STATE,
-                    "native queue ledger exceeds its size limit"
-                );
-                serde_json::from_slice::<Record>(&data)
-                    .context("invalid retained native queue ledger")?
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let file = Durable::open(
+            &directory,
+            "delivery.json",
+            MAX_STATE,
+            "native queue ledger",
+            "native queue controller already owns this agent",
+        )?;
+        let mut record = match file.read::<Record>()? {
+            Some(record) => record,
+            None => {
                 ensure!(
                     accepted.is_none(),
                     "bound native input ledger is missing; retained input needs reconciliation"
@@ -224,7 +212,6 @@ impl Ledger {
                     manual_reads: Vec::new(),
                 }
             }
-            Err(e) => return Err(e.into()),
         };
         record.migrate()?;
         record.validate(&record.binding)?;
@@ -257,11 +244,7 @@ impl Ledger {
             record.binding = binding.clone();
         }
         record.validate(&binding)?;
-        let mut ledger = Self {
-            _owner: owner,
-            path,
-            record,
-        };
+        let mut ledger = Self { file, record };
         ledger.save(ledger.record.clone())?;
         Ok(ledger)
     }
@@ -617,24 +600,7 @@ impl Ledger {
 
     fn save(&mut self, next: Record) -> Result<()> {
         next.validate(&self.record.binding)?;
-        let data = serde_json::to_vec(&next)?;
-        ensure!(
-            data.len() <= MAX_STATE,
-            "native queue ledger exceeds its size limit"
-        );
-        match dirs::read_private_file(&self.path) {
-            Ok(_) => (),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-            Err(e) => return Err(e.into()),
-        }
-        let directory = self
-            .path
-            .parent()
-            .context("native queue ledger has no directory")?;
-        let mut file = tempfile::Builder::new().make_in(directory, dirs::create_private_file)?;
-        file.write_all(&data)?;
-        file.as_file().sync_all()?;
-        agentdocker_host::files::publish_snapshot(&file.into_temp_path(), &self.path)?;
+        self.file.publish(&next)?;
         self.record = next;
         Ok(())
     }
@@ -851,6 +817,7 @@ impl Record {
 mod tests {
     use super::*;
     use agentdocker_core::{Destination, ProcessIdentity};
+    use std::io::Read;
 
     #[test]
     fn queued_start_preparation_can_retry_but_transmission_and_receipt_remain_once_only() {
@@ -1007,7 +974,7 @@ mod tests {
             .begin_queued_start(envelope.id.as_str(), &confirmation, "review", operator)
             .unwrap();
         let mut record = ledger.record.clone();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         record.version = 5;
         drop(ledger);
         std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
@@ -1048,7 +1015,7 @@ mod tests {
             )
             .unwrap();
         let original = serde_json::to_value(&ledger.record).unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         drop(ledger);
         let mut missing_marker = original.clone();
         missing_marker["attempt"]["start"]
@@ -1143,7 +1110,7 @@ mod tests {
     fn publication_preserves_a_held_readback_and_exposes_only_complete_records() {
         let home = tempfile::tempdir().unwrap();
         let mut ledger = Ledger::open(home.path(), binding(home.path()), None).unwrap();
-        let mut before = dirs::open_private_snapshot(&ledger.path).unwrap();
+        let mut before = dirs::open_private_snapshot(ledger.file.path()).unwrap();
         let envelope = Envelope::new(
             "peer",
             Destination::parse("agent"),
@@ -1158,7 +1125,7 @@ mod tests {
         let old: Record = serde_json::from_str(&old).unwrap();
         assert!(old.attempt.is_none());
         let mut new = String::new();
-        dirs::open_private_snapshot(&ledger.path)
+        dirs::open_private_snapshot(ledger.file.path())
             .unwrap()
             .read_to_string(&mut new)
             .unwrap();
@@ -1207,7 +1174,7 @@ mod tests {
             pid: 123,
             started_at: chrono::Utc::now(),
         };
-        let before = std::fs::read(&ledger.path).unwrap();
+        let before = std::fs::read(ledger.file.path()).unwrap();
         assert!(
             ledger
                 .begin_manual_read(
@@ -1233,7 +1200,7 @@ mod tests {
                 .begin_manual_read(envelope.id.as_str(), &confirmation, "", operator.clone())
                 .is_err()
         );
-        assert_eq!(std::fs::read(&ledger.path).unwrap(), before);
+        assert_eq!(std::fs::read(ledger.file.path()).unwrap(), before);
         ledger
             .begin_manual_read(
                 envelope.id.as_str(),
@@ -1275,13 +1242,13 @@ mod tests {
         assert!(ledger.resolved_hook_request("original-hook"));
         assert!(!ledger.resolved_hook_request("new-hook"));
         assert!(
-            !std::fs::read_to_string(&ledger.path)
+            !std::fs::read_to_string(ledger.file.path())
                 .unwrap()
                 .contains("original multiline")
         );
         let mut old = serde_json::to_value(&ledger.record).unwrap();
         old["version"] = serde_json::json!(3);
-        std::fs::write(&ledger.path, serde_json::to_vec(&old).unwrap()).unwrap();
+        std::fs::write(ledger.file.path(), serde_json::to_vec(&old).unwrap()).unwrap();
         let binding = ledger.record.binding.clone();
         drop(ledger);
         assert!(Ledger::open(home.path(), binding, None).is_err());
@@ -1344,7 +1311,7 @@ mod tests {
             ledger.acknowledge().unwrap();
         }
         assert_eq!(ledger.record.completed.len(), RETAINED);
-        let bytes = std::fs::read(&ledger.path).unwrap();
+        let bytes = std::fs::read(ledger.file.path()).unwrap();
         assert!(
             bytes.len() < 32_000,
             "acknowledged message bodies must not accumulate"
@@ -1401,7 +1368,7 @@ mod tests {
             message.id.as_str()
         );
         assert!(
-            !std::fs::read_to_string(&ledger.path)
+            !std::fs::read_to_string(ledger.file.path())
                 .unwrap()
                 .contains("pause fixture")
         );
@@ -1422,7 +1389,7 @@ mod tests {
         let mut ledger = Ledger::open(home.path(), binding.clone(), None).unwrap();
         ledger.prepare(&message, None).unwrap();
         ledger.queued("native-id").unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         let mut old = serde_json::to_value(&ledger.record).unwrap();
         old["version"] = serde_json::json!(2);
         drop(ledger);
@@ -1439,7 +1406,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let mut binding = binding(home.path());
         let ledger = Ledger::open(home.path(), binding.clone(), None).unwrap();
-        let path = ledger.path.clone();
+        let path = ledger.file.path().to_path_buf();
         let original = std::fs::read(&path).unwrap();
         drop(ledger);
         binding.remote = Some(super::super::remote::Descriptor {
@@ -1465,7 +1432,7 @@ mod tests {
         let mut old = serde_json::to_value(&ledger.record).unwrap();
         old["version"] = serde_json::json!(2);
         let bytes = serde_json::to_vec(&old).unwrap();
-        std::fs::write(&ledger.path, &bytes).unwrap();
+        std::fs::write(ledger.file.path(), &bytes).unwrap();
         let mut accepted = InputBinding {
             provider: binding.provider.clone(),
             controller: binding.provider.process.clone(),
@@ -1481,7 +1448,7 @@ mod tests {
         assert_eq!(found, binding);
         assert_eq!(token, ledger.record.token);
         assert_eq!(
-            std::fs::read(&ledger.path).unwrap(),
+            std::fs::read(ledger.file.path()).unwrap(),
             bytes,
             "no migration while the old receiver owns the lock"
         );
@@ -1491,7 +1458,7 @@ mod tests {
         );
         accepted.token_sha256 = "wrong".into();
         assert!(upgrade_credential(home.path(), "agent", &accepted).is_err());
-        assert_eq!(std::fs::read(&ledger.path).unwrap(), bytes);
+        assert_eq!(std::fs::read(ledger.file.path()).unwrap(), bytes);
         let missing = tempfile::tempdir().unwrap();
         assert!(upgrade_credential(missing.path(), "agent", &accepted).is_err());
         assert!(

@@ -200,7 +200,7 @@ impl Daemon {
                         running.finished_at = None;
                         running.last_seen = Utc::now();
                         running.restarts = attempt;
-                        let mut event = Event::new(
+                        let event = Event::new(
                             EventKind::AgentRestarted {
                                 agent: id.clone(),
                                 pid: Some(pid),
@@ -208,21 +208,17 @@ impl Daemon {
                             },
                             Utc::now(),
                         );
-                        event.seq = state.next_seq;
-                        let committed = state.persist("restart completion", |store| {
-                            store.agent_transition(&running, &event)
-                        });
-                        if committed == Persisted::Committed {
-                            *state
-                                .registry
-                                .get_mut(id)
-                                .expect("restart identity retained") = running;
-                            state.next_seq += 1;
-                            let _ = state.events.send(event);
-                            true
-                        } else {
-                            false
-                        }
+                        state.transition(
+                            "restart completion",
+                            event,
+                            |store, event| store.agent_transition(&running, event),
+                            |state| {
+                                *state
+                                    .registry
+                                    .get_mut(id)
+                                    .expect("restart identity retained") = running.clone();
+                            },
+                        ) == Persisted::Committed
                     } else {
                         false
                     }
@@ -264,26 +260,27 @@ impl Daemon {
                     failed.restarts = attempt;
                     failed.status = status.clone();
                     failed.finished_at = Some(Utc::now());
-                    let mut event = Event::new(
+                    let event = Event::new(
                         EventKind::AgentExited {
                             agent: id.clone(),
                             status: status.clone(),
                         },
                         Utc::now(),
                     );
-                    event.seq = state.next_seq;
-                    let committed = state.persist("failed restart", |store| {
-                        store.agent_transition(&failed, &event)
-                    });
+                    let committed = state.transition(
+                        "failed restart",
+                        event,
+                        |store, event| store.agent_transition(&failed, event),
+                        |state| {
+                            *state
+                                .registry
+                                .get_mut(id)
+                                .expect("restart identity retained") = failed.clone();
+                        },
+                    );
                     if committed != Persisted::Committed {
                         return true;
                     }
-                    *state
-                        .registry
-                        .get_mut(id)
-                        .expect("restart identity retained") = failed;
-                    state.next_seq += 1;
-                    let _ = state.events.send(event);
                 }
             }
         }
@@ -308,26 +305,22 @@ impl Daemon {
         // the policy as it was, in both places.
         let mut record = record.clone();
         record.spec.restart = agentdocker_core::RestartPolicy::No;
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::AgentRestartCleared {
                 agent: record.id.clone(),
             },
             Utc::now(),
         );
-        event.seq = state.next_seq;
-        let committed = state.persist("restart policy", |store| {
-            store.agent_transition(&record, &event)
-        });
-        if committed == Persisted::Committed {
-            if let Some(stored) = state.registry.get_mut(id) {
-                stored.spec.restart = agentdocker_core::RestartPolicy::No;
-            }
-            state.next_seq += 1;
-            let _ = state.events.send(event);
-            true
-        } else {
-            false
-        }
+        state.transition(
+            "restart policy",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                if let Some(stored) = state.registry.get_mut(id) {
+                    stored.spec.restart = agentdocker_core::RestartPolicy::No;
+                }
+            },
+        ) == Persisted::Committed
     }
 }
 
