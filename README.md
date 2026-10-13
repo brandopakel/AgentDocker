@@ -33,7 +33,7 @@ It runs on the host: a native per-user daemon, CLI and desktop using local IPC â
 
 If you know [herdr](https://github.com/herdrdev/herdr), the two are complements rather than rivals: herdr owns the terminals agents live in, AgentDocker owns what they may touch, what they changed, and who else needs to know. See [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits). The same goes for [Dax](https://getdax.app/) (a macOS menu-bar companion whose Shepherd window embeds herdr) and [Paprika](https://paprika.ai/) (a hosted Kanban board where agents pull cards over MCP): they say what the work is and where it lives; AgentDocker helps agents coordinate their work, surfaces conflicts, and records what happened. What is shared today, what is designed and what is only an idea is in [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits) (the deeper focus/prompt bridge was measured and deferred; HERDR-BRIDGE.md in git history): a herdr, tmux, screen or zellij session is recognised and shown with the agent; a local board of cards with acceptance text, pulled once over a `task:<id>` lease, is in the app (the shape taken from Paprika); the herdr prompt/focus bridge and a Paprika card-to-lease bridge are proposals.
 
-> Status: **beta, single host.** The native desktop, messaging, agent terminals, reconnect, task board and usage collection are implemented. The current preview is [v0.2.0-beta.11](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.11): the macOS/Linux desktop and an unsigned Windows portable ZIP. The stable download and Homebrew formula remain v0.1.0. First-run and sustained acceptance remain open on every platform, and the full Windows product is unfinished. [Remaining work](docs/REMAINING-WORK.md) says what is done, what has evidence and what is still open.
+> Status: **beta, single host.** The native desktop, messaging, agent terminals, reconnect, task board and usage collection are implemented. The current preview is [v0.2.0-beta.12](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.12): the macOS/Linux desktop and an unsigned Windows portable ZIP. The stable download and Homebrew formula remain v0.1.0. First-run and sustained acceptance remain open on every platform, and the full Windows product is unfinished. [Remaining work](docs/REMAINING-WORK.md) says what is done, what has evidence and what is still open.
 
 The first coworker rollout targets **macOS, Linux and native Windows**. Each
 platform needs a downloadable candidate and its own first-run acceptance; the
@@ -63,7 +63,7 @@ Idle message delivery needs a provider input adapter as well. The Claude channel
 ## Install
 
 **Trying the desktop preview with coworkers:** download
-[v0.2.0-beta.11](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.11)
+[v0.2.0-beta.12](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.12)
 explicitly. The default installer and Homebrew commands below still select the
 stable v0.1.0 release. For a source trial, follow
 [the local build instructions](docs/LOCAL-BUILD.md) at an agreed commit. The

@@ -163,15 +163,52 @@ class LinuxProcTransport(unittest.TestCase):
                 SMOKE.check_no_tcp([process], time.monotonic() + 5)
         process.wait.assert_called_once()
 
-    def test_permission_or_malformed_observation_is_not_excused_by_child_exit(self):
+    def test_malformed_observation_is_not_excused_by_child_exit(self):
         process = SimpleNamespace(pid=42, poll=lambda: 0, wait=Mock())
-        errors = [json.dumps({"error": "PermissionError", "detail": "kernel observation unavailable"}),
-                  "not JSON", json.dumps({"error": "FileNotFoundError", "detail": "unexpected"})]
+        errors = ["not JSON", json.dumps({"error": "FileNotFoundError", "detail": "unexpected"})]
         for error in errors:
             with self.subTest(error=error), patch.object(SMOKE.sys, "platform", "linux"), patch.object(SMOKE.subprocess, "run", return_value=subprocess.CompletedProcess([], 2, "", error)):
                 with self.assertRaises(SMOKE.TransportCheckFailed):
                     SMOKE.check_no_tcp([process], time.monotonic() + 5)
         process.wait.assert_not_called()
+
+    def test_permission_refusal_records_only_an_independently_confirmed_exit(self):
+        error = {"error": "PermissionError", "detail": "kernel observation unavailable"}
+        refused = subprocess.CompletedProcess([], 2, "", json.dumps(error))
+        for already_exited in (False, True):
+            process = SimpleNamespace(pid=42, poll=lambda: 0 if already_exited else None,
+                                      wait=Mock(return_value=0))
+            with self.subTest(already_exited=already_exited), patch.object(SMOKE.sys, "platform", "linux"), patch.object(SMOKE.subprocess, "run", return_value=refused), tempfile.TemporaryDirectory() as directory:
+                capture = Path(directory)
+                SMOKE.check_no_tcp([process], time.monotonic() + 5, capture)
+                record = json.loads((capture / "transport-exit.jsonl").read_text())
+                self.assertEqual(record["inspector_error"], error)
+                self.assertEqual(record["process_status"], 0)
+                self.assertFalse(record["live_transport_observation"])
+                self.assertFalse((capture / "transport-failure.json").exists())
+                if already_exited:
+                    process.wait.assert_not_called()
+                else:
+                    self.assertLessEqual(process.wait.call_args.kwargs["timeout"], 0.1)
+
+    def test_permission_refusal_for_live_process_still_fails(self):
+        refused = subprocess.CompletedProcess([], 2, "", json.dumps({
+            "error": "PermissionError", "detail": "kernel observation unavailable"}))
+        process = SimpleNamespace(pid=42, poll=lambda: None,
+                                  wait=Mock(side_effect=subprocess.TimeoutExpired("child", 0.1)))
+        with patch.object(SMOKE.sys, "platform", "linux"), patch.object(SMOKE.subprocess, "run", return_value=refused):
+            with self.assertRaises(SMOKE.TransportCheckFailed):
+                SMOKE.check_no_tcp([process], time.monotonic() + 5)
+
+    def test_permission_exit_observation_does_not_hide_nonzero_window_exit(self):
+        clean = subprocess.CompletedProcess([], 0, '{"tcp": false, "socket_count": 0}', "")
+        refused = subprocess.CompletedProcess([], 2, "", json.dumps({
+            "error": "PermissionError", "detail": "kernel observation unavailable"}))
+        daemon = SimpleNamespace(pid=41, poll=lambda: None)
+        window = SimpleNamespace(pid=42, poll=lambda: 7)
+        with patch.object(SMOKE.sys, "platform", "linux"), patch.object(SMOKE.subprocess, "run", side_effect=[clean, refused]):
+            with self.assertRaisesRegex(RuntimeError, "graphical acceptance failed"):
+                SMOKE.wait_window(daemon, window, timeout=5)
 
     def test_linux_inspector_failure_is_not_converted_into_no_tcp(self):
         process = SimpleNamespace(pid=42, poll=lambda: None)

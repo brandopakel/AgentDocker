@@ -389,7 +389,7 @@ async fn session(
     let mut file_reviews = file_changes::Reviews::default();
     let mut secrets = secret_requests::Session::new(agent)?;
     // Interactive routes require the bounded editor to own terminal echo.
-    // Windows console input keeps refusing until it has equivalent mode control.
+    // Non-terminal or unsupported interactive handles keep refusing.
     let secret_input = experimental(client).await.secret_input && (!input_open || terminal_editing);
     loop {
         tokio::select! {

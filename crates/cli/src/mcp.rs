@@ -707,6 +707,7 @@ impl<B: Backend> McpServer<B> {
         result
     }
 
+    /// Resolve the native caller when needed, then dispatch its authorized tool.
     async fn call_tool(&self, params: Value) -> Result<Value, (i64, String)> {
         let name = params
             .get("name")
@@ -720,7 +721,7 @@ impl<B: Backend> McpServer<B> {
             let agent = context
                 .resolve(&self.backend, &params["_meta"])
                 .await
-                .map_err(transport)?;
+                .map_err(native_identity::mcp_error)?;
             let identity = Identity {
                 id: agent.id.to_string(),
                 name: agent.spec.name,

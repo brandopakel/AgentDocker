@@ -49,7 +49,12 @@ fields cannot fall back to the older representation. It verifies the app-server 
 birth and executable. The canonical package-cache path supplies the host profile
 when Codex filters `CODEX_HOME` from the MCP environment; an explicitly supplied
 profile must agree. It requires the root thread/session to agree and refuses
-missing, ambiguous, stale or child bindings. It creates no app-server agent and
+missing, ambiguous, stale or child bindings. Identity-resolution errors now say
+`cannot resolve native Codex identity` and retain their underlying cause. A
+missing live binding does not establish a daemon connection failure; the daemon
+may have answered successfully with only an exited provider generation.
+This diagnostic does not create a binding or reconnect a conversation.
+It creates no app-server agent and
 never derives a thread from history or a display name. The native receiver keeps
 ownership of input receipts. Once resolved, a native question cannot fall back
 to a blocking legacy call if a binding changes during the request. This source
@@ -58,6 +63,9 @@ change passed an actual Codex 0.160.0 macOS ARM64 loopback trial on
 and idle/draft/busy/recovery checks and private-process cleanup passed.
 Independent review and broader platform/version acceptance remain; this does
 not solve zero-prompt startup/reopen.
+Backend I/O failures while reading the binding inventory preserve the existing
+`agentd unreachable: <cause>` diagnostic and its cause chain. Local host or
+binding validation failures retain the native identity diagnostic.
 
 The receiver probes the read-only queue/history APIs before taking ownership.
 Hooks keep their normal delivery while that probe is pending or unsupported;
@@ -1394,12 +1402,53 @@ delivery through a private model, masked desktop entry and a synthetic PTY draft
 trial. No supplied value was found in AgentDocker state/logs; Codex retained it
 in its rollout. Broader lifecycle/fault, account, final-package and native-terminal
 parity remain open. Default sessions still refuse secret bundles. An interactive
-route additionally requires AgentDocker to control terminal echo; Windows console
-input remains refused until equivalent mode handling is implemented. A supported
-managed terminal discards new typing without echo while a secret route is
+route additionally requires AgentDocker to control terminal echo. On Windows,
+the managed bridge now owns a duplicate console input handle, disables line
+buffering and echo, and enables virtual-terminal input for the bounded editor.
+It preserves Ctrl-C and output behavior and restores the saved input mode when
+the guard drops. Non-terminal/unsupported interactive handles still refuse.
+The native Windows workflow exercises actual console-mode restoration and the
+extracted package's masked form, suspended typing, Unicode draft and oversized
+line with a private Codex model and synthetic ConPTY. Source `e0f5d577` passed
+the exact extracted-package trial with Codex0.160.0; its scope is recorded below.
+The initial run passed the kernel checks but
+refused its fixture report ancestry before UI rendering and separately timed out
+detaching. Corrected private capture passed the ten UI steps and four receipts,
+but Ctrl-] still failed before the detach acknowledgement. A provider-free
+`windows.yml` dispatch with `console_input_probe=true` compares raw control bytes
+and advertised Win32 keyboard transport in private Python consoles. It is
+diagnostic evidence, separate from extracted-product acceptance. The extended probe
+reproduced mode 9001 changing Ctrl-] into a Win32 keyboard record. Windows
+attachment now recognizes its complete key-down record as the local detach key,
+including the protocol defaults for omitted parameters;
+other keyboard bytes remain unchanged. A split record is bounded to 64 bytes,
+and an incomplete Escape prefix is forwarded after 25 ms without further input,
+or immediately on EOF/error. The first corrected native run retired the attachment
+and ConPTY but its observer stopped before the buffered farewell finished. The
+fixture now drains output to EOF; complete farewell and retention checks remain
+required. The corrected `e0f5d577` package passed all ten masked UI steps, four
+unique receipts, Unicode draft restoration, discarded suspended/late typing,
+oversized-line refusal and subsequent valid input, and the complete detach
+farewell. All 56 watched process generations retired without forced cleanup;
+private scratch was removed. Independent scans found no invented value in
+AgentDocker state, internal logs or GUI reports; the provider retained it twice
+after explicit consent. This is a native runner/private-model/synthetic-input
+result, not hosted publication, account, physical keyboard/IME, screen-reader or
+logon/reboot acceptance. The supplied secret field remains unadvertised and the
+experimental gate stays. Original failed reports remain in the trial index.
+A supported managed terminal discards new typing without echo while a secret route is
 open. After it closes, Enter discards the suspended line and returns to the
 preexisting draft; buffered text cannot become an ordinary queued message. A possibly sent answer without a provider resolution stays
 paused for inspection and is never resubmitted by restart.
+
+Installed hosted beta.11 (`47d06d3b`) separately passed all eleven masked UI/PTY
+steps on this Mac with Codex0.160.1 and a private model. Three exact receipts,
+retention acknowledgement, preserved draft and no suspended-input delivery were
+verified; all sixteen recorded process generations and private paths retired.
+AgentDocker state/logs contained no invented value; Codex retained it. The
+provider did not advertise the supplied `isSecret` field in its model schema,
+so this does not establish advertised tool support, real-account, physical-input
+or screen-reader acceptance. The experimental gate remains.
 
 An actual Codex0.160.1/private-model trial on `ecfffb22` dropped the exact
 `serverRequest/resolved` notification through a supported Node proxy after the
@@ -1411,3 +1460,9 @@ cleanup checks passed. This is scoped confirmation-loss acceptance, not a manual
 inspection/reconciliation workflow, other crash boundaries or final-package,
 account, native-terminal or Windows acceptance. The first Python proxy failed
 its MCP handshake before model input; that failure remains in the trial index.
+
+The installed beta.11 Linux private-model/Xvfb trial separately passed ten masked
+UI steps, held input, draft restoration and stale-answer refusal. Receipts are
+correlated by message ID: same-turn steering may finish before the original
+turn and share its post-answer model request. A prior observer that assumed
+completion order matched submission order failed and remains indexed.
