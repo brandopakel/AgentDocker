@@ -15,6 +15,7 @@ struct Process {
     pid: u32,
     parent: u32,
     birth: u64,
+    state: char,
 }
 
 fn process(pid: u32) -> Option<Process> {
@@ -33,6 +34,7 @@ fn process(pid: u32) -> Option<Process> {
         pid,
         parent: fields[1].parse().unwrap(),
         birth: fields[19].parse().unwrap(),
+        state: fields[0].chars().next().unwrap(),
     })
 }
 
@@ -85,6 +87,7 @@ struct Fixture {
     agent: Option<String>,
     descendant: Option<Process>,
     owner: Option<Process>,
+    owner_suspended: bool,
 }
 
 impl Fixture {
@@ -121,6 +124,7 @@ impl Fixture {
             agent: None,
             descendant: None,
             owner: None,
+            owner_suspended: false,
         };
         wait("private daemon startup", || {
             assert!(fixture.daemon.try_wait().unwrap().is_none());
@@ -129,6 +133,17 @@ impl Fixture {
                 .filter(|reply| reply["type"] == "pong")
         });
         fixture
+    }
+
+    fn resume_owner(&mut self) {
+        if self.owner_suspended {
+            let owner = self.owner.unwrap();
+            let current = process(owner.pid).expect("owned session owner disappeared");
+            assert_eq!(current.birth, owner.birth);
+            // SAFETY: this is the same private owner generation we stopped.
+            assert_eq!(unsafe { libc::kill(owner.pid as i32, libc::SIGCONT) }, 0);
+            self.owner_suspended = false;
+        }
     }
 
     fn call(&self, request: Value) -> Value {
@@ -166,6 +181,7 @@ fn retire_adopted(expected: Process) -> bool {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        self.resume_owner();
         if let Some(agent) = &self.agent {
             // An already-finished reply is harmless during fixture retirement.
             let _ = rpc(
@@ -221,6 +237,15 @@ fn dedicated_owner_reaps_orphans_before_reporting_exit_and_releasing_leases() {
         fixture.call(json!({"op":"claim","agent":agent,"resource":"task:orphan","ttl_secs":60}))["type"],
         "lease"
     );
+    // Freeze only the pinned private owner, so adoption is observed before
+    // its shutdown timer can run, even on a loaded CI runner.
+    assert_eq!(process(owner).unwrap().birth, fixture.owner.unwrap().birth);
+    // SAFETY: the fixture owns this birth-matched session-owner process.
+    assert_eq!(unsafe { libc::kill(owner as i32, libc::SIGSTOP) }, 0);
+    fixture.owner_suspended = true;
+    wait("private owner stopped", || {
+        process(owner).filter(|value| value.state == 'T')
+    });
     std::fs::write(fixture.root.path().join("exit-leader"), "").unwrap();
     let adopted = wait("owner adopts orphan before ending it", || {
         process(pid)
@@ -238,6 +263,7 @@ fn dedicated_owner_reaps_orphans_before_reporting_exit_and_releasing_leases() {
         1,
         "live descendants must retain protection"
     );
+    fixture.resume_owner();
     wait("owner releases protection after reaping", || {
         fixture.call(json!({"op":"leases","agent":agent}))["leases"]
             .as_array()
