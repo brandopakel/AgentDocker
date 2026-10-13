@@ -560,8 +560,12 @@ terminal input. All three use the daemon's ordinary `Send` queue. The bridge pol
 while idle and starts one ordinary input turn. Once that input has an exact
 receipt, busy arrivals use `turn/steer` with the owned active turn's ID. Terminal,
 CLI, UI and peer input all follow the same daemon queue; a pending provider
-question retains ordinary input until its answer is resolved. This route applies
-to the owned bridge, not an independently running native TUI. Peer content carries its original sender and message ID in an
+approval or elicitation request retains ordinary input until its answer is resolved.
+A synchronous AgentDocker MCP `ask_human` call is separate: ordinary busy input
+may steer into its active turn while the human question remains open. Its answer
+still requires the exact tool receipt and must not become another user input.
+This route applies to the owned bridge, not an independently running native TUI.
+Peer content carries its original sender and message ID in an
 `agentdocker_message` envelope. Model text is shown in the session terminal;
 AgentDocker MCP `send_message` supplies a correlated peer reply.
 
@@ -588,9 +592,16 @@ The source-identical `6394a081` CI archive also passed on independent Oracle
 Ubuntu x86_64: a normal managed PTY visibly rejected the 20,028-byte paste, then
 queued the exact Unicode-edited 16,000-byte line in the same thread, with graceful
 cleanup and the unrelated runner/endurance trial unchanged. These empty-profile
-trials establish the terminal/bridge boundary. Authenticated model turns, physical
-Mac/Linux keyboard/IME input and broader terminal/platform coverage remain open;
-the original normal-PTY failures are retained.
+trials establish the terminal/bridge boundary. Hosted beta.12 separately passed
+an existing-account Oracle Codex 0.160.0 trial through a normal managed PTY: the
+20,028-byte line and its edited tail were refused without a receipt, then an
+exactly 16,000-byte Unicode-edited line and a following short input each produced
+one real model reply. Independent provider history matched both message IDs and
+thread/turn/item receipts. All nine watched generations retired without force;
+configuration remained unchanged and terminal settings were restored. This is
+synthetic managed-bridge input, not the native TUI. Authenticated acceptance on
+other platforms, physical keyboard/IME and broader terminal coverage remain
+open; the original normal-PTY failures are retained.
 
 The provider profile, authentication, hooks, trust and approval policy are
 inherited. No profile is rewritten. The session's AgentDocker MCP entry is bound
@@ -905,6 +916,16 @@ unmatched human answers stay queued and pause input instead of becoming new turn
 Up to 128 detailed MCP receipts rotate only after acknowledgement and a later
 turn; their older question routes share the 10,000-ID bound above.
 
+Hosted beta.12 (`d48c0ab6`) on Oracle with authenticated Codex 0.160.0 and its
+complete upstream package passed a 600-second MCP question through Code Mode.
+The exact tool answer was acknowledged once without another user input; two
+busy messages retained their order and the original terminal draft submitted
+once afterward. Four ordinary receipts and one MCP receipt matched provider
+history. All 13 process generations retired, with configuration and terminal
+settings unchanged. This used a synthetic managed PTY, not a provider approval,
+native TUI, physical keyboard or restart test. The earlier missing-helper and
+incorrect no-steering fixture failures remain in the verification index.
+
 The [MCP receipt trial](verification/INDEX.md) retains
 the failed extra-input baseline and passing actual Codex normal/crash recovery
 cases at `f42a8b0`. The crash cut let Codex consume the tool answer while its
@@ -953,8 +974,9 @@ provider trial. Browser interaction, final packages, Windows/other versions,
 pending restart and real-account waits remain open.
 
 Unknown callbacks,
-session-wide file grants, unsupported permission selectors, extended MCP forms/device-verification elicitation, secret inputs
-and oversized requests currently return an explicit provider error. Complete
+session-wide file grants, unsupported permission selectors, extended MCP forms/device-verification elicitation,
+secret inputs without the development switch, and oversized requests currently
+return an explicit provider error. Complete
 those review surfaces before treating the adapter as a general replacement for
 the provider terminal. Automatic provider review and configured approval policy
 are not overridden.
@@ -1403,7 +1425,7 @@ the guard drops. Non-terminal/unsupported interactive handles still refuse.
 The native Windows workflow exercises actual console-mode restoration and the
 extracted package's masked form, suspended typing, Unicode draft and oversized
 line with a private Codex model and synthetic ConPTY. Source `e0f5d577` passed
-the exact extracted-package trial with Codex0.160.0; its scope is recorded below.
+the exact extracted-package trial with Codex 0.160.0; its scope is recorded below.
 The initial run passed the kernel checks but
 refused its fixture report ancestry before UI rendering and separately timed out
 detaching. Corrected private capture passed the ten UI steps and four receipts,
