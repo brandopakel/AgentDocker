@@ -2,7 +2,6 @@
 //! native hosts never cache a caller or infer one from output/model text.
 use super::*;
 use agentdocker_core::usage::emission::Channel;
-use tokio::io::AsyncWriteExt;
 
 enum Attribution {
     Whole(String),
@@ -68,14 +67,11 @@ impl Reply {
         backend: &impl Backend,
         output: &mut (impl tokio::io::AsyncWrite + Unpin),
     ) -> Result<()> {
-        let mut bytes = serde_json::to_vec(&self.value)?;
-        bytes.push(b'\n');
-        output.write_all(&bytes).await?;
-        output.flush().await?;
+        let bytes = super::write_line(output, &self.value).await?;
         // Bound the whole frame's reporting, including a batch for several
         // agents. No failed/partial output is counted, replayed or acknowledged.
         let _ = tokio::time::timeout(Duration::from_millis(50), async {
-            for (agent, count) in self.counts(bytes.len()) {
+            for (agent, count) in self.counts(bytes) {
                 crate::emission::record(backend, &agent, Channel::Mcp, count).await;
             }
         })

@@ -338,12 +338,12 @@ async fn pump<B: Backend>(server: &McpServer<B>) -> Result<()> {
 async fn write_line(
     stdout: &mut (impl tokio::io::AsyncWrite + Unpin),
     value: &Value,
-) -> Result<()> {
+) -> Result<usize> {
     let mut line = serde_json::to_string(value)?;
     line.push('\n');
     stdout.write_all(line.as_bytes()).await?;
     stdout.flush().await?;
-    Ok(())
+    Ok(line.len())
 }
 
 /// Find the nearest Codex process before validating the managed binding. The
