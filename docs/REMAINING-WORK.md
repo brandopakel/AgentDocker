@@ -17,6 +17,12 @@ remain open. Native Codex, managed secret input and live daemon replacement stay
 experimental. Current existing-account evidence is scoped in the tables;
 synthetic providers and CI do not establish physical or fresh-login acceptance.
 
+The source is versioned **0.2.0**. A protected `v0.2.0` tag publishes it, with
+the Homebrew formula and cask, once the Developer ID identity and notary key in
+[stable macOS signing](#release-and-first-run) are configured; the release
+workflow refuses a stable tag without them. Its publication evidence is recorded
+here when that run passes.
+
 ## Release and first run
 
 | Requirement | Current evidence | Remaining work |

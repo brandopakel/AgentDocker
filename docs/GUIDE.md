@@ -29,9 +29,12 @@ the daemon inside it — through the app's own installer, so `agentdocker deskto
 update` and rollback work from the first install; on Linux, or with
 `AGENTDOCKER_INSTALL=cli`, it puts the two commands under `~/.local/bin`. A
 release that has no desktop archive yet (v0.1.0) falls back to the commands and
-says so. Until the app is signed with a Developer ID, macOS quarantines a
-downloaded copy: right-click it and choose **Open** once, or
-`xattr -dr com.apple.quarantine ~/Applications/AgentDocker.app`. From a checkout:
+says so. Releases are signed with a Developer ID and notarized, so macOS opens
+them without a prompt; a preview is not, and macOS quarantines a downloaded
+copy: right-click it and choose **Open** once, or
+`xattr -dr com.apple.quarantine ~/Applications/AgentDocker.app`. With Homebrew,
+`brew install --cask brandopakel/tap/agentdocker-app` installs the app and
+`brew install brandopakel/tap/agentdocker` the two commands. From a checkout:
 
 ```sh
 cargo install --path crates/cli --locked   # agentdocker + agentd
@@ -786,7 +789,12 @@ separate operation: stopping terminates managed agents.
 
 Newest first. Only what changes how the product is used.
 
-### Unreleased
+### v0.2.0
+
+The desktop app as the way in: shared project chat, agent terminals, sessions
+in their own worktrees with review and merge from **Changes**, reconnect, the
+task board and usage, signed and notarized on macOS and packaged for Linux.
+Windows remains a preview. Changes since v0.1.0:
 
 - Codex input refuses an app-server older than 0.154.0 when it attaches, naming
   both versions, instead of failing in the middle of a turn. A turn Codex
