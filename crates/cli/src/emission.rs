@@ -5,7 +5,9 @@ use agentdocker_core::usage::emission::{Channel, Emission};
 use serde_json::Value;
 
 pub(crate) async fn record(backend: &impl Backend, agent: &str, channel: Channel, bytes: usize) {
-    if bytes == 0 {
+    // Shared native MCP hosts have no single verified session identity. Never
+    // resolve their empty placeholder as an agent name/prefix in the daemon.
+    if bytes == 0 || agent.is_empty() {
         return;
     }
     let emission = Emission {
@@ -55,6 +57,7 @@ mod tests {
             json_line(&backend, "receiver", Channel::Mcp, &value).await;
         }
         record(&backend, "receiver", Channel::Hook, 0).await;
+        json_line(&backend, "", Channel::Mcp, &value).await;
         let records = backend.0.borrow();
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].0, "receiver");

@@ -1498,6 +1498,10 @@ are unknown, never zero. The design:
   Filters and effective retention bounds match provider reports independently of
   grouping. Never add these byte counts or future labelled estimates to provider
   token totals. Standalone transcript scanning has no emission instrumentation.
+  Detached/shared native Codex MCP replies currently remain unmeasured: their
+  transport identity is empty and per-call conversation attribution has not yet
+  been connected to the completed-write observer. Native hook/queue writes have
+  their own verified agent attribution and are counted separately.
 
 Usage discovery persists its directory frontier and a manifest of at most 10,000
 captured files. Each page, its coverage and its event commit together; consuming
