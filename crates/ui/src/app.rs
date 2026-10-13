@@ -1685,7 +1685,9 @@ impl App {
             | EventKind::TaskArchived { .. } => self.request_tasks(),
             // Collection moved: the report on view is read again, only
             // while it is on view.
-            EventKind::UsageRecorded { .. } | EventKind::UsageReconciled { .. } => {
+            EventKind::UsageRecorded { .. }
+            | EventKind::UsageReconciled { .. }
+            | EventKind::UsageEmissionRecorded { .. } => {
                 if self.screen == Screen::Usage {
                     self.request_usage();
                 }

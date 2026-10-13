@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub(crate) mod discovery;
+pub(crate) mod emission;
 mod tracking;
 pub(super) use tracking::init as tracking_init;
 
@@ -604,7 +605,12 @@ impl Store {
                     self.usage_tracking_report(range.effective_since, range.effective_until)?,
                 ),
             },
-            overhead: Overhead::default(),
+            overhead: self.emission_report(
+                range.effective_since,
+                range.effective_until,
+                project,
+                agent,
+            )?,
         }))
     }
 }

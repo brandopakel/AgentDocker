@@ -1949,6 +1949,7 @@ impl Daemon {
 
     async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
         match request {
+            Request::RecordEmission { agent, emission } => self.record_emission(&agent, emission),
             Request::BuildImage { spec } => self.build_image(spec).await,
             Request::Images => self.images(),
             Request::Observe { agent, paths } => self.observe(&agent, paths).await,
