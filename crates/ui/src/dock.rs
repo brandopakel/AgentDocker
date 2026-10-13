@@ -6,6 +6,8 @@
 //! so it never shows a number nobody can clear.
 
 /// The badge's words for `count` waiting questions: nothing at zero.
+/// Only macOS draws a badge; elsewhere the words are the tests' alone.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn label(count: usize) -> Option<String> {
     match count {
         0 => None,
