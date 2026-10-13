@@ -24,12 +24,13 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::client::{Backend, Client};
 
 mod channel;
 pub(crate) mod native_identity;
+mod output;
 pub(crate) const CLAUDE_CHANNEL_INPUT: &str = "AGENTDOCKER_CLAUDE_CHANNEL_INPUT";
 
 pub(crate) fn channel_input_active(
@@ -321,39 +322,16 @@ async fn pump<B: Backend>(server: &McpServer<B>) -> Result<()> {
             Err(err) => {
                 let response =
                     error_response(Value::Null, PARSE_ERROR, &format!("parse error: {err}"));
-                write_line(&mut stdout, &response).await?;
-                crate::emission::json_line(
-                    &server.backend,
-                    &server.identity.id,
-                    agentdocker_core::usage::emission::Channel::Mcp,
-                    &response,
-                )
-                .await;
+                output::Reply::single(response, server.output_agent())
+                    .write(&server.backend, &mut stdout)
+                    .await?;
                 continue;
             }
         };
-        if let Some(response) = server.handle_incoming(incoming).await {
-            write_line(&mut stdout, &response).await?;
-            crate::emission::json_line(
-                &server.backend,
-                &server.identity.id,
-                agentdocker_core::usage::emission::Channel::Mcp,
-                &response,
-            )
-            .await;
+        if let Some(response) = server.incoming_output(incoming).await {
+            response.write(&server.backend, &mut stdout).await?;
         }
     }
-    Ok(())
-}
-
-async fn write_line(
-    stdout: &mut (impl tokio::io::AsyncWrite + Unpin),
-    value: &Value,
-) -> Result<()> {
-    let mut line = serde_json::to_string(value)?;
-    line.push('\n');
-    stdout.write_all(line.as_bytes()).await?;
-    stdout.flush().await?;
     Ok(())
 }
 
@@ -572,30 +550,56 @@ impl<B: Backend> McpServer<B> {
     /// replies go back as one array with notifications (which get no reply)
     /// left out, and an empty batch is invalid per JSON-RPC.
     pub async fn handle_incoming(&self, incoming: Value) -> Option<Value> {
+        self.incoming_output(incoming)
+            .await
+            .map(|reply| reply.value)
+    }
+
+    fn output_agent(&self) -> Option<String> {
+        (self.native_context.is_none() && !self.identity.id.is_empty())
+            .then(|| self.identity.id.clone())
+    }
+
+    async fn incoming_output(&self, incoming: Value) -> Option<output::Reply> {
         match incoming {
             Value::Array(items) => {
                 if items.is_empty() {
-                    return Some(error_response(Value::Null, INVALID_REQUEST, "empty batch"));
+                    return Some(output::Reply::single(
+                        error_response(Value::Null, INVALID_REQUEST, "empty batch"),
+                        self.output_agent(),
+                    ));
                 }
                 let mut replies = Vec::with_capacity(items.len());
                 for item in items {
-                    if let Some(reply) = self.handle(item).await {
+                    if let Some(reply) = self.message_output(item).await {
                         replies.push(reply);
                     }
                 }
-                (!replies.is_empty()).then_some(Value::Array(replies))
+                output::Reply::batch(replies)
             }
-            single => self.handle(single).await,
+            single => self.message_output(single).await,
         }
     }
 
-    /// Handle one JSON-RPC message. Notifications produce no response.
-    pub async fn handle(&self, message: Value) -> Option<Value> {
+    #[cfg(test)]
+    async fn handle(&self, message: Value) -> Option<Value> {
+        self.message_output(message).await.map(|reply| reply.value)
+    }
+
+    /// Keep verified attribution local to this request until its output flush.
+    /// Never cache a conversation identity on a shared MCP host.
+    async fn message_output(&self, message: Value) -> Option<output::Reply> {
         let id = message.get("id").cloned();
         let params = message.get("params").cloned().unwrap_or(Value::Null);
+        let mut output_agent = self.output_agent();
         let Some(method) = message.get("method").and_then(Value::as_str) else {
             // Either a response to a request we never sent, or garbage.
-            return id.map(|id| error_response(id, INVALID_REQUEST, "missing method"));
+            return id.map(|id| {
+                output::Reply::single(
+                    error_response(id, INVALID_REQUEST, "missing method"),
+                    output_agent,
+                )
+            });
         };
         let id = id?;
 
@@ -669,13 +673,16 @@ impl<B: Backend> McpServer<B> {
                 }
                 Ok(json!({ "tools": tools }))
             }
-            "tools/call" => self.call_tool(params).await,
+            "tools/call" => self.call_tool(params, &mut output_agent).await,
             other => Err((METHOD_NOT_FOUND, format!("method not found: {other}"))),
         };
-        Some(match result {
-            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-            Err((code, message)) => error_response(id, code, &message),
-        })
+        Some(output::Reply::single(
+            match result {
+                Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                Err((code, message)) => error_response(id, code, &message),
+            },
+            output_agent,
+        ))
     }
 
     fn initialize(&self, params: &Value) -> Value {
@@ -722,7 +729,11 @@ impl<B: Backend> McpServer<B> {
     }
 
     /// Resolve the native caller when needed, then dispatch its authorized tool.
-    async fn call_tool(&self, params: Value) -> Result<Value, (i64, String)> {
+    async fn call_tool(
+        &self,
+        params: Value,
+        output_agent: &mut Option<String>,
+    ) -> Result<Value, (i64, String)> {
         let name = params
             .get("name")
             .and_then(Value::as_str)
@@ -743,6 +754,7 @@ impl<B: Backend> McpServer<B> {
                 host_pid: agent.pid,
                 host_started_at: agent.process_started_at,
             };
+            *output_agent = Some(identity.id.clone());
             crate::input_status::adapter_contact(
                 &self.backend,
                 &identity.id,

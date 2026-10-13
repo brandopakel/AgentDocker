@@ -1481,7 +1481,7 @@ are unknown, never zero. The design:
   responses, consent pages and authentication failures are not model context
   and are not counted. A flush to the local tunnel still does not establish
   remote client/model consumption.
-  A fresh random ID identifies each actual write; an accounting retry reuses that
+  A fresh random ID identifies each write's agent-attributed count; an accounting retry reuses that
   ID, while a repeated output write has a new ID and counts again. The daemon
   timestamps accepted reports and resolves their agent/project. It atomically
   stores metadata and `usage_emission_recorded {agent, emission:{id, channel,
@@ -1498,10 +1498,14 @@ are unknown, never zero. The design:
   Filters and effective retention bounds match provider reports independently of
   grouping. Never add these byte counts or future labelled estimates to provider
   token totals. Standalone transcript scanning has no emission instrumentation.
-  Detached/shared native Codex MCP replies currently remain unmeasured: their
-  transport identity is empty and per-call conversation attribution has not yet
-  been connected to the completed-write observer. Native hook/queue writes have
-  their own verified agent attribution and are counted separately.
+  Detached/shared native Codex MCP tool replies carry the identity verified for
+  that request through to its output flush, without caching a caller on the
+  transport or performing a second identity lookup. Unverified requests and
+  shared initialization/ping replies remain unmeasured. A batch whose replies
+  all belong to one agent counts its complete UTF-8 frame; a mixed or partly
+  unverified batch counts only each verified JSON reply segment, grouped once
+  per agent, excluding shared brackets, commas and newline. Its reports share
+  one 50 ms budget. Native hook/queue writes are counted separately.
 
 Usage discovery persists its directory frontier and a manifest of at most 10,000
 captured files. Each page, its coverage and its event commit together; consuming

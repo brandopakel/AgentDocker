@@ -275,8 +275,11 @@ measured, and a completed write does not prove a model consumed it. Browser
 counts exclude HTTP headers, OAuth/token responses and consent pages. Counts are neither provider tokens nor a bill, and
 are never added to the provider totals. No matching records still means
 *not measured*, rather than zero; output text is not saved in accounting tables.
-Shared native Codex MCP replies remain unmeasured; their transport is shared
-between conversations. Native hook and queue writes are counted separately.
+Shared native Codex MCP tool replies are assigned only to the conversation
+verified for each call. Unverified replies stay unmeasured. If a batch mixes
+conversations or unverified replies, only each verified reply's JSON bytes are
+counted; shared array framing is excluded. Native hook and queue writes are
+counted separately.
 
 The MCP `usage` tool reads the same stored report and advertises that it is
 read-only; querying usage does not enable collection or change its settings.
