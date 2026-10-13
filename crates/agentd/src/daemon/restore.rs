@@ -297,28 +297,27 @@ impl Daemon {
                     record.status = status.clone();
                     record.finished_at = Some(Utc::now());
                     record.last_seen = Utc::now();
-                    let mut event = Event::new(
+                    let event = Event::new(
                         EventKind::AgentExited {
                             agent: id.clone(),
                             status: status.clone(),
                         },
                         Utc::now(),
                     );
-                    event.seq = state.next_seq;
-                    if state
-                        .store_op("restore failure", |store| {
-                            store.agent_transition(&record, &event)
-                        })
-                        .is_none()
-                    {
+                    let committed = state.transition(
+                        "restore failure",
+                        event,
+                        |store, event| store.agent_transition(&record, event),
+                        |state| {
+                            *state
+                                .registry
+                                .get_mut(&id)
+                                .expect("restore identity retained") = record.clone();
+                        },
+                    );
+                    if committed != Persisted::Committed {
                         break;
                     }
-                    *state
-                        .registry
-                        .get_mut(&id)
-                        .expect("restore identity retained") = record;
-                    state.next_seq += 1;
-                    let _ = state.events.send(event);
                 }
                 if state
                     .store_op("restore_point", |store| {
@@ -378,27 +377,25 @@ impl Daemon {
         }
         let mut record = current.clone();
         record.spec.restore = false;
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::AgentRestoreCleared {
                 agent: record.id.clone(),
             },
             Utc::now(),
         );
-        event.seq = state.next_seq;
-        let committed = state.persist("restore intent", |store| {
-            store.agent_transition(&record, &event)?;
-            store.delete_document("restore_point", id.as_str())
-        });
         // The intent stays until its clearing is durable: a fenced or
         // failed write leaves memory saying what the disk still says.
-        if committed == Persisted::Committed {
-            *state.registry.get_mut(id).expect("resolved agent") = record;
-            state.next_seq += 1;
-            let _ = state.events.send(event);
-            true
-        } else {
-            false
-        }
+        state.transition(
+            "restore intent",
+            event,
+            |store, event| {
+                store.agent_transition(&record, event)?;
+                store.delete_document("restore_point", id.as_str())
+            },
+            |state| {
+                *state.registry.get_mut(id).expect("resolved agent") = record.clone();
+            },
+        ) == Persisted::Committed
     }
 
     async fn restore_one(self: &Arc<Self>, record: AgentRecord) -> anyhow::Result<()> {
@@ -453,7 +450,7 @@ impl Daemon {
             running.started_at = Some(Utc::now());
             running.finished_at = None;
             running.last_seen = Utc::now();
-            let mut event = Event::new(
+            let event = Event::new(
                 EventKind::AgentRestored {
                     agent: id.clone(),
                     pid: Some(pid),
@@ -461,22 +458,23 @@ impl Daemon {
                 },
                 Utc::now(),
             );
-            event.seq = state.next_seq;
             // The supervisor owns the child/PID on every path. Expose the
             // Running record only alongside its committed restore event: a
             // write the fence skipped commits nothing, so nothing is exposed
             // and the child is stopped below like any failed completion.
             let committed = !cancelled
-                && state.persist("restore completion", |store| {
-                    store.finish_restore(&running, &event)
-                }) == Persisted::Committed;
+                && state.transition(
+                    "restore completion",
+                    event,
+                    |store, event| store.finish_restore(&running, event),
+                    |state| {
+                        *state
+                            .registry
+                            .get_mut(&id)
+                            .expect("restore identity retained") = running.clone();
+                    },
+                ) == Persisted::Committed;
             if committed {
-                *state
-                    .registry
-                    .get_mut(&id)
-                    .expect("restore identity retained") = running;
-                state.next_seq += 1;
-                let _ = state.events.send(event);
                 state.send(
                     "agentd".to_owned(),
                     Destination::Agent(id.clone()),
@@ -622,23 +620,20 @@ impl Daemon {
             },
             now,
         ));
-        for (index, event) in events.iter_mut().enumerate() {
-            event.seq = state.next_seq + index as u64;
-        }
-        let committed = state.persist("restore preparation", |store| {
-            store.prepare_restore(&record, &point, &leases, &events)
-        });
+        let committed = state.commit(
+            "restore preparation",
+            events,
+            |store, events| store.prepare_restore(&record, &point, &leases, events),
+            |state, _, ()| {
+                state.leases = planned;
+                *state
+                    .registry
+                    .get_mut(&record.id)
+                    .expect("restore identity retained") = record.clone();
+            },
+        );
         if committed != Persisted::Committed {
             return Err(storage_error(&state));
-        }
-        state.leases = planned;
-        *state
-            .registry
-            .get_mut(&record.id)
-            .expect("restore identity retained") = record.clone();
-        state.next_seq += events.len() as u64;
-        for event in events {
-            let _ = state.events.send(event);
         }
         Ok(Some((record, reclaimed)))
     }

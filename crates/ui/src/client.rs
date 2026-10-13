@@ -440,6 +440,7 @@ mod tests {
                     restricted: None,
                     pid: None,
                     executable: None,
+                    experimental: None,
                 },
             ] {
                 let (stream, _) = listener.accept().unwrap();

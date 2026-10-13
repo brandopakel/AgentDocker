@@ -489,7 +489,10 @@ mod tests {
         }
         let descendant: u32 = std::fs::read_to_string(marker).unwrap().parse().unwrap();
         drop(child);
-        let deadline = Instant::now() + Duration::from_secs(1);
+        // The kill is immediate; the descendant then stays a zombie until
+        // init reaps it, which a container's init can take over a second
+        // to do. The same bound `wait_gone` allows.
+        let deadline = Instant::now() + Duration::from_secs(5);
         while crate::procinfo::start_time(descendant).is_some() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }

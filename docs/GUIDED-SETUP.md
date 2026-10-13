@@ -179,10 +179,9 @@ passed with Claude Code 2.1.263 and candidate `a65d956`: preview in profile A,
 apply and undo while invoking from profile B, matching health diagnostics,
 preservation of unrelated MCP entries/hooks, and refusal before edits for a
 changed server environment or malformed provider JSON. Both disposable profiles
-were removed; monitored user configurations stayed unchanged. Run
-`scripts/claude_setup_smoke.py --binary PATH --manifest PATH --output NEW_DIRECTORY`
-with an installed Claude CLI to repeat this configuration-only trial. It does
-not invoke a model or prove automatic inbox consumption.
+were removed; monitored user configurations stayed unchanged. The trial driver
+is in git history; it is a configuration-only trial that does not invoke a model
+or prove automatic inbox consumption.
 
 ## First-install configuration acceptance (September 19)
 

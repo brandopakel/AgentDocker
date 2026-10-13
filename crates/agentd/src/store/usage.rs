@@ -67,7 +67,7 @@ impl Store {
         seq: u64,
         discovery: Option<discovery::Change<'_>>,
     ) -> Result<Event> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         if let Some(change) = discovery {
             self.usage_discovery_change(change)?;
         }
@@ -127,7 +127,7 @@ impl Store {
         now: DateTime<Utc>,
         seq: u64,
     ) -> Result<Option<Event>> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         // The scheduling cursor commits with the accounting/event, including
         // a no-op. A failed cursor write must roll the entire operation back.
         self.put_document("usage", "reconcile_after", &(runtime, session))?;
@@ -219,7 +219,7 @@ impl Store {
             batch.samples.len() <= 4096 && batch.gaps.len() <= 4096,
             "usage batch exceeds bounds"
         );
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         let retained_since = self.usage_retained_since(batch.retained_since)?;
         let mut accepted = 0;
         let mut gaps = 0;
@@ -281,7 +281,7 @@ impl Store {
             samples.len() <= 256,
             "standalone ingestion batch exceeds bounds"
         );
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         let mut accepted = 0;
         let mut gaps = 0;
         for (sample, attribution) in samples {

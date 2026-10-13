@@ -99,8 +99,25 @@ pub async fn bind(daemon: &Daemon) -> anyhow::Result<Listener> {
 }
 
 pub async fn serve(daemon: Arc<Daemon>, listener: Listener) -> anyhow::Result<()> {
+    let mut delay = Duration::from_millis(10);
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, _) = match listener.accept().await {
+            Ok(connection) => {
+                delay = Duration::from_millis(10);
+                connection
+            }
+            // A burst of clients can exhaust descriptors for a moment, and
+            // an aborted handshake is the client's business. Neither is a
+            // reason to stop serving: returning from here ends the daemon
+            // and, with it, every managed agent.
+            Err(error) if transient_accept_failure(&error) => {
+                warn!(%error, "temporary accept failure on the host socket; retrying");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(1));
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
         let daemon = daemon.clone();
         tokio::spawn(async move {
             if let Err(err) = handle(daemon, stream).await {
@@ -108,6 +125,15 @@ pub async fn serve(daemon: Arc<Daemon>, listener: Listener) -> anyhow::Result<()
             }
         });
     }
+}
+
+/// An accept failure that passes: interruption, a connection the client
+/// dropped before it was taken, or no descriptor free to take it with.
+fn transient_accept_failure(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::ConnectionAborted
+    ) || descriptors_exhausted(error)
 }
 
 async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
@@ -730,8 +756,21 @@ pub async fn serve_restricted(
     daemon.hold_restricted(listener_fd(&listener));
     #[cfg(windows)]
     daemon.hold_restricted(Ok(()));
+    let mut delay = Duration::from_millis(10);
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, _) = match listener.accept().await {
+            Ok(connection) => {
+                delay = Duration::from_millis(10);
+                connection
+            }
+            Err(error) if transient_accept_failure(&error) => {
+                warn!(%error, "temporary accept failure on the restricted endpoint; retrying");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(1));
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
         let daemon = daemon.clone();
         tokio::spawn(async move {
             // Bounded admission also limits unauthenticated, idle connections.
@@ -754,6 +793,12 @@ fn descriptors_exhausted(error: &io::Error) -> bool {
     )
 }
 
+/// `ERROR_TOO_MANY_OPEN_FILES`, `ERROR_NO_SYSTEM_RESOURCES` and `WSAEMFILE`.
+#[cfg(windows)]
+fn descriptors_exhausted(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(4 | 1450 | 10024))
+}
+
 /// A directory-mounted proxy reconnects to the restricted socket after daemon restart.
 #[cfg(unix)]
 pub(crate) async fn serve_workspace(listener: Listener, target: std::path::PathBuf) {
@@ -764,14 +809,7 @@ pub(crate) async fn serve_workspace(listener: Listener, target: std::path::PathB
                 delay = Duration::from_millis(10);
                 connection
             }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::Interrupted
-                        | io::ErrorKind::WouldBlock
-                        | io::ErrorKind::ConnectionAborted
-                ) || descriptors_exhausted(&error) =>
-            {
+            Err(error) if transient_accept_failure(&error) => {
                 debug!(%error,"temporary workspace accept failure; retrying");
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(Duration::from_secs(1));
