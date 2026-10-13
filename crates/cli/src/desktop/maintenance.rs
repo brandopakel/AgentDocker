@@ -274,6 +274,20 @@ pub(super) fn run(
     preview: bool,
     expected: Option<&str>,
 ) -> Result<()> {
+    run_with(layout, keep, preview, expected, || {
+        service_installed(layout)
+    })
+}
+
+/// `run` with the service inventory supplied by the caller, so a test can
+/// exercise the lock and plan without a user service manager to ask.
+fn run_with<T: Into<services::References>>(
+    layout: &Layout,
+    keep: Option<usize>,
+    preview: bool,
+    expected: Option<&str>,
+    inspect_services: impl FnOnce() -> Result<T>,
+) -> Result<()> {
     // Refuse redirected or foreign installation paths before creating a lock.
     layout.preflight()?;
     let _install_lock = if !preview {
@@ -288,7 +302,7 @@ pub(super) fn run(
     };
     layout.preflight()?;
     let _services = installation::service_inventory_guard(&layout.root, !preview)?;
-    let (plan, _pins) = plan(layout, keep, !preview, || service_installed(layout))?;
+    let (plan, _pins) = plan(layout, keep, !preview, inspect_services)?;
     let id = plan.id()?;
     if let Some(expected) = expected {
         ensure!(id == expected, "maintenance plan changed; review again");
@@ -669,14 +683,17 @@ mod tests {
     fn an_absent_root_is_locked_before_non_preview_maintenance() {
         let temp = tempfile::tempdir().unwrap();
         let layout = Layout::new(temp.path().to_owned()).unwrap();
-        run(&layout, Some(0), true, None).unwrap();
+        // The service inventory is supplied, not asked of launchd or systemd:
+        // a container or a CI runner without a user service manager must
+        // still be able to check the lock and the plan.
+        run_with(&layout, Some(0), true, None, || Ok(false)).unwrap();
         assert!(!layout.root.exists());
-        run(&layout, Some(0), false, None).unwrap();
+        run_with(&layout, Some(0), false, None, || Ok(false)).unwrap();
         let held = lock::try_exclusive(&layout.root.join("install.lock"))
             .unwrap()
             .unwrap();
         assert!(
-            run(&layout, None, false, None)
+            run_with(&layout, None, false, None, || Ok(false))
                 .unwrap_err()
                 .to_string()
                 .contains("in progress")

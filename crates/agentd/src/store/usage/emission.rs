@@ -22,7 +22,7 @@ impl Store {
         emission.check().map_err(anyhow::Error::msg)?;
         let bytes =
             i64::try_from(emission.bytes).context("emission bytes exceed SQLite integer range")?;
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         let previous: Option<(String, String, i64)> = self
             .conn
             .query_row(

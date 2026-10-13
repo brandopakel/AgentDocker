@@ -130,7 +130,14 @@ impl Store {
         now: DateTime<Utc>,
         quiescent: impl Fn(&[AgentRecord]) -> Result<()>,
     ) -> Result<RepairPreview> {
-        let tx = self.conn.unchecked_transaction()?;
+        // A preview opens the database read-only, where a write transaction
+        // cannot begin; apply opens it exclusively and takes the write lock
+        // as it begins, like every other write.
+        let tx = if self.conn.is_readonly(rusqlite::MAIN_DB)? {
+            self.conn.unchecked_transaction()?
+        } else {
+            write_transaction(&self.conn)?
+        };
         self.check_repair_size()?;
         // The JSON describes the identity evidence, while writes address SQL
         // keys. Refuse disagreement before either one can authorize a move of
@@ -686,7 +693,7 @@ impl Store {
     pub(crate) fn write_resume(&self, plan: &ResumePlan, event: &Event) -> Result<()> {
         let kept = &plan.canonical.id;
         let now = event.at;
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = write_transaction(&self.conn)?;
         for seq in &plan.duplicate_inbox_rows {
             self.conn.execute("DELETE FROM inbox WHERE seq=?1", [seq])?;
         }

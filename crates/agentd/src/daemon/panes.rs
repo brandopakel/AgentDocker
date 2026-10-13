@@ -230,24 +230,26 @@ impl State {
         agent.status = AgentStatus::Running;
         agent.started_at.get_or_insert(now);
         agent.last_seen = now;
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::AgentStarted {
                 agent: id.clone(),
                 pid: Some(pane.pid),
             },
             now,
         );
-        event.seq = self.next_seq;
-        if self.persist("pane start", |store| store.agent_transition(&agent, &event))
-            != Persisted::Committed
-        {
+        let committed = self.transition(
+            "pane start",
+            event,
+            |store, event| store.agent_transition(&agent, event),
+            |state| {
+                *state.registry.get_mut(id).expect("pane identity retained") = agent.clone();
+            },
+        );
+        if committed != Persisted::Committed {
             return self
                 .write_failure()
                 .expect("refused pane start has a reason");
         }
-        *self.registry.get_mut(id).expect("pane identity retained") = agent.clone();
-        self.next_seq += 1;
-        let _ = self.events.send(event);
         Response::Agent { agent }
     }
 }

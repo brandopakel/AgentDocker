@@ -30,16 +30,16 @@ impl State {
         grant: &Grant,
         kind: EventKind,
     ) -> Result<(), Box<Response>> {
-        let mut event = Event::new(kind, Utc::now());
-        event.seq = self.next_seq;
-        let _ = self.persist("access transition", |store| {
-            store.put_document_with_event("access", id, grant, &event)
-        });
+        let event = Event::new(kind, Utc::now());
+        let _ = self.transition(
+            "access transition",
+            event,
+            |store, event| store.put_document_with_event("access", id, grant, event),
+            |_| {},
+        );
         if let Some(error) = self.write_failure() {
             return Err(Box::new(error));
         }
-        self.next_seq += 1;
-        let _ = self.events.send(event);
         Ok(())
     }
 
@@ -181,25 +181,32 @@ impl Daemon {
             .and_then(|f| f.sync_all())
             .map_err(|e| ContainerError::with_code(ErrorCode::StorageUnavailable, e.to_string()))?;
         let mut state = lock(&self.state);
-        let mut event = Event::new(
+        let event = Event::new(
             EventKind::AccessGranted {
                 agent: record.id.clone(),
                 grant: id.clone(),
             },
             Utc::now(),
         );
-        event.seq = state.next_seq;
-        let _ = state.persist("workspace grant", |store| {
-            store.put_document_with_event("access", &id, &grant, &event)
-        });
-        if let Some(error) = &state.storage_error {
-            return Err(ContainerError::with_code(
-                ErrorCode::StorageUnavailable,
-                error.clone(),
-            ));
+        let committed = state.transition(
+            "workspace grant",
+            event,
+            |store, event| store.put_document_with_event("access", &id, &grant, event),
+            |_| {},
+        );
+        // A fenced write is skipped, not failed: the grant is not recorded
+        // either way, and the token file must not be handed out for it.
+        if committed != Persisted::Committed {
+            return Err(match state.write_failure() {
+                Some(Response::Error { code, message, .. }) => {
+                    ContainerError::with_code(code, message)
+                }
+                _ => ContainerError::with_code(
+                    ErrorCode::StorageUnavailable,
+                    "workspace grant was not recorded".into(),
+                ),
+            });
         }
-        state.next_seq += 1;
-        let _ = state.events.send(event);
         access.grant = id;
         Ok(())
     }

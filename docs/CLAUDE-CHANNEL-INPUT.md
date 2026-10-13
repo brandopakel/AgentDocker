@@ -13,11 +13,16 @@ See the [official channel contract](https://code.claude.com/docs/en/channels-ref
 After initialization and any session verification, the adapter waits one second
 before its first queue offer. A September 18 real-provider trace found an offer
 written just before Claude registered its channel handler; an uninstrumented
-run lost that offer. This short startup settling interval mitigates that race;
-it is not a readiness guarantee or a receipt. Control and receipt requests
-remain responsive during the wait. Later messages follow the normal polling
-cadence. Missing receipts still retain and visibly pause the queue, without
-automatic replay based only on an absent transcript entry.
+run lost that offer. The settling interval narrows that race and the first
+offer's repeat closes it: while no receipt has yet been seen on the channel,
+an offer that has none after thirty seconds is written a second time, once,
+under the same message id with `repeat: true` in its metadata, and the
+delivery rule tells the model a repeat is the same message, acknowledged
+once. From the first receipt on, nothing is offered twice: a missing receipt
+retains and visibly pauses the queue, without automatic replay based only on
+an absent transcript entry. Control and receipt requests remain responsive
+throughout. Neither the wait nor the repeat is a readiness guarantee or a
+receipt.
 
 ## Launch from AgentDocker
 
@@ -245,12 +250,21 @@ separately from the earlier tool-call trials.
 
 A stdout write never removes an inbox message. Until a verified receipt,
 delivery is unconfirmed. Claude may silently ignore a channel that was not
-enabled; after 30 seconds without a receipt the adapter reports a durable
-delivery pause naming the outstanding message. That state appears in session
+enabled; after 30 seconds without a receipt (a session's first offer excepted,
+below) the adapter reports a durable delivery pause naming the outstanding
+message. That state appears in session
 details and send-readiness warnings. It stays paused through periodic refreshes
 until that message leaves the queue; fresh transport contact alone does not
 clear it. A failed or stalled diagnostic write is bounded and retried, without
-blocking the receipt/control path or offering the message again.
+blocking the receipt/control path or offering the message again. The one
+exception is a session's first offer, which may have been written before
+Claude registered its channel handler: while no receipt has been accepted on
+the channel, an offer 30 seconds without one is written a second time, once,
+under the same `message_id` and with `repeat: true` in its metadata, and the
+pause is reported only after the next 30 seconds pass without a receipt. A
+receipt the daemon accepts, whichever message it names and whether or not it
+was offered on this channel, ends the exception: later offers and diagnostic
+retries never repeat a message.
 The message remains recoverable through a non-draining CLI inbox read.
 The channel MCP hides and refuses `read_inbox` and `wait_for_messages` so the
 model receives input through the channel queue. Reconnects offer the same
