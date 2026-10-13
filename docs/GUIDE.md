@@ -267,10 +267,12 @@ names each agent or project row (`codex-96813`, `AgentDocker`) while AgentDocker
 still knows it, and shows its ID once it is gone; `(unattributed)` is usage no
 session could be matched to.
 Unreleased local-output instrumentation records successful hook, stdio MCP and
-managed/native Codex input writes when collection is enabled. The separate
+managed/native Codex input writes and authenticated browser MCP response bodies
+when collection is enabled. The separate
 overhead line counts UTF-8 protocol bytes, including forwarded content and
-wrappers. It is always marked partial: missing reports, older writers and browser
-HTTP output are not measured. Counts are neither provider tokens nor a bill, and
+wrappers. It is always marked partial: missing reports and older writers are not
+measured, and a completed write does not prove a model consumed it. Browser
+counts exclude HTTP headers, OAuth/token responses and consent pages. Counts are neither provider tokens nor a bill, and
 are never added to the provider totals. No matching records still means
 *not measured*, rather than zero; output text is not saved in accounting tables.
 

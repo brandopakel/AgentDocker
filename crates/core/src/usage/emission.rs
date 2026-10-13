@@ -10,6 +10,7 @@ pub enum Channel {
     ManagedInput,
     NativeHook,
     NativeInput,
+    BrowserMcp,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1472,10 +1472,15 @@ are unknown, never zero. The design:
   separate emitted-byte counts and estimated tokens, never a provider-row sum.
 - **AgentDocker overhead.** Opt-in accounting records successful local Claude,
   OpenCode and Codex hook writes, stdio MCP replies/channel notifications, managed
-  Codex turn writes and native Codex queue writes. Counts are UTF-8 protocol frame
-  bytes, including the newline on stdio, excluding WebSocket framing. They include
+  Codex turn writes, native Codex queue writes and authenticated browser MCP
+  response bodies. Counts are UTF-8 protocol bytes, including the newline on
+  stdio, excluding HTTP headers and WebSocket framing. They include
   envelopes and forwarded text; they are not just extra prompt text, provider
-  token consumption, or billed overhead. HTTP/browser output is not measured.
+  token consumption, or billed overhead. Browser attribution comes from the
+  authenticated grant after the body flush, never the caller's JSON. OAuth/token
+  responses, consent pages and authentication failures are not model context
+  and are not counted. A flush to the local tunnel still does not establish
+  remote client/model consumption.
   A fresh random ID identifies each actual write; an accounting retry reuses that
   ID, while a repeated output write has a new ID and counts again. The daemon
   timestamps accepted reports and resolves their agent/project. It atomically

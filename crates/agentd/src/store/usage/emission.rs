@@ -20,8 +20,10 @@ impl Store {
         event: &Event,
     ) -> Result<Recorded> {
         emission.check().map_err(anyhow::Error::msg)?;
+        let bytes =
+            i64::try_from(emission.bytes).context("emission bytes exceed SQLite integer range")?;
         let tx = self.conn.unchecked_transaction()?;
-        let previous: Option<(String, String, u64)> = self
+        let previous: Option<(String, String, i64)> = self
             .conn
             .query_row(
                 "SELECT agent,channel,bytes FROM usage_emissions WHERE id=?1",
@@ -31,13 +33,11 @@ impl Store {
             .optional()?;
         let channel = serde_json::to_string(&emission.channel)?;
         if let Some(previous) = previous {
-            return Ok(
-                if previous == (agent.to_string(), channel, emission.bytes) {
-                    Recorded::Duplicate
-                } else {
-                    Recorded::Conflict
-                },
-            );
+            return Ok(if previous == (agent.to_string(), channel, bytes) {
+                Recorded::Duplicate
+            } else {
+                Recorded::Conflict
+            });
         }
         if self
             .usage_bounded_write(|| {
@@ -48,7 +48,7 @@ impl Store {
                         agent.as_str(),
                         project,
                         channel,
-                        emission.bytes,
+                        bytes,
                         text(event.at)
                     ],
                 )?;
@@ -74,8 +74,13 @@ impl Store {
             "SELECT COUNT(*), SUM(bytes) FROM usage_emissions
              WHERE at>=?1 AND at<?2 AND (?3 IS NULL OR project=?3) AND (?4 IS NULL OR agent=?4)",
             params![text(since), text(until), project, agent],
-            |r| Ok((r.get::<_, u64>(0)?, r.get::<_, Option<u64>>(1)?)),
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)),
         )?;
+        let known_events = u64::try_from(known_events).context("negative emission count")?;
+        let injected_bytes = injected_bytes
+            .map(u64::try_from)
+            .transpose()
+            .context("negative emitted-byte sum")?;
         Ok(Overhead {
             injected_bytes,
             known_events,
