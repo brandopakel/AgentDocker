@@ -24,7 +24,7 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::client::{Backend, Client};
 
@@ -332,6 +332,17 @@ async fn pump<B: Backend>(server: &McpServer<B>) -> Result<()> {
             response.write(&server.backend, &mut stdout).await?;
         }
     }
+    Ok(())
+}
+
+async fn write_line(
+    stdout: &mut (impl tokio::io::AsyncWrite + Unpin),
+    value: &Value,
+) -> Result<()> {
+    let mut line = serde_json::to_string(value)?;
+    line.push('\n');
+    stdout.write_all(line.as_bytes()).await?;
+    stdout.flush().await?;
     Ok(())
 }
 
