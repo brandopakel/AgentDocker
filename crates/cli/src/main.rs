@@ -6,6 +6,7 @@ mod client;
 mod codex_input;
 mod connector;
 mod desktop;
+mod emission;
 mod format;
 mod hooks;
 mod input_status;

@@ -80,6 +80,11 @@ pub struct DigestRequest {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     Ping,
+    /// Best-effort metadata after a completed output write, never a delivery receipt.
+    RecordEmission {
+        agent: String,
+        emission: crate::usage::emission::Emission,
+    },
     /// Provider-reported tokens and explicit local collection coverage.
     Usage {
         #[serde(default)]

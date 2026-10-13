@@ -101,6 +101,9 @@ pub struct Response {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// Local-only attribution established after OAuth authentication. Never
+    /// serialized in the HTTP headers/body or accepted from the incoming JSON.
+    pub(super) emission_agent: Option<String>,
 }
 
 impl Response {
@@ -109,11 +112,17 @@ impl Response {
             status,
             headers: Vec::new(),
             body: Vec::new(),
+            emission_agent: None,
         }
     }
 
     pub fn header(mut self, name: &str, value: impl Into<String>) -> Self {
         self.headers.push((name.to_owned(), value.into()));
+        self
+    }
+
+    pub(super) fn emitted_for(mut self, agent: String) -> Self {
+        self.emission_agent = Some(agent);
         self
     }
 

@@ -126,6 +126,8 @@ pub(super) struct AsyncOutput<W>(pub W);
 #[cfg(test)]
 impl<W: tokio::io::AsyncWrite + Unpin> Output for AsyncOutput<W> {
     async fn send(&mut self, value: &Value) -> Result<()> {
-        super::super::write_line(&mut self.0, value).await
+        super::super::write_line(&mut self.0, value)
+            .await
+            .map(|_| ())
     }
 }

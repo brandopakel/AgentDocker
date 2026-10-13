@@ -297,6 +297,7 @@ impl Daemon {
             | Request::AckInbox { agent, .. }
             | Request::ReportProvider { agent, .. }
             | Request::ReportActivity { agent, .. }
+            | Request::RecordEmission { agent, .. }
             | Request::Role { agent, .. }
             | Request::Release { agent, .. }
             | Request::ReleaseAll { agent, .. }
