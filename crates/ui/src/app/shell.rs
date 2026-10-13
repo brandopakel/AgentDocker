@@ -47,6 +47,8 @@ pub(super) struct State {
     pub launch_channel: bool,
     /// Whether the launched session gets its own worktree and branch.
     pub launch_worktree: bool,
+    /// The count last shown on the dock icon, so it is set only on a change.
+    pub dock_badge: Option<usize>,
     pub launching: bool,
     /// The session whose resume is on its way to the daemon, so its
     /// button alone says "Reconnecting…" (a launch from the Launch form
@@ -2451,6 +2453,15 @@ impl App {
                     {
                         tasks.push(self.update(Message::CommandPalette));
                     }
+                    // New session, as in every other session manager: the
+                    // launch form for the project on screen.
+                    Key::Character(key)
+                        if modifiers.command()
+                            && key.as_str().eq_ignore_ascii_case("n")
+                            && !self.shell.launch =>
+                    {
+                        tasks.push(self.update(Message::ShowLaunch));
+                    }
                     Key::Character(key) if modifiers.command() => {
                         let screen = match key.as_str() {
                             "1" => Some(Screen::Agents),
@@ -2590,6 +2601,13 @@ impl App {
         // Smoke scenarios consume the snapshot as application state. Normal
         // refreshes publish it directly, avoiding a second update and redraw.
         // Explicit focus/reveal chains above keep their completion message.
+        // The dock icon counts the questions waiting on the person, in
+        // every project: the dock is the whole app's, not one screen's.
+        let waiting = self.waiting_questions();
+        if self.shell.dock_badge != Some(waiting) {
+            self.shell.dock_badge = Some(waiting);
+            crate::dock::badge(waiting);
+        }
         tasks.push(match self.shell.window {
             Some(id) if self.smoke.is_none() => crate::accessibility::collect_and_update(
                 id,
@@ -2598,6 +2616,13 @@ impl App {
             _ => crate::accessibility::collect(),
         });
         Task::batch(tasks)
+    }
+
+    /// Questions waiting on the person in every project: the rows Needs
+    /// you holds when it shows them all.
+    pub(crate) fn waiting_questions(&self) -> usize {
+        let now = Utc::now();
+        self.questions.iter().filter(|q| !q.expired(now)).count()
     }
 
     fn schedule_update_check(&mut self, now: i64) {
@@ -3647,6 +3672,50 @@ mod tests {
         let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
         assert_eq!(commands.try_iter().count(), 0);
         assert_eq!(app.shell.answers[&id], "earlier draft");
+    }
+
+    /// Command+N opens the launch form, as in every session manager, and
+    /// the dock icon counts the live questions waiting on the person,
+    /// set again only when the count changes.
+    #[test]
+    fn command_n_launches_and_the_dock_counts_waiting_questions() {
+        let (mut app, _, _) = app();
+        let key = keyboard::Key::Character("n".into());
+        let press = |modifiers| {
+            Message::Event(iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                modified_key: key.clone(),
+                key: key.clone(),
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers,
+                text: None,
+                repeat: false,
+            }))
+        };
+        let _ = app.update(press(keyboard::Modifiers::empty()));
+        assert!(!app.shell.launch, "a plain n is typing, not a shortcut");
+        let _ = app.update(press(keyboard::Modifiers::COMMAND));
+        assert!(app.shell.launch);
+        let _ = app.update(press(keyboard::Modifiers::COMMAND));
+        assert!(app.shell.launch, "pressing it again keeps the form open");
+
+        assert_eq!(app.shell.dock_badge, Some(0));
+        let question = |id: &str, minutes: i64| Question {
+            id: MessageId::from(id.to_owned()),
+            from: "asker".into(),
+            to: agentdocker_core::Destination::Agent("user".into()),
+            text: "Which branch?".into(),
+            presentation: None,
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(minutes),
+        };
+        app.questions.push(question("live", 5));
+        app.questions.push(question("expired", -1));
+        let _ = app.update(Message::Event(iced::Event::Window(window::Event::Focused)));
+        assert_eq!(app.waiting_questions(), 1);
+        assert_eq!(app.shell.dock_badge, Some(1));
     }
 
     #[test]
