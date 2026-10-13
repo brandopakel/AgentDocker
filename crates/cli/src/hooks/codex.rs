@@ -286,6 +286,7 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     let started_at =
         agentdocker_host::procinfo::start_time(pid).context("cannot verify Codex process birth")?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
+    let mut emission_agent = None;
     let delivery = tokio::time::timeout_at(deadline, async {
         let checkout = input.cwd.canonicalize()?;
         let native = crate::mcp::native_identity::Context::from_host(pid, checkout.clone(), &table)?;
@@ -304,6 +305,7 @@ pub(super) async fn run(client: &Client) -> Result<()> {
             );
             report(client, &input, pid, started_at, observed_at).await?
         };
+        emission_agent = agent.as_ref().map(|a| a.id.to_string());
         if input.hook_event_name == "PreToolUse"
             && let Some(agent) = &agent
             && let Some(denied) = claim_edits(client, &input, agent).await?
@@ -334,7 +336,7 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     })
     .await
     .context("coordination exceeded the four-second hook budget")??;
-    deliver(client, delivery, 1, deadline).await
+    deliver(client, emission_agent.as_deref(), delivery, 1, deadline).await
 }
 
 /// Lease the files a Codex patch is about to change, as the Claude Code hook
@@ -472,11 +474,13 @@ fn context(messages: &[Envelope]) -> (String, Vec<MessageId>) {
 
 async fn deliver<B: Backend>(
     backend: &B,
+    emission_agent: Option<&str>,
     delivery: Delivery,
     fd: i32,
     deadline: tokio::time::Instant,
 ) -> Result<()> {
-    super::write_output_before(fd, format!("{}\n", delivery.output).as_bytes(), deadline)
+    let bytes = format!("{}\n", delivery.output);
+    super::write_output_before(fd, bytes.as_bytes(), deadline)
         .context("output delivery failed; inbox retained")?;
     if let Some(request) = delivery.acknowledgement {
         match tokio::time::timeout_at(deadline, backend.call(request))
@@ -500,6 +504,18 @@ async fn deliver<B: Backend>(
                     observed_at: Utc::now(),
                 },
             }),
+        )
+        .await;
+    }
+    if let Some(agent) = emission_agent {
+        let _ = tokio::time::timeout_at(
+            deadline,
+            crate::emission::record(
+                backend,
+                agent,
+                agentdocker_core::usage::emission::Channel::NativeHook,
+                bytes.len(),
+            ),
         )
         .await;
     }
@@ -653,6 +669,7 @@ mod tests {
             let mut file = tempfile::tempfile().unwrap();
             deliver(
                 &backend,
+                None,
                 delivery,
                 file.as_raw_fd(),
                 tokio::time::Instant::now() + std::time::Duration::from_secs(1),
@@ -713,6 +730,7 @@ mod tests {
         assert!(
             deliver(
                 &backend,
+                None,
                 delivery,
                 -1,
                 tokio::time::Instant::now() + std::time::Duration::from_secs(1)
@@ -731,6 +749,7 @@ mod tests {
         assert!(
             deliver(
                 &backend,
+                None,
                 delivery,
                 file.as_raw_fd(),
                 tokio::time::Instant::now()

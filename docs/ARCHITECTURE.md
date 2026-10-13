@@ -420,6 +420,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `task_archive {agent, task}` | `ok`, `error(forbidden\|storage_unavailable)` | releases the card's leases in the same commit; an agent archives only a card it holds with a live lease. off the board, kept for the record: the person's to do, or the assignee's for a card in `done`. Archiving twice is `ok`. Emits `task_archived`. |
 | `tasks {project?, column?, archived?, offset?, limit?}` | `tasks {tasks: Task[], more}`, `error(storage_unavailable)` | one page of the board, Backlog to Done and oldest first within a column, from `offset`, at most `limit` cards (1–500; 100 by default) and within a page's byte budget (768 KiB of serialised cards; a page holds at least one card whatever its size), with `more` when the board goes on past them — the next page starts at `offset + tasks.len()`, so every card is reachable without a mutation. Read as a page from the store, so a board of long cards never fills a frame or holds the lock; archived cards only when asked; every project's when none is named. A read: served during a coordinator transfer. |
 | `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage, overhead}` | Initial collector branch: read hourly local usage grouped by agent/model/provider/project/hour with explicit collection and counter coverage. Defaults to the last 24 hours; strict duration/RFC3339 bounds, retention rounding and unknown counters follow the contract below. More than 10,000 buckets or an overflowing grouped total refuses the query without disabling coordination. Optional `coverage.tracking` reports logical tracking bytes, capacity and a capacity gap for the requested range; admission is bounded without discarding dedupe evidence. Served through the transfer fence. |
+| `record_emission {agent, emission:{id, channel, bytes}}` | `ok` / error | After a completed output write, retain metadata only when usage collection is enabled. Exact ID replay is idempotent; conflicting metadata refuses. Project is resolved from the agent, never supplied by the caller. Restricted credentials can report only for their agent; mutation observes the coordinator fence. |
 | `pause {from, project?, reason}` | `pause {pause: {project, by, reason, at}}`, `error(invalid\|forbidden\|not_found\|ambiguous\|backpressure\|storage_unavailable)` | the person tells a project's agents to hold: one `pause` message from `from` reaches every live agent in the project (archived under `#everyone`, payload `{text: "Pause: <reason>", reason}`) and the pause is written as a document in the same transaction — neither exists without the other, and a refused send (backpressure, storage) pauses nothing. Until it is lifted, `claim` from an agent in that project answers `paused` with the reason, a waiter queued before the pause included (what an agent holds, it keeps; the person's own claims are not held). A declared human sender may pause (`forbidden` for a nonhuman identity); the host socket trusts its owning OS user and `--from user` is not proof of human presence. The authenticated restricted/container endpoint cannot pause or resume a project; the reason is 1–400 characters; `project` is an id, root or unique prefix, the caller's own when absent; a second pause replaces the reason. The document is schema 23's: a daemon older than that refuses to open the database rather than open it and quietly not hold anyone, so rollback requires restoring a compatible pre-upgrade state backup while stopped, or retaining the newer daemon. Lifting a pause does not downgrade schema23 and does not make that state readable by schema22 — tried on real binaries in [the rollback refusal record](verification/INDEX.md): the installed schema-22 daemon exited with both numbers in its reason, the file unchanged, and the schema-23 daemon still listed the hold. Emits `project_paused`. |
 | `resume_project {from, project?}` | `ok`, `error(forbidden\|not_found\|ambiguous\|backpressure\|storage_unavailable)` | the person lifts the pause: a `resume` message reaches the project's live agents in the same transaction as the document's removal, and their leases are theirs again. `ok` for a project that is not paused. Emits `project_resumed`. |
 | `pauses` | `pauses {pauses: Pause[]}` | the projects that are paused, and why, oldest first |
@@ -1469,10 +1470,29 @@ are unknown, never zero. The design:
   its conversion method and parameters; it does not measure billed tokens or
   prove the provider consumed emitted bytes. The Usage screen labels these as
   separate emitted-byte counts and estimated tokens, never a provider-row sum.
-- **AgentDocker overhead.** Record injected hook/MCP/message byte counts apart
-  from provider-reported usage, with any token conversion labelled as an
-  estimate. These estimates are neither additional provider tokens nor a precise
-  measure of billed overhead; never add them to the provider total.
+- **AgentDocker overhead.** Opt-in accounting records successful local Claude,
+  OpenCode and Codex hook writes, stdio MCP replies/channel notifications, managed
+  Codex turn writes and native Codex queue writes. Counts are UTF-8 protocol frame
+  bytes, including the newline on stdio, excluding WebSocket framing. They include
+  envelopes and forwarded text; they are not just extra prompt text, provider
+  token consumption, or billed overhead. HTTP/browser output is not measured.
+  A fresh random ID identifies each actual write; an accounting retry reuses that
+  ID, while a repeated output write has a new ID and counts again. The daemon
+  timestamps accepted reports and resolves their agent/project. It atomically
+  stores metadata and `usage_emission_recorded {agent, emission:{id, channel,
+  bytes}}`; no prompt, output body, credential or token estimate is persisted.
+  IDs and metadata share the 256 MiB logical tracking budget and outlive the
+  queried retention window to prevent replay from recreating expired totals.
+  Each report is limited to 64 MiB of claimed output, with no output truncation.
+  Reporting has a 50 ms transport budget, never starts a daemon or retries, and
+  never changes output delivery or ACK semantics; hooks also retain their existing
+  overall deadline. An older daemon, failed write, shutdown, disabled collection,
+  full tracking store or lost report cannot manufacture a count. Stored counts
+  always have partial coverage because output and accounting cannot be atomic;
+  no matching records means unknown, not measured zero. CLI/desktop say so.
+  Filters and effective retention bounds match provider reports independently of
+  grouping. Never add these byte counts or future labelled estimates to provider
+  token totals. Standalone transcript scanning has no emission instrumentation.
 
 Usage discovery persists its directory frontier and a manifest of at most 10,000
 captured files. Each page, its coverage and its event commit together; consuming

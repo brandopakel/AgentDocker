@@ -555,9 +555,36 @@ fn log_tail(path: &Path, lines: usize) -> String {
 /// [`Response::Error`]; only transport failures are `Err`.
 pub trait Backend {
     fn call(&self, request: Request) -> impl Future<Output = Result<Response>>;
+    /// Only transports that observe actual output opt into reporting it.
+    /// Custom/mock backends do not fabricate a successful output observation.
+    fn record_emission(
+        &self,
+        _agent: &str,
+        _emission: agentdocker_core::usage::emission::Emission,
+    ) -> impl Future<Output = ()> {
+        async {}
+    }
 }
 
 impl Backend for Client {
+    async fn record_emission(
+        &self,
+        agent: &str,
+        emission: agentdocker_core::usage::emission::Emission,
+    ) {
+        let quiet = self.clone().with_start_timeout(None);
+        // No autostart, retry or output replay. A lost report leaves coverage
+        // partial; accounting must not make a completed delivery fail.
+        let _ = tokio::time::timeout(
+            Duration::from_millis(50),
+            quiet.call_once(&Request::RecordEmission {
+                agent: agent.to_owned(),
+                emission,
+            }),
+        )
+        .await;
+    }
+
     async fn call(&self, request: Request) -> Result<Response> {
         let response = self.call_raw(&request).await?;
         // An app update may leave a pre-schema18 daemon serving active agents.
@@ -575,6 +602,55 @@ impl Backend for Client {
                 .await;
         }
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod emission_tests {
+    use super::*;
+    use agentdocker_core::usage::emission::{Channel, Emission};
+
+    #[tokio::test]
+    async fn emission_reporting_is_bounded_and_does_not_retry_uncertain_writes() {
+        let dir = tempfile::Builder::new()
+            .prefix("ad-emit-")
+            .tempdir_in(std::env::temp_dir())
+            .unwrap();
+        let path = dir.path().join("s");
+        let listener = agentdocker_host::ipc::Listener::bind(&path).unwrap();
+        let client = Client::new(Some(path));
+        let emission = Emission {
+            id: "a".repeat(32),
+            channel: Channel::Mcp,
+            bytes: 42,
+        };
+        let reporting = async {
+            client.record_emission("fixture", emission).await;
+        };
+        let observing = async {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["op"], "record_emission");
+            assert_eq!(request["agent"], "fixture");
+            assert_eq!(request["emission"]["bytes"], 42);
+            // Hold the response indefinitely; the report's own budget closes
+            // this connection, rather than retrying or delaying output forever.
+            let mut eof = String::new();
+            assert_eq!(reader.read_line(&mut eof).await.unwrap(), 0);
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(reporting, observing);
+        })
+        .await
+        .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
     }
 }
 

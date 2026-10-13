@@ -82,6 +82,11 @@ pub(super) struct Provider {
     pending: VecDeque<(Value, usize)>,
     pending_bytes: usize,
     sequence: u64,
+    emission: Option<(
+        crate::client::Client,
+        String,
+        agentdocker_core::usage::emission::Channel,
+    )>,
 }
 
 impl Provider {
@@ -122,6 +127,7 @@ impl Provider {
             pending: VecDeque::new(),
             pending_bytes: 0,
             sequence: 0,
+            emission: None,
         })
     }
 
@@ -137,7 +143,17 @@ impl Provider {
             pending: VecDeque::new(),
             pending_bytes: 0,
             sequence: 0,
+            emission: None,
         })
+    }
+
+    pub fn record_emissions(
+        &mut self,
+        client: crate::client::Client,
+        agent: String,
+        channel: agentdocker_core::usage::emission::Channel,
+    ) {
+        self.emission = Some((client.with_start_timeout(None), agent, channel));
     }
 
     pub async fn send(&mut self, value: &Value) -> Result<()> {
@@ -152,7 +168,10 @@ impl Provider {
                 value["method"].is_string(),
                 "native observer cannot answer a provider request"
             );
-            return remote.send(data).await;
+            let bytes = data.len();
+            remote.send(data).await?;
+            self.record_written(value, bytes).await;
+            return Ok(());
         }
         data.push(b'\n');
         let input = self.input.as_mut().context("Codex transport is closed")?;
@@ -162,7 +181,18 @@ impl Provider {
         })
         .await
         .context("Codex transport write timed out")??;
+        self.record_written(value, data.len()).await;
         Ok(())
+    }
+
+    async fn record_written(&self, value: &Value, bytes: usize) {
+        if matches!(
+            value["method"].as_str(),
+            Some("turn/start" | "turn/steer" | "thread/queue/add")
+        ) && let Some((client, agent, channel)) = &self.emission
+        {
+            crate::emission::record(client, agent, *channel, bytes).await;
+        }
     }
 
     async fn receive(&mut self) -> Result<Value> {

@@ -67,6 +67,15 @@ pub struct TaskTransition<'a> {
 pub(crate) const SCHEMA_VERSION: i64 = 27;
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS usage_emissions (
+    id TEXT PRIMARY KEY,
+    agent TEXT NOT NULL,
+    project TEXT,
+    channel TEXT NOT NULL,
+    bytes INTEGER NOT NULL CHECK(bytes>0 AND bytes<=67108864),
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS usage_emissions_range ON usage_emissions(at,agent,project);
 CREATE TABLE IF NOT EXISTS documents (
     kind TEXT NOT NULL,
     id TEXT NOT NULL,

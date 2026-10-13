@@ -239,7 +239,22 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             if output.is_some() || !delivered.is_empty() || agent.is_some() {
                 let mut output = output.unwrap_or_else(|| json!({}));
                 output["agentdocker"] = json!({ "agent": agent, "delivered": delivered });
-                println!("{output}");
+                let bytes = format!("{output}\n");
+                if write_output_before(1, bytes.as_bytes(), deadline).is_ok() {
+                    let _ = tokio::time::timeout_at(deadline, async {
+                        if let Some(agent) = session_agent(&client, &input).await? {
+                            crate::emission::record(
+                                &client,
+                                agent.id.as_str(),
+                                agentdocker_core::usage::emission::Channel::Hook,
+                                bytes.len(),
+                            )
+                            .await;
+                        }
+                        Ok::<_, anyhow::Error>(())
+                    })
+                    .await;
+                }
             }
             Ok(())
         }
@@ -308,13 +323,14 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                 "Stop" => Some(agentdocker_core::ReportedActivity::Idle),
                 _ => None,
             };
+            let mut emitted_bytes = 0;
             if let Some(output) = output {
-                if let Err(error) =
-                    write_output_before(1, format!("{output}\n").as_bytes(), deadline)
-                {
+                let bytes = format!("{output}\n");
+                if let Err(error) = write_output_before(1, bytes.as_bytes(), deadline) {
                     eprintln!("agentdocker hook: output delivery failed: {error}");
                     return Ok(());
                 }
+                emitted_bytes = bytes.len();
                 // Lost acknowledgements cause duplicates, never lost messages.
                 let pending = delivery.pending.take();
                 for request in pending {
@@ -328,6 +344,13 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                 let _ = tokio::time::timeout_at(deadline, async {
                     if let Some(agent) = session_agent(&client, &input).await? {
                         report_hook_status(&client, &agent, activity).await?;
+                        crate::emission::record(
+                            &client,
+                            agent.id.as_str(),
+                            agentdocker_core::usage::emission::Channel::Hook,
+                            emitted_bytes,
+                        )
+                        .await;
                     }
                     Ok::<_, anyhow::Error>(())
                 })

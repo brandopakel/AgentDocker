@@ -145,6 +145,11 @@ async fn run_owned(
     let terminal_mode = terminal::Mode::enter(agent.spec.tty || agent.spec.in_pane)
         .context("cannot prepare managed Codex terminal input")?;
     let mut provider = Provider::start(std::path::Path::new(&args.command[0]), &arguments, &cwd)?;
+    provider.record_emissions(
+        client.clone(),
+        agent.id.to_string(),
+        agentdocker_core::usage::emission::Channel::ManagedInput,
+    );
     let result = session(
         client,
         agent,

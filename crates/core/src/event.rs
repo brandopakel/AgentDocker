@@ -57,6 +57,11 @@ pub enum WaitOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
+    /// A completed local output write was counted separately from provider tokens.
+    UsageEmissionRecorded {
+        agent: AgentId,
+        emission: crate::usage::emission::Emission,
+    },
     /// A bounded usage batch, its accounting and scan progress committed.
     UsageRecorded {
         generation: u64,

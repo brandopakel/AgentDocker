@@ -70,6 +70,67 @@ fn retained(now: DateTime<Utc>, config: &UsageConfig) -> DateTime<Utc> {
 }
 
 impl Daemon {
+    pub(super) fn record_emission(
+        &self,
+        reference: &str,
+        emission: usage::emission::Emission,
+    ) -> Response {
+        use crate::store::usage::emission::Recorded;
+        if let Err(error) = emission.check() {
+            return Response::error(ErrorCode::Invalid, error);
+        }
+        let config = match configuration(&self.home) {
+            Ok(config) => config,
+            Err(error) => return Response::error(ErrorCode::Invalid, error),
+        };
+        if !config.enabled {
+            return Response::Ok;
+        }
+        let mut state = lock(&self.state);
+        let agent = match state.resolve(reference) {
+            Ok(agent) => agent,
+            Err(error) => return *error,
+        };
+        let project = state
+            .registry
+            .get(&agent)
+            .and_then(|a| a.project.as_ref())
+            .map(|p| p.id().to_string());
+        let mut event = Event::new(
+            EventKind::UsageEmissionRecorded {
+                agent: agent.clone(),
+                emission: emission.clone(),
+            },
+            Utc::now(),
+        );
+        event.seq = state.next_seq;
+        let mut recorded = Recorded::Capacity;
+        let persisted = state.persist("emitted-byte accounting", |store| {
+            recorded = store.record_emission(&agent, project.as_deref(), &emission, &event)?;
+            Ok(())
+        });
+        if persisted != Persisted::Committed {
+            return state.storage_failure().unwrap_or_else(|| {
+                Response::error(ErrorCode::Unavailable, "emitted-byte accounting is fenced")
+            });
+        }
+        match recorded {
+            Recorded::New => {
+                state.next_seq += 1;
+                let _ = state.events.send(event);
+                Response::Ok
+            }
+            Recorded::Duplicate => Response::Ok,
+            Recorded::Conflict => {
+                Response::error(ErrorCode::Conflict, "emission id has different metadata")
+            }
+            Recorded::Capacity => Response::error(
+                ErrorCode::Unavailable,
+                "accounting tracking capacity reached; output was not counted",
+            ),
+        }
+    }
+
     fn reconcile_usage(&self, config: &UsageConfig) {
         let mut state = lock(&self.state);
         let mut sessions: BTreeMap<(String, String), ()> = BTreeMap::new();
@@ -806,6 +867,83 @@ mod tests {
         );
         std::fs::write(temp.path().join("agentd.toml"), config_text).unwrap();
         (temp, daemon, config, root)
+    }
+
+    #[tokio::test]
+    async fn emission_reports_respect_opt_in_dedupe_and_the_transfer_fence() {
+        use agentdocker_core::usage::emission::{Channel, Emission};
+        let (temp, daemon, _, root) = fixture();
+        let Response::Agent { agent } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "emission-fixture".into(),
+                    workdir: Some(root),
+                    ..Default::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("fixture registration failed")
+        };
+        let emission = Emission {
+            id: "1".repeat(32),
+            channel: Channel::Hook,
+            bytes: 123,
+        };
+        let request = Request::RecordEmission {
+            agent: agent.id.to_string(),
+            emission: emission.clone(),
+        };
+        assert!(matches!(daemon.handle(request.clone()).await, Response::Ok));
+        let after = lock(&daemon.state).next_seq;
+        assert!(matches!(daemon.handle(request.clone()).await, Response::Ok));
+        assert_eq!(lock(&daemon.state).next_seq, after);
+        let report = query(&daemon).await;
+        assert_eq!(
+            (report.overhead.injected_bytes, report.overhead.known_events),
+            (Some(123), 1)
+        );
+        assert!(report.rows.is_empty());
+        let conflicting = Request::RecordEmission {
+            agent: agent.id.to_string(),
+            emission: Emission {
+                bytes: 124,
+                ..emission.clone()
+            },
+        };
+        assert!(matches!(
+            daemon.handle(conflicting).await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        std::fs::write(temp.path().join("agentd.toml"), "[usage]\nenabled=false\n").unwrap();
+        let disabled = Request::RecordEmission {
+            agent: agent.id.to_string(),
+            emission: Emission {
+                id: "2".repeat(32),
+                ..emission
+            },
+        };
+        assert!(matches!(
+            daemon.handle(disabled.clone()).await,
+            Response::Ok
+        ));
+        assert_eq!(query(&daemon).await.overhead, report.overhead);
+        assert!(super::super::mutates(&disabled));
+        lock(&daemon.state).coordination = Coordination::Quiescing {
+            transfer: "fixture".into(),
+        };
+        assert!(matches!(
+            daemon.handle(disabled).await,
+            Response::Error {
+                code: ErrorCode::Transferring,
+                ..
+            }
+        ));
     }
 
     fn record(id: &str, input: u64) -> String {

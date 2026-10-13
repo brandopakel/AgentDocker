@@ -322,11 +322,25 @@ async fn pump<B: Backend>(server: &McpServer<B>) -> Result<()> {
                 let response =
                     error_response(Value::Null, PARSE_ERROR, &format!("parse error: {err}"));
                 write_line(&mut stdout, &response).await?;
+                crate::emission::json_line(
+                    &server.backend,
+                    &server.identity.id,
+                    agentdocker_core::usage::emission::Channel::Mcp,
+                    &response,
+                )
+                .await;
                 continue;
             }
         };
         if let Some(response) = server.handle_incoming(incoming).await {
             write_line(&mut stdout, &response).await?;
+            crate::emission::json_line(
+                &server.backend,
+                &server.identity.id,
+                agentdocker_core::usage::emission::Channel::Mcp,
+                &response,
+            )
+            .await;
         }
     }
     Ok(())

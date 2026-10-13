@@ -5,6 +5,10 @@ const MAX_BYTES: i64 = 256 * 1024 * 1024;
 const GAP_KEY: &str = "tracking-capacity";
 const TABLES: &[(&str, &[&str])] = &[
     (
+        "usage_emissions",
+        &["id", "agent", "project", "channel", "bytes", "at"],
+    ),
+    (
         "usage_samples",
         &["source_id", "fingerprint", "at", "contribution"],
     ),
