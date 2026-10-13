@@ -3107,7 +3107,11 @@ impl App {
         let header = column![
             heading("Launch an agent", 16),
             note(
-                "Start a tool in this project's folder. Nothing else is changed.",
+                if self.shell.launch_worktree && self.launch_project_is_git() {
+                "Start a tool on a branch of its own, in its own folder; merge its work from Changes."
+            } else {
+                "Start a tool in this project's folder. Nothing else is changed."
+            },
                 c
             )
         ]
@@ -3262,6 +3266,44 @@ impl App {
                 "Automatic idle delivery is not available for this tool.",
                 c,
             ));
+        }
+        // Its own worktree: the session works on a branch of its own, and
+        // its changes are reviewed and merged from its Changes. Files git
+        // ignores that the project lists in `.worktreeinclude` are copied
+        // in. A folder that is not a git repository has no branches.
+        if self.launch_project_is_git() {
+            body = body.push(Space::new().height(4)).push(
+                row![
+                    column![
+                        text("Own worktree")
+                            .size(14)
+                            .font(weight(iced::font::Weight::Medium)),
+                        small(
+                            if self.shell.launch_worktree {
+                                "Works on its own branch in its own folder; review and merge its changes from Changes. Files listed in .worktreeinclude are copied in."
+                            } else {
+                                "Works directly in the project folder, on its current branch."
+                            },
+                            c
+                        )
+                    ]
+                    .spacing(2)
+                    .width(Fill),
+                    action(
+                        "launch-worktree",
+                        if self.shell.launch_worktree {
+                            "Own worktree: On"
+                        } else {
+                            "Own worktree: Off"
+                        },
+                        (!self.shell.launching)
+                            .then_some(Message::LaunchWorktree(!self.shell.launch_worktree)),
+                        self.shell.launch_worktree,
+                    ),
+                ]
+                .spacing(12)
+                .align_y(Center),
+            );
         }
         if let Some(runtime) = self
             .runtimes

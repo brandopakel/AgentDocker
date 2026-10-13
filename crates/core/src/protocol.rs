@@ -109,6 +109,11 @@ pub enum Request {
     WorktreeDiff {
         agent: String,
     },
+    /// Remove an ended session's linked worktree (clean, non-force) and its
+    /// branch when git considers it merged. Answers `worktree_removed`.
+    WorktreeRemove {
+        agent: String,
+    },
     /// What an agent's branch would bring to the branch in the project's
     /// main checkout, and whether it can be merged now. Answers
     /// `branch_review`.
@@ -1212,6 +1217,12 @@ pub enum Response {
     },
     Diff {
         text: String,
+    },
+    WorktreeRemoved {
+        path: std::path::PathBuf,
+        branch_removed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
     BranchReview {
         review: crate::review::Review,
