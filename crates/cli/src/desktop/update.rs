@@ -888,9 +888,12 @@ mod tests {
         let target = host_target();
         let feed = tmp.path().join("feed.json");
         let payload = tmp.path().join("missing-archive");
+        // Newer than this build whatever it is, a prerelease or a release.
+        let running = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let newer = Version::new(running.major, running.minor, running.patch + 1).to_string();
         std::fs::write(&feed, serde_json::to_vec(&json!({
             "format":1,"product":"agentdocker","channel":"preview", "policy":{"download":"manual"},
-            "releases":[{"target":target,"version":"0.2.0","source_commit":"a".repeat(40),
+            "releases":[{"target":target,"version":newer,"source_commit":"a".repeat(40),
                 "state_schema":agentd::STATE_SCHEMA_VERSION-1,"signing":if cfg!(target_os="macos"){"local-preview"}else{"checksum"},"notarized":false,
                 "archive":{"name":format!("agentdocker-desktop-{target}.{}",if cfg!(target_os="macos"){"zip"}else{"tar.gz"}),"sha256":"b".repeat(64),"bytes":12,
                     "url":format!("file://{}",payload.display())}}]
