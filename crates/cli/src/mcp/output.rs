@@ -150,14 +150,10 @@ mod tests {
         );
         let rows = backend.0.borrow();
         assert_eq!(rows.len(), 2);
-        assert_eq!(
-            (&rows[0].0, rows[0].1.bytes),
-            (&"a".into(), expected_a as u64)
-        );
-        assert_eq!(
-            (&rows[1].0, rows[1].1.bytes),
-            (&"b".into(), expected_b as u64)
-        );
+        assert_eq!(rows[0].0, "a");
+        assert_eq!(rows[0].1.bytes, expected_a as u64);
+        assert_eq!(rows[1].0, "b");
+        assert_eq!(rows[1].1.bytes, expected_b as u64);
         assert_ne!(rows[0].1.id, rows[1].1.id);
         assert!(expected_a + expected_b < output.len());
     }

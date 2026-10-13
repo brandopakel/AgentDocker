@@ -343,14 +343,7 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             {
                 let _ = tokio::time::timeout_at(deadline, async {
                     if let Some(agent) = session_agent(&client, &input).await? {
-                        report_hook_status(&client, &agent, activity).await?;
-                        crate::emission::record(
-                            &client,
-                            agent.id.as_str(),
-                            agentdocker_core::usage::emission::Channel::Hook,
-                            emitted_bytes,
-                        )
-                        .await;
+                        report_hook_completion(&client, &agent, activity, emitted_bytes).await?;
                     }
                     Ok::<_, anyhow::Error>(())
                 })
@@ -361,10 +354,11 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
     }
 }
 
-async fn report_hook_status<B: Backend>(
+async fn report_hook_completion<B: Backend>(
     backend: &B,
     agent: &AgentRecord,
     activity: Option<agentdocker_core::ReportedActivity>,
+    emitted_bytes: usize,
 ) -> Result<()> {
     crate::input_status::adapter_contact(
         backend,
@@ -373,7 +367,7 @@ async fn report_hook_status<B: Backend>(
         agentdocker_core::AdapterKind::Hooks,
     )
     .await;
-    if let Some(activity) = activity {
+    let status = if let Some(activity) = activity {
         backend
             .call(Request::ReportActivity {
                 agent: agent.id.to_string(),
@@ -382,9 +376,21 @@ async fn report_hook_status<B: Backend>(
                     observed_at: chrono::Utc::now(),
                 },
             })
-            .await?;
-    }
-    Ok(())
+            .await
+            .map(|_| ())
+    } else {
+        Ok(())
+    };
+    // Status is secondary to the output already written. Preserve its error,
+    // but still count the write within the caller's remaining hook deadline.
+    crate::emission::record(
+        backend,
+        agent.id.as_str(),
+        agentdocker_core::usage::emission::Channel::Hook,
+        emitted_bytes,
+    )
+    .await;
+    status
 }
 
 /// An OpenCode answer and the messages it carries. The inbox is read before
@@ -2296,6 +2302,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_hook_output_is_counted_even_when_activity_transport_fails() {
+        use agentdocker_core::usage::emission::Emission;
+        struct FailedStatus {
+            calls: RefCell<Vec<&'static str>>,
+            emissions: RefCell<Vec<(String, Emission)>>,
+        }
+        impl Backend for FailedStatus {
+            async fn call(&self, request: Request) -> Result<Response> {
+                match request {
+                    Request::ReportAdapter { .. } => {
+                        self.calls.borrow_mut().push("contact");
+                        Ok(Response::Ok)
+                    }
+                    Request::ReportActivity { .. } => {
+                        self.calls.borrow_mut().push("status");
+                        anyhow::bail!("fixture activity transport failed")
+                    }
+                    other => panic!("unexpected request: {other:?}"),
+                }
+            }
+            async fn record_emission(&self, agent: &str, emission: Emission) {
+                self.calls.borrow_mut().push("emission");
+                self.emissions
+                    .borrow_mut()
+                    .push((agent.to_owned(), emission));
+            }
+        }
+        let backend = FailedStatus {
+            calls: RefCell::default(),
+            emissions: RefCell::default(),
+        };
+        let session = agent("claude-fixture", true);
+        let error = report_hook_completion(
+            &backend,
+            &session,
+            Some(agentdocker_core::ReportedActivity::Idle),
+            123,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("fixture activity transport failed")
+        );
+        assert_eq!(*backend.calls.borrow(), ["contact", "status", "emission"]);
+        let emissions = backend.emissions.borrow();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].0, session.id.as_str());
+        assert_eq!(emissions[0].1.bytes, 123);
+    }
+
+    #[tokio::test]
     async fn hook_contact_does_not_require_an_activity_observation() {
         let mut session = agent("claude-fixture", true);
         let birth = chrono::Utc::now();
@@ -2308,7 +2367,7 @@ mod tests {
                     "activity refused",
                 ),
             ]);
-            report_hook_status(&backend, &session, activity)
+            report_hook_completion(&backend, &session, activity, 0)
                 .await
                 .unwrap();
             let calls = backend.requests();

@@ -1491,7 +1491,10 @@ are unknown, never zero. The design:
   Each report is limited to 64 MiB of claimed output, with no output truncation.
   Reporting has a 50 ms transport budget, never starts a daemon or retries, and
   never changes output delivery or ACK semantics; hooks also retain their existing
-  overall deadline. An older daemon, failed write, shutdown, disabled collection,
+  overall deadline. A completed hook write is still eligible for counting after
+  a status or acknowledgement error when time remains; failed writes and expired
+  deadlines are not reported, and acknowledgement always precedes accounting.
+  An older daemon, failed write, shutdown, disabled collection,
   full tracking store or lost report cannot manufacture a count. Stored counts
   always have partial coverage because output and accounting cannot be atomic;
   no matching records means unknown, not measured zero. CLI/desktop say so.
