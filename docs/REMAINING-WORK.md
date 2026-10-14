@@ -17,6 +17,13 @@ remain open. Native Codex, managed secret input and live daemon replacement stay
 experimental. Current existing-account evidence is scoped in the tables;
 synthetic providers and CI do not establish physical or fresh-login acceptance.
 
+The next source candidate is `0.2.0-beta.13`, not yet published. It combines
+bounded emitted-byte accounting with Linux owner reaping of orphaned descendants.
+PR #337's final review/CI, candidate validation and hosted beta.12 → beta.13
+update, rollback and reapply remain gates. Ledger 15/state schema 27 is unchanged;
+accounting metadata must survive rollback without a database restore or duplicate
+count on reapplication. Stable and Homebrew remain separate.
+
 ## Release and first run
 
 | Requirement | Current evidence | Remaining work |
