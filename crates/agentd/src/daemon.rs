@@ -17801,14 +17801,52 @@ deny = ["send:all"]
             else {
                 panic!("managed launch failed");
             };
-            let finished = eventually(async || {
-                lock(&daemon.state)
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            let finished = loop {
+                let current = lock(&daemon.state)
                     .registry
                     .get(&agent.id)
-                    .filter(|current| !current.status.is_live())
                     .cloned()
-            })
-            .await;
+                    .expect("managed agent remains registered");
+                if !current.status.is_live() {
+                    break current;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    // Keep the original deadline and completion assertions.
+                    // A bare timeout cannot distinguish a slow writer, a live
+                    // child/group, or an exit report awaiting the controller.
+                    let log = std::fs::read_to_string(daemon.log_path(&agent.id));
+                    let progress = log.as_ref().map(|text| {
+                        ["OUT", "ERR"].map(|stream| {
+                            let prefix = format!("{stream}_");
+                            let markers: Vec<_> = text
+                                .split_whitespace()
+                                .filter(|word| word.starts_with(&prefix))
+                                .collect();
+                            (stream, markers.len(), markers.last().copied())
+                        })
+                    });
+                    let exit = std::fs::read_to_string(agentdocker_core::session::exit_path(
+                        &daemon.home,
+                        &agent.id,
+                    ));
+                    panic!(
+                        "managed output completion timed out: tty={tty}, status={:?}, \
+                         child_pid={:?}, recorded_birth={:?}, observed_birth={:?}, \
+                         group_exists={:?}, owner={:?}, terminal_attached={}, \
+                         log_bytes={:?}, progress={progress:?}, exit_report={exit:?}",
+                        current.status,
+                        current.pid,
+                        current.process_started_at,
+                        current.pid.and_then(procinfo::start_time),
+                        current.process_group.map(supervisor::group_exists),
+                        current.owner,
+                        daemon.session(&agent.id).is_some(),
+                        log.as_ref().map(|text| text.len()),
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            };
             assert_eq!(finished.status, AgentStatus::Exited { code: Some(17) });
             // No eventual log polling: reported completion is the boundary
             // at which shutdown, restart and a successor can rely on the log.
