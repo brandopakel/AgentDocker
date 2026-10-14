@@ -111,6 +111,8 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_windows_desktop_package.py
           python -m unittest discover -s tests -p test_windows_fixture_cleanup.py
+          python -m unittest discover -s tests -p test_windows_connector_fixture.py
+          python -m unittest discover -s tests -p test_windows_install_cleanup.py
           python -m unittest discover -s tests -p test_native_build.py
       - name: Native core and host lint
         run: cargo clippy --locked -p agentdocker-core -p agentdocker-host --all-targets -- -D warnings

@@ -67,6 +67,14 @@ Backend I/O failures while reading the binding inventory preserve the existing
 `agentd unreachable: <cause>` diagnostic and its cause chain. Local host or
 binding validation failures retain the native identity diagnostic.
 
+Native launch configuration flags are passed to both the dedicated server and
+its terminal, including explicit UUID reopen. The terminal reads local settings
+even in remote mode; dropping those flags can ignore launch-only preferences and
+let provider startup persist defaults. The launcher does not rewrite the profile.
+The Windows account preflight retained that failure before any model messages;
+its exact added screen-reader preference was verified and restored. Corrected
+package/account acceptance is still required.
+
 The receiver probes the read-only queue/history APIs before taking ownership.
 Hooks keep their normal delivery while that probe is pending or unsupported;
 only an accepted daemon binding suppresses their competing reads. An incompatible
