@@ -321,8 +321,7 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             let delivery = HookDelivery {
                 backend: &client,
                 pending: RefCell::new(Vec::new()),
-                channel_input: std::env::var(crate::mcp::CLAUDE_CHANNEL_INPUT).as_deref()
-                    == Ok("1"),
+                channel_input: crate::mcp::channel_opted_in("claude-code"),
                 channel_home: Some(agentdocker_host::dirs::home()),
             };
             let output = match bounded_claude_code_at(&delivery, &input, &opts, deadline).await {
@@ -460,6 +459,19 @@ fn opencode_delivered(pending: Vec<Request>) -> Vec<Delivered> {
         .collect()
 }
 
+/// Whether a Claude channel has stopped this session's queue on a message
+/// it offered and never saw confirmed. Claude drops channel offers it has
+/// not loaded the channel for (a session restarted without the flag), so
+/// this is a channel that is not delivering, not one that is slow.
+fn channel_stalled(agent: &agentdocker_core::AgentRecord) -> bool {
+    agent.input_delivery.as_ref().is_some_and(|delivery| {
+        delivery.paused_for(agent.process_started_at)
+            && delivery.pause_reason.as_deref().is_some_and(|reason| {
+                reason.starts_with(agentdocker_core::input::PAUSE_RECEIPT_MISSING)
+            })
+    })
+}
+
 /// Read inboxes without consuming them; acknowledge only after output is flushed.
 struct HookDelivery<'a, B> {
     backend: &'a B,
@@ -475,22 +487,31 @@ struct HookDelivery<'a, B> {
 impl<B: Backend> Backend for HookDelivery<'_, B> {
     async fn call(&self, request: Request) -> Result<Response> {
         if let Request::Inbox { agent, .. } = request {
-            let held_channel = if self.channel_input {
-                true
-            } else if let Some(home) = &self.channel_home {
+            let held_channel = if self.channel_input || self.channel_home.is_some() {
                 // The channel may hold the registration's pre-resumption ID.
                 // Check the canonical record's process generation as well so
                 // hooks cannot race that still-live adapter after folding.
-                match self
+                let record = match self
                     .backend
                     .call(Request::Inspect {
                         agent: agent.clone(),
                     })
                     .await?
                 {
-                    Response::Agent { agent } => crate::mcp::channel_input_active(home, &agent)?,
+                    Response::Agent { agent } => agent,
                     other => bail!("cannot verify channel ownership: {other:?}"),
-                }
+                };
+                let live = self.channel_input
+                    || match &self.channel_home {
+                        Some(home) => crate::mcp::channel_input_active(home, &record)?,
+                        None => false,
+                    };
+                // A channel that offered a message the session never
+                // confirmed has stopped the queue on it. The hooks reach
+                // the model directly, and receipt recovery has just looked
+                // for that message in the transcript, so they take the queue
+                // over rather than leave every later message silent.
+                live && !channel_stalled(&record)
             } else {
                 false
             };
@@ -3755,28 +3776,91 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_channel_input_skips_hook_inbox_delivery_but_forwards_other_requests() {
-        struct Observed(RefCell<Vec<Request>>);
+        struct Observed(RefCell<Vec<Request>>, AgentRecord);
         impl Backend for Observed {
             async fn call(&self, request: Request) -> Result<Response> {
-                self.0.borrow_mut().push(request);
-                Ok(Response::Ok)
+                self.0.borrow_mut().push(request.clone());
+                Ok(match request {
+                    Request::Inspect { .. } => Response::Agent {
+                        agent: self.1.clone(),
+                    },
+                    Request::DeliveryQueue { .. } => Response::Messages {
+                        messages: vec![message("user", "pause for the night")],
+                    },
+                    _ => Response::Ok,
+                })
             }
         }
-        let backend = Observed(RefCell::new(Vec::new()));
+        let started = Utc::now();
+        let mut record = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                runtime: "claude-code".into(),
+                ..Default::default()
+            },
+            false,
+            started,
+        );
+        record.process_started_at = Some(started);
+        let backend = Observed(RefCell::new(Vec::new()), record.clone());
         let delivery = HookDelivery {
             backend: &backend,
             pending: RefCell::new(Vec::new()),
             channel_input: true,
             channel_home: None,
         };
+        // A delivering channel owns the inbox: the hook reads nothing.
         assert!(
             matches!(delivery.call(Request::Inbox { agent: "me".into(), drain: true }).await.unwrap(),
             Response::Messages { messages } if messages.is_empty())
         );
-        assert!(backend.0.borrow().is_empty());
+        assert!(matches!(
+            backend.0.borrow().as_slice(),
+            [Request::Inspect { .. }]
+        ));
         assert!(delivery.pending.borrow().is_empty());
         delivery.call(Request::Ping).await.unwrap();
-        assert!(matches!(backend.0.borrow().as_slice(), [Request::Ping]));
+        assert!(matches!(backend.0.borrow().last(), Some(Request::Ping)));
+
+        // A channel stopped on an offer nobody confirmed (Claude restarted
+        // without loading it): the hook delivers the queue and acknowledges
+        // it once its output is written.
+        record.input_delivery = Some(agentdocker_core::InputDelivery {
+            process_started_at: started,
+            paused: true,
+            pause_reason: Some(format!(
+                "{} f76afe628d714b98; following messages remain queued.",
+                agentdocker_core::input::PAUSE_RECEIPT_MISSING
+            )),
+            reported_at: Utc::now(),
+            received: None,
+            received_at: None,
+        });
+        let backend = Observed(RefCell::new(Vec::new()), record);
+        let delivery = HookDelivery {
+            backend: &backend,
+            pending: RefCell::new(Vec::new()),
+            channel_input: true,
+            channel_home: None,
+        };
+        let Response::Messages { messages } = delivery
+            .call(Request::Inbox {
+                agent: "me".into(),
+                drain: true,
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("messages");
+        };
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(
+            backend.0.borrow().as_slice(),
+            [Request::Inspect { .. }, Request::DeliveryQueue { .. }]
+        ));
+        assert!(matches!(
+            delivery.pending.borrow().as_slice(),
+            [Request::AckInbox { .. }]
+        ));
     }
 
     #[tokio::test]

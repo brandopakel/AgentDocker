@@ -18,10 +18,16 @@ offer's repeat closes it: while no receipt has yet been seen on the channel,
 an offer that has none after thirty seconds is written a second time, once,
 under the same message id with `repeat: true` in its metadata, and the
 delivery rule tells the model a repeat is the same message, acknowledged
-once. From the first receipt on, nothing is offered twice: a missing receipt
-retains and visibly pauses the queue, without automatic replay based only on
-an absent transcript entry. Control and receipt requests remain responsive
-throughout. Neither the wait nor the repeat is a readiness guarantee or a
+once. From the first receipt on, the channel offers nothing twice: a missing
+receipt pauses its queue visibly, and the session's lifecycle hooks then take
+that queue over. At the next prompt or tool use, once receipt recovery has
+looked for the message in the transcript and not found it, they deliver it as
+hook context and acknowledge it when written, and every message behind it the
+same way. The case this covers is a channel Claude never loaded — a session
+restarted in place, which re-executes `claude` without the flag — where every
+offer is dropped without a word. A duplicate is possible only where the
+transcript hides a message the model did see, and is preferred to silence.
+Control and receipt requests remain responsive throughout. Neither the wait nor the repeat is a readiness guarantee or a
 receipt.
 
 ## Launch from AgentDocker
@@ -212,9 +218,12 @@ its complete JSON payload and stable `message_id`, `from_agent`, `kind`,
 `sent_at`, `destination` and optional `reply_to` metadata. The model can acknowledge
 received IDs using `acknowledge_messages`. Lifecycle hooks also recover a forgotten
 ACK when the current session's provider transcript records the exact complete
-channel body and metadata followed by a real assistant response in its parent
-chain. This accepts both idle channel input and a busy `queued_command` attachment;
-an attachment without that continuation is insufficient. The receipt commits
+channel body and metadata followed by a real assistant response: in its parent
+chain, or — since Claude Code 2.1.299, whose responses name the turn's prompt
+snapshot, written before a channel input that arrived for that turn, as their
+parent — any later main-chain response in the same session, which was made with
+the input in its context. This accepts both idle channel input and a busy
+`queued_command` attachment; an input without a later response is insufficient. The receipt commits
 before removing the queue head. It confirms input receipt, not task completion.
 Replies use `send_message` to the envelope's `reply_destination` with
 `reply_to=message_id`, so project/channel responses appear in their original chat.
@@ -233,7 +242,7 @@ trusted without rereading it. Each proof is limited to 4,096 records after its
 candidate ID, within a 250 ms recovery budget inside the existing one-second
 hook budget. It requires the
 current process generation and session, and rejects provider errors, synthetic
-responses, unrelated turns, sidechains, changed bodies and malformed metadata.
+responses, responses written before the input, sidechains, changed bodies and malformed metadata.
 No transcript content is retained. Missing hooks, unknown provider formats,
 ambiguous UUIDs and proof chains too large for a window keep the explicit-ACK
 fallback and queued input. Recovery clears at most one verified head per hook
