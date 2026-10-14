@@ -1040,9 +1040,30 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 .clone()
         };
         match server.handle_incoming(incoming).await {
-            Some(reply) => HttpResponse::json(200, &reply),
+            Some(reply) => HttpResponse::json(200, &reply).emitted_for(grant.agent_id),
             None => HttpResponse::new(202),
         }
+    }
+
+    /// Count only authenticated MCP bodies after the actual response flush.
+    /// OAuth/consent pages, credentials and refused requests are not model
+    /// context; their responses carry no accounting attribution.
+    async fn write_response<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        writer: &mut W,
+        response: &HttpResponse,
+    ) -> std::io::Result<()> {
+        http::write_response(writer, response).await?;
+        if let Some(agent) = &response.emission_agent {
+            crate::emission::record(
+                &self.backend,
+                agent,
+                agentdocker_core::usage::emission::Channel::BrowserMcp,
+                response.body.len(),
+            )
+            .await;
+        }
+        Ok(())
     }
 }
 
@@ -1234,7 +1255,7 @@ async fn serve(
                         Err(http::HttpError::Bad(status, why)) => HttpResponse::text(status, why),
                         Err(http::HttpError::Io(_)) => return,
                     };
-                    let _ = http::write_response(&mut write, &response).await;
+                    let _ = connector.write_response(&mut write, &response).await;
                     let _ = write.shutdown().await;
                 });
             }
@@ -1489,6 +1510,20 @@ mod tests {
     struct Shared(Arc<Mock>, Arc<std::sync::atomic::AtomicBool>);
 
     impl Backend for Shared {
+        async fn record_emission(
+            &self,
+            agent: &str,
+            emission: agentdocker_core::usage::emission::Emission,
+        ) {
+            let _ = self
+                .0
+                .call(Request::RecordEmission {
+                    agent: agent.to_owned(),
+                    emission,
+                })
+                .await;
+        }
+
         fn call(&self, request: Request) -> impl std::future::Future<Output = Result<Response>> {
             let inner = self.0.clone();
             let down = self.1.load(Ordering::Relaxed);
@@ -1597,6 +1632,79 @@ mod tests {
                 .await,
         );
         issued["access_token"].as_str().unwrap().to_owned()
+    }
+
+    #[tokio::test]
+    async fn browser_emission_counts_only_flushed_authenticated_mcp_bodies() {
+        let registered = live_agent("browser-byte-fixture");
+        let Response::Agent { agent } = &registered else {
+            unreachable!()
+        };
+        let expected_agent = agent.id.to_string();
+        let (connector, mock) = connector(vec![registered.clone(), registered]);
+        let access = connected(&connector, "https://claude.ai/api/mcp/auth_callback").await;
+        let request = post(
+            "/mcp",
+            "application/json",
+            r#"{"jsonrpc":"2.0","id":"é界🙂","method":"ping","emission_agent":"forged"}"#,
+            Some(&access),
+        );
+        let response = connector.handle(request).await;
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            response.emission_agent.as_deref(),
+            Some(expected_agent.as_str())
+        );
+        assert!(
+            !mock
+                .requests()
+                .iter()
+                .any(|r| matches!(r, Request::RecordEmission { .. }))
+        );
+        let mut wire = Vec::new();
+        connector
+            .write_response(&mut wire, &response)
+            .await
+            .unwrap();
+        assert!(wire.ends_with(&response.body));
+        assert!(!String::from_utf8_lossy(&wire).contains("emission_agent"));
+        let (mut broken, peer) = tokio::io::duplex(1);
+        drop(peer);
+        assert!(
+            connector
+                .write_response(&mut broken, &response)
+                .await
+                .is_err()
+        );
+        let unauthorized = connector
+            .handle(post("/mcp", "application/json", "{}", None))
+            .await;
+        assert_eq!(unauthorized.status, 401);
+        assert!(unauthorized.emission_agent.is_none());
+        connector
+            .write_response(&mut Vec::new(), &unauthorized)
+            .await
+            .unwrap();
+        let credential_response = HttpResponse::json(200, &json!({"access_token":"fixture-only"}));
+        connector
+            .write_response(&mut Vec::new(), &credential_response)
+            .await
+            .unwrap();
+        let requests = mock.requests();
+        let emissions: Vec<_> = requests
+            .iter()
+            .filter_map(|r| match r {
+                Request::RecordEmission { agent, emission } => Some((agent, emission)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].0, &expected_agent);
+        assert_eq!(
+            emissions[0].1.channel,
+            agentdocker_core::usage::emission::Channel::BrowserMcp
+        );
+        assert_eq!(emissions[0].1.bytes, response.body.len() as u64);
     }
 
     /// A daemon that is not answering is a `503` and nothing more: the

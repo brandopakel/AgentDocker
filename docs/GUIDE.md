@@ -269,6 +269,21 @@ the available time range, gaps and whether collection has caught up. The CLI
 names each agent or project row (`codex-96813`, `AgentDocker`) while AgentDocker
 still knows it, and shows its ID once it is gone; `(unattributed)` is usage no
 session could be matched to.
+Unreleased local-output instrumentation records successful hook, stdio MCP and
+managed/native Codex input writes and authenticated browser MCP response bodies
+when collection is enabled. The separate
+overhead line counts UTF-8 protocol bytes, including forwarded content and
+wrappers. It is always marked partial: missing reports and older writers are not
+measured, and a completed write does not prove a model consumed it. Browser
+counts exclude HTTP headers, OAuth/token responses and consent pages. Counts are neither provider tokens nor a bill, and
+are never added to the provider totals. No matching records still means
+*not measured*, rather than zero; output text is not saved in accounting tables.
+Shared native Codex MCP tool replies are assigned only to the conversation
+verified for each call. Unverified replies stay unmeasured. If a batch mixes
+conversations or unverified replies, only each verified reply's JSON bytes are
+counted; shared array framing is excluded. Native hook and queue writes are
+counted separately.
+
 The MCP `usage` tool reads the same stored report and advertises that it is
 read-only; querying usage does not enable collection or change its settings.
 
@@ -295,8 +310,8 @@ limit was reached and keeps totals partial. Earlier dedupe records are preserved
 so copied or replayed logs cannot count twice. Retention may free space, but the
 fixed tracking budget cannot currently be increased through configuration. Do not
 delete accounting tables to make space: doing so can invalidate deduplication.
-AgentDocker's own injected overhead remains **not measured** until that separate
-instrumentation is implemented.
+AgentDocker's emitted-byte coverage remains partial when collection is enabled;
+without matching output records, overhead is **not measured**.
 
 ### Accounting storage
 
@@ -434,7 +449,7 @@ each one by pid.
 | `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); `--input-details` adds reconnect guidance |
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is doing: working, idle, or blocked on a named resource |
-| `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour`), each count with its coverage (`~` where some samples did not say, `—` where none did), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on, and the overhead AgentDocker injected — *not measured* until it is; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
+| `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour`), each count with its coverage (`~` where some samples did not say, `—` where none did), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on, and AgentDocker's emitted-byte overhead with partial coverage, or *not measured* without matching records; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
 | `inspect <agent>` | Everything known about one agent, as JSON |
 | `logs <agent>` | An agent's captured output, at most 16 MiB kept per agent (the newest 8 MiB and the 8 MiB before them); `-f` to follow, `--compress` for an rtk view |
 | `validation <id>` | The retained log of one validation; `--compress` for an rtk view |

@@ -892,6 +892,14 @@ pub fn event_line(event: &Event) -> String {
         EventKind::UsageReconciled { agent, samples } => {
             format!("usage reconciled {} {samples} sample(s)", agent.short())
         }
+        EventKind::UsageEmissionRecorded { agent, emission } => {
+            format!(
+                "output counted  {} {} bytes ({:?})",
+                agent.short(),
+                emission.bytes,
+                emission.channel
+            )
+        }
         EventKind::Unknown => "(an event this version does not know)".to_owned(),
     };
     format!("{}  {}", clock(event.at), single_line(&body))
@@ -1171,7 +1179,7 @@ pub fn usage_report(
         ),
         (None, None) => "Overhead: not measured yet".to_owned(),
     };
-    println!("{overhead_line}");
+    println!("{overhead_line}{}", overhead.coverage_suffix());
 }
 
 /// Readiness is separate from queue acceptance; keep stdout stable for scripts.

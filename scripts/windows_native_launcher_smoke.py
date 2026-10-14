@@ -43,6 +43,32 @@ def canonical_reopen(descriptor, generation, ledger, agent, thread, receipts):
             and ledger.get('attempt') is None and ledger.get('completed') == receipts)
 
 
+def process_snapshot(processes, process_api):
+    """Observe every birth-pinned participant, retaining exits and uncertainty.
+
+    This is diagnostic only: it neither signals a process nor treats an
+    unreadable identity as a live participant. The second identity check
+    detects exits/reuse while parent/executable/status metadata was read.
+    """
+    rows = []
+    for process in processes:
+        row = {'pid': process.pid, 'running': None}
+        try:
+            row['birth'] = process.create_time()
+            row['running'] = process.is_running()
+            if row['running']:
+                row.update(parent=process.ppid(), executable=process.exe(),
+                           status=process.status())
+                if not process.is_running():
+                    row.update(running=False, ended_during_observation=True)
+        except process_api.NoSuchProcess:
+            row.update(running=False, ended_during_observation=True)
+        except process_api.Error as error:
+            row.update(running=None, observation_error=type(error).__name__)
+        rows.append(row)
+    return rows
+
+
 # pywinpty closes ConPTY when its root process exits. Keep a separate console
 # host alive so killing only the product front end cannot also close its console.
 # This host neither reads nor proxies terminal input and never owns a binding.
@@ -407,8 +433,11 @@ def main():
                 # release the last PyPTY reference: pinned pywinpty3.0.5 /
                 # winpty-rs1.0.6 Drop calls ClosePseudoConsole. Stop the read
                 # workers first so they cannot retain the console owner.
+                report[probe_key]['before_read_worker_stop'] = process_snapshot(watched, psutil)
                 close_console()
-                assert all(p.is_running() for p in watched)
+                report[probe_key]['after_read_worker_stop'] = process_snapshot(watched, psutil)
+                assert all(p.is_running() for p in watched), \
+                    'a watched process ended before ConPTY release; see process snapshots'
                 references = sys.getrefcount(terminal.pty)
                 assert references == 2, 'an extra Python reference retains ConPTY'
                 report[probe_key]['trigger'] = 'drop_final_conpty_owner'

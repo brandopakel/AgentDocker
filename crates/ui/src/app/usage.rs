@@ -77,7 +77,7 @@ pub fn collection_line(report: &Report) -> String {
 /// One line on the overhead: measured, bytes only, or not yet.
 pub fn overhead_line(report: &Report) -> String {
     let overhead = &report.overhead;
-    match (&overhead.estimated_tokens, overhead.injected_bytes) {
+    let line = match (&overhead.estimated_tokens, overhead.injected_bytes) {
         (Some(estimate), _) => format!(
             "Overhead: about {} tokens injected by AgentDocker, from {} known event(s)",
             thousands(estimate.value),
@@ -89,7 +89,8 @@ pub fn overhead_line(report: &Report) -> String {
             overhead.known_events
         ),
         (None, None) => "Overhead: not measured yet".to_owned(),
-    }
+    };
+    format!("{line}{}", overhead.coverage_suffix())
 }
 
 /// One line on the range the totals cover and what may be missing.
@@ -1032,7 +1033,7 @@ mod tests {
         measured.overhead.known_events = 7;
         assert_eq!(
             overhead_line(&measured),
-            "Overhead: 2,048 bytes injected by AgentDocker over 7 known event(s); tokens not estimated"
+            "Overhead: 2,048 bytes injected by AgentDocker over 7 known event(s); tokens not estimated; instrumentation coverage unknown"
         );
         assert!(range_line(&measured).contains("the current hour is still filling"));
         measured.coverage.source_gaps = 2;

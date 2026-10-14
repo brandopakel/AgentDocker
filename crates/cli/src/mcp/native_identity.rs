@@ -576,11 +576,16 @@ mod tests {
                 context.unbound_identity(),
             );
             server.native_context = Some(context);
+            let mut attribution = None;
             let (code, message) = server
-                .call_tool(json!({"name":"whoami", "arguments":{}, "_meta":meta}))
+                .call_tool(
+                    json!({"name":"whoami", "arguments":{}, "_meta":meta}),
+                    &mut attribution,
+                )
                 .await
                 .unwrap_err();
             assert_eq!(code, super::super::INTERNAL_ERROR);
+            assert!(attribution.is_none(), "unverified requests stay unmeasured");
             assert_eq!(
                 server.backend.calls.load(Ordering::SeqCst),
                 usize::from(!stale)
@@ -601,6 +606,127 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shared_native_batch_records_only_each_verified_conversation_after_output() {
+        use crate::{client::Backend, mcp::McpServer};
+        use agentdocker_core::usage::emission::Emission;
+        use std::{cell::RefCell, collections::BTreeMap};
+
+        struct Inventory {
+            agents: Vec<AgentRecord>,
+            emissions: RefCell<Vec<(String, Emission)>>,
+        }
+        impl Backend for Inventory {
+            async fn call(&self, request: Request) -> Result<Response> {
+                Ok(match request {
+                    Request::List { .. } => Response::Agents {
+                        agents: self.agents.clone(),
+                        aliases: Default::default(),
+                    },
+                    Request::ReportAdapter { .. } => Response::Ok,
+                    Request::Inspect { agent } => Response::Agent {
+                        agent: self
+                            .agents
+                            .iter()
+                            .find(|a| a.id.as_str() == agent)
+                            .unwrap()
+                            .clone(),
+                    },
+                    other => panic!("unexpected native coordination mutation: {other:?}"),
+                })
+            }
+            async fn record_emission(&self, agent: &str, emission: Emission) {
+                self.emissions
+                    .borrow_mut()
+                    .push((agent.to_owned(), emission));
+            }
+        }
+
+        let (mut context, mut agent, meta) = fixture();
+        let pid = std::process::id();
+        context.host = ProcessIdentity {
+            pid,
+            started_at: procinfo::start_time(pid).unwrap(),
+        };
+        context.executable = procinfo::executable_path().unwrap().canonicalize().unwrap();
+        agent.pid = Some(pid);
+        agent.process_started_at = Some(context.host.started_at);
+        agent.input_binding.as_mut().unwrap().provider.process = context.host.clone();
+        let first = agent.id.to_string();
+        let mut other = agent.clone();
+        other.id = "second-native-root".to_owned().into();
+        other.spec.name = "second-root".into();
+        other.input_binding.as_mut().unwrap().provider.session = "other-root".into();
+        let second = other.id.to_string();
+        let mut server = McpServer::new(
+            Inventory {
+                agents: vec![agent, other],
+                emissions: RefCell::new(Vec::new()),
+            },
+            context.unbound_identity(),
+        );
+        server.native_context = Some(context);
+        let call = |id: u64, name: &str, meta: Value| {
+            json!({
+                "jsonrpc":"2.0", "id":id, "method":"tools/call",
+                "params":{"name":name,"arguments":{"emission_agent":"forged"},"_meta":meta}
+            })
+        };
+        let output = server
+            .incoming_output(json!([
+                {"jsonrpc":"2.0","id":0,"method":"initialize"},
+                call(1, "whoami", meta.clone()),
+                call(2, "whoami", json!({"threadId":"other-root","sessionId":"other-root"})),
+                call(3, "whoami", json!({"threadId":"child","sessionId":"root-thread"})),
+                call(4, "acknowledge_messages", meta),
+                {"jsonrpc":"2.0","method":"notifications/initialized"}
+            ]))
+            .await
+            .unwrap();
+        assert!(
+            server.backend.emissions.borrow().is_empty(),
+            "no output yet"
+        );
+        assert!(
+            server.identity.id.is_empty(),
+            "shared host cannot retain a caller"
+        );
+        let mut wire = Vec::new();
+        output.write(&server.backend, &mut wire).await.unwrap();
+        let replies: Vec<Value> = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(replies.len(), 5);
+        assert!(replies[3].get("error").is_some());
+        assert!(replies[4].get("error").is_some());
+        let sizes: BTreeMap<_, _> = server
+            .backend
+            .emissions
+            .borrow()
+            .iter()
+            .map(|(agent, emission)| (agent.clone(), emission.bytes))
+            .collect();
+        assert_eq!(sizes.len(), 2);
+        assert_eq!(
+            sizes[&first],
+            (serde_json::to_vec(&replies[1]).unwrap().len()
+                + serde_json::to_vec(&replies[4]).unwrap().len()) as u64
+        );
+        assert_eq!(
+            sizes[&second],
+            serde_json::to_vec(&replies[2]).unwrap().len() as u64
+        );
+        let unknown = server
+            .incoming_output(json!({"jsonrpc":"2.0","id":5,"method":"ping"}))
+            .await
+            .unwrap();
+        unknown.write(&server.backend, &mut wire).await.unwrap();
+        assert_eq!(
+            server.backend.emissions.borrow().len(),
+            2,
+            "next request inherits nothing"
+        );
     }
 
     #[cfg(unix)]
@@ -632,15 +758,22 @@ mod tests {
         ]);
         let mut server = McpServer::new(backend, context.unbound_identity());
         server.native_context = Some(context);
+        let mut attribution = None;
         let result = server
             .call_tool(
                 json!({"name":"ask_human", "arguments":{"question":"Fixture?"}, "_meta":meta}),
+                &mut attribution,
             )
             .await
             .unwrap();
         let value: Value =
             serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(value["answer_delivery"], "native_queue");
+        assert_eq!(attribution.as_deref(), Some(agent.id.as_str()));
+        assert!(
+            server.identity.id.is_empty(),
+            "shared transport stays unbound"
+        );
         assert!(
             server.backend.requests().iter().any(
                 |r| matches!(r, Request::PostQuestion { from, .. } if from == agent.id.as_str())

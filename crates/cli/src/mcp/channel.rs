@@ -163,7 +163,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                 let value: Value = match serde_json::from_slice(&bytes) {
                     Ok(value) => value,
                     Err(error) => {
-                        write(&mut output, &error_response(Value::Null, super::PARSE_ERROR, &format!("parse error: {error}"))).await?;
+                        write(server, &mut output, &error_response(Value::Null, super::PARSE_ERROR, &format!("parse error: {error}"))).await?;
                         continue;
                     }
                 };
@@ -196,21 +196,21 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                             // handler is there, whichever offer it names:
                             // from here on no offer is repeated.
                             if receipt && receipt_accepted(&response) { receipt_seen = true; }
-                            write(&mut output, &response).await?
+                            write(server, &mut output, &response).await?
                         }
                         Ok(None) => {},
-                        Err(_) => write(&mut output, &error_response(id, super::INTERNAL_ERROR, "receipt/control request timed out; inspect the retained inbox before retrying")).await?,
+                        Err(_) => write(server, &mut output, &error_response(id, super::INTERNAL_ERROR, "receipt/control request timed out; inspect the retained inbox before retrying")).await?,
                     }
                 } else if pending.len() < ACTIVE_CALLS {
                     pending.push(Box::pin(server.handle_incoming(value)));
                 } else if let Some(id) = value.get("id") {
-                    write(&mut output, &error_response(id.clone(), -32000, "MCP request capacity is full; retry this request later")).await?;
+                    write(server, &mut output, &error_response(id.clone(), -32000, "MCP request capacity is full; retry this request later")).await?;
                 } else if value.is_array() {
                     // Reject every request in an over-capacity legacy batch.
                     let replies: Vec<_> = value.as_array().unwrap().iter().filter_map(|item| item.get("id")).map(|id|
                         error_response(id.clone(), -32000, "MCP request capacity is full; retry this request later")
                     ).collect();
-                    if !replies.is_empty() { write(&mut output, &Value::Array(replies)).await?; }
+                    if !replies.is_empty() { write(server, &mut output, &Value::Array(replies)).await?; }
                 }
             }
             (index, response) = poll_fn(|cx| {
@@ -222,7 +222,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                 Poll::Pending
             }), if !pending.is_empty() => {
                 drop(pending.swap_remove(index));
-                if let Some(response) = response { write(&mut output, &response).await?; }
+                if let Some(response) = response { write(server, &mut output, &response).await?; }
             }
             // Waiting for the hooks adapter to vouch for a resumed session:
             // the record this process is must carry a session id and be
@@ -323,7 +323,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                             // rule holds and a missing receipt pauses the
                             // queue visibly.
                             eprintln!("agentdocker channel: message {id} has no receipt after 30 seconds and no receipt has been seen yet this session; offering it once more");
-                            write(&mut output, &offer(message, true)?).await?;
+                            write(server, &mut output, &offer(message, true)?).await?;
                             *repeated = true;
                             *since = tokio::time::Instant::now();
                         } else if !*warned && since.elapsed() >= RECEIPT_TIMEOUT {
@@ -359,7 +359,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                     continue;
                 }
                 if let Some(message) = messages.first() {
-                    write(&mut output, &offer(message, false)?).await?;
+                    write(server, &mut output, &offer(message, false)?).await?;
                     first_offer_at = None;
                     offered = Some((message.id.clone(), tokio::time::Instant::now(), false, false));
                 }
@@ -469,10 +469,73 @@ fn offer(message: &agentdocker_core::Envelope, repeat: bool) -> Result<Value> {
     Ok(notification)
 }
 
-async fn write(output: &mut impl stdio::Output, value: &Value) -> Result<()> {
+#[cfg(test)]
+mod emission_tests {
+    use super::*;
+    use agentdocker_core::usage::emission::{Channel, Emission};
+    use std::cell::RefCell;
+    use tokio::io::AsyncReadExt;
+
+    struct Recorder(RefCell<Vec<Emission>>);
+    impl Backend for Recorder {
+        async fn call(&self, _: Request) -> Result<Response> {
+            panic!("unexpected coordination request")
+        }
+        async fn record_emission(&self, _: &str, emission: Emission) {
+            self.0.borrow_mut().push(emission);
+        }
+    }
+    struct Broken;
+    impl stdio::Output for Broken {
+        async fn send(&mut self, _: &Value) -> Result<()> {
+            bail!("fixture broken output")
+        }
+    }
+
+    #[tokio::test]
+    async fn emission_follows_a_complete_write_and_never_counts_failed_output() {
+        let server = McpServer::new(
+            Recorder(RefCell::new(Vec::new())),
+            Identity {
+                id: "receiver".into(),
+                name: "fixture".into(),
+                registered_here: false,
+                host_pid: None,
+                host_started_at: None,
+            },
+        );
+        let value = json!({"jsonrpc":"2.0","method":"notifications/claude/channel","params":{"content":"é界🙂"}});
+        let (output, mut input) = tokio::io::duplex(4096);
+        let mut output = stdio::AsyncOutput(output);
+        write(&server, &mut output, &value).await.unwrap();
+        let mut expected = serde_json::to_vec(&value).unwrap();
+        expected.push(b'\n');
+        let mut received = vec![0; expected.len()];
+        input.read_exact(&mut received).await.unwrap();
+        assert_eq!(received, expected);
+        assert!(write(&server, &mut Broken, &value).await.is_err());
+        let records = server.backend.0.borrow();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].bytes, expected.len() as u64);
+        assert_eq!(records[0].channel, Channel::Channel);
+    }
+}
+
+async fn write<B: Backend>(
+    server: &McpServer<B>,
+    output: &mut impl stdio::Output,
+    value: &Value,
+) -> Result<()> {
     tokio::time::timeout(WRITE_TIMEOUT, output.send(value))
         .await
-        .context("channel output stalled; queued messages remain unacknowledged")?
+        .context("channel output stalled; queued messages remain unacknowledged")??;
+    let channel = if value["method"] == "notifications/claude/channel" {
+        agentdocker_core::usage::emission::Channel::Channel
+    } else {
+        agentdocker_core::usage::emission::Channel::Mcp
+    };
+    crate::emission::json_line(&server.backend, &server.identity.id, channel, value).await;
+    Ok(())
 }
 
 /// Cancellation preserves the partial frame when a tool or polling tick wins
@@ -656,11 +719,15 @@ mod tests {
     /// input, and a late receipt can recover without restarting the provider.
     #[tokio::test(start_paused = true)]
     async fn unreceived_offer_stays_paused_until_ack_even_after_failed_status_writes() {
-        use agentdocker_core::InputReport;
+        use agentdocker_core::{
+            InputReport,
+            usage::emission::{Channel, Emission},
+        };
         use std::cell::Cell;
         struct Observed {
             queue: Queue,
             reports: RefCell<Vec<InputReport>>,
+            emissions: RefCell<Vec<Emission>>,
             first_pause: Cell<bool>,
             failure: u8,
         }
@@ -680,6 +747,10 @@ mod tests {
                 }
                 self.queue.call(request).await
             }
+            async fn record_emission(&self, agent: &str, emission: Emission) {
+                assert_eq!(agent, "receiver");
+                self.emissions.borrow_mut().push(emission);
+            }
         }
         for failure in 0..3 {
             let old = server();
@@ -687,6 +758,7 @@ mod tests {
                 Observed {
                     queue: old.backend,
                     reports: RefCell::new(Vec::new()),
+                    emissions: RefCell::new(Vec::new()),
                     first_pause: Cell::new(false),
                     failure,
                 },
@@ -712,10 +784,8 @@ mod tests {
                 )
                 .await
                 .unwrap();
-                assert_eq!(
-                    receive(&mut reader).await["params"]["meta"]["message_id"],
-                    ids[0].as_str()
-                );
+                let original = receive(&mut reader).await;
+                assert_eq!(original["params"]["meta"]["message_id"], ids[0].as_str());
                 // No receipt has been seen this session, so the first
                 // offer is repeated once after the receipt timeout, under
                 // the same id and saying it is a repeat; then nothing more.
@@ -741,6 +811,20 @@ mod tests {
                     .await
                     .is_err()
                 );
+                {
+                    // Reoffering the same message is a second completed
+                    // output write, with a distinct accounting identity.
+                    let emissions = server.backend.emissions.borrow();
+                    assert_eq!(emissions.len(), 2);
+                    assert_ne!(emissions[0].id, emissions[1].id);
+                    for (emission, frame) in emissions.iter().zip([&original, &repeated]) {
+                        assert_eq!(emission.channel, Channel::Channel);
+                        assert_eq!(
+                            emission.bytes,
+                            serde_json::to_vec(frame).unwrap().len() as u64 + 1
+                        );
+                    }
+                }
                 {
                     let reports = server.backend.reports.borrow();
                     let first = reports

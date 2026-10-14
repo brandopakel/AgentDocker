@@ -147,6 +147,20 @@ impl Default for Overhead {
     }
 }
 
+impl Overhead {
+    /// Counts from best-effort instrumentation must not look exhaustive.
+    pub fn coverage_suffix(&self) -> &'static str {
+        if self.injected_bytes.is_none() && self.estimated_tokens.is_none() {
+            return "";
+        }
+        match self.coverage {
+            Coverage::Complete => "",
+            Coverage::Partial => "; partial coverage, recorded writes only",
+            Coverage::Unknown => "; instrumentation coverage unknown",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
     pub rows: Vec<Row>,

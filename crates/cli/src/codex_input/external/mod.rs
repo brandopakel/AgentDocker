@@ -251,15 +251,22 @@ async fn verify_provider_with_birth(
 }
 
 async fn connect_provider(binding: &Binding) -> Result<Provider> {
-    if let Some(remote) = &binding.remote {
-        return remote::connect(remote, binding).await;
-    }
-    Provider::start_profile(
-        &binding.executable,
-        &[],
-        &binding.cwd,
-        Some(Path::new(&binding.provider.profile)),
-    )
+    let mut provider = if let Some(remote) = &binding.remote {
+        remote::connect(remote, binding).await?
+    } else {
+        Provider::start_profile(
+            &binding.executable,
+            &[],
+            &binding.cwd,
+            Some(Path::new(&binding.provider.profile)),
+        )?
+    };
+    provider.record_emissions(
+        Client::new(Some(binding.socket.clone())),
+        binding.agent.clone(),
+        agentdocker_core::usage::emission::Channel::NativeInput,
+    );
+    Ok(provider)
 }
 
 async fn preflight(binding: &Binding) -> Result<()> {

@@ -286,6 +286,7 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     let started_at =
         agentdocker_host::procinfo::start_time(pid).context("cannot verify Codex process birth")?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
+    let mut emission_agent = None;
     let delivery = tokio::time::timeout_at(deadline, async {
         let checkout = input.cwd.canonicalize()?;
         let native = crate::mcp::native_identity::Context::from_host(pid, checkout.clone(), &table)?;
@@ -304,6 +305,7 @@ pub(super) async fn run(client: &Client) -> Result<()> {
             );
             report(client, &input, pid, started_at, observed_at).await?
         };
+        emission_agent = agent.as_ref().map(|a| a.id.to_string());
         if input.hook_event_name == "PreToolUse"
             && let Some(agent) = &agent
             && let Some(denied) = claim_edits(client, &input, agent).await?
@@ -334,7 +336,7 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     })
     .await
     .context("coordination exceeded the four-second hook budget")??;
-    deliver(client, delivery, 1, deadline).await
+    deliver(client, emission_agent.as_deref(), delivery, 1, deadline).await
 }
 
 /// Lease the files a Codex patch is about to change, as the Claude Code hook
@@ -472,38 +474,58 @@ fn context(messages: &[Envelope]) -> (String, Vec<MessageId>) {
 
 async fn deliver<B: Backend>(
     backend: &B,
+    emission_agent: Option<&str>,
     delivery: Delivery,
     fd: i32,
     deadline: tokio::time::Instant,
 ) -> Result<()> {
-    super::write_output_before(fd, format!("{}\n", delivery.output).as_bytes(), deadline)
+    let bytes = format!("{}\n", delivery.output);
+    super::write_output_before(fd, bytes.as_bytes(), deadline)
         .context("output delivery failed; inbox retained")?;
-    if let Some(request) = delivery.acknowledgement {
-        match tokio::time::timeout_at(deadline, backend.call(request))
-            .await
-            .context("acknowledgement timed out; duplicate delivery possible")??
-        {
-            Response::Ok => {}
-            Response::Error { message, .. } => bail!("acknowledgement refused: {message}"),
-            _ => bail!("unexpected acknowledgement response"),
+    let completion = async {
+        if let Some(request) = delivery.acknowledgement {
+            match tokio::time::timeout_at(deadline, backend.call(request))
+                .await
+                .context("acknowledgement timed out; duplicate delivery possible")??
+            {
+                Response::Ok => {}
+                Response::Error { message, .. } => bail!("acknowledgement refused: {message}"),
+                _ => bail!("unexpected acknowledgement response"),
+            }
         }
+        if let Some(agent) = delivery.continuation {
+            // Output has already been delivered. This observation must never
+            // discard it or consume further messages if an older daemon refuses it.
+            let _ = tokio::time::timeout_at(
+                deadline,
+                backend.call(Request::ReportActivity {
+                    agent,
+                    observation: ActivityObservation {
+                        activity: ReportedActivity::Working,
+                        observed_at: Utc::now(),
+                    },
+                }),
+            )
+            .await;
+        }
+        Ok(())
     }
-    if let Some(agent) = delivery.continuation {
-        // Output has already been delivered. This observation must never
-        // discard it or consume further messages if an older daemon refuses it.
+    .await;
+    if let Some(agent) = emission_agent
+        && tokio::time::Instant::now() < deadline
+    {
         let _ = tokio::time::timeout_at(
             deadline,
-            backend.call(Request::ReportActivity {
+            crate::emission::record(
+                backend,
                 agent,
-                observation: ActivityObservation {
-                    activity: ReportedActivity::Working,
-                    observed_at: Utc::now(),
-                },
-            }),
+                agentdocker_core::usage::emission::Channel::NativeHook,
+                bytes.len(),
+            ),
         )
         .await;
     }
-    Ok(())
+    completion
 }
 
 fn read_input(fd: i32, timeout: std::time::Duration) -> Result<Input> {
@@ -653,6 +675,7 @@ mod tests {
             let mut file = tempfile::tempfile().unwrap();
             deliver(
                 &backend,
+                None,
                 delivery,
                 file.as_raw_fd(),
                 tokio::time::Instant::now() + std::time::Duration::from_secs(1),
@@ -702,6 +725,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_output_is_counted_after_ack_failures_without_changing_ack_priority() {
+        use agentdocker_core::usage::emission::Emission;
+        use std::{cell::RefCell, os::fd::AsRawFd};
+        struct Observed {
+            mode: &'static str,
+            calls: RefCell<Vec<&'static str>>,
+            emissions: RefCell<Vec<Emission>>,
+        }
+        impl Backend for Observed {
+            async fn call(&self, request: Request) -> Result<Response> {
+                match request {
+                    Request::AckInbox { .. } => {
+                        self.calls.borrow_mut().push("ack");
+                        match self.mode {
+                            "ok" => Ok(Response::Ok),
+                            "refused" => Ok(Response::error(
+                                agentdocker_core::ErrorCode::Unavailable,
+                                "fixture refused",
+                            )),
+                            "unexpected" => Ok(Response::Messages {
+                                messages: Vec::new(),
+                            }),
+                            "transport" => anyhow::bail!("fixture transport failed"),
+                            "timeout" => std::future::pending::<Result<Response>>().await,
+                            _ => unreachable!(),
+                        }
+                    }
+                    Request::ReportActivity { .. } => {
+                        self.calls.borrow_mut().push("activity");
+                        Ok(Response::Ok)
+                    }
+                    other => panic!("unexpected request: {other:?}"),
+                }
+            }
+            async fn record_emission(&self, agent: &str, emission: Emission) {
+                assert_eq!(agent, "receiver");
+                self.calls.borrow_mut().push("emission");
+                self.emissions.borrow_mut().push(emission);
+            }
+        }
+        for mode in [
+            "ok",
+            "refused",
+            "unexpected",
+            "transport",
+            "timeout",
+            "bad-fd",
+        ] {
+            let backend = Observed {
+                mode,
+                calls: RefCell::default(),
+                emissions: RefCell::default(),
+            };
+            let file = tempfile::tempfile().unwrap();
+            let output = json!({"text":"é界🙂"});
+            let expected = format!("{output}\n").len() as u64;
+            let delivery = Delivery {
+                output,
+                acknowledgement: Some(Request::AckInbox {
+                    agent: "receiver".into(),
+                    messages: vec!["original-id".to_owned().into()],
+                }),
+                continuation: Some("receiver".into()),
+            };
+            let result = deliver(
+                &backend,
+                Some("receiver"),
+                delivery,
+                if mode == "bad-fd" {
+                    -1
+                } else {
+                    file.as_raw_fd()
+                },
+                tokio::time::Instant::now() + std::time::Duration::from_millis(200),
+            )
+            .await;
+            assert_eq!(result.is_ok(), mode == "ok", "{mode}");
+            let expected_calls: &[&str] = match mode {
+                "ok" => &["ack", "activity", "emission"],
+                "timeout" => &["ack"],
+                "bad-fd" => &[],
+                _ => &["ack", "emission"],
+            };
+            assert_eq!(&*backend.calls.borrow(), expected_calls, "{mode}");
+            assert_eq!(
+                file.metadata().unwrap().len(),
+                if mode == "bad-fd" { 0 } else { expected }
+            );
+            let emissions = backend.emissions.borrow();
+            assert_eq!(
+                emissions.len(),
+                usize::from(!matches!(mode, "timeout" | "bad-fd")),
+                "{mode}"
+            );
+            if let Some(emission) = emissions.first() {
+                assert_eq!(emission.bytes, expected);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn output_failure_and_expired_deadline_leave_messages_unacknowledged() {
         use std::os::fd::AsRawFd;
         let backend = Mock::with(vec![Response::Messages {
@@ -713,6 +837,7 @@ mod tests {
         assert!(
             deliver(
                 &backend,
+                None,
                 delivery,
                 -1,
                 tokio::time::Instant::now() + std::time::Duration::from_secs(1)
@@ -731,6 +856,7 @@ mod tests {
         assert!(
             deliver(
                 &backend,
+                None,
                 delivery,
                 file.as_raw_fd(),
                 tokio::time::Instant::now()
