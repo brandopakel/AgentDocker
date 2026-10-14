@@ -829,6 +829,12 @@ Newest first. Only what changes how the product is used.
   focus; without `gh`, on a default branch or off GitHub there is no chip.
   An agent that finished while you were not looking carries an accent dot
   until you open it or its project; the **Done** pill it replaces is gone.
+- **Open in…**, beside Open terminal in a project's header, opens the project
+  in an editor installed on this computer — Visual Studio Code, Cursor,
+  Windsurf, Zed, Sublime Text, Nova, BBEdit, Xcode, Fleet or a JetBrains IDE —
+  from a small menu of the ones found, the last one chosen first. A session in
+  its own worktree offers it in Details for that worktree, and the command
+  palette has one **Open in** row per editor.
 - A Claude Code session stopped at a permission prompt or question shows as
   *waiting for you*: it is in Needs you with **Go to Terminal**, counted on
   the dock icon, and `agentdocker activity` shows it `waiting`. It needs the

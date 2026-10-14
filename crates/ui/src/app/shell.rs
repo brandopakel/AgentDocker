@@ -39,6 +39,10 @@ pub(super) struct State {
     pub launch: bool,
     /// The Launch agent split button's menu of tools is open.
     pub launch_menu: bool,
+    /// The editors installed here, found once as the window opens.
+    pub editors: Vec<agentdocker_core::editor::Editor>,
+    /// The **Open in…** menu that is open, if one is.
+    pub editor_menu: Option<EditorMenu>,
     pub launch_runtime: Option<String>,
     pub launch_name: String,
     pub launch_arguments: String,
@@ -538,6 +542,13 @@ pub enum DeliveryTarget {
 
 type PullRequestKey = crate::pull_request::Key;
 type PullRequestAnswer = Result<Option<crate::pull_request::PullRequest>, String>;
+/// Where an **Open in…** menu opens from: the project's header, or the
+/// selected session's details, for the worktree it works in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorMenu {
+    Project,
+    Session,
+}
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -720,6 +731,13 @@ pub enum Message {
     /// Open a pull request's page in the browser; and how that went.
     OpenPullRequest(String),
     PullRequestOpened(Result<(), String>),
+    /// The editors installed here, found off the UI thread.
+    EditorsFound(Vec<agentdocker_core::editor::Editor>),
+    /// Open or close an **Open in…** menu.
+    EditorMenu(EditorMenu),
+    /// Open this folder in the editor of this kind, and remember the choice.
+    OpenIn(String, PathBuf),
+    EditorOpened(Result<String, String>),
     TerminalInput(Vec<u8>),
     TerminalResize(u16, u16),
     TerminalScroll(i32),
@@ -968,10 +986,24 @@ impl App {
             .chain(crate::accessibility::collect())
     }
 
+    /// The installed editor of this kind, remembered as the last one
+    /// chosen; `None` when it is not installed (any more).
+    fn choose_editor(&mut self, kind: &str) -> Option<agentdocker_core::editor::Editor> {
+        let editor = self.shell.editors.iter().find(|e| e.kind == kind)?.clone();
+        if self.shell.catalog.editor.as_deref() != Some(editor.kind) {
+            self.shell.catalog.editor = Some(editor.kind.to_owned());
+            self.shell.changed();
+        }
+        Some(editor)
+    }
+
     pub fn boot() -> (Self, Task<Message>) {
         (
             Self::new(),
-            window::oldest().and_then(|id| Task::done(Message::Window(id))),
+            Task::batch([
+                window::oldest().and_then(|id| Task::done(Message::Window(id))),
+                find_editors(),
+            ]),
         )
     }
 
@@ -1186,6 +1218,7 @@ impl App {
                 self.screen = screen;
                 self.shell.more = false;
                 self.shell.launch_menu = false;
+                self.shell.editor_menu = None;
                 if screen == Screen::Chat {
                     self.open_project_chat();
                 }
@@ -1311,6 +1344,7 @@ impl App {
                 self.request_review(&id);
                 self.shell.selected = Some(id);
                 self.shell.session_details = false;
+                self.shell.editor_menu = None;
                 self.shell.review_delivery = false;
                 self.shell.session_message = false;
             }
@@ -1695,7 +1729,10 @@ impl App {
                     }
                 }
             }
-            Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
+            Message::SessionDetails => {
+                self.shell.session_details = !self.shell.session_details;
+                self.shell.editor_menu = None;
+            }
             Message::ReviewChanges(id) => self.request_review(&id),
             Message::ToggleDiffFile(path) => {
                 self.shell.diff_file = if self.shell.diff_file.as_deref() == Some(path.as_str()) {
@@ -2275,6 +2312,32 @@ impl App {
             Message::PullRequestOpened(result) => {
                 if let Err(error) = result {
                     self.say(error);
+            Message::EditorsFound(editors) => self.shell.editors = editors,
+            Message::EditorMenu(place) => {
+                self.shell.editor_menu = (self.shell.editor_menu != Some(place)).then_some(place);
+                if self.shell.editor_menu.is_some()
+                    && let Some(first) = self.editor_choices().first()
+                {
+                    let first = format!("open-in-{}", first.kind);
+                    let trigger = match place {
+                        EditorMenu::Project => "project-open-in",
+                        EditorMenu::Session => "session-open-in",
+                    };
+                    tasks.push(self.menu_focus(trigger, first));
+                }
+            }
+            Message::OpenIn(kind, folder) => {
+                self.shell.editor_menu = None;
+                if let Some(editor) = self.choose_editor(&kind) {
+                    self.say(format!("Opening in {}…", editor.name));
+                    tasks.push(open_in_editor(editor, folder));
+                }
+            }
+            Message::EditorOpened(result) => {
+                self.status.clear();
+                match result {
+                    Ok(shown) => self.say(shown),
+                    Err(error) => self.shell.error = Some(error),
                 }
             }
             Message::TerminalInput(bytes) => {
@@ -3080,6 +3143,33 @@ fn open_native_terminal(request: crate::native_terminal::Request) -> Task<Messag
     )
 }
 
+/// The editors installed here, read off the UI thread.
+fn find_editors() -> Task<Message> {
+    Task::perform(
+        async {
+            tokio::task::spawn_blocking(agentdocker_host::editor::installed)
+                .await
+                .unwrap_or_default()
+        },
+        Message::EditorsFound,
+    )
+}
+
+/// Open `folder` in `editor`, off the UI thread; the status line says so.
+fn open_in_editor(editor: agentdocker_core::editor::Editor, folder: PathBuf) -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                agentdocker_host::editor::open(&editor, &folder)
+                    .map(|()| format!("Opened in {}", editor.name))
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+        },
+        Message::EditorOpened,
+    )
+}
+
 fn resolve_folder(path: PathBuf) -> Task<Message> {
     Task::perform(
         async move {
@@ -3247,6 +3337,62 @@ mod tests {
         let _ = app.update(Message::LaunchMenu);
         app.reset_session_view();
         assert!(!app.shell.launch_menu);
+    }
+
+    /// Choosing an editor opens the folder in it — Launch Services given
+    /// the bundle and the folder, one argument each — and remembers it with
+    /// the workspace preferences; an editor no longer installed opens
+    /// nothing; a menu closes on a second press and never outlives its
+    /// screen; a failure is said where errors are.
+    #[test]
+    fn choosing_an_editor_opens_the_folder_in_it_and_remembers_it() {
+        let (mut app, _commands, _messages) = app();
+        app.shell.editors = agentdocker_core::editor::from_bundles(
+            ["/Applications/Zed.app", "/Applications/RustRover.app"].map(PathBuf::from),
+        );
+        let folder = PathBuf::from("/work/alpha");
+        let _ = app.update(Message::EditorMenu(EditorMenu::Project));
+        assert_eq!(app.shell.editor_menu, Some(EditorMenu::Project));
+        let saved = app.shell.generation;
+        let _ = app.update(Message::OpenIn("rustrover".into(), folder.clone()));
+        assert_eq!(app.shell.editor_menu, None);
+        assert_eq!(app.shell.catalog.editor.as_deref(), Some("rustrover"));
+        assert_ne!(app.shell.generation, saved, "the choice is saved");
+        assert_eq!(app.status, "Opening in RustRover…");
+        let editor = app.choose_editor("rustrover").unwrap();
+        assert_eq!(
+            editor.argv(&folder),
+            [
+                "/usr/bin/open",
+                "-a",
+                "/Applications/RustRover.app",
+                "/work/alpha"
+            ]
+            .map(std::ffi::OsString::from)
+        );
+        let saved = app.shell.generation;
+        let _ = app.update(Message::OpenIn("rustrover".into(), folder.clone()));
+        assert_eq!(app.shell.generation, saved, "the same choice saves nothing");
+
+        app.status.clear();
+        let _ = app.update(Message::OpenIn("xcode".into(), folder.clone()));
+        assert_eq!(app.shell.catalog.editor.as_deref(), Some("rustrover"));
+        assert!(app.status.is_empty(), "nothing opened");
+
+        let _ = app.update(Message::EditorMenu(EditorMenu::Session));
+        assert_eq!(app.shell.editor_menu, Some(EditorMenu::Session));
+        let _ = app.update(Message::EditorMenu(EditorMenu::Session));
+        assert_eq!(app.shell.editor_menu, None);
+        let _ = app.update(Message::EditorMenu(EditorMenu::Project));
+        let _ = app.update(Message::Navigate(Screen::Settings));
+        assert_eq!(app.shell.editor_menu, None);
+
+        let _ = app.update(Message::EditorOpened(
+            Err("Could not open Zed: gone".into()),
+        ));
+        assert_eq!(app.shell.error.as_deref(), Some("Could not open Zed: gone"));
+        let _ = app.update(Message::EditorOpened(Ok("Opened in Zed".into())));
+        assert_eq!(app.status, "Opened in Zed");
     }
 
     /// The board asks sent so far, newest last: `(request, offset, limit)`.
