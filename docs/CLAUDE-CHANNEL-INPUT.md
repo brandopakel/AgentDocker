@@ -218,9 +218,12 @@ its complete JSON payload and stable `message_id`, `from_agent`, `kind`,
 `sent_at`, `destination` and optional `reply_to` metadata. The model can acknowledge
 received IDs using `acknowledge_messages`. Lifecycle hooks also recover a forgotten
 ACK when the current session's provider transcript records the exact complete
-channel body and metadata followed by a real assistant response in its parent
-chain. This accepts both idle channel input and a busy `queued_command` attachment;
-an attachment without that continuation is insufficient. The receipt commits
+channel body and metadata followed by a real assistant response: in its parent
+chain, or — since Claude Code 2.1.299, whose responses name the turn's prompt
+snapshot, written before a channel input that arrived for that turn, as their
+parent — any later main-chain response in the same session, which was made with
+the input in its context. This accepts both idle channel input and a busy
+`queued_command` attachment; an input without a later response is insufficient. The receipt commits
 before removing the queue head. It confirms input receipt, not task completion.
 Replies use `send_message` to the envelope's `reply_destination` with
 `reply_to=message_id`, so project/channel responses appear in their original chat.
@@ -239,7 +242,7 @@ trusted without rereading it. Each proof is limited to 4,096 records after its
 candidate ID, within a 250 ms recovery budget inside the existing one-second
 hook budget. It requires the
 current process generation and session, and rejects provider errors, synthetic
-responses, unrelated turns, sidechains, changed bodies and malformed metadata.
+responses, responses written before the input, sidechains, changed bodies and malformed metadata.
 No transcript content is retained. Missing hooks, unknown provider formats,
 ambiguous UUIDs and proof chains too large for a window keep the explicit-ACK
 fallback and queued input. Recovery clears at most one verified head per hook

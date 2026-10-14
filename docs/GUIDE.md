@@ -812,6 +812,11 @@ Newest first. Only what changes how the product is used.
   the running `claude` decides whether the channel is used, and the hooks
   deliver whatever a stalled channel holds at the session's next prompt or
   tool use. Sessions already stuck catch up the next time they run a tool.
+- A fresh Claude Code session no longer stops hearing after its first channel
+  message. Claude Code 2.1.299 writes its transcript so the hooks could not
+  link a reply to the message it answered; no receipt was recorded and the
+  channel waited on it for good, with everything after it — a Pause
+  included — queued behind. A later reply in the session now confirms it.
 - A Claude Code session stopped at a permission prompt or question shows as
   *waiting for you*: it is in Needs you with **Go to Terminal**, counted on
   the dock icon, and `agentdocker activity` shows it `waiting`. It needs the
