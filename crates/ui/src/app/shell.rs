@@ -542,6 +542,7 @@ pub enum DeliveryTarget {
 
 type PullRequestKey = crate::pull_request::Key;
 type PullRequestAnswer = Result<Option<crate::pull_request::PullRequest>, String>;
+
 /// Where an **Open in…** menu opens from: the project's header, or the
 /// selected session's details, for the worktree it works in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2312,6 +2313,8 @@ impl App {
             Message::PullRequestOpened(result) => {
                 if let Err(error) = result {
                     self.say(error);
+                }
+            }
             Message::EditorsFound(editors) => self.shell.editors = editors,
             Message::EditorMenu(place) => {
                 self.shell.editor_menu = (self.shell.editor_menu != Some(place)).then_some(place);
