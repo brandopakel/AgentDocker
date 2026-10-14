@@ -240,6 +240,10 @@ pub enum Activity {
     },
     /// Explicitly reported quiet by an adapter; silence alone cannot prove it.
     Idle { since: DateTime<Utc> },
+    /// Stopped for the person, by its adapter's report: a permission
+    /// prompt or a question the provider put in its own terminal. Only
+    /// the person can move it on, from there.
+    Waiting { since: DateTime<Utc> },
     /// Not running any more.
     Finished,
 }
@@ -253,6 +257,7 @@ impl Activity {
             Self::Working { .. } => "working",
             Self::Blocked { .. } => "blocked",
             Self::Idle { .. } => "idle",
+            Self::Waiting { .. } => "waiting",
             Self::Finished => "finished",
         }
     }
@@ -265,6 +270,9 @@ impl Activity {
 pub enum ReportedActivity {
     Working,
     Idle,
+    /// The provider stopped for the person (a permission prompt, a
+    /// question dialog) until they answer in its terminal.
+    Waiting,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,9 +284,16 @@ pub struct ActivityObservation {
 impl ActivityObservation {
     /// A missed hook must not leave a permanent working/idle assertion. Long
     /// silent turns become unknown until another provider event arrives.
+    /// A wait for the person is silent by nature and may last as long as
+    /// they are away, so it holds for twelve hours unless the next event
+    /// replaces it.
     pub fn current(&self, now: DateTime<Utc>) -> Option<Activity> {
         let age = now - self.observed_at;
-        if age < chrono::Duration::zero() || age >= chrono::Duration::minutes(5) {
+        let lasts = match self.activity {
+            ReportedActivity::Waiting => chrono::Duration::hours(12),
+            _ => chrono::Duration::minutes(5),
+        };
+        if age < chrono::Duration::zero() || age >= lasts {
             return None;
         }
         Some(match self.activity {
@@ -286,6 +301,9 @@ impl ActivityObservation {
                 since: self.observed_at,
             },
             ReportedActivity::Idle => Activity::Idle {
+                since: self.observed_at,
+            },
+            ReportedActivity::Waiting => Activity::Waiting {
                 since: self.observed_at,
             },
         })
@@ -336,6 +354,25 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn a_wait_for_the_person_outlasts_a_quiet_turn_but_not_a_day() {
+        let now = now();
+        let observation = ActivityObservation {
+            activity: ReportedActivity::Waiting,
+            observed_at: now,
+        };
+        assert_eq!(
+            observation.current(now + chrono::Duration::hours(2)),
+            Some(Activity::Waiting { since: now })
+        );
+        assert_eq!(observation.current(now + chrono::Duration::hours(12)), None);
+        assert_eq!(
+            observation.current(now - chrono::Duration::seconds(1)),
+            None
+        );
+        assert_eq!(Activity::Waiting { since: now }.label(), "waiting");
     }
 
     fn agent(name: &str) -> AgentId {

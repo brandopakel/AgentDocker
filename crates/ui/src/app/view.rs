@@ -829,6 +829,7 @@ impl App {
         } else if agent.status.is_live() {
             match self.activity.get(&id) {
                 None | Some(Activity::Unknown) => "running".to_owned(),
+                Some(Activity::Waiting { .. }) => "waiting for you".to_owned(),
                 Some(activity) => activity.label().to_owned(),
             }
         } else if let agentdocker_core::AgentStatus::Failed { reason } = &agent.status {
@@ -839,7 +840,10 @@ impl App {
     }
     /// The colour that goes with [`Self::activity_label`].
     fn activity_color(&self, agent: &AgentRecord, c: Colors) -> iced::Color {
-        if self.needs_input(&agent.id.to_string()) || self.delivery_needs_you(agent) {
+        if self.needs_input(&agent.id.to_string())
+            || self.delivery_needs_you(agent)
+            || self.waits_for_person(agent)
+        {
             c.amber
         } else if agent.status.is_live() {
             // Green is a report, not a heartbeat: a process we only know is

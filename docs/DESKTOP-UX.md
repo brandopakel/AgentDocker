@@ -70,8 +70,11 @@ tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
 tmux pane**). Nothing is typed into the agent, and no second copy is started.
 An agent without a terminal to reach opens its details instead.
 
-**Needs you** shows only questions waiting on you (**Answer**; a question from
-a session that has since ended says so before you write). Seen across
+**Needs you** shows only what waits on you: questions (**Answer**; a question
+from a session that has since ended says so before you write), and sessions
+stopped at a permission prompt or question in their own terminal (*Claude Code
+is waiting for you in its terminal* — **Go to Terminal** takes you there; their
+row reads *waiting for you* in amber). Seen across
 projects, each row starts with its project's name (*keel · Claude Code · Badger
 asks: …*). A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not
@@ -563,8 +566,8 @@ and notarization; locally signed builds are explicit previews.
   Selected text stays stable while new output drains; copy or resumed input
   releases it. Command+V/Ctrl+Shift+V pastes using the agent's bracketed-paste mode.
 
-On macOS the dock icon shows how many questions are waiting on you, in every
-project: the rows Needs you holds. It shows nothing when none are waiting.
+On macOS the dock icon shows how many questions and prompts are waiting on you,
+in every project: the rows Needs you holds. It shows nothing when none are waiting.
 
 Text inputs and the terminal support native input methods. Focus indicators and
 status words complement color. Native accessibility adapters expose control

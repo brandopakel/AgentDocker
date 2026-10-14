@@ -1838,6 +1838,16 @@ impl App {
         self.naming().display(agent)
     }
 
+    /// Whether a live agent is stopped for the person in its own terminal
+    /// (a permission prompt, a question dialog), by its adapter's report.
+    fn waits_for_person(&self, agent: &AgentRecord) -> bool {
+        agent.status.is_live()
+            && matches!(
+                self.activity.get(agent.id.as_str()),
+                Some(Activity::Waiting { .. })
+            )
+    }
+
     /// Whether an agent has a terminal to go to: the in-app one for an
     /// agent AgentDocker started with a terminal, its own for one it did
     /// not. Clicking such an agent goes there; any other opens its details.
