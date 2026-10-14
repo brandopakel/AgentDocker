@@ -662,8 +662,9 @@ Pass `verbose: true` for the whole record.
 ## Hooks
 
 For Claude Code, `agentdocker setup claude-code` installs handlers for
-`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `StopFailure`
-and `SessionEnd`. They are what let the daemon see an agent's session
+`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `StopFailure`,
+`SessionEnd` and `Notification` (its permission prompts and question dialogs mark
+the session *waiting* for you; run setup again to add it to an existing install). They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
 should be told before it starts — the journal since it last looked, and
 anything it read that has gone stale. `PreToolUse` takes a lease on the
@@ -811,6 +812,14 @@ Newest first. Only what changes how the product is used.
   the running `claude` decides whether the channel is used, and the hooks
   deliver whatever a stalled channel holds at the session's next prompt or
   tool use. Sessions already stuck catch up the next time they run a tool.
+- A Claude Code session stopped at a permission prompt or question shows as
+  *waiting for you*: it is in Needs you with **Go to Terminal**, counted on
+  the dock icon, and `agentdocker activity` shows it `waiting`. It needs the
+  `Notification` hook, so run `agentdocker setup claude-code` once more.
+- Clicking an agent in a project's chat goes to its terminal: the tab in
+  Terminal or iTerm it runs in, its tmux or herdr pane, or the editor or app
+  its terminal is in. Its details are on the chevron beside it, and they say
+  where it runs. macOS asks once to let AgentDocker control Terminal or iTerm.
 - Codex input refuses an app-server older than 0.154.0 when it attaches, naming
   both versions, instead of failing in the middle of a turn. A turn Codex
   refuses outright leaves the message queued with the provider's reason on the

@@ -569,7 +569,44 @@ impl App {
                 ),
             ));
         }
-        // Only questions: a session that is blocked, paused or ended with
+        // A session stopped at a permission prompt or a question in its
+        // own terminal is a decision for the person too; the one action
+        // goes to that terminal, where it is answered.
+        for agent in self.agents.iter().filter(|a| {
+            a.status.is_live()
+                && self.agent_on_view(a.id.as_str())
+                && matches!(
+                    self.activity.get(a.id.as_str()),
+                    Some(agentdocker_core::Activity::Waiting { .. })
+                )
+        }) {
+            let id = agent.id.to_string();
+            let name = match self
+                .all_projects()
+                .then(|| self.project_name_of(&id))
+                .flatten()
+            {
+                Some(project) => format!("{project} · {}", self.display_name(agent)),
+                None => self.display_name(agent),
+            };
+            let what = "is waiting for you in its terminal".to_owned();
+            rows.push(waiting_row(
+                spoken(
+                    format!("needs-you-line-waiting-{id}"),
+                    format!("{name} {what}"),
+                    waiting_words(name, None, what, narrow, c),
+                ),
+                None,
+                compact(
+                    format!("needs-you-terminal-{id}"),
+                    Self::terminal_action(agent),
+                    (Self::terminal_reachable(agent) && !self.shell.terminal_opening)
+                        .then(|| Message::OpenAgentTerminal(id.clone())),
+                    Kind::Secondary,
+                ),
+            ));
+        }
+        // Nothing else: a session that is blocked, paused or ended with
         // messages queued says so on its own row and in its details. It is
         // not a decision for the person, and listing it here buried the
         // questions that are.
@@ -2190,6 +2227,47 @@ mod tests {
             view.control(&format!("needs-you-review-{ended_id}"))
                 .is_none()
         );
+    }
+
+    /// A session stopped at a prompt in its own terminal is in Needs you,
+    /// and its one action goes to that terminal, named for where it is.
+    #[test]
+    fn needs_you_holds_a_session_waiting_at_its_own_prompt() {
+        let (mut app, _commands) = app();
+        let mut waiting = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "builder".into(),
+                runtime: "claude-code".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        waiting.status = agentdocker_core::AgentStatus::Running;
+        waiting.pid = Some(4242);
+        waiting.process_started_at = Some(Utc::now());
+        waiting.terminal = Some(agentdocker_core::terminal::Host {
+            kind: "terminal".into(),
+            name: "Terminal".into(),
+            app: None,
+            tty: Some("/dev/ttys005".into()),
+        });
+        let id = waiting.id.to_string();
+        app.agents.push(waiting);
+        app.activity_seen = true;
+        app.activity.insert(
+            id.clone(),
+            agentdocker_core::Activity::Waiting { since: Utc::now() },
+        );
+        let view = seen(app.needs_you(Colors::new(true)).expect("a waiting session"));
+        let line = view
+            .control(&format!("needs-you-line-waiting-{id}"))
+            .expect("the session");
+        assert_eq!(line.1, "builder is waiting for you in its terminal");
+        let go = view
+            .control(&format!("needs-you-terminal-{id}"))
+            .expect("its terminal");
+        assert_eq!(go.1, "Go to Terminal");
     }
 
     /// Needs you reads each row as one sentence and keeps its action's id.

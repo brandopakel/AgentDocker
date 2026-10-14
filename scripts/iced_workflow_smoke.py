@@ -217,7 +217,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                 step("click", id=f"answer-choice-{choice}-0"), step("wait_control", id=f"answer-choice-{choice}-0", present=False)]
                 steps = [step("click", id=f"project-{project}"),
                          step("wait_control", id="project-terminal", present=True),
-                         step("wait_control", id=f"chat-terminal-{agent['id']}", present=True),
+                         step("wait_control", id=f"chat-agent-{agent['id']}", present=True),
                          # Board is a tab beside Chat and Agents, not behind More.
                          step("wait_control", id="project-tab-Board", present=True),
                          step("wait_text", text="#everyone"), step("capture", name="project-chat-default"),

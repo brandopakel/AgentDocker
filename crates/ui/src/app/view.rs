@@ -829,6 +829,7 @@ impl App {
         } else if agent.status.is_live() {
             match self.activity.get(&id) {
                 None | Some(Activity::Unknown) => "running".to_owned(),
+                Some(Activity::Waiting { .. }) => "waiting for you".to_owned(),
                 Some(activity) => activity.label().to_owned(),
             }
         } else if let agentdocker_core::AgentStatus::Failed { reason } = &agent.status {
@@ -839,7 +840,10 @@ impl App {
     }
     /// The colour that goes with [`Self::activity_label`].
     fn activity_color(&self, agent: &AgentRecord, c: Colors) -> iced::Color {
-        if self.needs_input(&agent.id.to_string()) || self.delivery_needs_you(agent) {
+        if self.needs_input(&agent.id.to_string())
+            || self.delivery_needs_you(agent)
+            || self.waits_for_person(agent)
+        {
             c.amber
         } else if agent.status.is_live() {
             // Green is a report, not a heartbeat: a process we only know is
@@ -2555,6 +2559,15 @@ impl App {
                     text(format!("· {}", super::runtime_label(&agent.spec.runtime)))
                         .size(12)
                         .color(c.muted),
+                    // Where it is: the identity a person can go and find.
+                    text(
+                        Self::whereabouts(agent)
+                            .filter(|_| agent.status.is_live())
+                            .map(|place| format!("· {place}"))
+                            .unwrap_or_default()
+                    )
+                    .size(12)
+                    .color(c.muted),
                 ]
                 .spacing(6)
                 .align_y(Center)
@@ -2748,7 +2761,7 @@ impl App {
         // to do; the terminal steps down to an outline.
         let composing =
             self.shell.session_message && agent.status.is_live() && agent.spec.runtime != "human";
-        let terminal_kind = |label: &'static str, id: &'static str, message: Option<Message>| {
+        let terminal_kind = |label: String, id: &'static str, message: Option<Message>| {
             if question.is_some() || composing {
                 action(id, label, message, false)
             } else {
@@ -2757,15 +2770,15 @@ impl App {
         };
         if agent.managed && agent.spec.tty && agent.status.is_live() {
             actions = actions.push(terminal_kind(
-                "Open terminal",
+                "Open terminal".to_owned(),
                 "attach-session",
                 self.connected
                     .is_ok()
                     .then_some(Message::Attach(id.clone())),
             ));
-        } else if agent.status.is_live() {
+        } else if Self::terminal_reachable(agent) {
             actions = actions.push(terminal_kind(
-                "Open original terminal",
+                Self::terminal_action(agent),
                 "open-original-terminal",
                 (!self.shell.terminal_opening).then(|| Message::OpenAgentTerminal(id.clone())),
             ));
