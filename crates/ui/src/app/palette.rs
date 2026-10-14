@@ -803,6 +803,23 @@ impl App {
                     Run::send(Message::OpenProjectTerminal, None),
                 ));
             }
+            // The header's Open in…, one row per installed editor, the one
+            // chosen last first.
+            if available {
+                for editor in self.editor_choices() {
+                    items.push(action(
+                        &format!("open-in-{}", editor.kind),
+                        &format!("Open in {}", editor.name),
+                        format!("The {name} folder"),
+                        Icon::Code,
+                        Hint::None,
+                        Run::send(
+                            Message::OpenIn(editor.kind.to_owned(), entry.project.root.clone()),
+                            None,
+                        ),
+                    ));
+                }
+            }
             // Pause… is the header's, so it is offered with the header on
             // view: the reason is typed under it.
             let root = entry.project.root.display().to_string();
@@ -1319,6 +1336,42 @@ mod tests {
         assert_eq!(palette.active, 0);
         palette.step(1, 0);
         assert_eq!(palette.active, 0);
+    }
+
+    /// Open in… is offered for the selected project, a row per installed
+    /// editor with the one chosen last first; a row opens the project's
+    /// folder in it and becomes the choice. Not for a folder that is gone.
+    #[test]
+    fn open_in_rows_follow_the_installed_editors() {
+        let mut app = app();
+        let dir = tempfile::tempdir().unwrap();
+        let project = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
+        app.shell.catalog.remember(project.clone(), true);
+        app.shell.catalog.selected = Some(project.root.clone());
+        let open_in = |app: &App| -> Vec<String> {
+            app.palette_places()
+                .into_iter()
+                .filter(|item| item.id.starts_with("palette-item-action-open-in-"))
+                .map(|item| item.label)
+                .collect()
+        };
+        assert!(open_in(&app).is_empty(), "no editor installed");
+        app.shell.editors = agentdocker_core::editor::from_bundles(
+            ["/Applications/Cursor.app", "/Applications/Zed.app"].map(std::path::PathBuf::from),
+        );
+        app.shell.catalog.editor = Some("zed".into());
+        assert_eq!(open_in(&app), ["Open in Zed", "Open in Cursor"]);
+
+        let _ = app.update(Message::CommandPalette);
+        let _ = app.update(Message::CommandRun(
+            "palette-item-action-open-in-cursor".into(),
+        ));
+        assert!(!app.shell.palette.open);
+        assert_eq!(app.shell.catalog.editor.as_deref(), Some("cursor"));
+        assert_eq!(open_in(&app), ["Open in Cursor", "Open in Zed"]);
+
+        app.shell.project_available = Some(false);
+        assert!(open_in(&app).is_empty(), "the folder is unavailable");
     }
 
     /// A row runs the message its own control sends and the palette

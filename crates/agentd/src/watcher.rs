@@ -157,33 +157,46 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
     let (attach_tx, mut attach_rx) = tokio::sync::mpsc::channel::<WatcherAttachment>(8);
     daemon.set_watcher_attach(attach_tx);
     loop {
-        let flush_ack = tokio::select! {
-            _ = reconcile.tick() => {
-                reconcile_watches(&daemon, &mut watcher, &mut watched, &mut retries);
-                continue;
-            }
-            Some(request) = attach_rx.recv() => {
+        let flush_ack = match next_watcher_action(
+            &mut attach_rx,
+            &mut flush_rx,
+            &mut flush,
+            &mut reconcile,
+            &mut rx,
+        )
+        .await
+        {
+            WatcherAction::Attachment(request) => {
                 attach_checkout(&daemon, &mut watcher, &mut watched, &mut retries, request);
                 continue;
             }
-            Some(event) = rx.recv() => {
-                if pending.len() < 4096 { pending.push(event); }
-                else { gap.store(true, Ordering::Relaxed); }
+            WatcherAction::Reconcile => {
+                reconcile_watches(&daemon, &mut watcher, &mut watched, &mut retries);
                 continue;
-            },
-            Some(ack) = flush_rx.recv() => {
-                // Give the OS a moment to deliver what just happened (FSEvents
-                // batches with some latency), take what is queued, then flush.
+            }
+            WatcherAction::Event(event) => {
+                if pending.len() < 4096 {
+                    pending.push(event);
+                } else {
+                    gap.store(true, Ordering::Relaxed);
+                }
+                continue;
+            }
+            WatcherAction::Flush(Some(ack)) => {
+                // Preserve the OS delivery grace and explicit flush barrier.
                 if !watched.is_empty() {
                     tokio::time::sleep(FLUSH_GRACE).await;
                 }
                 while let Ok(event) = rx.try_recv() {
-                    if pending.len() < 4096 { pending.push(event); }
-                    else { gap.store(true, Ordering::Relaxed); }
+                    if pending.len() < 4096 {
+                        pending.push(event);
+                    } else {
+                        gap.store(true, Ordering::Relaxed);
+                    }
                 }
                 Some(ack)
             }
-            _ = flush.tick() => None,
+            WatcherAction::Flush(None) => None,
         };
         // A flush may await Git reads for many linked checkouts. Keep servicing
         // coverage barriers while it waits, without cancelling or overlapping
@@ -205,6 +218,33 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
         if let Some(ack) = flush_ack {
             let _ = ack.send(());
         }
+    }
+}
+
+enum WatcherAction {
+    Attachment(WatcherAttachment),
+    Flush(Option<tokio::sync::oneshot::Sender<()>>),
+    Reconcile,
+    Event(notify::Event),
+}
+
+/// Admit coverage first, then due flushes before more filesystem events.
+/// A ready event stream must not postpone a requested release barrier or the
+/// periodic ledger drain. In-flight Git work still admits attachments below.
+async fn next_watcher_action(
+    attachments: &mut mpsc::Receiver<WatcherAttachment>,
+    flush_requests: &mut mpsc::Receiver<tokio::sync::oneshot::Sender<()>>,
+    flush: &mut tokio::time::Interval,
+    reconcile: &mut tokio::time::Interval,
+    events: &mut mpsc::Receiver<notify::Event>,
+) -> WatcherAction {
+    tokio::select! {
+        biased;
+        Some(request) = attachments.recv() => WatcherAction::Attachment(request),
+        Some(ack) = flush_requests.recv() => WatcherAction::Flush(Some(ack)),
+        _ = flush.tick() => WatcherAction::Flush(None),
+        _ = reconcile.tick() => WatcherAction::Reconcile,
+        Some(event) = events.recv() => WatcherAction::Event(event),
     }
 }
 
@@ -473,6 +513,90 @@ fn kind_of(kind: &EventKind) -> Option<ChangeKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn continuous_events_cannot_starve_coverage_or_due_flush_work() {
+        use tokio::time::Instant;
+        for periodic in [false, true] {
+            let (event_tx, mut events) = mpsc::channel(8);
+            let (attach_tx, mut attachments) = mpsc::channel(8);
+            let (flush_tx, mut flush_requests) = mpsc::channel(8);
+            let later = Instant::now() + Duration::from_secs(3600);
+            let mut reconcile = tokio::time::interval_at(later, Duration::from_secs(3600));
+            let mut flush = tokio::time::interval_at(
+                if periodic {
+                    Instant::now() - Duration::from_secs(1)
+                } else {
+                    later
+                },
+                Duration::from_secs(3600),
+            );
+            event_tx
+                .send(notify::Event::new(EventKind::Any))
+                .await
+                .unwrap();
+            let (attach_ack, attached) = tokio::sync::oneshot::channel();
+            attach_tx
+                .send(WatcherAttachment {
+                    checkout: PathBuf::from("covered"),
+                    ack: attach_ack,
+                })
+                .await
+                .unwrap();
+            let (flush_ack, flushed) = tokio::sync::oneshot::channel();
+            if !periodic {
+                flush_tx.send(flush_ack).await.unwrap();
+            }
+            let mut covered = false;
+            let mut drained = false;
+            // Keep filesystem input ready after every selection. The old
+            // event-before-flush bias never reaches a flush in this bound.
+            for _ in 0..8 {
+                match tokio::time::timeout(
+                    Duration::from_secs(1),
+                    next_watcher_action(
+                        &mut attachments,
+                        &mut flush_requests,
+                        &mut flush,
+                        &mut reconcile,
+                        &mut events,
+                    ),
+                )
+                .await
+                .unwrap()
+                {
+                    WatcherAction::Attachment(request) => {
+                        request.ack.send(Ok(())).unwrap();
+                        covered = true;
+                    }
+                    WatcherAction::Flush(ack) => {
+                        assert!(covered, "coverage must precede queued filesystem work");
+                        assert_eq!(ack.is_none(), periodic);
+                        if let Some(ack) = ack {
+                            ack.send(()).unwrap();
+                        }
+                        drained = true;
+                        break;
+                    }
+                    WatcherAction::Event(_) => {
+                        event_tx
+                            .send(notify::Event::new(EventKind::Any))
+                            .await
+                            .unwrap();
+                    }
+                    WatcherAction::Reconcile => panic!("reconcile is not due"),
+                }
+            }
+            assert!(
+                covered && drained,
+                "ready events starved coverage or flush work"
+            );
+            assert_eq!(attached.await.unwrap(), Ok(()));
+            if !periodic {
+                flushed.await.unwrap();
+            }
+        }
+    }
 
     #[tokio::test]
     async fn attachments_progress_while_flush_completion_remains_pending() {

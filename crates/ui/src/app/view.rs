@@ -406,6 +406,56 @@ pub(super) fn status_word<'a>(
     .into()
 }
 
+/// An agent finished since the person last looked: one accent dot on its
+/// row, its words when pointed at. The observed state stays in the row's
+/// status; this says only that it is new to you.
+pub(super) fn done_dot<'a>(c: Colors) -> Element<'a, Message> {
+    hint(dot(c.accent, 7.0, c), "Finished since you last looked", c)
+}
+
+impl App {
+    /// The pull request of the branch an agent works on, as one chip that
+    /// opens it: its number, then a tick, a dot or a cross for its checks,
+    /// or *merged*. Nothing when the branch has none, or nothing is known.
+    pub(super) fn pull_request_chip<'a>(
+        &self,
+        agent: &AgentRecord,
+        c: Colors,
+    ) -> Option<Element<'a, Message>> {
+        use crate::pull_request::Status;
+        let pull = self.pull_request_of(agent)?;
+        let number = text(format!("#{}", pull.number))
+            .size(12)
+            .line_height(iced::Pixels(16.0))
+            .font(weight(iced::font::Weight::Medium))
+            .color(c.muted);
+        let mut content = row![number].spacing(4).align_y(Center);
+        match pull.status {
+            Status::Open => {}
+            Status::Passed => content = content.push(icon(Icon::Check, c.green, 11.0)),
+            Status::Running => content = content.push(dot(c.amber, 6.0, c)),
+            Status::Failed => content = content.push(icon(Icon::Close, c.red, 10.0)),
+            Status::Merged => {
+                content = content.push(
+                    text("merged")
+                        .size(12)
+                        .line_height(iced::Pixels(16.0))
+                        .color(c.muted),
+                )
+            }
+        }
+        Some(custom(
+            format!("pull-request-{}", agent.id),
+            pull.spoken(),
+            content,
+            Some(Message::OpenPullRequest(pull.url.clone())),
+            false,
+            Kind::Inline,
+            [2, 6],
+        ))
+    }
+}
+
 /// A glyph or a monogram on a small raised tile.
 pub(super) fn icon_tile<'a>(
     content: impl Into<Element<'a, Message>>,
@@ -1043,6 +1093,16 @@ impl App {
                 Kind::Secondary,
                 [7, 12],
             ));
+            if let Some(entry) = self.shell.catalog.selected()
+                && let Some(open_in) = self.open_in(
+                    super::shell::EditorMenu::Project,
+                    &entry.project.root,
+                    self.shell.project_available != Some(false),
+                    c,
+                )
+            {
+                tools = tools.push(open_in);
+            }
         }
         if in_project && let Some(launch) = self.launch_button(c) {
             tools = tools.push(launch);
@@ -2068,6 +2128,101 @@ impl App {
         )
     }
 
+    /// The installed editors as **Open in…** offers them: the one chosen
+    /// last first.
+    pub(super) fn editor_choices(&self) -> Vec<&agentdocker_core::editor::Editor> {
+        agentdocker_core::editor::ordered(&self.shell.editors, self.shell.catalog.editor.as_deref())
+    }
+
+    /// The folder a session's **Open in…** opens: its working folder,
+    /// when that is a worktree of its own rather than the project's.
+    pub(super) fn session_editor_folder(agent: &AgentRecord) -> Option<&std::path::Path> {
+        agent.project.as_ref()?.worktree.as_ref()?;
+        agent.spec.workdir.as_deref()
+    }
+
+    /// **Open in…**: `folder` in one of the installed editors, from a
+    /// menu of them, or straight away when there is only one (**Open in
+    /// Zed**). Nothing when no editor is installed. In the header it is an
+    /// outline beside Open terminal; in a session's details, a quiet word
+    /// under its folder.
+    pub(super) fn open_in(
+        &self,
+        place: super::shell::EditorMenu,
+        folder: &std::path::Path,
+        enabled: bool,
+        c: Colors,
+    ) -> Option<Element<'_, Message>> {
+        use super::shell::EditorMenu;
+        let editors = self.editor_choices();
+        let (label, message) = match editors.as_slice() {
+            [] => return None,
+            [only] => (
+                format!("Open in {}", only.name),
+                Message::OpenIn(only.kind.to_owned(), folder.to_owned()),
+            ),
+            _ => ("Open in…".to_owned(), Message::EditorMenu(place)),
+        };
+        let (id, glyph, size, kind, padding) = match place {
+            EditorMenu::Project => ("project-open-in", 14.0, 13, Kind::Secondary, [7, 12]),
+            EditorMenu::Session => ("session-open-in", 12.0, 12, Kind::Ghost, [3, 6]),
+        };
+        let mut words = text(label.clone())
+            .size(size)
+            .font(weight(iced::font::Weight::Medium));
+        if place == EditorMenu::Project {
+            // The header's buttons share Open terminal's line height.
+            words = words.line_height(iced::Pixels(crate::controls::LABEL_LINE));
+        }
+        let trigger = custom_sized(
+            id,
+            label,
+            row![icon(Icon::Code, c.muted, glyph), words]
+                .spacing(if place == EditorMenu::Project { 7 } else { 5 })
+                .align_y(Center),
+            enabled.then_some(message),
+            false,
+            kind,
+            padding,
+            iced::Length::Shrink,
+        );
+        if editors.len() == 1 {
+            return Some(trigger);
+        }
+        let menu =
+            (self.shell.editor_menu == Some(place)).then(|| self.open_in_menu(folder, enabled, c));
+        Some(
+            crate::controls::popover(trigger, menu)
+                .width(220.0)
+                .align_end()
+                .on_dismiss(Message::EditorMenu(place))
+                .into(),
+        )
+    }
+
+    /// The menu under **Open in…**: one row per installed editor, the one
+    /// chosen last first.
+    pub(super) fn open_in_menu(
+        &self,
+        folder: &std::path::Path,
+        enabled: bool,
+        c: Colors,
+    ) -> Element<'_, Message> {
+        let mut items = column![].spacing(1).width(Fill);
+        for editor in self.editor_choices() {
+            items = items.push(custom(
+                format!("open-in-{}", editor.kind),
+                format!("Open in {}", editor.name),
+                text(editor.name).size(13).width(Fill),
+                enabled.then(|| Message::OpenIn(editor.kind.to_owned(), folder.to_owned())),
+                false,
+                Kind::Quiet,
+                [5, 8],
+            ));
+        }
+        menu(items, c)
+    }
+
     fn sessions(&self, c: Colors) -> Element<'_, Message> {
         let selected = self.shell.selected.as_ref().and_then(|id| {
             self.agents
@@ -2415,14 +2570,20 @@ impl App {
                 .agent_tokens
                 .get(&id)
                 .map(|t| format!("{} tokens in 24h", t.label()));
+            let unviewed = self.shell.unviewed_done.contains(&id);
             let spoken = format!(
-                "{name}\n{} · {}{}",
+                "{name}\n{} · {}{}{}",
                 agent.spec.runtime,
                 meta,
                 tokens
                     .as_ref()
                     .map(|t| format!(" · {t}"))
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                if unviewed {
+                    " · finished since you last looked"
+                } else {
+                    ""
+                }
             );
             // A generated name already reads as the tool ("Claude Code ·
             // 0180d761"), so only a chosen name says the tool again.
@@ -2467,10 +2628,11 @@ impl App {
             ]
             .spacing(12)
             .align_y(Center);
-            if self.shell.unviewed_done.contains(&id) {
-                // Finished since you last looked. The observed state stays
-                // in the status word; this says only that it is new to you.
-                content = content.push(pill("Done", c.accent_soft, c.accent_ink, c));
+            if unviewed {
+                content = content.push(done_dot(c));
+            }
+            if let Some(chip) = self.pull_request_chip(agent, c) {
+                content = content.push(chip);
             }
             if let Some(window) = window {
                 content = content.push(window);
@@ -3000,16 +3162,26 @@ impl App {
                 .align_y(Center)
                 .into(),
             )];
+            let folder = mono_value(
+                agent
+                    .spec
+                    .workdir
+                    .as_ref()
+                    .map(|p| shorten_home(p))
+                    .unwrap_or_else(|| "Working folder unknown".into()),
+            );
+            // A session in a worktree of its own is opened there, from under
+            // its path, which keeps the column's whole width to wrap in; the
+            // project's folder is the header's.
+            let open_in = Self::session_editor_folder(agent).and_then(|worktree| {
+                self.open_in(super::shell::EditorMenu::Session, worktree, true, c)
+            });
             facts.push((
                 "Folder".to_owned(),
-                mono_value(
-                    agent
-                        .spec
-                        .workdir
-                        .as_ref()
-                        .map(|p| shorten_home(p))
-                        .unwrap_or_else(|| "Working folder unknown".into()),
-                ),
+                match open_in {
+                    Some(open_in) => column![folder, open_in].spacing(2).into(),
+                    None => folder,
+                },
             ));
             facts.push((
                 "Last seen".to_owned(),
@@ -3958,6 +4130,148 @@ mod tests {
         // A window with no length, or one that ends before it starts, is over.
         assert_eq!(remaining_fraction(start, start, start), 0.0);
         assert_eq!(remaining_fraction(end, start, start), 0.0);
+    }
+
+    /// The controls an element offers, in the order drawn: each one's id,
+    /// its label and what pressing it sends.
+    fn offered(
+        mut element: iced::Element<'_, crate::app::Message>,
+    ) -> Vec<(String, String, Option<crate::app::Message>)> {
+        use iced::advanced::widget::{Operation, Tree, operation::Outcome};
+        use iced::advanced::{Layout, layout};
+        #[derive(Default)]
+        struct Offered(Vec<(String, String, Option<crate::app::Message>)>);
+        impl Operation for Offered {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+            fn custom(
+                &mut self,
+                _: Option<&iced::advanced::widget::Id>,
+                _: iced::Rectangle,
+                state: &mut dyn std::any::Any,
+            ) {
+                if let Some(semantic) = state.downcast_ref::<crate::accessibility::Semantic>() {
+                    self.0.push((
+                        semantic.id.clone(),
+                        semantic.label.clone(),
+                        semantic.action.clone(),
+                    ));
+                }
+            }
+            fn finish(&self) -> Outcome<()> {
+                Outcome::None
+            }
+        }
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, 14.0.into());
+        let mut tree = Tree::new(&element);
+        let node = element.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(iced::Size::ZERO, iced::Size::new(900.0, 600.0)),
+        );
+        let mut offered = Offered::default();
+        element
+            .as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &renderer, &mut offered);
+        offered.0
+    }
+
+    /// Open in… is there only with an editor installed: one opens the
+    /// folder straight in it (*Open in Zed*), several open a menu listing
+    /// the one chosen last first, each row opening the folder it was built
+    /// for. A session's opens the worktree it works in, and only a
+    /// worktree of its own: the project's folder is the header's.
+    #[test]
+    fn open_in_offers_the_installed_editors_the_last_choice_first() {
+        use crate::app::Message;
+        use crate::app::shell::EditorMenu;
+        use agentdocker_core::editor::from_bundles;
+        use std::path::{Path, PathBuf};
+        let (tx, _commands) = crate::app::queue::channel();
+        let (_sender, rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::bare(tx, rx);
+        let c = super::Colors::new(false);
+        let folder = Path::new("/work/alpha");
+        assert!(
+            app.open_in(EditorMenu::Project, folder, true, c).is_none(),
+            "no editor, no control"
+        );
+
+        app.shell.editors = from_bundles([PathBuf::from("/Applications/Zed.app")]);
+        let only = offered(app.open_in(EditorMenu::Project, folder, true, c).unwrap());
+        assert!(
+            matches!(
+                only.as_slice(),
+                [(id, label, Some(Message::OpenIn(kind, to)))]
+                    if id == "project-open-in" && label == "Open in Zed" && kind == "zed" && to == folder
+            ),
+            "{only:?}"
+        );
+
+        app.shell.editors = from_bundles(
+            [
+                "/Applications/Zed.app",
+                "/Applications/RustRover.app",
+                "/Applications/Visual Studio Code.app",
+            ]
+            .map(PathBuf::from),
+        );
+        let trigger = offered(app.open_in(EditorMenu::Session, folder, true, c).unwrap());
+        assert!(
+            matches!(
+                trigger.as_slice(),
+                [(id, label, Some(Message::EditorMenu(EditorMenu::Session)))]
+                    if id == "session-open-in" && label == "Open in…"
+            ),
+            "{trigger:?}"
+        );
+        app.shell.catalog.editor = Some("rustrover".into());
+        let rows = offered(app.open_in_menu(folder, true, c));
+        let listed: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|(id, label, _)| (id.as_str(), label.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("open-in-rustrover", "Open in RustRover"),
+                ("open-in-vscode", "Open in Visual Studio Code"),
+                ("open-in-zed", "Open in Zed"),
+            ]
+        );
+        assert!(rows.iter().all(|(id, _, action)| matches!(
+            action,
+            Some(Message::OpenIn(kind, to)) if *id == format!("open-in-{kind}") && to == folder
+        )));
+        assert!(
+            offered(app.open_in_menu(folder, false, c))
+                .iter()
+                .all(|(_, _, action)| action.is_none()),
+            "a folder that is unavailable opens in nothing"
+        );
+
+        let worktree = Path::new("/work/alpha-worktrees/feature");
+        let mut agent = agentdocker_core::AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                workdir: Some(worktree.to_owned()),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        assert_eq!(crate::app::App::session_editor_folder(&agent), None);
+        agent.project = Some(agentdocker_core::ProjectRef::directory("/work/alpha"));
+        assert_eq!(
+            crate::app::App::session_editor_folder(&agent),
+            None,
+            "a session in the project's own folder"
+        );
+        agent.project.as_mut().unwrap().worktree = Some(worktree.to_owned());
+        assert_eq!(
+            crate::app::App::session_editor_folder(&agent),
+            Some(worktree)
+        );
     }
 
     #[test]

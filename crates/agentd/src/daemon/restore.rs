@@ -412,7 +412,7 @@ impl Daemon {
             return Ok(());
         };
         if watchable(&record) {
-            self.ensure_watched(&record)
+            self.ensure_watched(&record, super::WATCHER_LAUNCH_TIMEOUT)
                 .await
                 .map_err(anyhow::Error::msg)?;
         }
