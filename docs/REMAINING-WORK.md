@@ -28,7 +28,8 @@ hosted beta.12 daemon and reapply, including exact-ID deduplication; all three
 private daemon generations retired without force. This is source compatibility
 evidence, not hosted beta.13 installation or provider acceptance. Ledger 15/state schema 27 is unchanged;
 accounting metadata must survive rollback without a database restore or duplicate
-count on reapplication. Stable and Homebrew remain separate.
+count on reapplication. Both workspace and fuzz lockfiles resolve the beta.13 local packages
+with locked, offline metadata checks; no registry dependency was changed. Stable and Homebrew remain separate.
 
 ## Release and first run
 
