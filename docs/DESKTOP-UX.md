@@ -243,7 +243,10 @@ or a press outside the dialog closes it) to choose an installed CLI and start it
 in the header. Claude and Codex launches default to **Idle messages: On**;
 turning it off visibly warns that messages may wait. Claude still requires its
 channel consent. Other tools disclose that automatic idle delivery is unavailable.
-This launch choice does not connect or restart an existing session.
+This launch choice does not connect or restart an existing session. A launched
+agent opens in its terminal as soon as it runs: what it asks before it starts —
+Claude's *Do you trust this folder?* for a new worktree and its channel consent —
+is answered there, and nothing else would show it.
 **Connect** under **Running here, not connected** adopts a discovered process for
 coordination (it reads **Connecting…** and cannot be pressed again until the
 daemon answers, and the result names the session or says why not); the row names the tool and the folder it runs in, not a

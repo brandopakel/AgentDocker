@@ -817,6 +817,11 @@ Newest first. Only what changes how the product is used.
   link a reply to the message it answered; no receipt was recorded and the
   channel waited on it for good, with everything after it — a Pause
   included — queued behind. A later reply in the session now confirms it.
+- **Launch agent…** no longer fails a launch on a busy machine with *watcher
+  did not confirm checkout coverage within 500 ms*: a launch waits up to 15 s
+  for its new worktree to be watched. A launched agent opens in its terminal,
+  where Claude's folder-trust and channel-consent questions wait to be
+  answered before it can start.
 - A Claude Code session stopped at a permission prompt or question shows as
   *waiting for you*: it is in Needs you with **Go to Terminal**, counted on
   the dock icon, and `agentdocker activity` shows it `waiting`. It needs the

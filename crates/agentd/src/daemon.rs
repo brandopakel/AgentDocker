@@ -119,6 +119,11 @@ const RING_IDLE: std::time::Duration = std::time::Duration::from_secs(600);
 const WATCHER_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 /// How long a registration waits for the watcher to cover its checkout.
 const WATCHER_ATTACH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+/// How long a launch waits for it. Nothing has started yet, and a new
+/// worktree on a busy machine (builds writing thousands of files in other
+/// watched checkouts) can take seconds to cover: failing the launch over
+/// it left the agent dead before it began.
+const WATCHER_LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// Ledger rows examined per released resource when building an entry.
 const RELEASE_SCAN: usize = 10_000;
 /// Entries after a cursor a digest reads from the store at most; older
@@ -2827,7 +2832,7 @@ impl Daemon {
     async fn launch(self: &Arc<Self>, record: AgentRecord) -> Response {
         // Watched before the process exists, so its first edit is seen.
         if watchable(&record) {
-            if let Err(reason) = self.ensure_watched(&record).await {
+            if let Err(reason) = self.ensure_watched(&record, WATCHER_LAUNCH_TIMEOUT).await {
                 self.mark_exited(
                     &record.id,
                     AgentStatus::Failed {
@@ -3062,7 +3067,7 @@ impl Daemon {
         // the checkout is watched by the time it goes out.
         if let Response::Agent { agent } = &response {
             if watchable(agent) {
-                if let Err(reason) = self.ensure_watched(agent).await {
+                if let Err(reason) = self.ensure_watched(agent, WATCHER_ATTACH_TIMEOUT).await {
                     // An externally started process may already be writing. Keep its
                     // identity and protection, but do not report coverage as successful.
                     return Response::error(
@@ -3875,14 +3880,18 @@ impl Daemon {
     /// registration awaits this so the agent's first edit is never made in
     /// the gap before the next reconcile tick. Bounded, and a no-op when no
     /// watcher runs.
-    async fn ensure_watched(&self, record: &AgentRecord) -> Result<(), String> {
+    async fn ensure_watched(
+        &self,
+        record: &AgentRecord,
+        within: std::time::Duration,
+    ) -> Result<(), String> {
         let checkout = record
             .project
             .as_ref()
             .ok_or("agent has no watchable checkout")?
             .dir()
             .to_path_buf();
-        tokio::time::timeout(WATCHER_ATTACH_TIMEOUT, async {
+        tokio::time::timeout(within, async {
             let mut link = self.watcher_attach.subscribe();
             let sender = match link
                 .wait_for(|link| !matches!(link, WatcherLink::Starting))
@@ -3905,7 +3914,12 @@ impl Daemon {
                 .map_err(|_| "watcher stopped before confirming coverage".to_string())?
         })
         .await
-        .map_err(|_| "watcher did not confirm checkout coverage within 500 ms".to_string())?
+        .map_err(|_| {
+            format!(
+                "watcher did not confirm checkout coverage within {} ms",
+                within.as_millis()
+            )
+        })?
     }
 
     /// Only path leases need pending filesystem observations for their summary.
@@ -17472,7 +17486,10 @@ deny = ["send:all"]
         ));
         let home = register_in(&daemon, "home", &repo).await;
         daemon.refresh_project_checkouts().await;
-        daemon.ensure_watched(&home).await.unwrap();
+        daemon
+            .ensure_watched(&home, WATCHER_ATTACH_TIMEOUT)
+            .await
+            .unwrap();
         // Reconcile also covers discovered checkouts without registered agents.
         assert!(
             daemon
@@ -17484,7 +17501,10 @@ deny = ["send:all"]
         std::fs::remove_file(repo.join("src/a.rs")).unwrap();
         // Reconcile before the OS necessarily delivers the surviving root's
         // deletion. Removing another watch must not discard that pending edit.
-        daemon.ensure_watched(&home).await.unwrap();
+        daemon
+            .ensure_watched(&home, WATCHER_ATTACH_TIMEOUT)
+            .await
+            .unwrap();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let entries = ledger(&daemon, &repo, Some("src/a.rs")).await;
