@@ -71,9 +71,13 @@ Native launch configuration flags are passed to both the dedicated server and
 its terminal, including explicit UUID reopen. The terminal reads local settings
 even in remote mode; dropping those flags can ignore launch-only preferences and
 let provider startup persist defaults. The launcher does not rewrite the profile.
-The Windows account preflight retained that failure before any model messages;
-its exact added screen-reader preference was verified and restored. Corrected
-package/account acceptance is still required.
+A controlled Mac comparison showed that the published launcher ignored a
+launch-only tooltip preference and persisted a counter; the corrected launcher
+honored it and preserved the private profile. Both trials retired cleanly.
+Codex 0.160 separately seeds its screen-reader detection marker directly from
+the saved user layer, before CLI overrides. Forwarding options does not prevent
+that provider first-use write. The Windows account preflight's exact marker
+addition was verified and restored; corrected account acceptance remains open.
 
 The receiver probes the read-only queue/history APIs before taking ownership.
 Hooks keep their normal delivery while that probe is pending or unsupported;
