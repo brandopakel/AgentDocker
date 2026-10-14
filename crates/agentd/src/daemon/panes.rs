@@ -96,7 +96,9 @@ impl Daemon {
         // Watched before the process exists, so its first edit is seen —
         // as with `run`.
         if watchable(&record)
-            && let Err(reason) = self.ensure_watched(&record).await
+            && let Err(reason) = self
+                .ensure_watched(&record, super::WATCHER_LAUNCH_TIMEOUT)
+                .await
         {
             self.mark_exited(
                 &record.id,

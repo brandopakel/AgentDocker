@@ -1016,11 +1016,13 @@ impl App {
                     // before the reconnect, says nothing about it and the
                     // request waits for the next one.
                     if let Some((id, generation)) = &self.shell.attach_when_listed {
+                        // A launch knows the agent, not yet its process: any
+                        // generation of it will do.
                         let listed = self.agents.iter().find(|a| {
                             a.id.as_str() == id
                                 && a.managed
                                 && a.spec.tty
-                                && a.process_started_at == *generation
+                                && (generation.is_none() || a.process_started_at == *generation)
                         });
                         if let Some(listed) = listed {
                             let running = listed.status.is_live();
@@ -1447,7 +1449,12 @@ impl App {
                     match result {
                         Ok(id) => {
                             self.shell.launch = false;
-                            self.shell.selected = Some(id);
+                            self.shell.selected = Some(id.clone());
+                            // Its terminal opens once it is listed: what it
+                            // asks before it starts (Claude's folder trust and
+                            // channel consent) is answered there, and nothing
+                            // else would show it.
+                            self.shell.attach_when_listed = Some((id, None));
                             self.send(Cmd::Agents);
                             self.say("Agent launched");
                         }

@@ -3750,6 +3750,35 @@ mod tests {
         assert_eq!(app.shell.dock_badge, Some(2));
     }
 
+    /// A launched agent's terminal opens as soon as the list shows it
+    /// running, so what it asks before it starts is in front of the person.
+    #[test]
+    fn a_launched_agent_opens_in_its_terminal_once_it_is_listed() {
+        let (mut app, _commands, messages) = app();
+        messages.send(Msg::Launched(Ok("fresh".into()))).unwrap();
+        app.drain();
+        assert_eq!(app.shell.attach_when_listed, Some(("fresh".into(), None)));
+        assert_ne!(app.screen, Screen::Terminal);
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                runtime: "claude-code".into(),
+                tty: true,
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        agent.id = "fresh".into();
+        agent.status = agentdocker_core::AgentStatus::Running;
+        agent.process_started_at = Some(Utc::now());
+        messages
+            .send(Msg::Agents(vec![agent], BTreeMap::new()))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.screen, Screen::Terminal);
+        assert_eq!(app.shell.attach_when_listed, None);
+    }
+
     #[test]
     fn mcp_url_questions_never_submit_or_save_a_typed_draft() {
         let (mut app, commands, _) = app();

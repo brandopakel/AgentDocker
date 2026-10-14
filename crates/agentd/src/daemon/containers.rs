@@ -236,7 +236,10 @@ impl Daemon {
             }
         };
         if watchable(&record) {
-            if let Err(reason) = self.ensure_watched(&record).await {
+            if let Err(reason) = self
+                .ensure_watched(&record, super::WATCHER_LAUNCH_TIMEOUT)
+                .await
+            {
                 lock(&self.state).container_busy.remove(&record.id);
                 // No create has been attempted; this is a failed preparation, not
                 // an assertion about an engine-managed writer's exit.
