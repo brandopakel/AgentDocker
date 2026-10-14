@@ -66,6 +66,7 @@ pub use task::{Column, Task, TaskId};
 pub mod policy;
 pub use policy::{Policy, Ruling};
 
+pub mod editor;
 pub mod multiplexer;
 pub mod terminal;
 

@@ -47,8 +47,9 @@ agent), *delivery paused*, *session ended before taking it*. Nothing says
 *read*: the daemon cannot know it. **Agents** opens the
 session list and **Board** the project's cards. **More** opens a menu of History,
 Files in use, Usage, AgentDocker commands and the project's Pin and Forget; the tab takes the name of the screen on view and is underlined only
-while one of those screens is open. **Pause…**, **Open terminal** and
-**Launch agent…** stay in the header on every project screen; the chevron
+while one of those screens is open. **Pause…**, **Open terminal**,
+**Open in…** (when an editor is installed) and **Launch agent…** stay in the
+header on every project screen; the chevron
 beside Launch agent lists the installed tools and opens the form with one
 chosen. The form is a dialog over the window; launching from Board or History
 goes to Agents with it open. A session's Details shows its
@@ -69,6 +70,23 @@ details header says where an agent runs (*in Terminal (ttys005)*, *in
 tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
 tmux pane**). Nothing is typed into the agent, and no second copy is started.
 An agent without a terminal to reach opens its details instead.
+
+**Open in…**, beside Open terminal, opens the project's folder in an editor
+installed on this computer: a small menu lists the ones found (the one chosen
+last first, remembered with the workspace preferences), and with only one
+installed the button names it (**Open in Zed**) and opens it at once. With
+none installed there is no button. On macOS the editors are the known
+applications in `/Applications`, `~/Applications` and `~/Applications/JetBrains
+Toolbox` — Visual Studio Code (and Insiders), Cursor, Windsurf, Zed (and
+Preview), Sublime Text, Nova, BBEdit, Xcode, Fleet and the JetBrains IDEs
+(IntelliJ IDEA and CE, RustRover, PyCharm and CE, GoLand, WebStorm, CLion,
+PhpStorm, RubyMine, DataGrip, Android Studio) — opened with `open -a`; on
+Linux, their commands on `PATH` (`code`, `cursor`, `windsurf`, `zed`, `subl`,
+`idea`, `rustrover`, `pycharm`, `goland`, `webstorm`, `clion`), given the
+folder. The folder is one argument, never shell text. They are found once, as
+the window opens. A session working in a worktree of its own offers the same
+**Open in…** in its Details, under its folder, for that worktree. The command
+palette has one **Open in** row per editor for the selected project.
 
 **Needs you** shows only what waits on you: questions (**Answer**; a question
 from a session that has since ended says so before you write), and sessions

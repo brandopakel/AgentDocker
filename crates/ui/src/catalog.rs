@@ -45,6 +45,10 @@ pub struct Catalog {
     /// goes, and only for that process: a resumed session is a new notice.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dismissed: Vec<Dismissed>,
+    /// The editor a folder was last opened in, by its kind (`vscode`,
+    /// `rustrover`): **Open in…** lists it first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor: Option<String>,
 }
 
 /// One dismissed notice: the session and the process it was about, by birth
@@ -372,6 +376,7 @@ mod tests {
         assert!(catalog.selected.is_none());
         assert!(!catalog.unassigned);
         let state = dir.path().join("state");
+        catalog.editor = Some("rustrover".into());
         catalog.save(&state).unwrap();
         assert_eq!(Catalog::load(&state).unwrap(), catalog);
         catalog.selected = Some(project("alpha").root);
