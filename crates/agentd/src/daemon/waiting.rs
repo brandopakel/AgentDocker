@@ -482,12 +482,13 @@ impl Daemon {
                 }
             })
             .collect();
-        // Blocked first, because that is the one somebody has to do
-        // something about; then working, then the quiet ones.
+        // Waiting on the person and blocked first, because those are the
+        // ones somebody has to do something about; then working, then the
+        // quiet ones.
         activity.sort_by_key(|a| {
             (
                 match a.activity {
-                    Activity::Blocked { .. } => 0,
+                    Activity::Waiting { .. } | Activity::Blocked { .. } => 0,
                     Activity::Working { .. } => 1,
                     Activity::Starting => 2,
                     Activity::Idle { .. } => 3,

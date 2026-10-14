@@ -328,6 +328,13 @@ pub struct AgentRecord {
     /// which lives in the daemon's own terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<crate::multiplexer::Session>,
+    /// The application its terminal is in (Terminal, iTerm, an editor)
+    /// and its terminal device, read from its ancestry when it registers
+    /// or is adopted. What the app names it by and brings forward to reach
+    /// it. `None` for a managed agent, for one inside a multiplexer whose
+    /// server has no such ancestor, and where nothing could be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<crate::terminal::Host>,
     /// How many times the daemon has started this agent again after an
     /// exit. Kept on the record because `on-failure` counts, and because
     /// a reader deserves to know an agent has died nine times.
@@ -524,6 +531,7 @@ impl AgentRecord {
             spec,
             status: AgentStatus::Created,
             session: None,
+            terminal: None,
             restarts: 0,
             host: "local".to_owned(),
             pid: None,

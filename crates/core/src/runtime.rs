@@ -21,6 +21,8 @@ pub const CLAUDE_CODE_HOOKS: &[(&str, Option<&str>)] = &[
     ("Stop", None),
     ("StopFailure", None),
     ("SessionEnd", None),
+    // A permission prompt or question dialog: the session waits for the person.
+    ("Notification", None),
 ];
 
 /// Activity observations plus prompt/tool/Stop inbox delivery. MCP also

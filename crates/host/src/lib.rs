@@ -41,6 +41,7 @@ pub mod multiplexer;
 pub mod notify;
 #[cfg_attr(windows, path = "pty/windows.rs")]
 pub mod pty;
+pub mod terminal;
 #[cfg_attr(windows, path = "transport/windows.rs")]
 pub mod transport;
 

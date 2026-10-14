@@ -3819,6 +3819,7 @@ async fn print_activity(client: &Client, activity: &[AgentActivity]) {
                 Activity::Working { since } | Activity::Idle { since } => {
                     (String::new(), Some(*since))
                 }
+                Activity::Waiting { since } => ("for you, in its terminal".into(), Some(*since)),
                 Activity::Unknown => ("no fresh activity reports".into(), None),
                 Activity::Starting | Activity::Finished => (String::new(), None),
             };
