@@ -15,6 +15,9 @@
 //! Nothing here reads coordination state: the owner knows its command, its
 //! log path and its socket, and nothing else.
 
+#[cfg(target_os = "linux")]
+mod reaping;
+
 use std::collections::{BTreeMap, VecDeque};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -234,6 +237,11 @@ fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// Run an owner to completion. Returns the process exit code.
 pub fn main(launch: Launch) -> anyhow::Result<i32> {
     anyhow::ensure!(launch.format == FORMAT, "unknown launch format");
+    // This is the dedicated owner process, before threads or children exist.
+    // Orphaned grandchildren must come here instead of depending on another
+    // process (possibly a container's init) to reap them after group shutdown.
+    #[cfg(target_os = "linux")]
+    reaping::enable().context("cannot own orphaned session descendants")?;
     // Our own session: the daemon signals the agent's group, never ours,
     // and a daemon that dies must not take us with it. On Windows the
     // daemon starts us detached in our own group, which is the same thing.
@@ -672,7 +680,23 @@ async fn supervise(
     if group.exists() {
         group.ask();
         let deadline = tokio::time::Instant::now() + STOP_GRACE;
+        #[cfg(target_os = "linux")]
+        let mut reaping_error_reported = false;
         while group.exists() {
+            // The original child's status was consumed above. Only now may
+            // waitpid reap adopted children from this particular group.
+            #[cfg(target_os = "linux")]
+            {
+                if let Err(error) = reaping::group(group.1)
+                    && !reaping_error_reported
+                {
+                    tracing::warn!(agent = %shared.launch.agent, %error, "cannot reap session descendants; group protection retained");
+                    reaping_error_reported = true;
+                }
+                if !group.exists() {
+                    break;
+                }
+            }
             if tokio::time::Instant::now() >= deadline {
                 group.end();
             }
