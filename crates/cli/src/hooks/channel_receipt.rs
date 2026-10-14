@@ -104,6 +104,13 @@ fn consumed(
     };
     let start = tail[..candidate].rfind('\n').map_or(0, |i| i + 1);
     let mut lineage: HashMap<String, DateTime<Utc>> = HashMap::new();
+    // When the channel input was written. Since Claude Code 2.1.29x a
+    // response names the turn's prompt snapshot as its parent, a record
+    // written before a channel input that arrived for that turn, so lineage
+    // no longer reaches the input. A later model response on the main chain
+    // of the same session was made with the input in its context — which is
+    // what a receipt says — so that is accepted as well.
+    let mut input_at: Option<DateTime<Utc>> = None;
     let mut seen = HashSet::new();
     for (index, line) in tail[start..].lines().enumerate() {
         if index >= MAX_RECORDS {
@@ -144,6 +151,7 @@ fn consumed(
                     .is_some_and(|text| matches_message(text, message))
             {
                 lineage.insert(uuid.to_owned(), at);
+                input_at.get_or_insert(at);
             }
             continue;
         }
@@ -163,7 +171,11 @@ fn consumed(
         {
             lineage.clear();
             lineage.insert(uuid.to_owned(), at);
+            input_at.get_or_insert(at);
             continue;
+        }
+        if record["type"] == "assistant" && input_at.is_some_and(|input| at >= input) {
+            return model_response(&record);
         }
         let Some(parent_at) = record["parentUuid"]
             .as_str()
@@ -175,31 +187,36 @@ fn consumed(
             continue;
         }
         if record["type"] == "assistant" {
-            return record["isApiErrorMessage"] != true
-                && record["message"]["role"] == "assistant"
-                && record["requestId"].as_str().is_some_and(|s| !s.is_empty())
-                && record["message"]["id"]
-                    .as_str()
-                    .is_some_and(|s| !s.is_empty())
-                && record["message"]["model"]
-                    .as_str()
-                    .is_some_and(|s| !s.is_empty() && !s.starts_with('<'))
-                && record["message"]["content"]
-                    .as_array()
-                    .is_some_and(|parts| {
-                        parts.iter().any(|part| {
-                            matches!(
-                                part["type"].as_str(),
-                                Some("text" | "thinking" | "tool_use")
-                            )
-                        })
-                    });
+            return model_response(&record);
         }
         if record["type"] == "attachment" {
             lineage.insert(uuid.to_owned(), at);
         }
     }
     false
+}
+
+/// An actual model turn: not an API error, a synthetic record or an empty one.
+fn model_response(record: &Value) -> bool {
+    record["isApiErrorMessage"] != true
+        && record["message"]["role"] == "assistant"
+        && record["requestId"].as_str().is_some_and(|s| !s.is_empty())
+        && record["message"]["id"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+        && record["message"]["model"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty() && !s.starts_with('<'))
+        && record["message"]["content"]
+            .as_array()
+            .is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    matches!(
+                        part["type"].as_str(),
+                        Some("text" | "thinking" | "tool_use")
+                    )
+                })
+            })
 }
 
 fn matches_message(text: &str, message: &Envelope) -> bool {
@@ -351,9 +368,6 @@ mod tests {
             (0, "/sessionId", json!("different-session")),
             (0, "/timestamp", json!(now - chrono::Duration::hours(1))),
             (0, "/timestamp", json!(now + chrono::Duration::hours(1))),
-            (1, "/parentUuid", json!("unrelated")),
-            (1, "/type", json!("user")),
-            (1, "/isSidechain", json!(true)),
             (2, "/message/model", json!("<synthetic>")),
             (2, "/requestId", json!(null)),
             (2, "/message/content", json!([])),
@@ -390,6 +404,54 @@ mod tests {
             now,
             &message
         ));
+    }
+
+    /// Claude Code 2.1.299 writes the channel input after the turn's prompt
+    /// snapshot and names that snapshot as the response's parent; a tool
+    /// result may come between. The later response still confirms it, a
+    /// subagent's does not, and nothing before the input does.
+    #[test]
+    fn a_later_response_confirms_an_input_its_parent_chain_skips() {
+        let (message, records, now) = fixture();
+        let start = now - chrono::Duration::minutes(1);
+        let mut snapshot = records[1].clone();
+        snapshot["uuid"] = json!("snapshot");
+        snapshot["parentUuid"] = json!("earlier");
+        let mut tool_result = json!({"uuid":"result", "parentUuid":"tool-call", "type":"user",
+            "message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}});
+        tool_result["sessionId"] = json!("session");
+        tool_result["isSidechain"] = json!(false);
+        tool_result["timestamp"] = records[0]["timestamp"].clone();
+        let mut response = records[2].clone();
+        response["parentUuid"] = json!("snapshot");
+        let current = vec![
+            snapshot.clone(),
+            records[0].clone(),
+            tool_result,
+            response.clone(),
+        ];
+        assert!(consumed(&text(&current), "session", start, now, &message));
+
+        let mut subagent = response.clone();
+        subagent["isSidechain"] = json!(true);
+        assert!(!consumed(
+            &text(&[snapshot.clone(), records[0].clone(), subagent]),
+            "session",
+            start,
+            now,
+            &message
+        ));
+        // A response written before the input saw nothing of it.
+        assert!(!consumed(
+            &text(&[response, records[0].clone()]),
+            "session",
+            start,
+            now,
+            &message
+        ));
+        let mut error = current.clone();
+        error[3]["isApiErrorMessage"] = json!(true);
+        assert!(!consumed(&text(&error), "session", start, now, &message));
     }
 
     #[test]
