@@ -57,6 +57,10 @@ impl InputReadiness {
 pub const PAUSE_CONTROLLER_ENDED: &str = "the bound controller ended";
 pub const PAUSE_CONTROLLER_RESTART_FAILED: &str = "the bound controller could not be restarted";
 pub const PAUSE_RECEIVER_UPGRADING: &str = "the input receiver is being upgraded";
+/// How a Claude channel says it offered a message the session never
+/// confirmed, followed by the message id. The hooks read it to take over a
+/// queue that would otherwise stay silent.
+pub const PAUSE_RECEIPT_MISSING: &str = "Waiting for a verified receipt for message";
 
 /// Contact with a particular adapter is separate from generic agent activity.
 /// These observations contain no provider configuration or message contents.
