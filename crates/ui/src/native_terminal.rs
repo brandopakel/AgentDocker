@@ -319,7 +319,6 @@ mod tmux {
 
 mod herdr {
     use super::*;
-    use std::io::{BufRead, BufReader, Read, Write};
 
     /// Focus `pane` in herdr over its socket, and return a herdr client
     /// process (the terminal window herdr is drawn in).
@@ -353,6 +352,7 @@ mod herdr {
     /// Unix socket. It moves herdr's focus; it types nothing.
     #[cfg(unix)]
     fn focus(socket: &Path, pane: &str) -> Result<(), String> {
+        use std::io::{BufRead, BufReader, Read, Write};
         let unreachable = |_| "herdr is not running for this agent's session.".to_owned();
         let mut stream = std::os::unix::net::UnixStream::connect(socket).map_err(unreachable)?;
         let limit = Some(Duration::from_secs(3));
@@ -380,6 +380,7 @@ mod herdr {
     }
 
     /// herdr's reply, `Some(reason)` when it refused.
+    #[cfg(any(unix, test))]
     pub(super) fn refused(reply: &str) -> Option<String> {
         match serde_json::from_str::<serde_json::Value>(reply.trim()) {
             Ok(value) if value.get("result").is_some() => None,
