@@ -68,7 +68,12 @@ Backend I/O failures while reading the binding inventory preserve the existing
 binding validation failures retain the native identity diagnostic.
 
 Native launch configuration flags are passed to both the dedicated server and
-its terminal, including explicit UUID reopen. The terminal reads local settings
+its terminal, including supported settings on explicit UUID reopen. Remote resume
+restores the conversation’s saved permissions: direct overrides of `approval_policy`,
+`approvals_reviewer`, `default_permissions`, `sandbox_mode`, `sandbox_workspace_write`,
+`permissions` or `network` are refused before provider startup. Omit these overrides
+to reuse the saved permissions, or start a new conversation with new settings. The
+launcher never silently removes a requested restriction. The terminal reads local settings
 even in remote mode; dropping those flags can ignore launch-only preferences and
 let provider startup persist defaults. The launcher does not rewrite the profile.
 A controlled Mac comparison showed that the published launcher ignored a
@@ -77,7 +82,10 @@ honored it and preserved the private profile. Both trials retired cleanly.
 Codex 0.160 separately seeds its screen-reader detection marker directly from
 the saved user layer, before CLI overrides. Forwarding options does not prevent
 that provider first-use write. The Windows account preflight's exact marker
-addition was verified and restored; corrected account acceptance remains open.
+addition was verified and restored. The corrected Windows account trial passed
+busy delivery, exact receipts, Unicode draft preservation, receiver replacement
+and normal exit. Reopen then failed because the fixture repeated permission
+overrides; supported reopen and early-refusal acceptance remain open.
 
 The receiver probes the read-only queue/history APIs before taking ownership.
 Hooks keep their normal delivery while that probe is pending or unsupported;

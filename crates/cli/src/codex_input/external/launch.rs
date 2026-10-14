@@ -41,9 +41,48 @@ pub struct Args {
     /// Reopen this exact persisted root conversation UUID without a new prompt.
     #[arg(long)]
     resume: Option<uuid::Uuid>,
-    /// Provider configuration flags; initial prompts and resume are not accepted.
+    /// Provider configuration flags; --resume preserves saved permissions. No initial prompt.
     #[arg(last = true, allow_hyphen_values = true)]
     arguments: Vec<String>,
+}
+
+/// Remote resume restores the destination thread's permissions. Codex rejects
+/// direct permission overrides there; refuse them before creating an owner or
+/// provider rather than silently dropping a caller's requested restrictions.
+fn native_arguments(arguments: &[String], resume: bool) -> Result<Vec<String>> {
+    let options = provider_input::codex_arguments(arguments)?;
+    if resume {
+        let mut values = options.iter();
+        while let Some(flag) = values.next() {
+            if flag == "--strict-config" {
+                continue;
+            }
+            let value = values
+                .next()
+                .context("normalized provider option lacks a value")?;
+            if !matches!(flag.as_str(), "-c" | "--config") {
+                continue;
+            }
+            let Some((key, _)) = value.split_once('=') else {
+                continue;
+            };
+            let root = key.trim().split('.').next().unwrap_or_default().trim();
+            ensure!(
+                !matches!(
+                    root,
+                    "approval_policy"
+                        | "approvals_reviewer"
+                        | "default_permissions"
+                        | "sandbox_mode"
+                        | "sandbox_workspace_write"
+                        | "permissions"
+                        | "network"
+                ),
+                "native Codex --resume restores saved permissions and cannot apply launch override {root}; omit this override to reuse saved permissions, or start a new conversation"
+            );
+        }
+    }
+    Ok(options)
 }
 
 fn identity(child: &Child) -> Result<ProcessIdentity> {
@@ -439,6 +478,7 @@ impl Startup<'_> {
 }
 
 pub async fn run(client: Client, args: Args) -> Result<()> {
+    let options = native_arguments(&args.arguments, args.resume.is_some())?;
     let Some(invitation) = std::env::var_os(lifetime::ENV) else {
         return lifetime::supervise(&client).await;
     };
@@ -458,7 +498,6 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         .or_else(|| std::env::home_dir().map(|home| home.join(".codex")))
         .context("Codex profile unavailable")?
         .canonicalize()?;
-    let options = provider_input::codex_arguments(&args.arguments)?;
     crate::codex_input::call(&client, Request::Ping).await?;
     // Any daemon autostart must precede Windows job admission: the shared
     // daemon belongs to the desktop session, not this native provider owner.
@@ -590,6 +629,75 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_remote_resume_rejects_permissions_before_supervision() {
+        let temporary = tempfile::tempdir().unwrap();
+        for key in [
+            "approval_policy",
+            "approvals_reviewer",
+            "default_permissions",
+            "sandbox_mode",
+            "sandbox_workspace_write.writable_roots",
+            "permissions.fixture",
+            "network.enabled",
+        ] {
+            for argument in [format!("-c={key}=false"), format!("--config= {key} =false")] {
+                let arguments = vec![argument];
+                assert_eq!(
+                    native_arguments(&arguments, false).unwrap(),
+                    provider_input::codex_arguments(&arguments).unwrap()
+                );
+                let error = run(
+                    Client::new(Some(temporary.path().join("absent.socket"))),
+                    Args {
+                        program: temporary.path().join("missing-provider"),
+                        profile: None,
+                        cwd: None,
+                        name: None,
+                        resume: Some(
+                            uuid::Uuid::parse_str("12345678-1234-1234-1234-123456789abc").unwrap(),
+                        ),
+                        arguments,
+                    },
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("--resume restores saved permissions"),
+                    "{error:#}"
+                );
+                assert_eq!(std::fs::read_dir(temporary.path()).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn native_remote_resume_preserves_nonpermission_configuration_exactly() {
+        let arguments: Vec<String> = [
+            "--model",
+            "approval_policy=literal-model-name",
+            "--enable",
+            "some_feature",
+            "--disable",
+            "apps",
+            "--strict-config",
+            "--config",
+            "tui.show_tooltips=false",
+            "-c",
+            "model_reasoning_effort=\"low\"",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(
+            native_arguments(&arguments, true).unwrap(),
+            provider_input::codex_arguments(&arguments).unwrap()
+        );
+        assert!(native_arguments(&["--config".into()], true).is_err());
+    }
 
     #[test]
     fn native_terminal_preserves_launch_only_configuration_on_new_and_resumed_threads() {
