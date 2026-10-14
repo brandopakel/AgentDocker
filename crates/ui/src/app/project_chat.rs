@@ -245,9 +245,21 @@ impl App {
         for agent in agents {
             let id = agent.id.to_string();
             let name = self.display_name(agent);
+            // The agent is where its terminal is: clicking it goes there,
+            // and its details are one step aside.
+            let reachable = Self::terminal_reachable(agent);
+            let go = if reachable {
+                (!self.shell.terminal_opening).then(|| Message::OpenAgentTerminal(id.clone()))
+            } else {
+                Some(Message::OpenSession(id.clone()))
+            };
             let open = custom(
                 format!("chat-agent-{id}"),
-                "Open agent",
+                if reachable {
+                    Self::terminal_action(agent)
+                } else {
+                    "Open agent".to_owned()
+                },
                 row![
                     with_presence(
                         agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 28.0, c),
@@ -278,22 +290,26 @@ impl App {
                 ]
                 .spacing(10)
                 .align_y(Center),
-                Some(Message::OpenSession(id.clone())),
+                go,
                 false,
                 Kind::Quiet,
                 [6, 8],
             );
-            let terminal = custom_sized(
-                format!("chat-terminal-{id}"),
-                "Terminal",
-                container(icon(Icon::Terminal, c.muted, 15.0)).center(18),
-                (!self.shell.terminal_opening).then_some(Message::OpenAgentTerminal(id)),
-                false,
-                Kind::Ghost,
-                [7, 7],
-                iced::Length::Shrink,
-            );
-            rows = rows.push(row![open, terminal].spacing(2).align_y(Center));
+            if reachable {
+                let details = custom_sized(
+                    format!("chat-details-{id}"),
+                    "Details",
+                    container(icon(Icon::ChevronRight, c.muted, 13.0)).center(18),
+                    Some(Message::OpenSession(id)),
+                    false,
+                    Kind::Ghost,
+                    [7, 7],
+                    iced::Length::Shrink,
+                );
+                rows = rows.push(row![open, details].spacing(2).align_y(Center));
+            } else {
+                rows = rows.push(open);
+            }
         }
         body.push(rows).into()
     }
@@ -334,9 +350,19 @@ impl App {
         for agent in agents {
             let id = agent.id.to_string();
             let name = self.display_name(agent);
+            let reachable = Self::terminal_reachable(agent);
+            let go = if reachable {
+                (!self.shell.terminal_opening).then(|| Message::OpenAgentTerminal(id.clone()))
+            } else {
+                Some(Message::OpenSession(id.clone()))
+            };
             strip = strip.push(custom(
                 format!("chat-agent-{id}"),
-                name.clone(),
+                if reachable {
+                    format!("{name}: {}", Self::terminal_action(agent))
+                } else {
+                    name.clone()
+                },
                 row![
                     with_presence(
                         agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 20.0, c),
@@ -351,21 +377,23 @@ impl App {
                 ]
                 .spacing(7)
                 .align_y(Center),
-                Some(Message::OpenSession(id.clone())),
+                go,
                 false,
                 Kind::Inline,
                 [4, 8],
             ));
-            strip = strip.push(custom_sized(
-                format!("chat-terminal-{id}"),
-                "Terminal",
-                container(icon(Icon::Terminal, c.muted, 14.0)).center(16),
-                (!self.shell.terminal_opening).then_some(Message::OpenAgentTerminal(id)),
-                false,
-                Kind::Ghost,
-                [6, 6],
-                iced::Length::Shrink,
-            ));
+            if reachable {
+                strip = strip.push(custom_sized(
+                    format!("chat-details-{id}"),
+                    "Details",
+                    container(icon(Icon::ChevronRight, c.muted, 12.0)).center(16),
+                    Some(Message::OpenSession(id)),
+                    false,
+                    Kind::Ghost,
+                    [6, 6],
+                    iced::Length::Shrink,
+                ));
+            }
         }
         strip = strip.push(link(
             "chat-all-agents",

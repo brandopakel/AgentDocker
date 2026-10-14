@@ -707,7 +707,7 @@ pub enum Message {
     Detach,
     OpenProjectTerminal,
     OpenAgentTerminal(String),
-    NativeTerminalOpened(Result<(), String>),
+    NativeTerminalOpened(Result<String, String>),
     TerminalInput(Vec<u8>),
     TerminalResize(u16, u16),
     TerminalScroll(i32),
@@ -2220,10 +2220,15 @@ impl App {
                     } else if !self.shell.terminal_opening {
                         if let (Some(pid), Some(started_at)) = (agent.pid, agent.process_started_at)
                         {
+                            let session = agent.session.clone();
                             self.shell.terminal_opening = true;
                             self.say("Opening terminal…");
                             tasks.push(open_native_terminal(
-                                crate::native_terminal::Request::Agent { pid, started_at },
+                                crate::native_terminal::Request::Agent {
+                                    pid,
+                                    started_at,
+                                    session,
+                                },
                             ));
                         } else {
                             self.shell.error = Some("This agent has not reported its terminal process. Open the app where it started.".into());
@@ -2235,7 +2240,7 @@ impl App {
                 self.shell.terminal_opening = false;
                 self.status.clear();
                 match result {
-                    Ok(()) => self.say("Terminal opened"),
+                    Ok(shown) => self.say(shown),
                     Err(error) => self.shell.error = Some(error),
                 }
             }

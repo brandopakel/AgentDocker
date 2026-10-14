@@ -803,6 +803,10 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- Clicking an agent in a project's chat goes to its terminal: the tab in
+  Terminal or iTerm it runs in, its tmux or herdr pane, or the editor or app
+  its terminal is in. Its details are on the chevron beside it, and they say
+  where it runs. macOS asks once to let AgentDocker control Terminal or iTerm.
 - Codex input refuses an app-server older than 0.154.0 when it attaches, naming
   both versions, instead of failing in the middle of a turn. A turn Codex
   refuses outright leaves the message queued with the provider's reason on the

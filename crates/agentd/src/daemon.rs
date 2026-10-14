@@ -2756,6 +2756,7 @@ impl Daemon {
         record.started_at = None;
         record.finished_at = None;
         record.session = None;
+        record.terminal = None;
         if let Err(response) = self.admit_run(&mut record).await {
             return *response;
         }
@@ -3053,6 +3054,9 @@ impl Daemon {
         // a person reach it with the tool that already owns its
         // terminal.
         record.session = pid.and_then(|pid| Self::session_of(pid, reported.clone()));
+        // And the application around that terminal, which is what a
+        // person brings to the front to reach it.
+        record.terminal = pid.and_then(agentdocker_host::terminal::of_process);
         let response = lock(&self.state).insert_record(record);
         // The reply is what a session waits for before its first edit, so
         // the checkout is watched by the time it goes out.
@@ -7620,6 +7624,7 @@ impl State {
         canonical.finished_at = None;
         canonical.last_seen = now;
         canonical.session = fresh.session.clone();
+        canonical.terminal = fresh.terminal.clone();
         canonical.vcs = fresh.vcs.clone();
         canonical.reported_activity = fresh.reported_activity.clone();
         canonical.adapter_contacts = fresh.adapter_contacts.clone();

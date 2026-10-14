@@ -58,11 +58,17 @@ Opening an agent takes you to its project and selects that session.
 
 **Open project terminal**, in the project header, opens a fresh native terminal
 in that project's folder. It is separate from **More → AgentDocker commands**,
-which runs AgentDocker commands rather than a project shell. Each live agent also
-has **Terminal**: app-managed agents open inside AgentDocker; on macOS, external
-agents open their existing Terminal tab without sending any input. If the agent
-belongs to another app, the action explains that the original app is needed.
-This does not start a second copy of an agent.
+which runs AgentDocker commands rather than a project shell. Clicking a live agent
+in the chat's agent list goes to its terminal; the chevron beside it opens its
+details. An agent AgentDocker started opens its terminal inside the app. One
+started elsewhere is found where it runs: in a tmux or herdr pane, that pane is
+selected first; then, on macOS, its Terminal or iTerm tab is brought forward
+(macOS asks once to let AgentDocker control that app), and any other host —
+Ghostty, an editor's terminal, a JetBrains IDE — is brought to the front. The
+details header says where an agent runs (*in Terminal (ttys005)*, *in
+tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
+tmux pane**). Nothing is typed into the agent, and no second copy is started.
+An agent without a terminal to reach opens its details instead.
 
 **Needs you** shows only questions waiting on you (**Answer**; a question from
 a session that has since ended says so before you write). Seen across
