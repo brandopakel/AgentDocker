@@ -5,25 +5,26 @@ Apple signing/notarization still needs a private developer identity and actual
 release acceptance. Other engineering and platform work is tracked in
 [Remaining work](REMAINING-WORK.md); distribution setup is one part of delivery.
 
-The unpublished beta.12 candidate adds Windows managed-console echo control,
-encoded Ctrl-] detachment and native identity diagnostics. Ledger 15/state schema
-27 is unchanged. Its beta.11/schema27 baseline supports binary rollback;
-acceptance must verify selected payload and previous pointer through update,
-rollback and reapply. Beta.9/schema26 remains incompatible. Never restore an
-older delivery database over acknowledged input. Final-source validation,
-included review and hosted download/install acceptance remain publication gates.
+The unpublished beta.13 candidate adds bounded emitted-byte accounting and
+Linux session-owner reaping of orphaned descendants. Emitted bytes remain separate
+from provider-reported tokens and carry partial coverage; collection stays opt-in.
+Ledger 15/state schema 27 is unchanged. Its beta.12 baseline supports binary
+rollback; acceptance must preserve recorded accounting metadata and event cursors
+through rollback and reapply, without restoring an older database. Beta.9/schema26
+remains incompatible. Final-source validation, included review and hosted
+installation/update/rollback checks remain publication gates.
 
 ## Release workflow and retry policy
 
 A protected `v*` tag triggers `.github/workflows/release.yml`; editing the
 workflow does not publish anything. The tag version must match `Cargo.toml`
 and the recorded build must have clean source. The current published preview is
-`0.2.0-beta.11`, reviewed source `47d06d3b`; all 31 hosted assets and both preview
+`0.2.0-beta.12`, reviewed source `d48c0ab6`; all 31 hosted assets and both preview
 feeds passed verification. Mac ARM64, Oracle Ubuntu and a Windows runner passed
-beta.10/schema27 → beta.11/schema27 update, rollback and reapply. Unix terminal,
-graphical, daemon-service and selective pruning/startup scopes passed; Windows
-hosted lifecycle and daemon/connector services passed. Stable signing, fresh
-accounts, independent physical hardware and sleep/reboot remain open in
+bounded beta.11/schema27 → beta.12/schema27 update, rollback and reapply. Unix
+terminal, graphical, daemon-service and selective pruning checks passed; Windows
+hosted lifecycle and daemon/connector service checks passed. Stable signing,
+fresh accounts, independent physical hardware and sleep/reboot remain open in
 [Remaining work](REMAINING-WORK.md).
 Tags exclude `+build` metadata.
 The workflow builds CLI archives and four native desktop targets: Apple
@@ -357,30 +358,29 @@ login/reboot acceptance remain separate gates.
 ## Coworker preview releases
 
 The failed immutable `v0.2.0-beta.1` tag remains at `d46db1f2`; it published no
-release. The current published preview is **0.2.0-beta.11**, immutable source
-`47d06d3b`; protected-tag run 37724230353 passed. All 31 hosted assets, nine
+release. The current published preview is **0.2.0-beta.12**, immutable source
+`d48c0ab6`; protected-tag run 38308608128 passed. All 31 hosted assets, nine
 archives, five manifests and both preview feeds were verified. Explicit-version
-CLI installation and beta.10 → beta.11 desktop installation/default-feed update,
+CLI installation and beta.11 → beta.12 desktop installation/default-feed update,
 same-schema rollback and reapply passed on Mac ARM64 and Oracle Ubuntu x86_64.
-Both platforms also passed eight terminal/31 graphical checks with synthetic
-providers and five selective pruning/startup checks. Mac passed 21 daemon checks,
-including twelve consecutive restarts; Oracle passed 17 systemd checks. Owned
-services/process generations retired and pre-existing state was preserved.
-Both fixed preview channels advertise beta.11; stable v0.1.0 and Homebrew remain
-unchanged. Full original trial scopes and failures remain in the verification index.
+Both platforms passed eight terminal/32 graphical checks with synthetic providers
+and five selective pruning/startup checks. Mac passed 21 daemon checks, including
+twelve consecutive restarts; Oracle passed 17 systemd checks. Windows passed
+15 hosted lifecycle checks plus 13 daemon and 24 connector service checks.
+Owned services/process generations retired and pre-existing state was preserved.
+Both fixed preview channels advertise beta.12; stable v0.1.0 and Homebrew remain
+unchanged. Trial scopes and original failures remain in the verification index.
 
-Beta.10 and beta.11 use state schema 27 and delivery ledger 15. Beta.9/schema26
-and earlier releases cannot replace schema27. The installer cannot downgrade a
-database. Never restore an older delivery ledger over acknowledged input; use
-isolated state for an older-version trial.
+Beta.11, beta.12 and the beta.13 candidate use state schema 27 and delivery ledger
+15. Beta.9/schema26 and earlier releases cannot replace schema27. Never restore
+an older delivery ledger over acknowledged input; use isolated state for an
+older-version trial. Beta.13's additive accounting metadata needs actual
+rollback/reapply acceptance; matching schema versions alone do not prove it.
 
-Windows hosted run 37725866482 passed 15 lifecycle checks, including actual
-beta.10 → beta.11 update/rollback/reapply, plus 13 installed daemon and 24
-connector checks through the retained beta.10 bootstrap. Exact hosted bytes,
-source-bound drivers and cleanup were independently verified. Native Codex launch,
-managed secret input and live replacement remain experimental. Fresh accounts,
-physical input, independent Mac, automatic Mac crash recovery and login/reboot
-remain open. Versioned published releases are immutable.
+Native Codex launch, managed secret input and live replacement remain
+experimental. Fresh accounts, physical input, independent Mac, automatic Mac
+crash recovery and login/reboot remain open. Versioned published releases are
+immutable.
 
 Before announcing the preview, download its actual hosted archives and sidecar
 checksums, verify package provenance, and exercise the explicit-version install
