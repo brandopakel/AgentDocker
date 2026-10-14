@@ -12386,6 +12386,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn polling_does_not_turn_a_hooked_agents_idle_report_into_work() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let agent = register(&daemon, "hooked", None).await;
+        let now = Utc::now();
+        let born = now - Duration::hours(1);
+        let mut state = lock(&daemon.state);
+        let record = state.registry.get_mut(&agent.id).unwrap();
+        record.created_at = born;
+        record.process_started_at = Some(born);
+        record.adapter_contacts.insert(
+            agentdocker_core::AdapterKind::Hooks,
+            agentdocker_core::AdapterContact {
+                process_started_at: born,
+                observed_at: now - Duration::seconds(30),
+            },
+        );
+        state.report_activity(
+            agent.id.as_str(),
+            agentdocker_core::ActivityObservation {
+                activity: agentdocker_core::ReportedActivity::Idle,
+                observed_at: now - Duration::seconds(20),
+            },
+            now,
+        );
+        // Its MCP server polls for messages a few seconds later.
+        state.registry.get_mut(&agent.id).unwrap().last_seen = now;
+        let record = state.registry.get(&agent.id).unwrap();
+        assert!(matches!(
+            state.activity_of(record, now),
+            Activity::Idle { .. }
+        ));
+        // Past the report's expiry the polling still says nothing of work.
+        state.registry.get_mut(&agent.id).unwrap().last_seen = now + Duration::minutes(6);
+        let record = state.registry.get(&agent.id).unwrap();
+        assert_eq!(
+            state.activity_of(record, now + Duration::minutes(6)),
+            Activity::Unknown
+        );
+        // Hooks from an earlier process of the same record prove nothing
+        // about this one: contact counts again, as for a hookless agent.
+        state
+            .registry
+            .get_mut(&agent.id)
+            .unwrap()
+            .process_started_at = Some(now);
+        let record = state.registry.get(&agent.id).unwrap();
+        assert!(matches!(
+            state.activity_of(record, now + Duration::minutes(6)),
+            Activity::Working { .. }
+        ));
+    }
+
+    #[tokio::test]
     async fn a_deadlock_refusal_says_the_wait_ended() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);

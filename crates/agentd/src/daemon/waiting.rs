@@ -404,11 +404,24 @@ impl State {
                 since: waiter.since,
             };
         }
+        // A provider whose lifecycle hooks have run in this process reports
+        // its own turns and says when the next one starts. Contact between
+        // them is its MCP server polling for messages, which is presence, not
+        // work: counting it turned every idle report into "working" within
+        // seconds, and a finished turn was never seen to finish.
+        let reports_turns = record
+            .adapter_contacts
+            .get(&agentdocker_core::AdapterKind::Hooks)
+            .is_some_and(|hooks| Some(hooks.process_started_at) == record.process_started_at);
         if let Some(observation) = &record.reported_activity
-            && (record.last_seen <= observation.observed_at
+            && (reports_turns
+                || record.last_seen <= observation.observed_at
                 || record.last_seen == record.created_at)
         {
             return observation.current(now).unwrap_or(Activity::Unknown);
+        }
+        if reports_turns {
+            return Activity::Unknown;
         }
         // Adoption/registration proves presence, not work. Nor does silence
         // prove idleness: MCP calls are optional, and hooks may be disconnected.
