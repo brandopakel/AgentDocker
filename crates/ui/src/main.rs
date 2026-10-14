@@ -17,6 +17,7 @@ mod drafts;
 mod native_terminal;
 mod notification_route;
 mod notify;
+mod pull_request;
 mod smoke;
 mod terminal;
 mod theme;

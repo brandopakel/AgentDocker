@@ -406,6 +406,56 @@ pub(super) fn status_word<'a>(
     .into()
 }
 
+/// An agent finished since the person last looked: one accent dot on its
+/// row, its words when pointed at. The observed state stays in the row's
+/// status; this says only that it is new to you.
+pub(super) fn done_dot<'a>(c: Colors) -> Element<'a, Message> {
+    hint(dot(c.accent, 7.0, c), "Finished since you last looked", c)
+}
+
+impl App {
+    /// The pull request of the branch an agent works on, as one chip that
+    /// opens it: its number, then a tick, a dot or a cross for its checks,
+    /// or *merged*. Nothing when the branch has none, or nothing is known.
+    pub(super) fn pull_request_chip<'a>(
+        &self,
+        agent: &AgentRecord,
+        c: Colors,
+    ) -> Option<Element<'a, Message>> {
+        use crate::pull_request::Status;
+        let pull = self.pull_request_of(agent)?;
+        let number = text(format!("#{}", pull.number))
+            .size(12)
+            .line_height(iced::Pixels(16.0))
+            .font(weight(iced::font::Weight::Medium))
+            .color(c.muted);
+        let mut content = row![number].spacing(4).align_y(Center);
+        match pull.status {
+            Status::Open => {}
+            Status::Passed => content = content.push(icon(Icon::Check, c.green, 11.0)),
+            Status::Running => content = content.push(dot(c.amber, 6.0, c)),
+            Status::Failed => content = content.push(icon(Icon::Close, c.red, 10.0)),
+            Status::Merged => {
+                content = content.push(
+                    text("merged")
+                        .size(12)
+                        .line_height(iced::Pixels(16.0))
+                        .color(c.muted),
+                )
+            }
+        }
+        Some(custom(
+            format!("pull-request-{}", agent.id),
+            pull.spoken(),
+            content,
+            Some(Message::OpenPullRequest(pull.url.clone())),
+            false,
+            Kind::Inline,
+            [2, 6],
+        ))
+    }
+}
+
 /// A glyph or a monogram on a small raised tile.
 pub(super) fn icon_tile<'a>(
     content: impl Into<Element<'a, Message>>,
@@ -2415,14 +2465,20 @@ impl App {
                 .agent_tokens
                 .get(&id)
                 .map(|t| format!("{} tokens in 24h", t.label()));
+            let unviewed = self.shell.unviewed_done.contains(&id);
             let spoken = format!(
-                "{name}\n{} · {}{}",
+                "{name}\n{} · {}{}{}",
                 agent.spec.runtime,
                 meta,
                 tokens
                     .as_ref()
                     .map(|t| format!(" · {t}"))
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                if unviewed {
+                    " · finished since you last looked"
+                } else {
+                    ""
+                }
             );
             // A generated name already reads as the tool ("Claude Code ·
             // 0180d761"), so only a chosen name says the tool again.
@@ -2467,10 +2523,11 @@ impl App {
             ]
             .spacing(12)
             .align_y(Center);
-            if self.shell.unviewed_done.contains(&id) {
-                // Finished since you last looked. The observed state stays
-                // in the status word; this says only that it is new to you.
-                content = content.push(pill("Done", c.accent_soft, c.accent_ink, c));
+            if unviewed {
+                content = content.push(done_dot(c));
+            }
+            if let Some(chip) = self.pull_request_chip(agent, c) {
+                content = content.push(chip);
             }
             if let Some(window) = window {
                 content = content.push(window);

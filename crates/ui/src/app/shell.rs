@@ -129,12 +129,16 @@ pub(super) struct State {
     pub reply_recoveries: Vec<ReplyRecovery>,
     /// Sessions whose turn finished while nobody was looking at them:
     /// finished as observed, not yet viewed. Viewing is an explicit act
-    /// (opening the project or the session, or already having it on
-    /// screen in a focused window when it finished); an `idle` report on
-    /// its own never counts as seen. Window-local, never persisted.
+    /// (opening the project, the session or its terminal, or already
+    /// having it on screen in a focused window when it finished); an
+    /// `idle` report on its own never counts as seen. Window-local, never
+    /// persisted.
     pub unviewed_done: BTreeSet<String>,
     /// The window has lost focus; what it shows is not being looked at.
     pub unfocused: bool,
+    /// Each shown branch's pull request and checks, as `gh` last said.
+    /// Window-local, never persisted.
+    pub pull_requests: crate::pull_request::Cache,
     // command palette
     /// The command palette: open or not, its search and nested pages.
     pub palette: super::palette::Palette,
@@ -532,6 +536,9 @@ pub enum DeliveryTarget {
     Session(String),
 }
 
+type PullRequestKey = crate::pull_request::Key;
+type PullRequestAnswer = Result<Option<crate::pull_request::PullRequest>, String>;
+
 #[derive(Clone, Debug)]
 pub enum Message {
     Tick,
@@ -708,6 +715,11 @@ pub enum Message {
     OpenProjectTerminal,
     OpenAgentTerminal(String),
     NativeTerminalOpened(Result<String, String>),
+    /// A round of pull request lookups came back, one answer per branch.
+    PullRequests(Vec<(PullRequestKey, PullRequestAnswer)>),
+    /// Open a pull request's page in the browser; and how that went.
+    OpenPullRequest(String),
+    PullRequestOpened(Result<(), String>),
     TerminalInput(Vec<u8>),
     TerminalResize(u16, u16),
     TerminalScroll(i32),
@@ -1068,6 +1080,7 @@ impl App {
                     self.shell.changed();
                 }
                 self.refresh_project_context();
+                tasks.push(self.refresh_pull_requests(false));
                 tasks.push(self.advance_notification());
                 if let Some(smoke) = &mut self.smoke {
                     tasks.push(smoke.tick(
@@ -2186,6 +2199,8 @@ impl App {
                     .iter()
                     .any(|a| a.id.as_str() == id && a.managed && a.spec.tty && a.status.is_live())
                 {
+                    // Its terminal on screen is the agent looked at.
+                    self.shell.unviewed_done.remove(&id);
                     self.attach(id, self.wake.clone());
                     self.screen = Screen::Terminal;
                     tasks.push(iced::widget::operation::focus(
@@ -2210,6 +2225,8 @@ impl App {
                 }
             }
             Message::OpenAgentTerminal(id) => {
+                // Going to its terminal is looking at what it finished.
+                self.shell.unviewed_done.remove(&id);
                 if let Some(agent) = self
                     .agents
                     .iter()
@@ -2242,6 +2259,22 @@ impl App {
                 match result {
                     Ok(shown) => self.say(shown),
                     Err(error) => self.shell.error = Some(error),
+                }
+            }
+            Message::PullRequests(answers) => {
+                self.shell.pull_requests.answered(answers, Instant::now());
+            }
+            Message::OpenPullRequest(url) => tasks.push(Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || crate::pull_request::open(&url))
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                Message::PullRequestOpened,
+            )),
+            Message::PullRequestOpened(result) => {
+                if let Err(error) = result {
+                    self.say(error);
                 }
             }
             Message::TerminalInput(bytes) => {
@@ -2410,6 +2443,9 @@ impl App {
                 // Request OS permission only once an actual window has focus.
                 crate::notify::request_permission();
                 self.shell.unfocused = false;
+                // Coming back is when CI is looked at: ask again now
+                // rather than at the next two-minute sweep.
+                tasks.push(self.refresh_pull_requests(true));
                 if let Some(id) = self.shell.window {
                     tasks.push(crate::accessibility::focus(id, true));
                 }
@@ -3055,6 +3091,68 @@ fn resolve_folder(path: PathBuf) -> Task<Message> {
         },
         Message::FolderResolved,
     )
+}
+
+/// How long after it ended an agent's branch keeps its pull request chip.
+const PULL_REQUEST_RECENT: chrono::TimeDelta = chrono::TimeDelta::hours(24);
+
+impl App {
+    /// The branch an agent's pull request chip is about: its project's
+    /// and its own, unless that is a default branch.
+    pub(super) fn pull_request_key(agent: &AgentRecord) -> Option<crate::pull_request::Key> {
+        let root = &agent.project.as_ref()?.root;
+        let branch = agent.vcs.as_ref()?.branch.as_deref()?;
+        crate::pull_request::Key::new(root, branch)
+    }
+
+    /// The pull request of the branch an agent works on, as last read.
+    pub(super) fn pull_request_of(
+        &self,
+        agent: &AgentRecord,
+    ) -> Option<&crate::pull_request::PullRequest> {
+        self.shell
+            .pull_requests
+            .get(&Self::pull_request_key(agent)?)
+    }
+
+    /// The branches worth a chip: those of live agents and of agents that
+    /// ended within the last day.
+    pub(super) fn pull_request_wanted(&self) -> BTreeSet<crate::pull_request::Key> {
+        let now = Utc::now();
+        self.agents
+            .iter()
+            .filter(|a| a.spec.runtime != agentdocker_core::HUMAN_RUNTIME)
+            .filter(|a| {
+                a.status.is_live()
+                    || now - a.finished_at.unwrap_or(a.last_seen) < PULL_REQUEST_RECENT
+            })
+            .filter_map(Self::pull_request_key)
+            .collect()
+    }
+
+    /// Ask `gh` again about the wanted branches whose answer is old (see
+    /// `pull_request::Cache::due`): one round on a background thread, its
+    /// answers in one message, so a refresh costs the window one frame.
+    pub(super) fn refresh_pull_requests(&mut self, focus: bool) -> Task<Message> {
+        let wanted = self.pull_request_wanted();
+        let due = self.shell.pull_requests.due(&wanted, Instant::now(), focus);
+        if due.is_empty() {
+            return Task::none();
+        }
+        Task::perform(
+            async move {
+                let keys = due.clone();
+                tokio::task::spawn_blocking(move || crate::pull_request::lookup_all(due))
+                    .await
+                    .unwrap_or_else(|e| {
+                        keys.into_iter()
+                            .map(|key| (key, Err(e.to_string())))
+                            .collect()
+                    })
+            },
+            Message::PullRequests,
+        )
+    }
 }
 
 #[cfg(test)]

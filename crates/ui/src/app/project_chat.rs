@@ -2,7 +2,7 @@
 use super::icons::{Icon, icon};
 use super::messages::look::{link, with_presence};
 use super::style::{Colors, weight};
-use super::view::{agent_mark, dot, note, rule};
+use super::view::{agent_mark, done_dot, dot, note, rule};
 use super::*;
 use crate::controls::{Kind, custom, custom_sized};
 use iced::{
@@ -254,50 +254,68 @@ impl App {
             } else {
                 Some(Message::OpenSession(id.clone()))
             };
+            let unviewed = self.shell.unviewed_done.contains(&id);
+            let mut who = row![
+                with_presence(
+                    agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 28.0, c),
+                    28.0,
+                    Some(self.chat_agent_tone(agent, c)),
+                    c.ground,
+                ),
+                column![
+                    container(
+                        text(name.clone())
+                            .size(13.5)
+                            .font(weight(iced::font::Weight::Medium))
+                            .wrapping(iced::widget::text::Wrapping::None)
+                    )
+                    .width(Fill)
+                    .clip(true),
+                    container(
+                        text(self.chat_agent_status(agent))
+                            .size(12)
+                            .color(c.muted)
+                            .wrapping(iced::widget::text::Wrapping::None)
+                    )
+                    .width(Fill)
+                    .clip(true),
+                ]
+                .spacing(1)
+                .width(Fill),
+            ]
+            .spacing(10)
+            .align_y(Center);
+            if unviewed {
+                who = who.push(done_dot(c));
+            }
             let open = custom(
                 format!("chat-agent-{id}"),
-                if reachable {
-                    Self::terminal_action(agent)
-                } else {
-                    "Open agent".to_owned()
-                },
-                row![
-                    with_presence(
-                        agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 28.0, c),
-                        28.0,
-                        Some(self.chat_agent_tone(agent, c)),
-                        c.ground,
-                    ),
-                    column![
-                        container(
-                            text(name.clone())
-                                .size(13.5)
-                                .font(weight(iced::font::Weight::Medium))
-                                .wrapping(iced::widget::text::Wrapping::None)
-                        )
-                        .width(Fill)
-                        .clip(true),
-                        container(
-                            text(self.chat_agent_status(agent))
-                                .size(12)
-                                .color(c.muted)
-                                .wrapping(iced::widget::text::Wrapping::None)
-                        )
-                        .width(Fill)
-                        .clip(true),
-                    ]
-                    .spacing(1)
-                    .width(Fill),
-                ]
-                .spacing(10)
-                .align_y(Center),
+                format!(
+                    "{}{}",
+                    if reachable {
+                        Self::terminal_action(agent)
+                    } else {
+                        "Open agent".to_owned()
+                    },
+                    if unviewed {
+                        " · finished since you last looked"
+                    } else {
+                        ""
+                    }
+                ),
+                who,
                 go,
                 false,
                 Kind::Quiet,
                 [6, 8],
             );
+            // Its pull request, one quiet click to the browser.
+            let mut line = row![open].spacing(2).align_y(Center);
+            if let Some(chip) = self.pull_request_chip(agent, c) {
+                line = line.push(chip);
+            }
             if reachable {
-                let details = custom_sized(
+                line = line.push(custom_sized(
                     format!("chat-details-{id}"),
                     "Details",
                     container(icon(Icon::ChevronRight, c.muted, 13.0)).center(18),
@@ -306,11 +324,9 @@ impl App {
                     Kind::Ghost,
                     [7, 7],
                     iced::Length::Shrink,
-                );
-                rows = rows.push(row![open, details].spacing(2).align_y(Center));
-            } else {
-                rows = rows.push(open);
+                ));
             }
+            rows = rows.push(line);
         }
         body.push(rows).into()
     }
@@ -357,32 +373,49 @@ impl App {
             } else {
                 Some(Message::OpenSession(id.clone()))
             };
-            strip = strip.push(custom(
-                format!("chat-agent-{id}"),
+            let unviewed = self.shell.unviewed_done.contains(&id);
+            let label = format!(
+                "{}{}",
                 if reachable {
                     format!("{name}: {}", Self::terminal_action(agent))
                 } else {
                     name.clone()
                 },
-                row![
-                    with_presence(
-                        agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 20.0, c),
-                        20.0,
-                        Some(self.chat_agent_tone(agent, c)),
-                        c.ground,
-                    ),
-                    text(name)
-                        .size(12.5)
-                        .line_height(iced::Pixels(16.0))
-                        .font(weight(iced::font::Weight::Medium)),
-                ]
-                .spacing(7)
-                .align_y(Center),
+                if unviewed {
+                    " · finished since you last looked"
+                } else {
+                    ""
+                }
+            );
+            let mut who = row![
+                with_presence(
+                    agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 20.0, c),
+                    20.0,
+                    Some(self.chat_agent_tone(agent, c)),
+                    c.ground,
+                ),
+                text(name)
+                    .size(12.5)
+                    .line_height(iced::Pixels(16.0))
+                    .font(weight(iced::font::Weight::Medium)),
+            ]
+            .spacing(7)
+            .align_y(Center);
+            if unviewed {
+                who = who.push(done_dot(c));
+            }
+            strip = strip.push(custom(
+                format!("chat-agent-{id}"),
+                label,
+                who,
                 go,
                 false,
                 Kind::Inline,
                 [4, 8],
             ));
+            if let Some(chip) = self.pull_request_chip(agent, c) {
+                strip = strip.push(chip);
+            }
             if reachable {
                 strip = strip.push(custom_sized(
                     format!("chat-details-{id}"),

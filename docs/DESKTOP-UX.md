@@ -70,6 +70,21 @@ tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
 tmux pane**). Nothing is typed into the agent, and no second copy is started.
 An agent without a terminal to reach opens its details instead.
 
+An agent's row, in the chat's agent list and in the session list, carries at
+most two small marks. An **accent dot** says it finished since you last looked:
+its turn ended, or the session did, while its project was not on screen in a
+focused window. Going to its terminal, opening its details or opening its
+project clears it, as does the agent starting to work again; an agent stopped
+for you (*waiting for you*) is not finished. Pointing at the dot says so. A
+**pull request chip** names the pull request of the agent's branch — **#340**
+with a green tick when its checks passed, an amber dot while they run, a red
+cross when one failed, **#340 merged** once merged — and opens it in the
+browser. It is read with the `gh` you are signed in to, in the background, at
+most every two minutes and again when the window regains focus, for live
+agents and those that ended within a day. A default branch (main, master,
+develop), a project whose remote is not on GitHub, a closed pull request, or a
+missing or signed-out `gh` shows no chip.
+
 **Needs you** shows only what waits on you: questions (**Answer**; a question
 from a session that has since ended says so before you write), and sessions
 stopped at a permission prompt or question in their own terminal (*Claude Code
@@ -82,7 +97,7 @@ here: its row says so in amber, and opening it shows the details — how many
 messages are kept, that resuming the conversation delivers them, **Review** for
 a live session's delivery and **Dismiss** for an ended one's notice, which
 leaves the messages as they are.
-Finished sessions keep their **Done** badge on the row. Question previews use at
+Finished sessions keep their accent dot on the row. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
 Inbox. The first three items are shown; **Show more** expands the same list and
