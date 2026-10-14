@@ -409,7 +409,10 @@ def main():
             previous_records = set((receiver.home / 'codex-native').glob('*/server.json'))
             output.clear(); closing.clear()
             pid_file, release_file = root / (probe_key + '.pid'), root / ('release-' + probe_key)
-            terminal = PtyProcess.spawn([sys.executable, '-c', CONSOLE_HOST, str(pid_file), str(release_file),
+            # A Windows venv python.exe redirects through another process.
+            # Use the actual interpreter for this stdlib-only console owner,
+            # retaining the strict direct-parent assertion below.
+            terminal = PtyProcess.spawn([sys._base_executable, '-c', CONSOLE_HOST, str(pid_file), str(release_file),
                         str(receiver.cli), '--socket', receiver.socket, 'codex-native',
                         '--program', str(codex), '--profile', str(profile), '--cwd', str(repo),
                         '--name', 'native-auto-' + probe_key, '--resume', thread],
