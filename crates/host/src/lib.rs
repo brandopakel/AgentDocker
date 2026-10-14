@@ -29,6 +29,7 @@ pub mod containers;
 pub mod engine;
 pub mod runtimes;
 
+pub mod codex_trust;
 pub mod dirs;
 pub mod editor;
 // Passing an open descriptor to another process is `SCM_RIGHTS` over a

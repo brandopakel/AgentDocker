@@ -272,7 +272,7 @@ it holds (what an agent already holds, it keeps; your own actions are not
 held; only you can pause or resume, an agent asks with a message).
 **Launch agent…** opens the form. In a git project it offers **Own worktree**, on by default: the session works on a branch of its own (`agent/<name>`) in its own folder under AgentDocker's worktree directory, with the files the project's `.worktreeinclude` lists copied in; off, it works in the project folder on its current branch. Pressing the button again leaves the form open; **Cancel**
 or a press outside the dialog closes it) to choose an installed CLI and start it at the project root shown
-in the header. Claude and Codex launches default to **Idle messages: On**;
+in the header. With Codex chosen for a folder Codex does not trust (no `trust_level = "trusted"` for the project root in Codex's `config.toml`), one line says Codex will run read-only there and ask before every change, and how to trust it; AgentDocker never trusts a folder on the person's behalf. Claude and Codex launches default to **Idle messages: On**;
 turning it off visibly warns that messages may wait. Claude still requires its
 channel consent. Other tools disclose that automatic idle delivery is unavailable.
 This launch choice does not connect or restart an existing session. A launched
