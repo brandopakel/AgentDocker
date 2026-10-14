@@ -822,6 +822,13 @@ Newest first. Only what changes how the product is used.
   for its new worktree to be watched. A launched agent opens in its terminal,
   where Claude's folder-trust and channel-consent questions wait to be
   answered before it can start.
+- An agent's row, in a project's chat and in the session list, shows its
+  branch's pull request as one chip — **#340** and a tick, a dot or a cross
+  for its checks, or **#340 merged** — that opens it in the browser. It is
+  read with your signed-in `gh` every two minutes and when the window regains
+  focus; without `gh`, on a default branch or off GitHub there is no chip.
+  An agent that finished while you were not looking carries an accent dot
+  until you open it or its project; the **Done** pill it replaces is gone.
 - A Claude Code session stopped at a permission prompt or question shows as
   *waiting for you*: it is in Needs you with **Go to Terminal**, counted on
   the dock icon, and `agentdocker activity` shows it `waiting`. It needs the

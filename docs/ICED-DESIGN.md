@@ -99,13 +99,29 @@ control does, its id or its accessible label:
   (`app/logos.rs`).
 - **Finished, not yet viewed.** When a session's activity goes from working
   or blocked to idle or finished while the user is not looking at its project
-  in a focused window, the session is marked unviewed: an accent pill on the
-  row ("Done"), a count on its rail row, and a total on the Projects entry.
-  Opening the project or selecting the session clears it, as does the session
-  starting to work again. An idle report on its own never counts as viewing,
-  and the observed state stays in the row's meta line unchanged. Window-local
-  state, never persisted (`shell::State::unviewed_done`, filled by
+  in a focused window, the session is marked unviewed: an accent dot on its
+  row in the chat's agent list and the session list (`view::done_dot`, its
+  words in a tooltip and in the row's spoken label), a count on its rail row,
+  and a total on the Projects entry. Opening the project, selecting the
+  session or going to its terminal clears it, as does the session starting to
+  work again; waiting for the person (`Activity::Waiting`) is not finished and
+  drops the mark. An idle report on its own never counts as viewing, and the
+  observed state stays in the row's meta line unchanged. Window-local state,
+  never persisted (`shell::State::unviewed_done`, filled by
   `App::note_completions`).
+- **Pull request chip.** An agent row whose branch has a pull request on
+  GitHub carries one `Kind::Inline` chip (`App::pull_request_chip`): the
+  number and a glyph for its checks — `Icon::Check` green, an amber dot,
+  `Icon::Close` red — or *merged*; it opens the page with `/usr/bin/open` or
+  `xdg-open`, the URL one argument. `pull_request.rs` reads it with
+  `gh pr list --repo <owner/name> --head=<branch> --state all --json …`, the
+  repository taken from the git configuration's GitHub remote (upstream, then
+  github, then origin), `gh` found on `PATH` or in the Homebrew directories,
+  each call bounded at ten seconds. One round of at most eight branches runs
+  off the UI thread and answers in one message, so a refresh costs one frame;
+  a branch is asked again after two minutes, or fifteen seconds once the
+  window regains focus. A failed lookup keeps the last answer; nothing is
+  persisted.
 - **Colour roles** live in `app/style.rs`: ground, rail, card, raised, hover,
   overlay, text, muted, faint, line, line-strong, accent, accent-hover,
   accent-soft/ink, cyan, green, amber, red and danger (the solid fill of an

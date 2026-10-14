@@ -6291,6 +6291,120 @@ pub(crate) mod tests {
         assert!(app.shell.unviewed_done.is_empty());
     }
 
+    #[test]
+    fn waiting_for_the_person_is_not_done_and_going_to_the_terminal_is_looking() {
+        fn step(app: &mut App, id: &str, activity: Activity) {
+            let fresh = BTreeMap::from([(id.to_owned(), activity)]);
+            app.note_completions(&fresh);
+            app.activity = fresh;
+        }
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut worker = record("worker", "claude-code", Some(4242));
+        worker.project = Some(ProjectRef::directory("/fixture/alpha"));
+        let id = worker.id.to_string();
+        app.agents.push(worker);
+        // Out of view the whole time: the window is elsewhere.
+        app.shell.unfocused = true;
+        let now = Utc::now();
+        let working = || Activity::Working { since: now };
+        let idle = || Activity::Idle { since: now };
+        let waiting = || Activity::Waiting { since: now };
+
+        // A turn that stops to ask the person is waiting, not done; and
+        // waiting that turns idle without working in between finished
+        // nothing.
+        step(&mut app, &id, working());
+        step(&mut app, &id, waiting());
+        assert!(app.shell.unviewed_done.is_empty());
+        step(&mut app, &id, idle());
+        assert!(app.shell.unviewed_done.is_empty());
+
+        // Working to idle out of view is done, until the agent stops for
+        // the person: then it is waiting again, not done.
+        step(&mut app, &id, working());
+        step(&mut app, &id, idle());
+        assert!(app.shell.unviewed_done.contains(&id));
+        step(&mut app, &id, waiting());
+        assert!(app.shell.unviewed_done.is_empty());
+
+        // Going to its terminal is looking at it.
+        step(&mut app, &id, working());
+        step(&mut app, &id, idle());
+        assert!(app.shell.unviewed_done.contains(&id));
+        let _ = app.update(Message::OpenAgentTerminal(id.clone()));
+        assert!(app.shell.unviewed_done.is_empty());
+
+        // Ending mid-turn out of view is done too.
+        step(&mut app, &id, working());
+        step(&mut app, &id, Activity::Finished);
+        assert!(app.shell.unviewed_done.contains(&id));
+    }
+
+    #[test]
+    fn a_pull_request_chip_is_for_live_or_recent_agents_off_the_default_branch() {
+        use crate::pull_request::{Key, PullRequest, Status};
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let root = std::path::Path::new("/fixture/alpha");
+        let now = Utc::now();
+        let on = |name: &str, runtime: &str, branch: Option<&str>| {
+            let mut agent = record(name, runtime, None);
+            agent.project = Some(ProjectRef::directory(root));
+            agent.vcs = Some(agentdocker_core::VcsState {
+                branch: branch.map(str::to_owned),
+                head: None,
+                dirty: None,
+                updated_at: now,
+            });
+            agent
+        };
+        let feature = on("feature", "claude-code", Some("claude/row-status"));
+        let trunk = on("trunk", "codex", Some("main"));
+        let detached = on("detached", "codex", None);
+        let person = on("me", agentdocker_core::HUMAN_RUNTIME, Some("me/notes"));
+        let mut recent = on("recent", "codex", Some("codex/recent"));
+        recent.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        recent.finished_at = Some(now - chrono::TimeDelta::hours(2));
+        let mut old = on("old", "codex", Some("codex/old"));
+        old.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        old.finished_at = Some(now - chrono::TimeDelta::days(3));
+        app.agents = vec![
+            feature.clone(),
+            trunk.clone(),
+            detached,
+            person,
+            recent,
+            old,
+        ];
+        assert_eq!(
+            app.pull_request_wanted(),
+            BTreeSet::from([
+                Key::new(root, "claude/row-status").unwrap(),
+                Key::new(root, "codex/recent").unwrap(),
+            ])
+        );
+        let c = style::Colors::new(true);
+        // Nothing known yet: no chip, and nothing in its place.
+        assert!(app.pull_request_chip(&feature, c).is_none());
+        app.shell.pull_requests.answered(
+            vec![(
+                Key::new(root, "claude/row-status").unwrap(),
+                Ok(Some(PullRequest {
+                    number: 340,
+                    url: "https://github.com/o/n/pull/340".into(),
+                    status: Status::Passed,
+                })),
+            )],
+            Instant::now(),
+        );
+        assert_eq!(app.pull_request_of(&feature).map(|p| p.number), Some(340));
+        assert!(app.pull_request_chip(&feature, c).is_some());
+        assert!(app.pull_request_chip(&trunk, c).is_none());
+    }
+
     pub(crate) fn record(name: &str, runtime: &str, pid: Option<u32>) -> AgentRecord {
         let mut record = AgentRecord::new(
             agentdocker_core::AgentSpec {
