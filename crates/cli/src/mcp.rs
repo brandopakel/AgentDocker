@@ -86,37 +86,37 @@ pub struct McpArgs {
     pub claude_channel: bool,
 }
 
-/// Whether the parent session was launched for channel input: Claude Code,
-/// either with the input-mode variable the managed launch sets on it, or
-/// — for a session the person started in their own terminal — with the
-/// channel flag visible on the `claude` process itself. The flag is what
-/// makes Claude Code honour the channel, so the flag is the truth; the
-/// variable remains for launches that cannot show it.
-fn channel_opted_in(runtime: &str) -> bool {
+/// Whether the parent session takes channel input: Claude Code with the
+/// channel flag on the `claude` process itself. The flag is what makes
+/// Claude Code honour the channel, so where that process can be seen it
+/// decides, whatever the input-mode variable says: Claude's own restart
+/// re-executes it without the flag it was launched with while the variable
+/// survives in its environment, and a channel Claude does not load drops
+/// every offer without a word. The variable decides only where no `claude`
+/// process is visible.
+pub(crate) fn channel_opted_in(runtime: &str) -> bool {
     runtime == "claude-code"
-        && (std::env::var(CLAUDE_CHANNEL_INPUT).as_deref() == Ok("1") || channel_flag_on_parent())
+        && channel_flag_on_parent()
+            .unwrap_or_else(|| std::env::var(CLAUDE_CHANNEL_INPUT).as_deref() == Ok("1"))
 }
 
 /// The channel flag on the nearest `claude` ancestor, as Claude Code
-/// spells it during the research preview.
-fn channel_flag_on_parent() -> bool {
-    let Ok(table) = agentdocker_host::procinfo::processes() else {
-        return false;
-    };
+/// spells it during the research preview; `None` when there is no such
+/// ancestor to read.
+fn channel_flag_on_parent() -> Option<bool> {
+    let table = agentdocker_host::procinfo::processes().ok()?;
     let mut pid = parent_id();
     for _ in 0..16 {
-        let Some(process) = table.iter().find(|p| p.pid == pid) else {
-            return false;
-        };
+        let process = table.iter().find(|p| p.pid == pid)?;
         if agentdocker_host::procinfo::runtime_of(&process.argv) == Some("claude-code") {
-            return channel_flag_names_us(&process.argv);
+            return Some(channel_flag_names_us(&process.argv));
         }
         if process.ppid == pid || process.ppid <= 1 {
-            return false;
+            return None;
         }
         pid = process.ppid;
     }
-    false
+    None
 }
 
 /// `--dangerously-load-development-channels server:agentdocker`, as one

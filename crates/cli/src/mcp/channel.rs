@@ -343,7 +343,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                 if state_changed || last_report.elapsed() >= Duration::from_secs(30) {
                     let observation = match &offered {
                         Some((id, _, true, _)) => agentdocker_core::InputReport::Paused {
-                            reason: format!("Waiting for a verified receipt for message {id}; following messages remain queued. Check live input, lifecycle hooks and provider limits. Missing or ambiguous transcript evidence is retained, not automatically resent."),
+                            reason: format!("{} {id}; following messages remain queued. The session's hooks deliver it at its next prompt or tool use unless its transcript shows it arrived.", agentdocker_core::input::PAUSE_RECEIPT_MISSING),
                         },
                         _ => agentdocker_core::InputReport::Ready,
                     };

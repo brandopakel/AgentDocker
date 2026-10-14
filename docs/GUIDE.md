@@ -610,7 +610,7 @@ be set.
 | `AGENTDOCKER_SOCKET` | daemon, commands, app | The socket to serve or connect to (`<home>/agentd.sock`). |
 | `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` | commands, hooks, MCP | Who is speaking: the default for `--as` and `--from`. `run` sets both in a managed agent's environment. |
 | `AGENTDOCKER_NO_AUTOSTART=1` | commands, app | A client that cannot connect does not start a daemon. |
-| `AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1` | Claude Code hooks | On a session launched with the channel: hooks leave inbox delivery to the channel and only observe. `run --claude-channel` sets it. |
+| `AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1` | Claude Code hooks | On a session launched with the channel: hooks leave inbox delivery to the channel and only observe. The parent `claude`'s own flag wins where it can be read, and the hooks deliver again when the channel's queue has paused on an unconfirmed message. `run --claude-channel` sets it. |
 | `AGENTDOCKER_CODEX_INPUT=1` | Codex hooks, bridge | On a Codex process AgentDocker launched with input: delivery goes through the bridge. `run --codex-input` and the app's **Idle messages: On** set it. |
 | `AGENTDOCKER_NO_NOTIFICATIONS=1` | daemon | Post no desktop notifications. |
 | `AGENTDOCKER_UPDATE_FEED` | `desktop update` | A feed other than the published one, as a URL or a file, for an offline trial. |
@@ -803,6 +803,14 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- A Claude Code session no longer goes deaf after Claude's own restart.
+  Restarting in place re-executes `claude` without the channel flag, so the
+  channel AgentDocker kept offering messages through was dropping them, its
+  queue paused on the first one, and the hooks left delivery to it: a
+  project's Pause, and everything after it, never arrived. Now the flag on
+  the running `claude` decides whether the channel is used, and the hooks
+  deliver whatever a stalled channel holds at the session's next prompt or
+  tool use. Sessions already stuck catch up the next time they run a tool.
 - Codex input refuses an app-server older than 0.154.0 when it attaches, naming
   both versions, instead of failing in the middle of a turn. A turn Codex
   refuses outright leaves the message queued with the provider's reason on the

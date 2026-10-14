@@ -18,10 +18,16 @@ offer's repeat closes it: while no receipt has yet been seen on the channel,
 an offer that has none after thirty seconds is written a second time, once,
 under the same message id with `repeat: true` in its metadata, and the
 delivery rule tells the model a repeat is the same message, acknowledged
-once. From the first receipt on, nothing is offered twice: a missing receipt
-retains and visibly pauses the queue, without automatic replay based only on
-an absent transcript entry. Control and receipt requests remain responsive
-throughout. Neither the wait nor the repeat is a readiness guarantee or a
+once. From the first receipt on, the channel offers nothing twice: a missing
+receipt pauses its queue visibly, and the session's lifecycle hooks then take
+that queue over. At the next prompt or tool use, once receipt recovery has
+looked for the message in the transcript and not found it, they deliver it as
+hook context and acknowledge it when written, and every message behind it the
+same way. The case this covers is a channel Claude never loaded — a session
+restarted in place, which re-executes `claude` without the flag — where every
+offer is dropped without a word. A duplicate is possible only where the
+transcript hides a message the model did see, and is preferred to silence.
+Control and receipt requests remain responsive throughout. Neither the wait nor the repeat is a readiness guarantee or a
 receipt.
 
 ## Launch from AgentDocker
