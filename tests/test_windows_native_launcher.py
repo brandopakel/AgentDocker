@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from windows_native_launcher_smoke import canonical_reopen, process_snapshot
+from windows_native_launcher_smoke import canonical_reopen, participants_alive, process_snapshot
 
 
 class ProcessError(Exception):
@@ -66,6 +66,36 @@ class ProcessSnapshots(unittest.TestCase):
         self.assertIsNone(rows[0]['running'])
         self.assertEqual(rows[0]['observation_error'], 'DeniedProcess')
         self.assertTrue(rows[1]['running'])
+
+
+class ConsoleLiveness(unittest.TestCase):
+    def setUp(self):
+        self.required = {role: {'pid': index, 'birth': float(index)}
+                         for index, role in enumerate(['frontend', 'owner', 'native_provider',
+                                                       'app_server', 'controller', 'console_host'], 1)}
+        self.snapshot = [dict(identity, running=True) for identity in self.required.values()]
+        # The retained Windows failure included a descendant that had already
+        # exited before reader cancellation. Every required participant lived.
+        self.snapshot.append({'pid': 99, 'birth': 99.0, 'running': False})
+
+    def test_completed_descendant_does_not_invalidate_live_console_participants(self):
+        self.assertTrue(participants_alive(self.snapshot, self.required))
+        self.assertFalse(all(row['running'] for row in self.snapshot))
+        self.assertEqual(len(self.snapshot), 7)  # Retirement still owns all seven.
+
+    def test_each_required_role_must_be_observed_live_with_its_original_birth(self):
+        for role, identity in self.required.items():
+            for fault in ['exited', 'denied', 'reused', 'missing', 'duplicate']:
+                with self.subTest(role=role, fault=fault):
+                    rows = copy.deepcopy(self.snapshot)
+                    row = next(row for row in rows if row['pid'] == identity['pid'])
+                    if fault == 'exited': row['running'] = False
+                    if fault == 'denied': row.update(running=None, observation_error='AccessDenied')
+                    if fault == 'reused': row['birth'] += 1
+                    if fault == 'missing': rows.remove(row)
+                    if fault == 'duplicate': rows.append(dict(row))
+                    self.assertFalse(participants_alive(rows, self.required))
+        self.assertFalse(participants_alive(self.snapshot, {}))
 
 
 class NativeReopen(unittest.TestCase):
