@@ -43,6 +43,18 @@ def canonical_reopen(descriptor, generation, ledger, agent, thread, receipts):
             and ledger.get('attempt') is None and ledger.get('completed') == receipts)
 
 
+def unique_process_generations(processes):
+    """Observe a descendant/controller generation once, retaining reused PIDs."""
+    seen = set()
+    unique = []
+    for process in processes:
+        identity = (process.pid, process.create_time())
+        if identity not in seen:
+            seen.add(identity)
+            unique.append(process)
+    return unique
+
+
 def process_snapshot(processes, process_api):
     """Observe every birth-pinned participant, retaining exits and uncertainty.
 
@@ -447,6 +459,7 @@ def main():
                 watched.append(launcher)
             if target == 'console':
                 watched.extend([launcher, console_host])
+            watched = unique_process_generations(watched)
             requests_before_exit = len(report['requests'])
             report[probe_key] = {'pid': launcher.pid, 'birth': launcher.create_time(),
                                        'target': {'pid': target_process.pid, 'birth': target_process.create_time()},

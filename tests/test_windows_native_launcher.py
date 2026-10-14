@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from windows_native_launcher_smoke import canonical_reopen, participants_alive, process_snapshot
+from windows_native_launcher_smoke import (canonical_reopen, participants_alive, process_snapshot,
+                                           unique_process_generations)
 
 
 class ProcessError(Exception):
@@ -22,13 +23,14 @@ class DeniedProcess(ProcessError):
 
 
 class ObservedProcess:
-    def __init__(self, pid, live, metadata_error=None):
+    def __init__(self, pid, live, metadata_error=None, birth=123.0):
         self.pid = pid
         self.live = iter(live)
         self.metadata_error = metadata_error
+        self.birth = birth
 
     def create_time(self):
-        return 123.0
+        return self.birth
 
     def is_running(self):
         return next(self.live)
@@ -66,6 +68,28 @@ class ProcessSnapshots(unittest.TestCase):
         self.assertIsNone(rows[0]['running'])
         self.assertEqual(rows[0]['observation_error'], 'DeniedProcess')
         self.assertTrue(rows[1]['running'])
+
+
+class WatchedGenerations(unittest.TestCase):
+    api = SimpleNamespace(NoSuchProcess=MissingProcess, Error=ProcessError)
+
+    def test_controller_already_a_descendant_has_one_snapshot_and_retirement_entry(self):
+        child = ObservedProcess(1, [False])
+        controller = ObservedProcess(2, [True, True])
+        repeated = ObservedProcess(2, [], birth=controller.create_time())
+        watched = unique_process_generations([child, controller, repeated])
+        self.assertEqual(watched, [child, controller])
+        rows = process_snapshot(watched, self.api)
+        self.assertTrue(participants_alive(rows, {'controller': {'pid': 2, 'birth': 123.0}}))
+        self.assertFalse(rows[0]['running'])  # Exited descendants remain tracked.
+
+    def test_reused_pid_remains_ambiguous_and_is_not_deduplicated(self):
+        old = ObservedProcess(2, [False], birth=122.0)
+        current = ObservedProcess(2, [True, True], birth=123.0)
+        watched = unique_process_generations([old, current, old])
+        self.assertEqual(watched, [old, current])
+        rows = process_snapshot(watched, self.api)
+        self.assertFalse(participants_alive(rows, {'controller': {'pid': 2, 'birth': 123.0}}))
 
 
 class ConsoleLiveness(unittest.TestCase):
