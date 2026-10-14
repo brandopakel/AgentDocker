@@ -334,6 +334,9 @@ def macos(args, stage, info):
         "CFBundleIconFile": "AgentDocker.icns", "NSHighResolutionCapable": True,
         "CFBundleGetInfoString": f"AgentDocker {args.version} ({args.source[:12]})",
         "AgentDockerSourceCommit": args.source,
+        # Shown when macOS asks to let the app select an agent's tab in
+        # Terminal or iTerm; without it the request is refused unasked.
+        "NSAppleEventsUsageDescription": "AgentDocker brings forward the terminal tab an agent is running in when you open that agent. It never types into it.",
     }
     (contents / "Info.plist").write_bytes(plistlib.dumps(plist))
     (contents / "PkgInfo").write_text("APPL????")
@@ -345,7 +348,15 @@ def macos(args, stage, info):
     # Sign known nested code explicitly; --deep is reserved for verification.
     for name in ("agentdocker", "agentd"):
         run("/usr/bin/codesign", *flags, contents / "MacOS" / name)
-    run("/usr/bin/codesign", *flags, app)
+    with tempfile.TemporaryDirectory(prefix="ad-entitlements-") as signing:
+        app_flags = list(flags)
+        if identity != "-":
+            # A hardened app may send Apple events (to select an agent's
+            # terminal tab) only with this entitlement.
+            entitlements = Path(signing) / "entitlements.plist"
+            entitlements.write_bytes(plistlib.dumps({"com.apple.security.automation.apple-events": True}))
+            app_flags += ["--entitlements", entitlements]
+        run("/usr/bin/codesign", *app_flags, app)
     run("/usr/bin/codesign", "--verify", "--deep", "--strict", app)
     run("/usr/bin/swift", ROOT / "packaging/macos/display-name.swift", app)
     archive = stage / f"agentdocker-desktop-{args.target}.zip"

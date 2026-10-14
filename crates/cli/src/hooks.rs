@@ -110,6 +110,21 @@ pub enum Host {
     Codex,
 }
 
+/// Whether a Claude Code `Notification` says the session stopped for the
+/// person: a permission prompt or a question dialog in its terminal. The
+/// reminder that a finished turn is waiting for input is not one; `Stop`
+/// already said it is idle.
+fn waits_for_person(input: &HookInput) -> bool {
+    match input.notification_type.as_deref() {
+        Some(kind) => matches!(kind, "permission_prompt" | "elicitation_dialog"),
+        // Before `notification_type` existed, only the text told them apart.
+        None => input
+            .message
+            .as_deref()
+            .is_some_and(|text| text.starts_with("Claude needs your permission")),
+    }
+}
+
 /// The fields of a Claude Code hook event this adapter looks at.
 #[derive(Deserialize, Debug, Default, Clone)]
 pub struct HookInput {
@@ -132,6 +147,13 @@ pub struct HookInput {
     pub tool_input: Option<Value>,
     #[serde(default)]
     pub stop_hook_active: bool,
+    /// A `Notification`'s kind (`permission_prompt`, `elicitation_dialog`,
+    /// `idle_prompt`, …) and, on versions before it, its text. Only read to
+    /// tell a wait for the person apart; never stored.
+    #[serde(default)]
+    pub notification_type: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
     /// The session's JSONL transcript; its tail is the `Stop` summary.
     #[serde(default)]
     pub transcript_path: Option<PathBuf>,
@@ -321,6 +343,9 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                     Some(agentdocker_core::ReportedActivity::Working)
                 }
                 "Stop" => Some(agentdocker_core::ReportedActivity::Idle),
+                "Notification" if waits_for_person(&input) => {
+                    Some(agentdocker_core::ReportedActivity::Waiting)
+                }
                 _ => None,
             };
             let mut emitted_bytes = 0;
@@ -1906,6 +1931,36 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
+
+    #[test]
+    fn only_a_permission_prompt_or_a_dialog_is_a_wait_for_the_person() {
+        let event = |kind: Option<&str>, message: Option<&str>| HookInput {
+            hook_event_name: "Notification".into(),
+            notification_type: kind.map(str::to_owned),
+            message: message.map(str::to_owned),
+            ..HookInput::default()
+        };
+        assert!(waits_for_person(&event(Some("permission_prompt"), None)));
+        assert!(waits_for_person(&event(Some("elicitation_dialog"), None)));
+        for kind in ["idle_prompt", "auth_success", ""] {
+            assert!(
+                !waits_for_person(&event(
+                    Some(kind),
+                    Some("Claude needs your permission to use Bash")
+                )),
+                "{kind}"
+            );
+        }
+        assert!(waits_for_person(&event(
+            None,
+            Some("Claude needs your permission to use Bash")
+        )));
+        assert!(!waits_for_person(&event(
+            None,
+            Some("Claude is waiting for your input")
+        )));
+        assert!(!waits_for_person(&event(None, None)));
+    }
     use crate::client::mock::Mock;
 
     /// A live agent has a process, and since the lifecycle hooks verify
@@ -3488,7 +3543,7 @@ mod tests {
         let mention =
             json!({"hooks":[{"type":"command", "command":"echo 'agentdocker hook claude-code'"}]});
         let mut settings = json!({"hooks":{"Stop":[mention.clone()]}});
-        assert_eq!(merge_claude_code_hooks(&mut settings, &command).unwrap(), 7);
+        assert_eq!(merge_claude_code_hooks(&mut settings, &command).unwrap(), 8);
         assert_eq!(settings["hooks"]["Stop"][0], mention);
         let file = tmp.path().join(".claude/settings.json");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -3613,7 +3668,7 @@ mod tests {
         let added =
             merge_claude_code_hooks(&mut settings, "/usr/local/bin/agentdocker hook claude-code")
                 .unwrap();
-        assert_eq!(added, 7);
+        assert_eq!(added, 8);
         assert_eq!(
             settings["hooks"]["StopFailure"][0]["hooks"][0]["async"],
             true

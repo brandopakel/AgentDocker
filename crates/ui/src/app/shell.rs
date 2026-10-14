@@ -707,7 +707,7 @@ pub enum Message {
     Detach,
     OpenProjectTerminal,
     OpenAgentTerminal(String),
-    NativeTerminalOpened(Result<(), String>),
+    NativeTerminalOpened(Result<String, String>),
     TerminalInput(Vec<u8>),
     TerminalResize(u16, u16),
     TerminalScroll(i32),
@@ -2220,10 +2220,15 @@ impl App {
                     } else if !self.shell.terminal_opening {
                         if let (Some(pid), Some(started_at)) = (agent.pid, agent.process_started_at)
                         {
+                            let session = agent.session.clone();
                             self.shell.terminal_opening = true;
                             self.say("Opening terminal…");
                             tasks.push(open_native_terminal(
-                                crate::native_terminal::Request::Agent { pid, started_at },
+                                crate::native_terminal::Request::Agent {
+                                    pid,
+                                    started_at,
+                                    session,
+                                },
                             ));
                         } else {
                             self.shell.error = Some("This agent has not reported its terminal process. Open the app where it started.".into());
@@ -2235,7 +2240,7 @@ impl App {
                 self.shell.terminal_opening = false;
                 self.status.clear();
                 match result {
-                    Ok(()) => self.say("Terminal opened"),
+                    Ok(shown) => self.say(shown),
                     Err(error) => self.shell.error = Some(error),
                 }
             }
@@ -2603,7 +2608,7 @@ impl App {
         // Explicit focus/reveal chains above keep their completion message.
         // The dock icon counts the questions waiting on the person, in
         // every project: the dock is the whole app's, not one screen's.
-        let waiting = self.waiting_questions();
+        let waiting = self.waiting_on_you();
         if self.shell.dock_badge != Some(waiting) {
             self.shell.dock_badge = Some(waiting);
             crate::dock::badge(waiting);
@@ -2618,11 +2623,17 @@ impl App {
         Task::batch(tasks)
     }
 
-    /// Questions waiting on the person in every project: the rows Needs
+    /// What waits on the person in every project: open questions, and
+    /// sessions stopped at a prompt in their own terminal. The rows Needs
     /// you holds when it shows them all.
-    pub(crate) fn waiting_questions(&self) -> usize {
+    pub(crate) fn waiting_on_you(&self) -> usize {
         let now = Utc::now();
         self.questions.iter().filter(|q| !q.expired(now)).count()
+            + self
+                .agents
+                .iter()
+                .filter(|agent| self.waits_for_person(agent))
+                .count()
     }
 
     fn schedule_update_check(&mut self, now: i64) {
@@ -3678,7 +3689,7 @@ mod tests {
     /// the dock icon counts the live questions waiting on the person,
     /// set again only when the count changes.
     #[test]
-    fn command_n_launches_and_the_dock_counts_waiting_questions() {
+    fn command_n_launches_and_the_dock_counts_what_waits_on_you() {
         let (mut app, _, _) = app();
         let key = keyboard::Key::Character("n".into());
         let press = |modifiers| {
@@ -3714,8 +3725,29 @@ mod tests {
         app.questions.push(question("live", 5));
         app.questions.push(question("expired", -1));
         let _ = app.update(Message::Event(iced::Event::Window(window::Event::Focused)));
-        assert_eq!(app.waiting_questions(), 1);
+        assert_eq!(app.waiting_on_you(), 1);
         assert_eq!(app.shell.dock_badge, Some(1));
+
+        // A session stopped at a permission prompt in its terminal waits
+        // on the person as much as a question does.
+        let mut prompt = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                runtime: "claude-code".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        prompt.id = "prompted".into();
+        prompt.status = agentdocker_core::AgentStatus::Running;
+        app.agents.push(prompt);
+        app.activity.insert(
+            "prompted".into(),
+            agentdocker_core::Activity::Waiting { since: Utc::now() },
+        );
+        let _ = app.update(Message::Event(iced::Event::Window(window::Event::Focused)));
+        assert_eq!(app.waiting_on_you(), 2);
+        assert_eq!(app.shell.dock_badge, Some(2));
     }
 
     #[test]

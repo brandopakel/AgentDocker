@@ -58,14 +58,23 @@ Opening an agent takes you to its project and selects that session.
 
 **Open project terminal**, in the project header, opens a fresh native terminal
 in that project's folder. It is separate from **More → AgentDocker commands**,
-which runs AgentDocker commands rather than a project shell. Each live agent also
-has **Terminal**: app-managed agents open inside AgentDocker; on macOS, external
-agents open their existing Terminal tab without sending any input. If the agent
-belongs to another app, the action explains that the original app is needed.
-This does not start a second copy of an agent.
+which runs AgentDocker commands rather than a project shell. Clicking a live agent
+in the chat's agent list goes to its terminal; the chevron beside it opens its
+details. An agent AgentDocker started opens its terminal inside the app. One
+started elsewhere is found where it runs: in a tmux or herdr pane, that pane is
+selected first; then, on macOS, its Terminal or iTerm tab is brought forward
+(macOS asks once to let AgentDocker control that app), and any other host —
+Ghostty, an editor's terminal, a JetBrains IDE — is brought to the front. The
+details header says where an agent runs (*in Terminal (ttys005)*, *in
+tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
+tmux pane**). Nothing is typed into the agent, and no second copy is started.
+An agent without a terminal to reach opens its details instead.
 
-**Needs you** shows only questions waiting on you (**Answer**; a question from
-a session that has since ended says so before you write). Seen across
+**Needs you** shows only what waits on you: questions (**Answer**; a question
+from a session that has since ended says so before you write), and sessions
+stopped at a permission prompt or question in their own terminal (*Claude Code
+is waiting for you in its terminal* — **Go to Terminal** takes you there; their
+row reads *waiting for you* in amber). Seen across
 projects, each row starts with its project's name (*keel · Claude Code · Badger
 asks: …*). A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not
@@ -557,8 +566,8 @@ and notarization; locally signed builds are explicit previews.
   Selected text stays stable while new output drains; copy or resumed input
   releases it. Command+V/Ctrl+Shift+V pastes using the agent's bracketed-paste mode.
 
-On macOS the dock icon shows how many questions are waiting on you, in every
-project: the rows Needs you holds. It shows nothing when none are waiting.
+On macOS the dock icon shows how many questions and prompts are waiting on you,
+in every project: the rows Needs you holds. It shows nothing when none are waiting.
 
 Text inputs and the terminal support native input methods. Focus indicators and
 status words complement color. Native accessibility adapters expose control

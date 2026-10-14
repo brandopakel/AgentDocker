@@ -1838,6 +1838,57 @@ impl App {
         self.naming().display(agent)
     }
 
+    /// Whether a live agent is stopped for the person in its own terminal
+    /// (a permission prompt, a question dialog), by its adapter's report.
+    fn waits_for_person(&self, agent: &AgentRecord) -> bool {
+        agent.status.is_live()
+            && matches!(
+                self.activity.get(agent.id.as_str()),
+                Some(Activity::Waiting { .. })
+            )
+    }
+
+    /// Whether an agent has a terminal to go to: the in-app one for an
+    /// agent AgentDocker started with a terminal, its own for one it did
+    /// not. Clicking such an agent goes there; any other opens its details.
+    fn terminal_reachable(agent: &AgentRecord) -> bool {
+        agent.status.is_live()
+            && agent.spec.runtime != "human"
+            && if agent.managed {
+                agent.spec.tty
+            } else {
+                agent.pid.is_some() && agent.process_started_at.is_some()
+            }
+    }
+
+    /// Where an agent's terminal is, for a person: *in Terminal
+    /// (ttys005)*, *in tmux:%3*, *in AgentDocker*. `None` where nothing
+    /// says.
+    fn whereabouts(agent: &AgentRecord) -> Option<String> {
+        if agent.managed {
+            return agent.spec.tty.then(|| "in AgentDocker".to_owned());
+        }
+        match (&agent.session, &agent.terminal) {
+            (Some(session), _) => Some(format!("in {}", session.describe())),
+            (None, Some(host)) => Some(format!("in {}", host.describe())),
+            (None, None) => None,
+        }
+    }
+
+    /// The action that goes to an agent's terminal, named for where it is.
+    fn terminal_action(agent: &AgentRecord) -> String {
+        if agent.managed {
+            return "Open terminal".to_owned();
+        }
+        match (&agent.session, &agent.terminal) {
+            (Some(session), _) if session.kind == "tmux" || session.kind == "herdr" => {
+                format!("Go to {} pane", session.kind)
+            }
+            (_, Some(host)) => format!("Go to {}", host.name),
+            _ => "Open original terminal".to_owned(),
+        }
+    }
+
     /// The names of the current snapshot of records.
     pub(crate) fn naming(&self) -> naming::Naming<'_> {
         naming::Naming::new(&self.agents, &self.aliases)
