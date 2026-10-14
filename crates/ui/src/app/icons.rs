@@ -101,6 +101,8 @@ pub enum Icon {
     Shield,
     /// A chevron pointing up: a disclosure that is open.
     ChevronUp,
+    /// Angle brackets round a slash: code, opened in an editor.
+    Code,
 }
 
 /// An icon inked in one colour.
@@ -472,6 +474,17 @@ impl Glyph {
                     &polyline(&[p(4.0, 10.0), p(8.0, 6.0), p(12.0, 10.0)]),
                     stroke,
                 );
+            }
+            Icon::Code => {
+                frame.stroke(
+                    &polyline(&[p(5.0, 4.5), p(1.75, 8.0), p(5.0, 11.5)]),
+                    stroke,
+                );
+                frame.stroke(
+                    &polyline(&[p(11.0, 4.5), p(14.25, 8.0), p(11.0, 11.5)]),
+                    stroke,
+                );
+                frame.stroke(&Path::line(p(9.25, 3.25), p(6.75, 12.75)), stroke);
             }
         }
     }

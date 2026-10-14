@@ -157,13 +157,18 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
     daemon.set_watcher_attach(attach_tx);
     loop {
         tokio::select! {
-            _ = reconcile.tick() => reconcile_watches(&daemon, &mut watcher, &mut watched, &mut retries),
+            // A registration or launch waits on its attachment; filesystem
+            // events can wait a moment behind it. Without the bias a burst
+            // of events (a build in another checkout) could hold a launch
+            // past its bound.
+            biased;
             Some(request) = attach_rx.recv() => {
                 reconcile_watches(&daemon, &mut watcher, &mut watched, &mut retries);
                 let result=if watched.contains_key(&request.checkout) { Ok(()) }
                     else { Err(format!("no watcher covers {}",request.checkout.display())) };
                 let _ = request.ack.send(result);
             }
+            _ = reconcile.tick() => reconcile_watches(&daemon, &mut watcher, &mut watched, &mut retries),
             Some(event) = rx.recv() => {
                 if pending.len() < 4096 { pending.push(event); }
                 else { gap.store(true, Ordering::Relaxed); }

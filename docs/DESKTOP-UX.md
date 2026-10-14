@@ -47,8 +47,9 @@ agent), *delivery paused*, *session ended before taking it*. Nothing says
 *read*: the daemon cannot know it. **Agents** opens the
 session list and **Board** the project's cards. **More** opens a menu of History,
 Files in use, Usage, AgentDocker commands and the project's Pin and Forget; the tab takes the name of the screen on view and is underlined only
-while one of those screens is open. **Pause…**, **Open terminal** and
-**Launch agent…** stay in the header on every project screen; the chevron
+while one of those screens is open. **Pause…**, **Open terminal**,
+**Open in…** (when an editor is installed) and **Launch agent…** stay in the
+header on every project screen; the chevron
 beside Launch agent lists the installed tools and opens the form with one
 chosen. The form is a dialog over the window; launching from Board or History
 goes to Agents with it open. A session's Details shows its
@@ -70,6 +71,37 @@ tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
 tmux pane**). Nothing is typed into the agent, and no second copy is started.
 An agent without a terminal to reach opens its details instead.
 
+An agent's row, in the chat's agent list and in the session list, carries at
+most two small marks. An **accent dot** says it finished since you last looked:
+its turn ended, or the session did, while its project was not on screen in a
+focused window. Going to its terminal, opening its details or opening its
+project clears it, as does the agent starting to work again; an agent stopped
+for you (*waiting for you*) is not finished. Pointing at the dot says so. A
+**pull request chip** names the pull request of the agent's branch — **#340**
+with a green tick when its checks passed, an amber dot while they run, a red
+cross when one failed, **#340 merged** once merged — and opens it in the
+browser. It is read with the `gh` you are signed in to, in the background, at
+most every two minutes and again when the window regains focus, for live
+agents and those that ended within a day. A default branch (main, master,
+develop), a project whose remote is not on GitHub, a closed pull request, or a
+missing or signed-out `gh` shows no chip.
+**Open in…**, beside Open terminal, opens the project's folder in an editor
+installed on this computer: a small menu lists the ones found (the one chosen
+last first, remembered with the workspace preferences), and with only one
+installed the button names it (**Open in Zed**) and opens it at once. With
+none installed there is no button. On macOS the editors are the known
+applications in `/Applications`, `~/Applications` and `~/Applications/JetBrains
+Toolbox` — Visual Studio Code (and Insiders), Cursor, Windsurf, Zed (and
+Preview), Sublime Text, Nova, BBEdit, Xcode, Fleet and the JetBrains IDEs
+(IntelliJ IDEA and CE, RustRover, PyCharm and CE, GoLand, WebStorm, CLion,
+PhpStorm, RubyMine, DataGrip, Android Studio) — opened with `open -a`; on
+Linux, their commands on `PATH` (`code`, `cursor`, `windsurf`, `zed`, `subl`,
+`idea`, `rustrover`, `pycharm`, `goland`, `webstorm`, `clion`), given the
+folder. The folder is one argument, never shell text. They are found once, as
+the window opens. A session working in a worktree of its own offers the same
+**Open in…** in its Details, under its folder, for that worktree. The command
+palette has one **Open in** row per editor for the selected project.
+
 **Needs you** shows only what waits on you: questions (**Answer**; a question
 from a session that has since ended says so before you write), and sessions
 stopped at a permission prompt or question in their own terminal (*Claude Code
@@ -82,7 +114,7 @@ here: its row says so in amber, and opening it shows the details — how many
 messages are kept, that resuming the conversation delivers them, **Review** for
 a live session's delivery and **Dismiss** for an ended one's notice, which
 leaves the messages as they are.
-Finished sessions keep their **Done** badge on the row. Question previews use at
+Finished sessions keep their accent dot on the row. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
 Inbox. The first three items are shown; **Show more** expands the same list and
@@ -243,7 +275,10 @@ or a press outside the dialog closes it) to choose an installed CLI and start it
 in the header. Claude and Codex launches default to **Idle messages: On**;
 turning it off visibly warns that messages may wait. Claude still requires its
 channel consent. Other tools disclose that automatic idle delivery is unavailable.
-This launch choice does not connect or restart an existing session.
+This launch choice does not connect or restart an existing session. A launched
+agent opens in its terminal as soon as it runs: what it asks before it starts —
+Claude's *Do you trust this folder?* for a new worktree and its channel consent —
+is answered there, and nothing else would show it.
 **Connect** under **Running here, not connected** adopts a discovered process for
 coordination (it reads **Connecting…** and cannot be pressed again until the
 daemon answers, and the result names the session or says why not); the row names the tool and the folder it runs in, not a

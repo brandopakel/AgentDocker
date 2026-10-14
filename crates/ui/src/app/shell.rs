@@ -39,6 +39,10 @@ pub(super) struct State {
     pub launch: bool,
     /// The Launch agent split button's menu of tools is open.
     pub launch_menu: bool,
+    /// The editors installed here, found once as the window opens.
+    pub editors: Vec<agentdocker_core::editor::Editor>,
+    /// The **Open in…** menu that is open, if one is.
+    pub editor_menu: Option<EditorMenu>,
     pub launch_runtime: Option<String>,
     pub launch_name: String,
     pub launch_arguments: String,
@@ -129,12 +133,16 @@ pub(super) struct State {
     pub reply_recoveries: Vec<ReplyRecovery>,
     /// Sessions whose turn finished while nobody was looking at them:
     /// finished as observed, not yet viewed. Viewing is an explicit act
-    /// (opening the project or the session, or already having it on
-    /// screen in a focused window when it finished); an `idle` report on
-    /// its own never counts as seen. Window-local, never persisted.
+    /// (opening the project, the session or its terminal, or already
+    /// having it on screen in a focused window when it finished); an
+    /// `idle` report on its own never counts as seen. Window-local, never
+    /// persisted.
     pub unviewed_done: BTreeSet<String>,
     /// The window has lost focus; what it shows is not being looked at.
     pub unfocused: bool,
+    /// Each shown branch's pull request and checks, as `gh` last said.
+    /// Window-local, never persisted.
+    pub pull_requests: crate::pull_request::Cache,
     // command palette
     /// The command palette: open or not, its search and nested pages.
     pub palette: super::palette::Palette,
@@ -532,6 +540,17 @@ pub enum DeliveryTarget {
     Session(String),
 }
 
+type PullRequestKey = crate::pull_request::Key;
+type PullRequestAnswer = Result<Option<crate::pull_request::PullRequest>, String>;
+
+/// Where an **Open in…** menu opens from: the project's header, or the
+/// selected session's details, for the worktree it works in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorMenu {
+    Project,
+    Session,
+}
+
 #[derive(Clone, Debug)]
 pub enum Message {
     Tick,
@@ -708,6 +727,18 @@ pub enum Message {
     OpenProjectTerminal,
     OpenAgentTerminal(String),
     NativeTerminalOpened(Result<String, String>),
+    /// A round of pull request lookups came back, one answer per branch.
+    PullRequests(Vec<(PullRequestKey, PullRequestAnswer)>),
+    /// Open a pull request's page in the browser; and how that went.
+    OpenPullRequest(String),
+    PullRequestOpened(Result<(), String>),
+    /// The editors installed here, found off the UI thread.
+    EditorsFound(Vec<agentdocker_core::editor::Editor>),
+    /// Open or close an **Open in…** menu.
+    EditorMenu(EditorMenu),
+    /// Open this folder in the editor of this kind, and remember the choice.
+    OpenIn(String, PathBuf),
+    EditorOpened(Result<String, String>),
     TerminalInput(Vec<u8>),
     TerminalResize(u16, u16),
     TerminalScroll(i32),
@@ -956,10 +987,24 @@ impl App {
             .chain(crate::accessibility::collect())
     }
 
+    /// The installed editor of this kind, remembered as the last one
+    /// chosen; `None` when it is not installed (any more).
+    fn choose_editor(&mut self, kind: &str) -> Option<agentdocker_core::editor::Editor> {
+        let editor = self.shell.editors.iter().find(|e| e.kind == kind)?.clone();
+        if self.shell.catalog.editor.as_deref() != Some(editor.kind) {
+            self.shell.catalog.editor = Some(editor.kind.to_owned());
+            self.shell.changed();
+        }
+        Some(editor)
+    }
+
     pub fn boot() -> (Self, Task<Message>) {
         (
             Self::new(),
-            window::oldest().and_then(|id| Task::done(Message::Window(id))),
+            Task::batch([
+                window::oldest().and_then(|id| Task::done(Message::Window(id))),
+                find_editors(),
+            ]),
         )
     }
 
@@ -1068,6 +1113,7 @@ impl App {
                     self.shell.changed();
                 }
                 self.refresh_project_context();
+                tasks.push(self.refresh_pull_requests(false));
                 tasks.push(self.advance_notification());
                 if let Some(smoke) = &mut self.smoke {
                     tasks.push(smoke.tick(
@@ -1173,6 +1219,7 @@ impl App {
                 self.screen = screen;
                 self.shell.more = false;
                 self.shell.launch_menu = false;
+                self.shell.editor_menu = None;
                 if screen == Screen::Chat {
                     self.open_project_chat();
                 }
@@ -1298,6 +1345,7 @@ impl App {
                 self.request_review(&id);
                 self.shell.selected = Some(id);
                 self.shell.session_details = false;
+                self.shell.editor_menu = None;
                 self.shell.review_delivery = false;
                 self.shell.session_message = false;
             }
@@ -1682,7 +1730,10 @@ impl App {
                     }
                 }
             }
-            Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
+            Message::SessionDetails => {
+                self.shell.session_details = !self.shell.session_details;
+                self.shell.editor_menu = None;
+            }
             Message::ReviewChanges(id) => self.request_review(&id),
             Message::ToggleDiffFile(path) => {
                 self.shell.diff_file = if self.shell.diff_file.as_deref() == Some(path.as_str()) {
@@ -2186,6 +2237,8 @@ impl App {
                     .iter()
                     .any(|a| a.id.as_str() == id && a.managed && a.spec.tty && a.status.is_live())
                 {
+                    // Its terminal on screen is the agent looked at.
+                    self.shell.unviewed_done.remove(&id);
                     self.attach(id, self.wake.clone());
                     self.screen = Screen::Terminal;
                     tasks.push(iced::widget::operation::focus(
@@ -2210,6 +2263,8 @@ impl App {
                 }
             }
             Message::OpenAgentTerminal(id) => {
+                // Going to its terminal is looking at what it finished.
+                self.shell.unviewed_done.remove(&id);
                 if let Some(agent) = self
                     .agents
                     .iter()
@@ -2238,6 +2293,50 @@ impl App {
             }
             Message::NativeTerminalOpened(result) => {
                 self.shell.terminal_opening = false;
+                self.status.clear();
+                match result {
+                    Ok(shown) => self.say(shown),
+                    Err(error) => self.shell.error = Some(error),
+                }
+            }
+            Message::PullRequests(answers) => {
+                self.shell.pull_requests.answered(answers, Instant::now());
+            }
+            Message::OpenPullRequest(url) => tasks.push(Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || crate::pull_request::open(&url))
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                Message::PullRequestOpened,
+            )),
+            Message::PullRequestOpened(result) => {
+                if let Err(error) = result {
+                    self.say(error);
+                }
+            }
+            Message::EditorsFound(editors) => self.shell.editors = editors,
+            Message::EditorMenu(place) => {
+                self.shell.editor_menu = (self.shell.editor_menu != Some(place)).then_some(place);
+                if self.shell.editor_menu.is_some()
+                    && let Some(first) = self.editor_choices().first()
+                {
+                    let first = format!("open-in-{}", first.kind);
+                    let trigger = match place {
+                        EditorMenu::Project => "project-open-in",
+                        EditorMenu::Session => "session-open-in",
+                    };
+                    tasks.push(self.menu_focus(trigger, first));
+                }
+            }
+            Message::OpenIn(kind, folder) => {
+                self.shell.editor_menu = None;
+                if let Some(editor) = self.choose_editor(&kind) {
+                    self.say(format!("Opening in {}…", editor.name));
+                    tasks.push(open_in_editor(editor, folder));
+                }
+            }
+            Message::EditorOpened(result) => {
                 self.status.clear();
                 match result {
                     Ok(shown) => self.say(shown),
@@ -2410,6 +2509,9 @@ impl App {
                 // Request OS permission only once an actual window has focus.
                 crate::notify::request_permission();
                 self.shell.unfocused = false;
+                // Coming back is when CI is looked at: ask again now
+                // rather than at the next two-minute sweep.
+                tasks.push(self.refresh_pull_requests(true));
                 if let Some(id) = self.shell.window {
                     tasks.push(crate::accessibility::focus(id, true));
                 }
@@ -3044,6 +3146,33 @@ fn open_native_terminal(request: crate::native_terminal::Request) -> Task<Messag
     )
 }
 
+/// The editors installed here, read off the UI thread.
+fn find_editors() -> Task<Message> {
+    Task::perform(
+        async {
+            tokio::task::spawn_blocking(agentdocker_host::editor::installed)
+                .await
+                .unwrap_or_default()
+        },
+        Message::EditorsFound,
+    )
+}
+
+/// Open `folder` in `editor`, off the UI thread; the status line says so.
+fn open_in_editor(editor: agentdocker_core::editor::Editor, folder: PathBuf) -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                agentdocker_host::editor::open(&editor, &folder)
+                    .map(|()| format!("Opened in {}", editor.name))
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+        },
+        Message::EditorOpened,
+    )
+}
+
 fn resolve_folder(path: PathBuf) -> Task<Message> {
     Task::perform(
         async move {
@@ -3055,6 +3184,68 @@ fn resolve_folder(path: PathBuf) -> Task<Message> {
         },
         Message::FolderResolved,
     )
+}
+
+/// How long after it ended an agent's branch keeps its pull request chip.
+const PULL_REQUEST_RECENT: chrono::TimeDelta = chrono::TimeDelta::hours(24);
+
+impl App {
+    /// The branch an agent's pull request chip is about: its project's
+    /// and its own, unless that is a default branch.
+    pub(super) fn pull_request_key(agent: &AgentRecord) -> Option<crate::pull_request::Key> {
+        let root = &agent.project.as_ref()?.root;
+        let branch = agent.vcs.as_ref()?.branch.as_deref()?;
+        crate::pull_request::Key::new(root, branch)
+    }
+
+    /// The pull request of the branch an agent works on, as last read.
+    pub(super) fn pull_request_of(
+        &self,
+        agent: &AgentRecord,
+    ) -> Option<&crate::pull_request::PullRequest> {
+        self.shell
+            .pull_requests
+            .get(&Self::pull_request_key(agent)?)
+    }
+
+    /// The branches worth a chip: those of live agents and of agents that
+    /// ended within the last day.
+    pub(super) fn pull_request_wanted(&self) -> BTreeSet<crate::pull_request::Key> {
+        let now = Utc::now();
+        self.agents
+            .iter()
+            .filter(|a| a.spec.runtime != agentdocker_core::HUMAN_RUNTIME)
+            .filter(|a| {
+                a.status.is_live()
+                    || now - a.finished_at.unwrap_or(a.last_seen) < PULL_REQUEST_RECENT
+            })
+            .filter_map(Self::pull_request_key)
+            .collect()
+    }
+
+    /// Ask `gh` again about the wanted branches whose answer is old (see
+    /// `pull_request::Cache::due`): one round on a background thread, its
+    /// answers in one message, so a refresh costs the window one frame.
+    pub(super) fn refresh_pull_requests(&mut self, focus: bool) -> Task<Message> {
+        let wanted = self.pull_request_wanted();
+        let due = self.shell.pull_requests.due(&wanted, Instant::now(), focus);
+        if due.is_empty() {
+            return Task::none();
+        }
+        Task::perform(
+            async move {
+                let keys = due.clone();
+                tokio::task::spawn_blocking(move || crate::pull_request::lookup_all(due))
+                    .await
+                    .unwrap_or_else(|e| {
+                        keys.into_iter()
+                            .map(|key| (key, Err(e.to_string())))
+                            .collect()
+                    })
+            },
+            Message::PullRequests,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -3149,6 +3340,62 @@ mod tests {
         let _ = app.update(Message::LaunchMenu);
         app.reset_session_view();
         assert!(!app.shell.launch_menu);
+    }
+
+    /// Choosing an editor opens the folder in it — Launch Services given
+    /// the bundle and the folder, one argument each — and remembers it with
+    /// the workspace preferences; an editor no longer installed opens
+    /// nothing; a menu closes on a second press and never outlives its
+    /// screen; a failure is said where errors are.
+    #[test]
+    fn choosing_an_editor_opens_the_folder_in_it_and_remembers_it() {
+        let (mut app, _commands, _messages) = app();
+        app.shell.editors = agentdocker_core::editor::from_bundles(
+            ["/Applications/Zed.app", "/Applications/RustRover.app"].map(PathBuf::from),
+        );
+        let folder = PathBuf::from("/work/alpha");
+        let _ = app.update(Message::EditorMenu(EditorMenu::Project));
+        assert_eq!(app.shell.editor_menu, Some(EditorMenu::Project));
+        let saved = app.shell.generation;
+        let _ = app.update(Message::OpenIn("rustrover".into(), folder.clone()));
+        assert_eq!(app.shell.editor_menu, None);
+        assert_eq!(app.shell.catalog.editor.as_deref(), Some("rustrover"));
+        assert_ne!(app.shell.generation, saved, "the choice is saved");
+        assert_eq!(app.status, "Opening in RustRover…");
+        let editor = app.choose_editor("rustrover").unwrap();
+        assert_eq!(
+            editor.argv(&folder),
+            [
+                "/usr/bin/open",
+                "-a",
+                "/Applications/RustRover.app",
+                "/work/alpha"
+            ]
+            .map(std::ffi::OsString::from)
+        );
+        let saved = app.shell.generation;
+        let _ = app.update(Message::OpenIn("rustrover".into(), folder.clone()));
+        assert_eq!(app.shell.generation, saved, "the same choice saves nothing");
+
+        app.status.clear();
+        let _ = app.update(Message::OpenIn("xcode".into(), folder.clone()));
+        assert_eq!(app.shell.catalog.editor.as_deref(), Some("rustrover"));
+        assert!(app.status.is_empty(), "nothing opened");
+
+        let _ = app.update(Message::EditorMenu(EditorMenu::Session));
+        assert_eq!(app.shell.editor_menu, Some(EditorMenu::Session));
+        let _ = app.update(Message::EditorMenu(EditorMenu::Session));
+        assert_eq!(app.shell.editor_menu, None);
+        let _ = app.update(Message::EditorMenu(EditorMenu::Project));
+        let _ = app.update(Message::Navigate(Screen::Settings));
+        assert_eq!(app.shell.editor_menu, None);
+
+        let _ = app.update(Message::EditorOpened(
+            Err("Could not open Zed: gone".into()),
+        ));
+        assert_eq!(app.shell.error.as_deref(), Some("Could not open Zed: gone"));
+        let _ = app.update(Message::EditorOpened(Ok("Opened in Zed".into())));
+        assert_eq!(app.status, "Opened in Zed");
     }
 
     /// The board asks sent so far, newest last: `(request, offset, limit)`.
@@ -3748,6 +3995,35 @@ mod tests {
         let _ = app.update(Message::Event(iced::Event::Window(window::Event::Focused)));
         assert_eq!(app.waiting_on_you(), 2);
         assert_eq!(app.shell.dock_badge, Some(2));
+    }
+
+    /// A launched agent's terminal opens as soon as the list shows it
+    /// running, so what it asks before it starts is in front of the person.
+    #[test]
+    fn a_launched_agent_opens_in_its_terminal_once_it_is_listed() {
+        let (mut app, _commands, messages) = app();
+        messages.send(Msg::Launched(Ok("fresh".into()))).unwrap();
+        app.drain();
+        assert_eq!(app.shell.attach_when_listed, Some(("fresh".into(), None)));
+        assert_ne!(app.screen, Screen::Terminal);
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                runtime: "claude-code".into(),
+                tty: true,
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        agent.id = "fresh".into();
+        agent.status = agentdocker_core::AgentStatus::Running;
+        agent.process_started_at = Some(Utc::now());
+        messages
+            .send(Msg::Agents(vec![agent], BTreeMap::new()))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.screen, Screen::Terminal);
+        assert_eq!(app.shell.attach_when_listed, None);
     }
 
     #[test]
