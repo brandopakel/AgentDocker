@@ -5,23 +5,24 @@ Apple signing/notarization still needs a private developer identity and actual
 release acceptance. Other engineering and platform work is tracked in
 [Remaining work](REMAINING-WORK.md); distribution setup is one part of delivery.
 
-The unpublished beta.13 candidate adds bounded emitted-byte accounting and
-Linux session-owner reaping of orphaned descendants. Emitted bytes remain separate
-from provider-reported tokens and carry partial coverage; collection stays opt-in.
-Ledger 15/state schema 27 is unchanged. Its beta.12 baseline supports binary
-rollback; acceptance must preserve recorded accounting metadata and event cursors
-through rollback and reapply, without restoring an older database. Beta.9/schema26
-remains incompatible. Final-source validation, included review and hosted
-installation/update/rollback checks remain publication gates.
+Published beta.13 adds bounded emitted-byte accounting and Linux session-owner
+reaping of orphaned descendants. Emitted bytes remain separate from provider
+tokens and carry partial coverage; collection stays opt-in. Ledger 15/state
+schema 27 is unchanged. Actual hosted beta.12 → beta.13 rollback and reapply
+passed: recorded accounting metadata, event cursors and tracking totals survived
+all three stopped-daemon generations, with exact-ID deduplication and no database
+restore. This does not prove live handover or provider continuity. Beta.9/schema26
+remains incompatible. Included final-source review, CI and hosted acceptance
+are recorded in [the verification index](verification/INDEX.md).
 
 ## Release workflow and retry policy
 
 A protected `v*` tag triggers `.github/workflows/release.yml`; editing the
 workflow does not publish anything. The tag version must match `Cargo.toml`
 and the recorded build must have clean source. The current published preview is
-`0.2.0-beta.12`, reviewed source `d48c0ab6`; all 31 hosted assets and both preview
+`0.2.0-beta.13`, reviewed source `c9e03f64`; all 31 hosted assets and both preview
 feeds passed verification. Mac ARM64, Oracle Ubuntu and a Windows runner passed
-bounded beta.11/schema27 → beta.12/schema27 update, rollback and reapply. Unix
+bounded beta.12/schema27 → beta.13/schema27 update, rollback and reapply. Unix
 terminal, graphical, daemon-service and selective pruning checks passed; Windows
 hosted lifecycle and daemon/connector service checks passed. Stable signing,
 fresh accounts, independent physical hardware and sleep/reboot remain open in
@@ -358,24 +359,25 @@ login/reboot acceptance remain separate gates.
 ## Coworker preview releases
 
 The failed immutable `v0.2.0-beta.1` tag remains at `d46db1f2`; it published no
-release. The current published preview is **0.2.0-beta.12**, immutable source
-`d48c0ab6`; protected-tag run 38308608128 passed. All 31 hosted assets, nine
+release. The current published preview is **0.2.0-beta.13**, immutable source
+`c9e03f64`; protected-tag run 38510224265 passed all 15 jobs. All 31 hosted assets, nine
 archives, five manifests and both preview feeds were verified. Explicit-version
-CLI installation and beta.11 → beta.12 desktop installation/default-feed update,
+CLI installation and beta.12 → beta.13 desktop installation/default-feed update,
 same-schema rollback and reapply passed on Mac ARM64 and Oracle Ubuntu x86_64.
 Both platforms passed eight terminal/32 graphical checks with synthetic providers
 and five selective pruning/startup checks. Mac passed 21 daemon checks, including
 twelve consecutive restarts; Oracle passed 17 systemd checks. Windows passed
 15 hosted lifecycle checks plus 13 daemon and 24 connector service checks.
 Owned services/process generations retired and pre-existing state was preserved.
-Both fixed preview channels advertise beta.12; stable v0.1.0 and Homebrew remain
+Both fixed preview channels advertise beta.13; stable v0.1.0 and Homebrew remain
 unchanged. Trial scopes and original failures remain in the verification index.
 
-Beta.11, beta.12 and the beta.13 candidate use state schema 27 and delivery ledger
-15. Beta.9/schema26 and earlier releases cannot replace schema27. Never restore
-an older delivery ledger over acknowledged input; use isolated state for an
-older-version trial. Beta.13's additive accounting metadata needs actual
-rollback/reapply acceptance; matching schema versions alone do not prove it.
+Beta.11, beta.12 and beta.13 use state schema 27 and delivery ledger 15.
+Beta.9/schema26 and earlier releases cannot replace schema27. Never restore an
+older delivery ledger over acknowledged input; use isolated state for an
+older-version trial. Hosted Mac/Oracle trials independently verified beta.13's
+additive accounting metadata through stopped-daemon rollback/reapply. Matching
+schema versions alone do not establish compatibility for a future release.
 
 Native Codex launch, managed secret input and live replacement remain
 experimental. Fresh accounts, physical input, independent Mac, automatic Mac
