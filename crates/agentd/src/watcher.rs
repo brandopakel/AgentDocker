@@ -35,6 +35,7 @@ const FLUSH_EVERY: Duration = Duration::from_millis(100);
 /// How long an on-demand flush waits for the OS before draining.
 const FLUSH_GRACE: Duration = Duration::from_millis(150);
 
+#[derive(Clone)]
 struct Watched {
     checkout: Checkout,
     /// A linked worktree's own git directory, watched for its `HEAD`.
@@ -156,23 +157,23 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
     let (attach_tx, mut attach_rx) = tokio::sync::mpsc::channel::<WatcherAttachment>(8);
     daemon.set_watcher_attach(attach_tx);
     loop {
-        tokio::select! {
-            _ = reconcile.tick() => reconcile_watches(&daemon, &mut watcher, &mut watched, &mut retries),
-            Some(request) = attach_rx.recv() => {
+        let flush_ack = tokio::select! {
+            _ = reconcile.tick() => {
                 reconcile_watches(&daemon, &mut watcher, &mut watched, &mut retries);
-                let result=if watched.contains_key(&request.checkout) { Ok(()) }
-                    else { Err(format!("no watcher covers {}",request.checkout.display())) };
-                let _ = request.ack.send(result);
+                continue;
+            }
+            Some(request) = attach_rx.recv() => {
+                attach_checkout(&daemon, &mut watcher, &mut watched, &mut retries, request);
+                continue;
             }
             Some(event) = rx.recv() => {
                 if pending.len() < 4096 { pending.push(event); }
                 else { gap.store(true, Ordering::Relaxed); }
+                continue;
             },
             Some(ack) = flush_rx.recv() => {
                 // Give the OS a moment to deliver what just happened (FSEvents
                 // batches with some latency), take what is queued, then flush.
-                // No filesystem events can arrive when no checkout is watched.
-                // Plain-directory leases still work but have no watcher coverage.
                 if !watched.is_empty() {
                     tokio::time::sleep(FLUSH_GRACE).await;
                 }
@@ -180,12 +181,61 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
                     if pending.len() < 4096 { pending.push(event); }
                     else { gap.store(true, Ordering::Relaxed); }
                 }
-                drain(&daemon, &mut pending, &watched, &gap).await;
-                let _ = ack.send(());
+                Some(ack)
             }
-            _ = flush.tick() => {
-                drain(&daemon, &mut pending, &watched, &gap).await;
-            }
+            _ = flush.tick() => None,
+        };
+        // A flush may await Git reads for many linked checkouts. Keep servicing
+        // coverage barriers while it waits, without cancelling or overlapping
+        // flushes. This batch retains its checkout snapshot; newly attached
+        // streams queue their observations for the next batch.
+        if pending.is_empty() {
+            drain(&daemon, &mut pending, &watched, &gap).await;
+        } else {
+            let snapshot = watched.clone();
+            finish_with_attachments(
+                drain(&daemon, &mut pending, &snapshot, &gap),
+                &mut attach_rx,
+                |request| {
+                    attach_checkout(&daemon, &mut watcher, &mut watched, &mut retries, request);
+                },
+            )
+            .await;
+        }
+        if let Some(ack) = flush_ack {
+            let _ = ack.send(());
+        }
+    }
+}
+
+fn attach_checkout(
+    daemon: &Daemon,
+    watcher: &mut CheckoutWatchers,
+    watched: &mut BTreeMap<PathBuf, Watched>,
+    retries: &mut HashMap<PathBuf, std::time::Instant>,
+    request: WatcherAttachment,
+) {
+    reconcile_watches(daemon, watcher, watched, retries);
+    let result = if watched.contains_key(&request.checkout) {
+        Ok(())
+    } else {
+        Err(format!("no watcher covers {}", request.checkout.display()))
+    };
+    let _ = request.ack.send(result);
+}
+
+/// Preserve the in-flight flush and its completion barrier while registrations
+/// obtain real watcher coverage. Attachment handling never acknowledges a flush.
+async fn finish_with_attachments(
+    work: impl std::future::Future<Output = ()>,
+    requests: &mut mpsc::Receiver<WatcherAttachment>,
+    mut attach: impl FnMut(WatcherAttachment),
+) {
+    tokio::pin!(work);
+    loop {
+        tokio::select! {
+            _ = &mut work => return,
+            Some(request) = requests.recv() => attach(request),
         }
     }
 }
@@ -423,6 +473,72 @@ fn kind_of(kind: &EventKind) -> Option<ChangeKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn attachments_progress_while_flush_completion_remains_pending() {
+        let (send, mut requests) = mpsc::channel::<WatcherAttachment>(8);
+        let (started, start) = tokio::sync::oneshot::channel();
+        let (complete, completion) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut handled = Vec::new();
+            finish_with_attachments(
+                async {
+                    started.send(()).unwrap();
+                    completion.await.unwrap();
+                },
+                &mut requests,
+                |request| {
+                    handled.push(request.checkout.clone());
+                    let result = if request.checkout == Path::new("covered") {
+                        Ok(())
+                    } else {
+                        Err("checkout unavailable".to_string())
+                    };
+                    request.ack.send(result).unwrap();
+                },
+            )
+            .await;
+            handled
+        });
+        tokio::time::timeout(Duration::from_secs(1), start)
+            .await
+            .unwrap()
+            .unwrap();
+        for (checkout, expected) in [
+            ("covered", Ok(())),
+            ("missing", Err("checkout unavailable".to_string())),
+        ] {
+            let (ack, done) = tokio::sync::oneshot::channel();
+            send.send(WatcherAttachment {
+                checkout: PathBuf::from(checkout),
+                ack,
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), done)
+                    .await
+                    .expect("coverage must not wait for flush completion")
+                    .unwrap(),
+                expected
+            );
+            assert!(
+                !task.is_finished(),
+                "attachment must not complete the flush"
+            );
+        }
+        // Closing admission also must not discard or prematurely finish work.
+        drop(send);
+        assert!(!task.is_finished());
+        complete.send(()).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .unwrap()
+                .unwrap(),
+            vec![PathBuf::from("covered"), PathBuf::from("missing")]
+        );
+    }
 
     #[test]
     fn removing_a_checkout_does_not_turn_its_entire_tree_into_contested_edits() {
