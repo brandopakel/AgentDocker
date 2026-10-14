@@ -31,6 +31,12 @@ accounting metadata must survive rollback without a database restore or duplicat
 count on reapplication. Both workspace and fuzz lockfiles resolve the beta.13 local packages
 with locked, offline metadata checks; no registry dependency was changed. Stable and Homebrew remain separate.
 
+After that preview, the source is versioned **0.2.0**. A protected `v0.2.0` tag publishes it, with
+the Homebrew formula and cask, once the Developer ID identity and notary key in
+[stable macOS signing](#release-and-first-run) are configured; the release
+workflow refuses a stable tag without them. Its publication evidence is recorded
+here when that run passes.
+
 ## Release and first run
 
 | Requirement | Current evidence | Remaining work |
