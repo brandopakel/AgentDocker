@@ -84,8 +84,13 @@ the saved user layer, before CLI overrides. Forwarding options does not prevent
 that provider first-use write. The Windows account preflight's exact marker
 addition was verified and restored. The corrected Windows account trial passed
 busy delivery, exact receipts, Unicode draft preservation, receiver replacement
-and normal exit. Reopen then failed because the fixture repeated permission
-overrides; supported reopen and early-refusal acceptance remain open.
+and normal exit. The first reopen then failed because the fixture repeated permission
+overrides. A later existing-account Windows trial on candidate `7dfd7c01`
+passed saved-permission UUID reopen without another prompt and early refusal
+before provider startup, alongside busy delivery, receipts, draft preservation
+and receiver replacement. All 28 observed process generations retired without
+force; configuration and protected sessions were independently verified. Final
+hosted beta.14 integration, broader versions and physical input remain open.
 
 The receiver probes the read-only queue/history APIs before taking ownership.
 Hooks keep their normal delivery while that probe is pending or unsupported;

@@ -26,6 +26,15 @@ remain open. Native Codex, managed secret input and live daemon replacement stay
 experimental. Existing-account and synthetic-provider evidence is scoped below;
 CI and private fixtures do not establish physical or fresh-login acceptance.
 
+The unpublished beta.14 candidate includes the Windows service staging,
+native Codex launch configuration and watcher responsiveness corrections, plus
+longer pending-question retention, durable question-stream recovery, accurate
+activity/pause reporting and the desktop Codex trust notice. Ledger 15/state
+schema 27 is unchanged. The candidate still requires final versioned-source
+review and CI, protected-tag publication and hosted beta.13 → beta.14 install,
+update, rollback, reapply and service acceptance. Earlier candidate trials do
+not replace those hosted checks. Stable v0.1.0 and Homebrew remain unchanged.
+
 ## Release and first run
 
 | Requirement | Current evidence | Remaining work |
