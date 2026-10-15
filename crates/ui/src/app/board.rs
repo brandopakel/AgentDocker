@@ -419,7 +419,9 @@ impl App {
         container(body)
             .width(Fill)
             .style(move |_| container::Style {
-                background: Some(c.accent_soft.into()),
+                // A faint wash under the accent edge: the open card is
+                // marked, not painted.
+                background: Some(mix(c.card, c.accent, if c.dark { 0.08 } else { 0.04 }).into()),
                 text_color: Some(c.text),
                 border: iced::Border {
                     color: c.accent,
