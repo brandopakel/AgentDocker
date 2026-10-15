@@ -1336,6 +1336,19 @@ impl App {
                 c,
             ));
         }
+        // Deny can carry words for the agent, as every agent app studied
+        // pairs it: why not, or what to do instead. They go to it as a
+        // message from the person once the denial is accepted.
+        if chosen.is_none() && !expired {
+            let draft = id.clone();
+            details = details.push(crate::controls::input_enabled(
+                format!("deny-note-{id}"),
+                "Why not, or what to do instead (sent with Deny)",
+                self.shell.answers.get(&id).map_or("", String::as_str),
+                move |words| Message::Draft(draft.clone(), words),
+                enabled,
+            ));
+        }
 
         let left: Element<'_, Message> = if expired {
             small("No longer waiting for an answer", c).into()
@@ -2094,6 +2107,10 @@ mod tests {
                 view.control("answer-command").is_none(),
                 "no written answer"
             );
+            assert!(
+                view.control("deny-note-command").is_some(),
+                "words for the agent, sent with Deny"
+            );
             assert!(view.reads("printf fixture"));
             assert!(view.reads("Requested connection: example.com (https"));
             assert!(view.reads("Deny cancels this Codex request."));
@@ -2103,6 +2120,7 @@ mod tests {
         let during = seen(app.question_card(&question, Colors::new(true)));
         assert!(during.control("answer-allow-command").is_none());
         assert!(during.control("answer-deny-command").is_none());
+        assert!(during.control("deny-note-command").is_none());
         assert!(during.reads("Allow"), "the footer says what was chosen");
     }
 
