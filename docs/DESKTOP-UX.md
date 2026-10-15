@@ -88,8 +88,9 @@ when it calls for you, and sets the name semibold when something there is new
 or waits on you. "Finished since you looked" means its turn ended, or the
 session did, while its project was not on screen in a focused window; going to
 its terminal, opening its details or opening its project clears it, as does
-the agent starting to work again. The row's one trailing slot shows what you
-must do, else the **pull request chip**, else how long. The pull request chip names the pull request of the agent's branch — **#340**
+the agent starting to work again; **Mark unread** in a session's panel brings
+the dot back, to come back to it later. The row's one trailing slot shows what
+you must do, else the **pull request chip**, else how long. The pull request chip names the pull request of the agent's branch — **#340**
 with a green tick when its checks passed, an amber dot while they run, a red
 cross when one failed, **#340 merged** once merged — and opens it in the
 browser. It is read with the `gh` you are signed in to, in the background, at
