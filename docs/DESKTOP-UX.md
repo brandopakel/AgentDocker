@@ -486,7 +486,8 @@ Click to see what it did.*), one per agent, replacing its last — but not when
 your next message to it is already queued, since it goes straight on to that.
 An agent that stops for you in its own terminal is told the same way (*Badger
 wants permission*, *has a question* or *is waiting for you · In keel. It is
-waiting in its terminal.*). A notice is taken back from Notification Center
+waiting in its terminal.*) once the stop has lasted two seconds, so a prompt you
+answer at once, at the terminal, never notifies. A notice is taken back from Notification Center
 once it is no longer true: the question was answered, the agent moved on from
 its prompt, or you looked at what it finished. Settings → Appearance → **When
 an agent finishes or waits** turns these off. A notification opens the message's conversation

@@ -151,8 +151,11 @@ pub(super) struct State {
     /// be told: posted off the window's thread after the update.
     pub finish_notices: Vec<String>,
     /// Agents that stopped for the person in their own terminal while the
-    /// window was not in front, waiting to be told.
-    pub wait_notices: Vec<String>,
+    /// window was not in front, and since when: told once the stop has
+    /// lasted `WAIT_GRACE`, so a prompt answered at once never notifies.
+    pub wait_notices: Vec<(String, Instant)>,
+    /// A wake is set for the first pending wait notice to come due.
+    pub wait_timer: bool,
     /// Agents whose notification may still sit in the notification
     /// centre: the ones this window posted, and those with a question the
     /// daemon posted. Each is taken back once it stops being true.
@@ -219,6 +222,10 @@ pub const REPLY_RECOVERIES: usize = 8;
 /// The clock sweep while the window has focus: "12s ago" labels, the
 /// status line clearing, a question's time left.
 pub const FOCUSED_SWEEP: Duration = Duration::from_secs(2);
+/// How long a stop for the person lasts before it is told: a prompt the
+/// person answers at once, at the terminal, is not news (Roo Code waits
+/// two seconds too).
+pub const WAIT_GRACE: Duration = Duration::from_secs(2);
 /// The same sweep while it does not: nobody reads those labels, and each
 /// tick paints the whole window.
 pub const UNFOCUSED_SWEEP: Duration = Duration::from_secs(30);
@@ -816,6 +823,8 @@ pub enum Message {
     CommandQuery(String),
     /// Move its highlighted row up or down, round the ends.
     CommandMove(i32),
+    /// A pending wait notice may have come due (`WAIT_GRACE`).
+    WaitGrace,
     /// Run its highlighted row (Enter).
     CommandSubmit,
     /// Run one of its rows, by id.
@@ -2584,6 +2593,8 @@ impl App {
                 self.shell.changed();
             }
             Message::NoticePosted(_) => {}
+            // The update's tail tells what has come due and sets the next.
+            Message::WaitGrace => self.shell.wait_timer = false,
             Message::MarkUnread(id) => {
                 self.shell.unviewed_done.insert(id);
                 // Marked from its own panel: close it, or opening it again
@@ -2840,9 +2851,39 @@ impl App {
         let finished = std::mem::take(&mut self.shell.finish_notices)
             .into_iter()
             .map(|id| (id, false));
-        let waiting = std::mem::take(&mut self.shell.wait_notices)
-            .into_iter()
-            .map(|id| (id, true));
+        // A stop is told once it has lasted the grace; one that ended
+        // inside it is forgotten, and one still young sets a wake for when
+        // it comes due, since an unfocused window sweeps only twice a
+        // minute.
+        let now = Instant::now();
+        let mut due = Vec::new();
+        let mut young = Vec::new();
+        for (id, since) in std::mem::take(&mut self.shell.wait_notices) {
+            let still = self
+                .agents
+                .iter()
+                .any(|a| a.id.as_str() == id && self.waits_for_person(a));
+            if !still {
+                continue;
+            }
+            if now.duration_since(since) >= WAIT_GRACE {
+                due.push(id);
+            } else {
+                young.push((id, since));
+            }
+        }
+        if let Some(soonest) = young.iter().map(|(_, since)| *since).min()
+            && !self.shell.wait_timer
+        {
+            self.shell.wait_timer = true;
+            let left = WAIT_GRACE.saturating_sub(now.duration_since(soonest));
+            tasks.push(Task::perform(
+                async move { tokio::time::sleep(left).await },
+                |()| Message::WaitGrace,
+            ));
+        }
+        self.shell.wait_notices = young;
+        let waiting = due.into_iter().map(|id| (id, true));
         for (id, waits) in finished.chain(waiting).collect::<Vec<_>>() {
             let Some(agent) = self.agents.iter().find(|a| a.id.as_str() == id) else {
                 continue;

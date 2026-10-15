@@ -1802,7 +1802,7 @@ impl App {
                     .iter()
                     .any(|a| a.id.as_str() == id && a.status.is_live())
             {
-                self.shell.wait_notices.push(id.clone());
+                self.shell.wait_notices.push((id.clone(), Instant::now()));
             }
             let was_busy = matches!(
                 self.activity.get(id),
@@ -6436,11 +6436,32 @@ pub(crate) mod tests {
         step(&mut app, &id, working());
         step(&mut app, &id, waiting());
         step(&mut app, &id, waiting());
-        assert_eq!(
-            app.shell.wait_notices,
-            std::slice::from_ref(&id),
-            "once per stop"
-        );
+        let pending = |app: &App| -> Vec<String> {
+            app.shell
+                .wait_notices
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        assert_eq!(pending(&app), std::slice::from_ref(&id), "once per stop");
+
+        // Told only once the stop has lasted the grace; a wake is set for
+        // then, as the unfocused window sweeps rarely.
+        let _ = app.update(Message::Tick);
+        assert_eq!(pending(&app), std::slice::from_ref(&id), "too young yet");
+        assert!(app.shell.wait_timer);
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        assert!(pending(&app).is_empty());
+        assert!(app.shell.noticed.contains(&id), "told");
+        // A stop answered inside the grace is never told.
+        app.shell.noticed.clear();
+        step(&mut app, &id, working());
+        step(&mut app, &id, waiting());
+        step(&mut app, &id, working());
+        let _ = app.update(Message::Tick);
+        assert!(pending(&app).is_empty());
+        assert!(!app.shell.noticed.contains(&id));
 
         // In front, the window shows it; nothing is posted.
         app.shell.wait_notices.clear();
