@@ -246,7 +246,9 @@ out. Merging makes a merge commit in the main folder and says so (*Merged into
 main as abc1234.*), or says why not, with nothing changed; a branch that moved
 since it was read is never merged unseen. Nothing is pushed. Changes are read
 again when the session commits or its branch moves, and with **Refresh**. Once
-nothing is left to merge, the next step is right there: while the session runs
+nothing is left to merge — or its pull request has merged on GitHub (*Merged on
+GitHub as #340.*), where a squash leaves the branch's own commits uncounted by
+the main branch, so no Merge is offered — the next step is right there: while the session runs
 the section says its worktree stays until it is done; once it has ended,
 **Remove its worktree** removes the folder (only when it is clean) and its branch
 when git considers it merged; the branch is kept, and the section says so, when not. **Details** reveals the session ID, process,
