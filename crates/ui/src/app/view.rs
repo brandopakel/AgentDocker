@@ -3457,7 +3457,7 @@ impl App {
         {
             body = body.push(small(
                 format!(
-                    "Codex does not trust {} yet, so it runs read-only there and asks before every change. Run codex in that folder once and trust it to let it edit.",
+                    "Codex trust for {} is not confirmed. Open Codex in this folder to review trust and permission settings before launching.",
                     shorten_home(root)
                 ),
                 c,

@@ -52,7 +52,7 @@ pub(super) struct State {
     /// Whether the launched session gets its own worktree and branch.
     pub launch_worktree: bool,
     /// The project folder Codex does not trust, when Codex is the tool
-    /// chosen: it would run read-only there and ask before every change.
+    /// chosen; this alone does not determine its sandbox or approval policy.
     pub launch_codex_untrusted: Option<std::path::PathBuf>,
     /// The count last shown on the dock icon, so it is set only on a change.
     pub dock_badge: Option<usize>,
@@ -3060,8 +3060,6 @@ impl App {
             .map_err(|error| format!("Cannot reconstruct the Claude session launch: {error}"))
     }
 
-    /// Whether the project the launch form is for is a git repository:
-    /// only then can a session have a worktree of its own.
     /// The selected project's folder when `runtime` is Codex and Codex
     /// does not trust it. Read as the form opens or the tool is chosen,
     /// never while drawing.
@@ -3071,6 +3069,8 @@ impl App {
         })
     }
 
+    /// Whether the project the launch form is for is a git repository:
+    /// only then can a session have a worktree of its own.
     pub(crate) fn launch_project_is_git(&self) -> bool {
         self.shell
             .catalog

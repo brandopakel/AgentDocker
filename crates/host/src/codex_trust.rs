@@ -1,8 +1,7 @@
-//! Whether Codex trusts a project folder. Codex runs in a folder it does
-//! not trust read-only and asks before every change. Its own terminal
-//! asks the person to trust a new folder first; a launch from AgentDocker
-//! does not, so the desktop says so before launching instead of letting
-//! every edit turn into an approval nobody expected.
+//! Read the saved project trust entry for the desktop launch notice.
+//! Missing trust does not establish effective sandbox or approval policy:
+//! explicit provider configuration can override trust-derived defaults.
+//! The notice directs the person to review Codex's settings without changing them.
 
 use std::path::{Path, PathBuf};
 
