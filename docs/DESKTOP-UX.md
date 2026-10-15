@@ -133,7 +133,10 @@ agents that need you, and its name in semibold when something there is new;
 how many agents run is not shown, since it is not a reason to look. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
-Inbox. A command a live session asks to run is answered in the row itself:
+Inbox, where an approval card also has a line for words to go with **Deny** —
+why not, or what to do instead — sent to the agent as your message once the
+denial is accepted (the provider's own answer is still exactly Deny; Allow sends
+no words). A command a live session asks to run is answered in the row itself:
 **Deny** and **Allow once** send the same exact answer as the Inbox card, with
 the command in the row's words; file changes, which must be looked at first,
 and every other question open with **Answer**. The first three items are shown; **Show more** expands the same list and

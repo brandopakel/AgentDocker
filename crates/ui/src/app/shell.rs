@@ -4145,6 +4145,48 @@ mod tests {
         assert_eq!(app.shell.answers[&id], "earlier draft");
     }
 
+    /// Deny with words: the denial is the one answer sent, and the words
+    /// go to the agent as a message only once the denial is accepted.
+    /// Allow sends none.
+    #[test]
+    fn a_denial_carries_its_note_to_the_agent_once_accepted() {
+        let (mut app, commands, messages) = app();
+        app.connected = Ok(());
+        for (choice, noted) in [("Deny", true), ("Allow", false)] {
+            let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
+                command: "rm -rf build".into(),
+                cwd: "/owned".into(),
+                reason: "Fixture".into(),
+            };
+            let id = MessageId::from(format!("question-{choice}"));
+            app.questions.push(Question {
+                id: id.clone(),
+                from: "asker".into(),
+                to: agentdocker_core::Destination::Agent("user".into()),
+                text: presentation.text(),
+                presentation: Some(presentation),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+            });
+            let _ = app.update(Message::Draft(
+                id.clone(),
+                "  Use the fixture script instead  ".into(),
+            ));
+            let _ = app.update(Message::AnswerChoice(id.clone(), choice.into()));
+            assert!(
+                matches!(commands.try_iter().collect::<Vec<_>>().as_slice(), [Cmd::Answer(message, answer)] if message == &id && answer == choice),
+                "{choice}: the choice alone is the answer"
+            );
+            messages.send(Msg::Answered(id.clone(), Ok(()))).unwrap();
+            app.drain();
+            let told = commands.try_iter().any(|cmd| {
+                matches!(cmd, Cmd::SessionSend(to, text) if to == "asker" && text == "Use the fixture script instead")
+            });
+            assert_eq!(told, noted, "{choice}");
+            assert!(!app.shell.answers.contains_key(&id));
+        }
+    }
+
     /// Command+N opens the launch form, as in every session manager, and
     /// the dock icon counts the live questions waiting on the person,
     /// set again only when the count changes.

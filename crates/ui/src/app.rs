@@ -1300,6 +1300,29 @@ impl App {
                     self.sending.remove(&id);
                     match result {
                         Ok(()) => {
+                            // A denial written with words: they go to the
+                            // agent now the denial is accepted.
+                            let note = self
+                                .shell
+                                .answers
+                                .get(&id)
+                                .map(|note| note.trim().to_owned())
+                                .filter(|note| !note.is_empty());
+                            let denied = self
+                                .shell
+                                .chosen_answers
+                                .get(&id)
+                                .is_some_and(|chosen| chosen.eq_ignore_ascii_case("deny"));
+                            if denied
+                                && let Some(note) = note
+                                && let Some(from) = self
+                                    .questions
+                                    .iter()
+                                    .find(|q| q.id == id && q.presentation.is_some())
+                                    .map(|q| q.from.clone())
+                            {
+                                self.send(Cmd::SessionSend(from, note));
+                            }
                             self.shell.forms.remove(&id);
                             if self.shell.answers.remove(&id).is_some() {
                                 self.shell.drafts.changed();
