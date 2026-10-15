@@ -1145,9 +1145,8 @@ impl App {
                     "project-terminal",
                     "Open project terminal",
                     container(icon(Icon::Terminal, c.muted, 15.0)).center(18),
-                    (!self.shell.terminal_opening
-                        && self.shell.project_available != Some(false))
-                    .then_some(Message::OpenProjectTerminal),
+                    (!self.shell.terminal_opening && self.shell.project_available != Some(false))
+                        .then_some(Message::OpenProjectTerminal),
                     false,
                     Kind::Ghost,
                     [7, 8],
@@ -2672,7 +2671,10 @@ impl App {
             let spoken = format!(
                 "{name}\n{}{}",
                 facts.join(" · "),
-                if matches!(standing, agentdocker_core::standing::Standing::FinishedUnseen) {
+                if matches!(
+                    standing,
+                    agentdocker_core::standing::Standing::FinishedUnseen
+                ) {
                     " · finished since you last looked"
                 } else {
                     ""
@@ -3384,9 +3386,8 @@ impl App {
         // Start from what the agent should do: the prompt first, the tool
         // as a chip under it, everything else behind More options.
         let header = column![heading("Launch an agent", 16)].spacing(4);
-        let ready = !self.shell.launching
-            && self.shell.launch_runtime.is_some()
-            && self.connected.is_ok();
+        let ready =
+            !self.shell.launching && self.shell.launch_runtime.is_some() && self.connected.is_ok();
         let prompt = crate::controls::composer(
             "launch-prompt",
             "launch",

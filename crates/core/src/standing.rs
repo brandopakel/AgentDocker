@@ -110,7 +110,10 @@ impl Standing {
     /// Whether the row's name is set heavier: something there is new to
     /// the person or waits on them.
     pub fn calls_for_attention(self) -> bool {
-        matches!(self, Self::NeedsYou(_) | Self::Failed | Self::FinishedUnseen)
+        matches!(
+            self,
+            Self::NeedsYou(_) | Self::Failed | Self::FinishedUnseen
+        )
     }
 
     /// The word for the state. Rows show it only when it calls for the

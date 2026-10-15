@@ -4095,11 +4095,18 @@ mod tests {
                 .any(|cmd| matches!(cmd, Cmd::SessionSend(id, text) if id == "fresh" && text == "Fix the flaky test")),
             "the prompt is queued to the agent it launched"
         );
-        assert!(app.shell.launch_prompt.is_empty(), "and the form starts empty next time");
+        assert!(
+            app.shell.launch_prompt.is_empty(),
+            "and the form starts empty next time"
+        );
         // No prompt, no message.
         messages.send(Msg::Launched(Ok("bare".into()))).unwrap();
         app.drain();
-        assert!(!commands.try_iter().any(|cmd| matches!(cmd, Cmd::SessionSend(..))));
+        assert!(
+            !commands
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::SessionSend(..)))
+        );
     }
 
     #[test]
