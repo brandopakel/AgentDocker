@@ -54,6 +54,58 @@ pub struct Review {
     /// Paths in the main checkout someone holds a lease on, with who.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held: Vec<(String, String)>,
+    /// An operation git has under way in the main checkout: the person's
+    /// own, which a merge must neither run into nor undo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_progress: Option<Operation>,
+}
+
+/// A git operation left under way in a checkout, by the marker git keeps
+/// for it in the repository's git directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Operation {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+    Bisect,
+    /// One a newer daemon names that this build does not know.
+    #[serde(other)]
+    Other,
+}
+
+impl Operation {
+    /// Its name in a sentence: *a rebase*.
+    pub fn named(self) -> &'static str {
+        match self {
+            Self::Merge => "a merge",
+            Self::Rebase => "a rebase",
+            Self::CherryPick => "a cherry-pick",
+            Self::Revert => "a revert",
+            Self::Bisect => "a bisect",
+            Self::Other => "a git operation",
+        }
+    }
+
+    /// Which operation the markers in a git directory say is under way,
+    /// in the order git itself checks them; `exists` answers for a path
+    /// relative to that directory.
+    pub fn from_markers(exists: impl Fn(&str) -> bool) -> Option<Self> {
+        if exists("rebase-merge") || exists("rebase-apply") {
+            Some(Self::Rebase)
+        } else if exists("MERGE_HEAD") {
+            Some(Self::Merge)
+        } else if exists("CHERRY_PICK_HEAD") {
+            Some(Self::CherryPick)
+        } else if exists("REVERT_HEAD") {
+            Some(Self::Revert)
+        } else if exists("BISECT_LOG") {
+            Some(Self::Bisect)
+        } else {
+            None
+        }
+    }
 }
 
 impl Default for Review {
@@ -74,6 +126,7 @@ impl Default for Review {
             target_dirty: Vec::new(),
             conflicts: Vec::new(),
             held: Vec::new(),
+            in_progress: None,
         }
     }
 }
@@ -105,6 +158,9 @@ pub enum Blocker {
     /// The main checkout has no branch checked out, or the agent's
     /// checkout has none.
     NoBranch,
+    /// The person has a git operation under way in the main checkout: a
+    /// merge would run into it, and only they can finish or abort it.
+    InProgress(Operation),
     /// The agent's branch has nothing the target does not.
     NothingToMerge,
     Uncommitted(usize),
@@ -130,6 +186,10 @@ impl Blocker {
                 )
             }
             Self::NoBranch => "no branch is checked out to merge into or from".to_owned(),
+            Self::InProgress(operation) => format!(
+                "the main folder is in the middle of {}; finish or abort it there first",
+                operation.named()
+            ),
             Self::NothingToMerge => format!("nothing on its branch that {target} does not have"),
             Self::Uncommitted(n) => format!("{} not committed yet", files(n)),
             Self::TargetDirty(n) => format!("{target} has {} changed and not committed", files(n)),
@@ -145,6 +205,11 @@ impl Review {
         let mut blockers = Vec::new();
         if self.checkout == self.target_checkout && self.branch == self.target {
             return vec![Blocker::SameCheckout];
+        }
+        // Said before a missing branch: a rebase leaves the main checkout
+        // on no branch, and that is the reason to give.
+        if let Some(operation) = self.in_progress {
+            return vec![Blocker::InProgress(operation)];
         }
         if self.branch.is_none() || self.target.is_none() {
             return vec![Blocker::NoBranch];

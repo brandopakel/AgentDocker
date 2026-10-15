@@ -80,7 +80,12 @@ impl App {
         {
             return None;
         }
-        let target = review.target.clone().unwrap_or_default();
+        // A rebase leaves the main folder on no branch; it is still where
+        // the merge would go.
+        let target = review
+            .target
+            .clone()
+            .unwrap_or_else(|| "the main folder".to_owned());
         let branch = review.branch.clone().unwrap_or_default();
         let (added, removed) = review.totals();
         let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
@@ -387,6 +392,14 @@ impl App {
             .into()
         };
         let mut list = column![].spacing(3);
+        // The person's own operation under way in the main folder is the
+        // one thing to say: nothing else was weighed while it lasts.
+        if let Some(b) = blockers
+            .iter()
+            .find(|b| matches!(b, Blocker::InProgress(_)))
+        {
+            return list.push(check(false, b.label(target))).into();
+        }
         list = list.push(
             match blockers
                 .iter()

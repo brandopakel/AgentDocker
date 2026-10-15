@@ -21,6 +21,15 @@ fn line(text: Option<String>) -> Option<String> {
     text.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty())
 }
 
+/// The git operation under way in the checkout at `root`, by the markers
+/// in its own git directory (a linked worktree has its own).
+async fn in_progress(root: &Path) -> Option<review::Operation> {
+    let git_dir = PathBuf::from(line(
+        read(root, &["rev-parse", "--absolute-git-dir"]).await,
+    )?);
+    review::Operation::from_markers(|marker| git_dir.join(marker).exists())
+}
+
 /// Keep a large patch within its byte budget without splitting a UTF-8 character.
 /// Prefer a complete line; a single oversized line still gets a safe prefix.
 fn patch_prefix(patch: &str) -> &str {
@@ -56,6 +65,7 @@ async fn gather(
         held,
         ..Review::default()
     };
+    review.in_progress = in_progress(&root).await;
     if (dir == root && review.branch == review.target) || head.is_none() {
         return review;
     }
@@ -235,6 +245,18 @@ impl Daemon {
         let _committing = person
             .is_some()
             .then(|| Committing::mark(self, root.clone()));
+        // Read again just before git runs: an operation the person began
+        // after the review is theirs, and the abort below must only ever
+        // undo a merge this call started.
+        if let Some(operation) = in_progress(&root).await {
+            return Response::error(
+                ErrorCode::Conflict,
+                format!(
+                    "not merged: {}",
+                    review::Blocker::InProgress(operation).label(&target)
+                ),
+            );
+        }
         let before = line(read(&root, &["rev-parse", "HEAD"]).await);
         let message = format!("Merge branch '{branch}'");
         let merged = git(
@@ -455,5 +477,50 @@ mod tests {
         ));
         assert_eq!(head_of(&root).await, before);
         assert!(!root.join(".git/MERGE_HEAD").exists());
+
+        // The person's own merge under way in the main folder, with every
+        // file already resolved: said, and never run into or undone.
+        // Main takes the agent's line, so the branch would merge cleanly:
+        // only the marker stands in the way. Before the check, git refused
+        // the merge and the cleanup's `merge --abort` undid theirs.
+        std::fs::write(root.join("shared.txt"), "the agent's\n").unwrap();
+        run(&root, &["commit", "-qam", "Take the agent's line"]).await;
+        let review = reviewed(&daemon).await;
+        assert!(review.conflicts.is_empty(), "{:?}", review.conflicts);
+        let head = review.head.unwrap();
+        std::fs::write(root.join(".git/MERGE_HEAD"), head_of(&root).await + "\n").unwrap();
+        let review = reviewed(&daemon).await;
+        assert_eq!(review.in_progress, Some(review::Operation::Merge));
+        assert_eq!(
+            review.blockers(),
+            [review::Blocker::InProgress(review::Operation::Merge)]
+        );
+        let before = head_of(&root).await;
+        assert!(refused(daemon.merge_branch("user", "otter", &head).await));
+        assert!(
+            root.join(".git/MERGE_HEAD").exists(),
+            "the person's merge is still theirs"
+        );
+        assert_eq!(head_of(&root).await, before);
+    }
+
+    /// Each marker git leaves names its operation, a rebase first, as git
+    /// itself reads them.
+    #[test]
+    fn the_markers_in_a_git_directory_name_the_operation_under_way() {
+        use review::Operation;
+        let with = |markers: &'static [&'static str]| {
+            Operation::from_markers(|marker| markers.contains(&marker))
+        };
+        assert_eq!(with(&[]), None);
+        assert_eq!(with(&["MERGE_HEAD"]), Some(Operation::Merge));
+        assert_eq!(
+            with(&["rebase-merge", "MERGE_HEAD"]),
+            Some(Operation::Rebase)
+        );
+        assert_eq!(with(&["rebase-apply"]), Some(Operation::Rebase));
+        assert_eq!(with(&["CHERRY_PICK_HEAD"]), Some(Operation::CherryPick));
+        assert_eq!(with(&["REVERT_HEAD"]), Some(Operation::Revert));
+        assert_eq!(with(&["BISECT_LOG"]), Some(Operation::Bisect));
     }
 }
