@@ -69,9 +69,11 @@ which runs AgentDocker commands rather than a project shell. Clicking a live age
 in the chat's agent list goes to its terminal; the chevron beside it opens its
 details. An agent AgentDocker started opens its terminal inside the app. One
 started elsewhere is found where it runs: in a tmux or herdr pane, that pane is
-selected first; then, on macOS, its Terminal or iTerm tab is brought forward
-(macOS asks once to let AgentDocker control that app), and any other host —
-Ghostty, an editor's terminal, a JetBrains IDE — is brought to the front. The
+selected first; then, on macOS, its Terminal or iTerm tab is brought forward,
+or in Ghostty (1.3 or later, whose scripting names no tty) the one terminal in
+the agent's folder — when several are there, Ghostty is brought forward and the
+status line says so (macOS asks once to let AgentDocker control that app); any
+other host — an editor's terminal, a JetBrains IDE — is brought to the front. The
 details header says where an agent runs (*in Terminal (ttys005)*, *in
 tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
 tmux pane**). Nothing is typed into the agent, and no second copy is started.
