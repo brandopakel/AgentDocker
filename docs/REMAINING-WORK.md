@@ -32,7 +32,10 @@ longer pending-question retention, durable question-stream recovery, accurate
 activity/pause reporting and the desktop Codex trust notice. The notice now
 refreshes for notification-driven project changes while the form remains open.
 Explicit commits also accept pending merges whose tree is unchanged, while
-ordinary empty commits remain refused; both corrections need final validation. Ledger 15/state
+ordinary empty commits remain refused. Git execution failures while checking merge
+state report `unavailable` with their original details. The exact `3a795b0b` tree
+passed the full Linux gate and Windows CI; physical AWBP also passed 13 normal-user
+merge checks. Ledger 15/state
 schema 27 is unchanged. The candidate still requires final versioned-source
 review and CI, protected-tag publication and hosted beta.13 → beta.14 install,
 update, rollback, reapply and service acceptance. Earlier candidate trials do

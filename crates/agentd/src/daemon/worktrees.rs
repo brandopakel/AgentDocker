@@ -551,7 +551,7 @@ impl Daemon {
             .await
             {
                 Ok(output) => output.success,
-                Err(error) => return failure(error),
+                Err(error) => return Response::error(ErrorCode::Unavailable, error.to_string()),
             }
         } else {
             false
