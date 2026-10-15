@@ -212,13 +212,20 @@ control does, its id or its accessible label:
 - **Jump to… (⌘K, Ctrl+K elsewhere).** A search-looking field under the
   brand (`command-palette`) and the shortcut from anywhere, including a
   focused text field, open one palette (`app/palette.rs`): a search field
-  (`palette-search`) over grouped rows — Go to (All projects, Messages or
+  (`palette-search`) over grouped rows — Agents (unsearched, only those whose
+  standing calls for attention, loudest first; searched, every live one, its
+  standing word in the description; the row's mark is its standing glyph or
+  its tool's logo; a row may carry a second action, run with ⌘Enter and named
+  in the footer while highlighted, which for an agent is its terminal), Go to
+  (All projects, Messages or
   Inbox, Tools, Settings, with their ⌘2–⌘4 keycaps), Projects (each with its
   mark and folder), Actions (Launch agent… with a nested page of installed
   tools, Open project terminal, Pause…, Add project…, the other appearance)
   — each row an existing message (`palette-item-<kind>-<key>`). Matching is
-  case-insensitive: label prefix, then every term starting a label word, then
-  a substring, then words of the description. Up/Down or Tab move the
+  case-insensitive, in tiers that never mix: label prefix, then every term
+  starting a label word or the label's initials starting with the query, then
+  a substring, then words of the description, then (three or more letters)
+  the query's letters in order in the label. Up/Down or Tab move the
   highlight, Enter runs it, Escape clears the search, then leaves a nested
   page, then closes; Backspace on an empty search leaves a nested page. The
   keys are read by a wrapper at the window root because a focused field
