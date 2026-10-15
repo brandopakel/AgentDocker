@@ -1520,8 +1520,8 @@ impl App {
                         c,
                     ),
                     setting(
-                        "When an agent finishes",
-                        "A quiet notification while the window is not in front, one per agent.",
+                        "When an agent finishes or waits",
+                        "A quiet notification while the window is not in front, one per agent, taken back once it is no longer true.",
                         switch(
                             "notify-finished",
                             if s.notify_finished {
