@@ -82,6 +82,15 @@ impl App {
         }
         let target = review.target.clone().unwrap_or_default();
         let branch = review.branch.clone().unwrap_or_default();
+        // Merged on GitHub: a squash or rebase merge leaves the branch's
+        // own commits outside the target, so the review still counts
+        // them. Nothing is left to merge here, and the next step is the
+        // cleanup, as the agent apps studied lead with once a pull request
+        // has merged.
+        let merged_upstream = self
+            .pull_request_of(agent)
+            .filter(|pull| pull.status == crate::pull_request::Status::Merged)
+            .map(|pull| pull.number);
         let (added, removed) = review.totals();
         let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
         let mut section = column![
@@ -95,7 +104,7 @@ impl App {
                 ),
             ]
             .align_y(Center),
-            text(if review.commits.is_empty() {
+            text(if review.commits.is_empty() || merged_upstream.is_some() {
                 format!("{branch} → {target}")
             } else {
                 format!(
@@ -121,12 +130,15 @@ impl App {
                     Err(reason) => text(reason.clone()).size(12.5).color(c.amber).into(),
                 }
             });
-        if review.commits.is_empty() {
+        if review.commits.is_empty() || merged_upstream.is_some() {
             if let Some(outcome) = outcome {
                 section = section.push(outcome);
             }
             section = section.push(small(
-                format!("Nothing on {branch} that {target} does not have."),
+                match merged_upstream {
+                    Some(number) => format!("Merged on GitHub as #{number}."),
+                    None => format!("Nothing on {branch} that {target} does not have."),
+                },
                 c,
             ));
             // Merged: the worktree has done its work. Removing it is the
@@ -431,7 +443,66 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::super::testing::seen;
     use super::*;
+
+    /// A pull request merged on GitHub leaves the branch's commits outside
+    /// the target after a squash; Changes then offers no merge and leads
+    /// with removing the worktree.
+    #[test]
+    fn a_pull_request_merged_on_github_leads_with_the_cleanup() {
+        use crate::pull_request::{Key, PullRequest, Status};
+        let (commands, _requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        let root = std::path::Path::new("/fixture/alpha");
+        let mut agent = crate::app::tests::record("feature", "claude-code", None);
+        agent.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        agent.project = Some(agentdocker_core::ProjectRef::directory(root));
+        agent.vcs = Some(agentdocker_core::VcsState {
+            branch: Some("claude/feature".into()),
+            head: None,
+            dirty: None,
+            updated_at: Utc::now(),
+        });
+        app.agents.push(agent.clone());
+        app.branch_review = Some((
+            agent.id.to_string(),
+            Ok(Review {
+                agent: agent.id.clone(),
+                checkout: "/fixture/alpha-wt/feature".into(),
+                branch: Some("claude/feature".into()),
+                target_checkout: root.into(),
+                target: Some("main".into()),
+                commits: vec![agentdocker_core::review::Commit {
+                    sha: "abc1234".into(),
+                    subject: "Do the thing".into(),
+                }],
+                ..Review::default()
+            }),
+        ));
+        let c = style::Colors::new(true);
+        let before = seen(app.changes_section(&agent, c).expect("changes"));
+        assert!(before.control("merge-branch").is_some(), "not merged yet");
+        assert!(before.control("remove-worktree").is_none());
+
+        app.shell.pull_requests.answered(
+            vec![(
+                Key::new(root, "claude/feature").unwrap(),
+                Ok(Some(PullRequest {
+                    number: 340,
+                    url: "https://github.com/o/n/pull/340".into(),
+                    status: Status::Merged,
+                })),
+            )],
+            std::time::Instant::now(),
+        );
+        let after = seen(app.changes_section(&agent, c).expect("changes"));
+        assert!(after.control("merge-branch").is_none());
+        assert!(after.control("remove-worktree").is_some());
+        assert!(after.reads("Merged on GitHub as #340."));
+    }
 
     #[test]
     fn a_unified_diff_splits_into_each_files_lines() {
