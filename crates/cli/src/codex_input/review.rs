@@ -12,6 +12,11 @@ use std::collections::HashSet;
 pub(super) const MAX_QUESTIONS: usize = 8;
 pub(super) const RETAINED: usize = 8;
 const MAX_TEXT: usize = 16_000;
+/// How long a Codex approval or question waits for the person. Codex's own
+/// terminal waits until someone answers; this matches it within the
+/// daemon's 24-hour question bound, so stepping away never turns into a
+/// silent denial.
+pub(super) const REVIEW_WINDOW_SECS: u64 = 24 * 60 * 60;
 const CANCEL_REASON: &str = "\n\nDeny cancels this Codex request.";
 const NETWORK_REVIEW: &str = "Allow network access for this request?";
 const STDIN_REVIEW: &str = "Send this input to the existing terminal once?";
@@ -613,7 +618,7 @@ impl Pending {
             human: human.into(),
             kind,
             command_denial,
-            expires_at: now + Duration::seconds(300),
+            expires_at: now + Duration::seconds(REVIEW_WINDOW_SECS as i64),
             questions,
             response: None,
             extra_answers: Vec::new(),
@@ -1095,7 +1100,7 @@ mod tests {
         }
         let request = Pending::plan(&event, "thread", Some("turn"), "human", now).unwrap();
         assert_eq!(
-            request.reply(now + Duration::minutes(6)).unwrap().unwrap()["result"],
+            request.reply(request.expires_at).unwrap().unwrap()["result"],
             json!({"action":"cancel","content":null})
         );
         let mut wrong = event;
@@ -2073,6 +2078,16 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn an_unanswered_approval_waits_a_day_before_it_denies() {
+        let now = Utc::now();
+        let request = Pending::plan(&event(), "thread", Some("turn"), "human", now).unwrap();
+        assert_eq!(request.expires_at, now + Duration::hours(24));
+        assert_eq!(request.reply(now + Duration::hours(1)).unwrap(), None);
+        let denied = request.reply(request.expires_at).unwrap().unwrap();
+        assert!(denied.get("result").is_none(), "{denied}");
     }
 
     #[test]
