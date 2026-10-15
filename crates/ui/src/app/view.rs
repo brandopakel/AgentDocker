@@ -3292,6 +3292,18 @@ impl App {
                 Some(Message::StartRename(id.clone())),
             ));
         }
+        // Keep it as something to come back to: its accent dot returns
+        // until it is opened again.
+        if agent.spec.runtime != agentdocker_core::HUMAN_RUNTIME
+            && !self.shell.unviewed_done.contains(&id)
+            && !self.standing(agent).needs_you()
+        {
+            footer_line = footer_line.push(ghost(
+                "mark-unread",
+                "Mark unread",
+                Some(Message::MarkUnread(id.clone())),
+            ));
+        }
         footer = footer.push(footer_line);
         if self.shell.session_details {
             // The full id is 32 hex digits with nowhere to wrap: shown short,

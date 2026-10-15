@@ -147,6 +147,9 @@ pub(super) struct State {
     /// `idle` report on its own never counts as seen. Window-local, never
     /// persisted.
     pub unviewed_done: BTreeSet<String>,
+    /// Agents that finished while the window was not in front, waiting to
+    /// be told: posted off the window's thread after the update.
+    pub finish_notices: Vec<String>,
     /// What this window last said it shows (`viewing.json`), and when.
     pub viewing: Option<(agentdocker_host::notify::Viewing, Instant)>,
     /// Cards this window has moved on by their holder's pull request, and
@@ -784,6 +787,12 @@ pub enum Message {
     TerminalSize(f32),
     Palette(String),
     Roomy(bool),
+    NotifyFinished(bool),
+    /// Mark a session as something to come back to, and leave it.
+    MarkUnread(String),
+    /// A notice the window posted itself was taken or refused; either way
+    /// nothing changes on screen (a refusal is the person's settings).
+    NoticePosted(Result<(), String>),
     DismissError,
     Event(iced::Event),
     Window(window::Id),
@@ -2567,6 +2576,18 @@ impl App {
                 self.shell.catalog.appearance = Some(self.settings.clone());
                 self.shell.changed();
             }
+            Message::NoticePosted(_) => {}
+            Message::MarkUnread(id) => {
+                self.shell.unviewed_done.insert(id);
+                // Marked from its own panel: close it, or opening it again
+                // at once would count as looking.
+                self.shell.selected = None;
+            }
+            Message::NotifyFinished(on) => {
+                self.settings.notify_finished = on;
+                self.shell.catalog.appearance = Some(self.settings.clone());
+                self.shell.changed();
+            }
             Message::DismissError => {
                 self.shell.error = None;
                 self.status.clear();
@@ -2805,6 +2826,30 @@ impl App {
                 }
                 self.shell.viewing = Some((now, Instant::now()));
             }
+        }
+        // An agent finished while the person was away: a quiet notice,
+        // one per agent, replacing its last.
+        for id in std::mem::take(&mut self.shell.finish_notices) {
+            let Some(agent) = self.agents.iter().find(|a| a.id.as_str() == id) else {
+                continue;
+            };
+            let notice = agentdocker_host::notify::Notification {
+                title: format!("{} finished", self.display_name(agent)),
+                body: match agent.project.as_ref() {
+                    Some(project) => format!("In {}. Click to see what it did.", project.name()),
+                    None => "Click to see what it did.".to_owned(),
+                },
+                action: None,
+                tag: Some(format!("finished.{id}")),
+            };
+            tasks.push(Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || crate::notify::post_notification(&notice))
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                Message::NoticePosted,
+            ));
         }
         // The dock icon counts the questions waiting on the person, in
         // every project: the dock is the whole app's, not one screen's.

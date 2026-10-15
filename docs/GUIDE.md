@@ -826,6 +826,9 @@ Newest first. Only what changes how the product is used.
   moves on to Review when the pull request opens and to Done when it merges.
   No notification is posted about what the focused window already shows, and
   an agent's newer notification replaces its last.
+- **Told when an agent finishes.** While the window is not in front, an agent
+  that finishes its turn gets one quiet notification, replacing its last;
+  **When an agent finishes** in Settings turns it off.
 
 - A Claude Code session no longer goes deaf after Claude's own restart.
   Restarting in place re-executes `claude` without the channel flag, so the
