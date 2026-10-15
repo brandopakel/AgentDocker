@@ -67,6 +67,10 @@ fn native_arguments(arguments: &[String], resume: bool) -> Result<Vec<String>> {
                 continue;
             };
             let root = key.trim().split('.').next().unwrap_or_default().trim();
+            // Also refuse a quoted spelling of a permission root. Codex may
+            // reject that spelling as an unknown key; do not start children
+            // for an attempted permission override either way.
+            let root = root.trim_matches(['"', '\'']);
             ensure!(
                 !matches!(
                     root,
@@ -638,12 +642,15 @@ mod tests {
             "approvals_reviewer",
             "default_permissions",
             "sandbox_mode",
+            "\"sandbox_mode\"",
+            "'approval_policy'",
+            "\"permissions\".fixture",
             "sandbox_workspace_write.writable_roots",
             "permissions.fixture",
             "network.enabled",
         ] {
             for argument in [format!("-c={key}=false"), format!("--config= {key} =false")] {
-                let arguments = vec![argument];
+                let arguments = vec!["--strict-config".into(), argument];
                 assert_eq!(
                     native_arguments(&arguments, false).unwrap(),
                     provider_input::codex_arguments(&arguments).unwrap()

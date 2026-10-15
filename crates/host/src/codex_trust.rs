@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 /// Codex's configuration: `$CODEX_HOME/config.toml`, else
 /// `~/.codex/config.toml`.
-fn config_path() -> Option<PathBuf> {
+pub fn config_path() -> Option<PathBuf> {
     match std::env::var_os("CODEX_HOME").filter(|p| !p.is_empty()) {
         Some(home) => Some(PathBuf::from(home).join("config.toml")),
         None => std::env::home_dir().map(|home| home.join(".codex").join("config.toml")),
@@ -20,11 +20,12 @@ fn config_path() -> Option<PathBuf> {
 /// repository), so a trusted parent folder does not count. `None` when
 /// the text is not a configuration Codex could read.
 pub fn trusts(config: &str, root: &Path) -> Option<bool> {
+    let root = root.to_str()?;
     let table = config.parse::<toml::Table>().ok()?;
     let level = table
         .get("projects")
         .and_then(toml::Value::as_table)
-        .and_then(|projects| projects.get(root.to_str()?))
+        .and_then(|projects| projects.get(root))
         .and_then(|project| project.get("trust_level"))
         .and_then(toml::Value::as_str);
     Some(level == Some("trusted"))
@@ -39,6 +40,14 @@ pub fn trusted(root: &Path) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_root_has_unknown_trust() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = Path::new(std::ffi::OsStr::from_bytes(b"/project/\xff"));
+        assert_eq!(trusts("", root), None);
+    }
 
     #[test]
     fn only_the_projects_own_trusted_entry_counts() {

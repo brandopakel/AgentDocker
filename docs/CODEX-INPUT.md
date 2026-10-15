@@ -71,7 +71,7 @@ Native launch configuration flags are passed to both the dedicated server and
 its terminal, including supported settings on explicit UUID reopen. Remote resume
 restores the conversation’s saved permissions: direct overrides of `approval_policy`,
 `approvals_reviewer`, `default_permissions`, `sandbox_mode`, `sandbox_workspace_write`,
-`permissions` or `network` are refused before provider startup. Omit these overrides
+`permissions` or `network`, including quoted root spellings, are refused before provider startup. Omit these overrides
 to reuse the saved permissions, or start a new conversation with new settings. The
 launcher never silently removes a requested restriction. The terminal reads local settings
 even in remote mode; dropping those flags can ignore launch-only preferences and
