@@ -157,22 +157,34 @@ fn open_agent(
     if agentdocker_host::procinfo::start_time(pid) != Some(started_at) {
         return Err(ENDED.into());
     }
-    let shown = focus(&host, pane.is_some())?;
+    // A terminal that names no tty for its tabs (Ghostty) is found by the
+    // folder the agent runs in; inside a multiplexer the pane is chosen
+    // already and the folder is the client's, not the agent's.
+    let folder = pane
+        .is_none()
+        .then(|| agentdocker_host::procinfo::cwd(pid))
+        .flatten();
+    let shown = focus(&host, pane.is_some(), folder.as_deref())?;
     Ok(match pane {
         Some(pane) => format!("{shown} · {pane}"),
         None => shown,
     })
 }
 
-/// Bring the host forward, on its exact tab where it can select one.
+/// Bring the host forward, on its exact tab where it can select one:
+/// Terminal and iTerm by the tab's tty, Ghostty (whose scripting names
+/// no tty) by the one terminal in the agent's folder.
 #[cfg(target_os = "macos")]
-fn focus(host: &Host, _pane_chosen: bool) -> Result<String, String> {
-    let script = match host.kind.as_str() {
-        "terminal" => Some(FOCUS_TERMINAL),
-        "iterm2" => Some(FOCUS_ITERM),
+fn focus(host: &Host, _pane_chosen: bool, folder: Option<&Path>) -> Result<String, String> {
+    let target = match host.kind.as_str() {
+        "terminal" => host.tty.clone().map(|tty| (FOCUS_TERMINAL, tty)),
+        "iterm2" => host.tty.clone().map(|tty| (FOCUS_ITERM, tty)),
+        "ghostty" => folder
+            .and_then(Path::to_str)
+            .map(|folder| (FOCUS_GHOSTTY, folder.to_owned())),
         _ => None,
     };
-    if let (Some(script), Some(tty)) = (script, host.tty.as_deref()) {
+    if let Some((script, which)) = target {
         let selected = run(
             Path::new("/"),
             vec![
@@ -181,7 +193,7 @@ fn focus(host: &Host, _pane_chosen: bool) -> Result<String, String> {
                 "JavaScript".into(),
                 "-e".into(),
                 script.into(),
-                tty.to_owned(),
+                which,
             ],
             Duration::from_secs(30),
         );
@@ -193,6 +205,11 @@ fn focus(host: &Host, _pane_chosen: bool) -> Result<String, String> {
                     format!(
                         "Brought {name} forward. To open the agent's own tab, allow AgentDocker to control {name} in System Settings → Privacy & Security → Automation.",
                         name = host.name
+                    )
+                } else if error.contains(AMBIGUOUS) {
+                    format!(
+                        "Brought {} forward; more than one of its terminals is in the agent's folder.",
+                        host.name
                     )
                 } else {
                     format!(
@@ -210,7 +227,7 @@ fn focus(host: &Host, _pane_chosen: bool) -> Result<String, String> {
 /// Elsewhere AgentDocker cannot raise another application's window. A
 /// chosen multiplexer pane is still where the agent now shows.
 #[cfg(not(target_os = "macos"))]
-fn focus(host: &Host, pane_chosen: bool) -> Result<String, String> {
+fn focus(host: &Host, pane_chosen: bool, _folder: Option<&Path>) -> Result<String, String> {
     if pane_chosen {
         Ok(format!("Showing it in {}", host.name))
     } else {
@@ -424,6 +441,29 @@ const FOCUS_TERMINAL: &str = r#"function run(argv) {
     terminal.activate();
 }"#;
 
+/// What the Ghostty script says when the folder holds several terminals.
+#[cfg(target_os = "macos")]
+const AMBIGUOUS: &str = "More than one Ghostty terminal is in this folder.";
+
+/// Ghostty 1.3's scripting names each terminal's working directory and
+/// focuses one (its window forward, its tab selected); folders compare
+/// with symbolic links resolved, since the shell may report either form.
+#[cfg(target_os = "macos")]
+const FOCUS_GHOSTTY: &str = r#"function run(argv) {
+    ObjC.import('Foundation');
+    const real = p => $(p).stringByResolvingSymlinksInPath.js.replace(/\/+$/, '');
+    const ghostty = Application('com.mitchellh.ghostty');
+    if (!ghostty.running()) throw new Error('The original Ghostty window is closed.');
+    const want = real(argv[0]);
+    const matches = ghostty.terminals().filter(t => {
+        const dir = t.workingDirectory();
+        return dir && real(dir) === want;
+    });
+    if (matches.length > 1) throw new Error('More than one Ghostty terminal is in this folder.');
+    if (matches.length !== 1) throw new Error('The original terminal was not found in Ghostty.');
+    ghostty.focus(matches[0]);
+}"#;
+
 #[cfg(target_os = "macos")]
 const FOCUS_ITERM: &str = r#"function run(argv) {
     const iterm = Application('com.googlecode.iterm2');
@@ -443,6 +483,14 @@ const FOCUS_ITERM: &str = r#"function run(argv) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Ghostty script's ambiguity is told apart by its own words.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_ghostty_script_says_when_a_folder_is_ambiguous() {
+        assert!(FOCUS_GHOSTTY.contains(AMBIGUOUS));
+        assert!(FOCUS_GHOSTTY.contains("Application('com.mitchellh.ghostty')"));
+    }
     #[test]
     fn project_paths_are_checked_as_directories_without_interpreting_shell_text() {
         let root = tempfile::tempdir().unwrap();
