@@ -1478,7 +1478,7 @@ impl App {
                 vec![
                     setting(
                         "Theme",
-                        "Light or dark. The rail stays navy in both.",
+                        "Light or dark.",
                         segmented(
                             vec![
                                 segment(

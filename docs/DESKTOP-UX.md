@@ -47,12 +47,16 @@ agent), *delivery paused*, *session ended before taking it*. Nothing says
 *read*: the daemon cannot know it. **Agents** opens the
 session list and **Board** the project's cards. **More** opens a menu of History,
 Files in use, Usage, AgentDocker commands and the project's Pin and Forget; the tab takes the name of the screen on view and is underlined only
-while one of those screens is open. **Pause…**, **Open terminal**,
-**Open in…** (when an editor is installed) and **Launch agent…** stay in the
-header on every project screen; the chevron
+while one of those screens is open. **Pause…**, the project terminal and
+**Open in…** (when an editor is installed), as icons named in their tooltips,
+and **Launch agent…**, the one labelled action, stay in the header on every
+project screen; the chevron
 beside Launch agent lists the installed tools and opens the form with one
-chosen. The form is a dialog over the window; launching from Board or History
-goes to Agents with it open. A session's Details shows its
+chosen. The form is a dialog over the window that starts from the prompt:
+what the agent should work on, sent as its first message once it is launched
+(optional), the tools as chips under it, and **More options** for its name,
+arguments and the exact command. Launching from Board or History goes to
+Agents with it open. A session's Details shows its
 short ID with **Copy session ID**. The Commands screen offers **Previous** and
 **Next** only once a command has run, and shows no output box before then.
 Opening an agent takes you to its project and selects that session.
@@ -71,13 +75,19 @@ tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
 tmux pane**). Nothing is typed into the agent, and no second copy is started.
 An agent without a terminal to reach opens its details instead.
 
-An agent's row, in the chat's agent list and in the session list, carries at
-most two small marks. An **accent dot** says it finished since you last looked:
-its turn ended, or the session did, while its project was not on screen in a
-focused window. Going to its terminal, opening its details or opening its
-project clears it, as does the agent starting to work again; an agent stopped
-for you (*waiting for you*) is not finished. Pointing at the dot says so. A
-**pull request chip** names the pull request of the agent's branch — **#340**
+An agent's row, in the chat's agent list and in the session list, is one line
+that leads with its **standing**, the same everywhere it appears: an amber dot
+when it needs you (a question, its own prompt, or messages it cannot take), a
+red triangle when it failed and you have not looked, a muted dot while it
+works, an hourglass while it waits on a lease, a dashed ring while it starts,
+an **accent dot** when it finished since you last looked, and nothing when it
+is idle. Pointing at the glyph says the word; the row prints the word only
+when it calls for you, and sets the name semibold when something there is new
+or waits on you. "Finished since you looked" means its turn ended, or the
+session did, while its project was not on screen in a focused window; going to
+its terminal, opening its details or opening its project clears it, as does
+the agent starting to work again. The row's one trailing slot shows what you
+must do, else the **pull request chip**, else how long. The pull request chip names the pull request of the agent's branch — **#340**
 with a green tick when its checks passed, an amber dot while they run, a red
 cross when one failed, **#340 merged** once merged — and opens it in the
 browser. It is read with the `gh` you are signed in to, in the background, at
@@ -85,7 +95,7 @@ most every two minutes and again when the window regains focus, for live
 agents and those that ended within a day. A default branch (main, master,
 develop), a project whose remote is not on GitHub, a closed pull request, or a
 missing or signed-out `gh` shows no chip.
-**Open in…**, beside Open terminal, opens the project's folder in an editor
+**Open in…** (the code icon beside the terminal icon in the header) opens the project's folder in an editor
 installed on this computer: a small menu lists the ones found (the one chosen
 last first, remembered with the workspace preferences), and with only one
 installed the button names it (**Open in Zed**) and opens it at once. With
@@ -114,7 +124,10 @@ here: its row says so in amber, and opening it shows the details — how many
 messages are kept, that resuming the conversation delivers them, **Review** for
 a live session's delivery and **Dismiss** for an ended one's notice, which
 leaves the messages as they are.
-Finished sessions keep their accent dot on the row. Question previews use at
+Finished sessions keep their accent dot on the row.
+A project's row in the rail shows its loudest agent's glyph, a number only for
+agents that need you, and its name in semibold when something there is new;
+how many agents run is not shown, since it is not a reason to look. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
 Inbox. The first three items are shown; **Show more** expands the same list and
@@ -196,14 +209,14 @@ Search applies to the
 selected project, both filters and the Earlier group. Switching projects
 returns to Current. Nothing is deleted when a row moves to Earlier.
 
-Session rows show the session's mark — its tool's logo (Claude, OpenAI,
-Gemini, Copilot, Cursor, Windsurf, VS Code, OpenCode), or a letter tile for
-a tool without one — the name over its tool (only when the
-name is one somebody chose; a generated name already reads as the tool) and
-branch, with the tokens its provider reported over the last 24 hours when
-collection is on (`1.23M tokens in 24h`, `~` where some samples did not say,
-nothing where none did), the observed activity as a dot and a word, and how
-long it has run or since it ended. Above the Current list one quiet line sums
+Session rows show the standing glyph, the session's small mark — its tool's
+logo (Claude, OpenAI, Gemini, Copilot, Cursor, Windsurf, VS Code, OpenCode),
+or a letter tile for a tool without one — and its name, then one trailing slot
+(what you must do, else the pull request chip, else how long it has run or
+since it ended). Pointing at the name shows its tool, branch and the tokens
+its provider reported over the last 24 hours when collection is on
+(`1.23M tokens in 24h`, `~` where some samples did not say, nothing where
+none did). Above the Current list one quiet line sums
 those sessions' tokens and opens **Usage**. Sessions needing
 input appear first within each project. An ended Claude Code session that can
 come back carries **Reconnect here** on its row itself (the same action as in
@@ -573,8 +586,9 @@ updates** and why (no connection to GitHub, say), never *Installation failed*.
 The footer says whether the window is connected. When the background service
 (the daemon) is older than the app — an older version, or another installed
 release of the same version, which is what an update installed underneath a
-running daemon looks like — the footer says so, with both versions, and offers
-**Restart background service…**. Its confirmation says what a restart costs:
+running daemon looks like — the footer says so in one quiet line, with both
+versions and an amber dot, and offers **Restart…**. Its confirmation, an amber
+strip with **Restart** and **Cancel**, says what a restart costs:
 how many sessions AgentDocker itself started will stop (and how many are set to
 start again); sessions started in a terminal keep running and reconnect. A
 request the older service has never heard of reads *The background service is
@@ -594,6 +608,9 @@ and notarization; locally signed builds are explicit previews.
   the next key press shows it on whatever is focused.
 - Command/Ctrl+1–4 switch Projects, Inbox, Tools and Settings.
 - Command/Ctrl+N opens **Launch agent…** for the project on screen.
+- Command/Ctrl+Shift+U goes to the next agent that needs you (questions, waits
+  and failures first, then finished work you have not seen), round again at
+  the end; **Next agent that needs you** in Jump to does the same.
 - Escape closes session details or an add/launch form.
 - F6 moves focus out of terminal input. Control+] detaches.
 - Drag across terminal cells to select text. Command+C on macOS, or Ctrl+Shift+C

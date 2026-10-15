@@ -1,10 +1,12 @@
 //! Shared visual roles; status is always accompanied by a text label.
 //!
-//! The palette comes from the mark: a deep navy ground, electric blue for
-//! selection and primary actions, cyan as the secondary brand tone. Light
-//! and dark keep the same roles so the hierarchy reads identically, and
-//! the rail stays navy in both, so the cube always sits on navy
-//! (`Colors::rail`).
+//! Neutral surfaces, with colour spent only on state and on the one
+//! primary action: every agent app studied for the 2026-10 redesign keeps
+//! its sidebar a step off the page rather than a contrasting block, and
+//! keeps text muted by default so what needs the person stands out. The
+//! blue of the mark is the accent: primary actions, selection, and "new to
+//! you". Light and dark keep the same roles so the hierarchy reads
+//! identically; the rail is the sidebar step of either (`Colors::rail`).
 //!
 //! Depth comes from tint and hairline, never from blur: rail under ground
 //! under card under raised, with `overlay` the only surface above a card.
@@ -76,44 +78,44 @@ impl Colors {
         if dark {
             Self {
                 dark,
-                ground: color!(0x0b1018),
-                sidebar: color!(0x070b12),
-                card: color!(0x111826),
-                raised: color!(0x18212f),
-                hover: color!(0x141c29),
-                overlay: color!(0x1a2333),
-                text: color!(0xe8ecf2),
-                muted: color!(0x97a2b4),
-                faint: color!(0x808ca0),
-                line: color!(0x1f2938),
-                line_strong: color!(0x2e3a4d),
+                ground: color!(0x141416),
+                sidebar: color!(0x1a1a1d),
+                card: color!(0x1b1b1e),
+                raised: color!(0x26262a),
+                hover: color!(0x212124),
+                overlay: color!(0x232327),
+                text: color!(0xededef),
+                muted: color!(0xa0a0a8),
+                faint: color!(0x92929b),
+                line: color!(0x2a2a2e),
+                line_strong: color!(0x3a3a40),
                 accent: color!(0x2c6ae4),
-                accent_hover: color!(0x326fe6),
-                accent_soft: color!(0x132748),
+                accent_hover: color!(0x2a63d6),
+                accent_soft: color!(0x1a2540),
                 accent_ink: color!(0xb7cdfd),
                 cyan: color!(0x2fc4dd),
                 green: color!(0x46c08a),
-                amber: color!(0xe0ad55),
+                amber: color!(0xe3ab39),
                 red: color!(0xee6b68),
                 danger: color!(0xc43b3b),
             }
         } else {
             Self {
                 dark,
-                ground: color!(0xf8f9fc),
-                sidebar: color!(0x0f1a2f),
+                ground: color!(0xf7f7f8),
+                sidebar: color!(0xf0f0f2),
                 card: Color::WHITE,
-                raised: color!(0xebeff6),
-                hover: color!(0xf2f5f9),
+                raised: color!(0xececef),
+                hover: color!(0xf2f2f4),
                 overlay: Color::WHITE,
-                text: color!(0x0b1324),
-                muted: color!(0x545f72),
-                faint: color!(0x5f6a7c),
-                line: color!(0xdfe4ec),
-                line_strong: color!(0xc9d1dd),
+                text: color!(0x18181b),
+                muted: color!(0x55555e),
+                faint: color!(0x5f5f68),
+                line: color!(0xe4e4e7),
+                line_strong: color!(0xd1d1d6),
                 accent: color!(0x2563eb),
                 accent_hover: color!(0x1d55d0),
-                accent_soft: color!(0xe5edff),
+                accent_soft: color!(0xe8efff),
                 accent_ink: color!(0x1a45a8),
                 cyan: color!(0x0a7c96),
                 green: color!(0x1b7f50),
@@ -129,31 +131,20 @@ impl Colors {
         Self::new(theme.palette().background.r < 0.5)
     }
 
-    /// The roles inside the navigation rail. The rail is navy in both
-    /// appearances, so in light mode it carries its own light-on-navy
-    /// ink; every rail colour comes from here, never from the page roles.
-    /// `ground` is the rail itself, `raised` the selected row and `hover`
-    /// the row under the pointer.
+    /// The roles inside the navigation rail: the page's own ink on the
+    /// sidebar step, so a view drawn in the rail reads the same as on the
+    /// page. Every rail colour comes from here: `ground` is the rail
+    /// itself, `raised` the selected row and `hover` the row under the
+    /// pointer, both a wash of the ink rather than a new hue.
     pub fn rail(self) -> Self {
-        let base = if self.dark {
-            self
-        } else {
-            Self {
-                sidebar: color!(0x0f1a2f),
-                text: color!(0xd4d9e2),
-                muted: color!(0x8f9aae),
-                faint: color!(0x8f9aae),
-                ..Self::new(true)
-            }
-        };
         Self {
-            ground: base.sidebar,
-            card: base.sidebar,
-            raised: mix(base.sidebar, base.text, 0.09),
-            hover: mix(base.sidebar, base.text, 0.05),
-            line: mix(base.sidebar, base.text, 0.10),
-            line_strong: mix(base.sidebar, base.text, 0.18),
-            ..base
+            ground: self.sidebar,
+            card: self.sidebar,
+            raised: mix(self.sidebar, self.text, 0.07),
+            hover: mix(self.sidebar, self.text, 0.04),
+            line: mix(self.sidebar, self.text, 0.10),
+            line_strong: mix(self.sidebar, self.text, 0.18),
+            ..self
         }
     }
 
@@ -376,8 +367,7 @@ mod tests {
     fn text_roles_stay_legible_on_every_surface() {
         for dark in [false, true] {
             let c = Colors::new(dark);
-            // The rail is checked with its own ink: it is navy in both
-            // appearances, so the page's light-mode ink would vanish on it.
+            // The rail is checked on its own step and selection washes.
             let rail = c.rail();
             for (roles, ground, place) in [
                 (c, c.ground, "ground"),

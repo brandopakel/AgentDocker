@@ -185,7 +185,32 @@ pub(super) fn agent_mark<'a>(
 /// Something small that says what it means when pointed at. Used only
 /// where the words are not already printed beside it (the rail's project
 /// marks); a tooltip that repeats visible text is noise.
-fn hint<'a>(
+/// A control that says what it does when pointed at: an icon button's
+/// name, which its glyph alone does not say. Unlike `hint` it adds no
+/// padding, since the control is already its own hover target.
+pub(super) fn tip<'a>(
+    control: impl Into<Element<'a, Message>>,
+    label: impl Into<String>,
+    c: Colors,
+) -> Element<'a, Message> {
+    iced::widget::tooltip(
+        control,
+        container(text(label.into()).size(12).color(c.text))
+            .padding([4, 8])
+            .style(move |_| container::Style {
+                border: iced::Border {
+                    radius: super::style::RADIUS_SM.into(),
+                    ..c.overlay_style().border
+                },
+                ..c.overlay_style()
+            }),
+        iced::widget::tooltip::Position::Bottom,
+    )
+    .gap(4)
+    .into()
+}
+
+pub(super) fn hint<'a>(
     content: impl Into<Element<'a, Message>>,
     label: impl Into<String>,
     c: Colors,
@@ -406,11 +431,50 @@ pub(super) fn status_word<'a>(
     .into()
 }
 
-/// An agent finished since the person last looked: one accent dot on its
-/// row, its words when pointed at. The observed state stays in the row's
-/// status; this says only that it is new to you.
-pub(super) fn done_dot<'a>(c: Colors) -> Element<'a, Message> {
-    hint(dot(c.accent, 7.0, c), "Finished since you last looked", c)
+/// The tone a standing is drawn and worded in: amber for the person,
+/// red for a failure, the accent for news, quiet for the rest.
+pub(super) fn standing_tone(
+    standing: agentdocker_core::standing::Standing,
+    c: Colors,
+) -> iced::Color {
+    use agentdocker_core::standing::Standing;
+    match standing {
+        Standing::NeedsYou(_) => c.amber,
+        Standing::Failed => c.red,
+        Standing::FinishedUnseen => c.accent,
+        Standing::Working => c.muted,
+        Standing::Parked | Standing::Starting | Standing::Idle | Standing::Ended => c.faint,
+    }
+}
+
+/// An agent's standing as one glyph, the loudest state only: dots for
+/// live states, shapes for settled ones, nothing for an idle agent. The
+/// word comes when it is pointed at; a row prints the word only when it
+/// calls for the person.
+pub(super) fn standing_glyph<'a>(
+    standing: agentdocker_core::standing::Standing,
+    c: Colors,
+) -> Element<'a, Message> {
+    use agentdocker_core::standing::Standing;
+    let tone = standing_tone(standing, c);
+    let glyph: Element<'a, Message> = match standing {
+        Standing::NeedsYou(_) | Standing::Working | Standing::FinishedUnseen => dot(tone, 8.0, c),
+        Standing::Failed => icon(Icon::Alert, tone, 12.0),
+        Standing::Parked => icon(Icon::Hourglass, tone, 12.0),
+        Standing::Starting => icon(Icon::Ring, tone, 12.0),
+        Standing::Idle | Standing::Ended => Space::new().width(8).height(8).into(),
+    };
+    let slot = container(glyph)
+        .width(12)
+        .height(12)
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Center);
+    if matches!(standing, Standing::Idle | Standing::Ended) {
+        // Nothing to point at: an empty slot keeps the names aligned.
+        container(slot).padding(5).into()
+    } else {
+        hint(slot, standing.word(), c)
+    }
 }
 
 impl App {
@@ -819,26 +883,43 @@ impl App {
                 ),
             ]
         } else {
-            row![
-                dot(c.amber, 7.0, c),
-                small(
-                    format!(
-                        "The background service is running an older version ({version}) than this app ({}). Restart it to finish updating.",
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                    c
-                )
-                .width(Fill),
-                action(
-                    "daemon-restart",
-                    "Restart background service…",
-                    connected.then_some(Message::ConfirmDaemonRestart(true)),
-                    false,
-                ),
-            ]
+            // At rest it is one quiet line of the status bar: nothing has
+            // to happen now, so it asks for no more attention than a dot.
+            return Some(
+                column![
+                    rule(c),
+                    container(
+                        row![
+                            dot(c.amber, 7.0, c),
+                            small(
+                                format!(
+                                    "Background service {version} is older than this app ({}).",
+                                    env!("CARGO_PKG_VERSION")
+                                ),
+                                c
+                            ),
+                            ghost(
+                                "daemon-restart",
+                                "Restart…",
+                                connected.then_some(Message::ConfirmDaemonRestart(true)),
+                            ),
+                        ]
+                        .spacing(6)
+                        .align_y(Center),
+                    )
+                    .padding([3, 14])
+                    .width(Fill)
+                    .style(move |_| container::Style {
+                        background: Some(c.sidebar.into()),
+                        text_color: Some(c.text),
+                        ..Default::default()
+                    })
+                ]
+                .into(),
+            );
         };
-        // A strip of the page's own surface, washed amber: it carries
-        // the page's controls, which the navy status bar cannot.
+        // Confirming or restarting: a strip of the page's own surface,
+        // washed amber, carrying the page's controls.
         Some(
             column![
                 rule(c),
@@ -886,24 +967,6 @@ impl App {
             format!("failed: {reason}")
         } else {
             "ended".to_owned()
-        }
-    }
-    /// The colour that goes with [`Self::activity_label`].
-    fn activity_color(&self, agent: &AgentRecord, c: Colors) -> iced::Color {
-        if self.needs_input(&agent.id.to_string())
-            || self.delivery_needs_you(agent)
-            || self.waits_for_person(agent)
-        {
-            c.amber
-        } else if agent.status.is_live() {
-            // Green is a report, not a heartbeat: a process we only know is
-            // alive has no signal to show green for.
-            match self.activity.get(&agent.id.to_string()) {
-                None | Some(Activity::Unknown | Activity::Starting) => c.faint,
-                Some(_) => c.green,
-            }
-        } else {
-            c.faint
         }
     }
 
@@ -1075,23 +1138,22 @@ impl App {
             tools = tools.push(pause);
         }
         if in_project && self.shell.catalog.selected().is_some() {
-            tools = tools.push(custom(
-                "project-terminal",
-                "Open project terminal",
-                row![
-                    icon(Icon::Terminal, c.muted, 14.0),
-                    text(if narrow { "Terminal" } else { "Open terminal" })
-                        .size(13)
-                        .line_height(iced::Pixels(crate::controls::LABEL_LINE))
-                        .font(weight(iced::font::Weight::Medium))
-                ]
-                .spacing(7)
-                .align_y(Center),
-                (!self.shell.terminal_opening && self.shell.project_available != Some(false))
+            // Launch agent is the header's one labelled action; the rest
+            // are icons that say what they do when pointed at.
+            tools = tools.push(tip(
+                custom(
+                    "project-terminal",
+                    "Open project terminal",
+                    container(icon(Icon::Terminal, c.muted, 15.0)).center(18),
+                    (!self.shell.terminal_opening
+                        && self.shell.project_available != Some(false))
                     .then_some(Message::OpenProjectTerminal),
-                false,
-                Kind::Secondary,
-                [7, 12],
+                    false,
+                    Kind::Ghost,
+                    [7, 8],
+                ),
+                "Open a terminal in the project folder",
+                c,
             ));
             if let Some(entry) = self.shell.catalog.selected()
                 && let Some(open_in) = self.open_in(
@@ -1321,9 +1383,9 @@ impl App {
                 .style(move |theme, status| quiet_scroll(theme, status, c))
                 .into()
         };
-        // In dark the rail and the page are near in tone, so a hairline
-        // parts them; in light the navy rail does that on its own.
-        let edge = if c.dark { 1.0 } else { 0.0 };
+        // The rail is one step off the page in both appearances, so a
+        // hairline parts them.
+        let edge = 1.0;
         row![
             container(Space::new().width(edge).height(Fill)).style(move |_| c.rule()),
             container(workspace)
@@ -1335,7 +1397,7 @@ impl App {
         .into()
     }
 
-    /// One quiet line across the bottom, part of the navy frame with the
+    /// One quiet line across the bottom, part of the frame with the
     /// rail: the daemon connection as a dot and a word, and the version.
     /// Said here once, so the rail and the pages need not repeat it.
     fn footer(&self, c: Colors) -> Element<'_, Message> {
@@ -1468,9 +1530,18 @@ impl App {
         // One line each, clipped rather than wrapped or drawn over the
         // marks beside it. Two folders called the same are told apart
         // by where they are, in one short line.
+        let calls = self
+            .project_standing(&path)
+            .0
+            .is_some_and(|s| s.calls_for_attention());
         let mut label = column![
             text(name.clone())
                 .size(13.5)
+                .font(weight(if calls {
+                    iced::font::Weight::Semibold
+                } else {
+                    iced::font::Weight::Normal
+                }))
                 .wrapping(iced::widget::text::Wrapping::None)
         ]
         .spacing(1)
@@ -1488,23 +1559,19 @@ impl App {
             .spacing(6)
             .width(Fill)
             .align_y(Center);
-        if done > 0 {
-            content = content.push(pill(
-                done.to_string(),
-                alpha(r.accent, 0.35),
-                r.accent_ink,
-                r,
-            ));
-        }
-        if live > 0 {
+        // The loudest agent's glyph, and a number only for agents that need
+        // the person: how many run is not a reason to look.
+        let (loudest, needs) = self.project_standing(&path);
+        if needs > 0 {
             content = content.push(
-                row![
-                    dot(r.green, 6.0, r),
-                    text(live.to_string()).size(12).color(r.muted)
-                ]
-                .spacing(5)
-                .align_y(Center),
+                text(needs.to_string())
+                    .size(12)
+                    .font(weight(iced::font::Weight::Semibold))
+                    .color(r.amber),
             );
+        }
+        if let Some(loudest) = loudest {
+            content = content.push(standing_glyph(loudest, r));
         }
         // The row's own menu button, at the row's right edge, shown only
         // where it is wanted: under the pointer, on the selected row and
@@ -1573,6 +1640,27 @@ impl App {
     }
 
     /// Live, non-human sessions in the project at `root`, each session once.
+    /// A project's agents as the rail shows them: the loudest standing
+    /// among them, and how many need the person. A collapsed project takes
+    /// its loudest agent's glyph, so attention shows without opening it.
+    pub(super) fn project_standing(
+        &self,
+        root: &std::path::Path,
+    ) -> (Option<agentdocker_core::standing::Standing>, usize) {
+        let standings: Vec<_> = self
+            .agents
+            .iter()
+            .filter(|a| {
+                a.spec.runtime != agentdocker_core::HUMAN_RUNTIME
+                    && a.project.as_ref().is_some_and(|p| p.root == root)
+                    && (self.live_session(a) || self.shell.unviewed_done.contains(a.id.as_str()))
+            })
+            .map(|a| self.standing(a))
+            .collect();
+        let needs = standings.iter().filter(|s| s.needs_you()).count();
+        (standings.into_iter().min(), needs)
+    }
+
     pub(super) fn live_in(&self, root: &std::path::Path) -> usize {
         self.agents
             .iter()
@@ -1731,8 +1819,7 @@ impl App {
                             .scroller_width(4)
                             .spacing(2),
                     ))
-                    // The rail's own ink for the scroller: the page's
-                    // grey would sit on navy like a smudge.
+                    // The rail's own ink for the scroller.
                     .style(move |theme, status| quiet_scroll(theme, status, r))
                     .height(Fill),
             )
@@ -1969,22 +2056,18 @@ impl App {
         if control.and_then(|control| control.draft.as_ref()).is_some() {
             return None;
         }
-        Some(custom(
-            "pause-project",
-            "Pause…",
-            row![
-                icon(Icon::Pause, c.muted, 12.0),
-                text("Pause…")
-                    .size(13)
-                    .line_height(iced::Pixels(crate::controls::LABEL_LINE))
-                    .font(weight(iced::font::Weight::Medium))
-            ]
-            .spacing(6)
-            .align_y(Center),
-            (connected && !sending).then_some(Message::PauseStart(root)),
-            false,
-            Kind::Ghost,
-            [7, 10],
+        Some(tip(
+            custom(
+                "pause-project",
+                "Pause…",
+                container(icon(Icon::Pause, c.muted, 14.0)).center(18),
+                (connected && !sending).then_some(Message::PauseStart(root)),
+                false,
+                Kind::Ghost,
+                [7, 8],
+            ),
+            "Pause this project's agents…",
+            c,
         ))
     }
 
@@ -2163,29 +2246,41 @@ impl App {
             ),
             _ => ("Open in…".to_owned(), Message::EditorMenu(place)),
         };
-        let (id, glyph, size, kind, padding) = match place {
-            EditorMenu::Project => ("project-open-in", 14.0, 13, Kind::Secondary, [7, 12]),
-            EditorMenu::Session => ("session-open-in", 12.0, 12, Kind::Ghost, [3, 6]),
-        };
-        let mut words = text(label.clone())
-            .size(size)
-            .font(weight(iced::font::Weight::Medium));
-        if place == EditorMenu::Project {
-            // The header's buttons share Open terminal's line height.
-            words = words.line_height(iced::Pixels(crate::controls::LABEL_LINE));
-        }
-        let trigger = custom_sized(
-            id,
-            label,
-            row![icon(Icon::Code, c.muted, glyph), words]
-                .spacing(if place == EditorMenu::Project { 7 } else { 5 })
+        let trigger = match place {
+            // In the header, an icon beside the terminal's, named when
+            // pointed at.
+            EditorMenu::Project => tip(
+                custom_sized(
+                    "project-open-in",
+                    label.clone(),
+                    container(icon(Icon::Code, c.muted, 15.0)).center(18),
+                    enabled.then_some(message),
+                    false,
+                    Kind::Ghost,
+                    [7, 8],
+                    iced::Length::Shrink,
+                ),
+                label,
+                c,
+            ),
+            EditorMenu::Session => custom_sized(
+                "session-open-in",
+                label.clone(),
+                row![
+                    icon(Icon::Code, c.muted, 12.0),
+                    text(label)
+                        .size(12)
+                        .font(weight(iced::font::Weight::Medium))
+                ]
+                .spacing(5)
                 .align_y(Center),
-            enabled.then_some(message),
-            false,
-            kind,
-            padding,
-            iced::Length::Shrink,
-        );
+                enabled.then_some(message),
+                false,
+                Kind::Ghost,
+                [3, 6],
+                iced::Length::Shrink,
+            ),
+        };
         if editors.len() == 1 {
             return Some(trigger);
         }
@@ -2550,8 +2645,8 @@ impl App {
                 previous_project = project_root;
             }
             let id = agent.id.to_string();
+            let standing = self.standing(agent);
             let activity = self.activity_label(agent);
-            let tone = self.activity_color(agent, c);
             let name = self.display_name(agent);
             // The branch is in the name already when the record has one.
             let branch = agent
@@ -2559,91 +2654,85 @@ impl App {
                 .as_ref()
                 .and_then(|v| v.branch.as_deref())
                 .filter(|b| !name.contains(b));
-            let meta = format!(
-                "{}{}",
-                branch.map(|b| format!("{b} · ")).unwrap_or_default(),
-                activity
-            );
             // What its provider reported over the last day, when collection
-            // is on and it has any: a footnote, beside the branch.
+            // is on and it has any.
             let tokens = self
                 .agent_tokens
                 .get(&id)
                 .map(|t| format!("{} tokens in 24h", t.label()));
-            let unviewed = self.shell.unviewed_done.contains(&id);
-            let spoken = format!(
-                "{name}\n{} · {}{}{}",
-                agent.spec.runtime,
-                meta,
-                tokens
-                    .as_ref()
-                    .map(|t| format!(" · {t}"))
-                    .unwrap_or_default(),
-                if unviewed {
-                    " · finished since you last looked"
-                } else {
-                    ""
-                }
-            );
-            // A generated name already reads as the tool ("Claude Code ·
-            // 0180d761"), so only a chosen name says the tool again.
-            let mut facts = Vec::new();
-            if !agent.name_is_generated() {
-                facts.push(super::runtime_label(&agent.spec.runtime));
-            }
+            // One line: everything else is a point away, in the name's
+            // hint and in the session's details.
+            let mut facts = vec![activity.clone(), super::runtime_label(&agent.spec.runtime)];
             if let Some(branch) = branch {
                 facts.push(branch.to_owned());
             }
             if let Some(tokens) = tokens {
                 facts.push(tokens);
             }
-            let mut words = column![
-                text(name.clone())
-                    .size(14)
-                    .font(weight(iced::font::Weight::Medium))
-                    .wrapping(iced::widget::text::Wrapping::None)
-            ]
-            .spacing(2)
-            .width(Fill);
-            // Narrow, the status word moves under the name rather than
-            // squeezing the name off the row.
-            if narrow {
-                facts.push(activity.clone());
-            }
-            if !facts.is_empty() {
-                words = words.push(
-                    text(facts.join(" · "))
-                        .size(12)
-                        .color(c.muted)
-                        .wrapping(iced::widget::text::Wrapping::None),
-                );
-            }
-            // Time left to answer, as the same small ring Needs you uses.
-            let window = self.soonest_answer_window(&id).map(|left| {
-                approvals::ring(left, if left < 0.2 { c.red } else { c.amber }, 14.0, c)
-            });
+            let spoken = format!(
+                "{name}\n{}{}",
+                facts.join(" · "),
+                if matches!(standing, agentdocker_core::standing::Standing::FinishedUnseen) {
+                    " · finished since you last looked"
+                } else {
+                    ""
+                }
+            );
+            // Heavier ink when something there is new or waits on the
+            // person; muted otherwise, so those rows are what the eye finds.
+            let attention = standing.calls_for_attention();
+            let name_text = text(name.clone())
+                .size(13.5)
+                .font(weight(if attention {
+                    iced::font::Weight::Semibold
+                } else {
+                    iced::font::Weight::Normal
+                }))
+                .color(if attention || agent.status.is_live() {
+                    c.text
+                } else {
+                    c.muted
+                })
+                .wrapping(iced::widget::text::Wrapping::None);
             let mut content = row![
-                agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 28.0, c),
-                container(words).width(Fill).clip(true)
+                standing_glyph(standing, c),
+                agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 20.0, c),
+                container(hint(name_text, facts[1..].join(" · "), c))
+                    .width(Fill)
+                    .clip(true)
             ]
-            .spacing(12)
+            .spacing(8)
             .align_y(Center);
-            if unviewed {
-                content = content.push(done_dot(c));
-            }
-            if let Some(chip) = self.pull_request_chip(agent, c) {
-                content = content.push(chip);
-            }
-            if let Some(window) = window {
-                content = content.push(window);
-            }
-            if !narrow {
+            // One trailing slot, the first that applies: what the person
+            // must do, the pull request, then how long ago.
+            let tone = standing_tone(standing, c);
+            if standing.needs_you() || standing == agentdocker_core::standing::Standing::Failed {
+                if let Some(left) = self.soonest_answer_window(&id) {
+                    content = content.push(approvals::ring(
+                        left,
+                        if left < 0.2 { c.red } else { c.amber },
+                        14.0,
+                        c,
+                    ));
+                }
                 content = content.push(
-                    container(status_word(activity.clone(), tone, c))
-                        .width(iced::Length::Shrink)
-                        .max_width(220)
-                        .clip(true),
+                    container(
+                        text(if standing.needs_you() {
+                            activity.clone()
+                        } else {
+                            standing.word().to_owned()
+                        })
+                        .size(12)
+                        .font(weight(iced::font::Weight::Medium))
+                        .color(tone)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                    )
+                    .max_width(if narrow { 120 } else { 220 })
+                    .clip(true),
                 );
+            } else if let Some(chip) = self.pull_request_chip(agent, c) {
+                content = content.push(chip);
+            } else {
                 let since = agent.started_at.unwrap_or(agent.created_at);
                 content = content.push(
                     container(
@@ -2658,8 +2747,6 @@ impl App {
                     .width(44)
                     .align_x(iced::alignment::Horizontal::Right),
                 );
-            } else {
-                content = content.push(dot(tone, 8.0, c));
             }
             // An ended Claude Code session that can come back says so on
             // its row: the one thing to do with it is right there, not
@@ -2699,7 +2786,7 @@ impl App {
                 }),
                 self.shell.selected.as_deref() == Some(id.as_str()),
                 Kind::Quiet,
-                [if self.settings.roomy { 14 } else { 10 }, 14],
+                [if self.settings.roomy { 10 } else { 6 }, 10],
             ));
         }
         rows_card(items, c)
@@ -2717,7 +2804,12 @@ impl App {
             column![
                 heading(name.clone(), 15).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 row![
-                    status_word(self.activity_label(agent), self.activity_color(agent, c), c),
+                    // The row's tone, so the panel and the list never disagree.
+                    status_word(
+                        self.activity_label(agent),
+                        standing_tone(self.standing(agent), c),
+                        c
+                    ),
                     text(format!("· {}", super::runtime_label(&agent.spec.runtime)))
                         .size(12)
                         .color(c.muted),
@@ -3289,117 +3381,72 @@ impl App {
     /// Cancel and Launch at the foot. Each tool is a row with its binary,
     /// the chosen one marked like a selected radio.
     fn launch_view(&self, c: Colors) -> Element<'_, Message> {
-        let header = column![
-            heading("Launch an agent", 16),
-            note(
-                if self.shell.launch_worktree && self.launch_project_is_git() {
-                "Start a tool on a branch of its own, in its own folder; merge its work from Changes."
-            } else {
-                "Start a tool in this project's folder. Nothing else is changed."
-            },
-                c
-            )
-        ]
-        .spacing(4);
-        let mut choices = column![].spacing(6);
+        // Start from what the agent should do: the prompt first, the tool
+        // as a chip under it, everything else behind More options.
+        let header = column![heading("Launch an agent", 16)].spacing(4);
+        let ready = !self.shell.launching
+            && self.shell.launch_runtime.is_some()
+            && self.connected.is_ok();
+        let prompt = crate::controls::composer(
+            "launch-prompt",
+            "launch",
+            "What should it work on? Sent as its first message (optional)",
+            &self.shell.launch_prompt,
+            Message::LaunchPrompt,
+            !self.shell.launching,
+            ready.then_some(Message::Launch),
+        );
+        let mut chips = row![].spacing(6);
         for runtime in self.runtimes.iter().filter(|r| r.cli.is_some()) {
             let chosen = self.shell.launch_runtime.as_deref() == Some(runtime.name.as_str());
-            let binary = runtime
-                .cli
-                .as_ref()
-                .map(|p| shorten_home(p))
-                .unwrap_or_default();
             let initial: String = runtime
                 .label
                 .chars()
                 .next()
                 .map(|ch| ch.to_uppercase().collect())
                 .unwrap_or_default();
-            let radio = container(if chosen {
-                Element::from(dot(iced::Color::WHITE, 6.0, c))
-            } else {
-                Space::new().width(6).height(6).into()
-            })
-            .center(16)
-            .style(move |_| container::Style {
-                background: chosen.then(|| c.accent.into()),
-                border: iced::Border {
-                    color: if chosen { c.accent } else { c.line_strong },
-                    width: 1.5,
-                    radius: 8.0.into(),
-                },
-                ..Default::default()
-            });
             let content = row![
                 match super::logos::Logo::for_runtime(&runtime.name) {
-                    Some(logo) => logo_tile(logo, 32.0, c),
+                    Some(logo) => logo_tile(logo, 18.0, c),
                     None => icon_tile(
                         text(initial)
-                            .size(13)
+                            .size(10)
                             .font(weight(iced::font::Weight::Semibold))
                             .color(c.muted),
-                        32.0,
+                        18.0,
                         c,
                     ),
                 },
-                column![
-                    text(runtime.label.clone())
-                        .size(14)
-                        .font(weight(iced::font::Weight::Medium))
-                        .color(c.text),
-                    text(binary)
-                        .size(11.5)
-                        .font(Font::MONOSPACE)
-                        .color(c.faint)
-                        .wrapping(iced::widget::text::Wrapping::None),
-                ]
-                .spacing(2)
-                .width(Fill),
-                radio,
+                text(runtime.label.clone())
+                    .size(13)
+                    .font(weight(iced::font::Weight::Medium))
+                    .color(if chosen { c.text } else { c.muted }),
             ]
-            .spacing(12)
+            .spacing(7)
             .align_y(Center);
-            choices = choices.push(
-                container(custom(
+            chips = chips.push(
+                container(custom_sized(
                     format!("launch-tool-{}", runtime.name),
                     runtime.label.clone(),
                     content,
                     (!self.shell.launching).then_some(Message::LaunchRuntime(runtime.name.clone())),
                     false,
-                    Kind::Quiet,
-                    [10, 12],
+                    Kind::Inline,
+                    [5, 10],
+                    iced::Length::Shrink,
                 ))
                 .style(move |_| container::Style {
-                    background: chosen.then(|| alpha(c.accent, 0.06).into()),
+                    background: chosen.then(|| c.accent_soft.into()),
                     border: iced::Border {
-                        color: if chosen { c.accent } else { c.line },
+                        color: if chosen { c.accent } else { c.line_strong },
                         width: 1.0,
-                        radius: super::style::RADIUS_MD.into(),
+                        radius: 999.0.into(),
                     },
                     ..Default::default()
                 }),
             );
         }
-        let mut body = column![
-            eyebrow("Tool", c),
-            choices,
-            Space::new().height(4),
-            eyebrow("Name", c),
-            input(
-                "launch-name",
-                "Optional; one is made up otherwise",
-                &self.shell.launch_name,
-                Message::LaunchName,
-            ),
-            eyebrow("Arguments", c),
-            input(
-                "launch-arguments",
-                "Command arguments (optional)",
-                &self.shell.launch_arguments,
-                Message::LaunchArguments,
-            ),
-        ]
-        .spacing(8);
+        let mut body = column![prompt, chips.wrap()].spacing(10);
         if matches!(
             self.shell.launch_runtime.as_deref(),
             Some("claude-code" | "codex")
@@ -3490,10 +3537,62 @@ impl App {
                 .align_y(Center),
             );
         }
-        if let Some(runtime) = self
-            .runtimes
-            .iter()
-            .find(|r| Some(&r.name) == self.shell.launch_runtime.as_ref())
+        // The name, the arguments and the exact command: there when wanted.
+        body = body.push(custom_sized(
+            "launch-more",
+            if self.shell.launch_more {
+                "Fewer options"
+            } else {
+                "More options"
+            },
+            row![
+                icon(
+                    if self.shell.launch_more {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    },
+                    c.muted,
+                    12.0
+                ),
+                text(if self.shell.launch_more {
+                    "Fewer options"
+                } else {
+                    "More options"
+                })
+                .size(13)
+                .font(weight(iced::font::Weight::Medium))
+            ]
+            .spacing(6)
+            .align_y(Center),
+            Some(Message::LaunchMore),
+            false,
+            Kind::Ghost,
+            [4, 6],
+            iced::Length::Shrink,
+        ));
+        if self.shell.launch_more {
+            body = body
+                .push(eyebrow("Name", c))
+                .push(input(
+                    "launch-name",
+                    "Optional; one is made up otherwise",
+                    &self.shell.launch_name,
+                    Message::LaunchName,
+                ))
+                .push(eyebrow("Arguments", c))
+                .push(input(
+                    "launch-arguments",
+                    "Command arguments (optional)",
+                    &self.shell.launch_arguments,
+                    Message::LaunchArguments,
+                ));
+        }
+        if self.shell.launch_more
+            && let Some(runtime) = self
+                .runtimes
+                .iter()
+                .find(|r| Some(&r.name) == self.shell.launch_runtime.as_ref())
         {
             body = body.push(
                 container(
@@ -3542,10 +3641,7 @@ impl App {
                 } else {
                     "Launch agent"
                 },
-                (!self.shell.launching
-                    && self.shell.launch_runtime.is_some()
-                    && self.connected.is_ok())
-                .then_some(Message::Launch),
+                ready.then_some(Message::Launch),
             ),
         ]
         .spacing(8)

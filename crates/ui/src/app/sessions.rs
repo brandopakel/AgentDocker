@@ -33,6 +33,24 @@ impl App {
         agent.is_present(Utc::now()) && !self.naming().folded(agent)
     }
 
+    /// Where an agent stands with the person: the one answer every view
+    /// shows, from the one function that decides it
+    /// (`agentdocker_core::standing`).
+    pub(super) fn standing(&self, agent: &AgentRecord) -> agentdocker_core::standing::Standing {
+        use agentdocker_core::standing::{Signals, Standing};
+        let id = agent.id.as_str();
+        let unviewed = self.shell.unviewed_done.contains(id);
+        Standing::of(Signals {
+            live: agent.status.is_live(),
+            failed: matches!(agent.status, agentdocker_core::AgentStatus::Failed { .. }),
+            seen: !unviewed,
+            question: self.needs_input(id),
+            delivery_held: self.delivery_needs_you(agent),
+            finished_unseen: unviewed,
+            activity: self.activity.get(id),
+        })
+    }
+
     pub(super) fn needs_input(&self, id: &str) -> bool {
         self.questions
             .iter()
