@@ -2653,6 +2653,9 @@ impl App {
         if self.shell.catalog.selected != self.shell.checked_project {
             self.shell.checked_project = self.shell.catalog.selected.clone();
             self.shell.project_available = None;
+            if self.shell.launch && self.shell.launch_runtime.as_deref() == Some("codex") {
+                tasks.push(self.refresh_codex_trust());
+            }
             if let Some(path) = self.shell.checked_project.clone() {
                 tasks.push(Task::perform(
                     async move {
@@ -4129,6 +4132,61 @@ mod tests {
         let _ = app.update(Message::LaunchRuntime("claude-code".into()));
         let _ = app.update(Message::CodexTrustLoaded(current, root, Some(false)));
         assert_eq!(app.shell.launch_codex_untrusted, None);
+    }
+
+    #[test]
+    fn a_notification_refreshes_trust_for_the_open_codex_form() {
+        for completed_read in [false, true] {
+            let (mut app, _commands, _messages, home, mut action) = notification_app();
+            let previous = home.path().join("previous");
+            let selected = home.path().join("selected");
+            std::fs::create_dir(&previous).unwrap();
+            std::fs::create_dir(&selected).unwrap();
+            let project = crate::catalog::resolve(&selected).unwrap();
+            app.shell.catalog.remember(project.clone(), false);
+            action.target.project = Some(project.id());
+            app.questions.push(Question {
+                presentation: None,
+                id: action.target.message.clone(),
+                from: action.target.agent.to_string(),
+                to: agentdocker_core::Destination::Agent("user".into()),
+                text: "which option?".into(),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+            });
+            app.shell.catalog.selected = Some(previous.clone());
+            app.shell.checked_project = Some(previous.clone());
+            app.shell.launch_runtime = Some("codex".into());
+            let _ = app.update(Message::ShowLaunch);
+            let old = app.shell.launch_codex_trust_generation;
+            if completed_read {
+                let _ = app.update(Message::CodexTrustLoaded(
+                    old,
+                    previous.clone(),
+                    Some(false),
+                ));
+                assert_eq!(app.shell.launch_codex_untrusted, Some(previous.clone()));
+            }
+            let _ = app.update(Message::Notification(
+                crate::notification_route::Activation::Open(action),
+            ));
+            assert!(app.shell.launch);
+            assert_eq!(app.shell.catalog.selected, Some(project.root.clone()));
+            let current = app.shell.launch_codex_trust_generation;
+            assert_ne!(
+                old, current,
+                "a notification must request the new project's trust"
+            );
+            assert_eq!(app.shell.launch_codex_untrusted, None);
+            let _ = app.update(Message::CodexTrustLoaded(old, previous, Some(false)));
+            assert_eq!(app.shell.launch_codex_untrusted, None);
+            let _ = app.update(Message::CodexTrustLoaded(
+                current,
+                project.root.clone(),
+                Some(false),
+            ));
+            assert_eq!(app.shell.launch_codex_untrusted, Some(project.root));
+        }
     }
 
     #[test]

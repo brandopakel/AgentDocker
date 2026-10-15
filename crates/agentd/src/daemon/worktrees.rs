@@ -536,7 +536,27 @@ impl Daemon {
             Err(e) => return failure(e),
         };
         let files = staged.text.lines().filter(|l| !l.is_empty()).count();
-        if files == 0 {
+        // A pending merge can change ancestry without changing the tree.
+        // Git still validates the complete merge state when committing it.
+        let merging = if files == 0 {
+            match git(
+                root.clone(),
+                vec![
+                    "rev-parse".into(),
+                    "--verify".into(),
+                    "--quiet".into(),
+                    "MERGE_HEAD^{commit}".into(),
+                ],
+            )
+            .await
+            {
+                Ok(output) => output.success,
+                Err(error) => return failure(error),
+            }
+        } else {
+            false
+        };
+        if files == 0 && !merging {
             return Response::error(
                 ErrorCode::Conflict,
                 if all {
@@ -864,6 +884,135 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn commit_finishes_history_only_merges_but_refuses_ordinary_empty_commits() {
+        async fn run(root: &Path, args: &[&str]) -> String {
+            let result = git(
+                root.to_owned(),
+                args.iter().map(|s| (*s).to_owned()).collect(),
+            )
+            .await
+            .unwrap();
+            assert!(result.success, "git {args:?}: {}", result.text);
+            result.text.trim().to_owned()
+        }
+        // Cover a normal checkout and a linked checkout with an octopus merge,
+        // and both forms of the explicit commit command.
+        for (all, sides) in [(false, 1), (true, 2)] {
+            let temporary = tempfile::tempdir().unwrap();
+            let repository = temporary.path().join("repository");
+            std::fs::create_dir(&repository).unwrap();
+            run(&repository, &["init", "-q", "-b", "main"]).await;
+            run(
+                &repository,
+                &["config", "user.email", "test@example.invalid"],
+            )
+            .await;
+            run(&repository, &["config", "user.name", "Fixture"]).await;
+            std::fs::write(repository.join("file"), "unchanged").unwrap();
+            run(&repository, &["add", "file"]).await;
+            run(&repository, &["commit", "-qm", "initial"]).await;
+            let parent = run(&repository, &["rev-parse", "HEAD"]).await;
+            let tree = run(&repository, &["rev-parse", "HEAD^{tree}"]).await;
+            let mut branches = Vec::new();
+            for number in 0..sides {
+                let branch = format!("side-{number}");
+                run(&repository, &["checkout", "-qb", &branch, &parent]).await;
+                run(&repository, &["commit", "--allow-empty", "-qm", &branch]).await;
+                branches.push(branch);
+            }
+            run(&repository, &["checkout", "-q", "main"]).await;
+            let root = if all {
+                let linked = temporary.path().join("linked");
+                run(
+                    &repository,
+                    &[
+                        "worktree",
+                        "add",
+                        "-b",
+                        "target",
+                        linked.to_str().unwrap(),
+                        "main",
+                    ],
+                )
+                .await;
+                linked
+            } else {
+                repository
+            };
+            std::fs::write(root.join("untracked"), "keep private").unwrap();
+            let daemon = Arc::new(
+                Daemon::open(
+                    temporary.path().join("state"),
+                    temporary.path().join("sock"),
+                )
+                .unwrap(),
+            );
+            daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: "merger".into(),
+                        workdir: Some(root.clone()),
+                        ..AgentSpec::default()
+                    },
+                    pid: None,
+                    session: None,
+                })
+                .await;
+            assert!(matches!(
+                daemon.commit("merger", "empty".into(), all, false).await,
+                Response::Error {
+                    code: ErrorCode::Conflict,
+                    ..
+                }
+            ));
+            assert_eq!(run(&root, &["rev-parse", "HEAD"]).await, parent);
+            let mut merge = vec!["merge", "--no-ff", "--no-commit"];
+            merge.extend(branches.iter().map(String::as_str));
+            run(&root, &merge).await;
+            assert!(
+                run(&root, &["diff", "--name-only", "--cached"])
+                    .await
+                    .is_empty()
+            );
+            let response = daemon
+                .commit("merger", "merge ancestry".into(), all, false)
+                .await;
+            let Response::Committed {
+                head,
+                files: 0,
+                pushed: false,
+                ..
+            } = response
+            else {
+                panic!("history-only merge refused: {response:?}");
+            };
+            assert_eq!(head, run(&root, &["rev-parse", "HEAD"]).await);
+            assert_eq!(run(&root, &["rev-parse", "HEAD^{tree}"]).await, tree);
+            assert_eq!(
+                run(&root, &["rev-list", "--parents", "-n", "1", "HEAD"])
+                    .await
+                    .split_whitespace()
+                    .count(),
+                sides + 2
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("untracked")).unwrap(),
+                "keep private"
+            );
+            assert_eq!(run(&root, &["status", "--porcelain"]).await, "?? untracked");
+            assert!(matches!(
+                daemon
+                    .commit("merger", "still empty".into(), all, false)
+                    .await,
+                Response::Error {
+                    code: ErrorCode::Conflict,
+                    ..
+                }
+            ));
+        }
+    }
     #[tokio::test]
     async fn integration_requires_matching_validation_and_leaves_merge_uncommitted() {
         let tmp = tempfile::tempdir().unwrap();

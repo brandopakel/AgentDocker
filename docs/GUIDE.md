@@ -745,6 +745,8 @@ Nothing goes into the commit itself. The git author is whoever git is
 configured as, and no trailer is added: it is your repository, and which
 agent typed it is our record to keep, not a change to your history.
 
+A pending merge can be committed even when its file tree is unchanged; its new ancestry is still journaled. An ordinary empty commit remains refused, and untracked files are not staged automatically.
+
 Add `--push` to push afterwards. A push that fails leaves the commit —
 losing the work to tidy up a failed push would be the wrong trade.
 
