@@ -73,7 +73,7 @@ pub(super) async fn open(
                 to: pending.human.clone(),
                 question: pending.questions[index].text.clone(),
                 presentation: pending.questions[index].presentation.clone(),
-                timeout_secs: 300,
+                timeout_secs: review::REVIEW_WINDOW_SECS,
             },
         )
         .await?;

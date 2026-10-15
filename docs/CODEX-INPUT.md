@@ -684,6 +684,10 @@ In Inbox, command requests show the command, folder and reason with **Allow once
 and **Deny** controls. Multiple-choice questions offer buttons and a text field
 for a different answer. These choices use the existing human answer queue, retain
 other question drafts and become unavailable when the question closes or expires.
+A Codex approval or question waits up to 24 hours for the person, as Codex's own
+terminal waits until someone answers; only then does it expire, and an expired
+approval is a denial. (It was five minutes, which turned a short absence into a
+silent denial.)
 The structured presentation is checked against the complete fallback question
 text, so the native app and CLI describe the same request.
 
