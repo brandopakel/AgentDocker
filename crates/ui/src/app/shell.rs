@@ -147,6 +147,12 @@ pub(super) struct State {
     /// `idle` report on its own never counts as seen. Window-local, never
     /// persisted.
     pub unviewed_done: BTreeSet<String>,
+    /// What this window last said it shows (`viewing.json`), and when.
+    pub viewing: Option<(agentdocker_host::notify::Viewing, Instant)>,
+    /// Cards this window has moved on by their holder's pull request, and
+    /// where to: each move is asked once, so an agent that moves a card
+    /// back is never fought.
+    pub board_moved: BTreeSet<(String, agentdocker_core::task::Column)>,
     /// The window has lost focus; what it shows is not being looked at.
     pub unfocused: bool,
     /// Each shown branch's pull request and checks, as `gh` last said.
@@ -722,6 +728,9 @@ pub enum Message {
     /// Put an armed Stop back without stopping anything.
     DisarmStop,
     ShowLaunch,
+    /// Hand a repair to the agent that owns the work: the prepared words
+    /// go to it as a message, as if typed in its panel.
+    AskAgent(String, String),
     /// Go to the next agent that calls for the person, loudest first:
     /// what needs you, then failures, then finished work you have not seen.
     NextAttention,
@@ -2229,6 +2238,18 @@ impl App {
                 self.shell.launch_codex_untrusted = self.codex_untrusted(&runtime);
                 self.shell.launch_runtime = Some(runtime);
             }
+            Message::AskAgent(id, words) => {
+                if self.connected.is_ok() {
+                    let name = self
+                        .agents
+                        .iter()
+                        .find(|a| a.id.as_str() == id)
+                        .map(|a| self.display_name(a))
+                        .unwrap_or_else(|| id.clone());
+                    self.send(Cmd::SessionSend(id, words));
+                    self.say(format!("Asked {name}"));
+                }
+            }
             Message::NextAttention => {
                 let mut calling: Vec<_> = self
                     .agents
@@ -2349,6 +2370,7 @@ impl App {
             }
             Message::PullRequests(answers) => {
                 self.shell.pull_requests.answered(answers, Instant::now());
+                self.move_cards_by_pull_request();
             }
             Message::OpenPullRequest(url) => tasks.push(Task::perform(
                 async move {
@@ -2764,6 +2786,26 @@ impl App {
         // Smoke scenarios consume the snapshot as application state. Normal
         // refreshes publish it directly, avoiding a second update and redraw.
         // Explicit focus/reveal chains above keep their completion message.
+        // What is on screen, for the notification poster: a notice about
+        // it is not posted. Written when it changes and every half minute
+        // while focused, so a stale record never silences anything.
+        if self.shell.window.is_some() && self.smoke.is_none() {
+            let now = self.viewing_now();
+            let due = match &self.shell.viewing {
+                None => true,
+                Some((said, at)) => {
+                    (said.focused, &said.agent, &said.chat) != (now.focused, &now.agent, &now.chat)
+                        || (now.focused && at.elapsed() >= Duration::from_secs(30))
+                }
+            };
+            if due {
+                let path = agentdocker_host::notify::viewing_path(&agentdocker_host::dirs::home());
+                if let Ok(text) = serde_json::to_string(&now) {
+                    let _ = std::fs::write(path, text);
+                }
+                self.shell.viewing = Some((now, Instant::now()));
+            }
+        }
         // The dock icon counts the questions waiting on the person, in
         // every project: the dock is the whole app's, not one screen's.
         let waiting = self.waiting_on_you();
@@ -3291,6 +3333,67 @@ impl App {
     /// Ask `gh` again about the wanted branches whose answer is old (see
     /// `pull_request::Cache::due`): one round on a background thread, its
     /// answers in one message, so a refresh costs the window one frame.
+    /// What the window shows the person now: the agent whose session or
+    /// terminal is open, and the project whose chat is open.
+    pub(super) fn viewing_now(&self) -> agentdocker_host::notify::Viewing {
+        let agent = match self.screen {
+            Screen::Terminal => self.terminal.as_ref().map(|t| t.agent.clone()),
+            Screen::Agents | Screen::Chat => self.shell.selected.clone(),
+            _ => None,
+        };
+        let chat = (self.screen == Screen::Chat)
+            .then(|| {
+                self.shell
+                    .catalog
+                    .selected()
+                    .map(|entry| entry.project.id().to_string())
+            })
+            .flatten();
+        agentdocker_host::notify::Viewing {
+            focused: !self.shell.unfocused,
+            agent,
+            chat,
+            at: Utc::now(),
+        }
+    }
+
+    /// A card follows its holder's pull request: opened, the work is in
+    /// review; merged, it is done. Only forward, from In progress or
+    /// Review, and each move once.
+    pub(super) fn move_cards_by_pull_request(&mut self) {
+        use crate::pull_request::Status;
+        use agentdocker_core::task::Column;
+        let Some(board) = self.tasks.as_ref() else {
+            return;
+        };
+        let mut moves = Vec::new();
+        for card in &board.cards {
+            let Some(holder) = card.assignee.as_ref() else {
+                continue;
+            };
+            let Some(agent) = self.agents.iter().find(|a| &a.id == holder) else {
+                continue;
+            };
+            let Some(pull) = self.pull_request_of(agent) else {
+                continue;
+            };
+            let to = match (pull.status, card.column) {
+                (Status::Merged, Column::InProgress | Column::Review) => Column::Done,
+                (
+                    Status::Open | Status::Passed | Status::Running | Status::Failed,
+                    Column::InProgress,
+                ) => Column::Review,
+                _ => continue,
+            };
+            if self.shell.board_moved.insert((card.id.to_string(), to)) {
+                moves.push((card.id.clone(), to));
+            }
+        }
+        for (task, column) in moves {
+            self.send(Cmd::TaskMove { task, column });
+        }
+    }
+
     pub(super) fn refresh_pull_requests(&mut self, focus: bool) -> Task<Message> {
         let wanted = self.pull_request_wanted();
         let due = self.shell.pull_requests.due(&wanted, Instant::now(), focus);
@@ -4064,6 +4167,95 @@ mod tests {
 
     /// A launched agent's terminal opens as soon as the list shows it
     /// running, so what it asks before it starts is in front of the person.
+    #[test]
+    fn a_card_follows_its_holders_pull_request_once() {
+        use crate::pull_request::{Key, PullRequest, Status};
+        use agentdocker_core::task::Column;
+        let (mut app, commands, _messages) = app();
+        let project = agentdocker_core::ProjectRef::directory("/work/alpha");
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "worker".into(),
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        agent.id = "worker".into();
+        agent.status = agentdocker_core::AgentStatus::Running;
+        agent.project = Some(project.clone());
+        agent.vcs = Some(agentdocker_core::VcsState {
+            branch: Some("feat/x".into()),
+            head: None,
+            dirty: None,
+            updated_at: Utc::now(),
+        });
+        app.agents.push(agent);
+        let mut card = agentdocker_core::Task::new(
+            project.id(),
+            "Ship it",
+            "",
+            Some(Column::InProgress),
+            "user",
+            Vec::new(),
+            Utc::now(),
+        )
+        .unwrap();
+        card.assignee = Some("worker".into());
+        let task = card.id.clone();
+        app.tasks = Some(crate::app::Board {
+            project: project.id().to_string(),
+            cards: vec![card],
+            more: false,
+            pending_more: None,
+        });
+        let key = Key::new(std::path::Path::new("/work/alpha"), "feat/x").unwrap();
+        let answer = |status| {
+            Message::PullRequests(vec![(
+                key.clone(),
+                Ok(Some(PullRequest {
+                    number: 7,
+                    url: "https://example.com/7".into(),
+                    status,
+                })),
+            )])
+        };
+        let moves = |commands: &CommandReceiver| -> Vec<Column> {
+            commands
+                .try_iter()
+                .filter_map(|cmd| match cmd {
+                    Cmd::TaskMove { column, .. } => Some(column),
+                    _ => None,
+                })
+                .collect()
+        };
+        let _ = app.update(answer(Status::Running));
+        assert_eq!(moves(&commands), [Column::Review], "a pull request opened");
+        let _ = app.update(answer(Status::Running));
+        assert!(moves(&commands).is_empty(), "asked once");
+        let _ = app.update(answer(Status::Merged));
+        assert_eq!(moves(&commands), [Column::Done], "merged");
+        assert!(
+            app.shell
+                .board_moved
+                .contains(&(task.to_string(), Column::Done))
+        );
+    }
+
+    #[test]
+    fn asking_an_agent_to_repair_sends_it_the_words() {
+        let (mut app, commands, _messages) = app();
+        app.connected = Ok(());
+        let _ = commands.try_iter().count();
+        let _ = app.update(Message::AskAgent(
+            "worker".into(),
+            "Please resolve the conflicts.".into(),
+        ));
+        assert!(commands.try_iter().any(|cmd| matches!(cmd,
+            Cmd::SessionSend(id, text) if id == "worker" && text == "Please resolve the conflicts.")));
+    }
+
     #[test]
     fn next_attention_walks_every_agent_that_calls_for_the_person() {
         let (mut app, _commands, _messages) = app();

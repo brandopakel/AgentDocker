@@ -315,22 +315,30 @@ impl App {
             // One line for the name, clipped: a long name never pushes
             // the state off the card or wraps under the dot. The holder's
             // tool mark sits between the dot and the name.
-            head = head.push(
-                row![
-                    dot(if *live { c.green } else { c.faint }, 6.0, c),
-                    self.agent_mark_for(id, name, 16.0, c),
-                    container(
-                        text(name.clone())
-                            .size(12)
-                            .color(c.muted)
-                            .wrapping(iced::widget::text::Wrapping::None)
-                    )
-                    .width(Fill)
-                    .clip(true),
-                ]
-                .spacing(6)
-                .align_y(Center),
-            );
+            // The holder's standing, as every agent row draws it, and its
+            // pull request: whether anyone is on the card, read off it.
+            let record = self.agents.iter().find(|r| r.id.as_str() == *id);
+            let mut line = row![
+                match record {
+                    Some(record) => super::view::standing_glyph(self.standing(record), c),
+                    None => dot(if *live { c.muted } else { c.faint }, 6.0, c),
+                },
+                self.agent_mark_for(id, name, 16.0, c),
+                container(
+                    text(name.clone())
+                        .size(12)
+                        .color(c.muted)
+                        .wrapping(iced::widget::text::Wrapping::None)
+                )
+                .width(Fill)
+                .clip(true),
+            ]
+            .spacing(6)
+            .align_y(Center);
+            if let Some(chip) = record.and_then(|r| self.pull_request_chip(r, c)) {
+                line = line.push(chip);
+            }
+            head = head.push(line);
             // Its own line: beside the name it clipped the name to a letter.
             if lapsed(*held) {
                 head = head.push(status_word("not being worked on", c.amber, c));

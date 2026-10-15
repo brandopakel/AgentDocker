@@ -206,6 +206,13 @@ pub fn post_notification(notice: &agentdocker_host::notify::Notification) -> Res
     if !in_a_bundle() {
         return Err("not running inside an application bundle".to_owned());
     }
+    // The window already shows it: nothing to tell the person.
+    if let Some(action) = &notice.action
+        && agentdocker_host::notify::Viewing::read(&action.home)
+            .is_some_and(|viewing| viewing.shows(&action.target, chrono::Utc::now()))
+    {
+        return Ok(());
+    }
     let centre = UNUserNotificationCenter::currentNotificationCenter();
 
     // Asking is idempotent and answered from the user's earlier choice
@@ -237,13 +244,18 @@ pub fn post_notification(notice: &agentdocker_host::notify::Notification) -> Res
 
     register_categories();
     let content = notification_content(notice)?;
-    let id = NSString::from_str(&format!(
-        "dev.agentdocker.{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default()
-    ));
+    // One notification per agent: a newer one replaces its last, so the
+    // centre holds what each agent says now, not a backlog of it.
+    let id = NSString::from_str(&match &notice.action {
+        Some(action) => format!("dev.agentdocker.agent.{}", action.target.agent),
+        None => format!(
+            "dev.agentdocker.{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ),
+    });
     let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&id, &content, None);
 
     let accepted: Outcome = Arc::new((Mutex::new(None), std::sync::Condvar::new()));

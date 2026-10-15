@@ -129,20 +129,32 @@ impl App {
                 format!("Nothing on {branch} that {target} does not have."),
                 c,
             ));
-            // Merged and ended: the worktree has done its work. Removing
-            // it is the person's call, here where they merged it.
-            if !agent.status.is_live() && review.checkout != review.target_checkout {
-                let removing = self.removing_worktree.as_deref() == Some(id.as_str());
-                section = section.push(ghost(
-                    "remove-worktree",
-                    if removing {
-                        "Removing…"
-                    } else {
-                        "Remove its worktree"
-                    },
-                    (!removing && self.connected.is_ok())
-                        .then(|| Message::RemoveWorktree(id.clone())),
-                ));
+            // Merged: the worktree has done its work. Removing it is the
+            // next step and the person's call, here where they merged it;
+            // a running agent keeps its folder until it is done.
+            if review.checkout != review.target_checkout {
+                if agent.status.is_live() {
+                    section = section.push(small(
+                        format!(
+                            "Its worktree stays while {} runs; remove it here once it is done.",
+                            self.display_name(agent)
+                        ),
+                        c,
+                    ));
+                } else {
+                    let removing = self.removing_worktree.as_deref() == Some(id.as_str());
+                    section = section.push(action(
+                        "remove-worktree",
+                        if removing {
+                            "Removing…"
+                        } else {
+                            "Remove its worktree"
+                        },
+                        (!removing && self.connected.is_ok())
+                            .then(|| Message::RemoveWorktree(id.clone())),
+                        false,
+                    ));
+                }
             }
             return Some(section.into());
         }
@@ -197,6 +209,67 @@ impl App {
         }
         section = section.push(files);
         section = section.push(self.merge_checklist(review, &blockers, &target, c));
+        // What only the agent can fix goes back to it as a message: its own
+        // uncommitted work, or a conflict on its branch. The person's own
+        // checkout and other agents' leases stay theirs to sort out.
+        let name = self.display_name(agent);
+        let mut asks = row![].spacing(8).align_y(Center);
+        let live = agent.status.is_live() && self.connected.is_ok();
+        if let Some(Blocker::Uncommitted(n)) = blockers
+            .iter()
+            .find(|b| matches!(b, Blocker::Uncommitted(_)))
+        {
+            asks = asks.push(action(
+                "ask-commit",
+                format!("Ask {name} to commit"),
+                live.then(|| {
+                    Message::AskAgent(
+                        id.clone(),
+                        format!(
+                            "{} on {branch} {} not committed. Please commit your work so it can be merged into {target}, then tell me.",
+                            plural(*n, "file"),
+                            if *n == 1 { "is" } else { "are" },
+                        ),
+                    )
+                }),
+                false,
+            ));
+        }
+        if blockers.iter().any(|b| matches!(b, Blocker::Conflicts(_))) {
+            asks = asks.push(action(
+                "ask-resolve",
+                format!("Ask {name} to resolve"),
+                live.then(|| {
+                    Message::AskAgent(
+                        id.clone(),
+                        format!(
+                            "Merging {branch} into {target} would conflict in {}. Please bring {target} into your branch (git merge {target}), resolve the conflicts, commit, and tell me when it is done.",
+                            review.conflicts.join(", "),
+                        ),
+                    )
+                }),
+                false,
+            ));
+        }
+        if let Some(pull) = self.pull_request_of(agent)
+            && pull.status == crate::pull_request::Status::Failed
+        {
+            asks = asks.push(action(
+                "ask-fix-checks",
+                format!("Ask {name} to fix checks"),
+                live.then(|| {
+                    Message::AskAgent(
+                        id.clone(),
+                        format!(
+                            "The checks on pull request #{} failed. Please look at the failures (gh pr checks {}), fix them, push, and tell me when they pass.",
+                            pull.number, pull.number,
+                        ),
+                    )
+                }),
+                false,
+            ));
+        }
+        section = section.push(asks.wrap());
         let head = review.head.clone().unwrap_or_default();
         let merging = self.merging.as_deref() == Some(id.as_str());
         let ready = blockers.is_empty() && !merging && self.connected.is_ok();
@@ -209,6 +282,15 @@ impl App {
             },
             ready.then(|| Message::MergeBranch(id.clone(), head)),
         ));
+        // The command it runs, so nothing about it is a surprise.
+        section = section.push(
+            text(format!(
+                "git merge --no-ff {branch}, in the {target} checkout"
+            ))
+            .size(11.5)
+            .font(Font::MONOSPACE)
+            .color(c.faint),
+        );
         if let Some(outcome) = outcome {
             section = section.push(outcome);
         }
