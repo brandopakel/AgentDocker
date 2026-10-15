@@ -130,7 +130,10 @@ agents that need you, and its name in semibold when something there is new;
 how many agents run is not shown, since it is not a reason to look. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
-Inbox. The first three items are shown; **Show more** expands the same list and
+Inbox. A command a live session asks to run is answered in the row itself:
+**Deny** and **Allow once** send the same exact answer as the Inbox card, with
+the command in the row's words; file changes, which must be looked at first,
+and every other question open with **Answer**. The first three items are shown; **Show more** expands the same list and
 **Show fewer** collapses it. When nobody needs an answer or delivery review, **To get started** can offer
 **Connect** for discovered processes and **Set up** for installed tools. Tools
 also keeps the full setup controls.
@@ -202,7 +205,8 @@ unanswered, unexpired questions, including questions from a session that has
 since finished; nothing else. Ended sessions are not a tab: they sit in one collapsed
 **Earlier (n)** group under the current ones, including previous runs with the
 same name, and a search that finds one opens the group. The group opens on
-its newest eight; **Show older** adds eight more each time, and closing the
+its newest eight, under the day they ended (Today, Yesterday, This week, Older);
+**Show older** adds eight more each time, and closing the
 group forgets how far it was opened. When only an earlier
 session matches, its result appears without a contradictory empty-state card.
 Search applies to the
@@ -229,11 +233,18 @@ merged into (the one checked out in the project's main folder), its commits,
 files and lines, each file opening its own coloured diff (300 lines at most),
 a checklist — work committed, the main folder has nothing uncommitted, no
 conflicts, nobody holding files there — and **Merge into main**, enabled only
-when the checklist is clear. It makes a merge commit in the main folder and
-says so (*Merged into main as abc1234.*), or says why not, with nothing changed;
-a branch that moved since it was read is never merged unseen. Nothing is pushed.
-Changes are read again when the session commits or its branch moves, and with
-**Refresh**. Once nothing is left to merge and the session has ended,
+when the checklist is clear, with the command it runs under it (`git merge
+--no-ff <branch>`, in the main folder). What only the agent can fix goes back
+to it as a message, one click each: **Ask <agent> to commit** for its own
+uncommitted work, **Ask <agent> to resolve** for conflicts (naming the files),
+and **Ask <agent> to fix checks** when its pull request's checks failed. The
+main folder's own uncommitted files and other agents' leases stay yours to sort
+out. Merging makes a merge commit in the main folder and says so (*Merged into
+main as abc1234.*), or says why not, with nothing changed; a branch that moved
+since it was read is never merged unseen. Nothing is pushed. Changes are read
+again when the session commits or its branch moves, and with **Refresh**. Once
+nothing is left to merge, the next step is right there: while the session runs
+the section says its worktree stays until it is done; once it has ended,
 **Remove its worktree** removes the folder (only when it is clean) and its branch
 when git considers it merged; the branch is kept, and the section says so, when not. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
@@ -254,7 +265,13 @@ them, that is the person's tools' work) and its
 moves: one column back or forward, **Hand to** an agent running here (or
 *nobody*), and **Archive**. An agent pulls a Ready
 card with the `pull_task` tool and the board shows it in progress under that
-agent at once; two agents never get one card. The pull is a `task:<id>`
+agent at once; two agents never get one card. A held card shows its holder's
+standing glyph, as every agent row draws it, and the holder's pull request
+chip, so whether anyone is on it reads off the card. While the board is on
+screen, a card follows its holder's pull request forward: from In progress to
+Review once the pull request is open, and from In progress or Review to Done
+once it is merged. Each move is made once, so an agent that moves the card
+back is not fought. The pull is a `task:<id>`
 lease: a card whose holder's lease has lapsed — expired, released, or the
 agent gone — says *not being worked on* beside the holder; nobody takes it by a
 plain pull, only by naming that holder (`pull_task` with `take_over_from`)
@@ -448,7 +465,12 @@ the conversation's composer stays under the conversation and never becomes a
 reply. It sends to the project (`#everyone`) or to that agent; it reads
 **This session has ended** for a direct conversation whose agent is gone and
 says so for one between two agents. Drafts survive navigation, a failed
-request and disconnection. A notification opens the message's conversation
+request and disconnection. Notifications follow what every agent app
+studied does: none is posted about what the focused window already shows (the
+agent whose session or terminal is open, or the project whose chat is open;
+the window keeps a short-lived `viewing.json` in the AgentDocker home for the
+poster), and an agent's newer notification replaces its last one in
+Notification Center rather than stacking. A notification opens the message's conversation
 even after it has been read, and even when the sender's record is gone: the
 archive outlives it. A notification about a message in a channel or to every
 agent (`#all`) opens the direct conversation with its sender when that is an

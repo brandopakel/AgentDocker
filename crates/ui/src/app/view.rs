@@ -655,6 +655,36 @@ pub(super) fn quiet_scroll(
 
 /// How long since `then`, coarsely: "now", "3m", "1h 12m", "2d". Rows
 /// refresh on the clock sweep; seconds would only make them twitch.
+/// Ended sessions, newest first, under the day they ended: Today,
+/// Yesterday, This week, then Older. Empty days are left out; the order
+/// within a day is kept.
+pub(super) fn by_day<'a>(
+    records: &[&'a AgentRecord],
+    now: chrono::DateTime<chrono::Local>,
+) -> Vec<(&'static str, Vec<&'a AgentRecord>)> {
+    let today = now.date_naive();
+    let mut days: Vec<(&'static str, Vec<&'a AgentRecord>)> = Vec::new();
+    for record in records {
+        let ended = record
+            .finished_at
+            .unwrap_or(record.last_seen)
+            .with_timezone(&chrono::Local)
+            .date_naive();
+        let age = (today - ended).num_days();
+        let day = match age {
+            ..=0 => "Today",
+            1 => "Yesterday",
+            2..=6 => "This week",
+            _ => "Older",
+        };
+        match days.iter_mut().find(|(label, _)| *label == day) {
+            Some((_, rows)) => rows.push(record),
+            None => days.push((day, vec![record])),
+        }
+    }
+    days
+}
+
 pub(super) fn elapsed(now: chrono::DateTime<Utc>, then: chrono::DateTime<Utc>) -> String {
     let minutes = (now - then).num_minutes().max(0);
     match minutes {
@@ -2580,7 +2610,12 @@ impl App {
                 // from last week is a click away, not on every screen.
                 let page: Vec<&AgentRecord> = earlier.iter().copied().take(shown).collect();
                 let older = earlier.len().saturating_sub(page.len());
-                group = group.push(self.session_rows(&page, c));
+                // By the day they ended, as a person remembers them.
+                for (day, rows) in by_day(&page, chrono::Local::now()) {
+                    group = group
+                        .push(container(eyebrow(day, c)).padding([4, 4]))
+                        .push(self.session_rows(&rows, c));
+                }
                 if older > 0 {
                     group = group.push(ghost(
                         "sessions-earlier-more",
@@ -4054,6 +4089,46 @@ pub(super) fn split_style(c: Colors) -> iced::widget::pane_grid::Style {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ended_sessions_group_by_the_day_they_ended() {
+        use chrono::TimeZone;
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 10, 14, 15, 0, 0)
+            .unwrap();
+        let ended = |days: i64, name: &str| {
+            let mut record = agentdocker_core::AgentRecord::new(
+                agentdocker_core::AgentSpec {
+                    name: name.into(),
+                    ..Default::default()
+                },
+                false,
+                chrono::Utc::now(),
+            );
+            record.finished_at =
+                Some((now - chrono::Duration::days(days)).with_timezone(&chrono::Utc));
+            record
+        };
+        let records = [
+            ended(0, "a"),
+            ended(0, "b"),
+            ended(1, "c"),
+            ended(3, "d"),
+            ended(40, "e"),
+        ];
+        let refs: Vec<_> = records.iter().collect();
+        let days = super::by_day(&refs, now);
+        let labels: Vec<_> = days.iter().map(|(day, rows)| (*day, rows.len())).collect();
+        assert_eq!(
+            labels,
+            [
+                ("Today", 2),
+                ("Yesterday", 1),
+                ("This week", 1),
+                ("Older", 1)
+            ]
+        );
+    }
+
     #[test]
     fn a_held_path_reads_from_the_project_root_on_view() {
         let root = std::path::Path::new("/work/project");
