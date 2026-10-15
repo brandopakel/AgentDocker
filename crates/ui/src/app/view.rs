@@ -3452,6 +3452,17 @@ impl App {
                 c,
             ));
         }
+        if self.shell.launch_runtime.as_deref() == Some("codex")
+            && let Some(root) = &self.shell.launch_codex_untrusted
+        {
+            body = body.push(small(
+                format!(
+                    "Codex does not trust {} yet, so it runs read-only there and asks before every change. Run codex in that folder once and trust it to let it edit.",
+                    shorten_home(root)
+                ),
+                c,
+            ));
+        }
         // Its own worktree: the session works on a branch of its own, and
         // its changes are reviewed and merged from its Changes. Files git
         // ignores that the project lists in `.worktreeinclude` are copied

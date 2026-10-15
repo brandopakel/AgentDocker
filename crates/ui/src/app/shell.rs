@@ -51,6 +51,9 @@ pub(super) struct State {
     pub launch_channel: bool,
     /// Whether the launched session gets its own worktree and branch.
     pub launch_worktree: bool,
+    /// The project folder Codex does not trust, when Codex is the tool
+    /// chosen: it would run read-only there and ask before every change.
+    pub launch_codex_untrusted: Option<std::path::PathBuf>,
     /// The count last shown on the dock icon, so it is set only on a change.
     pub dock_badge: Option<usize>,
     pub launching: bool,
@@ -2189,6 +2192,11 @@ impl App {
                 // A git project starts each session on its own branch in
                 // its own worktree unless the person says otherwise.
                 self.shell.launch_worktree = self.launch_project_is_git();
+                self.shell.launch_codex_untrusted = self
+                    .shell
+                    .launch_runtime
+                    .clone()
+                    .and_then(|runtime| self.codex_untrusted(&runtime));
                 if self.shell.launch {
                     self.shell.selected = None;
                     self.shell.session_filter = super::sessions::Filter::Current;
@@ -2207,6 +2215,7 @@ impl App {
                 // A normal launch connects the supported input adapter. The
                 // provider still asks for its own channel/tool consent.
                 self.shell.launch_channel = matches!(runtime.as_str(), "claude-code" | "codex");
+                self.shell.launch_codex_untrusted = self.codex_untrusted(&runtime);
                 self.shell.launch_runtime = Some(runtime);
             }
             Message::LaunchName(name) => self.shell.launch_name = name.chars().take(120).collect(),
@@ -3053,6 +3062,15 @@ impl App {
 
     /// Whether the project the launch form is for is a git repository:
     /// only then can a session have a worktree of its own.
+    /// The selected project's folder when `runtime` is Codex and Codex
+    /// does not trust it. Read as the form opens or the tool is chosen,
+    /// never while drawing.
+    fn codex_untrusted(&self, runtime: &str) -> Option<std::path::PathBuf> {
+        self.shell.catalog.selected.clone().filter(|root| {
+            runtime == "codex" && agentdocker_host::codex_trust::trusted(root) == Some(false)
+        })
+    }
+
     pub(crate) fn launch_project_is_git(&self) -> bool {
         self.shell
             .catalog
@@ -4024,6 +4042,15 @@ mod tests {
         app.drain();
         assert_eq!(app.screen, Screen::Terminal);
         assert_eq!(app.shell.attach_when_listed, None);
+    }
+
+    #[test]
+    fn the_codex_trust_note_is_for_codex_alone() {
+        let (mut app, _commands, _messages) = app();
+        app.shell.launch_codex_untrusted = Some("/work/new".into());
+        // Another tool reads nothing and shows no Codex note.
+        let _ = app.update(Message::LaunchRuntime("claude-code".into()));
+        assert_eq!(app.shell.launch_codex_untrusted, None);
     }
 
     #[test]
