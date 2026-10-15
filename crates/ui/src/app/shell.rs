@@ -4203,7 +4203,10 @@ mod tests {
         app.agents.push(prompt);
         app.activity.insert(
             "prompted".into(),
-            agentdocker_core::Activity::Waiting { since: Utc::now() },
+            agentdocker_core::Activity::Waiting {
+                since: Utc::now(),
+                reason: None,
+            },
         );
         let _ = app.update(Message::Event(iced::Event::Window(window::Event::Focused)));
         assert_eq!(app.waiting_on_you(), 2);

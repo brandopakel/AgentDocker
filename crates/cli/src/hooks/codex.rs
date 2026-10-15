@@ -215,6 +215,7 @@ async fn finish_report<B: Backend>(
             observation: ActivityObservation {
                 activity,
                 observed_at,
+                reason: None,
             },
         })
         .await?
@@ -503,6 +504,7 @@ async fn deliver<B: Backend>(
                     observation: ActivityObservation {
                         activity: ReportedActivity::Working,
                         observed_at: Utc::now(),
+                        reason: None,
                     },
                 }),
             )
