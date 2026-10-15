@@ -617,6 +617,12 @@ external interaction, not browser completion; there is no automatic tool retry.
 
 `run` defaults to closed stdin and captured stdout/stderr; `--tty` instead supplies a controlling terminal with attach input/output. Pipe log lines carry timestamps and stream tags; terminal log lines carry an `out` tag and retain line boundaries. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM. Exit persistence may finish before its session owner receives acknowledgement and releases its lock. Shutdown therefore waits for held owner locks within the same eight-second shutdown budget and repeats the non-recursive cleanup sweep. A held lock or unacknowledged exit report remains protected when the budget expires.
 
+The log writer batches queued lines through a 64 KiB buffer, avoiding a separate
+blocking file operation for each short line. It flushes when the queue empties,
+before rotation, and at EOF: a quiet live agent's last line remains visible,
+and log completion is still required before reporting exit. Flush failures
+remain failures; buffering does not promise filesystem crash durability.
+
 Supervision retains terminal/pipe readers, the input writer and log writer. After
 the child and its group finish, it closes terminal input and waits for output
 EOF and the final log flush before publishing `agent_exited`, releasing leases
