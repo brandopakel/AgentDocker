@@ -189,6 +189,7 @@ pub fn post(title: &str, body: &str) -> Result<(), String> {
         title: title.into(),
         body: body.into(),
         action: None,
+        tag: None,
     })
 }
 
@@ -246,9 +247,10 @@ pub fn post_notification(notice: &agentdocker_host::notify::Notification) -> Res
     let content = notification_content(notice)?;
     // One notification per agent: a newer one replaces its last, so the
     // centre holds what each agent says now, not a backlog of it.
-    let id = NSString::from_str(&match &notice.action {
-        Some(action) => format!("dev.agentdocker.agent.{}", action.target.agent),
-        None => format!(
+    let id = NSString::from_str(&match (&notice.tag, &notice.action) {
+        (Some(tag), _) => format!("dev.agentdocker.{tag}"),
+        (None, Some(action)) => format!("dev.agentdocker.agent.{}", action.target.agent),
+        (None, None) => format!(
             "dev.agentdocker.{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -376,6 +378,7 @@ mod tests {
             title: "AgentDocker".into(),
             body: "test".into(),
             action: None,
+            tag: None,
         })
         .unwrap_err();
         assert!(!refused.is_empty(), "a refusal says why");

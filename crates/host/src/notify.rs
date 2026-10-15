@@ -98,6 +98,10 @@ pub struct Notification {
     pub body: String,
     #[serde(default)]
     pub action: Option<Action>,
+    /// What a newer notification with the same tag replaces, so one
+    /// subject keeps one notification rather than a backlog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
 }
 impl Notification {
     pub fn parse(text: &str) -> Result<Self, String> {
@@ -236,6 +240,7 @@ mod tests {
             title: "--action=bad".into(),
             body: "quotes \" and $(data)".into(),
             action: None,
+            tag: None,
         };
         let encoded = serde_json::to_string(&notification).unwrap();
         assert_eq!(Notification::parse(&encoded).unwrap(), notification);
@@ -273,6 +278,7 @@ mod tests {
                     channel: None,
                 },
             }),
+            tag: None,
         };
         assert_eq!(
             post(&notice).unwrap_err(),

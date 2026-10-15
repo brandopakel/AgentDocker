@@ -785,6 +785,7 @@ mod tests {
             title: "An agent asks".into(),
             body: "quotes \" and emoji 💬".into(),
             action: Some(action.clone()),
+            tag: None,
         };
         let content = crate::notify::notification_content(&notice).unwrap();
         assert_eq!(content.title().to_string(), notice.title);

@@ -1520,6 +1520,22 @@ impl App {
                         c,
                     ),
                     setting(
+                        "When an agent finishes",
+                        "A quiet notification while the window is not in front, one per agent.",
+                        switch(
+                            "notify-finished",
+                            if s.notify_finished {
+                                "Stop telling me when an agent finishes"
+                            } else {
+                                "Tell me when an agent finishes"
+                            },
+                            s.notify_finished,
+                            Some(Message::NotifyFinished(!s.notify_finished)),
+                            c,
+                        ),
+                        c,
+                    ),
+                    setting(
                         "Roomier rows",
                         "More space between rows, for a window you watch rather than read.",
                         switch(

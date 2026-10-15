@@ -477,7 +477,10 @@ studied does: none is posted about what the focused window already shows (the
 agent whose session or terminal is open, or the project whose chat is open;
 the window keeps a short-lived `viewing.json` in the AgentDocker home for the
 poster), and an agent's newer notification replaces its last one in
-Notification Center rather than stacking. A notification opens the message's conversation
+Notification Center rather than stacking. When an agent finishes while the window is
+not in front, the app posts a quiet notice itself (*Badger finished · In keel.
+Click to see what it did.*), one per agent, replacing its last; Settings →
+Appearance → **When an agent finishes** turns it off. A notification opens the message's conversation
 even after it has been read, and even when the sender's record is gone: the
 archive outlives it. A notification about a message in a channel or to every
 agent (`#all`) opens the direct conversation with its sender when that is an

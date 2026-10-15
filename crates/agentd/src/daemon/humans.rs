@@ -337,6 +337,7 @@ pub async fn notifier(mut notices: mpsc::Receiver<Notice>, home: PathBuf, socket
                 socket: socket.clone(),
                 target: notice.target,
             }),
+            tag: None,
         };
         // Posting spawns a process and waits for it; keep that off the
         // runtime's worker threads.
