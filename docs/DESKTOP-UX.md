@@ -39,8 +39,10 @@ With no saved selection, the app opens on **All projects**, with sessions groupe
 under their project names. A saved project or Other sessions view is restored.
 **Projects** in the sidebar returns to All projects. Choosing a project opens
 its shared **Chat**, with the agents working there beside it. Under each of your
-own five newest messages in a conversation, one quiet line per agent it went to
-says where it stands, refreshed with the screen: *answered*, *delivered*,
+own five newest messages in a conversation, one quiet line says where it stands
+with the agents it went to, refreshed with the screen: the agents grouped by
+state, problems first, named while there are one or two in a state and counted
+beyond that, each one's own line when you point at it. The states are *answered*, *delivered*,
 *received by the model*, *shown to its session, not confirmed*, or why it still
 waits — *waiting for its next prompt*, *waits until it checks in* (a browser
 agent), *delivery paused*, *session ended before taking it*. Nothing says
@@ -265,7 +267,10 @@ them, that is the person's tools' work) and its
 moves: one column back or forward, **Hand to** an agent running here (or
 *nobody*), and **Archive**. An agent pulls a Ready
 card with the `pull_task` tool and the board shows it in progress under that
-agent at once; two agents never get one card. A held card shows its holder's
+agent at once; two agents never get one card. Each lane's header draws its
+place in the flow as a shape that fills as work moves right: a dashed outline
+for Backlog, a ring for Ready, a half disc for In progress, three quarters for
+Review and a full disc with a tick for Done. A held card shows its holder's
 standing glyph, as every agent row draws it, and the holder's pull request
 chip, so whether anyone is on it reads off the card. While the board is on
 screen, a card follows its holder's pull request forward: from In progress to
@@ -427,9 +432,11 @@ Nothing else is listed: `#all`, channels, the rooms AgentDocker opens when
 two checkouts change the same files, and AgentDocker's notices to an agent
 are the CLI's (`agentdocker conversations`, `agentdocker history
 <conversation>`, `agentdocker channels`, `agentdocker channel …`). Unread
-counts and the rail badge cover what is yours to answer: each project's chat
-and your own direct messages, never what two agents said to each other or
-what AgentDocker told them; **Mark all read** beside the count reads all of
+counts cover what is yours to answer: each project's chat and your own direct
+messages, never what two agents said to each other or what AgentDocker told
+them. The rail's **Messages** badge is a number only for your direct messages
+(questions arrive in them) and a dot when only a project chat has something
+unread, as Slack's dock does; **Mark all read** beside the count reads all of
 it at once. What reaches you in `#all`, a channel or a contested room is
 read through as each list arrives, so it never waits in your queue or under
 a count nobody can clear here. The

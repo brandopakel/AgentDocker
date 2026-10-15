@@ -253,8 +253,18 @@ impl App {
         foot: Option<Element<'a, Message>>,
         c: Colors,
     ) -> Element<'a, Message> {
+        // Each lane's shape fills as work moves right, as Linear draws
+        // status: an outline for Backlog, a ring, a half, three quarters,
+        // a disc with a tick.
+        let glyph = match kind {
+            Column::Backlog => Icon::Ring,
+            Column::Ready => Icon::LaneEmpty,
+            Column::InProgress => Icon::LaneHalf,
+            Column::Review => Icon::LaneMost,
+            Column::Done => Icon::LaneDone,
+        };
         let header = row![
-            dot(lane_tone(kind, c), 8.0, c),
+            icon(glyph, lane_tone(kind, c), 14.0),
             text(kind.label())
                 .size(13)
                 .font(weight(iced::font::Weight::Medium)),
@@ -409,7 +419,9 @@ impl App {
         container(body)
             .width(Fill)
             .style(move |_| container::Style {
-                background: Some(c.accent_soft.into()),
+                // A faint wash under the accent edge: the open card is
+                // marked, not painted.
+                background: Some(mix(c.card, c.accent, if c.dark { 0.08 } else { 0.04 }).into()),
                 text_color: Some(c.text),
                 border: iced::Border {
                     color: c.accent,
