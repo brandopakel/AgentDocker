@@ -258,7 +258,8 @@ async fn activity(client: &Client, agent: &str, activity: ReportedActivity) -> R
                     agent: agent.into(),
                     observation: ActivityObservation {
                         activity,
-                        observed_at: chrono::Utc::now()
+                        observed_at: chrono::Utc::now(),
+                        reason: None,
                     }
                 }
             )

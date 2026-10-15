@@ -121,7 +121,7 @@ impl App {
                 Some(
                     Activity::Working { since }
                     | Activity::Idle { since }
-                    | Activity::Waiting { since }
+                    | Activity::Waiting { since, .. }
                     | Activity::Blocked { since, .. },
                 ) => Some(*since),
                 _ => agent.started_at,

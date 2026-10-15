@@ -118,8 +118,10 @@ palette has one **Open in** row per editor for the selected project.
 **Needs you** shows only what waits on you: questions (**Answer**; a question
 from a session that has since ended says so before you write), and sessions
 stopped at a permission prompt or question in their own terminal (*Claude Code
-is waiting for you in its terminal* — **Go to Terminal** takes you there; their
-row reads *waiting for you* in amber). Seen across
+wants permission in its terminal*, or *has a question in its terminal*, or *is
+waiting for you in its terminal* when its hooks did not say which — **Go to
+Terminal** takes you there; their row reads *wants permission*, *has a question*
+or *waiting for you* in amber). Seen across
 projects, each row starts with its project's name (*keel · Claude Code · Badger
 asks: …*). A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not

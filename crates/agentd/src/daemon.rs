@@ -11797,6 +11797,39 @@ mod tests {
         );
     }
 
+    /// What a wait is for travels with the report, into the store and out
+    /// of the agent's activity, so the app can say which errand it is.
+    #[tokio::test]
+    async fn a_wait_keeps_what_it_is_for_through_the_store() {
+        use agentdocker_core::{ActivityObservation, ReportedActivity, WaitReason};
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let agent = register(&daemon, "waiting-fixture", None).await;
+        let now = Utc::now();
+        let waiting = ActivityObservation {
+            activity: ReportedActivity::Waiting,
+            observed_at: now,
+            reason: Some(WaitReason::Permission),
+        };
+        let mut state = lock(&daemon.state);
+        assert!(matches!(
+            state.report_activity(agent.id.as_str(), waiting.clone(), now),
+            Response::Ok
+        ));
+        assert_eq!(
+            state.store.load_agents().unwrap()[0].reported_activity,
+            Some(waiting)
+        );
+        let record = state.registry.get(&agent.id).unwrap();
+        assert_eq!(
+            state.activity_of(record, now + Duration::minutes(30)),
+            Activity::Waiting {
+                since: now,
+                reason: Some(WaitReason::Permission)
+            }
+        );
+    }
+
     #[tokio::test]
     async fn provider_activity_is_ordered_expires_and_commits_with_its_event() {
         use agentdocker_core::{ActivityObservation, ReportedActivity};
@@ -11807,10 +11840,12 @@ mod tests {
         let working = ActivityObservation {
             activity: ReportedActivity::Working,
             observed_at: now - Duration::seconds(2),
+            reason: None,
         };
         let idle = ActivityObservation {
             activity: ReportedActivity::Idle,
             observed_at: now - Duration::seconds(1),
+            reason: None,
         };
         let mut events = daemon.subscribe_events();
         {
@@ -12344,6 +12379,7 @@ mod tests {
                 observation: agentdocker_core::ActivityObservation {
                     activity: agentdocker_core::ReportedActivity::Working,
                     observed_at: Utc::now(),
+                    reason: None,
                 },
             })
             .await;
@@ -12377,6 +12413,7 @@ mod tests {
             agentdocker_core::ActivityObservation {
                 activity: agentdocker_core::ReportedActivity::Idle,
                 observed_at: now - Duration::seconds(299),
+                reason: None,
             },
             now,
         );
@@ -12422,6 +12459,7 @@ mod tests {
             agentdocker_core::ActivityObservation {
                 activity: agentdocker_core::ReportedActivity::Idle,
                 observed_at: now - Duration::seconds(20),
+                reason: None,
             },
             now,
         );

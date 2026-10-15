@@ -155,7 +155,10 @@ mod tests {
     fn the_loudest_state_wins_and_idle_says_nothing() {
         let now = Utc::now();
         let working = Activity::Working { since: now };
-        let waiting = Activity::Waiting { since: now };
+        let waiting = Activity::Waiting {
+            since: now,
+            reason: None,
+        };
         let idle = Activity::Idle { since: now };
         let blocked = Activity::Blocked {
             resource: crate::ResourceKey::new("task:x"),

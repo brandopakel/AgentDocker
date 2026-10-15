@@ -75,7 +75,8 @@ pub use contest::{Contest, ContestId, Entry, Measure, Metric, Standing};
 
 pub mod wait;
 pub use wait::{
-    Activity, ActivityObservation, AgentActivity, Blocked, ReportedActivity, WaitQueue, Waiter,
+    Activity, ActivityObservation, AgentActivity, Blocked, ReportedActivity, WaitQueue, WaitReason,
+    Waiter,
 };
 
 pub mod standing;

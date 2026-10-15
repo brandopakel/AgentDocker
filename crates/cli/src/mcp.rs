@@ -847,6 +847,7 @@ impl<B: Backend> McpServer<B> {
                     observation: agentdocker_core::ActivityObservation {
                         activity,
                         observed_at: chrono::Utc::now(),
+                        reason: None,
                     },
                 })
                 .await
