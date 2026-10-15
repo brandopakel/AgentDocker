@@ -1315,13 +1315,29 @@ impl App {
                                 .is_some_and(|chosen| chosen.eq_ignore_ascii_case("deny"));
                             if denied
                                 && let Some(note) = note
-                                && let Some(from) = self
+                                && let Some(question) = self
                                     .questions
                                     .iter()
                                     .find(|q| q.id == id && q.presentation.is_some())
-                                    .map(|q| q.from.clone())
                             {
-                                self.send(Cmd::SessionSend(from, note));
+                                // It opens with what did not happen, so the
+                                // words read rightly however late they land.
+                                let refused = match &question.presentation {
+                                    Some(
+                                        agentdocker_core::QuestionPresentation::CodexCommand {
+                                            command,
+                                            ..
+                                        },
+                                    ) => format!("Denied `{command}`"),
+                                    Some(agentdocker_core::QuestionPresentation::CodexFiles {
+                                        ..
+                                    }) => "Denied the file changes".to_owned(),
+                                    _ => "Denied".to_owned(),
+                                };
+                                self.send(Cmd::SessionSend(
+                                    question.from.clone(),
+                                    format!("{refused}: {note}"),
+                                ));
                             }
                             self.shell.forms.remove(&id);
                             if self.shell.answers.remove(&id).is_some() {

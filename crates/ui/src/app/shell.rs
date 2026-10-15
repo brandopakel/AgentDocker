@@ -4180,7 +4180,7 @@ mod tests {
             messages.send(Msg::Answered(id.clone(), Ok(()))).unwrap();
             app.drain();
             let told = commands.try_iter().any(|cmd| {
-                matches!(cmd, Cmd::SessionSend(to, text) if to == "asker" && text == "Use the fixture script instead")
+                matches!(cmd, Cmd::SessionSend(to, text) if to == "asker" && text == "Denied `rm -rf build`: Use the fixture script instead")
             });
             assert_eq!(told, noted, "{choice}");
             assert!(!app.shell.answers.contains_key(&id));
