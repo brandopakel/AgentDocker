@@ -655,6 +655,36 @@ pub(super) fn quiet_scroll(
 
 /// How long since `then`, coarsely: "now", "3m", "1h 12m", "2d". Rows
 /// refresh on the clock sweep; seconds would only make them twitch.
+/// Ended sessions, newest first, under the day they ended: Today,
+/// Yesterday, This week, then Older. Empty days are left out; the order
+/// within a day is kept.
+pub(super) fn by_day<'a>(
+    records: &[&'a AgentRecord],
+    now: chrono::DateTime<chrono::Local>,
+) -> Vec<(&'static str, Vec<&'a AgentRecord>)> {
+    let today = now.date_naive();
+    let mut days: Vec<(&'static str, Vec<&'a AgentRecord>)> = Vec::new();
+    for record in records {
+        let ended = record
+            .finished_at
+            .unwrap_or(record.last_seen)
+            .with_timezone(&chrono::Local)
+            .date_naive();
+        let age = (today - ended).num_days();
+        let day = match age {
+            ..=0 => "Today",
+            1 => "Yesterday",
+            2..=6 => "This week",
+            _ => "Older",
+        };
+        match days.iter_mut().find(|(label, _)| *label == day) {
+            Some((_, rows)) => rows.push(record),
+            None => days.push((day, vec![record])),
+        }
+    }
+    days
+}
+
 pub(super) fn elapsed(now: chrono::DateTime<Utc>, then: chrono::DateTime<Utc>) -> String {
     let minutes = (now - then).num_minutes().max(0);
     match minutes {
@@ -1481,11 +1511,15 @@ impl App {
         .spacing(10)
         .align_y(Center);
         let spoken = match &badge {
+            Some((0, _)) => format!("{label}, unread"),
             Some((count, _)) => format!("{label} {count}"),
             None => label.to_owned(),
         };
-        if let Some((count, waiting)) = badge {
-            content = content.push(count_chip(count, waiting, r));
+        match badge {
+            // Unread with nothing addressed to the person: a dot, no number.
+            Some((0, _)) => content = content.push(dot(r.accent, 7.0, r)),
+            Some((count, waiting)) => content = content.push(count_chip(count, waiting, r)),
+            None => {}
         }
         custom(
             id,
@@ -1698,16 +1732,31 @@ impl App {
             },
             Icon::Inbox,
             {
-                // With conversations the badge is their unread count, the
-                // one number the screen itself shows per conversation.
+                // A number only for what is addressed to the person (direct
+                // messages, open questions); unread project chat is a dot.
+                // Slack's dock does the same: the count is a reason to look.
                 let now = Utc::now();
-                let waiting = if self.has_conversations() {
-                    self.unread_total() as usize
+                if self.has_conversations() {
+                    use agentdocker_core::ConversationKind;
+                    let direct: u64 = self
+                        .conversations
+                        .iter()
+                        .filter(|c| c.kind == ConversationKind::Dm && self.counts_for_person(c))
+                        .map(|c| c.unread)
+                        .sum();
+                    let chatter = self.unread_total() > direct;
+                    if direct > 0 {
+                        Some((direct as usize, true))
+                    } else if chatter {
+                        Some((0, false))
+                    } else {
+                        None
+                    }
                 } else {
-                    self.questions.iter().filter(|q| !q.expired(now)).count()
-                        + self.direct_messages().len()
-                };
-                (waiting > 0).then_some((waiting, true))
+                    let waiting = self.questions.iter().filter(|q| !q.expired(now)).count()
+                        + self.direct_messages().len();
+                    (waiting > 0).then_some((waiting, true))
+                }
             },
             Message::Navigate(Screen::Questions),
             self.screen == Screen::Questions,
@@ -2537,9 +2586,36 @@ impl App {
                 }
             };
             if !title_text.is_empty() {
+                // An empty project offers its next step, not only a
+                // description of it, with the key that does it anywhere.
+                let next = (filter == Filter::Current
+                    && !self.all_projects()
+                    && self.shell.catalog.selected().is_some()
+                    && self.shell.search.trim().is_empty())
+                .then(|| -> Element<'_, Message> {
+                    row![
+                        primary(
+                            "empty-launch",
+                            "Launch agent…",
+                            (self.connected.is_ok() && self.shell.project_available != Some(false))
+                                .then_some(Message::OpenLaunch),
+                        ),
+                        kbd(
+                            if cfg!(target_os = "macos") {
+                                "⌘N"
+                            } else {
+                                "Ctrl+N"
+                            },
+                            c
+                        ),
+                    ]
+                    .spacing(10)
+                    .align_y(Center)
+                    .into()
+                });
                 // An empty list shows the shape of what will fill it.
                 panel_col = panel_col
-                    .push(column![ghost_rows(c), empty(title_text, hint, None, c)].spacing(0));
+                    .push(column![ghost_rows(c), empty(title_text, hint, next, c)].spacing(0));
             }
         }
         if filter == Filter::Current && !earlier.is_empty() {
@@ -2580,7 +2656,12 @@ impl App {
                 // from last week is a click away, not on every screen.
                 let page: Vec<&AgentRecord> = earlier.iter().copied().take(shown).collect();
                 let older = earlier.len().saturating_sub(page.len());
-                group = group.push(self.session_rows(&page, c));
+                // By the day they ended, as a person remembers them.
+                for (day, rows) in by_day(&page, chrono::Local::now()) {
+                    group = group
+                        .push(container(eyebrow(day, c)).padding([4, 4]))
+                        .push(self.session_rows(&rows, c));
+                }
                 if older > 0 {
                     group = group.push(ghost(
                         "sessions-earlier-more",
@@ -3209,6 +3290,18 @@ impl App {
                 "rename-session",
                 "Rename…",
                 Some(Message::StartRename(id.clone())),
+            ));
+        }
+        // Keep it as something to come back to: its accent dot returns
+        // until it is opened again.
+        if agent.spec.runtime != agentdocker_core::HUMAN_RUNTIME
+            && !self.shell.unviewed_done.contains(&id)
+            && !self.standing(agent).needs_you()
+        {
+            footer_line = footer_line.push(ghost(
+                "mark-unread",
+                "Mark unread",
+                Some(Message::MarkUnread(id.clone())),
             ));
         }
         footer = footer.push(footer_line);
@@ -4054,6 +4147,46 @@ pub(super) fn split_style(c: Colors) -> iced::widget::pane_grid::Style {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ended_sessions_group_by_the_day_they_ended() {
+        use chrono::TimeZone;
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 10, 14, 15, 0, 0)
+            .unwrap();
+        let ended = |days: i64, name: &str| {
+            let mut record = agentdocker_core::AgentRecord::new(
+                agentdocker_core::AgentSpec {
+                    name: name.into(),
+                    ..Default::default()
+                },
+                false,
+                chrono::Utc::now(),
+            );
+            record.finished_at =
+                Some((now - chrono::Duration::days(days)).with_timezone(&chrono::Utc));
+            record
+        };
+        let records = [
+            ended(0, "a"),
+            ended(0, "b"),
+            ended(1, "c"),
+            ended(3, "d"),
+            ended(40, "e"),
+        ];
+        let refs: Vec<_> = records.iter().collect();
+        let days = super::by_day(&refs, now);
+        let labels: Vec<_> = days.iter().map(|(day, rows)| (*day, rows.len())).collect();
+        assert_eq!(
+            labels,
+            [
+                ("Today", 2),
+                ("Yesterday", 1),
+                ("This week", 1),
+                ("Older", 1)
+            ]
+        );
+    }
+
     #[test]
     fn a_held_path_reads_from_the_project_root_on_view() {
         let root = std::path::Path::new("/work/project");

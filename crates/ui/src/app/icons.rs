@@ -109,6 +109,15 @@ pub enum Icon {
     Hourglass,
     /// A dashed circle: starting.
     Ring,
+    /// A board lane's progress, as Linear draws status: a ring that
+    /// fills as work moves right. Empty: ready.
+    LaneEmpty,
+    /// Half filled: in progress.
+    LaneHalf,
+    /// Three quarters: in review.
+    LaneMost,
+    /// A full disc with a tick cut out: done.
+    LaneDone,
 }
 
 /// An icon inked in one colour.
@@ -512,6 +521,41 @@ impl Glyph {
                     b.close();
                 });
                 frame.stroke(&glass, stroke);
+            }
+            Icon::LaneEmpty | Icon::LaneHalf | Icon::LaneMost => {
+                frame.stroke(&Path::circle(p(8.0, 8.0), 6.0), stroke);
+                let share = match self.icon {
+                    Icon::LaneHalf => 0.5,
+                    Icon::LaneMost => 0.75,
+                    _ => 0.0,
+                };
+                if share > 0.0 {
+                    // A pie from twelve o'clock, clockwise.
+                    let start = -std::f32::consts::FRAC_PI_2;
+                    let end = start + share * std::f32::consts::TAU;
+                    let pie = Path::new(|b| {
+                        b.move_to(p(8.0, 8.0));
+                        b.arc(canvas::path::Arc {
+                            center: p(8.0, 8.0),
+                            radius: 3.75,
+                            start_angle: iced::Radians(start),
+                            end_angle: iced::Radians(end),
+                        });
+                        b.close();
+                    });
+                    frame.fill(&pie, self.color);
+                }
+            }
+            Icon::LaneDone => {
+                frame.fill(&Path::circle(p(8.0, 8.0), 7.0), self.color);
+                let tick = polyline(&[p(5.0, 8.2), p(7.2, 10.3), p(11.0, 6.0)]);
+                frame.stroke(
+                    &tick,
+                    Stroke {
+                        style: canvas::Style::Solid(iced::Color::WHITE),
+                        ..self.stroke(1.75)
+                    },
+                );
             }
             Icon::Ring => {
                 let dashes = [2.2, 2.0];

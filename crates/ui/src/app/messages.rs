@@ -946,34 +946,79 @@ impl App {
             && let Some(recipients) = self.deliveries.get(&id).filter(|r| !r.is_empty())
         {
             use agentdocker_core::delivery::State as Delivery;
-            let mut lines = column![].spacing(2);
+            let tone_of = |state: Delivery| match state {
+                Delivery::Answered => c.accent,
+                Delivery::Delivered | Delivery::Received | Delivery::Shown => c.green,
+                Delivery::Paused | Delivery::Blocked | Delivery::Silent | Delivery::Ended => {
+                    c.amber
+                }
+                _ => c.faint,
+            };
+            // Problems first, so the one line leads with what needs a look.
+            let rank = |state: Delivery| match tone_of(state) {
+                t if t == c.amber => 0,
+                t if t == c.faint => 1,
+                t if t == c.green => 2,
+                _ => 3,
+            };
+            let mut groups: Vec<(Delivery, Vec<String>)> = Vec::new();
             for recipient in recipients {
-                let state = recipient.state;
-                let tone = match state {
-                    Delivery::Answered => c.accent,
-                    Delivery::Delivered | Delivery::Received | Delivery::Shown => c.green,
-                    Delivery::Paused | Delivery::Blocked | Delivery::Silent | Delivery::Ended => {
-                        c.amber
-                    }
-                    _ => c.faint,
-                };
                 let who = recipient
                     .name
                     .as_ref()
                     .map(|_| self.name_of(recipient.agent.as_str()))
                     .unwrap_or_else(|| recipient.agent.short().to_owned());
-                lines = lines.push(
-                    row![
-                        super::view::dot(tone, 6.0, c),
-                        text(format!("{who} · {}", state.label()))
-                            .size(12)
-                            .color(if state.reached() { c.muted } else { c.faint })
-                            .wrapping(iced::widget::text::Wrapping::None),
-                    ]
-                    .spacing(6)
-                    .align_y(Center),
-                );
+                match groups
+                    .iter_mut()
+                    .find(|(state, _)| *state == recipient.state)
+                {
+                    Some((_, names)) => names.push(who),
+                    None => groups.push((recipient.state, vec![who])),
+                }
             }
+            groups.sort_by_key(|(state, _)| rank(*state));
+            // One quiet line for every recipient, as chat apps keep it: a
+            // state names its agents while there are few, and counts them
+            // otherwise; pointing at it lists each one.
+            let summary = groups
+                .iter()
+                .map(|(state, names)| {
+                    if names.len() <= 2 {
+                        format!("{} · {}", names.join(", "), state.label())
+                    } else {
+                        format!("{} {}", names.len(), state.label())
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("  ·  ");
+            let every = recipients
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{} · {}",
+                        r.name
+                            .as_ref()
+                            .map(|_| self.name_of(r.agent.as_str()))
+                            .unwrap_or_else(|| r.agent.short().to_owned()),
+                        r.state.label()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let lead = groups[0].0;
+            let lines = super::view::hint(
+                row![
+                    super::view::dot(tone_of(lead), 6.0, c),
+                    text(summary)
+                        .size(12)
+                        .color(if lead.reached() { c.muted } else { c.faint })
+                        .wrapping(iced::widget::text::Wrapping::None),
+                ]
+                .spacing(6)
+                .align_y(Center),
+                every,
+                c,
+            );
             words = words.push(container(lines).padding(iced::Padding {
                 top: 4.0,
                 ..iced::Padding::ZERO

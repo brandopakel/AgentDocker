@@ -42,8 +42,10 @@ const fn rgb(hex: u32) -> Rgb {
 pub const PALETTES: &[Palette] = &[
     Palette {
         name: "AgentDocker",
-        ground: rgb(0x14171D),
-        text: rgb(0xD6DBE4),
+        // The window's own neutral ground, so a terminal pane is part of
+        // the page rather than a panel of another colour.
+        ground: rgb(0x161618),
+        text: rgb(0xDCDCE0),
         accent: rgb(0x77DD77),
         ansi: [
             rgb(0x3B3B3B),
@@ -250,6 +252,9 @@ pub struct Settings {
     pub text_size: f32,
     /// Roomier rows, for a window that is being watched rather than read.
     pub roomy: bool,
+    /// Tell the person when an agent finishes while the window is not in
+    /// front, as Claude and the Codex app do by default.
+    pub notify_finished: bool,
 }
 
 impl Default for Settings {
@@ -259,6 +264,7 @@ impl Default for Settings {
             terminal_size: 13.0,
             text_size: 14.0,
             roomy: false,
+            notify_finished: true,
         }
     }
 }
@@ -349,6 +355,7 @@ mod tests {
             terminal_size: 16.0,
             text_size: 15.0,
             roomy: true,
+            notify_finished: true,
         };
         chosen.save(dir.path());
         assert_eq!(Settings::load(dir.path()), chosen);

@@ -423,7 +423,8 @@ control does, its id or its accessible label:
   request chip, or how long (coarse: *now*, *3m*, *1h 12m*); tool, branch
   and tokens are in the name's tooltip, and an action only where there is one
   (**Reconnect here**). The chat's agent list uses the same row. An empty list shows three faint static rows in
-  the shape of what will fill it; a search that finds nothing says what it
+  the shape of what will fill it; an empty project adds its next step, **Launch agent…**
+  with its key (`empty-launch`), as Emdash's empty states do; a search that finds nothing says what it
   looked for and offers **Clear search** (`session-search-clear`). A
   session's panel has one filled action — **Answer** when it asks something,
   otherwise its terminal — Details as a definition list, and Stop at the

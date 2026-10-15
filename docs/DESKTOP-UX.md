@@ -39,8 +39,10 @@ With no saved selection, the app opens on **All projects**, with sessions groupe
 under their project names. A saved project or Other sessions view is restored.
 **Projects** in the sidebar returns to All projects. Choosing a project opens
 its shared **Chat**, with the agents working there beside it. Under each of your
-own five newest messages in a conversation, one quiet line per agent it went to
-says where it stands, refreshed with the screen: *answered*, *delivered*,
+own five newest messages in a conversation, one quiet line says where it stands
+with the agents it went to, refreshed with the screen: the agents grouped by
+state, problems first, named while there are one or two in a state and counted
+beyond that, each one's own line when you point at it. The states are *answered*, *delivered*,
 *received by the model*, *shown to its session, not confirmed*, or why it still
 waits — *waiting for its next prompt*, *waits until it checks in* (a browser
 agent), *delivery paused*, *session ended before taking it*. Nothing says
@@ -86,8 +88,9 @@ when it calls for you, and sets the name semibold when something there is new
 or waits on you. "Finished since you looked" means its turn ended, or the
 session did, while its project was not on screen in a focused window; going to
 its terminal, opening its details or opening its project clears it, as does
-the agent starting to work again. The row's one trailing slot shows what you
-must do, else the **pull request chip**, else how long. The pull request chip names the pull request of the agent's branch — **#340**
+the agent starting to work again; **Mark unread** in a session's panel brings
+the dot back, to come back to it later. The row's one trailing slot shows what
+you must do, else the **pull request chip**, else how long. The pull request chip names the pull request of the agent's branch — **#340**
 with a green tick when its checks passed, an amber dot while they run, a red
 cross when one failed, **#340 merged** once merged — and opens it in the
 browser. It is read with the `gh` you are signed in to, in the background, at
@@ -130,7 +133,10 @@ agents that need you, and its name in semibold when something there is new;
 how many agents run is not shown, since it is not a reason to look. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
-Inbox. The first three items are shown; **Show more** expands the same list and
+Inbox. A command a live session asks to run is answered in the row itself:
+**Deny** and **Allow once** send the same exact answer as the Inbox card, with
+the command in the row's words; file changes, which must be looked at first,
+and every other question open with **Answer**. The first three items are shown; **Show more** expands the same list and
 **Show fewer** collapses it. When nobody needs an answer or delivery review, **To get started** can offer
 **Connect** for discovered processes and **Set up** for installed tools. Tools
 also keeps the full setup controls.
@@ -202,7 +208,8 @@ unanswered, unexpired questions, including questions from a session that has
 since finished; nothing else. Ended sessions are not a tab: they sit in one collapsed
 **Earlier (n)** group under the current ones, including previous runs with the
 same name, and a search that finds one opens the group. The group opens on
-its newest eight; **Show older** adds eight more each time, and closing the
+its newest eight, under the day they ended (Today, Yesterday, This week, Older);
+**Show older** adds eight more each time, and closing the
 group forgets how far it was opened. When only an earlier
 session matches, its result appears without a contradictory empty-state card.
 Search applies to the
@@ -229,11 +236,18 @@ merged into (the one checked out in the project's main folder), its commits,
 files and lines, each file opening its own coloured diff (300 lines at most),
 a checklist — work committed, the main folder has nothing uncommitted, no
 conflicts, nobody holding files there — and **Merge into main**, enabled only
-when the checklist is clear. It makes a merge commit in the main folder and
-says so (*Merged into main as abc1234.*), or says why not, with nothing changed;
-a branch that moved since it was read is never merged unseen. Nothing is pushed.
-Changes are read again when the session commits or its branch moves, and with
-**Refresh**. Once nothing is left to merge and the session has ended,
+when the checklist is clear, with the command it runs under it (`git merge
+--no-ff <branch>`, in the main folder). What only the agent can fix goes back
+to it as a message, one click each: **Ask <agent> to commit** for its own
+uncommitted work, **Ask <agent> to resolve** for conflicts (naming the files),
+and **Ask <agent> to fix checks** when its pull request's checks failed. The
+main folder's own uncommitted files and other agents' leases stay yours to sort
+out. Merging makes a merge commit in the main folder and says so (*Merged into
+main as abc1234.*), or says why not, with nothing changed; a branch that moved
+since it was read is never merged unseen. Nothing is pushed. Changes are read
+again when the session commits or its branch moves, and with **Refresh**. Once
+nothing is left to merge, the next step is right there: while the session runs
+the section says its worktree stays until it is done; once it has ended,
 **Remove its worktree** removes the folder (only when it is clean) and its branch
 when git considers it merged; the branch is kept, and the section says so, when not. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
@@ -254,7 +268,16 @@ them, that is the person's tools' work) and its
 moves: one column back or forward, **Hand to** an agent running here (or
 *nobody*), and **Archive**. An agent pulls a Ready
 card with the `pull_task` tool and the board shows it in progress under that
-agent at once; two agents never get one card. The pull is a `task:<id>`
+agent at once; two agents never get one card. Each lane's header draws its
+place in the flow as a shape that fills as work moves right: a dashed outline
+for Backlog, a ring for Ready, a half disc for In progress, three quarters for
+Review and a full disc with a tick for Done. A held card shows its holder's
+standing glyph, as every agent row draws it, and the holder's pull request
+chip, so whether anyone is on it reads off the card. While the board is on
+screen, a card follows its holder's pull request forward: from In progress to
+Review once the pull request is open, and from In progress or Review to Done
+once it is merged. Each move is made once, so an agent that moves the card
+back is not fought. The pull is a `task:<id>`
 lease: a card whose holder's lease has lapsed — expired, released, or the
 agent gone — says *not being worked on* beside the holder; nobody takes it by a
 plain pull, only by naming that holder (`pull_task` with `take_over_from`)
@@ -410,9 +433,11 @@ Nothing else is listed: `#all`, channels, the rooms AgentDocker opens when
 two checkouts change the same files, and AgentDocker's notices to an agent
 are the CLI's (`agentdocker conversations`, `agentdocker history
 <conversation>`, `agentdocker channels`, `agentdocker channel …`). Unread
-counts and the rail badge cover what is yours to answer: each project's chat
-and your own direct messages, never what two agents said to each other or
-what AgentDocker told them; **Mark all read** beside the count reads all of
+counts cover what is yours to answer: each project's chat and your own direct
+messages, never what two agents said to each other or what AgentDocker told
+them. The rail's **Messages** badge is a number only for your direct messages
+(questions arrive in them) and a dot when only a project chat has something
+unread, as Slack's dock does; **Mark all read** beside the count reads all of
 it at once. What reaches you in `#all`, a channel or a contested room is
 read through as each list arrives, so it never waits in your queue or under
 a count nobody can clear here. The
@@ -448,7 +473,15 @@ the conversation's composer stays under the conversation and never becomes a
 reply. It sends to the project (`#everyone`) or to that agent; it reads
 **This session has ended** for a direct conversation whose agent is gone and
 says so for one between two agents. Drafts survive navigation, a failed
-request and disconnection. A notification opens the message's conversation
+request and disconnection. Notifications follow what every agent app
+studied does: none is posted about what the focused window already shows (the
+agent whose session or terminal is open, or the project whose chat is open;
+the window keeps a short-lived `viewing.json` in the AgentDocker home for the
+poster), and an agent's newer notification replaces its last one in
+Notification Center rather than stacking. When an agent finishes while the window is
+not in front, the app posts a quiet notice itself (*Badger finished · In keel.
+Click to see what it did.*), one per agent, replacing its last; Settings →
+Appearance → **When an agent finishes** turns it off. A notification opens the message's conversation
 even after it has been read, and even when the sender's record is gone: the
 archive outlives it. A notification about a message in a channel or to every
 agent (`#all`) opens the direct conversation with its sender when that is an

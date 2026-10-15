@@ -554,6 +554,41 @@ impl App {
                     "asked before its session ended"
                 }
             );
+            // A command to allow is answered where it is seen, as every
+            // agent app studied does it: the command is in the row, and
+            // Allow and Deny send the same exact answer the Inbox card does.
+            // Anything else (file changes to look at first, choices, words)
+            // opens the question.
+            let id = question.id.clone();
+            let actions: Element<'_, Message> = match &question.presentation {
+                Some(QuestionPresentation::CodexCommand { .. }) if live => row![
+                    compact(
+                        format!("needs-you-deny-{id}"),
+                        "Deny",
+                        self.connected
+                            .is_ok()
+                            .then(|| Message::AnswerChoice(id.clone(), "Deny".into())),
+                        Kind::Ghost,
+                    ),
+                    compact(
+                        format!("needs-you-allow-{id}"),
+                        "Allow once",
+                        self.connected
+                            .is_ok()
+                            .then(|| Message::AnswerChoice(id.clone(), "Allow".into())),
+                        Kind::Secondary,
+                    ),
+                ]
+                .spacing(6)
+                .align_y(iced::Center)
+                .into(),
+                _ => compact(
+                    format!("needs-you-answer-{id}"),
+                    "Answer",
+                    Some(Message::OpenQuestion(id.clone())),
+                    Kind::Secondary,
+                ),
+            };
             rows.push(waiting_row(
                 spoken(
                     format!("needs-you-line-{}", question.id),
@@ -561,12 +596,7 @@ impl App {
                     waiting_words(name, (!live).then_some("· session ended"), what, narrow, c),
                 ),
                 Some(time_left(question, now, c)),
-                compact(
-                    format!("needs-you-answer-{}", question.id),
-                    "Answer",
-                    Some(Message::OpenQuestion(question.id.clone())),
-                    Kind::Secondary,
-                ),
+                actions,
             ));
         }
         // A session stopped at a permission prompt or a question in its

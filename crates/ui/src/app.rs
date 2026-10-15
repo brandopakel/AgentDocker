@@ -1813,6 +1813,10 @@ impl App {
                 });
             if !on_screen {
                 self.shell.unviewed_done.insert(id.clone());
+                // Away from the window altogether: say so, quietly.
+                if self.shell.unfocused && self.settings.notify_finished && self.smoke.is_none() {
+                    self.shell.finish_notices.push(id.clone());
+                }
             }
         }
         // A session that started working again, or left, is no longer a
@@ -6295,6 +6299,41 @@ pub(crate) mod tests {
         messages.send(report(&[(&worker, working)])).unwrap();
         app.drain();
         assert!(app.shell.unviewed_done.is_empty());
+
+        // Away from the window altogether, a finish is also told, once.
+        let working = Activity::Working { since: Utc::now() };
+        let idle = Activity::Idle { since: Utc::now() };
+        app.shell.finish_notices.clear();
+        app.shell.unfocused = true;
+        messages
+            .send(report(&[
+                (&worker, working.clone()),
+                (&other, idle.clone()),
+            ]))
+            .unwrap();
+        app.drain();
+        messages
+            .send(report(&[(&worker, idle.clone()), (&other, idle.clone())]))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.shell.finish_notices, [worker.id.to_string()]);
+        app.settings.notify_finished = false;
+        messages
+            .send(report(&[
+                (&worker, working.clone()),
+                (&other, idle.clone()),
+            ]))
+            .unwrap();
+        app.drain();
+        messages
+            .send(report(&[(&worker, idle.clone()), (&other, idle.clone())]))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.shell.finish_notices.len(),
+            1,
+            "turned off, nothing more is told"
+        );
     }
 
     #[test]

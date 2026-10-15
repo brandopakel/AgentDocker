@@ -41,6 +41,55 @@ impl Action {
     }
 }
 
+/// What the desktop window shows, so a notice about it is not also
+/// posted: every agent app studied stays silent about the session on
+/// screen. The window writes it as it changes (`viewing.json` in the
+/// AgentDocker home); the poster reads it. A stale or missing record
+/// claims nothing, and the notice is posted.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Viewing {
+    /// The window has the person's focus.
+    pub focused: bool,
+    /// The agent whose session, terminal or conversation is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The project whose chat is open, as its id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<String>,
+    pub at: chrono::DateTime<chrono::Utc>,
+}
+
+/// How long a viewing record counts without being written again; the
+/// window rewrites it well within this while focused.
+pub const VIEWING_FRESH: chrono::TimeDelta = chrono::TimeDelta::seconds(90);
+
+pub fn viewing_path(home: &Path) -> PathBuf {
+    home.join("viewing.json")
+}
+
+impl Viewing {
+    pub fn read(home: &Path) -> Option<Self> {
+        let text = std::fs::read_to_string(viewing_path(home)).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    /// Whether a notice about `target` would tell the person what is
+    /// already in front of them.
+    pub fn shows(
+        &self,
+        target: &agentdocker_core::NotificationTarget,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
+        let fresh = now >= self.at && now - self.at < VIEWING_FRESH;
+        fresh
+            && self.focused
+            && (self.agent.as_deref() == Some(target.agent.as_str())
+                || (target.channel.is_none()
+                    && self.chat.is_some()
+                    && self.chat.as_deref() == target.project.as_ref().map(|p| p.as_str())))
+    }
+}
+
 /// Visible text is independent of activation metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,6 +98,10 @@ pub struct Notification {
     pub body: String,
     #[serde(default)]
     pub action: Option<Action>,
+    /// What a newer notification with the same tag replaces, so one
+    /// subject keeps one notification rather than a backlog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
 }
 impl Notification {
     pub fn parse(text: &str) -> Result<Self, String> {
@@ -187,6 +240,7 @@ mod tests {
             title: "--action=bad".into(),
             body: "quotes \" and $(data)".into(),
             action: None,
+            tag: None,
         };
         let encoded = serde_json::to_string(&notification).unwrap();
         assert_eq!(Notification::parse(&encoded).unwrap(), notification);
@@ -224,10 +278,49 @@ mod tests {
                     channel: None,
                 },
             }),
+            tag: None,
         };
         assert_eq!(
             post(&notice).unwrap_err(),
             "Cannot encode the notification destination."
+        );
+    }
+
+    #[test]
+    fn a_notice_about_what_is_on_screen_is_not_posted() {
+        let now = chrono::Utc::now();
+        let target = |agent: &str, project: Option<&str>, channel: bool| {
+            agentdocker_core::NotificationTarget {
+                message: "0123456789abcdef".to_owned().into(),
+                agent: agent.into(),
+                project: project.map(Into::into),
+                channel: channel.then(|| "0123456789abcdef".to_owned().into()),
+            }
+        };
+        let viewing = Viewing {
+            focused: true,
+            agent: Some("worker".into()),
+            chat: Some("project-a".into()),
+            at: now,
+        };
+        assert!(viewing.shows(&target("worker", None, false), now));
+        assert!(viewing.shows(&target("other", Some("project-a"), false), now));
+        assert!(!viewing.shows(&target("other", Some("project-b"), false), now));
+        assert!(
+            !viewing.shows(&target("other", Some("project-a"), true), now),
+            "a channel is not the project chat"
+        );
+        assert!(
+            !Viewing {
+                focused: false,
+                ..viewing.clone()
+            }
+            .shows(&target("worker", None, false), now),
+            "an unfocused window shows nothing"
+        );
+        assert!(
+            !viewing.shows(&target("worker", None, false), now + VIEWING_FRESH),
+            "a stale record claims nothing"
         );
     }
 

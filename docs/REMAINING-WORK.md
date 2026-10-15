@@ -33,17 +33,19 @@ activity/pause reporting and the desktop Codex trust notice. The notice now
 refreshes for notification-driven project changes while the form remains open.
 Explicit commits also accept pending merges whose tree is unchanged, while
 ordinary empty commits remain refused. Git execution failures while checking merge
-state report `unavailable` with their original details. The pre-integration
-`f847b1f6` tree passed the full Linux and macOS standard gates and Windows CI;
-its Intel CLI archive and ARM desktop packaging were the outstanding CI jobs
-when this evidence was recorded. Physical AWBP passed 143 application startup
-checks on that tree; its wrapper cleanup failed on empty config locks, and a
-separate verified cleanup completed without changing the original report.
-The candidate also integrates main's desktop standing and launch-form changes
-(#355), preserving asynchronous Codex trust loading. Ledger 15/state schema 27
-is unchanged. This integrated source still requires the standard gates and
-platform packaging, final review, protected-tag publication and hosted beta.13
-→ beta.14 install, update, rollback, reapply and service acceptance. Earlier
+state report `unavailable` with their original details. Before the final desktop
+batch, `657a8ed8` passed the full local Mac and Linux CI standard gates, including
+all eleven trust/merge/standing regressions. Its other platform jobs were still
+running or queued when that evidence was recorded. Earlier `f847b1f6` also passed
+Windows CI and 143 physical AWBP application startup checks; the physical
+wrapper cleanup failed on empty config locks, and a separate verified cleanup
+completed without changing the original report.
+The candidate integrates main's desktop standing, launch form, repair actions,
+delivery display and completion-notification changes (#355–358), preserving
+asynchronous Codex trust loading. Ledger 15/state schema 27 is unchanged.
+Publication requires the combined source's standard gates, platform packaging
+and final review, followed by protected-tag publication and hosted beta.13 →
+beta.14 install, update, rollback, reapply and service acceptance. Earlier
 candidate trials do not replace those checks. Stable v0.1.0 and Homebrew remain
 unchanged.
 

@@ -253,8 +253,18 @@ impl App {
         foot: Option<Element<'a, Message>>,
         c: Colors,
     ) -> Element<'a, Message> {
+        // Each lane's shape fills as work moves right, as Linear draws
+        // status: an outline for Backlog, a ring, a half, three quarters,
+        // a disc with a tick.
+        let glyph = match kind {
+            Column::Backlog => Icon::Ring,
+            Column::Ready => Icon::LaneEmpty,
+            Column::InProgress => Icon::LaneHalf,
+            Column::Review => Icon::LaneMost,
+            Column::Done => Icon::LaneDone,
+        };
         let header = row![
-            dot(lane_tone(kind, c), 8.0, c),
+            icon(glyph, lane_tone(kind, c), 14.0),
             text(kind.label())
                 .size(13)
                 .font(weight(iced::font::Weight::Medium)),
@@ -315,22 +325,30 @@ impl App {
             // One line for the name, clipped: a long name never pushes
             // the state off the card or wraps under the dot. The holder's
             // tool mark sits between the dot and the name.
-            head = head.push(
-                row![
-                    dot(if *live { c.green } else { c.faint }, 6.0, c),
-                    self.agent_mark_for(id, name, 16.0, c),
-                    container(
-                        text(name.clone())
-                            .size(12)
-                            .color(c.muted)
-                            .wrapping(iced::widget::text::Wrapping::None)
-                    )
-                    .width(Fill)
-                    .clip(true),
-                ]
-                .spacing(6)
-                .align_y(Center),
-            );
+            // The holder's standing, as every agent row draws it, and its
+            // pull request: whether anyone is on the card, read off it.
+            let record = self.agents.iter().find(|r| r.id.as_str() == *id);
+            let mut line = row![
+                match record {
+                    Some(record) => super::view::standing_glyph(self.standing(record), c),
+                    None => dot(if *live { c.muted } else { c.faint }, 6.0, c),
+                },
+                self.agent_mark_for(id, name, 16.0, c),
+                container(
+                    text(name.clone())
+                        .size(12)
+                        .color(c.muted)
+                        .wrapping(iced::widget::text::Wrapping::None)
+                )
+                .width(Fill)
+                .clip(true),
+            ]
+            .spacing(6)
+            .align_y(Center);
+            if let Some(chip) = record.and_then(|r| self.pull_request_chip(r, c)) {
+                line = line.push(chip);
+            }
+            head = head.push(line);
             // Its own line: beside the name it clipped the name to a letter.
             if lapsed(*held) {
                 head = head.push(status_word("not being worked on", c.amber, c));
@@ -401,7 +419,9 @@ impl App {
         container(body)
             .width(Fill)
             .style(move |_| container::Style {
-                background: Some(c.accent_soft.into()),
+                // A faint wash under the accent edge: the open card is
+                // marked, not painted.
+                background: Some(mix(c.card, c.accent, if c.dark { 0.08 } else { 0.04 }).into()),
                 text_color: Some(c.text),
                 border: iced::Border {
                     color: c.accent,
