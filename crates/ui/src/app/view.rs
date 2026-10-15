@@ -1511,11 +1511,15 @@ impl App {
         .spacing(10)
         .align_y(Center);
         let spoken = match &badge {
+            Some((0, _)) => format!("{label}, unread"),
             Some((count, _)) => format!("{label} {count}"),
             None => label.to_owned(),
         };
-        if let Some((count, waiting)) = badge {
-            content = content.push(count_chip(count, waiting, r));
+        match badge {
+            // Unread with nothing addressed to the person: a dot, no number.
+            Some((0, _)) => content = content.push(dot(r.accent, 7.0, r)),
+            Some((count, waiting)) => content = content.push(count_chip(count, waiting, r)),
+            None => {}
         }
         custom(
             id,
@@ -1728,16 +1732,31 @@ impl App {
             },
             Icon::Inbox,
             {
-                // With conversations the badge is their unread count, the
-                // one number the screen itself shows per conversation.
+                // A number only for what is addressed to the person (direct
+                // messages, open questions); unread project chat is a dot.
+                // Slack's dock does the same: the count is a reason to look.
                 let now = Utc::now();
-                let waiting = if self.has_conversations() {
-                    self.unread_total() as usize
+                if self.has_conversations() {
+                    use agentdocker_core::ConversationKind;
+                    let direct: u64 = self
+                        .conversations
+                        .iter()
+                        .filter(|c| c.kind == ConversationKind::Dm && self.counts_for_person(c))
+                        .map(|c| c.unread)
+                        .sum();
+                    let chatter = self.unread_total() > direct;
+                    if direct > 0 {
+                        Some((direct as usize, true))
+                    } else if chatter {
+                        Some((0, false))
+                    } else {
+                        None
+                    }
                 } else {
-                    self.questions.iter().filter(|q| !q.expired(now)).count()
-                        + self.direct_messages().len()
-                };
-                (waiting > 0).then_some((waiting, true))
+                    let waiting = self.questions.iter().filter(|q| !q.expired(now)).count()
+                        + self.direct_messages().len();
+                    (waiting > 0).then_some((waiting, true))
+                }
             },
             Message::Navigate(Screen::Questions),
             self.screen == Screen::Questions,
@@ -2567,9 +2586,36 @@ impl App {
                 }
             };
             if !title_text.is_empty() {
+                // An empty project offers its next step, not only a
+                // description of it, with the key that does it anywhere.
+                let next = (filter == Filter::Current
+                    && !self.all_projects()
+                    && self.shell.catalog.selected().is_some()
+                    && self.shell.search.trim().is_empty())
+                .then(|| -> Element<'_, Message> {
+                    row![
+                        primary(
+                            "empty-launch",
+                            "Launch agent…",
+                            (self.connected.is_ok() && self.shell.project_available != Some(false))
+                                .then_some(Message::OpenLaunch),
+                        ),
+                        kbd(
+                            if cfg!(target_os = "macos") {
+                                "⌘N"
+                            } else {
+                                "Ctrl+N"
+                            },
+                            c
+                        ),
+                    ]
+                    .spacing(10)
+                    .align_y(Center)
+                    .into()
+                });
                 // An empty list shows the shape of what will fill it.
                 panel_col = panel_col
-                    .push(column![ghost_rows(c), empty(title_text, hint, None, c)].spacing(0));
+                    .push(column![ghost_rows(c), empty(title_text, hint, next, c)].spacing(0));
             }
         }
         if filter == Filter::Current && !earlier.is_empty() {

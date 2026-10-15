@@ -42,8 +42,10 @@ const fn rgb(hex: u32) -> Rgb {
 pub const PALETTES: &[Palette] = &[
     Palette {
         name: "AgentDocker",
-        ground: rgb(0x14171D),
-        text: rgb(0xD6DBE4),
+        // The window's own neutral ground, so a terminal pane is part of
+        // the page rather than a panel of another colour.
+        ground: rgb(0x161618),
+        text: rgb(0xDCDCE0),
         accent: rgb(0x77DD77),
         ansi: [
             rgb(0x3B3B3B),
