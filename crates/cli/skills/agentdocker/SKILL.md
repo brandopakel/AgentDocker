@@ -48,8 +48,9 @@ the acceptance text is met; file follow-up work with `create_task`. Do not
 move cards you do not hold.
 
 Message kinds `pause` and `resume` are reserved for committed project lifecycle
-changes; ordinary sends cannot use them. Check `agentdocker pause --list` for
-the current project state before acting on a delayed lifecycle notice. While
+changes; ordinary sends cannot use them. Check the current project state before
+acting on a delayed lifecycle notice: `whoami` says it (`project_paused`), as
+does `agentdocker pause --list` from a shell. While
 paused, finish the step in hand, start no build, campaign or merge, take no new
 lease (`claim` answers `paused` with the reason), keep what you hold, and say in
 one line where you stopped. Use the session's normal receipt path; do not

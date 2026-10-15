@@ -997,8 +997,39 @@ impl<B: Backend> McpServer<B> {
                 self.forward(tagged_request(arguments, op, &me)?).await
             }
             "whoami" => {
-                self.forward_as(Request::Inspect { agent: me }, verbose)
+                let response = self
+                    .backend
+                    .call(Request::Inspect { agent: me })
                     .await
+                    .map_err(transport)?;
+                let Response::Agent { agent } = response else {
+                    return Ok(render(response, verbose));
+                };
+                let mut record = if verbose {
+                    whole_agent(&agent)
+                } else {
+                    brief_agent(&agent)
+                };
+                // Whether its project is paused, so an agent checking a
+                // lifecycle notice needs no shell: a sandboxed provider
+                // cannot reach the daemon for `agentdocker pause --list`
+                // without asking the person. A daemon that cannot say
+                // leaves the field out rather than claiming no pause.
+                if let Some(project) = agent.project.as_ref().map(|p| p.id())
+                    && let Ok(Response::Pauses { pauses }) =
+                        self.backend.call(Request::Pauses).await
+                {
+                    record["project_paused"] =
+                        match pauses.into_iter().find(|p| p.project == project) {
+                            Some(pause) => json!({
+                                "reason": pause.reason,
+                                "by": pause.by,
+                                "since": pause.at,
+                            }),
+                            None => json!(false),
+                        };
+                }
+                Ok(text_result(&record, false))
             }
             "list_agents" => {
                 // An agent reaches only its own project and the person, so
@@ -1913,7 +1944,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "whoami",
-            "description": "This agent's own record in AgentDocker: id, name, runtime, status.",
+            "description": "This agent's own record in AgentDocker: id, name, runtime, status, and whether its project is paused (`project_paused`: false, or the reason, who asked and since when).",
             "inputSchema": { "type": "object", "properties": { "verbose": verbose.clone() }, "additionalProperties": false }
         }),
         json!({
@@ -2297,6 +2328,48 @@ mod tests {
     fn tool_text(result: &Value) -> Value {
         let text = result["result"]["content"][0]["text"].as_str().unwrap();
         serde_json::from_str(text).unwrap()
+    }
+
+    #[tokio::test]
+    async fn whoami_says_whether_this_agents_project_is_paused() {
+        let mut me = agentdocker_core::AgentRecord::new(
+            AgentSpec {
+                name: "me".into(),
+                runtime: "codex".into(),
+                ..AgentSpec::default()
+            },
+            false,
+            Utc::now(),
+        );
+        me.project = Some(agentdocker_core::ProjectRef::directory("/work/alpha"));
+        let pause = agentdocker_core::Pause {
+            project: agentdocker_core::ProjectRef::directory("/work/alpha").id(),
+            by: "user".into(),
+            reason: "lunch".into(),
+            at: Utc::now(),
+        };
+        let elsewhere = agentdocker_core::Pause {
+            project: agentdocker_core::ProjectRef::directory("/work/beta").id(),
+            ..pause.clone()
+        };
+        let whoami = |pauses: Vec<agentdocker_core::Pause>| {
+            let s = server(vec![
+                Response::Agent { agent: me.clone() },
+                Response::Pauses { pauses },
+            ]);
+            async move {
+                body(
+                    &s.handle(rpc(1, "tools/call", json!({ "name": "whoami" })))
+                        .await
+                        .unwrap(),
+                )
+            }
+        };
+        let paused = whoami(vec![elsewhere.clone(), pause]).await;
+        assert!(paused.contains("\"project_paused\":{"), "{paused}");
+        assert!(paused.contains("\"reason\":\"lunch\""), "{paused}");
+        let running = whoami(vec![elsewhere]).await;
+        assert!(running.contains("\"project_paused\":false"), "{running}");
     }
 
     #[tokio::test]
