@@ -92,7 +92,13 @@ impl Standing {
             };
         }
         if !signals.live {
-            return Self::Ended;
+            // A session that finished while the person was away is news
+            // until they look, ended or not.
+            return if signals.finished_unseen {
+                Self::FinishedUnseen
+            } else {
+                Self::Ended
+            };
         }
         match signals.activity {
             Some(Activity::Working { .. }) => Self::Working,
@@ -212,6 +218,14 @@ mod tests {
             Standing::Ended
         );
         assert_eq!(Standing::of(Signals::default()), Standing::Ended);
+        assert_eq!(
+            Standing::of(Signals {
+                finished_unseen: true,
+                ..Signals::default()
+            }),
+            Standing::FinishedUnseen,
+            "an ended session finished while away is still news"
+        );
         // Held messages on an ended agent still need the person.
         assert_eq!(
             Standing::of(Signals {
