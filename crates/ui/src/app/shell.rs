@@ -156,6 +156,15 @@ pub(super) struct State {
     pub wait_notices: Vec<(String, Instant)>,
     /// A wake is set for the first pending wait notice to come due.
     pub wait_timer: bool,
+    /// What is to be asked of the notification centre, in order, one at a
+    /// time: a withdrawal always lands after the post it takes back, and
+    /// an older withdrawal never meets a newer post of the same agent.
+    pub notice_queue: std::collections::VecDeque<NoticeOp>,
+    /// One operation is with the notification centre now.
+    pub notice_busy: bool,
+    /// The operations started, in order, for the tests to read.
+    #[cfg(test)]
+    pub notice_log: Vec<String>,
     /// Agents whose notification may still sit in the notification
     /// centre: the ones this window posted, and those with a question the
     /// daemon posted. Each is taken back once it stops being true.
@@ -205,6 +214,34 @@ impl State {
 
 /// The words of a failed notification reply, and why it failed, until
 /// they are in the conversation's draft, copied, or dismissed.
+/// One request of the notification centre: post an agent's notice, or
+/// take back those of some agents.
+#[derive(Clone, Debug)]
+pub enum NoticeOp {
+    Post(Box<agentdocker_host::notify::Notification>),
+    Withdraw(Vec<String>),
+}
+
+impl NoticeOp {
+    /// Done off the window's thread; the outcome is the person's business
+    /// (a refused notification is not an error the window can fix).
+    fn run(self) {
+        match self {
+            Self::Post(notice) => {
+                let _ = crate::notify::post_notification(&notice);
+            }
+            Self::Withdraw(agents) => crate::notify::withdraw(&agents),
+        }
+    }
+    #[cfg(test)]
+    fn describe(&self) -> String {
+        match self {
+            Self::Post(notice) => format!("post {}", notice.tag.as_deref().unwrap_or_default()),
+            Self::Withdraw(agents) => format!("withdraw {}", agents.join(",")),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplyRecovery {
     pub message: MessageId,
@@ -806,7 +843,8 @@ pub enum Message {
     MarkUnread(String),
     /// A notice the window posted itself was taken or refused; either way
     /// nothing changes on screen (a refusal is the person's settings).
-    NoticePosted(Result<(), String>),
+    /// The notification centre finished the operation in hand.
+    NoticeDone,
     DismissError,
     Event(iced::Event),
     Window(window::Id),
@@ -2592,7 +2630,8 @@ impl App {
                 self.shell.catalog.appearance = Some(self.settings.clone());
                 self.shell.changed();
             }
-            Message::NoticePosted(_) => {}
+            // The update's tail starts the next one, if any.
+            Message::NoticeDone => self.shell.notice_busy = false,
             // The update's tail tells what has come due and sets the next.
             Message::WaitGrace => self.shell.wait_timer = false,
             Message::MarkUnread(id) => {
@@ -2917,14 +2956,9 @@ impl App {
                 tag: Some(format!("agent.{id}")),
             };
             self.shell.noticed.insert(id.clone());
-            tasks.push(Task::perform(
-                async move {
-                    tokio::task::spawn_blocking(move || crate::notify::post_notification(&notice))
-                        .await
-                        .unwrap_or_else(|e| Err(e.to_string()))
-                },
-                Message::NoticePosted,
-            ));
+            self.shell
+                .notice_queue
+                .push_back(NoticeOp::Post(Box::new(notice)));
         }
         // A notice that stopped being true is taken back: the question was
         // answered, the agent moved on from its prompt, or the person
@@ -2932,12 +2966,20 @@ impl App {
         // them to something already done.
         let stale = self.stale_notices();
         if !stale.is_empty() && self.smoke.is_none() {
+            self.shell.notice_queue.push_back(NoticeOp::Withdraw(stale));
+        }
+        // One at a time, in order; the next starts when this one is done.
+        if !self.shell.notice_busy
+            && let Some(op) = self.shell.notice_queue.pop_front()
+        {
+            self.shell.notice_busy = true;
+            #[cfg(test)]
+            self.shell.notice_log.push(op.describe());
             tasks.push(Task::perform(
                 async move {
-                    let _ =
-                        tokio::task::spawn_blocking(move || crate::notify::withdraw(&stale)).await;
+                    let _ = tokio::task::spawn_blocking(move || op.run()).await;
                 },
-                |()| Message::Tick,
+                |()| Message::NoticeDone,
             ));
         }
         // The dock icon counts the questions waiting on the person, in

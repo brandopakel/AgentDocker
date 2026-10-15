@@ -6494,6 +6494,61 @@ pub(crate) mod tests {
         assert!(app.stale_notices().is_empty());
     }
 
+    /// The notification centre is asked one thing at a time, in order: a
+    /// wait that ends while its post is still in flight is taken back only
+    /// after that post lands, and a fresh wait during the withdrawal is
+    /// posted after it, so neither a late post nor an old withdrawal wins.
+    #[test]
+    fn notices_are_posted_and_taken_back_in_order_one_at_a_time() {
+        fn step(app: &mut App, id: &str, activity: Activity) {
+            let fresh = BTreeMap::from([(id.to_owned(), activity)]);
+            app.note_completions(&fresh);
+            app.activity = fresh;
+        }
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut worker = record("worker", "claude-code", Some(4242));
+        worker.project = Some(ProjectRef::directory("/fixture/alpha"));
+        let id = worker.id.to_string();
+        app.agents.push(worker);
+        app.shell.unfocused = true;
+        let now = Utc::now();
+        let working = || Activity::Working { since: now };
+        let waiting = || Activity::Waiting {
+            since: now,
+            reason: None,
+        };
+        let post = format!("post agent.{id}");
+        let withdraw = format!("withdraw {id}");
+
+        step(&mut app, &id, working());
+        step(&mut app, &id, waiting());
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        assert_eq!(app.shell.notice_log, std::slice::from_ref(&post));
+        assert!(app.shell.notice_busy, "the post is in flight");
+
+        // The wait ends before the post lands: its withdrawal waits.
+        step(&mut app, &id, working());
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.shell.notice_log, std::slice::from_ref(&post));
+        assert_eq!(app.shell.notice_queue.len(), 1);
+        let _ = app.update(Message::NoticeDone);
+        assert_eq!(app.shell.notice_log, [post.clone(), withdraw.clone()]);
+
+        // A fresh wait while that withdrawal is in flight is posted after.
+        step(&mut app, &id, waiting());
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        assert_eq!(app.shell.notice_log.len(), 2, "behind the withdrawal");
+        let _ = app.update(Message::NoticeDone);
+        assert_eq!(app.shell.notice_log, [post.clone(), withdraw, post]);
+        let _ = app.update(Message::NoticeDone);
+        assert!(!app.shell.notice_busy);
+        assert!(app.shell.notice_queue.is_empty());
+    }
+
     #[test]
     fn a_pull_request_chip_is_for_live_or_recent_agents_off_the_default_branch() {
         use crate::pull_request::{Key, PullRequest, Status};
