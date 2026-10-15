@@ -858,9 +858,12 @@ schema-14 cursor. Replayed closures remain private until the daemon's checked
 replay-complete marker arrives; incomplete replay is retried from the previous
 cursor. The worker retains at most 128 pending question events and attempts at
 most three reconnects with 100 ms backoff. That allowance resets only after a
-connection remains caught up for 30 seconds. Unknown event kinds, invalid or
-missing history and buffer overflow pause immediately; no fresh subscription
-replaces a lost cursor. The existing five-second connection/replay/frame bounds
+connection remains caught up for 30 seconds. A stream the daemon ends because
+the subscriber fell behind its live broadcast (a burst of more than 1,024
+events, file changes included) counts as such a loss: the durable log still
+holds what was missed, so the worker resumes from its cursor within the same
+allowance. Unknown event kinds, history found missing at the resume and buffer
+overflow pause immediately; no fresh subscription replaces a lost cursor. The existing five-second connection/replay/frame bounds
 apply to each attempt, and shutdown cancels the worker and its socket.
 
 Actual Mac and Oracle Linux Codex 0.160 with private model/MCP fixtures and source

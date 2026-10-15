@@ -73,6 +73,21 @@ fn relevant(kind: &EventKind) -> bool {
 
 use super::daemon_io::recoverable;
 
+/// The daemon refused to continue a stream it had already accepted. A
+/// subscriber that falls behind the live broadcast is told this and to
+/// resume from its last complete cursor: the durable log still holds what
+/// it missed, and the resume proves continuity or refuses before
+/// readiness. History lost at the resume itself is refused before
+/// readiness and still pauses delivery.
+fn fell_behind(accepted: bool, error: &anyhow::Error) -> bool {
+    accepted
+        && error.chain().any(|cause| {
+            cause
+                .downcast_ref::<crate::client::RemoteError>()
+                .is_some_and(|e| e.code == agentdocker_core::ErrorCode::EventHistoryLost)
+        })
+}
+
 async fn worker(
     client: Client,
     sender: mpsc::Sender<Result<EventKind>>,
@@ -84,11 +99,12 @@ async fn worker(
     let mut failures = 0;
     let error = loop {
         let mut caught_up = None;
+        let mut accepted = false;
         let mut pending = Vec::new();
         let result = client
             .checked_events(committed.clone(), |response| {
                 match response {
-                    Response::EventsReadyAt { .. } => (),
+                    Response::EventsReadyAt { .. } => accepted = true,
                     Response::EventAt { cursor, event } => {
                         if caught_up.is_some() {
                             if relevant(&event.kind) {
@@ -133,7 +149,7 @@ async fn worker(
         let error = result
             .err()
             .unwrap_or_else(|| anyhow!("daemon question event stream ended"));
-        if committed.is_none() || !recoverable(&error) {
+        if committed.is_none() || !(recoverable(&error) || fell_behind(accepted, &error)) {
             break error;
         }
         if caught_up.is_some_and(|at| at.elapsed() >= policy.stable) {
@@ -297,6 +313,39 @@ mod tests {
         finish.send(()).unwrap();
         question(&mut events, 2).await;
         question(&mut events, 3).await;
+        drop(events);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_subscriber_that_fell_behind_resumes_from_its_last_cursor() {
+        let home = tempfile::tempdir().unwrap();
+        let socket = home.path().join("sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let mut peer = accept(&listener, None).await;
+            ready(&mut peer, 0).await;
+            write(&mut peer, event(1)).await;
+            write(
+                &mut peer,
+                Response::error(
+                    agentdocker_core::ErrorCode::EventHistoryLost,
+                    "live event subscriber fell behind; resume from its last complete cursor",
+                ),
+            )
+            .await;
+            drop(peer);
+            let mut peer = accept(&listener, Some(cursor(1))).await;
+            ready(&mut peer, 1).await;
+            write(&mut peer, event(2)).await;
+            let mut line = String::new();
+            let _ = timeout(Duration::from_secs(2), peer.read_line(&mut line)).await;
+        });
+        let mut events = Events::start_with(Client::new(Some(socket)), fast())
+            .await
+            .unwrap();
+        question(&mut events, 1).await;
+        question(&mut events, 2).await;
         drop(events);
         server.await.unwrap();
     }
