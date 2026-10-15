@@ -806,6 +806,19 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **A quieter, neutral desktop.** The navy rail is retired for a neutral
+  sidebar one step off the page, in both appearances; colour is kept for
+  state and the one primary action. Every agent row is one line that leads
+  with one glyph for where the agent stands — the same function decides it
+  in the chat, the session list and the rail — and prints a word only when it
+  calls for you. The project header keeps **Launch agent…** as its one
+  labelled button; Pause, the terminal and Open in are icons named in their
+  tooltips. A project's rail row shows its loudest agent's glyph and a number
+  only for agents that need you. **Launch agent…** starts from what the agent
+  should work on, sent as its first message; its name and arguments are under
+  **More options**. Command/Ctrl+Shift+U goes to the next agent that needs
+  you. The background-service notice is one quiet line until you act on it.
+
 - A Claude Code session no longer goes deaf after Claude's own restart.
   Restarting in place re-executes `claude` without the channel flag, so the
   channel AgentDocker kept offering messages through was dropping them, its
@@ -829,9 +842,12 @@ Newest first. Only what changes how the product is used.
   for its checks, or **#340 merged** — that opens it in the browser. It is
   read with your signed-in `gh` every two minutes and when the window regains
   focus; without `gh`, on a default branch or off GitHub there is no chip.
-  An agent that finished while you were not looking carries an accent dot
-  until you open it or its project; the **Done** pill it replaces is gone.
-- **Open in…**, beside Open terminal in a project's header, opens the project
+  Every agent row leads with one glyph for where the agent stands (amber:
+  needs you; red: failed; muted dot: working; accent dot: finished since you
+  looked; nothing: idle), the same in the chat, the session list and the
+  rail. An agent that finished while you were not looking keeps its accent
+  dot until you open it or its project.
+- **Open in…** (the code icon beside the terminal icon in a project's header) opens the project
   in an editor installed on this computer — Visual Studio Code, Cursor,
   Windsurf, Zed, Sublime Text, Nova, BBEdit, Xcode, Fleet or a JetBrains IDE —
   from a small menu of the ones found, the last one chosen first. A session in

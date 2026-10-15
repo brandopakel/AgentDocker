@@ -731,6 +731,14 @@ impl App {
                 shortcut("2"),
             ),
             go(
+                "next-attention",
+                "Next agent that needs you",
+                "Questions, waits and failures first, then finished work you have not seen",
+                Icon::Question,
+                Message::NextAttention,
+                Hint::Keys(vec![MODIFIER, "⇧", "U"]),
+            ),
+            go(
                 "tools",
                 "Tools",
                 "Installed tools and their connections",

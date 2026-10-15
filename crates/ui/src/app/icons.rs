@@ -103,6 +103,12 @@ pub enum Icon {
     ChevronUp,
     /// Angle brackets round a slash: code, opened in an editor.
     Code,
+    /// A filled triangle: something failed.
+    Alert,
+    /// An hourglass: waiting on something other than the person.
+    Hourglass,
+    /// A dashed circle: starting.
+    Ring,
 }
 
 /// An icon inked in one colour.
@@ -485,6 +491,40 @@ impl Glyph {
                     stroke,
                 );
                 frame.stroke(&Path::line(p(9.25, 3.25), p(6.75, 12.75)), stroke);
+            }
+            Icon::Alert => {
+                let triangle = Path::new(|b| {
+                    b.move_to(p(8.0, 2.25));
+                    b.line_to(p(14.5, 13.75));
+                    b.line_to(p(1.5, 13.75));
+                    b.close();
+                });
+                frame.fill(&triangle, self.color);
+            }
+            Icon::Hourglass => {
+                let glass = Path::new(|b| {
+                    b.move_to(p(4.5, 2.5));
+                    b.line_to(p(11.5, 2.5));
+                    b.line_to(p(8.0, 8.0));
+                    b.line_to(p(11.5, 13.5));
+                    b.line_to(p(4.5, 13.5));
+                    b.line_to(p(8.0, 8.0));
+                    b.close();
+                });
+                frame.stroke(&glass, stroke);
+            }
+            Icon::Ring => {
+                let dashes = [2.2, 2.0];
+                frame.stroke(
+                    &Path::circle(p(8.0, 8.0), 5.0),
+                    Stroke {
+                        line_dash: canvas::LineDash {
+                            segments: &dashes,
+                            offset: 0,
+                        },
+                        ..stroke
+                    },
+                );
             }
         }
     }

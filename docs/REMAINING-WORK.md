@@ -33,13 +33,19 @@ activity/pause reporting and the desktop Codex trust notice. The notice now
 refreshes for notification-driven project changes while the form remains open.
 Explicit commits also accept pending merges whose tree is unchanged, while
 ordinary empty commits remain refused. Git execution failures while checking merge
-state report `unavailable` with their original details. The exact `3a795b0b` tree
-passed the full Linux gate and Windows CI; physical AWBP also passed 13 normal-user
-merge checks. Ledger 15/state
-schema 27 is unchanged. The candidate still requires final versioned-source
-review and CI, protected-tag publication and hosted beta.13 → beta.14 install,
-update, rollback, reapply and service acceptance. Earlier candidate trials do
-not replace those hosted checks. Stable v0.1.0 and Homebrew remain unchanged.
+state report `unavailable` with their original details. The pre-integration
+`f847b1f6` tree passed the full Linux and macOS standard gates and Windows CI;
+its Intel CLI archive and ARM desktop packaging were the outstanding CI jobs
+when this evidence was recorded. Physical AWBP passed 143 application startup
+checks on that tree; its wrapper cleanup failed on empty config locks, and a
+separate verified cleanup completed without changing the original report.
+The candidate also integrates main's desktop standing and launch-form changes
+(#355), preserving asynchronous Codex trust loading. Ledger 15/state schema 27
+is unchanged. This integrated source still requires the standard gates and
+platform packaging, final review, protected-tag publication and hosted beta.13
+→ beta.14 install, update, rollback, reapply and service acceptance. Earlier
+candidate trials do not replace those checks. Stable v0.1.0 and Homebrew remain
+unchanged.
 
 ## Release and first run
 

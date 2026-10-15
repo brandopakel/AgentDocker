@@ -44,6 +44,12 @@ pub(super) struct State {
     /// The **Open in…** menu that is open, if one is.
     pub editor_menu: Option<EditorMenu>,
     pub launch_runtime: Option<String>,
+    /// What the new agent is asked to do, sent as its first message once
+    /// it is launched. Kept like a draft until then.
+    pub launch_prompt: String,
+    /// The launch form's **More options** (name, arguments, the command)
+    /// are open.
+    pub launch_more: bool,
     pub launch_name: String,
     pub launch_arguments: String,
     /// Provider input is on for supported new sessions by default. The launch
@@ -718,9 +724,14 @@ pub enum Message {
     /// Put an armed Stop back without stopping anything.
     DisarmStop,
     ShowLaunch,
+    /// Go to the next agent that calls for the person, loudest first:
+    /// what needs you, then failures, then finished work you have not seen.
+    NextAttention,
     LaunchRuntime(String),
     /// Saved project trust read off the UI thread for one launch form.
     CodexTrustLoaded(u64, PathBuf, Option<bool>),
+    LaunchPrompt(String),
+    LaunchMore,
     LaunchName(String),
     LaunchArguments(String),
     LaunchChannel(bool),
@@ -2227,6 +2238,34 @@ impl App {
                     self.shell.launch_codex_untrusted = (trusted == Some(false)).then_some(root);
                 }
             }
+            Message::NextAttention => {
+                let mut calling: Vec<_> = self
+                    .agents
+                    .iter()
+                    .filter(|a| a.spec.runtime != agentdocker_core::HUMAN_RUNTIME)
+                    .map(|a| (self.standing(a), a.id.to_string()))
+                    .filter(|(standing, _)| standing.calls_for_attention())
+                    .collect();
+                calling.sort();
+                if calling.is_empty() {
+                    self.say("Nothing needs you");
+                } else {
+                    // From the one on screen to the next, round again at
+                    // the end, so pressing it again walks the whole queue.
+                    let next = self
+                        .shell
+                        .selected
+                        .as_deref()
+                        .and_then(|current| calling.iter().position(|(_, id)| id == current))
+                        .map_or(0, |at| (at + 1) % calling.len());
+                    let id = calling[next].1.clone();
+                    tasks.push(self.update(Message::OpenSession(id)));
+                }
+            }
+            Message::LaunchPrompt(prompt) => {
+                self.shell.launch_prompt = prompt.chars().take(16_000).collect()
+            }
+            Message::LaunchMore => self.shell.launch_more = !self.shell.launch_more,
             Message::LaunchName(name) => self.shell.launch_name = name.chars().take(120).collect(),
             Message::LaunchArguments(args) => {
                 self.shell.launch_arguments = args.chars().take(8192).collect()
@@ -2577,6 +2616,14 @@ impl App {
                         if modifiers.command() && key.as_str().eq_ignore_ascii_case("k") =>
                     {
                         tasks.push(self.update(Message::CommandPalette));
+                    }
+                    // The next agent that needs you, as cmux binds it.
+                    Key::Character(key)
+                        if modifiers.command()
+                            && modifiers.shift()
+                            && key.as_str().eq_ignore_ascii_case("u") =>
+                    {
+                        tasks.push(self.update(Message::NextAttention));
                     }
                     // New session, as in every other session manager: the
                     // launch form for the project on screen.
@@ -4050,6 +4097,69 @@ mod tests {
 
     /// A launched agent's terminal opens as soon as the list shows it
     /// running, so what it asks before it starts is in front of the person.
+    #[test]
+    fn next_attention_walks_every_agent_that_calls_for_the_person() {
+        let (mut app, _commands, _messages) = app();
+        // Opening a project marks its finished agents seen, so the two
+        // that call for the person are in different projects.
+        for (name, root) in [
+            ("first", "/work/alpha"),
+            ("quiet", "/work/alpha"),
+            ("second", "/work/beta"),
+        ] {
+            let mut agent = AgentRecord::new(
+                agentdocker_core::AgentSpec {
+                    name: name.into(),
+                    runtime: "claude-code".into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            agent.id = name.into();
+            agent.status = agentdocker_core::AgentStatus::Running;
+            agent.project = Some(agentdocker_core::ProjectRef::directory(root));
+            app.agents.push(agent);
+        }
+        app.shell.unviewed_done.insert("first".into());
+        app.shell.unviewed_done.insert("second".into());
+        let _ = app.update(Message::NextAttention);
+        assert_eq!(app.shell.selected.as_deref(), Some("first"));
+        let _ = app.update(Message::NextAttention);
+        assert_eq!(app.shell.selected.as_deref(), Some("second"));
+        // Both have been looked at now: nothing is left to walk to.
+        let _ = app.update(Message::NextAttention);
+        assert_eq!(app.shell.selected.as_deref(), Some("second"));
+        assert!(app.shell.unviewed_done.is_empty());
+    }
+
+    #[test]
+    fn the_launch_prompt_is_the_new_agents_first_message() {
+        let (mut app, commands, messages) = app();
+        let _ = app.update(Message::LaunchPrompt("Fix the flaky test".into()));
+        let _ = commands.try_iter().count();
+        messages.send(Msg::Launched(Ok("fresh".into()))).unwrap();
+        app.drain();
+        assert!(
+            commands
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::SessionSend(id, text) if id == "fresh" && text == "Fix the flaky test")),
+            "the prompt is queued to the agent it launched"
+        );
+        assert!(
+            app.shell.launch_prompt.is_empty(),
+            "and the form starts empty next time"
+        );
+        // No prompt, no message.
+        messages.send(Msg::Launched(Ok("bare".into()))).unwrap();
+        app.drain();
+        assert!(
+            !commands
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::SessionSend(..)))
+        );
+    }
+
     #[test]
     fn a_launched_agent_opens_in_its_terminal_once_it_is_listed() {
         let (mut app, _commands, messages) = app();
