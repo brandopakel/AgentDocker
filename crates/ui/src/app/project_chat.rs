@@ -1,8 +1,8 @@
 //! The project's everyday workspace: shared chat and the agents working here.
 use super::icons::{Icon, icon};
-use super::messages::look::{link, with_presence};
+use super::messages::look::link;
 use super::style::{Colors, weight};
-use super::view::{agent_mark, done_dot, dot, note, rule};
+use super::view::{agent_mark, dot, hint, note, rule, standing_glyph, standing_tone};
 use super::*;
 use crate::controls::{Kind, custom, custom_sized};
 use iced::{
@@ -103,21 +103,6 @@ impl App {
             .iter()
             .filter(|q| !q.expired(Utc::now()) && agents.iter().any(|a| a.id.as_str() == q.from))
             .collect()
-    }
-
-    /// An agent's presence tone: amber while a question waits on the person, green
-    /// while it reports work, quiet while all that is known is that it runs.
-    fn chat_agent_tone(&self, agent: &agentdocker_core::AgentRecord, c: Colors) -> iced::Color {
-        if self.needs_input(agent.id.as_str()) || self.waits_for_person(agent) {
-            c.amber
-        } else if agent.status.is_live() {
-            match self.activity.get(agent.id.as_str()) {
-                None | Some(Activity::Unknown | Activity::Starting) => c.faint,
-                Some(_) => c.green,
-            }
-        } else {
-            c.faint
-        }
     }
 
     /// What an agent is doing and for how long: `working · 3m`,
@@ -255,39 +240,47 @@ impl App {
                 Some(Message::OpenSession(id.clone()))
             };
             let unviewed = self.shell.unviewed_done.contains(&id);
+            let standing = self.standing(agent);
+            let attention = standing.calls_for_attention();
+            let status = self.chat_agent_status(agent);
             let mut who = row![
-                with_presence(
-                    agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 28.0, c),
-                    28.0,
-                    Some(self.chat_agent_tone(agent, c)),
-                    c.ground,
-                ),
-                column![
-                    container(
-                        text(name.clone())
-                            .size(13.5)
-                            .font(weight(iced::font::Weight::Medium))
-                            .wrapping(iced::widget::text::Wrapping::None)
-                    )
-                    .width(Fill)
-                    .clip(true),
-                    container(
-                        text(self.chat_agent_status(agent))
-                            .size(12)
-                            .color(c.muted)
-                            .wrapping(iced::widget::text::Wrapping::None)
-                    )
-                    .width(Fill)
-                    .clip(true),
-                ]
-                .spacing(1)
-                .width(Fill),
+                standing_glyph(standing, c),
+                agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 20.0, c),
+                container(hint(
+                    text(name.clone())
+                        .size(13.5)
+                        .font(weight(if attention {
+                            iced::font::Weight::Semibold
+                        } else {
+                            iced::font::Weight::Normal
+                        }))
+                        .color(if attention { c.text } else { c.muted })
+                        .wrapping(iced::widget::text::Wrapping::None),
+                    status.clone(),
+                    c,
+                ))
+                .width(Fill)
+                .clip(true),
             ]
-            .spacing(10)
+            .spacing(8)
             .align_y(Center);
-            if unviewed {
-                who = who.push(done_dot(c));
-            }
+            // The one trailing word: what the person must do, else how long.
+            let slot = if standing.needs_you() {
+                text(standing.word())
+                    .size(12)
+                    .font(weight(iced::font::Weight::Medium))
+                    .color(standing_tone(standing, c))
+            } else {
+                text(
+                    status
+                        .rsplit_once(" · ")
+                        .map(|(_, since)| since.to_owned())
+                        .unwrap_or_default(),
+                )
+                .size(12)
+                .color(c.faint)
+            };
+            who = who.push(slot.wrapping(iced::widget::text::Wrapping::None));
             let open = custom(
                 format!("chat-agent-{id}"),
                 format!(
@@ -387,23 +380,21 @@ impl App {
                     ""
                 }
             );
-            let mut who = row![
-                with_presence(
-                    agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 20.0, c),
-                    20.0,
-                    Some(self.chat_agent_tone(agent, c)),
-                    c.ground,
-                ),
+            let standing = self.standing(agent);
+            let who = row![
+                standing_glyph(standing, c),
+                agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 18.0, c),
                 text(name)
                     .size(12.5)
                     .line_height(iced::Pixels(16.0))
-                    .font(weight(iced::font::Weight::Medium)),
+                    .font(weight(if standing.calls_for_attention() {
+                        iced::font::Weight::Semibold
+                    } else {
+                        iced::font::Weight::Normal
+                    })),
             ]
-            .spacing(7)
+            .spacing(6)
             .align_y(Center);
-            if unviewed {
-                who = who.push(done_dot(c));
-            }
             strip = strip.push(custom(
                 format!("chat-agent-{id}"),
                 label,

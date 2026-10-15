@@ -1450,6 +1450,12 @@ impl App {
                         Ok(id) => {
                             self.shell.launch = false;
                             self.shell.selected = Some(id.clone());
+                            // What it was asked to do is its first message:
+                            // queued now, delivered when it takes input.
+                            let prompt = std::mem::take(&mut self.shell.launch_prompt);
+                            if !prompt.trim().is_empty() {
+                                self.send(Cmd::SessionSend(id.clone(), prompt));
+                            }
                             // Its terminal opens once it is listed: what it
                             // asks before it starts (Claude's folder trust and
                             // channel consent) is answered there, and nothing

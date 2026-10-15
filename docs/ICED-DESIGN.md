@@ -97,12 +97,26 @@ control does, its id or its accessible label:
   (`crates/ui/src/logos/`, light and dark variants for one-colour marks)
   and decoded once each, like the cube — the build has no SVG renderer
   (`app/logos.rs`).
+- **One standing per agent.** The October 14 redesign follows a REA teardown
+  of eleven agent apps (Conductor, Superset, Emdash, Sculptor, Claude desktop,
+  the Codex app, Vibe Kanban, Crystal, cmux, herdr, claude-squad, agent-deck),
+  which all fold their signals into a few states with a fixed precedence.
+  `agentdocker_core::standing::Standing::of` is the one function: **needs
+  you** (an open question, a provider stopped at its own prompt, or held
+  messages), **failed** (until seen), **working**, **parked** (waiting on a
+  lease), **starting**, **finished since you looked**, **idle**, **ended**,
+  loudest first, so sorting by it is the attention order. Every view draws it
+  the same way (`view::standing_glyph`, `view::standing_tone`): an amber dot
+  for needs you, a red triangle for failed, a muted dot for working, an
+  hourglass for parked, a dashed ring for starting, an accent dot for news,
+  nothing for idle or ended. The word comes in a tooltip; a row prints it
+  only when it calls for the person.
 - **Finished, not yet viewed.** When a session's activity goes from working
   or blocked to idle or finished while the user is not looking at its project
-  in a focused window, the session is marked unviewed: an accent dot on its
-  row in the chat's agent list and the session list (`view::done_dot`, its
-  words in a tooltip and in the row's spoken label), a count on its rail row,
-  and a total on the Projects entry. Opening the project, selecting the
+  in a focused window, the session is marked unviewed: its standing is
+  *finished since you looked* (the accent dot, its words in a tooltip and in
+  the row's spoken label), its name is set semibold, its project's rail row
+  takes the glyph, and the Projects entry carries a total. Opening the project, selecting the
   session or going to its terminal clears it, as does the session starting to
   work again; waiting for the person (`Activity::Waiting`) is not finished and
   drops the mark. An idle report on its own never counts as viewing, and the
@@ -125,13 +139,16 @@ control does, its id or its accessible label:
 - **Colour roles** live in `app/style.rs`: ground, rail, card, raised, hover,
   overlay, text, muted, faint, line, line-strong, accent, accent-hover,
   accent-soft/ink, cyan, green, amber, red and danger (the solid fill of an
-  armed destructive action). Dark is a deep navy; light is cool off-white with
-  white cards. **The rail is navy in both appearances**, so the cube always
-  sits on navy: `Colors::rail()` gives the rail (and the status bar, which
-  is part of the same frame) its own light-on-navy ink. A unit test keeps
-  text, muted and faint ink above WCAG thresholds on every page surface and,
-  with the rail's ink, on the rail and its selected and hovered rows; white
-  labels on the filled actions and status words on a card are checked too.
+  armed destructive action). Since October 14 the surfaces are neutral greys
+  (dark ground `#141416`, light `#f7f7f8` with white cards) and colour is
+  spent on state and the one primary action: every app in the teardown keeps
+  its sidebar a step off the page, never a contrasting block, so the navy
+  rail is retired. `Colors::rail()` is the sidebar step of either appearance
+  (lighter than the page in dark, darker in light) with washes of the ink for
+  the selected and hovered rows. A unit test keeps text, muted and faint ink
+  above WCAG thresholds on every page surface and on the rail and its rows;
+  white labels on the filled actions and status words on a card are checked
+  too.
 - **One radius scale** (`RADIUS_XS` 4 keycaps and checkboxes, `RADIUS_SM` 6
   controls, rows and tooltips, `RADIUS_MD` 8 menus, tracks and tiles,
   `RADIUS_LG` 10 cards) and one control height: a 13-point Medium label on an
@@ -149,9 +166,10 @@ control does, its id or its accessible label:
   under two percent (measured 2026-09-10 on the packaged build). Cards and
   panels get depth from tint and hairline only. Tiny shadows on tooltips and
   the selected segment are a few hundred pixels and remain.
-- **Status is a dot and a word.** Green is live, amber needs input, faint is
-  finished, cyan marks a pinned project or a process available to connect.
-  Header pills count live sessions and open questions for the project.
+- **Status is a glyph, and a word where it matters.** The standing glyph sits
+  on every agent row; the word is in its tooltip, printed on the row only for
+  needs you and failed, and printed beside a dot in the session panel. Cyan
+  marks a pinned project or a process available to connect.
 - **Controls have kinds** (`controls::Kind`) on one ladder: one filled
   *primary* action per screen, *secondary* actions as hairline outlines with
   no fill, *ghost* words for tertiary actions (Cancel, Dismiss, Details,
@@ -214,8 +232,8 @@ control does, its id or its accessible label:
 - **Marks explain themselves.** Where a mark has no words beside it (the
   rail's project tiles), pointing at it shows a tooltip with the words the row
   would otherwise print: live agents, pinned or discovered, and how many
-  finished unviewed (`hint`); dots that already sit next to their words get no
-  tooltip. The hover target is padded to about sixteen points; the mark itself
+  finished unviewed (`hint`); an icon button says its name (`tip`); dots that
+  already sit next to their words get no tooltip. The hover target is padded to about sixteen points; the mark itself
   stays small. Verified with the real macOS pointer (a CGEvent helper moving
   the cursor over the running release window while the smoke captured the
   frame), not only with widget callbacks.
@@ -358,20 +376,24 @@ control does, its id or its accessible label:
   own scroll, where `Fill` has nothing to fill; `scripts/iced_workflow_smoke.py`
   asserts that reading a conversation acknowledges its rows and clears its
   unread count.
-- **Layout.** A navy rail (236 points to begin with, 204 when narrow) whose
-  selected entry is a neutral pill, counts quiet chips (amber when something
-  waits on the person), then a workspace that leads with one toolbar line:
-  the project's mark, its name over its path in mono, then **Pause…** as a
-  ghost, **Open terminal** as an outline and the one filled action, the
-  **Launch agent…** split button whose chevron lists the installed tools
+- **Layout.** A neutral rail (236 points to begin with, 204 when narrow) whose
+  selected entry is a wash of the ink; a project row shows its loudest agent's
+  glyph, a number only for agents that need the person, and a semibold name
+  when something there is new. Then a workspace that leads with one toolbar
+  line: the project's mark, its name over its path in mono, then three icon
+  buttons named in tooltips (**Pause…**, the project terminal, **Open in…**)
+  and the one labelled and filled action, the **Launch agent…** split button whose chevron lists the installed tools
   (`launch-menu`, `launch-with-<tool>`). Then the section tabs (glyph and
   label, a 2-point accent bar under the selected one on the tabs' hairline).
   Typing a pause reason is its own tinted row under the header; while paused
   the header says **Paused · reason** in amber beside **Resume**. **Launch
-  agent…** opens a dialog over a flat scrim (no blur): each installed tool a
-  row with its binary and a radio, then the name and arguments, the idle
-  delivery switch for Claude and Codex, the exact command in a mono well,
-  and Cancel and Launch at the foot. Pressing the scrim closes it. The rail and the workspace, and on the
+  agent…** opens a dialog over a flat scrim (no blur) that starts from the
+  prompt, as every launch surface in the teardown does: a composer (*What
+  should it work on?*, sent as the new agent's first message once it is
+  launched, optional), the installed tools as chips under it, the idle
+  delivery switch for Claude and Codex and **Own worktree**, then **More
+  options** for the name, the arguments and the exact command in a mono
+  well, and Cancel and Launch at the foot. Pressing the scrim closes it. The rail and the workspace, and on the
   Messages screen the sidebar, the conversation and the thread, are
   `pane_grid` panes with a draggable divider between each (`app/panes.rs`):
   the widths are kept in logical pixels, not shares, so a window resize
@@ -387,26 +409,28 @@ control does, its id or its accessible label:
   grids number their splits separately, so a resize event carries which grid
   it came from. The thread column is split off and closed with the thread.
   The dividers are 8 points wide, drawn as a 2-point accent line while
-  hovered or dragged; at rest the rail meets the page with its own navy edge
-  (a hairline in dark, where the tones are close). Scrollbars are quiet: no
+  hovered or dragged; at rest a hairline parts the rail from the page. Scrollbars are quiet: no
   track, a thin scroller in a wash of the ink. A narrow window keeps the
   fixed rail and the one column on view. Lists are rows inside a panel; prose sits in cards; the terminal
   and command output sit in a bezel of the chosen terminal palette's ground.
-  Filters sit left and search right on one row. A navy status bar says the
+  Filters sit left and search right on one row. A status bar says the
   daemon connection once, as a dot and a word (**Connected — background
   service**), with the version in mono at the right, so no page repeats them.
-  The agents list is one card of rows separated by rules: the session's
-  mark, its name over its tool and branch, its status as a dot and a word,
-  how long (coarse: *now*, *3m*, *1h 12m*), and an action only where there
-  is one (**Reconnect here**). An empty list shows three faint static rows in
+  The agents list is one card of one-line rows separated by rules: the
+  standing glyph, the tool's small mark, the name (semibold when it calls for
+  the person, muted when ended), and one trailing slot holding the first that
+  applies: what the person must do (*needs input*, *failed*), the pull
+  request chip, or how long (coarse: *now*, *3m*, *1h 12m*); tool, branch
+  and tokens are in the name's tooltip, and an action only where there is one
+  (**Reconnect here**). The chat's agent list uses the same row. An empty list shows three faint static rows in
   the shape of what will fill it; a search that finds nothing says what it
   looked for and offers **Clear search** (`session-search-clear`). A
   session's panel has one filled action — **Answer** when it asks something,
   otherwise its terminal — Details as a definition list, and Stop at the
   foot: the first press turns that slot solid red, **Confirm stop**, with a
   square **Keep running** (`stop-session-cancel`) beside it.
-- **Say each fact once.** Counts live in the sidebar (live agents per project,
-  open questions on Inbox) and in the filter chips; the header does not repeat
+- **Say each fact once.** Counts live in the sidebar (agents that need you
+  per project, open questions on Inbox) and in the filter chips; the header does not repeat
   them. Messages in Inbox are transcript lines (when · who · what)
   rather than a card per message, following the chat clients in the iced
   showcase (Halloy); the pane-header, footer-bar and inline-meter patterns come
