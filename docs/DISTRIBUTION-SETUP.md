@@ -15,6 +15,15 @@ restore. This does not prove live handover or provider continuity. Beta.9/schema
 remains incompatible. Included final-source review, CI and hosted acceptance
 are recorded in [the verification index](verification/INDEX.md).
 
+The unpublished beta.14 candidate includes the Windows service staging,
+native Codex launch configuration and watcher responsiveness corrections, plus
+longer pending-question retention, durable question-stream recovery, accurate
+activity/pause reporting and the desktop Codex trust notice. Ledger 15/state
+schema 27 is unchanged. The candidate still requires final versioned-source
+review and CI, protected-tag publication and hosted beta.13 → beta.14 install,
+update, rollback, reapply and service acceptance. Earlier candidate trials do
+not replace those hosted checks. Stable v0.1.0 and Homebrew remain unchanged.
+
 ## Release workflow and retry policy
 
 A protected `v*` tag triggers `.github/workflows/release.yml`; editing the
