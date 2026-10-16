@@ -15,7 +15,7 @@
 //! in the window so the field stays put while the list changes length.
 use super::icons::{Icon, icon};
 use super::style::{Colors, RADIUS_MD, alpha, weight};
-use super::view::{eyebrow, monogram};
+use super::view::monogram;
 use super::*;
 use crate::controls::{Kind, custom, custom_sized};
 use iced::advanced::{
@@ -130,17 +130,6 @@ pub(super) enum Group {
     Projects,
     Actions,
     Tools,
-}
-impl Group {
-    fn heading(self) -> &'static str {
-        match self {
-            Group::Agents => "Agents",
-            Group::GoTo => "Go to",
-            Group::Projects => "Projects",
-            Group::Actions => "Actions",
-            Group::Tools => "Tools",
-        }
-    }
 }
 
 /// What a row shows before its label.
@@ -1134,7 +1123,7 @@ impl App {
                 .into(),
         };
         let placeholder = match nested {
-            Some(Page::Launch) => "Launch an agent with…",
+            Some(Page::Launch) => "Launch with…",
             None => "Jump to…",
         };
         let search = container(
@@ -1148,28 +1137,19 @@ impl App {
         let mut list = column![].spacing(1).width(Fill);
         let mut group = None;
         for (index, item) in rows.iter().enumerate() {
+            // Groups part with a hairline, not a heading: each row's mark
+            // says what kind of thing it is.
             if group != Some(item.group) {
-                list = list.push(container(eyebrow(item.group.heading(), c)).padding(
-                    iced::Padding {
-                        top: if group.is_some() { 12.0 } else { 6.0 },
-                        right: 10.0,
-                        bottom: 4.0,
-                        left: 10.0,
-                    },
-                ));
+                if group.is_some() {
+                    list = list.push(container(hairline(c)).padding([6, 10]));
+                }
                 group = Some(item.group);
             }
             list = list.push(item_view(item, index == active, c));
         }
         if rows.is_empty() {
-            let words = match nested {
-                Some(Page::Launch) if palette.query.trim().is_empty() => {
-                    "No tool to launch is installed.".to_owned()
-                }
-                _ => format!("Nothing matches “{}”", palette.query.trim()),
-            };
             list = list.push(
-                container(text(words).size(13).color(c.muted))
+                container(icon(Icon::Search, c.faint, 16.0))
                     .padding([24, 10])
                     .center_x(Fill),
             );

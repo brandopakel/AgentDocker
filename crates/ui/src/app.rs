@@ -1075,7 +1075,6 @@ impl App {
                             {
                                 self.shell.notification_message = None;
                             }
-                            self.say("Messages dismissed");
                         }
                         Err(reason) => self.say(reason),
                     }
@@ -1272,7 +1271,6 @@ impl App {
                     }
                 }
                 Msg::SecretCompleted => {
-                    self.say("Temporary input action acknowledged by AgentDocker; this is not a provider receipt.");
                     self.send(Cmd::SecretReviews);
                 }
                 Msg::Questions(questions) => {
@@ -1368,7 +1366,6 @@ impl App {
                                 self.shell.pending_answer_reveal = None;
                                 self.shell.reveal_next_question = true;
                             }
-                            self.say("answered");
                         }
                         // The draft stays exactly where it was, so nothing
                         // typed is lost to a daemon that was not listening.
@@ -1426,7 +1423,7 @@ impl App {
                 Msg::Adopted(pid, result) => {
                     self.shell.adopting.remove(&pid);
                     match result {
-                        Ok(name) => self.say(format!("Connected {name}")),
+                        Ok(_) => {}
                         Err(error) => self.say(format!("Could not connect that session: {error}")),
                     }
                 }
@@ -1442,7 +1439,6 @@ impl App {
                     self.daemon_restarting = false;
                     match result {
                         Ok(()) => {
-                            self.say("The background service restarted");
                             // Ask again now, so the notice clears without
                             // waiting for a reconnect to notice.
                             self.send(Cmd::Ping);
@@ -1478,10 +1474,6 @@ impl App {
                                 value["plans"].as_array().cloned().unwrap_or_default();
                         }
                         Ok(value) => {
-                            self.say(format!(
-                                "Setup {}",
-                                value["phase"].as_str().unwrap_or("updated")
-                            ));
                             self.setup_plan = Some(value);
                             self.send(Cmd::Runtimes);
                         }
@@ -1518,7 +1510,6 @@ impl App {
                             // else would show it.
                             self.shell.attach_when_listed = Some((id, None));
                             self.send(Cmd::Agents);
-                            self.say("Agent launched");
                         }
                         Err(error) => self.shell.error = Some(error),
                     }
@@ -1531,7 +1522,6 @@ impl App {
                             self.shell.selected = Some(id.clone());
                             self.shell.attach_when_listed = Some((id, generation));
                             self.send(Cmd::Agents);
-                            self.say("Session reconnected; it continues in its pane");
                         }
                         Err(error) => self.shell.error = Some(error),
                     }
@@ -1677,10 +1667,7 @@ impl App {
                 }
                 Msg::DenyNoteSent(question, result) => match result {
                     Ok(()) => {
-                        if let Some(note) = self.shell.deny_notes.remove(&question) {
-                            let name = self.name_of(&note.agent);
-                            self.say(format!("Told {name} why"));
-                        }
+                        self.shell.deny_notes.remove(&question);
                     }
                     Err(error) => {
                         if let Some(note) = self.shell.deny_notes.get_mut(&question) {
@@ -2947,15 +2934,15 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             } => Some(Msg::Journal(project, head_seq, entries)),
             _ => None,
         },
-        Cmd::Rename(agent, name) => Some(Msg::Status(
-            match client.call(&Request::Rename { agent, name })? {
-                Response::Agent { agent } => format!("Renamed to {}", agent.spec.name),
-                Response::Error { message, .. } => {
-                    format!("Could not rename: {}", crate::client::explain(&message))
-                }
-                other => unexpected_reply(&other),
-            },
-        )),
+        // A rename that took says nothing: the name on the row changes.
+        Cmd::Rename(agent, name) => match client.call(&Request::Rename { agent, name })? {
+            Response::Agent { .. } => None,
+            Response::Error { message, .. } => Some(Msg::Status(format!(
+                "Could not rename: {}",
+                crate::client::explain(&message)
+            ))),
+            other => Some(Msg::Status(unexpected_reply(&other))),
+        },
         Cmd::Ping => match client.call(&Request::Ping)? {
             Response::Pong {
                 version,
@@ -3288,17 +3275,15 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                     })?;
                 adopted += 1;
             }
-            Some(Msg::Status(format!(
-                "Connected {adopted} session{}",
-                if adopted == 1 { "" } else { "s" }
-            )))
+            // Connected sessions move into the list: nothing to say.
+            None
         }
         Cmd::Stop(agent) => {
             client.call(&Request::Stop {
                 agent,
                 force: false,
             })?;
-            Some(Msg::Status("Stopping the session…".into()))
+            None
         }
         Cmd::ResumeProvider(agent, blocked_at) => {
             let response = client.call(&Request::ResumeProvider { agent, blocked_at })?;
@@ -3307,9 +3292,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 "Delivery could not be resumed: {}",
                 refusal(&response)
             );
-            Some(Msg::Status(
-                "Delivery resumed; previously received input will not be replayed".into(),
-            ))
+            None
         }
         Cmd::RetryController(agent) => {
             let response = client.call(&Request::RetryController { agent })?;
@@ -3318,10 +3301,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 "Message delivery could not be started again: {}",
                 refusal(&response)
             );
-            Some(Msg::Status(
-                "The receiver will be started again within a second; queued input waits for it"
-                    .into(),
-            ))
+            None
         }
         Cmd::Launch(spec) => match client.call(&Request::Run { spec: *spec })? {
             Response::Agent { agent } => Some(Msg::Launched(Ok(agent.id.to_string()))),

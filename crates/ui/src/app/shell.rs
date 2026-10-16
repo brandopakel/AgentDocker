@@ -2358,7 +2358,6 @@ impl App {
                     .collect();
                 calling.sort();
                 if calling.is_empty() {
-                    self.say("Nothing needs you");
                 } else {
                     // From the one on screen to the next, round again at
                     // the end, so pressing it again walks the whole queue.

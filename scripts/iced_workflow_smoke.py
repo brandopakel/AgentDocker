@@ -284,7 +284,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("wait_text", text="Use API v2"),
                          step("capture", name="inbox-draft"), step("click", id="connections"), step("click", id="inbox"),
                          step("wait_text", text="Use API v2"), step("click", id=f"send-answer-{question['id']}"),
-                         step("wait_text", text="answered"), *review_steps, step("click", id="projects"),
+                         step("wait_control", id=f"send-answer-{question['id']}", present=False), *review_steps, step("click", id="projects"),
                          step("click", id=f"session-{agent['id']}"), step("resize", width=720, height=540), step("wait_control", id="attach-session", present=True),
                          step("capture", name="compact-session"), step("click", id="close-session"),
                          step("wait_control", id=f"session-{agent['id']}", present=True),
@@ -329,7 +329,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          # This fake CLI is a terminal fixture, not a provider input server.
                          step("click", id="launch-more"), step("fill", id="launch-name", text="launched-from-iced"), step("capture", name="launch-dialog"),
                          step("click", id="confirm-launch"),
-                         step("wait_text", text="Agent launched"), step("click", id="project-tab-Agents"), step("click", id="attach-session"),
+                         step("wait_control", id="confirm-launch", present=False), step("click", id="project-tab-Agents"), step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="launched-terminal"), step("click", id="detach-terminal"),
                          step("click", id="stop-session"), step("wait_text", text="Confirm stop"), step("capture", name="confirm-stop"),
                          step("click", id="stop-session"),

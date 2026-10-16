@@ -1321,9 +1321,9 @@ impl App {
             content = content.push(column![tabs, rule(c)].spacing(0));
         }
         if self.shell.adding {
-            content = content.push(section(
-                "Add an existing project",
-                None,
+            // The form is its folder field and its buttons: Add project
+            // opened it and names it.
+            content = content.push(panel(
                 container(
                     column![
                         row![
@@ -2216,17 +2216,14 @@ impl App {
                             24.0,
                             c
                         ),
-                        column![
+                        // The tool; where its command lives is its tooltip.
+                        container(tip(
                             text(runtime.label.clone())
                                 .size(13)
                                 .font(weight(iced::font::Weight::Medium)),
-                            text(binary)
-                                .size(11)
-                                .font(Font::MONOSPACE)
-                                .color(c.faint)
-                                .wrapping(iced::widget::text::Wrapping::None),
-                        ]
-                        .spacing(2)
+                            binary,
+                            c
+                        ))
                         .width(Fill)
                     ]
                     .spacing(10)
@@ -2236,10 +2233,6 @@ impl App {
                     Kind::Quiet,
                     [6, 8],
                 ));
-            }
-            if self.runtimes.iter().all(|r| r.cli.is_none()) {
-                items = items
-                    .push(container(small("No tool to launch is installed.", c)).padding([6, 8]));
             }
             menu(items, c)
         });
