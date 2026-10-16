@@ -40,6 +40,7 @@ where it stands (*waiting*, *failed*, *working*). On an agent, ⌘Enter goes to
 its terminal instead, and the footer says so. Initials work (*cc* for Claude
 Code), and three or more letters in order find what nothing else did.
 **Launch agent…** in it lists the installed tools.
+Agents in a forgotten project stay out of Jump to until you add that project again.
 
 With no saved selection, the app opens on **All projects**, with sessions grouped
 under their project names. A saved project or Other sessions view is restored.
