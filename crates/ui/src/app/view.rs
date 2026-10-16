@@ -2913,22 +2913,20 @@ impl App {
             // An ended session: its messages are kept in its queue. Say how
             // many, how to get them delivered, and let the person put the
             // notice away. Nothing waiting means nothing to review.
-            if paused && !agent.status.is_live() {
-                if self.ended_with_undelivered(agent) {
-                    body = body.push(said(
-                        "ended-undelivered",
-                        format!(
-                            "This session ended {}.",
-                            undelivered_phrase(self.undelivered(agent))
-                        ),
-                        row![
-                            icon(Icon::Inbox, c.amber, 13.0),
-                            count_chip(self.undelivered(agent).unwrap_or(0), true, c)
-                        ]
-                        .spacing(4)
-                        .align_y(Center),
-                    ));
-                }
+            if paused && !agent.status.is_live() && self.ended_with_undelivered(agent) {
+                body = body.push(said(
+                    "ended-undelivered",
+                    format!(
+                        "This session ended {}.",
+                        undelivered_phrase(self.undelivered(agent))
+                    ),
+                    row![
+                        icon(Icon::Inbox, c.amber, 13.0),
+                        count_chip(self.undelivered(agent).unwrap_or(0), true, c)
+                    ]
+                    .spacing(4)
+                    .align_y(Center),
+                ));
             }
             // Every notice an ended session raises can be put away: it can
             // report no recovery, so a block or a count would otherwise stay.

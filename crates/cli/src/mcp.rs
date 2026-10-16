@@ -2956,6 +2956,12 @@ mod tests {
                 "usage",
                 "pull_task",
                 "move_task",
+                "get_task",
+                "my_tasks",
+                "update_task",
+                "comment_task",
+                "archive_task",
+                "create_tasks",
                 "create_task"
             ]
         );

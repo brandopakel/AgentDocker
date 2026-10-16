@@ -189,7 +189,6 @@ impl State {
     fn project_name(&self, project: &ProjectId) -> String {
         self.registry
             .all()
-            .into_iter()
             .filter_map(|a| a.project.as_ref())
             .find(|p| &p.id() == project)
             .map(ProjectRef::name)
@@ -471,11 +470,7 @@ impl State {
     /// it to them, moved it while they held it, or said something on it.
     /// The card goes with it as a link; nothing is sent to the person.
     fn tell_holder(&mut self, from: &str, to: &AgentId, task: &Task, text: String) {
-        if self
-            .registry
-            .get(to)
-            .is_none_or(|record| super::humans::is_human(record))
-        {
+        if self.registry.get(to).is_none_or(super::humans::is_human) {
             return;
         }
         let mut envelope = Envelope::new(

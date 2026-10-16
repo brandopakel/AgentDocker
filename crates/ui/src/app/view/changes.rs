@@ -161,38 +161,36 @@ impl App {
             // Merged: the worktree has done its work. Removing it is the
             // next step and the person's call, here where they merged it;
             // a running agent keeps its folder until it is done.
-            if review.checkout != review.target_checkout {
-                if !agent.status.is_live() {
-                    // Git deletes the branch only when it sees it merged:
-                    // with nothing left on it, it does; after a squash on
-                    // GitHub, it keeps it. The button says which before it
-                    // is pressed, as Tower's "Safe to delete" does, and
-                    // what it runs when pointed at.
-                    let keeps = !review.commits.is_empty();
-                    let removing = self.removing_worktree.as_deref() == Some(id.as_str());
-                    let worktree = review.checkout.display();
-                    section = section.push(tip(
-                        action(
-                            "remove-worktree",
-                            &if removing {
-                                "Removing…".to_owned()
-                            } else if keeps {
-                                format!("Remove worktree (keeps {branch})")
-                            } else {
-                                "Remove worktree and branch".to_owned()
-                            },
-                            (!removing && self.connected.is_ok())
-                                .then(|| Message::RemoveWorktree(id.clone())),
-                            false,
-                        ),
-                        if keeps {
-                            format!("git worktree remove {worktree}")
+            if review.checkout != review.target_checkout && !agent.status.is_live() {
+                // Git deletes the branch only when it sees it merged:
+                // with nothing left on it, it does; after a squash on
+                // GitHub, it keeps it. The button says which before it
+                // is pressed, as Tower's "Safe to delete" does, and
+                // what it runs when pointed at.
+                let keeps = !review.commits.is_empty();
+                let removing = self.removing_worktree.as_deref() == Some(id.as_str());
+                let worktree = review.checkout.display();
+                section = section.push(tip(
+                    action(
+                        "remove-worktree",
+                        &if removing {
+                            "Removing…".to_owned()
+                        } else if keeps {
+                            format!("Remove worktree (keeps {branch})")
                         } else {
-                            format!("git worktree remove {worktree} · git branch -d {branch}")
+                            "Remove worktree and branch".to_owned()
                         },
-                        c,
-                    ));
-                }
+                        (!removing && self.connected.is_ok())
+                            .then(|| Message::RemoveWorktree(id.clone())),
+                        false,
+                    ),
+                    if keeps {
+                        format!("git worktree remove {worktree}")
+                    } else {
+                        format!("git worktree remove {worktree} · git branch -d {branch}")
+                    },
+                    c,
+                ));
             }
             return Some(section.into());
         }

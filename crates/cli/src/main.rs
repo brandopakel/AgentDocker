@@ -1058,6 +1058,20 @@ enum TaskAction {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         from: Option<String>,
     },
+    /// Rewrite a comment you wrote.
+    CommentEdit {
+        comment: String,
+        body: String,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+    /// Delete a comment: yours, or any as the person. Its place in the
+    /// thread stays.
+    CommentDelete {
+        comment: String,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
     /// Take a card off the board, kept for the record.
     Archive {
         task: String,
@@ -1084,6 +1098,22 @@ enum TaskAction {
         name: String,
         #[arg(long, default_value = "classic")]
         template: String,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+    },
+    /// Rename a board, or reshape it: its lanes from a JSON file (or -
+    /// for stdin), an array of `{slug, name, category, owner, wip?}`,
+    /// and which lanes a pull takes from and into.
+    BoardUpdate {
+        board: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, value_name = "FILE")]
+        lanes: Option<PathBuf>,
+        #[arg(long, value_name = "LANE")]
+        pull_source: Option<String>,
+        #[arg(long, value_name = "LANE")]
+        pull_target: Option<String>,
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
     },
@@ -2620,6 +2650,33 @@ async fn run() -> Result<()> {
                         println!("{}", comment.id);
                     }
                 }
+                TaskAction::CommentEdit {
+                    comment,
+                    body,
+                    from,
+                } => {
+                    let request = Request::TaskCommentEdit {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        comment,
+                        body,
+                    };
+                    if let Response::Comment { comment } = client.call(&request).await? {
+                        println!("{}", comment.id);
+                    }
+                }
+                TaskAction::CommentDelete { comment, from } => {
+                    let request = Request::TaskCommentDelete {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        comment,
+                    };
+                    if let Response::Ok = client.call(&request).await? {
+                        println!("deleted");
+                    }
+                }
                 TaskAction::Archive { task, agent } => {
                     let request = Request::TaskArchive {
                         agent: sender::resolve(&client, agent)
@@ -2686,6 +2743,44 @@ async fn run() -> Result<()> {
                         project: Some(project.map_or_else(here, Ok)?),
                         name,
                         template,
+                    };
+                    if let Response::Board { board } = client.call(&request).await? {
+                        println!("{}", board.slug);
+                    }
+                }
+                TaskAction::BoardUpdate {
+                    board,
+                    name,
+                    lanes,
+                    pull_source,
+                    pull_target,
+                    project,
+                } => {
+                    let lanes = match lanes {
+                        None => None,
+                        Some(file) => {
+                            let text = if file.as_os_str() == "-" {
+                                let mut text = String::new();
+                                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                                text
+                            } else {
+                                std::fs::read_to_string(&file)
+                                    .with_context(|| format!("reading {}", file.display()))?
+                            };
+                            Some(
+                                serde_json::from_str::<Vec<agentdocker_core::Lane>>(&text)
+                                    .context("the file is a JSON array of lanes")?,
+                            )
+                        }
+                    };
+                    let request = Request::BoardUpdate {
+                        from: HUMAN.into(),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        board,
+                        name,
+                        lanes,
+                        pull_source,
+                        pull_target,
                     };
                     if let Response::Board { board } = client.call(&request).await? {
                         println!("{}", board.slug);

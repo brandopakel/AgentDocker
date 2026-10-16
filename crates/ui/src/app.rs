@@ -384,7 +384,7 @@ enum Msg {
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
     /// One card in full, or why it could not be read.
-    TaskDetail(agentdocker_core::TaskId, Result<CardDetail, String>),
+    TaskDetail(agentdocker_core::TaskId, Result<Box<CardDetail>, String>),
     /// A project's boards, or why they could not be read.
     Boards(String, Result<Vec<agentdocker_core::Board>, String>),
     Pauses(Vec<agentdocker_core::Pause>),
@@ -1305,7 +1305,7 @@ impl App {
                 Msg::TaskDetail(task, result) => {
                     if self.task_open.as_ref() == Some(&task) {
                         match result {
-                            Ok(detail) => self.card = Some(detail),
+                            Ok(detail) => self.card = Some(*detail),
                             Err(error) => self.say(error),
                         }
                     }
@@ -3281,14 +3281,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                     blockers,
                     children,
                     ..
-                }) => Ok(CardDetail {
+                }) => Ok(Box::new(CardDetail {
                     task: card,
                     board,
                     comments,
                     history,
                     blockers,
                     children,
-                }),
+                })),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
@@ -3512,8 +3512,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             let Response::Processes { processes } = client.call(&Request::Discover)? else {
                 return Ok(None);
             };
-            let mut adopted = 0;
-            for process in processes {
+            for (adopted, process) in processes.into_iter().enumerate() {
                 client
                     .call(&Request::Adopt {
                         pid: process.pid,
@@ -3526,7 +3525,6 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                             if adopted == 1 { "" } else { "s" }
                         )
                     })?;
-                adopted += 1;
             }
             // Connected sessions move into the list: nothing to say.
             None

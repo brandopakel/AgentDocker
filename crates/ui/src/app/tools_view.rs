@@ -2038,16 +2038,15 @@ impl App {
                     }
                 }
             }
-            None => match update.and_then(|u| {
-                u["installed_version"]
-                    .as_str()
-                    .or(u["running_version"].as_str())
-            }) {
-                Some(version) => {
+            None => {
+                if let Some(version) = update.and_then(|u| {
+                    u["installed_version"]
+                        .as_str()
+                        .or(u["running_version"].as_str())
+                }) {
                     rows.push(version_row(version.to_owned(), None, "Current", c.green))
                 }
-                None => {}
-            },
+            }
         }
         let mut maintenance = row![].spacing(4).align_y(Center);
         for (operation, label) in [

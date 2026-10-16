@@ -1213,11 +1213,7 @@ impl App {
                     composer(
                         format!("answer-{id}"),
                         id.to_string(),
-                        if options.is_empty() {
-                            "Your answer"
-                        } else {
-                            "Your answer"
-                        },
+                        "Your answer",
                         &answer,
                         move |text| Message::Draft(draft_id.clone(), text),
                         enabled,
