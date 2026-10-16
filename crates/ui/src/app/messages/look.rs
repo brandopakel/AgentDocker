@@ -8,7 +8,7 @@ use super::super::view::dot;
 use crate::app::Message;
 use crate::controls::{Kind, custom};
 use iced::{
-    Center, Color, Element, Fill,
+    Color, Element, Fill,
     widget::{Space, container, row, stack, text},
 };
 
@@ -89,79 +89,35 @@ pub(in crate::app) fn tinted<'a>(
     }
 }
 
-/// A list's section label: short, sentence case, quiet.
-pub(in crate::app) fn section_label<'a>(
-    label: impl Into<String>,
-    c: Colors,
-) -> Element<'a, Message> {
-    container(
-        text(label.into())
-            .size(12)
-            .font(weight(iced::font::Weight::Medium))
-            .color(c.muted),
-    )
-    .padding(iced::Padding {
-        top: 14.0,
-        right: 8.0,
-        bottom: 4.0,
-        left: 8.0,
-    })
-    .into()
-}
-
-/// A rule with a word in it: the day, centred and quiet.
+/// A bare rule where the day turns; the day is its name.
 pub(in crate::app) fn day_divider<'a>(label: String, c: Colors) -> Element<'a, Message> {
-    let line = move || container(Space::new().width(Fill).height(1)).style(move |_| c.rule());
-    container(
-        row![
-            line(),
-            text(label)
-                .size(11)
-                .font(weight(iced::font::Weight::Medium))
-                .color(c.faint),
-            line(),
-        ]
-        .spacing(12)
-        .align_y(Center),
+    super::super::view::said(
+        format!("day-{label}"),
+        label,
+        container(container(Space::new().width(Fill).height(1)).style(move |_| c.rule()))
+            .padding([10, 8]),
     )
-    .padding([10, 8])
-    .into()
 }
 
-/// Where the unread begins: `New` in the accent, then its line.
+/// Where the unread begins: a line in the accent, named New.
 pub(in crate::app) fn unread_divider<'a>(c: Colors) -> Element<'a, Message> {
     let tone = mix(c.line, c.accent, 0.55);
-    container(
-        row![
-            text("New")
-                .size(11)
-                .font(weight(iced::font::Weight::Semibold))
-                .color(c.accent),
-            container(Space::new().width(Fill).height(1)).style(move |_| c.dot(tone)),
-        ]
-        .spacing(8)
-        .align_y(Center),
+    super::super::view::said(
+        "unread-divider",
+        "New",
+        container(container(Space::new().width(Fill).height(1)).style(move |_| c.dot(tone)))
+            .padding([6, 8]),
     )
-    .padding([6, 8])
-    .into()
 }
 
-/// A rule with a quiet count at its start: `2 replies` under a thread's
-/// first message.
+/// A bare rule under a thread's first message; the count is its name.
 pub(in crate::app) fn count_divider<'a>(label: String, c: Colors) -> Element<'a, Message> {
-    container(
-        row![
-            text(label)
-                .size(11)
-                .font(weight(iced::font::Weight::Medium))
-                .color(c.faint),
-            container(Space::new().width(Fill).height(1)).style(move |_| c.rule()),
-        ]
-        .spacing(8)
-        .align_y(Center),
+    super::super::view::said(
+        "thread-replies",
+        label,
+        container(container(Space::new().width(Fill).height(1)).style(move |_| c.rule()))
+            .padding([8, 8]),
     )
-    .padding([8, 8])
-    .into()
 }
 
 /// A small glyph on a round raised disc, centred in a column `column`

@@ -30,26 +30,39 @@ pub(super) fn note<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Tex
     text(value.into()).size(13).color(c.muted)
 }
 /// The typed references beside a card, a message or a hand-off, one per
-/// row: the kind as a quiet pill, the target as text to read, and the
-/// note after it. Nothing is opened or copied from here — a path or a
-/// pull request is the reader's to open with their own tools; what the
-/// row does is say what kind of thing it is without prose.
+/// row: the kind as a faint glyph (named on the pointer), the target as
+/// text to read, and its note on the target's tooltip. Nothing is opened or
+/// copied from here — a path or a pull request is the reader's to open
+/// with their own tools.
 pub(super) fn links<'a>(links: &[agentdocker_core::Link], c: Colors) -> Element<'a, Message> {
+    use agentdocker_core::LinkKind;
     let mut rows = column![].spacing(3).width(Fill);
     for link in links {
-        let mut line = row![
-            pill(link.kind.as_str().to_owned(), c.raised, c.muted, c),
-            text(link.target.clone())
-                .size(12)
-                .color(c.accent)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-        ]
-        .spacing(6)
-        .align_y(Center);
-        if let Some(note) = &link.note {
-            line = line.push(small(note.clone(), c));
-        }
-        rows = rows.push(line);
+        let glyph = match link.kind {
+            LinkKind::Path => Icon::File,
+            LinkKind::Commit => Icon::Commit,
+            LinkKind::Pr => Icon::Code,
+            LinkKind::Url => Icon::Connections,
+            LinkKind::Task => Icon::Board,
+            LinkKind::Message => Icon::Channels,
+            LinkKind::Memory => Icon::Note,
+        };
+        let target = text(link.target.clone())
+            .size(12)
+            .color(c.accent)
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph);
+        let target: Element<'a, Message> = match &link.note {
+            Some(note) => tip(target, note.clone(), c),
+            None => target.into(),
+        };
+        rows = rows.push(
+            row![
+                tip(icon(glyph, c.faint, 12.0), link.kind.as_str().to_owned(), c),
+                target
+            ]
+            .spacing(6)
+            .align_y(Center),
+        );
     }
     rows.into()
 }
