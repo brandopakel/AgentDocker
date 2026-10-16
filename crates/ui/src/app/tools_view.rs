@@ -445,59 +445,6 @@ enum Step {
     /// The step that is next, or under way.
     Next,
     Waiting,
-    /// Taken back.
-    Undone,
-}
-
-/// A 16-point tile for a step: a tick when done, an accent dot for the
-/// one that is next, a small square while waiting, a cross when undone.
-fn step_tile<'a>(step: Step, c: Colors) -> Element<'a, Message> {
-    let tile = |content: Element<'a, Message>, tone: iced::Color| -> Element<'a, Message> {
-        container(content)
-            .center(16)
-            .style(move |_| fill_style(alpha(tone, if c.dark { 0.18 } else { 0.14 }), 5.0))
-            .into()
-    };
-    match step {
-        Step::Done => tile(icon(Icon::Check, c.green, 11.0), c.green),
-        Step::Next => tile(dot(c.accent, 6.0, c), c.accent),
-        Step::Undone => tile(icon(Icon::Close, c.faint, 10.0), c.faint),
-        Step::Waiting => container(
-            container(Space::new().width(5).height(5))
-                .style(move |_| fill_style(c.line_strong, 2.0)),
-        )
-        .center(16)
-        .into(),
-    }
-}
-
-/// One row of a step list: its tile, its words, and a quiet fact at the
-/// right in monospace.
-fn step_row<'a>(
-    step: Step,
-    label: impl Into<String>,
-    meta: Option<String>,
-    c: Colors,
-) -> Element<'a, Message> {
-    let ink = match step {
-        Step::Done => c.muted,
-        Step::Next => c.text,
-        Step::Waiting | Step::Undone => c.faint,
-    };
-    let mut line = row![
-        step_tile(step, c),
-        text(label.into())
-            .size(13)
-            .color(ink)
-            .font(if step == Step::Next { MEDIUM } else { UI })
-            .width(Fill)
-    ]
-    .spacing(10)
-    .align_y(Center);
-    if let Some(meta) = meta {
-        line = line.push(mono(meta, 11, c.faint));
-    }
-    container(line).height(28).center_y(28).into()
 }
 
 /// Words for how a tool's integration is wired, and their tone.
@@ -538,7 +485,6 @@ struct ToolState<'a> {
     supported: bool,
     unverified: bool,
     missing: bool,
-    ready: bool,
     sessions: Vec<&'a AgentRecord>,
     tone: iced::Color,
     word: String,
@@ -630,7 +576,6 @@ impl App {
             supported,
             unverified,
             missing,
-            ready,
             sessions,
             tone,
             word,
@@ -641,11 +586,16 @@ impl App {
     /// open, then one card with a row per tool.
     pub(super) fn connections(&self, c: Colors) -> Element<'_, Message> {
         let mut page = column![].spacing(16).width(Fill);
+        // Busy is a ring, a failure one line beside the alert mark.
         if self.setup_busy {
-            page = page.push(notice_line("Checking…", None, c.accent, c));
+            page = page.push(super::view::said(
+                "setup-busy",
+                "Checking…",
+                icon(Icon::Ring, c.accent, 14.0),
+            ));
         }
         if let Some(error) = &self.shell.setup_error {
-            page = page.push(alert(error.clone(), c));
+            page = page.push(super::view::error_line("setup-error", error, c));
         }
         if let Some(plan) = &self.setup_plan {
             page = page.push(self.setup_view(plan, c));
@@ -677,11 +627,7 @@ impl App {
             })
             .collect();
         if other_count > 0 {
-            let words = if self.shell.other_tools {
-                "Hide other tools".to_owned()
-            } else {
-                format!("Other supported tools ({other_count})")
-            };
+            let words = format!("Other tools ({other_count})");
             rows.push(
                 container(custom(
                     "other-tools",
@@ -726,7 +672,7 @@ impl App {
         if !self.discovered.is_empty() {
             page = page.push(action(
                 "register-all-discovered",
-                format!("Connect all {} running sessions", self.discovered.len()),
+                format!("Connect all ({})", self.discovered.len()),
                 self.connected.is_ok().then_some(Message::AdoptAll),
                 false,
             ));
@@ -747,8 +693,13 @@ impl App {
                         format!("saved-setup-{id}"),
                         format!("{phase} · {id}"),
                         row![
-                            mono(id.clone(), 12, c.text).width(Fill),
-                            status_word(phase.clone(), tone, c),
+                            mono(short_id(&id).to_owned(), 12, c.text).width(Fill),
+                            super::view::status_dot(
+                                format!("saved-setup-phase-{id}"),
+                                tone,
+                                phase.clone(),
+                                c
+                            ),
                             icon(Icon::ChevronRight, c.faint, 13.0)
                         ]
                         .spacing(12)
@@ -857,8 +808,8 @@ impl App {
             status_word(word, tone, c)
         };
         let mut facts: Vec<(String, Element<'a, Message>)> = vec![
-            ("Tools (MCP)".into(), wired(runtime.mcp)),
-            ("Live activity (hooks)".into(), wired(runtime.hooks)),
+            ("MCP".into(), wired(runtime.mcp)),
+            ("Hooks".into(), wired(runtime.hooks)),
         ];
         if runtime.name == "claude-code" {
             let (word, tone, why) = match runtime.shell {
@@ -900,36 +851,15 @@ impl App {
                     .padding(padding(4.0, 0.0, 2.0, 0.0)),
                 );
             }
-            facts.push(("Terminal launches".into(), value.into()));
+            facts.push(("Shell".into(), value.into()));
         }
-        facts.extend([
-            (
-                "Vendor".into(),
-                text(runtime.vendor.to_string()).size(13).into(),
-            ),
-            (
-                "Version".into(),
-                text(
-                    runtime
-                        .version
-                        .as_deref()
-                        .unwrap_or("Version unknown")
-                        .to_owned(),
-                )
-                .size(13)
-                .into(),
-            ),
-            (
-                "Command".into(),
-                match &runtime.cli {
-                    Some(path) => mono(tilde(path), 12, c.text).into(),
-                    None => text("No command-line tool found")
-                        .size(13)
-                        .color(c.muted)
-                        .into(),
-                },
-            ),
-        ]);
+        // What is known, and nothing about what is not.
+        if let Some(version) = &runtime.version {
+            facts.push(("Version".into(), text(version.clone()).size(13).into()));
+        }
+        if let Some(path) = &runtime.cli {
+            facts.push(("Command".into(), mono(tilde(path), 12, c.text).into()));
+        }
         for app in &runtime.apps {
             facts.push((
                 "Application".into(),
@@ -941,133 +871,100 @@ impl App {
                 "Browser".into(),
                 text(super::extension_words(extension)).size(13).into(),
             ));
-            if let Some(bridge) = &extension.bridge {
-                facts.push(("Bridge".into(), mono(tilde(bridge), 12, c.text).into()));
-            }
         }
         let mut notes: Vec<Element<'a, Message>> = Vec::new();
         if runtime.in_browser() && state.installed {
-            notes.push(Element::from(note(
-                agentdocker_core::runtime::IN_BROWSER,
-                c,
-            )));
             // The connector is what brings a browser agent here: its
             // address and pairing code are what the person needs at the
             // vendor's settings and on the consent page, and this card is
             // where they look for them.
             match &self.connector {
                 Some(serving) => {
+                    // Where to paste it is the address's tooltip.
                     facts.push((
-                        "Connector".into(),
-                        mono(serving.mcp_url(), 12, c.text).into(),
+                        "URL".into(),
+                        super::view::tip(
+                            mono(serving.mcp_url(), 12, c.text),
+                            super::add_connector_words(&runtime.name),
+                            c,
+                        ),
                     ));
                     facts.push((
-                        "Pairing code".into(),
-                        column![
-                            mono(serving.pairing_code.clone(), 13, c.text),
-                            small(
-                                "Typed on the consent page, which also asks which project the agent joins",
-                                c
-                            )
-                        ]
-                        .spacing(2)
-                        .into(),
-                    ));
-                    facts.push((
-                        "Add it".into(),
-                        text(super::add_connector_words(&runtime.name))
-                            .size(13)
-                            .into(),
+                        "Code".into(),
+                        mono(serving.pairing_code.clone(), 13, c.text).into(),
                     ));
                 }
                 None => {
-                    facts.push(("Connector".into(), status_word("Not running", c.faint, c)));
+                    facts.push((
+                        "Connector".into(),
+                        super::view::status_dot(
+                            format!("connector-off-{}", runtime.name),
+                            c.faint,
+                            "Not running",
+                            c,
+                        ),
+                    ));
                     if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
-                        notes.push(Element::from(note(
-                            "Enable a connection for Claude and ChatGPT. It starts at login and uses a public HTTPS tunnel; each browser account still needs your consent. Existing service settings are preserved.", c)));
-                        notes.push(Element::from(note(
-                            "Tailscale keeps the same address and needs Funnel enabled. Cloudflare gives a new address after each restart, so saved browser connections must be added again.", c)));
                         let busy = |tunnel| self.connector_busy == Some(tunnel);
                         notes.push(Element::from(
                             row![
-                                action(
-                                    format!("connector-tailscale-{}", runtime.name),
-                                    if busy(super::ConnectorTunnel::Tailscale) {
-                                        "Starting…"
-                                    } else {
-                                        "Enable with Tailscale"
-                                    },
-                                    self.connector_busy.is_none().then_some(
-                                        Message::ConnectorEnable(super::ConnectorTunnel::Tailscale)
+                                super::view::tip(
+                                    action(
+                                        format!("connector-tailscale-{}", runtime.name),
+                                        if busy(super::ConnectorTunnel::Tailscale) {
+                                            "Starting…"
+                                        } else {
+                                            "Tailscale"
+                                        },
+                                        self.connector_busy.is_none().then_some(
+                                            Message::ConnectorEnable(
+                                                super::ConnectorTunnel::Tailscale
+                                            )
+                                        ),
+                                        false
                                     ),
-                                    false
+                                    "Same address; needs Funnel",
+                                    c
                                 ),
-                                action(
-                                    format!("connector-cloudflare-{}", runtime.name),
-                                    if busy(super::ConnectorTunnel::Cloudflared) {
-                                        "Starting…"
-                                    } else {
-                                        "Enable with Cloudflare"
-                                    },
-                                    self.connector_busy.is_none().then_some(
-                                        Message::ConnectorEnable(
-                                            super::ConnectorTunnel::Cloudflared
-                                        )
+                                super::view::tip(
+                                    action(
+                                        format!("connector-cloudflare-{}", runtime.name),
+                                        if busy(super::ConnectorTunnel::Cloudflared) {
+                                            "Starting…"
+                                        } else {
+                                            "Cloudflare"
+                                        },
+                                        self.connector_busy.is_none().then_some(
+                                            Message::ConnectorEnable(
+                                                super::ConnectorTunnel::Cloudflared
+                                            )
+                                        ),
+                                        false
                                     ),
-                                    false
+                                    "A new address after each restart",
+                                    c
                                 ),
                             ]
                             .spacing(8)
                             .wrap(),
                         ));
-                    } else {
-                        notes.push(Element::from(note("Browser connector login services are currently available on macOS and Linux.", c)));
                     }
                     if let Some(error) = &self.connector_error {
-                        notes.push(Element::from(alert(error.clone(), c)));
+                        notes.push(super::view::error_line("connector-error", error, c));
                     }
                 }
             }
         }
         for why in &runtime.incomplete {
-            notes.push(Element::from(note(
+            notes.push(super::view::alert_mark(
+                format!("inventory-incomplete-{}", runtime.name),
                 format!("Inventory incomplete: {why}"),
                 c,
-            )));
-        }
-        if state.installed
-            && state.supported
-            && !state.missing
-            && !state.unverified
-            && !state.reporting
-        {
-            notes.push(Element::from(note(
-                "Setup is saved. Start a fresh session to load it. Approve only the \
-                 integration prompts shown by the provider.",
-                c,
-            )));
-        }
-        if !state.sessions.is_empty()
-            && !state.ready
-            && matches!(runtime.name.as_str(), "codex" | "claude-code")
-            && state.sessions.iter().any(|agent| {
-                agent.input_delivery.as_ref().is_none_or(|delivery| {
-                    Some(delivery.process_started_at) != agent.process_started_at
-                })
-            })
-        {
-            notes.push(Element::from(note(
-                if runtime.name == "claude-code" {
-                    "Hooks cannot start an idle turn. New Claude launches use Idle messages: On and require channel consent. Existing sessions need a safe reconnect; queued messages stay with their current record."
-                } else {
-                    "Hooks cannot start an idle turn. Codex sessions need their message delivery connected. New launches here use Idle messages: On."
-                },
-                c,
-            )));
+            ));
         }
         let mut details = column![kv_list(facts, c)].spacing(16).width(Fill);
         if !state.sessions.is_empty() {
-            let mut sessions = column![super::view::eyebrow("Sessions", c)].spacing(10);
+            let mut sessions = column![].spacing(10);
             let now = Utc::now();
             for agent in &state.sessions {
                 let seen = |kind| {
@@ -1076,7 +973,9 @@ impl App {
                     })
                 };
                 let contact = |name: &str, seen: bool| {
-                    status_word(
+                    super::view::status_dot(
+                        format!("contact-{name}-{}", agent.id),
+                        if seen { c.green } else { c.faint },
                         format!(
                             "{name}: {}",
                             if seen {
@@ -1085,7 +984,6 @@ impl App {
                                 "no recent contact"
                             }
                         ),
-                        if seen { c.green } else { c.faint },
                         c,
                     )
                 };
@@ -1096,7 +994,12 @@ impl App {
                             .size(13)
                             .font(MEDIUM)
                             .width(Fill),
-                        status_word(readiness, readiness_tone(readiness, c), c)
+                        super::view::status_dot(
+                            format!("tool-session-readiness-{}", agent.id),
+                            readiness_tone(readiness, c),
+                            readiness,
+                            c
+                        )
                     ]
                     .spacing(12)
                     .align_y(Center),
@@ -1198,31 +1101,21 @@ impl App {
                     field(check, "detail")
                 ));
             }
-            let ok = problems.is_empty();
-            let mut line = column![
-                row![
-                    text(label).size(14).font(MEDIUM).width(Fill),
-                    if ok {
-                        status_word("Configuration checked", c.green, c)
-                    } else {
-                        status_word("Needs attention", c.amber, c)
-                    }
-                ]
+            // Checked is a tick; a problem the alert mark, with what is
+            // wrong on the pointer and in its name.
+            let mark: Element<'_, Message> = if problems.is_empty() {
+                super::view::said(
+                    format!("health-ok-{label}"),
+                    "Configuration checked",
+                    icon(Icon::Check, c.green, 14.0),
+                )
+            } else {
+                super::view::alert_mark(format!("health-{label}"), problems.join("\n"), c)
+            };
+            let line = row![text(label).size(14).font(MEDIUM).width(Fill), mark]
                 .spacing(12)
-                .align_y(Center)
-            ]
-            .spacing(4);
-            for problem in problems {
-                line = line.push(small(problem, c));
-            }
+                .align_y(Center);
             rows.push(container(line).padding([10, 16]).width(Fill).into());
-        }
-        if rows.is_empty() {
-            rows.push(
-                container(note("No installed tool to check.", c))
-                    .padding([10, 16])
-                    .into(),
-            );
         }
         section(
             "Connection check",
@@ -1249,15 +1142,12 @@ impl App {
         let shell_plan = changes
             .iter()
             .any(|change| field(change, "channel") == "shell");
-        let title_text = match (&tool, phase.as_str()) {
-            (Some(_), "applied") if shell_plan => "Terminal launches will wake".to_owned(),
-            (Some(_), "undone") if shell_plan => "Shell change undone".to_owned(),
-            (Some(_), _) if shell_plan => "Wake terminal sessions".to_owned(),
-            (Some(tool), "applied") => format!("{tool} setup saved"),
-            (Some(tool), "undone") => format!("{tool} setup undone"),
-            (Some(tool), _) => format!("Connect {tool}"),
-            (None, "applied") => "Setup saved".to_owned(),
-            (None, _) => "Nothing to connect".to_owned(),
+        // The card is named for what it sets up; its state is the
+        // footer's dot.
+        let title_text = match &tool {
+            Some(_) if shell_plan => "Shell".to_owned(),
+            Some(tool) => tool.clone(),
+            None => "Setup".to_owned(),
         };
         let applied = phase == "applied";
         let undone = phase == "undone";
@@ -1266,44 +1156,27 @@ impl App {
         let mut files: Vec<(String, Vec<String>)> = Vec::new();
         for change in &changes {
             let what = match field(change, "channel").as_str() {
-                "mcp" => "Tools (MCP)".to_owned(),
-                "activity hooks" | "hooks" => "Live activity (hooks)".to_owned(),
-                "shell" => "Terminal launches wake (shell startup file)".to_owned(),
+                "mcp" => "MCP".to_owned(),
+                "activity hooks" | "hooks" => "Hooks".to_owned(),
+                "shell" => "Shell".to_owned(),
                 other => other.to_owned(),
             };
             let line = format!("{what}: {}", field(change, "action"));
             let path = change["path"]
                 .as_str()
                 .map(|p| tilde(std::path::Path::new(p)))
-                .unwrap_or_else(|| "unknown".to_owned());
+                .unwrap_or_default();
             match files.iter_mut().find(|(p, _)| *p == path) {
                 Some((_, lines)) => lines.push(line),
                 None => files.push((path, vec![line])),
             }
         }
-        let summary = if any {
-            format!(
-                "{} {} in {} {}",
-                changes.len(),
-                if changes.len() == 1 {
-                    "change"
-                } else {
-                    "changes"
-                },
-                files.len(),
-                if files.len() == 1 { "file" } else { "files" }
-            )
-        } else {
-            "Everything this tool needs is already in place.".to_owned()
-        };
         let header = container(
             row![
                 container(icon(Icon::File, c.muted, 16.0))
                     .center(32)
                     .style(move |_| c.tile(RADIUS_MD)),
-                column![heading(title_text, 15), small(summary, c)]
-                    .spacing(2)
-                    .width(Fill)
+                heading(title_text, 15).width(Fill)
             ]
             .spacing(12)
             .align_y(Center),
@@ -1311,92 +1184,27 @@ impl App {
         .padding([12, 15]);
         let mut body = column![].spacing(14).width(Fill);
         if any {
-            let (apply_step, load_step) = match phase.as_str() {
-                "applied" => (Step::Done, Step::Next),
-                "undone" => (Step::Undone, Step::Waiting),
-                _ => (Step::Next, Step::Waiting),
-            };
-            body = body.push(
-                column![
-                    step_row(Step::Done, "Preview what changes", None, c),
-                    step_row(
-                        apply_step,
-                        match phase.as_str() {
-                            "applied" => "Saved",
-                            "undone" => "Taken back",
-                            "applying" => "Applying…",
-                            _ => "Connect to save it",
-                        },
-                        applied.then(|| short_id(&id)),
-                        c
-                    ),
-                    step_row(
-                        load_step,
-                        if shell_plan {
-                            "Open a new terminal to load it"
-                        } else {
-                            "Start a fresh session to load it"
-                        },
-                        None,
-                        c
-                    ),
-                ]
-                .spacing(2),
-            );
             for (path, lines) in files {
                 body = body.push(diff_block(path, lines, undone, c));
             }
-        }
-        let expanded = self.shell.connection_details.as_deref() == Some("setup-plan");
-        if expanded {
-            let mut facts: Vec<(String, Element<'_, Message>)> = vec![
-                ("Plan".into(), mono(id.clone(), 12, c.text).into()),
-                ("State".into(), text(phase.clone()).size(13).into()),
-            ];
-            if let Some(executable) = plan["executable"].as_str() {
-                facts.push(("Command".into(), mono(executable, 12, c.text).into()));
-            }
-            for change in &changes {
-                facts.push((
-                    "File".into(),
-                    mono(field(change, "path"), 12, c.text).into(),
-                ));
-            }
-            let mut technical = column![kv_list(facts, c)].spacing(8);
-            for note_text in plan["notes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|s| s.as_str())
-            {
-                technical = technical.push(small(note_text, c));
-            }
-            body = body.push(technical);
         }
         let applicable = !self.setup_busy
             && matches!(phase.as_str(), "prepared" | "applying")
             && any
             && plan_id.is_some();
         let (state_word, tone) = match phase.as_str() {
-            "applied" => ("Saved", c.green),
+            "applied" if shell_plan => ("Saved; open a new terminal to load it", c.green),
+            "applied" => ("Saved; start a fresh session to load it", c.green),
             "undone" => ("Undone", c.faint),
             "applying" => ("Applying…", c.accent),
             _ if !any => ("Nothing to change", c.faint),
             _ => ("Waiting for you", c.amber),
         };
-        let mut buttons = row![
-            disclosure(
-                "setup-details",
-                expanded,
-                Some(Message::ConnectionDetails("setup-plan".into())),
-                c
-            ),
-            ghost(
-                "close-setup",
-                "Close",
-                (!self.setup_busy).then_some(Message::SetupClose),
-            )
-        ]
+        let mut buttons = row![ghost(
+            "close-setup",
+            "Close",
+            (!self.setup_busy).then_some(Message::SetupClose),
+        )]
         .spacing(4)
         .align_y(Center);
         if applied && plan_id.is_some() {
@@ -1416,7 +1224,7 @@ impl App {
         }
         let footer = container(
             row![
-                container(status_word(state_word, tone, c)).width(Fill),
+                container(super::view::status_dot("setup-state", tone, state_word, c)).width(Fill),
                 buttons
             ]
             .spacing(12)
@@ -1431,7 +1239,7 @@ impl App {
             )
         });
         let mut card = column![header, rule(c)].width(Fill);
-        if any || expanded {
+        if any {
             card = card.push(container(body).padding([14, 16]));
         }
         frame(card.push(rule(c)).push(footer), c)
@@ -2641,12 +2449,12 @@ fn stage_list<'a>(stages: Vec<(Step, &str, Option<String>)>, c: Colors) -> Eleme
         let tone = match step {
             Step::Done => c.green,
             Step::Next => c.accent,
-            Step::Waiting | Step::Undone => c.faint,
+            Step::Waiting => c.faint,
         };
         let glyph: Element<'a, Message> = match step {
             Step::Done => icon(Icon::Check, tone, 11.0),
             Step::Next => dot(tone, 6.0, c),
-            Step::Waiting | Step::Undone => Space::new().width(0).height(0).into(),
+            Step::Waiting => Space::new().width(0).height(0).into(),
         };
         let node = container(glyph)
             .center(20)
