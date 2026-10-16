@@ -244,8 +244,15 @@ to it as a message, one click each: **Ask <agent> to commit** for its own
 uncommitted work, **Ask <agent> to resolve** for conflicts (naming the files),
 and **Ask <agent> to fix checks** when its pull request's checks failed. The
 main folder's own uncommitted files and other agents' leases stay yours to sort
-out. Merging makes a merge commit in the main folder and says so (*Merged into
-main as abc1234.*), or says why not, with nothing changed; a branch that moved
+out. A merge, rebase, cherry-pick, revert or bisect you have under way in the
+main folder is the one thing the checklist says (*the main folder is in the
+middle of a rebase; finish or abort it there first*); nothing is merged, and
+your operation is left in place. Merging makes a merge commit in the main folder
+and says so (*Merged into main as abc1234.*). A refusal before execution changes
+nothing. If Git fails during execution, inspect the main folder: a rejected
+merge-commit hook can leave a pending merge to finish or abort. The app never
+automatically aborts or resets, since a concurrent operation may belong to you.
+An unreadable final operation check refuses execution. A branch that moved
 since it was read is never merged unseen. Nothing is pushed. Changes are read
 again when the session commits or its branch moves, and with **Refresh**. Once
 nothing is left to merge, the next step is right there: while the session runs
@@ -310,7 +317,7 @@ it holds (what an agent already holds, it keeps; your own actions are not
 held; only you can pause or resume, an agent asks with a message).
 **Launch agent…** opens the form. In a git project it offers **Own worktree**, on by default: the session works on a branch of its own (`agent/<name>`) in its own folder under AgentDocker's worktree directory, with the files the project's `.worktreeinclude` lists copied in; off, it works in the project folder on its current branch. Pressing the button again leaves the form open; **Cancel**
 or a press outside the dialog closes it) to choose an installed CLI and start it at the project root shown
-in the header. With Codex chosen for a folder Codex does not trust (no `trust_level = "trusted"` for the project root in Codex's `config.toml`), one line says Codex will run read-only there and ask before every change, and how to trust it; AgentDocker never trusts a folder on the person's behalf. Claude and Codex launches default to **Idle messages: On**;
+in the header. With Codex chosen and no saved trusted entry found for the project root, the form says trust is unconfirmed and directs the person to review trust and permission settings in Codex. A missing trust entry alone does not establish effective sandbox or approval policy; explicit provider configuration can override those defaults. Saved trust is read off the UI thread only for an open Codex form; results for an older form, project or tool are ignored, and unreadable paths remain unknown. Every project-selection path, including notifications while the form stays open, clears the previous notice and checks the newly selected project. AgentDocker never trusts a folder on the person's behalf. Claude and Codex launches default to **Idle messages: On**;
 turning it off visibly warns that messages may wait. Claude still requires its
 channel consent. Other tools disclose that automatic idle delivery is unavailable.
 This launch choice does not connect or restart an existing session. A launched

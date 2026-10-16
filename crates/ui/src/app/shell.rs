@@ -58,8 +58,10 @@ pub(super) struct State {
     /// Whether the launched session gets its own worktree and branch.
     pub launch_worktree: bool,
     /// The project folder Codex does not trust, when Codex is the tool
-    /// chosen: it would run read-only there and ask before every change.
+    /// chosen; this alone does not determine its sandbox or approval policy.
     pub launch_codex_untrusted: Option<std::path::PathBuf>,
+    /// Invalidates configuration reads from an earlier launch form or tool.
+    launch_codex_trust_generation: u64,
     /// The count last shown on the dock icon, so it is set only on a change.
     pub dock_badge: Option<usize>,
     pub launching: bool,
@@ -738,6 +740,8 @@ pub enum Message {
     /// what needs you, then failures, then finished work you have not seen.
     NextAttention,
     LaunchRuntime(String),
+    /// Saved project trust read off the UI thread for one launch form.
+    CodexTrustLoaded(u64, PathBuf, Option<bool>),
     LaunchPrompt(String),
     LaunchMore,
     LaunchName(String),
@@ -2221,11 +2225,6 @@ impl App {
                 // A git project starts each session on its own branch in
                 // its own worktree unless the person says otherwise.
                 self.shell.launch_worktree = self.launch_project_is_git();
-                self.shell.launch_codex_untrusted = self
-                    .shell
-                    .launch_runtime
-                    .clone()
-                    .and_then(|runtime| self.codex_untrusted(&runtime));
                 if self.shell.launch {
                     self.shell.selected = None;
                     self.shell.session_filter = super::sessions::Filter::Current;
@@ -2236,16 +2235,26 @@ impl App {
                         // it; it is opened again on arrival.
                         let task = self.update(Message::Navigate(Screen::Agents));
                         self.shell.launch = true;
-                        return task;
+                        return Task::batch([task, self.refresh_codex_trust()]);
                     }
                 }
+                tasks.push(self.refresh_codex_trust());
             }
             Message::LaunchRuntime(runtime) => {
                 // A normal launch connects the supported input adapter. The
                 // provider still asks for its own channel/tool consent.
                 self.shell.launch_channel = matches!(runtime.as_str(), "claude-code" | "codex");
-                self.shell.launch_codex_untrusted = self.codex_untrusted(&runtime);
                 self.shell.launch_runtime = Some(runtime);
+                tasks.push(self.refresh_codex_trust());
+            }
+            Message::CodexTrustLoaded(generation, root, trusted) => {
+                if self.shell.launch
+                    && self.shell.launch_runtime.as_deref() == Some("codex")
+                    && self.shell.launch_codex_trust_generation == generation
+                    && self.shell.catalog.selected.as_ref() == Some(&root)
+                {
+                    self.shell.launch_codex_untrusted = (trusted == Some(false)).then_some(root);
+                }
             }
             Message::AskAgent(id, words) => {
                 if self.connected.is_ok() {
@@ -2734,6 +2743,9 @@ impl App {
         if self.shell.catalog.selected != self.shell.checked_project {
             self.shell.checked_project = self.shell.catalog.selected.clone();
             self.shell.project_available = None;
+            if self.shell.launch && self.shell.launch_runtime.as_deref() == Some("codex") {
+                tasks.push(self.refresh_codex_trust());
+            }
             if let Some(path) = self.shell.checked_project.clone() {
                 tasks.push(Task::perform(
                     async move {
@@ -3194,17 +3206,26 @@ impl App {
             .map_err(|error| format!("Cannot reconstruct the Claude session launch: {error}"))
     }
 
-    /// Whether the project the launch form is for is a git repository:
-    /// only then can a session have a worktree of its own.
-    /// The selected project's folder when `runtime` is Codex and Codex
-    /// does not trust it. Read as the form opens or the tool is chosen,
-    /// never while drawing.
-    fn codex_untrusted(&self, runtime: &str) -> Option<std::path::PathBuf> {
-        self.shell.catalog.selected.clone().filter(|root| {
-            runtime == "codex" && agentdocker_host::codex_trust::trusted(root) == Some(false)
-        })
+    /// Refresh only the open Codex form. Late reads cannot change a newer form.
+    fn refresh_codex_trust(&mut self) -> Task<Message> {
+        self.shell.launch_codex_untrusted = None;
+        self.shell.launch_codex_trust_generation =
+            self.shell.launch_codex_trust_generation.wrapping_add(1);
+        if !self.shell.launch || self.shell.launch_runtime.as_deref() != Some("codex") {
+            return Task::none();
+        }
+        let Some(root) = self.shell.catalog.selected.clone() else {
+            return Task::none();
+        };
+        let generation = self.shell.launch_codex_trust_generation;
+        Task::perform(
+            load_codex_trust(root.clone(), agentdocker_host::codex_trust::config_path()),
+            move |trusted| Message::CodexTrustLoaded(generation, root.clone(), trusted),
+        )
     }
 
+    /// Whether the project the launch form is for is a git repository:
+    /// only then can a session have a worktree of its own.
     pub(crate) fn launch_project_is_git(&self) -> bool {
         self.shell
             .catalog
@@ -3296,6 +3317,18 @@ fn open_native_terminal(request: crate::native_terminal::Request) -> Task<Messag
         },
         Message::NativeTerminalOpened,
     )
+}
+
+/// Reading a user-selected provider profile may block, including on network storage.
+async fn load_codex_trust(root: PathBuf, config: Option<PathBuf>) -> Option<bool> {
+    let config = config?;
+    tokio::task::spawn_blocking(move || {
+        let text = std::fs::read_to_string(config).ok()?;
+        agentdocker_host::codex_trust::trusts(&text, &root)
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// The editors installed here, read off the UI thread.
@@ -4392,6 +4425,118 @@ mod tests {
         app.drain();
         assert_eq!(app.screen, Screen::Terminal);
         assert_eq!(app.shell.attach_when_listed, None);
+    }
+
+    #[tokio::test]
+    async fn the_codex_form_applies_a_private_profile_read() {
+        let temporary = tempfile::tempdir().unwrap();
+        let config = temporary.path().join("config.toml");
+        std::fs::write(&config, "model = \"test-only\"\n").unwrap();
+        let root = temporary.path().join("project");
+        let (mut app, _commands, _messages) = app();
+        app.shell.catalog.selected = Some(root.clone());
+        app.shell.launch_runtime = Some("codex".into());
+        let _ = app.update(Message::ShowLaunch);
+        assert!(app.shell.launch);
+        let generation = app.shell.launch_codex_trust_generation;
+        let trusted = load_codex_trust(root.clone(), Some(config.clone())).await;
+        assert_eq!(trusted, Some(false));
+        let _ = app.update(Message::CodexTrustLoaded(generation, root.clone(), trusted));
+        assert_eq!(app.shell.launch_codex_untrusted, Some(root.clone()));
+        std::fs::remove_file(config).unwrap();
+        let trusted = load_codex_trust(root.clone(), Some(temporary.path().join("missing"))).await;
+        assert_eq!(trusted, None);
+        let _ = app.update(Message::CodexTrustLoaded(generation, root, trusted));
+        assert_eq!(app.shell.launch_codex_untrusted, None);
+    }
+
+    #[test]
+    fn stale_codex_trust_reads_cannot_change_a_reopened_or_different_form() {
+        let (mut app, _commands, _messages) = app();
+        let root = PathBuf::from("/work/new");
+        app.shell.catalog.selected = Some(root.clone());
+        app.shell.launch_runtime = Some("codex".into());
+        let _ = app.update(Message::ShowLaunch);
+        let old = app.shell.launch_codex_trust_generation;
+        let _ = app.update(Message::ShowLaunch);
+        let _ = app.update(Message::CodexTrustLoaded(old, root.clone(), Some(false)));
+        assert_eq!(app.shell.launch_codex_untrusted, None);
+        let _ = app.update(Message::ShowLaunch);
+        let _ = app.update(Message::CodexTrustLoaded(old, root.clone(), Some(false)));
+        assert_eq!(app.shell.launch_codex_untrusted, None);
+        let current = app.shell.launch_codex_trust_generation;
+        let _ = app.update(Message::CodexTrustLoaded(
+            current,
+            root.clone(),
+            Some(false),
+        ));
+        assert_eq!(app.shell.launch_codex_untrusted, Some(root.clone()));
+        app.shell.catalog.selected = Some("/work/other".into());
+        let _ = app.update(Message::LaunchRuntime("codex".into()));
+        let _ = app.update(Message::CodexTrustLoaded(
+            current,
+            root.clone(),
+            Some(false),
+        ));
+        assert_eq!(app.shell.launch_codex_untrusted, None);
+        let _ = app.update(Message::LaunchRuntime("claude-code".into()));
+        let _ = app.update(Message::CodexTrustLoaded(current, root, Some(false)));
+        assert_eq!(app.shell.launch_codex_untrusted, None);
+    }
+
+    #[test]
+    fn a_notification_refreshes_trust_for_the_open_codex_form() {
+        for completed_read in [false, true] {
+            let (mut app, _commands, _messages, home, mut action) = notification_app();
+            let previous = home.path().join("previous");
+            let selected = home.path().join("selected");
+            std::fs::create_dir(&previous).unwrap();
+            std::fs::create_dir(&selected).unwrap();
+            let project = crate::catalog::resolve(&selected).unwrap();
+            app.shell.catalog.remember(project.clone(), false);
+            action.target.project = Some(project.id());
+            app.questions.push(Question {
+                presentation: None,
+                id: action.target.message.clone(),
+                from: action.target.agent.to_string(),
+                to: agentdocker_core::Destination::Agent("user".into()),
+                text: "which option?".into(),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+            });
+            app.shell.catalog.selected = Some(previous.clone());
+            app.shell.checked_project = Some(previous.clone());
+            app.shell.launch_runtime = Some("codex".into());
+            let _ = app.update(Message::ShowLaunch);
+            let old = app.shell.launch_codex_trust_generation;
+            if completed_read {
+                let _ = app.update(Message::CodexTrustLoaded(
+                    old,
+                    previous.clone(),
+                    Some(false),
+                ));
+                assert_eq!(app.shell.launch_codex_untrusted, Some(previous.clone()));
+            }
+            let _ = app.update(Message::Notification(
+                crate::notification_route::Activation::Open(action),
+            ));
+            assert!(app.shell.launch);
+            assert_eq!(app.shell.catalog.selected, Some(project.root.clone()));
+            let current = app.shell.launch_codex_trust_generation;
+            assert_ne!(
+                old, current,
+                "a notification must request the new project's trust"
+            );
+            assert_eq!(app.shell.launch_codex_untrusted, None);
+            let _ = app.update(Message::CodexTrustLoaded(old, previous, Some(false)));
+            assert_eq!(app.shell.launch_codex_untrusted, None);
+            let _ = app.update(Message::CodexTrustLoaded(
+                current,
+                project.root.clone(),
+                Some(false),
+            ));
+            assert_eq!(app.shell.launch_codex_untrusted, Some(project.root));
+        }
     }
 
     #[test]

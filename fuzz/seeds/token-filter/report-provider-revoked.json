@@ -1,0 +1,1 @@
+{"request":{"op":"report_provider","agent":"fixture-owner","process_started_at":"2026-10-16T00:00:00Z","observed_at":"2026-10-16T00:00:00Z","report":{"state":"recovered","blocked_at":"2026-10-16T00:00:00Z"}},"revoked":true}

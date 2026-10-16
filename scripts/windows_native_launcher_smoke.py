@@ -43,6 +43,18 @@ def canonical_reopen(descriptor, generation, ledger, agent, thread, receipts):
             and ledger.get('attempt') is None and ledger.get('completed') == receipts)
 
 
+def unique_process_generations(processes):
+    """Observe a descendant/controller generation once, retaining reused PIDs."""
+    seen = set()
+    unique = []
+    for process in processes:
+        identity = (process.pid, process.create_time())
+        if identity not in seen:
+            seen.add(identity)
+            unique.append(process)
+    return unique
+
+
 def process_snapshot(processes, process_api):
     """Observe every birth-pinned participant, retaining exits and uncertainty.
 
@@ -67,6 +79,22 @@ def process_snapshot(processes, process_api):
             row.update(running=None, observation_error=type(error).__name__)
         rows.append(row)
     return rows
+
+
+def participants_alive(snapshot, required):
+    """Require each persistent role's exact generation, not every transient child.
+
+    All observed descendants remain in the separate retirement list. An absent,
+    reused, duplicated or unreadable required identity cannot pass this guard.
+    """
+    if not required:
+        return False
+    for identity in required.values():
+        matches = [row for row in snapshot if row['pid'] == identity['pid']]
+        if (len(matches) != 1 or matches[0].get('birth') != identity['birth']
+                or matches[0].get('running') is not True):
+            return False
+    return True
 
 
 # pywinpty closes ConPTY when its root process exits. Keep a separate console
@@ -381,7 +409,10 @@ def main():
             previous_records = set((receiver.home / 'codex-native').glob('*/server.json'))
             output.clear(); closing.clear()
             pid_file, release_file = root / (probe_key + '.pid'), root / ('release-' + probe_key)
-            terminal = PtyProcess.spawn([sys.executable, '-c', CONSOLE_HOST, str(pid_file), str(release_file),
+            # A Windows venv python.exe redirects through another process.
+            # Use the actual interpreter for this stdlib-only console owner,
+            # retaining the strict direct-parent assertion below.
+            terminal = PtyProcess.spawn([sys._base_executable, '-c', CONSOLE_HOST, str(pid_file), str(release_file),
                         str(receiver.cli), '--socket', receiver.socket, 'codex-native',
                         '--program', str(codex), '--profile', str(profile), '--cwd', str(repo),
                         '--name', 'native-auto-' + probe_key, '--resume', thread],
@@ -409,21 +440,34 @@ def main():
             receiver.owned.append(controller)
             # The daemon may own the resumed receiver, so include it explicitly.
             watched = [*descendants, controller]
+            native_process = psutil.Process(descriptor['provider']['process']['pid'])
+            server_process = psutil.Process(descriptor['server']['pid'])
+            owner_process = psutil.Process(native_process.ppid())
+            assert owner_process.ppid() == launcher.pid
+            assert Path(owner_process.exe()).resolve() == receiver.cli.resolve()
+            assert server_process.ppid() == owner_process.pid
+            assert all(any(p == participant for p in descendants)
+                       for participant in [owner_process, native_process, server_process])
+            for process, identity in [(native_process, descriptor['provider']['process']),
+                                      (server_process, descriptor['server'])]:
+                assert normalized_birth(process_birth(process.pid)) == normalized_birth(identity['started_at'])
+            persistent = {'frontend': launcher, 'owner': owner_process,
+                          'native_provider': native_process, 'app_server': server_process,
+                          'controller': controller, 'console_host': console_host}
+            required = {role: {'pid': process.pid, 'birth': process.create_time()}
+                        for role, process in persistent.items()}
             target_process = launcher
             if target == 'owner':
-                native_process = psutil.Process(descriptor['provider']['process']['pid'])
-                target_process = psutil.Process(native_process.ppid())
-                assert target_process.ppid() == launcher.pid
-                assert Path(target_process.exe()).resolve() == receiver.cli.resolve()
-                assert psutil.Process(descriptor['server']['pid']).ppid() == target_process.pid
-                assert any(p == target_process for p in descendants)
+                target_process = owner_process
                 watched.append(launcher)
             if target == 'console':
                 watched.extend([launcher, console_host])
+            watched = unique_process_generations(watched)
             requests_before_exit = len(report['requests'])
             report[probe_key] = {'pid': launcher.pid, 'birth': launcher.create_time(),
                                        'target': {'pid': target_process.pid, 'birth': target_process.create_time()},
                                        'watched': [{'pid': p.pid, 'birth': p.create_time()} for p in watched],
+                                       'required_participants': required,
                                        'descriptor': descriptor, 'binding': generation,
                                        'console_host': {'pid': console_host.pid, 'birth': console_host.create_time(),
                                                         'script_sha256': hashlib.sha256(CONSOLE_HOST.encode()).hexdigest()}}
@@ -434,10 +478,13 @@ def main():
                 # winpty-rs1.0.6 Drop calls ClosePseudoConsole. Stop the read
                 # workers first so they cannot retain the console owner.
                 report[probe_key]['before_read_worker_stop'] = process_snapshot(watched, psutil)
+                assert participants_alive(report[probe_key]['before_read_worker_stop'], required), \
+                    'a required participant is not verified live before reader stop; see process snapshots'
                 close_console()
                 report[probe_key]['after_read_worker_stop'] = process_snapshot(watched, psutil)
-                assert all(p.is_running() for p in watched), \
-                    'a watched process ended before ConPTY release; see process snapshots'
+                assert participants_alive(report[probe_key]['after_read_worker_stop'], required), \
+                    'a required participant ended or became unverified before ConPTY release; see process snapshots'
+                assert all(p.is_running() for p in persistent.values()), 'a required participant ended immediately before ConPTY release'
                 references = sys.getrefcount(terminal.pty)
                 assert references == 2, 'an extra Python reference retains ConPTY'
                 report[probe_key]['trigger'] = 'drop_final_conpty_owner'
