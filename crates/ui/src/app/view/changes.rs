@@ -112,11 +112,7 @@ impl App {
             text(if review.commits.is_empty() || merged_upstream.is_some() {
                 format!("{branch} → {target}")
             } else {
-                format!(
-                    "{branch} → {target} · {} · {} · +{added} −{removed}",
-                    plural(review.commits.len(), "commit"),
-                    plural(review.files.len(), "file"),
-                )
+                format!("{branch} → {target}  +{added} −{removed}")
             })
             .size(13)
             .color(c.text),
@@ -152,59 +148,44 @@ impl App {
             if let Some(outcome) = outcome {
                 section = section.push(outcome);
             }
-            section = section.push(small(
-                match merged_upstream {
-                    Some(number) => format!("Merged on GitHub as #{number}."),
-                    None => format!("Nothing on {branch} that {target} does not have."),
-                },
-                c,
-            ));
+            section = section.push(match merged_upstream {
+                Some(number) => status_word(format!("Merged #{number}"), c.green, c),
+                None => status_word("Up to date", c.green, c),
+            });
             // Merged: the worktree has done its work. Removing it is the
             // next step and the person's call, here where they merged it;
             // a running agent keeps its folder until it is done.
             if review.checkout != review.target_checkout {
-                if agent.status.is_live() {
-                    section = section.push(small(
-                        format!(
-                            "Its worktree stays while {} runs; remove it here once it is done.",
-                            self.display_name(agent)
-                        ),
-                        c,
-                    ));
-                } else {
+                if !agent.status.is_live() {
                     // Git deletes the branch only when it sees it merged:
                     // with nothing left on it, it does; after a squash on
                     // GitHub, it keeps it. The button says which before it
-                    // is pressed, as Tower's "Safe to delete" does.
+                    // is pressed, as Tower's "Safe to delete" does, and
+                    // what it runs when pointed at.
                     let keeps = !review.commits.is_empty();
                     let removing = self.removing_worktree.as_deref() == Some(id.as_str());
-                    section = section.push(action(
-                        "remove-worktree",
-                        &if removing {
-                            "Removing…".to_owned()
-                        } else if keeps {
-                            format!("Remove worktree (keeps {branch})")
-                        } else {
-                            "Remove worktree and branch".to_owned()
-                        },
-                        (!removing && self.connected.is_ok())
-                            .then(|| Message::RemoveWorktree(id.clone())),
-                        false,
-                    ));
-                    // What it runs, as Merge says what it runs.
                     let worktree = review.checkout.display();
-                    section = section.push(
-                        text(if keeps {
-                            format!(
-                                "git worktree remove {worktree} · git keeps {branch}: it does not see the squash as merged"
-                            )
+                    section = section.push(tip(
+                        action(
+                            "remove-worktree",
+                            &if removing {
+                                "Removing…".to_owned()
+                            } else if keeps {
+                                format!("Remove worktree (keeps {branch})")
+                            } else {
+                                "Remove worktree and branch".to_owned()
+                            },
+                            (!removing && self.connected.is_ok())
+                                .then(|| Message::RemoveWorktree(id.clone())),
+                            false,
+                        ),
+                        if keeps {
+                            format!("git worktree remove {worktree}")
                         } else {
                             format!("git worktree remove {worktree} · git branch -d {branch}")
-                        })
-                        .size(11.5)
-                        .font(Font::MONOSPACE)
-                        .color(c.faint),
-                    );
+                        },
+                        c,
+                    ));
                 }
             }
             return Some(section.into());
@@ -547,12 +528,12 @@ mod tests {
         );
         let after = seen(app.changes_section(&agent, c).expect("changes"));
         assert!(after.control("merge-branch").is_none());
-        assert!(after.reads("Merged on GitHub as #340."));
+        assert!(after.reads("Merged #340"));
         // Git does not see a squash as merged: the button says the branch
-        // stays, and the line under it says what runs.
+        // stays; what it runs is its tooltip, not a line under it.
         let remove = after.control("remove-worktree").expect("remove");
         assert_eq!(remove.1, "Remove worktree (keeps claude/feature)");
-        assert!(after.reads("git worktree remove /fixture/alpha-wt/feature"));
+        assert!(!after.reads("git worktree remove"));
 
         // With nothing left on the branch, git deletes it too; once it
         // has, the outcome says how to bring it back.
@@ -565,7 +546,6 @@ mod tests {
             clean.control("remove-worktree").expect("remove").1,
             "Remove worktree and branch"
         );
-        assert!(clean.reads("git branch -d claude/feature"));
         let _ = app.update(Message::RemoveWorktree(agent.id.to_string()));
         _messages
             .send(crate::app::Msg::WorktreeRemoved(
