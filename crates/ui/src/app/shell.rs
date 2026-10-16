@@ -3011,9 +3011,6 @@ impl App {
         Task::batch(tasks)
     }
 
-    /// What waits on the person in every project: open questions, and
-    /// sessions stopped at a prompt in their own terminal. The rows Needs
-    /// you holds when it shows them all.
     /// The agents whose notice stopped being true, forgotten as noticed:
     /// no open question from them, nothing finished the person has not
     /// looked at, and not stopped at a prompt. An agent with an open
@@ -3043,6 +3040,9 @@ impl App {
         stale
     }
 
+    /// What waits on the person in every project: open questions, and
+    /// sessions stopped at a prompt in their own terminal. The rows Needs
+    /// you holds when it shows them all.
     pub(crate) fn waiting_on_you(&self) -> usize {
         let now = Utc::now();
         self.questions.iter().filter(|q| !q.expired(now)).count()
