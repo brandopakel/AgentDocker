@@ -555,14 +555,7 @@ impl App {
             Status::Passed => content = content.push(icon(Icon::Check, c.green, 11.0)),
             Status::Running => content = content.push(dot(c.amber, 6.0, c)),
             Status::Failed => content = content.push(icon(Icon::Close, c.red, 10.0)),
-            Status::Merged => {
-                content = content.push(
-                    text("merged")
-                        .size(12)
-                        .line_height(iced::Pixels(16.0))
-                        .color(c.muted),
-                )
-            }
+            Status::Merged => content = content.push(icon(Icon::LaneDone, c.muted, 11.0)),
         }
         Some(custom(
             format!("pull-request-{}", agent.id),
@@ -707,38 +700,6 @@ pub(super) fn quiet_scroll(
         };
     }
     style
-}
-
-/// How long since `then`, coarsely: "now", "3m", "1h 12m", "2d". Rows
-/// refresh on the clock sweep; seconds would only make them twitch.
-/// Ended sessions, newest first, under the day they ended: Today,
-/// Yesterday, This week, then Older. Empty days are left out; the order
-/// within a day is kept.
-pub(super) fn by_day<'a>(
-    records: &[&'a AgentRecord],
-    now: chrono::DateTime<chrono::Local>,
-) -> Vec<(&'static str, Vec<&'a AgentRecord>)> {
-    let today = now.date_naive();
-    let mut days: Vec<(&'static str, Vec<&'a AgentRecord>)> = Vec::new();
-    for record in records {
-        let ended = record
-            .finished_at
-            .unwrap_or(record.last_seen)
-            .with_timezone(&chrono::Local)
-            .date_naive();
-        let age = (today - ended).num_days();
-        let day = match age {
-            ..=0 => "Today",
-            1 => "Yesterday",
-            2..=6 => "This week",
-            _ => "Older",
-        };
-        match days.iter_mut().find(|(label, _)| *label == day) {
-            Some((_, rows)) => rows.push(record),
-            None => days.push((day, vec![record])),
-        }
-    }
-    days
 }
 
 /// A card with a header strip: what it holds on the left, an optional
@@ -2423,7 +2384,7 @@ impl App {
         );
         let search = input(
             "session-search",
-            "Find a session…",
+            "Search",
             &self.shell.search,
             Message::Search,
         );
@@ -2440,49 +2401,22 @@ impl App {
                     .align_y(Center),
             );
         }
-        // What the sessions on view used over the last day, when collection
-        // is on: one quiet line, and the way to the Usage screen.
-        let used: Vec<_> = current
-            .iter()
-            .filter_map(|a| self.agent_tokens.get(a.id.as_str()))
-            .collect();
-        if filter == Filter::Current && !used.is_empty() {
-            let total = agentdocker_core::usage::report::Tokens {
-                sum: used.iter().map(|t| t.sum).fold(0, u64::saturating_add),
-                partial: used.iter().any(|t| t.partial),
-            };
-            let label = format!("{} tokens in the last 24h", total.label());
-            panel_col = panel_col.push(custom(
-                "sessions-tokens",
-                format!("{label}. Open Usage"),
-                row![
-                    text(label).size(12).color(c.muted),
-                    text("Usage ›").size(12).color(c.accent_ink)
-                ]
-                .spacing(8)
-                .align_y(Center),
-                Some(Message::Navigate(Screen::Usage)),
-                false,
-                Kind::Quiet,
-                [4, 6],
-            ));
-        }
         if let Some(strip) = self.needs_you(c) {
             panel_col = panel_col.push(strip);
         }
         if self.shell.project_available == Some(false) {
             panel_col = panel_col.push(attention(
-                column![
-                    heading("Project folder unavailable", 16),
-                    note("Restore the folder or choose another project.", c),
+                row![
+                    alert_mark("project-folder-missing", "Project folder unavailable", c),
                     action(
                         "retry-project-folder",
-                        "Check folder again",
+                        "Check again",
                         Some(Message::RetryProject),
                         false
                     )
                 ]
-                .spacing(10),
+                .spacing(8)
+                .align_y(Center),
                 c.amber,
                 c,
             ));
@@ -2518,19 +2452,13 @@ impl App {
                         ),
                     }),
                     label,
-                    Some(
-                        text(
-                            process
-                                .cwd
-                                .as_ref()
-                                .map(|cwd| shorten_home(cwd))
-                                .unwrap_or_else(|| "folder unknown".to_owned()),
-                        )
-                        .size(12)
-                        .font(Font::MONOSPACE)
-                        .color(c.faint)
-                        .into(),
-                    ),
+                    process.cwd.as_ref().map(|cwd| {
+                        text(shorten_home(cwd))
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .color(c.faint)
+                            .into()
+                    }),
                     Some(action(
                         format!("adopt-{}", process.pid),
                         if self.shell.adopting.contains(&process.pid) {
@@ -2544,12 +2472,7 @@ impl App {
                     )),
                 ));
             }
-            panel_col = panel_col.push(section(
-                "Running here, not connected",
-                None,
-                rows_list(rows, c),
-                c,
-            ));
+            panel_col = panel_col.push(section("Not connected", None, rows_list(rows, c), c));
         }
         // A search can match only the Earlier group, which opens below.
         // Those results must not be paired with a "No matching sessions" card.
@@ -2624,12 +2547,7 @@ impl App {
                 // from last week is a click away, not on every screen.
                 let page: Vec<&AgentRecord> = earlier.iter().copied().take(shown).collect();
                 let older = earlier.len().saturating_sub(page.len());
-                // By the day they ended, as a person remembers them.
-                for (day, rows) in by_day(&page, chrono::Local::now()) {
-                    group = group
-                        .push(container(eyebrow(day, c)).padding([4, 4]))
-                        .push(self.session_rows(&rows, c));
-                }
+                group = group.push(self.session_rows(&page, c));
                 if older > 0 {
                     group = group.push(ghost(
                         "sessions-earlier-more",
@@ -2820,33 +2738,34 @@ impl App {
         let name = self.display_name(agent);
         let header = row![
             agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 32.0, c),
-            column![
+            // The name and the row's standing glyph, so the panel and the
+            // list never disagree; what it is doing, its tool and where it
+            // runs are the glyph's tooltip and name.
+            row![
                 heading(name.clone(), 15).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                row![
-                    // The row's tone, so the panel and the list never disagree.
-                    status_word(
+                {
+                    let mut words = vec![
                         self.activity_label(agent),
-                        standing_tone(self.standing(agent), c),
-                        c
-                    ),
-                    text(format!("· {}", super::runtime_label(&agent.spec.runtime)))
-                        .size(12)
-                        .color(c.muted),
-                    // Where it is: the identity a person can go and find.
-                    text(
-                        Self::whereabouts(agent)
-                            .filter(|_| agent.status.is_live())
-                            .map(|place| format!("· {place}"))
-                            .unwrap_or_default()
+                        super::runtime_label(&agent.spec.runtime),
+                    ];
+                    if let Some(place) = Self::whereabouts(agent).filter(|_| agent.status.is_live())
+                    {
+                        words.push(place);
+                    }
+                    let words = words.join(" · ");
+                    tip(
+                        said(
+                            "inspector-standing",
+                            words.clone(),
+                            standing_glyph(self.standing(agent), c),
+                        ),
+                        words,
+                        c,
                     )
-                    .size(12)
-                    .color(c.muted),
-                ]
-                .spacing(6)
-                .align_y(Center)
-                .wrap()
+                },
             ]
-            .spacing(4)
+            .spacing(6)
+            .align_y(Center)
             .width(Fill),
             custom_sized(
                 "close-session",
@@ -2865,99 +2784,128 @@ impl App {
         let delivery = agent.input_delivery.as_ref();
         let paused = delivery.is_some_and(|d| d.paused_for(agent.process_started_at));
         if agent.spec.runtime != "human" {
-            let queue = self.queued_inputs.get(&id).map(|count| {
-                if *count == 0 {
-                    "No queued messages".to_owned()
-                } else {
-                    format!("{count} queued")
-                }
-            });
-            let mut status = Vec::new();
+            // How messages reach it: its readiness as a dot, what waits for
+            // it as a count; the words are the marks' tooltips and names.
+            let mut words = Vec::new();
             if self.connected.is_err() {
-                status.push("Last known".to_owned());
+                words.push("Last known".to_owned());
             }
-            if paused && agent.status.is_live() {
-                status.push("Not receiving messages".to_owned());
+            let readiness = if paused && agent.status.is_live() {
+                Some("Not receiving messages")
             } else if agent.status.is_live() {
-                status.push(self.input_readiness(agent).to_owned());
-            }
-            if let Some(queue) = queue {
-                status.push(queue);
+                Some(self.input_readiness(agent))
+            } else {
+                None
+            };
+            if let Some(readiness) = readiness {
+                words.push(readiness.to_owned());
             }
             if let Some(received_at) = delivery.and_then(|d| d.received_at) {
-                status.push(format!(
+                words.push(format!(
                     "Last took a message {}",
                     ago(Utc::now(), received_at)
                 ));
             }
-            if !status.is_empty() {
-                body = body.push(small(status.join(" · "), c));
-            }
-            if let Some((source, state)) = agentdocker_core::provider_block(agent, &self.agents) {
-                let issue = state.issue.as_ref().expect("blocked");
-                if let Some(reset) = issue.reset_at {
-                    body = body.push(small(
-                        format!(
-                            "{} {}.",
-                            issue.kind.label(),
-                            reset_words(Utc::now(), reset, &chrono::Local)
-                        ),
-                        c,
-                    ));
-                }
-                body = body.push(small(
-                    "Messages are kept. Resume after the provider is available.",
+            let mut marks = row![].spacing(6).align_y(Center);
+            if !words.is_empty() {
+                marks = marks.push(status_dot(
+                    "inspector-readiness",
+                    readiness.map_or(c.faint, |r| super::tools_view::readiness_tone(r, c)),
+                    words.join(" · "),
                     c,
                 ));
-                body = body.push(action(
-                    "resume-provider",
-                    "Resume delivery",
-                    self.connected
-                        .is_ok()
-                        .then(|| Message::ResumeProvider(source.id.to_string(), state.observed_at)),
-                    false,
+            }
+            if let Some(count) = self.queued_inputs.get(&id).filter(|n| **n > 0) {
+                marks = marks.push(said(
+                    "inspector-queued",
+                    format!("{count} queued"),
+                    row![
+                        icon(Icon::Inbox, c.muted, 13.0),
+                        count_chip(*count, false, c)
+                    ]
+                    .spacing(4)
+                    .align_y(Center),
                 ));
+            }
+            body = body.push(marks);
+            if let Some((source, state)) = agentdocker_core::provider_block(agent, &self.agents) {
+                let issue = state.issue.as_ref().expect("blocked");
+                // The limit is the hourglass, when it resets its tooltip.
+                let words = match issue.reset_at {
+                    Some(reset) => format!(
+                        "{} {}",
+                        issue.kind.label(),
+                        reset_words(Utc::now(), reset, &chrono::Local)
+                    ),
+                    None => issue.kind.label().to_owned(),
+                };
+                body = body.push(
+                    row![
+                        tip(
+                            said(
+                                "provider-limit",
+                                words.clone(),
+                                container(icon(Icon::Hourglass, c.amber, 14.0)).padding(3)
+                            ),
+                            words,
+                            c
+                        ),
+                        action(
+                            "resume-provider",
+                            "Resume delivery",
+                            self.connected.is_ok().then(|| {
+                                Message::ResumeProvider(source.id.to_string(), state.observed_at)
+                            }),
+                            false,
+                        )
+                    ]
+                    .spacing(6)
+                    .align_y(Center),
+                );
             }
             // The daemon gave up starting the bound receiver: the one repair a
             // person can make from here, and the only control that makes one.
             if let Some(binding) = agent.input_binding.as_ref().filter(|b| b.restart.exhausted) {
-                body = body.push(small(
-                    format!(
-                        "Message delivery could not be restarted after {} tries. Its messages are kept.",
-                        binding.restart.attempts
-                    ),
-                    c,
-                ));
-                body = body.push(action(
-                    "retry-receiver",
-                    "Restart message delivery",
-                    self.connected
-                        .is_ok()
-                        .then(|| Message::RetryController(agent.id.to_string())),
-                    false,
-                ));
+                body = body.push(
+                    row![
+                        alert_mark(
+                            "receiver-exhausted",
+                            format!(
+                                "Delivery restart failed after {} tries; its messages are kept",
+                                binding.restart.attempts
+                            ),
+                            c
+                        ),
+                        action(
+                            "retry-receiver",
+                            "Restart delivery",
+                            self.connected
+                                .is_ok()
+                                .then(|| Message::RetryController(agent.id.to_string())),
+                            false,
+                        )
+                    ]
+                    .spacing(6)
+                    .align_y(Center),
+                );
             }
             // An ended session: its messages are kept in its queue. Say how
             // many, how to get them delivered, and let the person put the
             // notice away. Nothing waiting means nothing to review.
             if paused && !agent.status.is_live() {
                 if self.ended_with_undelivered(agent) {
-                    body = body.push(
-                        text(format!(
+                    body = body.push(said(
+                        "ended-undelivered",
+                        format!(
                             "This session ended {}.",
                             undelivered_phrase(self.undelivered(agent))
-                        ))
-                        .size(13)
-                        .color(c.amber),
-                    );
-                    body = body.push(note(
-                        "They are kept. Resume the conversation from its project folder and they are delivered to it; nothing is sent anywhere else.",
-                        c,
-                    ));
-                } else {
-                    body = body.push(small(
-                        "Session ended. Nothing is waiting to be delivered.",
-                        c,
+                        ),
+                        row![
+                            icon(Icon::Inbox, c.amber, 13.0),
+                            count_chip(self.undelivered(agent).unwrap_or(0), true, c)
+                        ]
+                        .spacing(4)
+                        .align_y(Center),
                     ));
                 }
             }
@@ -2985,35 +2933,28 @@ impl App {
                     self.connected.is_ok().then_some(Message::ReviewDelivery),
                     false,
                 ));
-                if self.connected.is_err() {
-                    body = body.push(small("Reconnect to the daemon to read the session log.", c));
-                }
                 if self.shell.review_delivery {
                     if let Some(reason) = delivery.and_then(|d| d.pause_reason.as_deref()) {
-                        body = body.push(text(plain_pause_reason(reason)).size(13).color(c.amber));
+                        body =
+                            body.push(alert_mark("delivery-paused", plain_pause_reason(reason), c));
                     }
-                    body = body.push(note("Messages to this session are kept, not lost. Check the log below before restarting it or sending again.", c));
                     if let Some((log_agent, result)) = &self.session_log
                         && log_agent == &id
                     {
                         match result {
                             Err(error) => {
-                                body = body.push(
-                                    text(format!("Could not read the session log: {error}"))
-                                        .size(13)
-                                        .color(c.amber),
-                                );
+                                body = body.push(error_line(
+                                    "session-log-error",
+                                    &format!("Could not read the session log: {error}"),
+                                    c,
+                                ));
                             }
-                            Ok(log) if log.is_empty() => {
-                                body = body.push(small("The session log is empty.", c));
-                            }
+                            Ok(log) if log.is_empty() => {}
                             Ok(log) => {
                                 body =
                                     body.push(scrollable(text(log.as_str()).size(12)).height(120));
                             }
                         }
-                    } else {
-                        body = body.push(small("Loading session log…", c));
                     }
                 }
             }
@@ -3087,7 +3028,7 @@ impl App {
                 .push(composer(
                     "session-message-text",
                     target.clone(),
-                    "Message this agent…",
+                    "Message",
                     value,
                     move |text| Message::SessionDraft(target.clone(), text),
                     true,
@@ -3125,7 +3066,7 @@ impl App {
                 body = body.push(notice);
             }
             if let Some(error) = draft.and_then(|draft| draft.error.as_deref()) {
-                body = body.push(text(error).size(13).color(c.amber));
+                body = body.push(error_line("session-message-error", error, c));
             } else if entry.is_some_and(|entry| entry.queued.is_some()) {
                 let received = entry
                     .and_then(|entry| entry.queued.as_ref())
@@ -3134,12 +3075,23 @@ impl App {
                             .and_then(|d| d.received.as_ref())
                             .is_some_and(|input| input.messages.contains(id))
                     });
-                body = body.push(small(
-                    if received {
-                        "Received by agent"
-                    } else {
-                        "Message saved to queue"
-                    },
+                // Taken is a tick, waiting a clock; the words are their names.
+                body = body.push(tip(
+                    said(
+                        "session-message-queued",
+                        if received {
+                            "Received by agent"
+                        } else {
+                            "Message saved to queue"
+                        },
+                        container(if received {
+                            icon(Icon::Check, c.green, 14.0)
+                        } else {
+                            icon(Icon::Clock, c.muted, 14.0)
+                        })
+                        .padding(3),
+                    ),
+                    if received { "Received" } else { "Queued" },
                     c,
                 ));
             }
@@ -3154,7 +3106,7 @@ impl App {
                         column![
                             crate::controls::input_submitting(
                                 "rename-session",
-                                "A name for this session",
+                                "Name",
                                 draft,
                                 Message::RenameDraft,
                                 true,
@@ -3164,7 +3116,7 @@ impl App {
                             row![
                                 action(
                                     "rename-save",
-                                    "Save name",
+                                    "Save",
                                     (self.connected.is_ok() && valid.is_ok())
                                         .then_some(Message::SubmitRename),
                                     false,
@@ -3178,7 +3130,7 @@ impl App {
                     if let Err(reason) = valid
                         && !draft.is_empty()
                     {
-                        body = body.push(small(reason, c));
+                        body = body.push(alert_mark("rename-invalid", reason, c));
                     }
                 }
                 _ => {}
@@ -3271,14 +3223,7 @@ impl App {
                     crate::controls::custom_sized(
                         "copy-session-id",
                         "Copy session ID",
-                        row![
-                            icon(Icon::Copy, c.muted, 12.0),
-                            text("Copy")
-                                .size(12)
-                                .font(weight(iced::font::Weight::Medium))
-                        ]
-                        .spacing(5)
-                        .align_y(Center),
+                        icon(Icon::Copy, c.muted, 12.0),
                         Some(Message::CopyGuidance(agent.id.to_string())),
                         false,
                         Kind::Ghost,
@@ -3349,12 +3294,8 @@ impl App {
                     .spacing(8)
                     .align_y(Center);
                     if let Some(why) = blocker {
-                        reconnect = reconnect.push(small(why, c));
-                    } else {
-                        reconnect = reconnect.push(small(
-                            "Opens the session in a pane here, with its conversation and live messages; accept Claude's prompt there.",
-                            c,
-                        ));
+                        reconnect =
+                            reconnect.push(status_dot("reconnect-blocked", c.faint, why, c));
                     }
                     details = details.push(reconnect);
                 }
@@ -3386,7 +3327,6 @@ impl App {
                     ]
                     .spacing(6)
                     .align_y(Center),
-                    small("Confirm within five seconds to send the stop signal.", c),
                 ]
                 .spacing(6)
                 .into()
@@ -4029,46 +3969,6 @@ mod tests {
         assert_eq!(
             super::reset_words(now, at(-5), &zone),
             "should have reset by now"
-        );
-    }
-
-    #[test]
-    fn ended_sessions_group_by_the_day_they_ended() {
-        use chrono::TimeZone;
-        let now = chrono::Local
-            .with_ymd_and_hms(2026, 10, 14, 15, 0, 0)
-            .unwrap();
-        let ended = |days: i64, name: &str| {
-            let mut record = agentdocker_core::AgentRecord::new(
-                agentdocker_core::AgentSpec {
-                    name: name.into(),
-                    ..Default::default()
-                },
-                false,
-                chrono::Utc::now(),
-            );
-            record.finished_at =
-                Some((now - chrono::Duration::days(days)).with_timezone(&chrono::Utc));
-            record
-        };
-        let records = [
-            ended(0, "a"),
-            ended(0, "b"),
-            ended(1, "c"),
-            ended(3, "d"),
-            ended(40, "e"),
-        ];
-        let refs: Vec<_> = records.iter().collect();
-        let days = super::by_day(&refs, now);
-        let labels: Vec<_> = days.iter().map(|(day, rows)| (*day, rows.len())).collect();
-        assert_eq!(
-            labels,
-            [
-                ("Today", 2),
-                ("Yesterday", 1),
-                ("This week", 1),
-                ("Older", 1)
-            ]
         );
     }
 

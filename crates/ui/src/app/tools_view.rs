@@ -511,7 +511,7 @@ fn wiring_word(wiring: Wiring, c: Colors) -> (&'static str, iced::Color) {
 }
 
 /// The tone that goes with a session's input readiness.
-fn readiness_tone(word: &str, c: Colors) -> iced::Color {
+pub(super) fn readiness_tone(word: &str, c: Colors) -> iced::Color {
     match word {
         "Receiving messages" | "Ready for messages" => c.green,
         "Sent · waiting for the agent to take it" => c.accent,
