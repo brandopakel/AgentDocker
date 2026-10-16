@@ -80,7 +80,12 @@ impl App {
         {
             return None;
         }
-        let target = review.target.clone().unwrap_or_default();
+        // A rebase leaves the main folder on no branch; it is still where
+        // the merge would go.
+        let target = review
+            .target
+            .clone()
+            .unwrap_or_else(|| "the main folder".to_owned());
         let branch = review.branch.clone().unwrap_or_default();
         // Merged on GitHub: a squash or rebase merge leaves the branch's
         // own commits outside the target, so the review still counts
@@ -130,6 +135,19 @@ impl App {
                     Err(reason) => text(reason.clone()).size(12.5).color(c.amber).into(),
                 }
             });
+        // A detached rebase has no commit list. Show its blocker before
+        // empty-branch messaging or cleanup controls, which would imply
+        // that the worktree has been merged and is safe to remove.
+        if review.in_progress.is_some() {
+            if let Some(outcome) = outcome {
+                section = section.push(outcome);
+            }
+            return Some(
+                section
+                    .push(self.merge_checklist(review, &blockers, &target, c))
+                    .into(),
+            );
+        }
         if review.commits.is_empty() || merged_upstream.is_some() {
             if let Some(outcome) = outcome {
                 section = section.push(outcome);
@@ -399,6 +417,14 @@ impl App {
             .into()
         };
         let mut list = column![].spacing(3);
+        // The person's own operation under way in the main folder is the
+        // one thing to say: nothing else was weighed while it lasts.
+        if let Some(b) = blockers
+            .iter()
+            .find(|b| matches!(b, Blocker::InProgress(_)))
+        {
+            return list.push(check(false, b.label(target))).into();
+        }
         list = list.push(
             match blockers
                 .iter()

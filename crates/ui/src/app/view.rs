@@ -3598,7 +3598,7 @@ impl App {
         {
             body = body.push(small(
                 format!(
-                    "Codex does not trust {} yet, so it runs read-only there and asks before every change. Run codex in that folder once and trust it to let it edit.",
+                    "Codex trust for {} is not confirmed. Open Codex in this folder to review trust and permission settings before launching.",
                     shorten_home(root)
                 ),
                 c,
@@ -4378,34 +4378,50 @@ mod tests {
     /// The controls an element offers, in the order drawn: each one's id,
     /// its label and what pressing it sends.
     fn offered(
-        mut element: iced::Element<'_, crate::app::Message>,
+        element: iced::Element<'_, crate::app::Message>,
     ) -> Vec<(String, String, Option<crate::app::Message>)> {
-        use iced::advanced::widget::{Operation, Tree, operation::Outcome};
-        use iced::advanced::{Layout, layout};
-        #[derive(Default)]
-        struct Offered(Vec<(String, String, Option<crate::app::Message>)>);
-        impl Operation for Offered {
-            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
-                operate(self);
-            }
-            fn custom(
-                &mut self,
-                _: Option<&iced::advanced::widget::Id>,
-                _: iced::Rectangle,
-                state: &mut dyn std::any::Any,
-            ) {
-                if let Some(semantic) = state.downcast_ref::<crate::accessibility::Semantic>() {
-                    self.0.push((
-                        semantic.id.clone(),
-                        semantic.label.clone(),
-                        semantic.action.clone(),
-                    ));
-                }
-            }
-            fn finish(&self) -> Outcome<()> {
-                Outcome::None
+        inspected(element).controls
+    }
+
+    #[derive(Default)]
+    struct Inspected {
+        controls: Vec<(String, String, Option<crate::app::Message>)>,
+        text: Vec<String>,
+    }
+
+    impl iced::advanced::widget::Operation for Inspected {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+        ) {
+            operate(self);
+        }
+        fn text(&mut self, _: Option<&iced::advanced::widget::Id>, _: iced::Rectangle, text: &str) {
+            self.text.push(text.to_owned());
+        }
+        fn custom(
+            &mut self,
+            _: Option<&iced::advanced::widget::Id>,
+            _: iced::Rectangle,
+            state: &mut dyn std::any::Any,
+        ) {
+            if let Some(semantic) = state.downcast_ref::<crate::accessibility::Semantic>() {
+                self.controls.push((
+                    semantic.id.clone(),
+                    semantic.label.clone(),
+                    semantic.action.clone(),
+                ));
             }
         }
+        fn finish(&self) -> iced::advanced::widget::operation::Outcome<()> {
+            iced::advanced::widget::operation::Outcome::None
+        }
+    }
+
+    /// Inspect actual text and accessibility controls in the laid-out widget tree.
+    fn inspected(mut element: iced::Element<'_, crate::app::Message>) -> Inspected {
+        use iced::advanced::widget::Tree;
+        use iced::advanced::{Layout, layout};
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, 14.0.into());
         let mut tree = Tree::new(&element);
         let node = element.as_widget_mut().layout(
@@ -4413,11 +4429,78 @@ mod tests {
             &renderer,
             &layout::Limits::new(iced::Size::ZERO, iced::Size::new(900.0, 600.0)),
         );
-        let mut offered = Offered::default();
+        let mut offered = Inspected::default();
         element
             .as_widget_mut()
             .operate(&mut tree, Layout::new(&node), &renderer, &mut offered);
-        offered.0
+        offered
+    }
+
+    #[test]
+    fn an_operation_blocks_empty_review_cleanup_even_when_the_target_is_detached() {
+        use agentdocker_core::review::{Operation, Review};
+        let (tx, _commands) = crate::app::queue::channel();
+        let (_sender, rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::bare(tx, rx);
+        let c = super::Colors::new(false);
+        let mut agent = agentdocker_core::AgentRecord::new(
+            agentdocker_core::AgentSpec::default(),
+            false,
+            Utc::now(),
+        );
+        agent.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        let mut review = Review {
+            agent: agent.id.clone(),
+            checkout: "repo/worktree".into(),
+            target_checkout: "repo".into(),
+            branch: Some("feature".into()),
+            target: Some("main".into()),
+            ..Review::default()
+        };
+        // A truly empty branch still offers the person's cleanup action.
+        app.branch_review = Some((agent.id.to_string(), Ok(review.clone())));
+        let controls = offered(app.changes_section(&agent, c).unwrap());
+        assert!(controls.iter().any(|(id, _, _)| id == "remove-worktree"));
+        let reason = "Git did not confirm the merge: the pre-merge-commit hook rejected it";
+        app.merge_outcome = Some((agent.id.to_string(), Err(reason.to_owned())));
+        for (operation, target) in [
+            (Operation::Merge, Some("main")),
+            (Operation::Rebase, None),
+            (Operation::CherryPick, Some("main")),
+        ] {
+            review.in_progress = Some(operation);
+            review.target = target.map(str::to_owned);
+            app.branch_review = Some((agent.id.to_string(), Ok(review.clone())));
+            let shown = inspected(app.changes_section(&agent, c).unwrap());
+            assert_eq!(
+                shown
+                    .controls
+                    .iter()
+                    .map(|(id, _, _)| id.as_str())
+                    .collect::<Vec<_>>(),
+                ["review-refresh"],
+                "pending operation must not offer worktree removal: {operation:?}"
+            );
+            assert!(
+                shown.text.iter().any(|line| line == reason),
+                "the merge failure must remain visible beside its operation blocker"
+            );
+            assert!(
+                shown
+                    .text
+                    .iter()
+                    .any(|line| line.contains(operation.named())),
+                "the actual operation reason is rendered: {:?}",
+                shown.text
+            );
+            assert!(
+                !shown
+                    .text
+                    .iter()
+                    .any(|line| line.starts_with("Nothing on ")),
+                "an operation is not an empty branch"
+            );
+        }
     }
 
     /// Open in… is there only with an editor installed: one opens the

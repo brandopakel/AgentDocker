@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from windows_native_launcher_smoke import canonical_reopen, process_snapshot
+from windows_native_launcher_smoke import (canonical_reopen, participants_alive, process_snapshot,
+                                           unique_process_generations)
 
 
 class ProcessError(Exception):
@@ -22,13 +23,14 @@ class DeniedProcess(ProcessError):
 
 
 class ObservedProcess:
-    def __init__(self, pid, live, metadata_error=None):
+    def __init__(self, pid, live, metadata_error=None, birth=123.0):
         self.pid = pid
         self.live = iter(live)
         self.metadata_error = metadata_error
+        self.birth = birth
 
     def create_time(self):
-        return 123.0
+        return self.birth
 
     def is_running(self):
         return next(self.live)
@@ -66,6 +68,58 @@ class ProcessSnapshots(unittest.TestCase):
         self.assertIsNone(rows[0]['running'])
         self.assertEqual(rows[0]['observation_error'], 'DeniedProcess')
         self.assertTrue(rows[1]['running'])
+
+
+class WatchedGenerations(unittest.TestCase):
+    api = SimpleNamespace(NoSuchProcess=MissingProcess, Error=ProcessError)
+
+    def test_controller_already_a_descendant_has_one_snapshot_and_retirement_entry(self):
+        child = ObservedProcess(1, [False])
+        controller = ObservedProcess(2, [True, True])
+        repeated = ObservedProcess(2, [], birth=controller.create_time())
+        watched = unique_process_generations([child, controller, repeated])
+        self.assertEqual(watched, [child, controller])
+        rows = process_snapshot(watched, self.api)
+        self.assertTrue(participants_alive(rows, {'controller': {'pid': 2, 'birth': 123.0}}))
+        self.assertFalse(rows[0]['running'])  # Exited descendants remain tracked.
+
+    def test_reused_pid_remains_ambiguous_and_is_not_deduplicated(self):
+        old = ObservedProcess(2, [False], birth=122.0)
+        current = ObservedProcess(2, [True, True], birth=123.0)
+        watched = unique_process_generations([old, current, old])
+        self.assertEqual(watched, [old, current])
+        rows = process_snapshot(watched, self.api)
+        self.assertFalse(participants_alive(rows, {'controller': {'pid': 2, 'birth': 123.0}}))
+
+
+class ConsoleLiveness(unittest.TestCase):
+    def setUp(self):
+        self.required = {role: {'pid': index, 'birth': float(index)}
+                         for index, role in enumerate(['frontend', 'owner', 'native_provider',
+                                                       'app_server', 'controller', 'console_host'], 1)}
+        self.snapshot = [dict(identity, running=True) for identity in self.required.values()]
+        # The retained Windows failure included a descendant that had already
+        # exited before reader cancellation. Every required participant lived.
+        self.snapshot.append({'pid': 99, 'birth': 99.0, 'running': False})
+
+    def test_completed_descendant_does_not_invalidate_live_console_participants(self):
+        self.assertTrue(participants_alive(self.snapshot, self.required))
+        self.assertFalse(all(row['running'] for row in self.snapshot))
+        self.assertEqual(len(self.snapshot), 7)  # Retirement still owns all seven.
+
+    def test_each_required_role_must_be_observed_live_with_its_original_birth(self):
+        for role, identity in self.required.items():
+            for fault in ['exited', 'denied', 'reused', 'missing', 'duplicate']:
+                with self.subTest(role=role, fault=fault):
+                    rows = copy.deepcopy(self.snapshot)
+                    row = next(row for row in rows if row['pid'] == identity['pid'])
+                    if fault == 'exited': row['running'] = False
+                    if fault == 'denied': row.update(running=None, observation_error='AccessDenied')
+                    if fault == 'reused': row['birth'] += 1
+                    if fault == 'missing': rows.remove(row)
+                    if fault == 'duplicate': rows.append(dict(row))
+                    self.assertFalse(participants_alive(rows, self.required))
+        self.assertFalse(participants_alive(self.snapshot, {}))
 
 
 class NativeReopen(unittest.TestCase):
