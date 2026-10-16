@@ -65,8 +65,21 @@ fn file_digest(path: &Path, budget: &mut u64) -> io::Result<String> {
     if !before.is_file() {
         return Err(io::Error::other("snapshot requires a regular file"));
     }
+    // Past the hashing budget (a 500 MiB dataset in an observed folder),
+    // the file is known by its length, modification time and mode instead:
+    // a change to it still changes the fingerprint, and the rest of the
+    // observation goes ahead rather than failing on one file.
     if before.len() > *budget {
-        return Err(io::Error::other("snapshot exceeds 256 MiB"));
+        let modified = before
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        return Ok(format!(
+            "large:{}:{modified}:{:o}",
+            before.len(),
+            crate::files::observed_permissions(&before)
+        ));
     }
     let mut hash = Sha256::new();
     hash.update(crate::files::observed_permissions(&before).to_le_bytes());
@@ -92,6 +105,22 @@ fn file_digest(path: &Path, budget: &mut u64) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file past the hashing budget is known by its stamp: the folder is
+    /// still observed, and touching the file still changes it.
+    #[test]
+    fn a_file_past_the_budget_is_known_by_its_stamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let big = tmp.path().join("big.bin");
+        std::fs::write(&big, vec![0u8; 64]).unwrap();
+        let mut budget = 16;
+        let first = file_digest(&big, &mut budget).unwrap();
+        assert!(first.starts_with("large:64:"), "{first}");
+        assert_eq!(budget, 16, "nothing was read");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&big, vec![1u8; 65]).unwrap();
+        assert_ne!(file_digest(&big, &mut 16).unwrap(), first);
+    }
     #[cfg(unix)]
     #[test]
     fn snapshots_apply_ignores_outside_git_and_track_executable_bits() {

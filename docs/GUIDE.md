@@ -667,7 +667,12 @@ For Claude Code, `agentdocker setup claude-code` installs handlers for
 the session *waiting* for you; run setup again to add it to an existing install). They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
 should be told before it starts — the journal since it last looked, and
-anything it read that has gone stale. `PreToolUse` takes a lease on the
+anything it read that has gone stale. Before an edit, `PreToolUse` refuses
+one to a file someone else changed since the session read it: a file that
+does not exist yet is never refused, and under a folder the session
+observed only a change to that file itself counts — the session's own
+changes never do. In a folder removed from the desktop's project list the
+hooks do nothing at all until it is added back. `PreToolUse` takes a lease on the
 file about to be edited and `Stop` gives those edit leases back when the
 turn ends; a lease the session claimed itself — a worktree, a branch, the
 build campaign — is not touched until the session releases it, its TTL runs

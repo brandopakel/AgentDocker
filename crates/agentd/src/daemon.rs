@@ -19717,6 +19717,96 @@ deny = ["send:all"]
         assert_eq!(entries[0].paths, [PathBuf::from("pending.rs")]);
     }
 
+    /// The read-before-write guard from the agent's side, as reported from a
+    /// real session: a file that is not there yet is never stale; under an
+    /// observed folder only a target that someone else changed is, as the
+    /// ledger says, never for the agent's own changes; and a difference
+    /// nothing recorded stays stale.
+    #[tokio::test]
+    async fn stale_judges_an_observed_folder_by_what_changed_and_by_whom() {
+        let home = TempDir::new().unwrap();
+        let work = TempDir::new().unwrap();
+        let daemon = open(&home);
+        let me = register_in(&daemon, "me", work.path()).await;
+        let project = me.project.clone().unwrap();
+        let root = project.dir().to_path_buf();
+        std::fs::create_dir_all(root.join("repro")).unwrap();
+        std::fs::write(root.join("repro/a.txt"), "a").unwrap();
+        std::fs::write(root.join("repro/b.txt"), "b").unwrap();
+        assert!(matches!(
+            daemon
+                .handle(Request::Observe {
+                    agent: "me".into(),
+                    paths: vec!["repro".into()],
+                })
+                .await,
+            Response::Reads { .. }
+        ));
+        let stale = |path: &'static str| {
+            let daemon = daemon.clone();
+            async move {
+                match daemon
+                    .handle(Request::Stale {
+                        agent: "me".into(),
+                        paths: vec![path.into()],
+                    })
+                    .await
+                {
+                    Response::Stale { stale } => stale,
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+        };
+        // A shell mkdir changes the folder; a file to create beneath it has
+        // nothing to overwrite.
+        std::fs::create_dir(root.join("repro/sub")).unwrap();
+        assert!(stale("repro/sub/new.txt").await.is_empty());
+        // A change nothing recorded stays stale.
+        std::fs::write(root.join("repro/a.txt"), "a2").unwrap();
+        assert_eq!(stale("repro/a.txt").await.len(), 1);
+        // The ledger says who: the agent's own change to a.txt, someone
+        // else's to b.txt.
+        let change = |path: &str, by: Attribution| Change {
+            seq: 0,
+            project: project.id(),
+            checkout: Some(root.clone()),
+            worktree: None,
+            path: path.into(),
+            kind: ChangeKind::Modified,
+            at: Utc::now(),
+            by,
+            head: None,
+        };
+        std::fs::write(root.join("repro/b.txt"), "b2").unwrap();
+        {
+            let state = lock(&daemon.state);
+            state
+                .store
+                .append_change(&change(
+                    "repro/a.txt",
+                    Attribution::Agent {
+                        agent: me.id.clone(),
+                        lease: agentdocker_core::LeaseId::generate(),
+                        note: None,
+                    },
+                ))
+                .unwrap();
+            state
+                .store
+                .append_change(&change("repro/b.txt", Attribution::External))
+                .unwrap();
+        }
+        assert!(stale("repro/a.txt").await.is_empty(), "my own edit");
+        let theirs = stale("repro/b.txt").await;
+        assert_eq!(theirs.len(), 1);
+        assert_eq!(
+            theirs[0].path,
+            root.join("repro/b.txt"),
+            "names the file to reread"
+        );
+        assert!(stale("repro/sub/new.txt").await.is_empty());
+    }
+
     #[tokio::test]
     async fn a_full_watcher_flush_queue_cannot_block_release_indefinitely() {
         let dir = TempDir::new().unwrap();

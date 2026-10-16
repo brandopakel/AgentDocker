@@ -194,6 +194,15 @@ pub fn session_name_for(input: &HookInput) -> String {
     }
 }
 
+/// Whether the session works in a folder the person took off AgentDocker's
+/// list: then the hook leaves it alone entirely — no guard, no lease, no
+/// context — as removing the project promised.
+fn uncoordinated(input: &HookInput) -> bool {
+    input.cwd.as_deref().is_some_and(|cwd| {
+        agentdocker_host::coordination::excluded(&agentdocker_host::dirs::home(), cwd)
+    })
+}
+
 pub async fn run(client: Client, args: HookArgs) -> Result<()> {
     // A hook that has to start the daemon may wait a moment, not stall
     // the editor: it fails open past this.
@@ -218,6 +227,9 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                 }
             };
             input.runtime = Some("opencode");
+            if uncoordinated(&input) {
+                return Ok(());
+            }
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
             if input.hook_event_name == "Delivered" {
                 // Only what reached a completed turn leaves the queue; a lost
@@ -294,6 +306,9 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                     return Ok(());
                 }
             };
+            if uncoordinated(&input) {
+                return Ok(());
+            }
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
             // Receipt recovery is independent of hook context delivery. It only
             // accepts provider-recorded channel input followed by a real model
@@ -781,13 +796,24 @@ pub async fn claude_code<B: Backend>(
             // every one is checked and claimed, and the first conflict
             // refuses the whole edit.
             for path in &paths {
-                match backend
-                    .call(Request::Stale {
-                        agent: me.id.to_string(),
-                        paths: vec![path.to_string_lossy().into_owned()],
-                    })
-                    .await?
-                {
+                // A file that is not there yet has nothing to overwrite, and
+                // "read it again" could not be followed; only its lease is
+                // taken. Checked here too, for a daemon predating that rule.
+                let exists = !matches!(
+                    std::fs::symlink_metadata(path),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound
+                );
+                let staleness = if exists {
+                    backend
+                        .call(Request::Stale {
+                            agent: me.id.to_string(),
+                            paths: vec![path.to_string_lossy().into_owned()],
+                        })
+                        .await?
+                } else {
+                    Response::Stale { stale: Vec::new() }
+                };
+                match staleness {
                     Response::Stale { stale } if !stale.is_empty() => {
                         return Ok(Some(json!({
                             "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny",
@@ -3079,9 +3105,13 @@ mod tests {
             },
             Response::Reads { reads: vec![] },
         ]);
+        // The edit target exists: only an existing file can be stale.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
         let mut event = input("PreToolUse");
         event.tool_name = Some("Read".into());
-        event.tool_input = Some(json!({"file_path": "file.rs"}));
+        event.tool_input = Some(json!({"file_path": file}));
         assert!(
             claude_code(&backend, &event, &opts())
                 .await
@@ -3132,9 +3162,12 @@ mod tests {
                 details: Some(json!({ "held_by": [{ "note": "refactoring" }] })),
             },
         ]);
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.rs");
+        std::fs::write(&shared, "").unwrap();
         let mut ev = input("PreToolUse");
         ev.tool_name = Some("Edit".into());
-        ev.tool_input = Some(json!({ "file_path": "/tmp/shared.rs" }));
+        ev.tool_input = Some(json!({ "file_path": shared }));
 
         let out = claude_code(&backend, &ev, &opts()).await.unwrap().unwrap();
         let specific = &out["hookSpecificOutput"];
@@ -3231,10 +3264,13 @@ mod tests {
                 details: Some(json!({ "held_by": [{ "note": "refactoring util.py" }] })),
             },
         ]);
+        let dir = tempfile::tempdir().unwrap();
+        let util = dir.path().join("util.py");
+        std::fs::write(&util, "").unwrap();
         let mut ev = input("PreToolUse");
         ev.tool_name = Some("apply_patch".into());
         ev.tool_input = Some(json!({
-            "command": "*** Begin Patch\n*** Update File: /tmp/util.py\n@@\n+x\n*** End Patch"
+            "command": format!("*** Begin Patch\n*** Update File: {}\n@@\n+x\n*** End Patch", util.display())
         }));
         let out = claude_code(&backend, &ev, &opts()).await.unwrap().unwrap();
         assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
@@ -3242,6 +3278,27 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(reason.contains("refactor-peer") && reason.contains("refactoring util.py"));
+    }
+
+    /// A file that is not there yet has nothing to overwrite: its edit asks
+    /// no staleness question, so "read it again" is never the answer, and
+    /// only its lease is taken.
+    #[tokio::test]
+    async fn a_new_file_is_never_stale_and_is_only_claimed() {
+        let backend = Mock::with(vec![
+            Response::Agent {
+                agent: agent("claude-01234567", true),
+            },
+            Response::Ok, // stands in for Response::Lease
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut ev = input("PreToolUse");
+        ev.tool_name = Some("Write".into());
+        ev.tool_input = Some(json!({ "file_path": dir.path().join("sub/new.go") }));
+        assert!(claude_code(&backend, &ev, &opts()).await.unwrap().is_none());
+        let requests = backend.requests();
+        assert!(!requests.iter().any(|r| matches!(r, Request::Stale { .. })));
+        assert!(requests.iter().any(|r| matches!(r, Request::Claim { .. })));
     }
 
     #[tokio::test]
