@@ -301,8 +301,12 @@ control does, its id or its accessible label:
   **Details** disclosure with a definition list. A setup review is one card:
   the change count, a step list with small state tiles, a block per file
   with a path header, +N and tinted lines with a left bar, and a footer whose
-  one filled action is **Connect**. Settings is section cards of rows (title
-  and a line on the left, the control on the right): the theme as a
+  one filled action is **Connect**. Settings is a grouped form, as macOS
+  forms are (`form_section`): each group's name, 13 pt semibold, and an
+  optional 12 pt line of why sit above a card of rows; a row is a 13 pt title
+  over a 12 pt muted line on the left and the control on the right, padded
+  8 by 14, with rules inset 14 (the same rows serve Installation and the
+  connection check); keyboard rows are 13 pt, padded 6 by 14: the theme as a
   segmented control, text sizes as `− 14 pt +` steppers, switches for roomier
   rows, daily update checks and preview builds, terminal palettes as preview
   swatches with an accent ring, the keyboard as keycap rows. The terminal
