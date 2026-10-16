@@ -274,6 +274,30 @@ pub fn post_notification(notice: &agentdocker_host::notify::Notification) -> Res
     }
 }
 
+/// Take back the notices of these agents, delivered or still pending:
+/// each stopped being true (a question answered, a prompt passed, a
+/// finish looked at). The identifiers are the per-agent ones notices are
+/// posted under, by this window and by the daemon alike.
+#[cfg(target_os = "macos")]
+pub fn withdraw(agents: &[String]) {
+    use objc2_foundation::{NSArray, NSString};
+    use objc2_user_notifications::UNUserNotificationCenter;
+    if agents.is_empty() || !in_a_bundle() {
+        return;
+    }
+    let ids: Vec<_> = agents
+        .iter()
+        .map(|agent| NSString::from_str(&format!("dev.agentdocker.agent.{agent}")))
+        .collect();
+    let ids = NSArray::from_retained_slice(&ids);
+    let centre = UNUserNotificationCenter::currentNotificationCenter();
+    centre.removeDeliveredNotificationsWithIdentifiers(&ids);
+    centre.removePendingNotificationRequestsWithIdentifiers(&ids);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn withdraw(_agents: &[String]) {}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn notification_content(
     notice: &agentdocker_host::notify::Notification,

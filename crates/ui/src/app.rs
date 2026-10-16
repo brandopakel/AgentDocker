@@ -1789,8 +1789,21 @@ impl App {
     /// a separate question, answered here once and then only by the user.
     /// A completion on the screen the user is looking at, in a focused
     /// window, is viewed as it happens; every other one waits for them.
+    /// A session that stops for the person in its own terminal while the
+    /// window is not in front is told as well.
     fn note_completions(&mut self, fresh: &BTreeMap<String, Activity>) {
+        let telling = self.shell.unfocused && self.settings.notify_finished && self.smoke.is_none();
         for (id, now) in fresh {
+            if telling
+                && matches!(now, Activity::Waiting { .. })
+                && !matches!(self.activity.get(id), Some(Activity::Waiting { .. }))
+                && self
+                    .agents
+                    .iter()
+                    .any(|a| a.id.as_str() == id && a.status.is_live())
+            {
+                self.shell.wait_notices.push((id.clone(), Instant::now()));
+            }
             let was_busy = matches!(
                 self.activity.get(id),
                 Some(Activity::Working { .. } | Activity::Blocked { .. })
@@ -1813,8 +1826,11 @@ impl App {
                 });
             if !on_screen {
                 self.shell.unviewed_done.insert(id.clone());
-                // Away from the window altogether: say so, quietly.
-                if self.shell.unfocused && self.settings.notify_finished && self.smoke.is_none() {
+                // Away from the window altogether: say so, quietly, unless
+                // a message from them already waits for it: it goes on to
+                // that next, and "finished" would be stale on arrival.
+                let has_next = self.queued_inputs.get(id).is_some_and(|queued| *queued > 0);
+                if telling && !has_next {
                     self.shell.finish_notices.push(id.clone());
                 }
             }
@@ -6388,6 +6404,149 @@ pub(crate) mod tests {
         step(&mut app, &id, working());
         step(&mut app, &id, Activity::Finished);
         assert!(app.shell.unviewed_done.contains(&id));
+    }
+
+    /// Away from the window, an agent that stops for the person is told
+    /// once per stop; one that finishes with the person's next message
+    /// already queued is not told as finished; and a notice is taken back
+    /// once it is no longer true.
+    #[test]
+    fn a_wait_is_told_a_queued_finish_is_not_and_stale_notices_are_taken_back() {
+        fn step(app: &mut App, id: &str, activity: Activity) {
+            let fresh = BTreeMap::from([(id.to_owned(), activity)]);
+            app.note_completions(&fresh);
+            app.activity = fresh;
+        }
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut worker = record("worker", "claude-code", Some(4242));
+        worker.project = Some(ProjectRef::directory("/fixture/alpha"));
+        let id = worker.id.to_string();
+        app.agents.push(worker);
+        app.shell.unfocused = true;
+        let now = Utc::now();
+        let working = || Activity::Working { since: now };
+        let idle = || Activity::Idle { since: now };
+        let waiting = || Activity::Waiting {
+            since: now,
+            reason: Some(agentdocker_core::WaitReason::Permission),
+        };
+
+        step(&mut app, &id, working());
+        step(&mut app, &id, waiting());
+        step(&mut app, &id, waiting());
+        let pending = |app: &App| -> Vec<String> {
+            app.shell
+                .wait_notices
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        assert_eq!(pending(&app), std::slice::from_ref(&id), "once per stop");
+
+        // Told only once the stop has lasted the grace; a wake is set for
+        // then, as the unfocused window sweeps rarely.
+        let _ = app.update(Message::Tick);
+        assert_eq!(pending(&app), std::slice::from_ref(&id), "too young yet");
+        assert!(app.shell.wait_timer);
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        assert!(pending(&app).is_empty());
+        assert!(app.shell.noticed.contains(&id), "told");
+        // A stop answered inside the grace is never told.
+        app.shell.noticed.clear();
+        step(&mut app, &id, working());
+        step(&mut app, &id, waiting());
+        step(&mut app, &id, working());
+        let _ = app.update(Message::Tick);
+        assert!(pending(&app).is_empty());
+        assert!(!app.shell.noticed.contains(&id));
+
+        // In front, the window shows it; nothing is posted.
+        app.shell.wait_notices.clear();
+        app.shell.unfocused = false;
+        step(&mut app, &id, working());
+        step(&mut app, &id, waiting());
+        assert!(app.shell.wait_notices.is_empty());
+
+        // A finish with the person's next message queued goes on to it.
+        app.shell.unfocused = true;
+        app.queued_inputs.insert(id.clone(), 1);
+        step(&mut app, &id, working());
+        step(&mut app, &id, idle());
+        assert!(app.shell.finish_notices.is_empty());
+        assert!(app.shell.unviewed_done.contains(&id), "still not looked at");
+        app.queued_inputs.clear();
+
+        // Noticed and still true: kept. Looking at it makes it stale, and
+        // the update takes it back.
+        app.shell.noticed.insert(id.clone());
+        assert!(app.stale_notices().is_empty());
+        let _ = app.update(Message::SelectSession(id.clone()));
+        assert!(!app.shell.noticed.contains(&id));
+        // A wait is kept while it lasts and taken back, once, when it ends.
+        step(&mut app, &id, waiting());
+        app.shell.noticed.insert(id.clone());
+        assert!(app.stale_notices().is_empty(), "waiting is still true");
+        step(&mut app, &id, working());
+        assert_eq!(app.stale_notices(), std::slice::from_ref(&id));
+        assert!(app.stale_notices().is_empty());
+    }
+
+    /// The notification centre is asked one thing at a time, in order: a
+    /// wait that ends while its post is still in flight is taken back only
+    /// after that post lands, and a fresh wait during the withdrawal is
+    /// posted after it, so neither a late post nor an old withdrawal wins.
+    #[test]
+    fn notices_are_posted_and_taken_back_in_order_one_at_a_time() {
+        fn step(app: &mut App, id: &str, activity: Activity) {
+            let fresh = BTreeMap::from([(id.to_owned(), activity)]);
+            app.note_completions(&fresh);
+            app.activity = fresh;
+        }
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut worker = record("worker", "claude-code", Some(4242));
+        worker.project = Some(ProjectRef::directory("/fixture/alpha"));
+        let id = worker.id.to_string();
+        app.agents.push(worker);
+        app.shell.unfocused = true;
+        let now = Utc::now();
+        let working = || Activity::Working { since: now };
+        let waiting = || Activity::Waiting {
+            since: now,
+            reason: None,
+        };
+        let post = format!("post agent.{id}");
+        let withdraw = format!("withdraw {id}");
+
+        step(&mut app, &id, working());
+        step(&mut app, &id, waiting());
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        assert_eq!(app.shell.notice_log, std::slice::from_ref(&post));
+        assert!(app.shell.notice_busy, "the post is in flight");
+
+        // The wait ends before the post lands: its withdrawal waits.
+        step(&mut app, &id, working());
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.shell.notice_log, std::slice::from_ref(&post));
+        assert_eq!(app.shell.notice_queue.len(), 1);
+        let _ = app.update(Message::NoticeDone);
+        assert_eq!(app.shell.notice_log, [post.clone(), withdraw.clone()]);
+
+        // A fresh wait while that withdrawal is in flight is posted after.
+        step(&mut app, &id, waiting());
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        assert_eq!(app.shell.notice_log.len(), 2, "behind the withdrawal");
+        let _ = app.update(Message::NoticeDone);
+        assert_eq!(app.shell.notice_log, [post.clone(), withdraw, post]);
+        let _ = app.update(Message::NoticeDone);
+        assert!(!app.shell.notice_busy);
+        assert!(app.shell.notice_queue.is_empty());
     }
 
     #[test]
