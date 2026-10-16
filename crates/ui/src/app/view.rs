@@ -4387,40 +4387,39 @@ mod tests {
         text: Vec<String>,
     }
 
-    /// Inspect actual text and accessibility controls in the laid-out widget tree.
-    fn inspected(mut element: iced::Element<'_, crate::app::Message>) -> Inspected {
-        use iced::advanced::widget::{Operation, Tree, operation::Outcome};
-        use iced::advanced::{Layout, layout};
-        impl Operation for Inspected {
-            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
-                operate(self);
-            }
-            fn text(
-                &mut self,
-                _: Option<&iced::advanced::widget::Id>,
-                _: iced::Rectangle,
-                text: &str,
-            ) {
-                self.text.push(text.to_owned());
-            }
-            fn custom(
-                &mut self,
-                _: Option<&iced::advanced::widget::Id>,
-                _: iced::Rectangle,
-                state: &mut dyn std::any::Any,
-            ) {
-                if let Some(semantic) = state.downcast_ref::<crate::accessibility::Semantic>() {
-                    self.controls.push((
-                        semantic.id.clone(),
-                        semantic.label.clone(),
-                        semantic.action.clone(),
-                    ));
-                }
-            }
-            fn finish(&self) -> Outcome<()> {
-                Outcome::None
+    impl iced::advanced::widget::Operation for Inspected {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+        ) {
+            operate(self);
+        }
+        fn text(&mut self, _: Option<&iced::advanced::widget::Id>, _: iced::Rectangle, text: &str) {
+            self.text.push(text.to_owned());
+        }
+        fn custom(
+            &mut self,
+            _: Option<&iced::advanced::widget::Id>,
+            _: iced::Rectangle,
+            state: &mut dyn std::any::Any,
+        ) {
+            if let Some(semantic) = state.downcast_ref::<crate::accessibility::Semantic>() {
+                self.controls.push((
+                    semantic.id.clone(),
+                    semantic.label.clone(),
+                    semantic.action.clone(),
+                ));
             }
         }
+        fn finish(&self) -> iced::advanced::widget::operation::Outcome<()> {
+            iced::advanced::widget::operation::Outcome::None
+        }
+    }
+
+    /// Inspect actual text and accessibility controls in the laid-out widget tree.
+    fn inspected(mut element: iced::Element<'_, crate::app::Message>) -> Inspected {
+        use iced::advanced::widget::Tree;
+        use iced::advanced::{Layout, layout};
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, 14.0.into());
         let mut tree = Tree::new(&element);
         let node = element.as_widget_mut().layout(
