@@ -15,7 +15,7 @@
 //! in the window so the field stays put while the list changes length.
 use super::icons::{Icon, icon};
 use super::style::{Colors, RADIUS_MD, alpha, weight};
-use super::view::{eyebrow, kbd, monogram};
+use super::view::{eyebrow, monogram};
 use super::*;
 use crate::controls::{Kind, custom, custom_sized};
 use iced::advanced::{
@@ -186,8 +186,8 @@ impl Run {
     }
 }
 
-/// A row's second action: run with ⌘Enter, and named in the footer
-/// while the row is highlighted.
+/// A row's second action: run with ⌘Enter, marked on the highlighted
+/// row and named in its spoken label.
 #[derive(Clone, Debug)]
 pub(super) struct Alt {
     pub label: String,
@@ -302,14 +302,6 @@ fn short_path(path: &std::path::Path) -> String {
         };
     }
     path.display().to_string()
-}
-
-/// Keys pressed together, as keycaps side by side.
-fn combo<'a>(keys: &[&'static str], c: Colors) -> Element<'a, Message> {
-    row(keys.iter().map(|key| kbd(*key, c)))
-        .spacing(3)
-        .align_y(Center)
-        .into()
 }
 
 /// The container around a row, scrolled to when the highlight reaches it.
@@ -637,7 +629,7 @@ fn item_view<'a>(item: &Item, active: bool, c: Colors) -> Element<'a, Message> {
             }
         }
     };
-    let mut words = row![
+    let words = row![
         text(item.label.clone())
             .size(13.5)
             .line_height(iced::Pixels(20.0))
@@ -646,27 +638,30 @@ fn item_view<'a>(item: &Item, active: bool, c: Colors) -> Element<'a, Message> {
     ]
     .spacing(8)
     .align_y(Center);
-    if !item.detail.is_empty() {
-        words = words.push(
-            text(item.detail.clone())
-                .size(12)
-                .color(c.muted)
-                .wrapping(iced::widget::text::Wrapping::None),
-        );
-    }
+    // The detail is searched and spoken, not drawn; a shortcut is the
+    // destination's own, not a keycap on the row.
     let mut line = row![mark, container(words).width(Fill).clip(true)]
         .spacing(10)
         .align_y(Center);
-    match &item.hint {
-        Hint::None => {}
-        Hint::Keys(keys) => line = line.push(combo(keys, c)),
-        Hint::Opens => line = line.push(icon(Icon::ChevronRight, ink, 14.0)),
+    if active && item.alt.is_some() {
+        line = line.push(icon(Icon::Terminal, ink, 14.0));
     }
-    let spoken = if item.detail.is_empty() {
+    if let Hint::Opens = &item.hint {
+        line = line.push(icon(Icon::ChevronRight, ink, 14.0));
+    }
+    // What is not drawn is said: the detail, the shortcut and the
+    // second action.
+    let mut spoken = if item.detail.is_empty() {
         item.label.clone()
     } else {
         format!("{}, {}", item.label, item.detail)
     };
+    if let Hint::Keys(keys) = &item.hint {
+        spoken.push_str(&format!(" ({})", keys.join("")));
+    }
+    if let Some(alt) = &item.alt {
+        spoken.push_str(&format!("; {MODIFIER}Enter: {}", alt.label));
+    }
     container(custom(
         item.id.clone(),
         spoken,
@@ -692,7 +687,6 @@ impl App {
                     .color(r.muted)
                     .width(Fill)
                     .wrapping(iced::widget::text::Wrapping::None),
-                combo(&[MODIFIER, "K"], r),
             ]
             .spacing(8)
             .align_y(Center),
@@ -1197,32 +1191,9 @@ impl App {
         )
         .max_height(LIST_HEIGHT.min(room));
 
-        let tip = |keys: &[&'static str], words: &'static str| -> Element<'static, Message> {
-            row![combo(keys, c), text(words).size(12).color(c.muted)]
-                .spacing(6)
-                .align_y(Center)
-                .into()
-        };
-        // The highlighted row's second action, where it has one, is named
-        // with its keys: the one place ⌘Enter is taught.
-        let mut tips = row![tip(&["↵"], "Select")].spacing(16).align_y(Center);
-        if let Some(alt) = rows.get(active).and_then(|item| item.alt.as_ref()) {
-            tips = tips.push(
-                row![
-                    combo(&[MODIFIER, "↵"], c),
-                    text(alt.label.clone()).size(12).color(c.muted)
-                ]
-                .spacing(6)
-                .align_y(Center),
-            );
-        }
-        let footer = container(tips.push(tip(&["↑", "↓"], "Navigate")).push(tip(
-            &["esc"],
-            if nested.is_some() { "Back" } else { "Close" },
-        )))
-        .padding([8, 14]);
-
-        let panel = container(column![search, hairline(c), results, hairline(c), footer])
+        // No key footer: the keys are the ones every list takes, and a
+        // row's second action shows as its mark on the highlighted row.
+        let panel = container(column![search, hairline(c), results])
             .width(Fill)
             .max_width(WIDTH)
             .style(move |_| c.dialog_style());

@@ -234,10 +234,7 @@ const BARS_FIT: f32 = 1180.0;
 impl App {
     pub(super) fn usage_view(&self, c: Colors) -> Element<'_, Message> {
         let Some(project) = self.selected_project_root() else {
-            return empty(
-                None,
-                c,
-            );
+            return empty(None, c);
         };
         let since = if self.shell.usage_since.is_empty() {
             DEFAULT_SINCE
@@ -331,10 +328,7 @@ impl App {
         };
         if report.rows.is_empty() {
             page = page.push(if collection_off(report) {
-                empty(
-                    None,
-                    c,
-                )
+                empty(None, c)
             } else {
                 // The range it covers is said once, with the notes below.
                 text("No usage in this window")

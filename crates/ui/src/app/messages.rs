@@ -21,8 +21,8 @@ use iced::{
     widget::{Space, column, container, responsive, row, scrollable, text},
 };
 use look::{
-    count_divider, day_divider, disc, link, section_label, status_line, tinted,
-    unread_divider, with_presence,
+    count_divider, day_divider, disc, link, section_label, status_line, tinted, unread_divider,
+    with_presence,
 };
 
 pub(super) mod look;
@@ -1546,10 +1546,7 @@ impl App {
     pub(super) fn messages_pane(&self, c: Colors) -> Element<'_, Message> {
         let mention_names = self.mention_names();
         let Some(summary) = self.open_summary() else {
-            return empty(
-                None,
-                c,
-            );
+            return empty(None, c);
         };
         let label = self.conversation_label(&summary);
         let key = summary.conversation.as_str().to_owned();

@@ -106,10 +106,7 @@ fn card_look(
 impl App {
     pub(super) fn board_view(&self, c: Colors) -> Element<'_, Message> {
         let Some(entry) = self.shell.catalog.selected() else {
-            return super::view::empty(
-                None,
-                c,
-            );
+            return super::view::empty(None, c);
         };
         let root = entry.project.root.display().to_string();
         let board = self.tasks.as_ref().filter(|b| b.project == root);

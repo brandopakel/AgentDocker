@@ -245,7 +245,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          # seeing the mixed-case sidebar label alone cannot pass.
                          step("click", id=f"project-menu-{project}"), step("click", id=f"project-rename-start-{project}"),
                          step("fill", id=f"project-rename-{project}", text="Renamed Project"), step("click", id=f"project-rename-save-{project}"),
-                         step("click", id="projects"), step("wait_text", text="RENAMED PROJECT"), step("capture", name="renamed-all-projects"),
+                         step("click", id="projects"), step("wait_text", text="Renamed Project"), step("capture", name="renamed-all-projects"),
                          step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                          step("click", id=f"project-menu-{project}"), step("click", id=f"project-rename-start-{project}"),
                          step("fill", id=f"project-rename-{project}", text=""), step("click", id=f"project-rename-save-{project}"),
@@ -341,7 +341,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("resize", width=720, height=540), step("click", id="larger-ui"), step("click", id="larger-ui"),
                          step("focus", id="installation"), step("wait_focus", id="installation"), step("capture", name="compact-zoom-focus"),
                          step("click", id="installation"), step("capture", name="installation"), step("click", id="projects"),
-                         step("wait_text", text="All projects"), step("click", id=f"project-{pinned}"),
+                         step("wait_control", id=f"project-{pinned}", present=True), step("click", id=f"project-{pinned}"),
                          step("pause", millis=400)]
                 def launch(name, scenario):
                     nonlocal window

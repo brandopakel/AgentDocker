@@ -661,10 +661,7 @@ impl App {
         runtimes.sort_by_key(|r| !r.installed());
         let other_count = self.runtimes.iter().filter(|r| !r.installed()).count();
         if runtimes.is_empty() {
-            page = page.push(empty(
-                None,
-                c,
-            ));
+            page = page.push(empty(None, c));
         }
         // One filled action on the screen: the first tool that needs
         // setting up; the others' Set up step down to an outline, and all
@@ -765,12 +762,7 @@ impl App {
                     .into()
                 })
                 .collect();
-            page = page.push(section(
-                "Setup history",
-                None,
-                column(rows),
-                c,
-            ));
+            page = page.push(section("Setup history", None, column(rows), c));
         }
         page.into()
     }
@@ -891,7 +883,8 @@ impl App {
                     "Setup knows zsh, bash and fish. Start claude with --dangerously-load-development-channels server:agentdocker yourself.",
                 ),
             };
-            let mut value = column![super::view::tip(status_word(word, tone, c), why, c)].spacing(4);
+            let mut value =
+                column![super::view::tip(status_word(word, tone, c), why, c)].spacing(4);
             // A `claude` typed in a terminal only sees messages at its next
             // prompt unless the shell adds the channel flag; one reviewed
             // change does that, and this is where the person looks for it.
@@ -1551,10 +1544,7 @@ impl App {
                             c,
                         ),
                     ),
-                    field_row(
-                        "Palette",
-                        swatches.wrap().vertical_spacing(12),
-                    ),
+                    field_row("Palette", swatches.wrap().vertical_spacing(12)),
                 ],
                 c,
             ),
@@ -1792,10 +1782,7 @@ impl App {
     /// with the state in a word and Detach at the right.
     pub(super) fn terminal_view(&self, c: Colors) -> Element<'_, Message> {
         let Some(terminal) = &self.terminal else {
-            return empty(
-                None,
-                c,
-            );
+            return empty(None, c);
         };
         let ended = matches!(terminal.status(), Status::Ended(_));
         let scrolled = terminal.scrolled_back();
@@ -1898,23 +1885,9 @@ impl App {
             .width(Fill)
             .style(move |_| fill_style(ground, iced::border::bottom(RADIUS_LG - 1.0))),
         );
-        let hint = row![
-            keys(&["F6"], c),
-            small("leaves terminal input", c),
-            text("·").size(12).color(c.faint),
-            keys(
-                if cfg!(target_os = "macos") {
-                    &["⌃", "]"]
-                } else {
-                    &["Ctrl", "]"]
-                },
-                c
-            ),
-            small("detaches", c)
-        ]
-        .spacing(6)
-        .align_y(Center);
-        column![frame(pane, c), hint].spacing(10).into()
+        // The keys out of the terminal (F6, ⌃]) are in the terminal's
+        // spoken name and in Settings, not under it.
+        frame(pane, c)
     }
 
     /// AgentDocker commands as a command panel: the prompt and the input
@@ -2106,10 +2079,7 @@ impl App {
                 .into()
         };
         let mut rows = vec![
-            field_row(
-                "Package",
-                source,
-            ),
+            field_row("Package", source),
             field_row(
                 "Prefix",
                 input(

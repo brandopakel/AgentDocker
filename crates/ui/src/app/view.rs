@@ -211,9 +211,27 @@ pub(super) fn tip<'a>(
     .into()
 }
 
+/// Words a glyph stands for, as its accessible name: a reader (and the
+/// workflow driver) hears what the eye reads from the mark. A tooltip
+/// alone is not in the accessibility tree.
+pub(super) fn said<'a>(
+    id: impl Into<String>,
+    words: impl Into<String>,
+    content: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    crate::controls::Control {
+        content: content.into(),
+        semantic: crate::accessibility::Semantic {
+            role: accesskit::Role::Label,
+            ..crate::accessibility::Semantic::button(id.into(), words.into(), None)
+        },
+        button: false,
+    }
+    .into()
+}
+
 /// A state shown as a dot: its words are the dot's tooltip and its
-/// accessible name, so a reader (and the workflow driver) hears what the
-/// eye reads from the colour.
+/// accessible name.
 pub(super) fn status_dot<'a>(
     id: impl Into<String>,
     tone: iced::Color,
@@ -221,15 +239,54 @@ pub(super) fn status_dot<'a>(
     c: Colors,
 ) -> Element<'a, Message> {
     let words = words.into();
-    let dot = crate::controls::Control {
-        content: container(dot(tone, 6.0, c)).padding(4).into(),
-        semantic: crate::accessibility::Semantic {
-            role: accesskit::Role::Label,
-            ..crate::accessibility::Semantic::button(id.into(), words.clone(), None)
-        },
-        button: false,
-    };
-    tip(dot, words, c)
+    tip(
+        said(id, words.clone(), container(dot(tone, 6.0, c)).padding(4)),
+        words,
+        c,
+    )
+}
+
+/// A failure in one line: the amber mark and the first line of the
+/// words, clipped; all of them on the pointer and in its name.
+pub(super) fn error_line<'a>(
+    id: impl Into<String>,
+    words: &str,
+    c: Colors,
+) -> Element<'a, Message> {
+    let id = id.into();
+    row![
+        alert_mark(format!("{id}-mark"), words.to_owned(), c),
+        container(
+            text(first_line(words, 140))
+                .size(13)
+                .color(c.amber)
+                .wrapping(iced::widget::text::Wrapping::None)
+        )
+        .width(Fill)
+        .clip(true),
+    ]
+    .spacing(6)
+    .align_y(Center)
+    .into()
+}
+
+/// Something went wrong, as a mark: the amber triangle, its words on the
+/// pointer and in its name.
+pub(super) fn alert_mark<'a>(
+    id: impl Into<String>,
+    words: impl Into<String>,
+    c: Colors,
+) -> Element<'a, Message> {
+    let words = words.into();
+    tip(
+        said(
+            id,
+            words.clone(),
+            container(icon(Icon::Alert, c.amber, 13.0)).padding(3),
+        ),
+        words,
+        c,
+    )
 }
 
 pub(super) fn hint<'a>(
@@ -375,20 +432,6 @@ pub(super) fn empty<'a>(extra: Option<Element<'a, Message>>, c: Colors) -> Eleme
         .width(Fill)
         .center_x(Fill)
         .into()
-}
-
-/// A key as a keycap: monospace on a raised tile with a hairline.
-pub(super) fn kbd<'a>(key: impl Into<String>, c: Colors) -> Element<'a, Message> {
-    container(
-        text(key.into())
-            .size(11)
-            .line_height(iced::Pixels(14.0))
-            .font(Font::MONOSPACE)
-            .color(c.muted),
-    )
-    .padding([1, 5])
-    .style(move |_| c.tile(super::style::RADIUS_XS))
-    .into()
 }
 
 /// Status, said the one way: a dot and a word in the same tone.
@@ -1196,7 +1239,12 @@ impl App {
         } else {
             row![heading_row, tools].spacing(16).align_y(Center).into()
         };
-        let mut content = column![header].spacing(16).width(Fill);
+        // Only a project has a header: elsewhere the selected rail row
+        // already names the screen.
+        let mut content = column![].spacing(16).width(Fill);
+        if in_project && self.shell.catalog.selected().is_some() {
+            content = content.push(header);
+        }
         if in_project && let Some(form) = self.pause_form(c) {
             content = content.push(form);
         }
@@ -1220,18 +1268,21 @@ impl App {
                 ));
             }
             content = content.push(attention(
-                column![text(error.clone()).size(14).color(c.amber), controls].spacing(8),
+                row![error_line("drafts-error", error, c), controls]
+                    .spacing(8)
+                    .align_y(Center),
                 c.amber,
                 c,
             ));
         }
         if let Some(error) = &self.shell.error {
             content = content.push(attention(
-                column![
-                    text(error.clone()).size(14).color(c.amber),
+                row![
+                    error_line("page-error", error, c),
                     ghost("dismiss-error", "Dismiss", Some(Message::DismissError))
                 ]
-                .spacing(10),
+                .spacing(8)
+                .align_y(Center),
                 c.amber,
                 c,
             ));
@@ -1393,44 +1444,43 @@ impl App {
     /// to install. A healthy service says nothing, as the status apps
     /// studied do (Docker Desktop, Tailscale); the page keeps its height.
     fn service_chip(&self, r: Colors) -> Option<Element<'_, Message>> {
-        let line = |tone: iced::Color, words: String| {
-            row![
-                container(dot(tone, 7.0, r)).padding([5, 0]),
-                text(words)
-                    .size(12)
-                    .color(r.muted)
-                    .width(Fill)
-                    .wrapping(iced::widget::text::Wrapping::Word),
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Start)
-        };
+        // A dot that says what it means when pointed at, and to a reader.
         let chip: Element<'_, Message> = if self.connected.is_err() {
-            line(r.amber, "Reconnecting to the background service…".into()).into()
+            row![
+                status_dot(
+                    "service-reconnecting",
+                    r.amber,
+                    "Reconnecting to the background service…",
+                    r
+                ),
+                text("Reconnecting…").size(12).color(r.muted),
+            ]
+            .spacing(4)
+            .align_y(Center)
+            .into()
         } else if let Some(version) = self.daemon_behind_now() {
             if self.daemon_restarting() || self.shell.confirm_daemon_restart {
                 // The strip across the bottom has it now.
                 return None;
             }
-            column![
-                line(
+            row![
+                status_dot(
+                    "service-behind",
                     r.amber,
                     format!(
                         "Background service {version} is older than this app ({}).",
                         env!("CARGO_PKG_VERSION")
                     ),
+                    r
                 ),
-                container(ghost(
+                ghost(
                     "daemon-restart",
                     "Restart…",
                     Some(Message::ConfirmDaemonRestart(true)),
-                ))
-                .padding(iced::Padding {
-                    left: 9.0,
-                    ..Default::default()
-                }),
+                ),
             ]
             .spacing(2)
+            .align_y(Center)
             .into()
         } else {
             let version = self.desktop.update_available()?;
@@ -1439,7 +1489,7 @@ impl App {
                 format!("Update {version} available"),
                 row![
                     dot(r.accent_ink, 6.0, r),
-                    text(format!("Update {version} available"))
+                    text(format!("Update {version}"))
                         .size(12)
                         .color(r.accent_ink)
                 ]
@@ -1515,15 +1565,14 @@ impl App {
         let hovered = self.shell.rail_hover.as_deref() == Some(path.as_path());
         let live = self.live_in(&path);
         let done = self.shell.unviewed_in(&self.agents, &path);
-        let mut hint_text = if live > 0 {
-            format!("{live} live agent{}", if live == 1 { "" } else { "s" })
-        } else if entry.pinned {
-            "Pinned · no live agents".to_owned()
-        } else {
-            "Discovered · no live agents".to_owned()
-        };
+        // The mark's tooltip says where the folder is, and what is live
+        // or new there; the row itself is the name.
+        let mut hint_text = shorten_home(&path);
+        if live > 0 {
+            hint_text.push_str(&format!(" · {live} live"));
+        }
         if done > 0 {
-            hint_text.push_str(&format!(" · {done} finished, not yet viewed"));
+            hint_text.push_str(&format!(" · {done} new"));
         }
         let seed = entry.project.id().to_string();
         // One line each, clipped rather than wrapped or drawn over the
@@ -1533,7 +1582,7 @@ impl App {
             .project_standing(&path)
             .0
             .is_some_and(|s| s.calls_for_attention());
-        let mut label = column![
+        let label = column![
             text(name.clone())
                 .size(13.5)
                 .font(weight(if calls {
@@ -1545,14 +1594,6 @@ impl App {
         ]
         .spacing(1)
         .width(Fill);
-        if shared.contains(&name) {
-            label = label.push(
-                text(parent_folder(&path))
-                    .size(11.5)
-                    .color(r.muted)
-                    .wrapping(iced::widget::text::Wrapping::None),
-            );
-        }
         let label = container(label).width(Fill).clip(true);
         let mut content = row![hint(monogram(&name, &seed, 20.0, r), hint_text, c), label]
             .spacing(6)
@@ -1606,7 +1647,18 @@ impl App {
         );
         let row_button = custom(
             format!("project-{}", path.display()),
-            format!("{}{}", if entry.pinned { "• " } else { "" }, name),
+            // Two folders called the same are told apart by where they
+            // are, to a reader as on the mark's tooltip.
+            if shared.contains(&name) {
+                format!(
+                    "{}{} · {}",
+                    if entry.pinned { "• " } else { "" },
+                    name,
+                    parent_folder(&path)
+                )
+            } else {
+                format!("{}{}", if entry.pinned { "• " } else { "" }, name)
+            },
             content,
             Some(Message::SelectProject(path.clone())),
             selected,
@@ -1763,7 +1815,15 @@ impl App {
             let open = self.temporary_fold_open();
             let label = "Temporary".to_owned();
             let mut fold = row![
-                text(if open { "▾" } else { "▸" }).size(11).color(r.muted),
+                icon(
+                    if open {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    },
+                    r.muted,
+                    10.0
+                ),
                 eyebrow(label.clone(), r).width(Fill),
             ]
             .spacing(8)
@@ -2047,15 +2107,17 @@ impl App {
         if let Some(pause) = self.selected_pause() {
             return Some(
                 row![
-                    row![
-                        dot(c.amber, 7.0, c),
-                        text(format!("Paused · {}", first_line(&pause.reason, 48)))
-                            .size(13)
-                            .font(weight(iced::font::Weight::Medium))
-                            .color(c.amber),
-                    ]
-                    .spacing(6)
-                    .align_y(Center),
+                    // Paused is the amber pause mark; why is its tooltip
+                    // and its name.
+                    tip(
+                        said(
+                            "project-paused",
+                            format!("Paused · {}", first_line(&pause.reason, 120)),
+                            container(icon(Icon::Pause, c.amber, 14.0)).padding(3),
+                        ),
+                        first_line(&pause.reason, 120),
+                        c,
+                    ),
                     action(
                         "resume-project",
                         if sending { "Resuming…" } else { "Resume" },
@@ -2063,7 +2125,7 @@ impl App {
                         false
                     ),
                 ]
-                .spacing(10)
+                .spacing(6)
                 .align_y(Center)
                 .into(),
             );
@@ -2081,7 +2143,7 @@ impl App {
                 Kind::Ghost,
                 [7, 8],
             ),
-            "Pause this project's agents…",
+            "Pause agents",
             c,
         ))
     }
@@ -2102,7 +2164,7 @@ impl App {
             let draft_project = root.clone();
             let field = input_submitting(
                 "pause-reason",
-                "Why: what the agents will read",
+                "Reason",
                 reason,
                 move |reason| Message::PauseDraft(draft_project.clone(), reason),
                 connected && !sending,
@@ -2126,20 +2188,14 @@ impl App {
             ]
             .spacing(8)
             .align_y(Center);
-            form = form
-                .push(heading("Pause this project's agents", 14))
-                .push(if self.narrow() {
-                    Element::from(column![field, buttons].spacing(8))
-                } else {
-                    row![container(field).width(Fill), buttons]
-                        .spacing(10)
-                        .align_y(Center)
-                        .into()
-                });
-            form = form.push(small(
-                "They finish what they are doing and claim nothing new until you resume.",
-                c,
-            ));
+            form = form.push(if self.narrow() {
+                Element::from(column![field, buttons].spacing(8))
+            } else {
+                row![container(field).width(Fill), buttons]
+                    .spacing(10)
+                    .align_y(Center)
+                    .into()
+            });
         } else if error.is_none() {
             return None;
         }
@@ -3612,10 +3668,7 @@ impl App {
     /// and where under it, and how long ago at the right.
     fn journal_view(&self, c: Colors) -> Element<'_, Message> {
         if self.journal.is_empty() {
-            return empty(
-                None,
-                c,
-            );
+            return empty(None, c);
         }
         let mut rows = column![].width(Fill);
         for (index, entry) in self.journal.iter().rev().enumerate() {
@@ -3625,9 +3678,9 @@ impl App {
             rows = rows.push(self.history_row(entry, c));
         }
         container(rows)
-        .width(Fill)
-        .style(move |_| c.card_style())
-        .into()
+            .width(Fill)
+            .style(move |_| c.card_style())
+            .into()
     }
 
     /// One journal entry as a row. The kind is said under the line, with

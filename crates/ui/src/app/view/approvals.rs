@@ -1474,10 +1474,7 @@ impl App {
             .filter(|id| threads.iter().any(|(t, _, _)| t == id));
 
         if threads.is_empty() {
-            return empty(
-                None,
-                c,
-            );
+            return empty(None, c);
         }
 
         // Left: who is talking to you, in one card.
