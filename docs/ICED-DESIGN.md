@@ -424,9 +424,12 @@ control does, its id or its accessible label:
   track, a thin scroller in a wash of the ink. A narrow window keeps the
   fixed rail and the one column on view. Lists are rows inside a panel; prose sits in cards; the terminal
   and command output sit in a bezel of the chosen terminal palette's ground.
-  Filters sit left and search right on one row. A status bar says the
-  daemon connection once, as a dot and a word (**Connected — background
-  service**), with the version in mono at the right, so no page repeats them.
+  Filters sit left and search right on one row. The background service is
+  said once, at the rail's foot (`service_chip`), and only when it calls for
+  something: reconnecting, older than the app with **Restart…**
+  (`daemon-restart`), or an update to install (`open-available-update`); a
+  healthy one says nothing, as in Docker Desktop and Tailscale. The bottom
+  strip exists only while a restart is confirmed or under way.
   The agents list is one card of one-line rows separated by rules: the
   standing glyph, the tool's small mark, the name (semibold when it calls for
   the person, muted when ended), and one trailing slot holding the first that
