@@ -29,7 +29,7 @@ pub struct Args {
     /// Actual native Codex executable, not an npm or shell wrapper.
     #[arg(long)]
     program: PathBuf,
-    /// Provider profile; defaults to CODEX_HOME or ~/.codex. Never modified.
+    /// Provider profile; defaults to CODEX_HOME or ~/.codex. Not rewritten by the launcher.
     #[arg(long)]
     profile: Option<PathBuf>,
     /// Checkout for both children; defaults to the current directory and is canonicalized.
@@ -41,9 +41,52 @@ pub struct Args {
     /// Reopen this exact persisted root conversation UUID without a new prompt.
     #[arg(long)]
     resume: Option<uuid::Uuid>,
-    /// Provider configuration flags; initial prompts and resume are not accepted.
+    /// Provider configuration flags; --resume preserves saved permissions. No initial prompt.
     #[arg(last = true, allow_hyphen_values = true)]
     arguments: Vec<String>,
+}
+
+/// Remote resume restores the destination thread's permissions. Codex rejects
+/// direct permission overrides there; refuse them before creating an owner or
+/// provider rather than silently dropping a caller's requested restrictions.
+fn native_arguments(arguments: &[String], resume: bool) -> Result<Vec<String>> {
+    let options = provider_input::codex_arguments(arguments)?;
+    if resume {
+        let mut values = options.iter();
+        while let Some(flag) = values.next() {
+            if flag == "--strict-config" {
+                continue;
+            }
+            let value = values
+                .next()
+                .context("normalized provider option lacks a value")?;
+            if !matches!(flag.as_str(), "-c" | "--config") {
+                continue;
+            }
+            let Some((key, _)) = value.split_once('=') else {
+                continue;
+            };
+            let root = key.trim().split('.').next().unwrap_or_default().trim();
+            // Also refuse a quoted spelling of a permission root. Codex may
+            // reject that spelling as an unknown key; do not start children
+            // for an attempted permission override either way.
+            let root = root.trim_matches(['"', '\'']);
+            ensure!(
+                !matches!(
+                    root,
+                    "approval_policy"
+                        | "approvals_reviewer"
+                        | "default_permissions"
+                        | "sandbox_mode"
+                        | "sandbox_workspace_write"
+                        | "permissions"
+                        | "network"
+                ),
+                "native Codex --resume restores saved permissions and cannot apply launch override {root}; omit this override to reuse saved permissions, or start a new conversation"
+            );
+        }
+    }
+    Ok(options)
 }
 
 fn identity(child: &Child) -> Result<ProcessIdentity> {
@@ -249,6 +292,7 @@ struct Startup<'a> {
     token: &'a str,
     name: Option<String>,
     resume: Option<&'a str>,
+    options: &'a [String],
 }
 
 fn resumed_root(thread: &Value, session: &str, cwd: &Path) -> bool {
@@ -267,6 +311,35 @@ fn resumed_root(thread: &Value, session: &str, cwd: &Path) -> bool {
 }
 
 impl Startup<'_> {
+    fn terminal_command(&self) -> Command {
+        // The terminal reads local configuration too, even with a remote server.
+        // Preserve launch-only settings for both children; do not rewrite the profile.
+        let mut terminal = command(
+            self.program,
+            self.cwd,
+            self.profile,
+            &dirs::home(),
+            self.client,
+        );
+        terminal.args(self.options);
+        if let Some(session) = self.resume {
+            terminal.args(["resume", session]);
+        }
+        terminal
+            .args([
+                "--no-alt-screen",
+                "--remote",
+                &format!("ws://127.0.0.1:{}", self.port),
+                "--remote-auth-token-env",
+                "AGENTDOCKER_NATIVE_CAPABILITY",
+            ])
+            .env("AGENTDOCKER_NATIVE_CAPABILITY", self.token)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        terminal
+    }
+
     async fn witness(&self, server: &mut Child, tui: &mut Option<Child>) -> Result<Binding> {
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut observer = loop {
@@ -281,29 +354,8 @@ impl Startup<'_> {
             }
         };
         // Inherit the physical terminal. No synthetic input or terminal proxy.
-        let mut terminal = command(
-            self.program,
-            self.cwd,
-            self.profile,
-            &dirs::home(),
-            self.client,
-        );
-        if let Some(session) = self.resume {
-            terminal.args(["resume", session]);
-        }
         *tui = Some(
-            terminal
-                .args([
-                    "--no-alt-screen",
-                    "--remote",
-                    &format!("ws://127.0.0.1:{}", self.port),
-                    "--remote-auth-token-env",
-                    "AGENTDOCKER_NATIVE_CAPABILITY",
-                ])
-                .env("AGENTDOCKER_NATIVE_CAPABILITY", self.token)
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
+            self.terminal_command()
                 .spawn()
                 .context("cannot start native Codex terminal")?,
         );
@@ -430,6 +482,7 @@ impl Startup<'_> {
 }
 
 pub async fn run(client: Client, args: Args) -> Result<()> {
+    let options = native_arguments(&args.arguments, args.resume.is_some())?;
     let Some(invitation) = std::env::var_os(lifetime::ENV) else {
         return lifetime::supervise(&client).await;
     };
@@ -449,7 +502,6 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         .or_else(|| std::env::home_dir().map(|home| home.join(".codex")))
         .context("Codex profile unavailable")?
         .canonicalize()?;
-    let options = provider_input::codex_arguments(&args.arguments)?;
     crate::codex_input::call(&client, Request::Ping).await?;
     // Any daemon autostart must precede Windows job admission: the shared
     // daemon belongs to the desktop session, not this native provider owner.
@@ -477,7 +529,7 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         .port();
     let mut server = command(&program, &cwd, &profile, &home, &client)
         .arg("app-server")
-        .args(options)
+        .args(&options)
         .args([
             "--listen",
             &format!("ws://127.0.0.1:{port}"),
@@ -511,6 +563,7 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         token: &token,
         name: args.name,
         resume: resume.as_deref(),
+        options: &options,
     };
     let result = tokio::select! {
         _ = stop_signal() => Ok(()),
@@ -580,6 +633,131 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_remote_resume_rejects_permissions_before_supervision() {
+        let temporary = tempfile::tempdir().unwrap();
+        for key in [
+            "approval_policy",
+            "approvals_reviewer",
+            "default_permissions",
+            "sandbox_mode",
+            "\"sandbox_mode\"",
+            "'approval_policy'",
+            "\"permissions\".fixture",
+            "sandbox_workspace_write.writable_roots",
+            "permissions.fixture",
+            "network.enabled",
+        ] {
+            for argument in [format!("-c={key}=false"), format!("--config= {key} =false")] {
+                let arguments = vec!["--strict-config".into(), argument];
+                assert_eq!(
+                    native_arguments(&arguments, false).unwrap(),
+                    provider_input::codex_arguments(&arguments).unwrap()
+                );
+                let error = run(
+                    Client::new(Some(temporary.path().join("absent.socket"))),
+                    Args {
+                        program: temporary.path().join("missing-provider"),
+                        profile: None,
+                        cwd: None,
+                        name: None,
+                        resume: Some(
+                            uuid::Uuid::parse_str("12345678-1234-1234-1234-123456789abc").unwrap(),
+                        ),
+                        arguments,
+                    },
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("--resume restores saved permissions"),
+                    "{error:#}"
+                );
+                assert_eq!(std::fs::read_dir(temporary.path()).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn native_remote_resume_preserves_nonpermission_configuration_exactly() {
+        let arguments: Vec<String> = [
+            "--model",
+            "approval_policy=literal-model-name",
+            "--enable",
+            "some_feature",
+            "--disable",
+            "apps",
+            "--strict-config",
+            "--config",
+            "tui.show_tooltips=false",
+            "-c",
+            "model_reasoning_effort=\"low\"",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(
+            native_arguments(&arguments, true).unwrap(),
+            provider_input::codex_arguments(&arguments).unwrap()
+        );
+        assert!(native_arguments(&["--config".into()], true).is_err());
+    }
+
+    #[test]
+    fn native_terminal_preserves_launch_only_configuration_on_new_and_resumed_threads() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path();
+        let client = Client::new(Some(path.join("fixture.socket")));
+        let options = provider_input::codex_arguments(&[
+            "--model".into(),
+            "selected-model".into(),
+            "--config".into(),
+            "tui.screen_reader_detection_done=true".into(),
+            "-c".into(),
+            "tui.show_tooltips=false".into(),
+            "--disable".into(),
+            "apps".into(),
+            "--strict-config".into(),
+        ])
+        .unwrap();
+        for resume in [None, Some("12345678-1234-1234-1234-123456789abc")] {
+            let startup = Startup {
+                client: &client,
+                cwd: path,
+                profile: path,
+                program: path,
+                directory: path,
+                port: 12345,
+                token: "private-test-capability",
+                name: None,
+                resume,
+                options: &options,
+            };
+            let command = startup.terminal_command();
+            let actual: Vec<_> = command
+                .as_std()
+                .get_args()
+                .map(|value| value.to_str().unwrap().to_owned())
+                .collect();
+            let mut expected = options.clone();
+            if let Some(session) = resume {
+                expected.extend(["resume".into(), session.into()]);
+            }
+            expected.extend([
+                "--no-alt-screen".into(),
+                "--remote".into(),
+                "ws://127.0.0.1:12345".into(),
+                "--remote-auth-token-env".into(),
+                "AGENTDOCKER_NATIVE_CAPABILITY".into(),
+            ]);
+            assert_eq!(actual, expected);
+            assert!(!actual.iter().any(|argument| argument == startup.token));
+            assert_eq!(std::fs::read_dir(path).unwrap().count(), 0);
+        }
+    }
 
     #[test]
     fn reopen_requires_the_exact_idle_persisted_root_in_its_original_checkout() {
