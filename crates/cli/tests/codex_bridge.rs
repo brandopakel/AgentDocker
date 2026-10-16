@@ -592,7 +592,14 @@ fn a_queued_message_becomes_a_turn_with_a_receipt_proved_from_the_providers_item
             .any(|frame| frame["method"] == "hooks/list"),
         "every turn is preceded by the hook preflight"
     );
-    assert!(bridge.inbox().is_empty() || bridge.inbox()[0]["id"] != second.as_str());
+    // One read: the bridge may take the second message between two, which
+    // emptied the inbox under its own index (seen on CI).
+    let inbox = bridge.inbox();
+    assert!(
+        inbox
+            .first()
+            .is_none_or(|message| message["id"] != second.as_str())
+    );
     bridge.stop();
 }
 

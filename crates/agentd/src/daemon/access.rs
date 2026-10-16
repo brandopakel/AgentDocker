@@ -515,6 +515,87 @@ mod tests {
         assert!(lock(&daemon.state).storage_error.is_some());
     }
     #[tokio::test]
+    async fn restricted_owner_reports_preserve_payload_and_refuse_impersonation() {
+        let (tmp, daemon) = fixture().await;
+        assert!(matches!(
+            daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: "peer".into(),
+                        workdir: Some(tmp.path().join("checkout")),
+                        ..Default::default()
+                    },
+                    pid: None,
+                    session: None,
+                })
+                .await,
+            Response::Agent { .. }
+        ));
+        let Response::Access { grant, token, .. } =
+            daemon.grant_access("credential-fixture", "/workspace".into(), 60)
+        else {
+            panic!("fixture grant failed")
+        };
+        let owner = daemon.resolve("credential-fixture").unwrap().to_string();
+        let requests = [
+            json!({"op": "role", "agent": "credential-fixture", "role": null}),
+            json!({"op": "delivery_queue", "agent": "credential-fixture"}),
+            json!({"op": "report_activity", "agent": "credential-fixture", "observation": {"activity": "idle", "observed_at": "2026-10-16T00:00:00Z"}}),
+            json!({"op": "report_provider", "agent": "credential-fixture", "process_started_at": "2026-10-16T00:00:00Z", "observed_at": "2026-10-16T00:00:00Z", "report": {"state": "recovered", "blocked_at": "2026-10-16T00:00:00Z"}}),
+            json!({"op": "record_emission", "agent": "credential-fixture", "emission": {"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "channel": "mcp", "bytes": 4}}),
+        ];
+        for original in &requests {
+            for actor in ["credential-fixture", owner.as_str(), &owner[..12]] {
+                let mut input = original.clone();
+                input["agent"] = json!(actor);
+                let accepted = daemon
+                    .restricted_request(&token, serde_json::from_value(input).unwrap())
+                    .unwrap();
+                let mut expected = original.clone();
+                expected["agent"] = json!(owner);
+                assert_eq!(serde_json::to_value(accepted).unwrap(), expected);
+            }
+            for actor in ["peer", "unknown-agent"] {
+                let mut input = original.clone();
+                input["agent"] = json!(actor);
+                assert!(matches!(
+                    *daemon
+                        .restricted_request(&token, serde_json::from_value(input).unwrap())
+                        .unwrap_err(),
+                    Response::Error {
+                        code: ErrorCode::Forbidden,
+                        ..
+                    }
+                ));
+            }
+            assert!(matches!(
+                *daemon
+                    .restricted_request(
+                        "invalid-token",
+                        serde_json::from_value(original.clone()).unwrap()
+                    )
+                    .unwrap_err(),
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ));
+        }
+        assert!(matches!(daemon.revoke_access(&grant), Response::Ok));
+        for original in requests {
+            assert!(matches!(
+                *daemon
+                    .restricted_request(&token, serde_json::from_value(original).unwrap())
+                    .unwrap_err(),
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[tokio::test]
     async fn credentials_scope_identity_paths_operations_and_revocation() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("checkout");
