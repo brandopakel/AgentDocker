@@ -37,6 +37,15 @@ so a recurrence names the blocked call instead of ending at nextest's
 private temporary directory and ended after 30 seconds with any partial output
 kept; Linux `/proc/self/task` gives task wait states, not stacks.
 
+
+The Windows daemon smoke's cleanup rescue starts one private daemon and retains
+all readiness probes within its existing ten-second budget, each capped at three
+seconds or the remaining allowance. A timed-out probe does not discard the rest
+of that budget; failure to obtain readiness still fails cleanup. The report keeps
+probe errors/timings, the rescue PID/exit and up to 16 KiB of its startup log.
+Functional assertion failures remain failed even when cleanup succeeds; no trial
+is replayed. This corrects the cleanup loop, not the unexplained Windows latency.
+
 The scheduled workflow runs bounded protocol, resource-key, engine-metadata and token-filter fuzz campaigns. Docker/Podman protocol jobs run on PRs and main pushes. Repeated concurrency soaks, large-checkout latency workloads and the full desktop/OS lifecycle matrix are still required trial work, not existing scheduled coverage. Failed seeds, logs, JUnit, coverage and benchmark outputs are retained with the exact commit and platform. CodeRabbit reviews implementation and test changes; green automated checks and disposition of valid review findings are required before integration.
 
 ## Measurements and thresholds

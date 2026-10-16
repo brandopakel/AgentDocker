@@ -40,6 +40,78 @@ class ManagedSessionCleanup(unittest.TestCase):
         self.assertEqual(inspect.call_count, 2)
 
 
+class CleanupReadiness(unittest.TestCase):
+    def setUp(self):
+        self.now = 0.0
+        self.report = {}
+        self.start = Mock()
+
+    def advance(self, seconds):
+        self.now += seconds
+
+    def wait(self, probe, alive=lambda: True):
+        return WINDOWS_SMOKE.wait_cleanup_start(self.start, probe, alive, self.report,
+                                               clock=lambda: self.now, sleep=self.advance)
+
+    def test_timeout_then_answer_uses_one_start_and_retains_the_timeout(self):
+        calls = []
+
+        def probe(timeout):
+            calls.append(timeout)
+            if len(calls) == 1:
+                self.advance(timeout)
+                raise AssertionError("ping did not exit within 3 s")
+            self.advance(0.2)
+            return True
+
+        result = self.wait(probe)
+        self.start.assert_called_once_with()
+        self.assertEqual(calls, [3, 3])
+        self.assertIsNotNone(result.answered)
+        self.assertLess(result.elapsed, 10)
+        self.assertEqual(self.report["result"], "passed")
+        self.assertIn("did not exit", self.report["probes"][0]["error"])
+        self.assertTrue(self.report["probes"][1]["ready"])
+
+    def test_repeated_timeouts_exhaust_the_original_budget_and_remain_failed(self):
+        deadlines = []
+
+        def probe(timeout):
+            deadlines.append(self.now + timeout)
+            self.advance(timeout)
+            raise AssertionError("ping timeout")
+
+        result = self.wait(probe)
+        self.start.assert_called_once_with()
+        self.assertTrue(all(deadline <= 10 for deadline in deadlines))
+        self.assertLess(self.report["probes"][-1]["timeout_seconds"], 3)
+        self.assertIsNone(result.answered)
+        self.assertLessEqual(result.elapsed, 10.1)
+        self.assertEqual(self.report["result"], "failed")
+        self.assertEqual(len(self.report["probes"]), 4)
+        self.assertTrue(all("error" in item for item in self.report["probes"]))
+
+    def test_daemon_exit_during_a_probe_stops_recovery(self):
+        def probe(timeout):
+            self.advance(1)
+            raise AssertionError("ping timeout")
+
+        result = self.wait(probe, alive=lambda: False)
+        self.start.assert_called_once_with()
+        self.assertTrue(result.exited)
+        self.assertEqual(len(self.report["probes"]), 1)
+        self.assertEqual(self.report["result"], "failed")
+
+    def test_slow_process_creation_does_not_receive_a_new_budget(self):
+        self.start.side_effect = lambda: self.advance(11)
+        probe = Mock()
+        result = self.wait(probe)
+        probe.assert_not_called()
+        self.assertEqual(result.created, 11)
+        self.assertEqual(self.report["probes"], [])
+        self.assertEqual(self.report["result"], "failed")
+
+
 class StartupSampling(unittest.TestCase):
     def step(self, label, ok, detail):
         if not ok:

@@ -97,6 +97,36 @@ def wait_first_start(start, probe, alive, budget=90.0, clock=time.monotonic, sle
     return result
 
 
+def wait_cleanup_start(start, probe, alive, report, clock=time.monotonic, sleep=time.sleep):
+    """Keep cleanup's ten-second readiness budget across bounded probe failures.
+
+    Start exactly once and retain every probe, including timeouts before a later
+    answer. This is fixture recovery, not a retry of any failed acceptance step.
+    """
+    report.update(budget_seconds=10, probe_limit_seconds=3, probes=[])
+
+    def recorded_probe(remaining):
+        timeout = min(3.0, remaining)
+        item = {"timeout_seconds": timeout}
+        report["probes"].append(item)
+        began = clock()
+        try:
+            ready = probe(timeout)
+            item["ready"] = ready
+            return ready
+        except Exception as error:
+            item["error"] = f"{type(error).__name__}: {error}"
+            raise
+        finally:
+            item["elapsed_seconds"] = clock() - began
+
+    result = wait_first_start(start, recorded_probe, alive, budget=10, clock=clock, sleep=sleep)
+    report.update(created_seconds=result.created, answered_seconds=result.answered,
+                  elapsed_seconds=result.elapsed, exited=result.exited,
+                  result="passed" if result.answered is not None else "failed")
+    return result
+
+
 def wait_terminal(inspect, name, seconds=10):
     deadline = time.monotonic() + seconds
     while True:
@@ -1050,12 +1080,26 @@ def main():
         if managed_names:
             try:
                 if run("ping", check=False, timeout=5).returncode != 0:
-                    rescue = subprocess.Popen([str(daemon_binary)], cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    deadline = time.monotonic() + 10
-                    while time.monotonic() < deadline and rescue.poll() is None:
-                        if run("ping", check=False, timeout=3).returncode == 0:
-                            break
-                        time.sleep(0.1)
+                    recovery = report["cleanup_rescue"] = {}
+                    with (root / "cleanup-rescue.log").open("wb") as rescue_log:
+                        def start_rescue():
+                            nonlocal rescue
+                            rescue = subprocess.Popen([str(daemon_binary)], cwd=project, env=env,
+                                                      stdin=subprocess.DEVNULL, stdout=rescue_log,
+                                                      stderr=subprocess.STDOUT)
+                            recovery["pid"] = rescue.pid
+
+                        def probe_rescue(timeout):
+                            response = run("ping", check=False, timeout=timeout)
+                            recovery["probes"][-1].update(returncode=response.returncode,
+                                                        stderr=response.stderr.strip()[:600])
+                            return response.returncode == 0
+
+                        ready = wait_cleanup_start(start_rescue, probe_rescue,
+                                                   lambda: rescue.poll() is None, recovery)
+                    if ready.answered is None:
+                        raise AssertionError("cleanup daemon did not become ready: " + ready.describe()
+                                             + "; " + str(recovery["probes"][-1:]))
                 for name in reversed(managed_names):
                     try:
                         record = inspect_agent(name, missing_ok=True)
@@ -1094,9 +1138,22 @@ def main():
                 report.setdefault("cleanup", []).append(f"owner cleanup: {error}")
             finally:
                 owner.close()
-        if rescue is not None and rescue.poll() is None:
-            rescue.kill()
-            rescue.wait(timeout=10)
+        if rescue is not None:
+            try:
+                if rescue.poll() is None:
+                    rescue.kill()
+                rescue.wait(timeout=10)
+                report["cleanup_rescue"]["exit_code"] = rescue.returncode
+            except Exception as error:
+                report.setdefault("cleanup", []).append(f"rescue cleanup: {error}")
+            try:
+                with (root / "cleanup-rescue.log").open("rb") as source:
+                    source.seek(0, os.SEEK_END)
+                    size = source.tell()
+                    source.seek(max(0, size - 16384))
+                    report["cleanup_rescue"].update(log_size=size, log_tail=source.read(16384).decode(errors="replace"))
+            except OSError as error:
+                report["cleanup_rescue"]["log_unavailable"] = str(error)
         if daemon is not None and daemon.poll() is None:
             daemon.kill()
             daemon.wait()

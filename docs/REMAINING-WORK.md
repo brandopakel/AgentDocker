@@ -33,9 +33,16 @@ request was permitted by the daemon but missing from the oracle's allowlist.
 The original crash and logs are retained and reproduced locally. The correction
 covers all five omitted owner-only operations and tests impersonation before
 identity rewriting. The saved crash replay, 35 credential cases and a 120-second
-token-filter campaign passed. The standard gate and final review/CI remain
-required before release.
-This correction changes test coverage, not the restricted endpoint's permissions.
+token-filter campaign passed. Source eee8393f then passed the standard gate,
+review and all four Linux fuzz targets. Windows run 38940623574 passed all 62
+extracted-package checks but failed cleanup: a three-second probe timeout escaped
+the rescue daemon's ten-second readiness loop. Cleanup now retains timed-out
+probes within that same budget, fails explicitly if no answer arrives, and saves
+the rescue process's startup log. The original failure is retained; its OS-level
+latency cause and the separate historical first-start failures remain unknown.
+Final corrected-source review/CI and hosted acceptance are required before release.
+These corrections change test coverage/cleanup, not endpoint permissions or
+production startup deadlines.
 
 The beta.14 candidate now also refuses a one-step merge while Git has an
 operation in progress, including detached rebase and sequencer states. The
