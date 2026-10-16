@@ -383,7 +383,7 @@ enum Msg {
     /// daemon started (its id and that process's start), or why it is not.
     Reconnected(Result<(String, Option<chrono::DateTime<chrono::Utc>>), String>),
     SessionSent(String, Result<QueuedSend, String>),
-    DenyNoteSent(MessageId, Result<(), String>),
+    DenyNoteSent(MessageId, Result<(), shell::NoteFailure>),
     /// `Err` when the daemon does not know conversations at all.
     Conversations(Result<Vec<agentdocker_core::ConversationSummary>, String>),
     History(String, u64, Vec<agentdocker_core::ArchivedMessage>),
@@ -867,6 +867,18 @@ impl App {
                         entry.draft.complete(Err(reason.into()));
                     }
                 }
+                // Never queued, so certainly not sent: the note goes to the
+                // message box, which says so itself.
+                Cmd::DenyNote(question, ..) => {
+                    if let Some(note) = self.shell.deny_notes.get_mut(&question) {
+                        note.failed = Some(shell::NoteFailure {
+                            reason: reason.into(),
+                            certain: true,
+                        });
+                    }
+                    self.place_failed_notes();
+                    return;
+                }
                 // A conversation draft that could not be queued is told so,
                 // or it would stay "sending" and never be retried.
                 Cmd::ConversationSend { draft, .. } => {
@@ -1306,6 +1318,7 @@ impl App {
                         Ok(()) => {
                             // A denial written with words: they go to the
                             // agent now the denial is accepted.
+                            let mut note_send = None;
                             let note = self
                                 .shell
                                 .answers
@@ -1349,7 +1362,8 @@ impl App {
                                         failed: None,
                                     },
                                 );
-                                self.send(Cmd::DenyNote(id.clone(), question.from.clone(), text));
+                                note_send =
+                                    Some(Cmd::DenyNote(id.clone(), question.from.clone(), text));
                             }
                             self.shell.forms.remove(&id);
                             if self.shell.answers.remove(&id).is_some() {
@@ -1364,6 +1378,11 @@ impl App {
                                 self.shell.reveal_next_question = true;
                             }
                             self.say("answered");
+                            // After the answer is told, so a note the queue
+                            // will not take says so last.
+                            if let Some(cmd) = note_send {
+                                self.send(cmd);
+                            }
                         }
                         // The draft stays exactly where it was, so nothing
                         // typed is lost to a daemon that was not listening.
@@ -1673,6 +1692,8 @@ impl App {
                 Msg::DenyNoteSent(question, result) => match result {
                     Ok(()) => {
                         if let Some(note) = self.shell.deny_notes.remove(&question) {
+                            // Its saved copy goes with it.
+                            self.shell.drafts.changed();
                             let name = self.name_of(&note.agent);
                             self.say(format!("Told {name} why"));
                         }
@@ -3434,9 +3455,22 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 links: Vec::new(),
             }) {
                 Ok(Response::Sent { .. }) => Ok(()),
-                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
-                Ok(other) => Err(unexpected_reply(&other)),
-                Err(error) => Err(format!("{error:#}")),
+                Ok(other) => Err(shell::NoteFailure {
+                    reason: unexpected_reply(&other),
+                    certain: false,
+                }),
+                // The daemon answered no: certainly not sent. Anything
+                // else may have been committed before the answer was lost.
+                Err(error) => Err(match error.downcast_ref::<crate::client::RemoteError>() {
+                    Some(refused) => shell::NoteFailure {
+                        reason: crate::client::explain(&refused.message),
+                        certain: true,
+                    },
+                    None => shell::NoteFailure {
+                        reason: format!("{error:#}"),
+                        certain: false,
+                    },
+                }),
             };
             Some(Msg::DenyNoteSent(question, result))
         }
@@ -5029,6 +5063,32 @@ pub(crate) mod tests {
         assert!(!app.sending.contains(&id));
         assert!(app.connected.is_ok());
         assert!(app.status.contains("question expired"));
+    }
+
+    /// A denial note the daemon refused was certainly not sent; one whose
+    /// answer never came may have been.
+    #[cfg(unix)]
+    #[test]
+    fn a_denial_note_tells_a_refusal_from_a_lost_answer() {
+        use serde_json::json;
+        let question = MessageId::from("fixture-question".to_owned());
+        for (reply, certain) in [
+            (
+                Some(json!({"type":"error", "code":"paused", "message":"the project is paused"})),
+                true,
+            ),
+            (None, false),
+        ] {
+            let replies = command_with_replies(
+                Cmd::DenyNote(question.clone(), "asker".into(), "Denied: why".into()),
+                vec![(json!({"op":"send", "to":"asker"}), reply)],
+            );
+            let failure = replies.iter().find_map(|message| match message {
+                Msg::DenyNoteSent(id, Err(failure)) if *id == question => Some(failure),
+                _ => None,
+            });
+            assert_eq!(failure.map(|f| f.certain), Some(certain));
+        }
     }
 
     #[cfg(unix)]
