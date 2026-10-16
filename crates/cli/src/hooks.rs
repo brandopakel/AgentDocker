@@ -199,6 +199,32 @@ fn uncoordinated(input: &HookInput) -> bool {
     })
 }
 
+/// A session already registered before its folder was taken off the list
+/// still ends cleanly: a turn's end gives back the leases this adapter
+/// took, and the session's end its record and the rest. Nothing else — no
+/// guard, no context, no new registration.
+async fn uncoordinated_cleanup<B: Backend>(backend: &B, input: &HookInput) -> Result<()> {
+    match input.hook_event_name.as_str() {
+        "Stop" => {
+            if let Some(me) = session_agent(backend, input).await? {
+                release_held(backend, &me, None, true).await?;
+            }
+        }
+        "SessionEnd" => {
+            if let Some(me) = session_agent(backend, input).await? {
+                release_held(backend, &me, None, false).await?;
+                backend
+                    .call(Request::Deregister {
+                        agent: me.id.to_string(),
+                    })
+                    .await?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub async fn run(client: Client, args: HookArgs) -> Result<()> {
     // A hook that has to start the daemon may wait a moment, not stall
     // the editor: it fails open past this.
@@ -224,6 +250,12 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             };
             input.runtime = Some("opencode");
             if uncoordinated(&input) {
+                let cleanup = uncoordinated_cleanup(&client, &input);
+                if let Ok(Err(error)) =
+                    tokio::time::timeout(std::time::Duration::from_secs(1), cleanup).await
+                {
+                    eprintln!("agentdocker hook opencode: {error:#}");
+                }
                 return Ok(());
             }
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
@@ -303,6 +335,12 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                 }
             };
             if uncoordinated(&input) {
+                let cleanup = uncoordinated_cleanup(&client, &input);
+                if let Ok(Err(error)) =
+                    tokio::time::timeout(std::time::Duration::from_secs(1), cleanup).await
+                {
+                    eprintln!("agentdocker hook: {error:#}");
+                }
                 return Ok(());
             }
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
@@ -3593,6 +3631,50 @@ mod tests {
             "a session's end gives everything back"
         );
         assert!(matches!(&requests[2], Request::Deregister { agent } if agent == me.id.as_str()));
+    }
+
+    /// A folder taken off the list leaves its sessions alone, but one that
+    /// was registered still gives back its leases at a turn's end and its
+    /// record at the session's end; anything else asks the daemon nothing.
+    #[tokio::test]
+    async fn an_uncoordinated_session_still_ends_cleanly() {
+        let me = agent("claude-01234567", true);
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Leases { leases: vec![] },
+            Response::Agent { agent: me.clone() },
+        ]);
+        uncoordinated_cleanup(&backend, &input("SessionEnd"))
+            .await
+            .unwrap();
+        let requests = backend.requests();
+        assert!(matches!(
+            &requests[1],
+            Request::ReleaseAll {
+                only_automatic: false,
+                ..
+            }
+        ));
+        assert!(matches!(&requests[2], Request::Deregister { agent } if agent == me.id.as_str()));
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Leases { leases: vec![] },
+        ]);
+        uncoordinated_cleanup(&backend, &input("Stop"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            &backend.requests()[1],
+            Request::ReleaseAll {
+                only_automatic: true,
+                ..
+            }
+        ));
+        let backend = Mock::with(vec![]);
+        uncoordinated_cleanup(&backend, &input("PreToolUse"))
+            .await
+            .unwrap();
+        assert!(backend.requests().is_empty());
     }
 
     #[tokio::test]
