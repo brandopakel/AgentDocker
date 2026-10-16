@@ -9,7 +9,7 @@
 use super::icons::{Icon, icon};
 use super::style::{Colors, RADIUS_LG, RADIUS_MD, RADIUS_SM, UI, alpha, mix, weight};
 use super::view::{
-    dot, empty, heading, kv_list, note, notice_line, rule, section, segmented, small, status_word,
+    dot, empty, heading, kv_list, note, rule, section, segmented, small, status_word,
 };
 use super::*;
 use crate::controls::{Kind, button as action, custom, ghost, input, primary, segment};
@@ -83,22 +83,6 @@ fn frame<'a>(content: impl Into<Element<'a, Message>>, c: Colors) -> Element<'a,
         .width(Fill)
         .style(move |_| c.card_style())
         .into()
-}
-
-/// A notice that something went wrong: an amber wash, a dot and the words.
-fn alert<'a>(words: impl Into<String>, c: Colors) -> Element<'a, Message> {
-    container(
-        row![
-            dot(c.amber, 7.0, c),
-            text(words.into()).size(13).color(c.text).width(Fill)
-        ]
-        .spacing(10)
-        .align_y(Center),
-    )
-    .padding([10, 14])
-    .width(Fill)
-    .style(move |_| c.attention_style(c.amber))
-    .into()
 }
 
 /// Rows separated by rules inset to the row padding, for a card body.
@@ -322,35 +306,6 @@ fn stepper<'a>(
         ..Default::default()
     })
     .into()
-}
-
-/// A key or a key combination as keycaps: each key on its own small tile.
-fn keys<'a>(combination: &[&str], c: Colors) -> Element<'a, Message> {
-    let mut caps = row![].spacing(3).align_y(Center);
-    for key in combination {
-        caps = caps.push(
-            container(
-                text((*key).to_owned())
-                    .size(11)
-                    .line_height(iced::Pixels(16.0))
-                    .font(MEDIUM)
-                    .color(c.muted)
-                    .center(),
-            )
-            .padding([1, 6])
-            .width(Length::Shrink)
-            .style(move |_| container::Style {
-                background: Some(c.raised.into()),
-                border: Border {
-                    color: c.line_strong,
-                    width: 1.0,
-                    radius: 5.0.into(),
-                },
-                ..Default::default()
-            }),
-        );
-    }
-    caps.into()
 }
 
 /// A disclosure: muted words and a chevron that says which way it opens.
@@ -1293,7 +1248,7 @@ impl App {
                         ),
                     ),
                     setting(
-                        "When an agent finishes or waits",
+                        "Notifications",
                         switch(
                             "notify-finished",
                             if s.notify_finished {
@@ -1307,7 +1262,7 @@ impl App {
                         ),
                     ),
                     setting(
-                        "Roomier rows",
+                        "Roomy rows",
                         switch(
                             "roomy-rows",
                             if s.roomy {
@@ -1334,7 +1289,7 @@ impl App {
             rows_body(
                 vec![
                     setting(
-                        "Text size",
+                        "Terminal text",
                         stepper(
                             (
                                 "smaller-terminal",
@@ -1352,74 +1307,7 @@ impl App {
                             c,
                         ),
                     ),
-                    field_row("Palette", swatches.wrap().vertical_spacing(12)),
-                ],
-                c,
-            ),
-            c,
-        );
-        let mac = cfg!(target_os = "macos");
-        let shortcut =
-            |what: &'static str, combos: Vec<Vec<&'static str>>| -> Element<'_, Message> {
-                let mut alternatives = row![].spacing(6).align_y(Center);
-                for (index, combo) in combos.iter().enumerate() {
-                    if index > 0 {
-                        alternatives = alternatives.push(text("or").size(12).color(c.faint));
-                    }
-                    alternatives = alternatives.push(keys(combo, c));
-                }
-                container(
-                    row![text(what).size(13).width(Fill), alternatives]
-                        .spacing(16)
-                        .align_y(Center),
-                )
-                .padding([6, 14])
-                .width(Fill)
-                .into()
-            };
-        let keyboard = form_section(
-            "Keyboard and accessibility",
-            rows_body(
-                vec![
-                    shortcut(
-                        "Jump to a place, project or action",
-                        vec![if mac {
-                            vec!["⌘", "K"]
-                        } else {
-                            vec!["Ctrl", "K"]
-                        }],
-                    ),
-                    shortcut("Move between controls", vec![vec!["Tab"], vec!["⇧", "Tab"]]),
-                    shortcut(
-                        "Activate the focused control",
-                        vec![vec!["Enter"], vec!["Space"]],
-                    ),
-                    shortcut(
-                        "Switch sections",
-                        vec![if mac {
-                            vec!["⌘", "1–4"]
-                        } else {
-                            vec!["Ctrl", "1–4"]
-                        }],
-                    ),
-                    shortcut("Close details or a draft launch form", vec![vec!["Esc"]]),
-                    shortcut("Leave terminal input", vec![vec!["F6"]]),
-                    shortcut(
-                        "Detach the terminal",
-                        vec![if mac {
-                            vec!["⌃", "]"]
-                        } else {
-                            vec!["Ctrl", "]"]
-                        }],
-                    ),
-                    shortcut(
-                        "Copy the terminal selection",
-                        if mac {
-                            vec![vec!["⌘", "C"]]
-                        } else {
-                            vec![vec!["Ctrl", "⇧", "C"]]
-                        },
-                    ),
+                    field_row("Terminal colours", swatches.wrap().vertical_spacing(12)),
                 ],
                 c,
             ),
@@ -1427,7 +1315,7 @@ impl App {
         );
         let mut installation_rows = vec![
             setting(
-                "Daily update checks",
+                "Update checks",
                 switch(
                     "automatic-update-checks",
                     if self.shell.catalog.updates.enabled {
@@ -1443,7 +1331,7 @@ impl App {
                 ),
             ),
             setting(
-                "Installation and versions",
+                "Installation",
                 custom(
                     "installation",
                     "Manage installation and retained versions",
@@ -1465,10 +1353,9 @@ impl App {
         ];
         if self.desktop.update_check_error {
             installation_rows.push(
-                container(notice_line(
+                container(super::view::alert_mark(
+                    "update-check-failed",
                     "Couldn’t check for updates.",
-                    Some("Try again in Installation.".to_owned()),
-                    c.amber,
                     c,
                 ))
                 .padding([10, 16])
@@ -1476,25 +1363,7 @@ impl App {
             );
         }
         let installation = form_section("Installation", rows_body(installation_rows, c), c);
-        let diagnostics = form_section(
-            "Diagnostics",
-            container(kv_list(
-                vec![
-                    (
-                        "Local daemon".to_owned(),
-                        mono(self.socket.clone(), 12, c.text).into(),
-                    ),
-                    (
-                        "Preferences".to_owned(),
-                        mono(tilde(&self.home.join("workspace.json")), 12, c.text).into(),
-                    ),
-                ],
-                c,
-            ))
-            .padding([12, 16]),
-            c,
-        );
-        column![appearance, terminal, keyboard, installation, diagnostics]
+        column![appearance, terminal, installation]
             .spacing(20)
             .into()
     }
@@ -1852,10 +1721,14 @@ impl App {
         let p = &self.desktop;
         let mut screen = column![self.update_banner(c)].spacing(16);
         if p.busy {
-            screen = screen.push(notice_line("Verifying installation…", None, c.accent, c));
+            screen = screen.push(super::view::said(
+                "installation-busy",
+                "Verifying installation…",
+                icon(Icon::Ring, c.accent, 14.0),
+            ));
         }
         if let Some(error) = &p.error {
-            screen = screen.push(alert(error.clone(), c));
+            screen = screen.push(super::view::error_line("installation-error", error, c));
         }
         if let Some(report) = p
             .report
@@ -1868,7 +1741,7 @@ impl App {
         let narrow = self.narrow();
         let source_input = input(
             "desktop-source",
-            "Application bundle or extracted package",
+            "Package",
             &p.source,
             Message::DesktopSource,
         );
@@ -1892,7 +1765,7 @@ impl App {
                 "Prefix",
                 input(
                     "desktop-prefix",
-                    "Installation prefix (empty uses your home)",
+                    "Prefix",
                     &p.prefix,
                     Message::DesktopPrefix,
                 ),
@@ -2045,19 +1918,37 @@ impl App {
             sentence = "Couldn’t reach the release feed. Try again.".to_owned();
         }
         if p.checking_updates {
-            actions = actions.push(small("Checking…", c));
+            actions = actions.push(super::view::said(
+                "update-checking",
+                "Checking…",
+                icon(Icon::Ring, c.accent, 14.0),
+            ));
         }
-        let disc = container(icon(glyph, tone, 18.0))
-            .center(36)
-            .style(move |_| c.dot(alpha(tone, if c.dark { 0.16 } else { 0.12 })));
-        let mut words = column![
-            text(headline).size(14).font(MEDIUM),
-            text(sentence).size(13).color(c.muted)
-        ]
-        .spacing(2)
-        .width(Fill);
+        // The disc says the state; its words are its tooltip and name, and
+        // the line beside it is the version alone.
+        let version_line = headline
+            .rsplit_once(" — ")
+            .map(|(_, version)| version.to_owned())
+            .or_else(|| installed.map(|v| v.to_string()))
+            .unwrap_or_default();
+        let disc = super::view::tip(
+            super::view::said(
+                "update-state",
+                format!("{headline}. {sentence}"),
+                container(icon(glyph, tone, 18.0))
+                    .center(36)
+                    .style(move |_| c.dot(alpha(tone, if c.dark { 0.16 } else { 0.12 }))),
+            ),
+            sentence.clone(),
+            c,
+        );
+        let mut words = row![text(version_line).size(14).font(MEDIUM)]
+            .spacing(6)
+            .align_y(Center)
+            .width(Fill);
         if update.is_some_and(|u| u["state_schema_change"] == true) {
-            words = words.push(small(
+            words = words.push(super::view::alert_mark(
+                "update-schema-change",
                 "This release changes the daemon's state schema: after installing, rollback needs a matching state backup.",
                 c,
             ));
@@ -2120,9 +2011,14 @@ impl App {
         }
         match status {
             Some(installation) if installation.is_null() => rows.push(
-                container(note("No managed installation at this prefix.", c))
-                    .padding([10, 16])
-                    .into(),
+                container(super::view::status_dot(
+                    "installation-none",
+                    c.faint,
+                    "No managed installation at this prefix.",
+                    c,
+                ))
+                .padding([10, 16])
+                .into(),
             ),
             Some(installation) => {
                 for (key, word, tone) in [
@@ -2150,14 +2046,7 @@ impl App {
                 Some(version) => {
                     rows.push(version_row(version.to_owned(), None, "Current", c.green))
                 }
-                None => rows.push(
-                    container(note(
-                        "Show installed versions to read what is installed at this prefix.",
-                        c,
-                    ))
-                    .padding([10, 16])
-                    .into(),
-                ),
+                None => {}
             },
         }
         let mut maintenance = row![].spacing(4).align_y(Center);
@@ -2214,7 +2103,11 @@ impl App {
                 ));
             }
             if facts.is_empty() {
-                body = body.push(note("Nothing to remove.", c));
+                body = body.push(super::view::said(
+                    "nothing-to-remove",
+                    "Nothing to remove.",
+                    icon(Icon::Check, c.faint, 14.0),
+                ));
             } else {
                 body = body.push(kv_list(facts, c));
             }
@@ -2304,10 +2197,10 @@ impl App {
             card = card.push(rule(c)).push(
                 container(
                     row![
-                        container(status_word("Waiting for you", c.amber, c)).width(Fill),
+                        Space::new().width(Fill),
                         primary(
                             "desktop-apply",
-                            "Apply this reviewed plan",
+                            "Apply",
                             p.apply().map(|_| Message::DesktopApply),
                         )
                     ]
@@ -2324,19 +2217,7 @@ impl App {
                 }),
             );
         }
-        let title_text = if preview {
-            "Review this plan"
-        } else {
-            "Installation report"
-        };
-        frame(
-            column![
-                container(heading(title_text, 15)).padding([12, 16]),
-                rule(c),
-                card
-            ],
-            c,
-        )
+        frame(card, c)
     }
 }
 
