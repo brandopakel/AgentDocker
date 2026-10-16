@@ -361,6 +361,12 @@ struct State {
     discovered: Discovered,
     store: Store,
     storage_error: Option<String>,
+    /// Since when the change ledger has missed nothing in each checkout,
+    /// by its project directory: from when the watcher began watching
+    /// it, moved forward by every event the watcher lost, and gone while
+    /// nothing watches it. Only a read taken since then in that checkout
+    /// can be explained by the ledger.
+    ledger_since: HashMap<PathBuf, DateTime<Utc>>,
     /// Whether this process may write the database. Serving is the
     /// ordinary case. Offering a transfer stops every writer here,
     /// request or tick, until the successor accepts (this process exits
@@ -1630,6 +1636,7 @@ impl Daemon {
                 discovered: Discovered::default(),
                 store,
                 storage_error: None,
+                ledger_since: HashMap::new(),
                 coordination: match pending_transfer {
                     Some(transfer) => Coordination::Quiescing {
                         transfer: transfer.id,
@@ -3824,6 +3831,25 @@ impl Daemon {
         *lock(&self.watcher_flush) = Some(sender);
     }
 
+    /// The watcher now records every change in `dir`, or no longer does.
+    pub fn ledger_covers(&self, dir: &Path, covered: bool) {
+        let mut state = lock(&self.state);
+        if covered {
+            state.ledger_since.insert(dir.to_path_buf(), Utc::now());
+        } else {
+            state.ledger_since.remove(dir);
+        }
+    }
+
+    /// The watcher lost events: no checkout's ledger accounts for anything
+    /// before now.
+    pub fn ledger_gap(&self) {
+        let now = Utc::now();
+        for since in lock(&self.state).ledger_since.values_mut() {
+            *since = now;
+        }
+    }
+
     /// A watcher is about to be spawned: registrations arriving before it
     /// has handed over its channel wait for it, within the same bound,
     /// instead of taking startup for no watcher at all.
@@ -3942,19 +3968,26 @@ impl Daemon {
         if !needs_flush {
             return;
         }
+        self.flush_ledger().await;
+    }
+
+    /// Ask the watcher to record what it has pending and wait for it to
+    /// say so. False when there is no watcher, or it did not confirm in
+    /// time: changes made before this call may then be missing from the
+    /// ledger.
+    pub(super) async fn flush_ledger(&self) -> bool {
         let sender = lock(&self.watcher_flush).clone();
         let Some(sender) = sender else {
-            return;
+            return false;
         };
         // Bound both queue admission and acknowledgement: a full channel must
-        // never leave a release waiting indefinitely for the watcher.
-        let _ = tokio::time::timeout(WATCHER_FLUSH_TIMEOUT, async {
+        // never leave a caller waiting indefinitely for the watcher.
+        tokio::time::timeout(WATCHER_FLUSH_TIMEOUT, async {
             let (ack, done) = oneshot::channel();
-            if sender.send(ack).await.is_ok() {
-                let _ = done.await;
-            }
+            sender.send(ack).await.is_ok() && done.await.is_ok()
         })
-        .await;
+        .await
+        .unwrap_or(false)
     }
 
     /// An absolute path made relative to the checkout containing it;
@@ -19692,6 +19725,7 @@ deny = ["send:all"]
         let me = register_in(&daemon, "me", work.path()).await;
         let project = me.project.clone().unwrap();
         let root = project.dir().to_path_buf();
+        watch_ledger(&daemon, &root);
         std::fs::create_dir_all(root.join("repro")).unwrap();
         std::fs::write(root.join("repro/a.txt"), "a").unwrap();
         std::fs::write(root.join("repro/b.txt"), "b").unwrap();
@@ -19767,6 +19801,163 @@ deny = ["send:all"]
             "names the file to reread"
         );
         assert!(stale("repro/sub/new.txt").await.is_empty());
+    }
+
+    /// A watcher for `checkout` that records nothing on its own and
+    /// confirms every flush: what the ledger holds is what a test put there.
+    fn watch_ledger(daemon: &Daemon, checkout: &Path) {
+        let (sender, mut receiver) = mpsc::channel::<oneshot::Sender<()>>(8);
+        daemon.set_watcher_flush(sender);
+        daemon.ledger_covers(checkout, true);
+        tokio::spawn(async move {
+            while let Some(ack) = receiver.recv().await {
+                let _ = ack.send(());
+            }
+        });
+    }
+
+    /// The ledger clears a changed observation only when it can have seen
+    /// every change behind it: a page cut short, a watcher that has not
+    /// confirmed its pending events, or a checkout nothing watched since the
+    /// read all leave the target stale, however innocent the page looks.
+    /// A file read and since removed stays stale; a path never seen does not.
+    #[tokio::test]
+    async fn stale_trusts_the_ledger_only_as_far_as_it_reaches() {
+        let home = TempDir::new().unwrap();
+        let work = TempDir::new().unwrap();
+        let daemon = open(&home);
+        let me = register_in(&daemon, "me", work.path()).await;
+        let project = me.project.clone().unwrap();
+        let root = project.dir().to_path_buf();
+        std::fs::create_dir_all(root.join("repro")).unwrap();
+        std::fs::write(root.join("repro/a.txt"), "a").unwrap();
+        std::fs::write(root.join("repro/gone.txt"), "g").unwrap();
+        let (sender, mut flushes) = mpsc::channel::<oneshot::Sender<()>>(8);
+        daemon.set_watcher_flush(sender);
+        daemon.ledger_covers(&root, true);
+        let observe = |path: &'static str| {
+            let daemon = daemon.clone();
+            async move {
+                assert!(matches!(
+                    daemon
+                        .handle(Request::Observe {
+                            agent: "me".into(),
+                            paths: vec![path.into()],
+                        })
+                        .await,
+                    Response::Reads { .. }
+                ));
+            }
+        };
+        let stale = |path: &'static str| {
+            let daemon = daemon.clone();
+            tokio::spawn(async move {
+                match daemon
+                    .handle(Request::Stale {
+                        agent: "me".into(),
+                        paths: vec![path.into()],
+                    })
+                    .await
+                {
+                    Response::Stale { stale } => stale,
+                    other => panic!("unexpected {other:?}"),
+                }
+            })
+        };
+        let change = |checkout: &Path, path: &str, by: Attribution| Change {
+            seq: 0,
+            project: project.id(),
+            checkout: Some(checkout.to_path_buf()),
+            worktree: None,
+            path: path.into(),
+            kind: ChangeKind::Modified,
+            at: Utc::now(),
+            by,
+            head: None,
+        };
+        let mine = || Attribution::Agent {
+            agent: me.id.clone(),
+            lease: agentdocker_core::LeaseId::generate(),
+            note: None,
+        };
+        observe("repro").await;
+        std::fs::write(root.join("repro/a.txt"), "a2").unwrap();
+        lock(&daemon.state)
+            .store
+            .append_change(&change(&root, "repro/a.txt", mine()))
+            .unwrap();
+        // The watcher drains an external write it had not yet recorded
+        // before it confirms the flush: the check must wait for it.
+        let asked = stale("repro/a.txt");
+        let ack = flushes.recv().await.unwrap();
+        lock(&daemon.state)
+            .store
+            .append_change(&change(&root, "repro/a.txt", Attribution::External))
+            .unwrap();
+        ack.send(()).unwrap();
+        assert_eq!(asked.await.unwrap().len(), 1, "delayed external write");
+        // Reread, then only my own edit since: clear, once confirmed.
+        observe("repro").await;
+        std::fs::write(root.join("repro/a.txt"), "a3").unwrap();
+        lock(&daemon.state)
+            .store
+            .append_change(&change(&root, "repro/a.txt", mine()))
+            .unwrap();
+        let asked = stale("repro/a.txt");
+        flushes.recv().await.unwrap().send(()).unwrap();
+        assert!(asked.await.unwrap().is_empty(), "my own edit, confirmed");
+        // A watcher that never confirms proves nothing.
+        let asked = stale("repro/a.txt");
+        drop(flushes.recv().await.unwrap());
+        assert_eq!(asked.await.unwrap().len(), 1, "unconfirmed flush");
+        // Nor does a ledger that stopped watching the checkout.
+        daemon.ledger_covers(&root, false);
+        let asked = stale("repro/a.txt");
+        flushes.recv().await.unwrap().send(()).unwrap();
+        assert_eq!(asked.await.unwrap().len(), 1, "unwatched checkout");
+        daemon.ledger_covers(&root, true);
+        // A full page is partial even when another checkout's entries fill
+        // it and the rest is my own.
+        observe("repro").await;
+        std::fs::write(root.join("repro/a.txt"), "a4").unwrap();
+        {
+            let state = lock(&daemon.state);
+            let elsewhere = work.path().join("elsewhere");
+            for _ in 0..500 {
+                state
+                    .store
+                    .append_change(&change(&elsewhere, "repro/a.txt", Attribution::External))
+                    .unwrap();
+            }
+            state
+                .store
+                .append_change(&change(&root, "repro/a.txt", mine()))
+                .unwrap();
+        }
+        let asked = stale("repro/a.txt");
+        flushes.recv().await.unwrap().send(()).unwrap();
+        assert_eq!(asked.await.unwrap().len(), 1, "partial page");
+        // A file I read that someone removed is stale; a path never seen
+        // there is not.
+        observe("repro/gone.txt").await;
+        std::fs::remove_file(root.join("repro/gone.txt")).unwrap();
+        lock(&daemon.state)
+            .store
+            .append_change(&Change {
+                kind: ChangeKind::Removed,
+                ..change(&root, "repro/gone.txt", Attribution::External)
+            })
+            .unwrap();
+        let asked = stale("repro/gone.txt");
+        flushes.recv().await.unwrap().send(()).unwrap();
+        let gone = asked.await.unwrap();
+        assert_eq!(gone.len(), 1, "read, then removed");
+        assert_eq!(gone[0].path, root.join("repro/gone.txt"));
+        assert!(gone[0].reason.contains("removed"), "{}", gone[0].reason);
+        assert!(stale("repro/never.txt").await.unwrap().is_empty());
+        // Looking again records the absence, and writing it back is fine.
+        observe("repro/gone.txt").await;
+        assert!(stale("repro/gone.txt").await.unwrap().is_empty());
     }
 
     #[tokio::test]

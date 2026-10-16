@@ -7,13 +7,16 @@ use std::path::{Path, PathBuf};
 const MAX_FILES: usize = 20_000;
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
+/// The fingerprint of a path with nothing there.
+pub const MISSING: &str = "missing";
+
 /// Hash a file or an ignore-aware directory tree. Refuse special files and
 /// oversized trees; a failed observation must never become a fresh read mark.
 pub fn fingerprint(path: &Path) -> io::Result<String> {
     let mut entries = BTreeMap::new();
     let mut budget = MAX_BYTES;
     match std::fs::symlink_metadata(path) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok("missing".into()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(MISSING.into()),
         Err(e) => return Err(e),
         Ok(m) if !m.is_dir() => return file_digest(path, &mut budget),
         Ok(_) => {}

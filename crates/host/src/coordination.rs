@@ -80,7 +80,7 @@ mod tests {
         std::fs::create_dir_all(lab.join("reproductions/e2e")).unwrap();
         std::fs::create_dir_all(&other).unwrap();
         assert!(!excluded(home.path(), &lab));
-        write(home.path(), &[lab.clone()]).unwrap();
+        write(home.path(), std::slice::from_ref(&lab)).unwrap();
         assert!(excluded(home.path(), &lab));
         assert!(excluded(home.path(), &lab.join("reproductions/e2e")));
         assert!(!excluded(home.path(), &other));

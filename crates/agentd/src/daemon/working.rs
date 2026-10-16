@@ -167,12 +167,20 @@ impl Daemon {
                 } else {
                     for raw in paths {
                         let path = checkout_path(&root, &raw)?;
-                        // Nothing there yet: there is nothing to overwrite,
-                        // so nothing to have read first.
-                        if matches!(
+                        // Nothing there, and never seen there: there is
+                        // nothing to overwrite, so nothing to have read
+                        // first. A file this agent read that has since gone
+                        // is another matter: writing it back would undo a
+                        // removal the agent has not seen.
+                        let missing = matches!(
                             std::fs::symlink_metadata(&path),
                             Err(e) if e.kind() == std::io::ErrorKind::NotFound
-                        ) {
+                        );
+                        if missing
+                            && !reads
+                                .iter()
+                                .any(|m| m.path == path && m.version != content::MISSING)
+                        {
                             continue;
                         }
                         // The newest read covering a target wins. Re-reading a
@@ -210,22 +218,37 @@ impl Daemon {
             Ok(Err(e)) => return Response::error(ErrorCode::Invalid, e.to_string()),
             Err(e) => return Response::error(ErrorCode::Internal, e.to_string()),
         };
+        if candidates.is_empty() {
+            return Response::Stale { stale: Vec::new() };
+        }
         // A changed fingerprint says something under the mark changed, not
-        // what or by whom; the ledger says both, and decides.
+        // what or by whom; the ledger says both, and decides, but only for
+        // what it can have seen. The fingerprints above were taken before
+        // this flush, so every change they show was made before it began;
+        // the ledger must also have run unbroken since the mark was taken.
+        let flushed = self.flush_ledger().await;
         let mut stale = Vec::new();
         let state = lock(&self.state);
-        let project = state
+        let (project, watched) = state
             .registry
             .get(&id)
-            .and_then(|r| r.project.as_ref().map(|p| p.id()));
+            .and_then(|r| r.project.as_ref())
+            .map(|p| (p.id(), p.dir().to_path_buf()))
+            .unzip();
+        let since = watched.and_then(|dir| state.ledger_since.get(&dir).copied());
         for (found, mark, target) in candidates {
-            let (Some(project), Some(_), Ok(mark_rel), Ok(target_rel)) = (
+            let covered = flushed && since.is_some_and(|since| since <= mark.at);
+            let (true, Some(project), Some(_), Ok(mark_rel), Ok(target_rel)) = (
+                covered,
                 project.clone(),
                 found.current.as_ref(),
                 mark.path.strip_prefix(&checkout),
                 target.strip_prefix(&checkout),
             ) else {
-                stale.push(found);
+                stale.push(StalePath {
+                    path: target,
+                    ..found
+                });
                 continue;
             };
             let query = ChangesQuery {
@@ -237,17 +260,25 @@ impl Daemon {
                 after: Some(mark.at),
                 before_seq: None,
             };
-            let changes: Vec<Change> = match state.store.changes(&query) {
-                Ok(changes) => changes
-                    .into_iter()
-                    .filter(|c| c.checkout.as_deref().is_none_or(|c| c == checkout))
-                    .collect(),
+            // Whether the page is whole is a property of the page, before
+            // other checkouts' entries are dropped from it.
+            let (changes, complete): (Vec<Change>, bool) = match state.store.changes(&query) {
+                Ok(page) => {
+                    let complete = page.len() < STALE_LEDGER_SCAN;
+                    let changes = page
+                        .into_iter()
+                        .filter(|c| c.checkout.as_deref().is_none_or(|c| c == checkout))
+                        .collect();
+                    (changes, complete)
+                }
                 Err(_) => {
-                    stale.push(found);
+                    stale.push(StalePath {
+                        path: target,
+                        ..found
+                    });
                     continue;
                 }
             };
-            let complete = changes.len() < STALE_LEDGER_SCAN;
             if agentdocker_core::working_set::stale_by_ledger(
                 &id, mark_rel, target_rel, &changes, complete,
             ) {
@@ -262,7 +293,7 @@ impl Daemon {
 }
 
 /// At most this many ledger entries are read to explain one stale mark;
-/// past it, a target the page did not name stays stale.
+/// past it, the mark's targets stay stale.
 const STALE_LEDGER_SCAN: usize = 500;
 
 pub(super) fn checkout_path(root: &Path, raw: &str) -> anyhow::Result<PathBuf> {
@@ -287,8 +318,12 @@ pub(super) fn check_reads(reads: &[ReadMark]) -> Vec<StalePath> {
             Ok(current) => Some(StalePath {
                 path: mark.path.clone(),
                 observed: mark.version.clone(),
+                reason: if current == content::MISSING {
+                    "removed since observation; look again before writing it back".into()
+                } else {
+                    "content changed since observation; reread before editing".into()
+                },
                 current: Some(current),
-                reason: "content changed since observation; reread before editing".into(),
             }),
             Err(e) => Some(StalePath {
                 path: mark.path.clone(),

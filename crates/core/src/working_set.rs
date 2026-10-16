@@ -33,7 +33,9 @@ pub struct StalePath {
 /// them. Only a change to the target itself counts, and never one
 /// attributed to the agent asking. A difference the ledger does not account
 /// for, because it recorded nothing under the mark, stays stale: the
-/// checkout changed in a way nothing saw.
+/// checkout changed in a way nothing saw. So does one it answered only
+/// partly, whatever the page shows: the change cut off may be the one that
+/// matters, even when every change shown is the agent's own.
 pub fn stale_by_ledger(
     agent: &AgentId,
     mark: &Path,
@@ -41,19 +43,13 @@ pub fn stale_by_ledger(
     changes: &[Change],
     complete: bool,
 ) -> bool {
-    if changes.is_empty() {
+    if changes.is_empty() || !complete {
         return true;
     }
-    let mut relevant = changes
+    changes
         .iter()
         .filter(|change| target == mark || change.path.starts_with(target))
-        .peekable();
-    if relevant.peek().is_none() {
-        // The tree changed elsewhere, and the ledger says where; with a
-        // partial answer the target's own change may be the one missing.
-        return !complete;
-    }
-    relevant.any(|change| change.by.agent() != Some(agent))
+        .any(|change| change.by.agent() != Some(agent))
 }
 
 #[cfg(test)]
@@ -102,6 +98,10 @@ mod tests {
         assert!(
             !stale_by_ledger(&me, dir, target, &mine, true),
             "my own edit"
+        );
+        assert!(
+            stale_by_ledger(&me, dir, target, &mine, false),
+            "partial, showing only my own edit"
         );
         let theirs = [
             change("repro/e2e/main.go", Some("me")),

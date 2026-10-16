@@ -786,23 +786,16 @@ pub async fn claude_code<B: Backend>(
             // every one is checked and claimed, and the first conflict
             // refuses the whole edit.
             for path in &paths {
-                // A file that is not there yet has nothing to overwrite, and
-                // "read it again" could not be followed; only its lease is
-                // taken. Checked here too, for a daemon predating that rule.
-                let exists = !matches!(
-                    std::fs::symlink_metadata(path),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound
-                );
-                let staleness = if exists {
-                    backend
-                        .call(Request::Stale {
-                            agent: me.id.to_string(),
-                            paths: vec![path.to_string_lossy().into_owned()],
-                        })
-                        .await?
-                } else {
-                    Response::Stale { stale: Vec::new() }
-                };
+                // A path that is not there is asked about too: the daemon
+                // knows whether this agent read a file there that has since
+                // been removed, which is stale, or never saw one, which is
+                // not.
+                let staleness = backend
+                    .call(Request::Stale {
+                        agent: me.id.to_string(),
+                        paths: vec![path.to_string_lossy().into_owned()],
+                    })
+                    .await?;
                 match staleness {
                     Response::Stale { stale } if !stale.is_empty() => {
                         return Ok(Some(json!({
@@ -3262,11 +3255,14 @@ mod tests {
     /// no staleness question, so "read it again" is never the answer, and
     /// only its lease is taken.
     #[tokio::test]
-    async fn a_new_file_is_never_stale_and_is_only_claimed() {
+    async fn a_missing_path_is_judged_by_the_daemon() {
+        // Never seen there: the daemon finds nothing stale, and the write
+        // is only claimed.
         let backend = Mock::with(vec![
             Response::Agent {
                 agent: agent("claude-01234567", true),
             },
+            Response::Stale { stale: vec![] },
             Response::Ok, // stands in for Response::Lease
         ]);
         let dir = tempfile::tempdir().unwrap();
@@ -3275,8 +3271,35 @@ mod tests {
         ev.tool_input = Some(json!({ "file_path": dir.path().join("sub/new.go") }));
         assert!(claude_code(&backend, &ev, &opts()).await.unwrap().is_none());
         let requests = backend.requests();
-        assert!(!requests.iter().any(|r| matches!(r, Request::Stale { .. })));
+        assert!(requests.iter().any(|r| matches!(r, Request::Stale { .. })));
         assert!(requests.iter().any(|r| matches!(r, Request::Claim { .. })));
+        // Read, then removed by someone else: writing it back is refused.
+        let gone = dir.path().join("gone.go");
+        let backend = Mock::with(vec![
+            Response::Agent {
+                agent: agent("claude-01234567", true),
+            },
+            Response::Stale {
+                stale: vec![agentdocker_core::StalePath {
+                    path: gone.clone(),
+                    observed: "sha256:x".into(),
+                    current: Some("missing".into()),
+                    reason: "removed since observation; look again before writing it back".into(),
+                }],
+            },
+        ]);
+        ev.tool_input = Some(json!({ "file_path": gone }));
+        let denied = claude_code(&backend, &ev, &opts()).await.unwrap().unwrap();
+        assert_eq!(
+            denied["hookSpecificOutput"]["permissionDecision"],
+            json!("deny")
+        );
+        assert!(
+            !backend
+                .requests()
+                .iter()
+                .any(|r| matches!(r, Request::Claim { .. }))
+        );
     }
 
     #[tokio::test]
