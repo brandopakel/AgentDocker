@@ -14,13 +14,13 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 import uuid
 
 from windows_package_smoke import extract_checked
+from windows_native_codex_smoke import remove_fixture
 
 REPO = 'brandopakel/AgentDocker'
 TARGET = 'x86_64-pc-windows-msvc'
@@ -300,7 +300,7 @@ def main():
         report['stable_after'] = stable()
         step('stable release and Homebrew tap are unchanged', before == report['stable_after'])
         report['two_release_lifecycle'] = bool(args.baseline_tag)
-        shutil.rmtree(scratch)
+        remove_fixture(scratch)
         step('owned hosted fixture scratch is removed', not scratch.exists())
         report['scratch_removed'] = True
         report['result'] = 'passed'
