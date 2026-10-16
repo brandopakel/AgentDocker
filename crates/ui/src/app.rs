@@ -6451,6 +6451,7 @@ pub(crate) mod tests {
                     number: 340,
                     url: "https://github.com/o/n/pull/340".into(),
                     status: Status::Passed,
+                    head: None,
                 })),
             )],
             Instant::now(),

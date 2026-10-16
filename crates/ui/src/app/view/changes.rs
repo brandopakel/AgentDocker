@@ -89,12 +89,16 @@ impl App {
         let branch = review.branch.clone().unwrap_or_default();
         // Merged on GitHub: a squash or rebase merge leaves the branch's
         // own commits outside the target, so the review still counts
-        // them. Nothing is left to merge here, and the next step is the
+        // them. Only the same reviewed and current head is covered by that
+        // merged pull request. Nothing is left to merge here, and the next step is the
         // cleanup, as the agent apps studied lead with once a pull request
         // has merged.
         let merged_upstream = self
             .pull_request_of(agent)
-            .filter(|pull| pull.status == crate::pull_request::Status::Merged)
+            .filter(|pull| pull.merged_head_matches(review.head.as_deref()))
+            .filter(|_| {
+                agent.vcs.as_ref().and_then(|vcs| vcs.head.as_deref()) == review.head.as_deref()
+            })
             .map(|pull| pull.number);
         let (added, removed) = review.totals();
         let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
@@ -495,12 +499,14 @@ mod tests {
         let mut app = App::bare(commands, results);
         app.connected = Ok(());
         let root = std::path::Path::new("/fixture/alpha");
+        let merged_head = "1111111111111111111111111111111111111111";
+        let new_head = "2222222222222222222222222222222222222222";
         let mut agent = crate::app::tests::record("feature", "claude-code", None);
         agent.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
         agent.project = Some(agentdocker_core::ProjectRef::directory(root));
         agent.vcs = Some(agentdocker_core::VcsState {
             branch: Some("claude/feature".into()),
-            head: None,
+            head: Some(merged_head.into()),
             dirty: None,
             updated_at: Utc::now(),
         });
@@ -511,6 +517,7 @@ mod tests {
                 agent: agent.id.clone(),
                 checkout: "/fixture/alpha-wt/feature".into(),
                 branch: Some("claude/feature".into()),
+                head: Some(merged_head.into()),
                 target_checkout: root.into(),
                 target: Some("main".into()),
                 commits: vec![agentdocker_core::review::Commit {
@@ -532,6 +539,7 @@ mod tests {
                     number: 340,
                     url: "https://github.com/o/n/pull/340".into(),
                     status: Status::Merged,
+                    head: Some(merged_head.into()),
                 })),
             )],
             std::time::Instant::now(),
@@ -544,9 +552,17 @@ mod tests {
         let remove = after.control("remove-worktree").expect("remove");
         assert_eq!(remove.1, "Remove worktree (may delete its branch)");
         assert!(after.reads("using its current upstream or HEAD"));
+        let merged_commits = app
+            .branch_review
+            .as_ref()
+            .unwrap()
+            .1
+            .as_ref()
+            .unwrap()
+            .commits
+            .clone();
         if let Some((_, Ok(review))) = app.branch_review.as_mut() {
             review.commits.clear();
-            review.head = Some("stale-reviewed-head".into());
         }
         let clean = seen(app.changes_section(&agent, c).expect("changes"));
         assert_eq!(
@@ -566,7 +582,7 @@ mod tests {
         let said = app.merge_outcome.as_ref().unwrap().1.as_ref().unwrap();
         assert_eq!(said, &format!("Worktree and branch removed. {actual}"));
         assert!(!said.contains("claude/feature"));
-        assert!(!said.contains("stale-reviewed-head"));
+        assert!(!said.contains(merged_head));
 
         // Older daemons may omit the note; no cached identity is substituted.
         _messages
@@ -596,6 +612,27 @@ mod tests {
                 "Worktree removed; its branch was not deleted. branch actual is kept: Git refused deletion"
             )
         );
+
+        app.branch_review
+            .as_mut()
+            .unwrap()
+            .1
+            .as_mut()
+            .unwrap()
+            .commits = merged_commits;
+        // A new registry head must stop offering cleanup even before the
+        // refreshed branch review arrives. The cached PR is still merged.
+        agent.vcs.as_mut().unwrap().head = Some(new_head.into());
+        let moved = seen(app.changes_section(&agent, c).expect("changes"));
+        assert!(moved.control("merge-branch").is_some());
+        assert!(moved.control("remove-worktree").is_none());
+        if let Some((_, Ok(review))) = app.branch_review.as_mut() {
+            review.head = Some(new_head.into());
+        }
+        let refreshed = seen(app.changes_section(&agent, c).expect("changes"));
+        assert!(refreshed.control("merge-branch").is_some());
+        assert!(refreshed.control("remove-worktree").is_none());
+        assert!(!refreshed.reads("Merged on GitHub as #340."));
     }
 
     #[test]

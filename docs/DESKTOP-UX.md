@@ -253,8 +253,9 @@ automatically aborts or resets, since a concurrent operation may belong to you.
 An unreadable final operation check refuses execution. A branch that moved
 since it was read is never merged unseen. Nothing is pushed. Changes are read
 again when the session commits or its branch moves, and with **Refresh**. Once
-nothing is left to merge — or its pull request has merged on GitHub (*Merged on
-GitHub as #340.*), where a squash leaves the branch's own commits uncounted by
+nothing is left to merge — or GitHub reports a merged pull request whose head
+matches both the reviewed and current branch head (*Merged on GitHub as #340.*),
+where a squash leaves the branch's own commits uncounted by
 the main branch, so no Merge is offered — the next step is right there: while the session runs
 the section says its worktree stays until it is done; once it has ended,
 **Remove worktree (may delete its branch)** removes the clean folder, then lets
