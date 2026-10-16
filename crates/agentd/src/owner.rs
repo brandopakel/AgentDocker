@@ -44,7 +44,7 @@ use nix::sys::signal::{Signal, kill};
 #[cfg(unix)]
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
 /// What the daemon hands an owner on its stdin: everything needed to
@@ -1143,22 +1143,29 @@ async fn pump<R: AsyncRead + Unpin>(
 /// (counting `written`, what the sink already held), `rotate` supplies
 /// a fresh sink for the rest.
 async fn write_log<W: AsyncWrite + Unpin>(
-    mut log: W,
+    log: W,
     mut rx: mpsc::Receiver<String>,
     mut written: u64,
     cap: u64,
     mut rotate: impl FnMut() -> anyhow::Result<W>,
 ) -> anyhow::Result<()> {
+    // tokio's file sink schedules blocking work per write. Coalesce queued
+    // lines into a bounded buffer, but flush whenever the queue drains so a
+    // quiet live agent's last line is visible without waiting for its exit.
+    let mut log = BufWriter::with_capacity(64 * 1024, log);
     while let Some(line) = rx.recv().await {
         if written > 0 && written + line.len() as u64 > cap {
             log.flush().await.context("cannot flush agent log")?;
-            log = rotate()?;
+            log = BufWriter::with_capacity(64 * 1024, rotate()?);
             written = 0;
         }
         log.write_all(line.as_bytes())
             .await
             .context("cannot write agent log")?;
         written += line.len() as u64;
+        if rx.is_empty() {
+            log.flush().await.context("cannot flush agent log")?;
+        }
     }
     log.flush().await.context("cannot flush agent log")
 }
@@ -1437,5 +1444,116 @@ mod tests {
         let (start, bytes) = output.since(0);
         assert_eq!(start, 6);
         assert_eq!(bytes.len(), SCROLLBACK);
+    }
+}
+
+#[cfg(test)]
+mod log_batch_tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    #[derive(Default)]
+    struct Writes {
+        bytes: Vec<u8>,
+        calls: usize,
+    }
+
+    struct RecordingLog {
+        writes: Arc<std::sync::Mutex<Writes>>,
+        fail_flush: bool,
+    }
+
+    impl AsyncWrite for RecordingLog {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let mut writes = lock(&self.writes);
+            writes.calls += 1;
+            writes.bytes.extend_from_slice(bytes);
+            Poll::Ready(Ok(bytes.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(if self.fail_flush {
+                Err(std::io::Error::other("injected flush failure"))
+            } else {
+                Ok(())
+            })
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            self.poll_flush(cx)
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_log_lines_do_not_require_one_file_write_each() {
+        let writes = Arc::new(std::sync::Mutex::new(Writes::default()));
+        let sink = RecordingLog {
+            writes: writes.clone(),
+            fail_flush: false,
+        };
+        let (tx, rx) = mpsc::channel(1024);
+        let expected: String = (0..1024)
+            .map(|n| format!("line {n:04} and its complete contents\n"))
+            .collect();
+        for line in expected.split_inclusive('\n') {
+            tx.try_send(line.to_owned()).unwrap();
+        }
+        drop(tx);
+        write_log(sink, rx, 0, u64::MAX, || anyhow::bail!("no rotation"))
+            .await
+            .unwrap();
+        let writes = lock(&writes);
+        assert_eq!(writes.bytes, expected.as_bytes());
+        assert!(
+            writes.calls <= 32,
+            "1024 queued lines required {} file writes",
+            writes.calls
+        );
+    }
+
+    #[tokio::test]
+    async fn a_live_agent_small_log_is_visible_without_another_line_or_exit() {
+        use tokio::io::AsyncReadExt;
+        let (sink, mut reader) = tokio::io::duplex(8);
+        let (tx, rx) = mpsc::channel(256);
+        let writer = tokio::spawn(write_log(sink, rx, 0, u64::MAX, || {
+            anyhow::bail!("no rotation")
+        }));
+        let line = b"one line from an agent that stays alive\n";
+        tx.send(String::from_utf8(line.to_vec()).unwrap())
+            .await
+            .unwrap();
+        let mut seen = vec![0; line.len()];
+        tokio::time::timeout(Duration::from_secs(2), reader.read_exact(&mut seen))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(seen, line);
+        assert!(!writer.is_finished());
+        drop(tx);
+        writer.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_log_flush_failure_is_reported_while_the_agent_is_alive() {
+        let sink = RecordingLog {
+            writes: Arc::default(),
+            fail_flush: true,
+        };
+        let (tx, rx) = mpsc::channel(256);
+        tx.send("one line\n".to_owned()).await.unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            write_log(sink, rx, 0, u64::MAX, || anyhow::bail!("no rotation")),
+        )
+        .await
+        .unwrap();
+        assert!(format!("{:#}", result.unwrap_err()).contains("injected flush failure"));
+        drop(tx);
     }
 }
