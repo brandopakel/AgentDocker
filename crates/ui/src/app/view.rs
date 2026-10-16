@@ -990,6 +990,14 @@ impl App {
         } else if agent.status.is_live() {
             match self.activity.get(&id) {
                 None | Some(Activity::Unknown) => "running".to_owned(),
+                Some(Activity::Waiting {
+                    reason: Some(agentdocker_core::WaitReason::Permission),
+                    ..
+                }) => "wants permission".to_owned(),
+                Some(Activity::Waiting {
+                    reason: Some(agentdocker_core::WaitReason::Question),
+                    ..
+                }) => "has a question".to_owned(),
                 Some(Activity::Waiting { .. }) => "waiting for you".to_owned(),
                 Some(activity) => activity.label().to_owned(),
             }
