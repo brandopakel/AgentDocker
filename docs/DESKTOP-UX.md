@@ -123,7 +123,9 @@ row reads *waiting for you* in amber). Seen across
 projects, each row starts with its project's name (*keel · Claude Code · Badger
 asks: …*). A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not
-here: its row says so in amber, and opening it shows the details — how many
+here: its row says so in amber, and opening it shows the details — for a
+provider's limit, when it lifts on your own clock (*Usage limit resets in 42 min
+(15:00).*), how many
 messages are kept, that resuming the conversation delivers them, **Review** for
 a live session's delivery and **Dismiss** for an ended one's notice, which
 leaves the messages as they are.
