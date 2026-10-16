@@ -69,7 +69,8 @@ def describe_probe(last, result):
 def wait_first_start(start, probe, alive, budget=90.0, clock=time.monotonic, sleep=time.sleep):
     """Start a daemon with `start()` and probe it with `probe(timeout)` until
     it answers (a probe returns True), it exits (`alive()` is False), or
-    `budget` seconds pass from the request. Every probe's timeout stays
+    `budget` seconds pass from the request. Readiness arriving after the
+    deadline is recorded but never accepted. Every probe's timeout stays
     within what is left of the budget, and the budget's expiry is handled
     before a probe as well as after one, so a slow process creation still
     ends in a result rather than an error. A probe that raises (its own
@@ -87,8 +88,11 @@ def wait_first_start(start, probe, alive, budget=90.0, clock=time.monotonic, sle
             result.probe = probe(min(10.0, remaining))
         except Exception as error:
             result.probe = error
-        if result.probe is True:
-            result.answered = clock() - requested_at - result.created
+        finished_at = clock()
+        if result.probe is True and finished_at - requested_at <= budget:
+            result.answered = finished_at - requested_at - result.created
+            break
+        if finished_at - requested_at >= budget:
             break
         if not alive():
             result.exited = True
@@ -106,6 +110,7 @@ def wait_cleanup_start(start, probe, alive, report, clock=time.monotonic, sleep=
     report.update(budget_seconds=10, probe_limit_seconds=3, probes=[])
 
     def recorded_probe(remaining):
+        """Retain the observed answer or error even when it arrives after the deadline."""
         timeout = min(3.0, remaining)
         item = {"timeout_seconds": timeout}
         report["probes"].append(item)
@@ -162,6 +167,7 @@ def startup_sample(cli, step, homes, samples, home, kind, ordinal):
 
 
 def main():
+    """Exercise isolated native processes and retain diagnostics before fixture cleanup."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -1083,6 +1089,7 @@ def main():
                     recovery = report["cleanup_rescue"] = {}
                     with (root / "cleanup-rescue.log").open("wb") as rescue_log:
                         def start_rescue():
+                            """Keep the exact rescue process handle before probing its private endpoint."""
                             nonlocal rescue
                             rescue = subprocess.Popen([str(daemon_binary)], cwd=project, env=env,
                                                       stdin=subprocess.DEVNULL, stdout=rescue_log,
@@ -1090,6 +1097,7 @@ def main():
                             recovery["pid"] = rescue.pid
 
                         def probe_rescue(timeout):
+                            """Capture CLI exit diagnostics while checking only the fixture daemon."""
                             response = run("ping", check=False, timeout=timeout)
                             recovery["probes"][-1].update(returncode=response.returncode,
                                                         stderr=response.stderr.strip()[:600])

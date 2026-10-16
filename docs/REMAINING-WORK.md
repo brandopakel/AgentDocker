@@ -40,7 +40,13 @@ the rescue daemon's ten-second readiness loop. Cleanup now retains timed-out
 probes within that same budget, fails explicitly if no answer arrives, and saves
 the rescue process's startup log. The original failure is retained; its OS-level
 latency cause and the separate historical first-start failures remain unknown.
-Final corrected-source review/CI and hosted acceptance are required before release.
+Source b80eb228 subsequently passed the standard gate and all six platform CI
+workflows on their first attempt; its Windows archive and complete cleanup were
+independently verified. Review then found that a probe returning success after
+its deadline could still pass. The waiter now checks the clock after every probe;
+regressions cover late success and success exactly at the deadline. Later-head CI
+and review are tracked on [PR #368](https://github.com/brandopakel/AgentDocker/pull/368),
+without relabeling the completed b80eb228 evidence. Hosted acceptance remains open.
 These corrections change test coverage/cleanup, not endpoint permissions or
 production startup deadlines.
 

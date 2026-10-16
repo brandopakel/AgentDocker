@@ -41,7 +41,9 @@ kept; Linux `/proc/self/task` gives task wait states, not stacks.
 The Windows daemon smoke's cleanup rescue starts one private daemon and retains
 all readiness probes within its existing ten-second budget, each capped at three
 seconds or the remaining allowance. A timed-out probe does not discard the rest
-of that budget; failure to obtain readiness still fails cleanup. The report keeps
+of that budget; a successful probe returning after the deadline is retained as
+an observation but still fails readiness. Failure to obtain readiness within the
+budget fails cleanup. The report keeps
 probe errors/timings, the rescue PID/exit and up to 16 KiB of its startup log.
 Functional assertion failures remain failed even when cleanup succeeds; no trial
 is replayed. This corrects the cleanup loop, not the unexplained Windows latency.

@@ -42,21 +42,26 @@ class ManagedSessionCleanup(unittest.TestCase):
 
 class CleanupReadiness(unittest.TestCase):
     def setUp(self):
+        """Give each readiness scenario an independent monotonic clock and report."""
         self.now = 0.0
         self.report = {}
         self.start = Mock()
 
     def advance(self, seconds):
+        """Advance the scenario clock without introducing real sleeps."""
         self.now += seconds
 
     def wait(self, probe, alive=lambda: True):
+        """Run the actual cleanup waiter with the scenario clock and process state."""
         return WINDOWS_SMOKE.wait_cleanup_start(self.start, probe, alive, self.report,
                                                clock=lambda: self.now, sleep=self.advance)
 
     def test_timeout_then_answer_uses_one_start_and_retains_the_timeout(self):
+        """A failed probe must not discard remaining budget or its diagnostic."""
         calls = []
 
         def probe(timeout):
+            """Time out once, then answer within the original deadline."""
             calls.append(timeout)
             if len(calls) == 1:
                 self.advance(timeout)
@@ -74,9 +79,11 @@ class CleanupReadiness(unittest.TestCase):
         self.assertTrue(self.report["probes"][1]["ready"])
 
     def test_repeated_timeouts_exhaust_the_original_budget_and_remain_failed(self):
+        """Repeated probe timeouts may consume only the original readiness allowance."""
         deadlines = []
 
         def probe(timeout):
+            """Consume each granted timeout while recording its absolute deadline."""
             deadlines.append(self.now + timeout)
             self.advance(timeout)
             raise AssertionError("ping timeout")
@@ -92,7 +99,9 @@ class CleanupReadiness(unittest.TestCase):
         self.assertTrue(all("error" in item for item in self.report["probes"]))
 
     def test_daemon_exit_during_a_probe_stops_recovery(self):
+        """An exited rescue process must not trigger another start or readiness probe."""
         def probe(timeout):
+            """Simulate the bounded probe that observes a disappearing daemon."""
             self.advance(1)
             raise AssertionError("ping timeout")
 
@@ -102,7 +111,35 @@ class CleanupReadiness(unittest.TestCase):
         self.assertEqual(len(self.report["probes"]), 1)
         self.assertEqual(self.report["result"], "failed")
 
+    def test_a_late_success_is_recorded_but_not_accepted(self):
+        """Process-creation delay cannot turn an expired readiness probe into a pass."""
+        def probe(timeout):
+            """Return success after process creation has consumed the whole budget."""
+            self.advance(11)
+            return True
+
+        result = self.wait(probe)
+        self.start.assert_called_once_with()
+        self.assertIsNone(result.answered)
+        self.assertEqual(self.report["result"], "failed")
+        self.assertTrue(self.report["probes"][0]["ready"])
+        self.assertEqual(len(self.report["probes"]), 1)
+        self.assertGreater(result.elapsed, 10)
+
+    def test_readiness_at_the_deadline_is_still_within_the_budget(self):
+        """A response exactly at the deadline remains a valid bounded result."""
+        def probe(timeout):
+            """Finish at the absolute deadline despite the earlier start time."""
+            self.advance(10 - self.now)
+            return True
+
+        result = self.wait(probe)
+        self.assertEqual(result.answered, 10)
+        self.assertEqual(result.elapsed, 10)
+        self.assertEqual(self.report["result"], "passed")
+
     def test_slow_process_creation_does_not_receive_a_new_budget(self):
+        """Slow process creation consumes the same budget as readiness polling."""
         self.start.side_effect = lambda: self.advance(11)
         probe = Mock()
         result = self.wait(probe)
