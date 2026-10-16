@@ -798,7 +798,6 @@ impl App {
                 .collect();
             page = page.push(section(
                 "Setup history",
-                Some("Setups saved on this machine. Open one to see it again.".to_owned()),
                 None,
                 column(rows),
                 c,
@@ -1264,7 +1263,6 @@ impl App {
         }
         section(
             "Connection check",
-            Some(field(health, "daemon")),
             Some(ghost("close-health", "Close", Some(Message::SetupClose))),
             rows_body(rows, c),
             c,
@@ -2215,14 +2213,6 @@ impl App {
         );
         screen = screen.push(section(
             "Install from a package",
-            Some(
-                if narrow {
-                    "Preview first; activation takes effect on the next launch."
-                } else {
-                    "Preview an install, rollback, or cleanup before applying it. Activation takes effect on the next app launch; running agents continue."
-                }
-                .to_owned(),
-            ),
             None,
             rows_body(rows, c),
             c,
@@ -2466,7 +2456,6 @@ impl App {
         rows.push(container(maintenance.wrap()).padding([6, 10]).into());
         section(
             "Versions",
-            None,
             Some(action(
                 "desktop-status",
                 "Show installed versions",

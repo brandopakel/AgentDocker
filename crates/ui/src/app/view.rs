@@ -677,36 +677,17 @@ pub(super) fn by_day<'a>(
     days
 }
 
-pub(super) fn elapsed(now: chrono::DateTime<Utc>, then: chrono::DateTime<Utc>) -> String {
-    let minutes = (now - then).num_minutes().max(0);
-    match minutes {
-        0 => "now".to_owned(),
-        m if m < 60 => format!("{m}m"),
-        m if m < 60 * 24 => {
-            if m % 60 == 0 || m >= 600 {
-                format!("{}h", m / 60)
-            } else {
-                format!("{}h {}m", m / 60, m % 60)
-            }
-        }
-        m => format!("{}d", m / (60 * 24)),
-    }
-}
-
-/// A card with a header strip: what it holds and why on the left, an
-/// optional action on the right, a rule, then the body.
+/// A card with a header strip: what it holds on the left, an optional
+/// action on the right, a rule, then the body.
 pub(super) fn section<'a>(
     title_text: impl Into<String>,
-    description: Option<String>,
     action_element: Option<Element<'a, Message>>,
     body: impl Into<Element<'a, Message>>,
     c: Colors,
 ) -> Element<'a, Message> {
-    let mut words = column![heading(title_text, 15)].spacing(2).width(Fill);
-    if let Some(description) = description {
-        words = words.push(note(description, c));
-    }
-    let mut header = row![words].spacing(12).align_y(Center);
+    let mut header = row![heading(title_text, 15).width(Fill)]
+        .spacing(12)
+        .align_y(Center);
     if let Some(action_element) = action_element {
         header = header.push(action_element);
     }
@@ -1296,7 +1277,6 @@ impl App {
         if self.shell.adding {
             content = content.push(section(
                 "Add an existing project",
-                Some("Choose a folder. Nothing is launched or written into it.".to_owned()),
                 None,
                 container(
                     column![
@@ -2489,10 +2469,6 @@ impl App {
             }
             panel_col = panel_col.push(section(
                 "Running here, not connected",
-                Some(
-                    "Started outside AgentDocker. Connect one to see what it is doing and message it."
-                        .to_owned(),
-                ),
                 None,
                 rows_list(rows, c),
                 c,
@@ -2605,8 +2581,6 @@ impl App {
     /// name over its tool and branch), how it is (a dot and a word, how
     /// long), and the one thing to do with it, only when there is one.
     fn session_rows<'a>(&'a self, records: &[&'a AgentRecord], c: Colors) -> Element<'a, Message> {
-        let now = Utc::now();
-        let narrow = self.narrow();
         let mut items: Vec<Element<'a, Message>> = Vec::new();
         let mut previous_project = None;
         for (index, agent) in records.iter().enumerate() {
@@ -2701,9 +2675,9 @@ impl App {
             ]
             .spacing(8)
             .align_y(Center);
-            // One trailing slot, the first that applies: what the person
-            // must do, the pull request, then how long ago.
-            let tone = standing_tone(standing, c);
+            // One trailing slot, the first that applies: the time left to
+            // answer, else the pull request. The glyph at the front already
+            // says the standing, and the row's name says it to a reader.
             if standing.needs_you() || standing == agentdocker_core::standing::Standing::Failed {
                 if let Some(left) = self.soonest_answer_window(&id) {
                     content = content.push(approvals::ring(
@@ -2713,38 +2687,8 @@ impl App {
                         c,
                     ));
                 }
-                content = content.push(
-                    container(
-                        text(if standing.needs_you() {
-                            activity.clone()
-                        } else {
-                            standing.word().to_owned()
-                        })
-                        .size(12)
-                        .font(weight(iced::font::Weight::Medium))
-                        .color(tone)
-                        .wrapping(iced::widget::text::Wrapping::None),
-                    )
-                    .max_width(if narrow { 120 } else { 220 })
-                    .clip(true),
-                );
             } else if let Some(chip) = self.pull_request_chip(agent, c) {
                 content = content.push(chip);
-            } else {
-                let since = agent.started_at.unwrap_or(agent.created_at);
-                content = content.push(
-                    container(
-                        text(if agent.status.is_live() {
-                            elapsed(now, since)
-                        } else {
-                            elapsed(now, agent.finished_at.unwrap_or(agent.last_seen))
-                        })
-                        .size(12)
-                        .color(c.faint),
-                    )
-                    .width(44)
-                    .align_x(iced::alignment::Horizontal::Right),
-                );
             }
             // An ended Claude Code session that can come back says so on
             // its row: the one thing to do with it is right there, not
