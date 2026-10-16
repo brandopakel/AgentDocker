@@ -3716,32 +3716,32 @@ impl App {
             if let Some(why) = &lease.note {
                 about.push(first_line(why, 160));
             }
-            let mut line = row![
-                column![
-                    text(resource_label(
-                        &lease.resource.to_string(),
-                        self.selected_root()
-                    ))
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .color(c.text)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                    small(about.join(" · "), c).wrapping(iced::widget::text::Wrapping::Word),
-                ]
-                .spacing(4)
+            // Who holds it is their mark, what is held the one line of
+            // text, and the time left a meter; the words for both show
+            // when they are pointed at.
+            let name = self.name_of(lease.holder.as_str());
+            let line = row![
+                tip(
+                    agent_mark(
+                        holder.map(|a| a.spec.runtime.as_str()),
+                        &name,
+                        lease.holder.as_str(),
+                        18.0,
+                        c
+                    ),
+                    about.join(" · "),
+                    c
+                ),
+                text(resource_label(
+                    &lease.resource.to_string(),
+                    self.selected_root()
+                ))
+                .size(12)
+                .font(Font::MONOSPACE)
+                .color(c.text)
                 .width(Fill)
-            ]
-            .spacing(12)
-            .align_y(Center);
-            if low {
-                line = line.push(status_word(
-                    if left_secs > 0 { "Expiring" } else { "Expired" },
-                    c.amber,
-                    c,
-                ));
-            }
-            line = line
-                .push(
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                tip(
                     container(meter(
                         left,
                         if low {
@@ -3751,21 +3751,18 @@ impl App {
                         },
                         c,
                     ))
-                    .width(64),
-                )
-                .push(
-                    container(
-                        text(if left_secs > 0 {
-                            format!("{} left", super::span(left_secs))
-                        } else {
-                            "expired".to_owned()
-                        })
-                        .size(12)
-                        .color(if low { c.amber } else { c.faint }),
-                    )
-                    .width(56)
-                    .align_x(iced::alignment::Horizontal::Right),
-                );
+                    .width(64)
+                    .padding([6, 0]),
+                    if left_secs > 0 {
+                        format!("{} left", super::span(left_secs))
+                    } else {
+                        "Expired".to_owned()
+                    },
+                    c
+                ),
+            ]
+            .spacing(12)
+            .align_y(Center);
             rows = rows.push(container(line).padding([10, 16]));
         }
         if count == 0 {

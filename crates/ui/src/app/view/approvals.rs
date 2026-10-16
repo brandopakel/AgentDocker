@@ -129,7 +129,8 @@ pub(super) fn ring<'a>(
     .into()
 }
 
-/// How long is left to answer: a ring and "4m left", or the word Expired.
+/// How long is left to answer: a ring, its words ("4m left") when it is
+/// pointed at, or the word Expired.
 pub(super) fn time_left<'a>(
     question: &Question,
     now: chrono::DateTime<Utc>,
@@ -140,15 +141,11 @@ pub(super) fn time_left<'a>(
         return status_word("Expired", c.faint, c);
     }
     let left = remaining_fraction(question.asked_at, question.expires_at, now);
-    row![
-        ring(left, window_tone(left, c), 14.0, c),
-        text(format!("{} left", super::super::span(secs)))
-            .size(12)
-            .color(c.muted)
-    ]
-    .spacing(6)
-    .align_y(Center)
-    .into()
+    super::tip(
+        container(ring(left, window_tone(left, c), 14.0, c)).padding(3),
+        format!("{} left", super::super::span(secs)),
+        c,
+    )
 }
 
 /// Words drawn in two weights and read as one sentence. Text inside a
@@ -2330,7 +2327,10 @@ mod tests {
             .expect("the row's action");
         assert_eq!((answer.1.as_str(), answer.3), ("Answer", true));
         assert!(view.reads("Needs you"));
-        assert!(view.reads("left"), "time left beside the ask");
+        assert!(
+            !view.reads("left"),
+            "the ring says the time left; its words are on the pointer"
+        );
     }
 
     #[test]
