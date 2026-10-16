@@ -113,25 +113,17 @@ fn rows_body<'a>(rows: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Mess
     list.into()
 }
 
-/// A group of settings as a macOS form draws one: its name, and a line of
-/// why, above the box, and the rows inside it. Ice, Stats and System
-/// Settings all put the name outside; a strip inside the card cost every
-/// group a header row.
+/// A group of settings as a macOS form draws one: its name above the box,
+/// and the rows inside it. Ice, Stats and System Settings all put the name
+/// outside; a strip inside the card cost every group a header row.
 fn form_section<'a>(
     title_text: &'a str,
-    description: Option<&'a str>,
     body: impl Into<Element<'a, Message>>,
     c: Colors,
 ) -> Element<'a, Message> {
-    let mut head = column![
-        text(title_text)
-            .size(13)
-            .font(weight(iced::font::Weight::Semibold))
-    ]
-    .spacing(2);
-    if let Some(description) = description {
-        head = head.push(text(description).size(12).color(c.muted));
-    }
+    let head = text(title_text)
+        .size(13)
+        .font(weight(iced::font::Weight::Semibold));
     column![
         container(head).padding([0, 4]),
         container(body).width(Fill).style(move |_| c.card_style()),
@@ -141,54 +133,31 @@ fn form_section<'a>(
     .into()
 }
 
-/// A settings row: what it is and one line of why on the left, the
-/// control on the right.
+/// A settings row: what it is on the left, the control on the right.
 fn setting<'a>(
     title_text: impl Into<String>,
-    description: impl Into<String>,
     control: impl Into<Element<'a, Message>>,
-    c: Colors,
 ) -> Element<'a, Message> {
     container(
-        row![
-            column![
-                text(title_text.into()).size(13),
-                text(description.into()).size(12).color(c.muted)
-            ]
-            .spacing(1)
-            .width(Fill),
-            control.into()
-        ]
-        .spacing(16)
-        .align_y(Center),
+        row![text(title_text.into()).size(13).width(Fill), control.into()]
+            .spacing(16)
+            .align_y(Center),
     )
     .padding([8, 14])
     .width(Fill)
     .into()
 }
 
-/// A field row: title and description over the input, for values too
-/// long to sit beside their name.
+/// A field row: its name over the input, for values too long to sit
+/// beside it.
 fn field_row<'a>(
     title_text: impl Into<String>,
-    description: impl Into<String>,
     control: impl Into<Element<'a, Message>>,
-    c: Colors,
 ) -> Element<'a, Message> {
-    container(
-        column![
-            column![
-                text(title_text.into()).size(13),
-                text(description.into()).size(12).color(c.muted)
-            ]
-            .spacing(1),
-            control.into()
-        ]
-        .spacing(8),
-    )
-    .padding([8, 14])
-    .width(Fill)
-    .into()
+    container(column![text(title_text.into()).size(13), control.into()].spacing(8))
+        .padding([8, 14])
+        .width(Fill)
+        .into()
 }
 
 /// A focusable, labelled control with a style of its own, for the few
@@ -1480,12 +1449,10 @@ impl App {
         let s = &self.settings;
         let appearance = form_section(
             "Appearance",
-            None,
             rows_body(
                 vec![
                     setting(
                         "Theme",
-                        "Light or dark.",
                         segmented(
                             vec![
                                 segment(
@@ -1503,11 +1470,9 @@ impl App {
                             ],
                             c,
                         ),
-                        c,
                     ),
                     setting(
                         "Text size",
-                        "Every word in the window.",
                         stepper(
                             (
                                 "smaller-ui",
@@ -1524,11 +1489,9 @@ impl App {
                             ),
                             c,
                         ),
-                        c,
                     ),
                     setting(
                         "When an agent finishes or waits",
-                        "A quiet notification while the window is not in front, one per agent, taken back once it is no longer true.",
                         switch(
                             "notify-finished",
                             if s.notify_finished {
@@ -1540,11 +1503,9 @@ impl App {
                             Some(Message::NotifyFinished(!s.notify_finished)),
                             c,
                         ),
-                        c,
                     ),
                     setting(
                         "Roomier rows",
-                        "More space between rows, for a window you watch rather than read.",
                         switch(
                             "roomy-rows",
                             if s.roomy {
@@ -1556,7 +1517,6 @@ impl App {
                             Some(Message::Roomy(!s.roomy)),
                             c,
                         ),
-                        c,
                     ),
                 ],
                 c,
@@ -1569,12 +1529,10 @@ impl App {
         }
         let terminal = form_section(
             "Terminal",
-            None,
             rows_body(
                 vec![
                     setting(
                         "Text size",
-                        "Agent terminals and command output.",
                         stepper(
                             (
                                 "smaller-terminal",
@@ -1591,13 +1549,10 @@ impl App {
                             ),
                             c,
                         ),
-                        c,
                     ),
                     field_row(
                         "Palette",
-                        "The colours agent terminals and command output are drawn in.",
                         swatches.wrap().vertical_spacing(12),
-                        c,
                     ),
                 ],
                 c,
@@ -1625,9 +1580,6 @@ impl App {
             };
         let keyboard = form_section(
             "Keyboard and accessibility",
-            Some(
-                "Every control is reachable from the keyboard. Text fields support native input methods.",
-            ),
             rows_body(
                 vec![
                     shortcut(
@@ -1677,7 +1629,6 @@ impl App {
         let mut installation_rows = vec![
             setting(
                 "Daily update checks",
-                "Looks for a newer release once a day. Nothing downloads or installs on its own.",
                 switch(
                     "automatic-update-checks",
                     if self.shell.catalog.updates.enabled {
@@ -1691,11 +1642,9 @@ impl App {
                     )),
                     c,
                 ),
-                c,
             ),
             setting(
                 "Installation and versions",
-                "Preview and apply installs, rollbacks and cleanup.",
                 custom(
                     "installation",
                     "Manage installation and retained versions",
@@ -1713,7 +1662,6 @@ impl App {
                     Kind::Secondary,
                     [7, 10],
                 ),
-                c,
             ),
         ];
         if self.desktop.update_check_error {
@@ -1728,10 +1676,9 @@ impl App {
                 .into(),
             );
         }
-        let installation = form_section("Installation", None, rows_body(installation_rows, c), c);
+        let installation = form_section("Installation", rows_body(installation_rows, c), c);
         let diagnostics = form_section(
             "Diagnostics",
-            None,
             container(kv_list(
                 vec![
                     (
@@ -2160,26 +2107,21 @@ impl App {
         let mut rows = vec![
             field_row(
                 "Package",
-                "An application bundle, or a release package you extracted.",
                 source,
-                c,
             ),
             field_row(
                 "Prefix",
-                "Where releases are kept. Empty uses your home.",
                 input(
                     "desktop-prefix",
                     "Installation prefix (empty uses your home)",
                     &p.prefix,
                     Message::DesktopPrefix,
                 ),
-                c,
             ),
         ];
         if cfg!(target_os = "macos") {
             rows.push(setting(
                 "Preview builds",
-                "Allow releases from the preview channel to download and install.",
                 switch(
                     "desktop-local",
                     if p.local_preview {
@@ -2191,7 +2133,6 @@ impl App {
                     (!p.busy).then_some(Message::DesktopLocal(!p.local_preview)),
                     c,
                 ),
-                c,
             ));
         }
         rows.push(
