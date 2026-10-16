@@ -329,12 +329,26 @@ role) and an optional limit; a project's main board starts from the classic
 five, and **New agent workflow board** adds one from the `agents` template
 (Backlog, Approved, Analyst, In progress, Testing, UAT, Done, Blocked,
 Cancelled). The toolbar switches boards, searches (a key, or words in a
-title, description or tag), keeps four filters as named icons — high
-priority, waiting on something, waiting for you (a Review lane that is the
-person's), nobody holds it — and **Lanes** edits the board on view: rename,
+title, description or tag, a typing slip forgiven), keeps five filters as
+named icons — high priority, waiting on something, waiting for you (a
+Review lane that is the person's), nobody holds it, an agent holds it — and
+**Tags**, a row of the project's tags to show only cards that carry them all.
+**Table** lays every card of the project out as a row (key, lane mark,
+title, priority, due day, tags, holder; a row opens its card under it), and
+**Compact** drops a card's marks for its key and title. Pressed with no
+field in use, `n` opens the first lane's title line, `/` the search, `v`
+switches lanes and table, `d` roomy and compact, and Esc closes, innermost
+first, a menu, the title line, the open card, the board's settings, then
+clears the search. **Lanes** edits the board on view: rename,
 reorder, add or remove a lane, its category, owner and limit, and which lane
 a pull takes from (a removed lane's cards sit in the first lane of its
-category). A lane's head is its shape, name and count (named *3 of 4* with a
+category). Under it are the project's tags — each its colour (pressed, the
+next one), a delete, and a field for a new one; the person's new words on a
+card become tags too — and the board's rules: each a bolt (its summary on
+the pointer), its name, **On**/**Off** and a delete, and a new one from when
+(**Comes in** to a lane, or **Sits** there some days), what (**Comment**,
+**Move** to a lane, **Archive**, **Start agent** of an installed runtime)
+and a name. A lane's head is its shape, name and count (named *3 of 4* with a
 limit, red past it), **Archive all** in a Done or Cancelled lane that holds
 cards, and **Add a card**, which opens a title line in that lane: Enter files
 it there, and the line stays open for the next. Its words are the project's
@@ -352,8 +366,32 @@ priority and size segments, due, what it waits on off the board, tags,
 **Save**, its moves as named icons (**To** the lane before or after),
 **Approve** and **Send back** (with what is typed in the comment line as the
 reason) in a Review lane that is the person's, **Hand to** an agent running
-here or nobody, **Archive**, the cards it waits on and those part of it, its
-comments with replies and a composer, and its history. An agent pulls the
+here or nobody, **Archive**, then its tools — **Plan** (the project's plans
+to choose from, or none), **Attach a file** (the project's files), **Add a
+file from disk**, **Add a link** (URL, PR, path, commit or card, and the
+target) and, on a card nobody holds, **Start an agent on it** (the installed
+command-line agents) — the plan it carries out (opened on Plans), its files
+(opened with the system's app from a private copy, or unlinked), its links
+(a URL or a pull request in the browser, a path in its app, a card in place,
+anything else copied; each with copy and remove), the cards it waits on and
+those part of it, its comments with replies and a composer, and its
+history. A card an agent is started on moves into the pull target, held by
+that agent, and the agent is told to work on it.
+
+**To-do**, in the sidebar under Projects, is every project's open cards in
+three groups, each named by its mark: yours, your agents', and those you
+filed that nobody holds; within a group, by project (named above its rows),
+then by due day and priority. A row is a circle that ticks the card done
+(to its board's Done), its key, title, priority and due marks, and its
+holder; pressed, it opens the card on its project's board.
+
+**More → Plans** is the project's plans and files. The list is each plan's
+name with a dot for where it stands (draft, active, done, archived) and a
+**New plan**; the plan open is its title, its status as segments, its
+Markdown in an editor, **Save** while it has changes, and the cards that
+carry it out, each opening on its board. Under it are the project's files,
+each opening with the system's app (a private copy) or deleted, and **Add a
+file**. An agent pulls the
 next ready card with `pull_task` (or names one), and the board shows it in
 progress under that agent at once; two agents never get one card, and a
 card that waits on an open card is skipped. When the person moves, hands or

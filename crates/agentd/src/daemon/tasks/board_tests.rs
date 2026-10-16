@@ -355,7 +355,7 @@ async fn files_are_kept_linked_and_deleted_by_their_owner() {
         panic!()
     };
     assert_eq!(file.media_type, "text/markdown");
-    assert_eq!(file.tasks, [filed.id.clone()]);
+    assert_eq!(file.tasks, std::slice::from_ref(&filed.id));
     let Response::Files { files } = d
         .handle(Request::Files {
             project: None,
@@ -391,7 +391,11 @@ async fn files_are_kept_linked_and_deleted_by_their_owner() {
         panic!()
     };
     assert_eq!(again.id, file.id);
-    assert_eq!(again.tasks, [filed.id.clone()], "its links kept");
+    assert_eq!(
+        again.tasks,
+        std::slice::from_ref(&filed.id),
+        "its links kept"
+    );
     // Bytes that are not text come back as base64.
     let Response::File { file: image } = d
         .handle(Request::FilePut {

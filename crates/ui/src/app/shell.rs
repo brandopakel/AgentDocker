@@ -12,6 +12,8 @@ pub(super) struct BoardFilters {
     pub blocked: bool,
     pub waiting: bool,
     pub unassigned: bool,
+    /// Held by an agent.
+    pub agent: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,6 +22,102 @@ pub enum BoardFilterKind {
     Blocked,
     Waiting,
     Unassigned,
+    Agent,
+}
+
+/// How the board is laid out: lanes side by side, or every card a row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BoardLayout {
+    #[default]
+    Lanes,
+    Table,
+}
+
+/// The plan open on Plans as the person edits it.
+pub(super) struct PlanDraft {
+    pub id: Option<String>,
+    pub title: String,
+    pub body: iced::widget::text_editor::Content,
+    pub status: agentdocker_core::PlanStatus,
+    /// Edited since it was read or saved.
+    pub dirty: bool,
+}
+
+impl Default for PlanDraft {
+    fn default() -> Self {
+        Self {
+            id: None,
+            title: String::new(),
+            body: iced::widget::text_editor::Content::new(),
+            status: agentdocker_core::PlanStatus::Draft,
+            dirty: false,
+        }
+    }
+}
+
+impl PlanDraft {
+    /// The plan as read, unless the person is editing it.
+    pub fn load(&mut self, plan: &agentdocker_core::Plan) {
+        if self.dirty && self.id.as_deref() == Some(plan.id.as_str()) {
+            return;
+        }
+        self.id = Some(plan.id.clone());
+        self.title = plan.title.clone();
+        self.body = iced::widget::text_editor::Content::with_text(&plan.body);
+        self.status = plan.status;
+        self.dirty = false;
+    }
+}
+
+/// A rule being written in the board's settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RuleDraft {
+    pub name: String,
+    /// When: a card enters `lane`, or (idle) has sat there `days`.
+    pub idle: bool,
+    pub lane: String,
+    pub days: String,
+    pub action: RuleActionKind,
+    /// The comment's words, the lane to move to, or the runtime to start.
+    pub value: String,
+}
+
+impl Default for RuleDraft {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            idle: false,
+            lane: String::new(),
+            days: "14".into(),
+            action: RuleActionKind::Comment,
+            value: String::new(),
+        }
+    }
+}
+
+/// A menu open on the card: which agent to start, which plan it carries
+/// out, which of the project's files to attach.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardMenu {
+    Start,
+    Plan,
+    Attach,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuleActionKind {
+    Comment,
+    Move,
+    Archive,
+    Start,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuleFieldKind {
+    Name,
+    Lane,
+    Days,
+    Value,
 }
 
 /// The open card's fields as the person edits them; saved on CardSave.
@@ -81,6 +179,18 @@ pub(super) struct State {
     /// The lane whose quick-add field is open. Its words are the
     /// project's card draft (`task_drafts`), saved with the other drafts.
     pub quick_add: Option<String>,
+    pub board_layout: BoardLayout,
+    pub board_dense: bool,
+    /// Tags a card must all carry to show.
+    pub board_tags: BTreeSet<String>,
+    pub tags_menu: bool,
+    /// A link being added to the open card.
+    pub link_kind: Option<agentdocker_core::LinkKind>,
+    pub link_target: String,
+    pub card_menu: Option<CardMenu>,
+    pub tag_draft: String,
+    pub rule_draft: RuleDraft,
+    pub plan_draft: PlanDraft,
     /// The open card's fields as the person edits them.
     pub card_draft: CardDraft,
     /// A card being dragged, and the lane (and card) it would land at.
@@ -803,6 +913,58 @@ pub enum Message {
     /// as `TaskTitle`) there.
     QuickAdd(Option<String>),
     QuickAddFile,
+    /// Lanes or a table; roomy or dense; a tag to show only, and the menu
+    /// of them.
+    BoardLayout,
+    BoardDense,
+    TagFilter(String),
+    TagsMenu,
+    /// To-do: tick a card done, or open it on its board.
+    TodoDone(agentdocker_core::TaskId),
+    TodoOpen(String, agentdocker_core::TaskId),
+    /// The open card's links: the kind and target of one to add, adding,
+    /// removing, opening and copying one.
+    LinkKind(agentdocker_core::LinkKind),
+    LinkTarget(String),
+    LinkAdd,
+    LinkRemove(usize),
+    LinkOpen(usize),
+    LinkCopy(usize),
+    /// The plan the open card carries out; none clears it.
+    CardPlan(Option<String>),
+    /// The open card's files: open one, upload from disk, attach one the
+    /// project has, unlink one.
+    FileOpen(String),
+    FileUpload,
+    FilePicked(Option<PathBuf>),
+    FileAttach(String),
+    FileUnlink(String),
+    /// A menu on the open card, opened or closed; starting an agent of a
+    /// runtime on it.
+    CardMenu(CardMenu),
+    StartAgent(String),
+    /// The project's tags, in the board's settings: a new one's name,
+    /// making it, its next colour, deleting it.
+    TagDraft(String),
+    TagCreate,
+    TagRecolor(String),
+    TagDelete(String),
+    /// The board's rules, in its settings.
+    RuleField(RuleFieldKind, String),
+    RuleIdle(bool),
+    RuleAction(RuleActionKind),
+    RuleCreate,
+    RuleToggle(String, bool),
+    RuleDelete(String),
+    /// Plans: a new one, one opened, its words, where it stands, saved.
+    PlanNew,
+    PlanOpen(String),
+    PlanTitle(String),
+    PlanBody(iced::widget::text_editor::Action),
+    PlanStatus(agentdocker_core::PlanStatus),
+    PlanSave,
+    /// A project file deleted, from Plans.
+    FileDelete(String),
     /// The open card's fields as the person edits them, and saving them.
     CardField(CardFieldKind, String),
     CardPriority(agentdocker_core::Priority),
@@ -1428,6 +1590,14 @@ impl App {
                 if screen == Screen::Board {
                     self.request_tasks();
                 }
+                if matches!(screen, Screen::Board | Screen::Plans)
+                    && let Some(project) = self.selected_project_root()
+                {
+                    self.send(Cmd::Workspace(project));
+                }
+                if screen == Screen::Todo {
+                    self.send(Cmd::Todo);
+                }
                 if screen == Screen::Usage {
                     self.request_usage();
                 }
@@ -1796,6 +1966,319 @@ impl App {
                     BoardFilterKind::Blocked => filters.blocked = !filters.blocked,
                     BoardFilterKind::Waiting => filters.waiting = !filters.waiting,
                     BoardFilterKind::Unassigned => filters.unassigned = !filters.unassigned,
+                    BoardFilterKind::Agent => filters.agent = !filters.agent,
+                }
+            }
+            Message::BoardLayout => {
+                self.shell.board_layout = match self.shell.board_layout {
+                    BoardLayout::Lanes => BoardLayout::Table,
+                    BoardLayout::Table => BoardLayout::Lanes,
+                };
+            }
+            Message::BoardDense => self.shell.board_dense = !self.shell.board_dense,
+            Message::TagFilter(tag) => {
+                if !self.shell.board_tags.remove(&tag) {
+                    self.shell.board_tags.insert(tag);
+                }
+            }
+            Message::TagsMenu => self.shell.tags_menu = !self.shell.tags_menu,
+            Message::TodoDone(task) => {
+                // Ticked: to its board's Done, wherever that is.
+                self.send(Cmd::TaskMove {
+                    task,
+                    to: "done".to_owned(),
+                    before: None,
+                    comment: None,
+                });
+            }
+            Message::TodoOpen(root, task) => {
+                self.shell.catalog.selected = Some(PathBuf::from(root));
+                self.shell.changed();
+                self.task_open = Some(task.clone());
+                self.card = None;
+                self.send(Cmd::TaskDetail(task));
+                return self.update(Message::Navigate(Screen::Board));
+            }
+            Message::LinkKind(kind) => {
+                // The link button again, with nothing typed, closes it.
+                self.shell.link_kind = if self.shell.link_kind == Some(kind)
+                    && self.shell.link_target.trim().is_empty()
+                {
+                    None
+                } else {
+                    Some(kind)
+                };
+            }
+            Message::LinkTarget(target) => {
+                self.shell.link_target = target.chars().take(2048).collect();
+            }
+            Message::LinkAdd => {
+                if let Some(detail) = &self.card
+                    && let Some(kind) = self.shell.link_kind
+                    && !self.shell.link_target.trim().is_empty()
+                {
+                    let mut links = detail.task.links.clone();
+                    links.push(agentdocker_core::Link {
+                        kind,
+                        target: self.shell.link_target.trim().to_owned(),
+                        note: None,
+                    });
+                    let task = detail.task.id.clone();
+                    self.shell.link_target.clear();
+                    self.shell.link_kind = None;
+                    self.board_act(update_links(task, links));
+                }
+            }
+            Message::LinkRemove(index) => {
+                if let Some(detail) = &self.card
+                    && index < detail.task.links.len()
+                {
+                    let mut links = detail.task.links.clone();
+                    links.remove(index);
+                    self.board_act(update_links(detail.task.id.clone(), links));
+                }
+            }
+            Message::LinkOpen(index) => {
+                if let Some(link) = self.card.as_ref().and_then(|d| d.task.links.get(index)) {
+                    match link_destination(link, self.selected_project_root().as_deref()) {
+                        LinkDestination::Open(target) => {
+                            if let Err(error) = super::open_target(&target) {
+                                self.say(error);
+                            }
+                        }
+                        LinkDestination::Card(task) => {
+                            self.task_open = Some(task.clone());
+                            self.card = None;
+                            self.send(Cmd::TaskDetail(task));
+                        }
+                        LinkDestination::Copy(text) => {
+                            self.say("Copied to the clipboard");
+                            return iced::clipboard::write(text);
+                        }
+                    }
+                }
+            }
+            Message::LinkCopy(index) => {
+                if let Some(link) = self.card.as_ref().and_then(|d| d.task.links.get(index)) {
+                    return iced::clipboard::write(link.target.clone());
+                }
+            }
+            Message::CardPlan(plan) => {
+                self.shell.card_menu = None;
+                if let Some(detail) = &self.card {
+                    let task = detail.task.id.to_string();
+                    self.board_act(Request::TaskUpdate {
+                        agent: agentdocker_core::HUMAN.into(),
+                        task,
+                        title: None,
+                        acceptance: None,
+                        assignee: None,
+                        links: None,
+                        description: None,
+                        priority: None,
+                        size: None,
+                        due: None,
+                        external_blocker: None,
+                        parent: None,
+                        blocked_by: None,
+                        tags: None,
+                        plan: Some(plan.unwrap_or_default()),
+                    });
+                }
+            }
+            Message::FileOpen(file) => self.send(Cmd::FileOpen(file)),
+            Message::FileUpload => {
+                tasks.push(Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Add a file")
+                            .pick_file()
+                            .await
+                            .map(|f| f.path().to_owned())
+                    },
+                    Message::FilePicked,
+                ));
+            }
+            Message::FilePicked(Some(path)) => {
+                if let Some(project) = self.selected_project_root() {
+                    let task = match self.screen {
+                        Screen::Board => self.task_open.clone(),
+                        _ => None,
+                    };
+                    self.send(Cmd::FileUpload {
+                        project,
+                        path,
+                        task,
+                    });
+                }
+            }
+            Message::FilePicked(None) => {}
+            Message::FileAttach(file) => {
+                self.shell.card_menu = None;
+                self.link_file(file, false);
+            }
+            Message::FileUnlink(file) => self.link_file(file, true),
+            Message::FileDelete(file) => self.board_act(Request::FileDelete {
+                from: agentdocker_core::HUMAN.into(),
+                file,
+            }),
+            Message::CardMenu(menu) => {
+                self.shell.card_menu = (self.shell.card_menu != Some(menu)).then_some(menu);
+                if menu == CardMenu::Start && self.runtimes.is_empty() {
+                    self.send(Cmd::Runtimes);
+                }
+            }
+            Message::StartAgent(runtime) => {
+                self.shell.card_menu = None;
+                if let Some(detail) = &self.card {
+                    let workdir = self.selected_project_root().map(PathBuf::from);
+                    self.board_act(Request::TaskStart {
+                        from: agentdocker_core::HUMAN.into(),
+                        task: detail.task.id.to_string(),
+                        runtime,
+                        args: Vec::new(),
+                        workdir,
+                    });
+                }
+            }
+            Message::TagDraft(name) => {
+                self.shell.tag_draft = name
+                    .chars()
+                    .take(agentdocker_core::task::TAG_CHARS)
+                    .collect();
+            }
+            Message::TagCreate => {
+                let name = self.shell.tag_draft.trim().to_owned();
+                if !name.is_empty() {
+                    self.shell.tag_draft.clear();
+                    self.board_act(Request::TagSave {
+                        from: agentdocker_core::HUMAN.into(),
+                        project: self.selected_project_root(),
+                        name,
+                        color: None,
+                        rename: None,
+                    });
+                }
+            }
+            Message::TagRecolor(name) => {
+                let next = self
+                    .selected_project_root()
+                    .and_then(|p| self.workspaces.get(&p))
+                    .and_then(|w| w.tags.iter().find(|t| t.name == name))
+                    .map(|t| {
+                        let all = agentdocker_core::TagColor::ALL;
+                        let at = all.iter().position(|c| *c == t.color).unwrap_or(0);
+                        all[(at + 1) % all.len()]
+                    });
+                if let Some(color) = next {
+                    self.board_act(Request::TagSave {
+                        from: agentdocker_core::HUMAN.into(),
+                        project: self.selected_project_root(),
+                        name,
+                        color: Some(color),
+                        rename: None,
+                    });
+                }
+            }
+            Message::TagDelete(name) => self.board_act(Request::TagDelete {
+                from: agentdocker_core::HUMAN.into(),
+                project: self.selected_project_root(),
+                name,
+            }),
+            Message::RuleField(kind, words) => {
+                let draft = &mut self.shell.rule_draft;
+                let field = match kind {
+                    RuleFieldKind::Name => &mut draft.name,
+                    RuleFieldKind::Lane => &mut draft.lane,
+                    RuleFieldKind::Days => &mut draft.days,
+                    RuleFieldKind::Value => &mut draft.value,
+                };
+                *field = words.chars().take(4000).collect();
+            }
+            Message::RuleIdle(idle) => self.shell.rule_draft.idle = idle,
+            Message::RuleAction(action) => {
+                // A comment's words are not a lane or a runtime.
+                let draft = &mut self.shell.rule_draft;
+                if draft.action != action {
+                    draft.value.clear();
+                }
+                draft.action = action;
+            }
+            Message::RuleCreate => match self.rule_request() {
+                Ok(request) => {
+                    self.shell.rule_draft = RuleDraft::default();
+                    self.board_act(request);
+                }
+                Err(error) => self.say(error),
+            },
+            Message::RuleToggle(rule, enabled) => self.board_act(Request::RuleUpdate {
+                from: agentdocker_core::HUMAN.into(),
+                rule,
+                name: None,
+                trigger: None,
+                action: None,
+                enabled: Some(enabled),
+            }),
+            Message::RuleDelete(rule) => self.board_act(Request::RuleDelete {
+                from: agentdocker_core::HUMAN.into(),
+                rule,
+            }),
+            Message::PlanNew => {
+                self.plan_open = None;
+                self.shell.plan_draft = PlanDraft {
+                    dirty: true,
+                    ..PlanDraft::default()
+                };
+            }
+            Message::PlanOpen(plan) => {
+                self.shell.plan_draft = PlanDraft::default();
+                self.plan_open = None;
+                self.send(Cmd::PlanGet(plan));
+                if self.screen != Screen::Plans {
+                    return self.update(Message::Navigate(Screen::Plans));
+                }
+            }
+            Message::PlanTitle(title) => {
+                self.shell.plan_draft.title = title
+                    .chars()
+                    .take(agentdocker_core::plan::PLAN_TITLE_CHARS)
+                    .collect();
+                self.shell.plan_draft.dirty = true;
+            }
+            Message::PlanBody(action) => {
+                let edit = action.is_edit();
+                self.shell.plan_draft.body.perform(action);
+                if edit {
+                    self.shell.plan_draft.dirty = true;
+                }
+            }
+            Message::PlanStatus(status) => {
+                self.shell.plan_draft.status = status;
+                self.shell.plan_draft.dirty = true;
+            }
+            Message::PlanSave => {
+                let project = self.selected_project_root();
+                let draft = &mut self.shell.plan_draft;
+                if draft.title.trim().is_empty() {
+                    self.say("A plan needs a title");
+                } else {
+                    draft.dirty = false;
+                    let request = Request::PlanSave {
+                        from: agentdocker_core::HUMAN.into(),
+                        project: project.clone(),
+                        plan: draft.id.clone(),
+                        title: Some(draft.title.trim().to_owned()),
+                        body: Some(draft.body.text()),
+                        status: Some(draft.status),
+                    };
+                    // Its answer is the plan, which opens: a new one has
+                    // its id from then on.
+                    if let Some(project) = project {
+                        self.send(Cmd::PlanSave {
+                            project,
+                            request: Box::new(request),
+                        });
+                    }
                 }
             }
             Message::QuickAdd(lane) => {
@@ -1948,6 +2431,10 @@ impl App {
                     Some(_) => None,
                     None => self.board_on_view(),
                 };
+                // A rule may start an agent: the runtimes to choose from.
+                if self.shell.lane_settings.is_some() && self.runtimes.is_empty() {
+                    self.send(Cmd::Runtimes);
+                }
             }
             Message::LaneName(index, name) => {
                 if let Some(lane) = self
@@ -3120,6 +3607,50 @@ impl App {
                         self.shell.launch = false;
                         self.shell.adding = false;
                         self.shell.more = false;
+                        if self.screen == Screen::Board {
+                            // The board's open things close, one press each
+                            // from the innermost.
+                            if self.shell.card_menu.is_some() || self.shell.tags_menu {
+                                self.shell.card_menu = None;
+                                self.shell.tags_menu = false;
+                            } else if self.shell.quick_add.is_some() {
+                                self.shell.quick_add = None;
+                            } else if self.task_open.is_some() {
+                                self.task_open = None;
+                                self.card = None;
+                            } else if self.shell.lane_settings.is_some() {
+                                self.shell.lane_settings = None;
+                            } else {
+                                self.shell.board_query.clear();
+                            }
+                        }
+                    }
+                    // The board's own keys, when no field took them: n adds
+                    // a card to the first lane, / searches, v switches
+                    // lanes and table, d density.
+                    Key::Character(key)
+                        if self.screen == Screen::Board
+                            && !modifiers.command()
+                            && !modifiers.control()
+                            && !modifiers.alt() =>
+                    {
+                        match key.as_str() {
+                            "n" => {
+                                if let Some(lane) = self
+                                    .board_on_view()
+                                    .and_then(|b| b.lanes.first().map(|l| l.slug.clone()))
+                                {
+                                    self.shell.quick_add = Some(lane.clone());
+                                    tasks.push(
+                                        self.update(Message::Focus(format!("quick-add-{lane}"))),
+                                    );
+                                }
+                            }
+                            "/" => tasks.push(self.update(Message::Focus("board-search".into()))),
+                            "v" => tasks.push(self.update(Message::BoardLayout)),
+                            "d" => tasks.push(self.update(Message::BoardDense)),
+                            _ => {}
+                        }
                     }
                     // command palette: here only when no control took the
                     // key first (a terminal that owns Control+K, say).
@@ -3536,6 +4067,93 @@ impl App {
                     .filter(|s| s != agentdocker_core::board::MAIN),
             });
         }
+    }
+
+    /// A change to the board's model for the project on view; what it
+    /// touched is read again after.
+    pub(super) fn board_act(&mut self, request: Request) {
+        if let Some(project) = self.selected_project_root() {
+            self.send(Cmd::BoardAct {
+                project,
+                request: Box::new(request),
+            });
+        }
+    }
+
+    fn link_file(&mut self, file: String, unlink: bool) {
+        if let Some(detail) = &self.card {
+            let task = detail.task.id.to_string();
+            self.board_act(Request::FileLink {
+                from: agentdocker_core::HUMAN.into(),
+                file,
+                task,
+                unlink,
+            });
+        }
+    }
+
+    /// The rule the board's settings describe, for the board on view.
+    fn rule_request(&self) -> Result<Request, String> {
+        use agentdocker_core::{RuleAction, Trigger};
+        let draft = &self.shell.rule_draft;
+        let board = self.board_on_view().ok_or("Open a board first")?;
+        let lane = if draft.lane.trim().is_empty() {
+            board
+                .lanes
+                .first()
+                .map(|l| l.slug.clone())
+                .unwrap_or_default()
+        } else {
+            draft.lane.trim().to_owned()
+        };
+        let trigger = if draft.idle {
+            let days: u32 = draft
+                .days
+                .trim()
+                .parse()
+                .map_err(|_| "Idle days are a number from 1 to 365".to_owned())?;
+            Trigger::Idle { lane, days }
+        } else {
+            Trigger::Enter { lane }
+        };
+        let value = draft.value.trim().to_owned();
+        let action = match draft.action {
+            RuleActionKind::Comment => RuleAction::Comment { text: value },
+            RuleActionKind::Move => RuleAction::Move { lane: value },
+            RuleActionKind::Archive => RuleAction::Archive,
+            RuleActionKind::Start => RuleAction::Start {
+                runtime: if value.is_empty() {
+                    self.runtimes
+                        .iter()
+                        .find(|r| r.cli.is_some())
+                        .map(|r| r.name.clone())
+                        .ok_or("No command-line agent is installed to start")?
+                } else {
+                    value
+                },
+                args: Vec::new(),
+                max: 1,
+            },
+        };
+        let name = if draft.name.trim().is_empty() {
+            match &action {
+                RuleAction::Comment { .. } => "Comment",
+                RuleAction::Move { .. } => "Move",
+                RuleAction::Archive => "Archive",
+                RuleAction::Start { .. } => "Start an agent",
+            }
+            .to_owned()
+        } else {
+            draft.name.trim().to_owned()
+        };
+        Ok(Request::RuleCreate {
+            from: agentdocker_core::HUMAN.into(),
+            project: self.selected_project_root(),
+            board: Some(board.slug),
+            name,
+            trigger,
+            action,
+        })
     }
 
     /// What waits on the person in every project: open questions, and
@@ -4165,6 +4783,134 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    /// A link opens where it can: a web URL or pull request in the
+    /// browser, a path (from the project's folder) in its app, a card in
+    /// place; a commit, a message or a memory is copied instead.
+    #[test]
+    fn a_link_opens_where_it_can_and_is_copied_otherwise() {
+        use agentdocker_core::{Link, LinkKind};
+        let link = |kind, target: &str| Link {
+            kind,
+            target: target.into(),
+            note: None,
+        };
+        assert_eq!(
+            link_destination(&link(LinkKind::Url, "https://example.com"), None),
+            LinkDestination::Open("https://example.com".into())
+        );
+        assert_eq!(
+            link_destination(&link(LinkKind::Pr, "#176"), None),
+            LinkDestination::Copy("#176".into()),
+            "a bare number names no page"
+        );
+        assert_eq!(
+            link_destination(&link(LinkKind::Path, "src/lib.rs"), Some("/repo")),
+            LinkDestination::Open("/repo/src/lib.rs".into())
+        );
+        assert_eq!(
+            link_destination(&link(LinkKind::Task, "abcdef012345"), None),
+            LinkDestination::Card(agentdocker_core::TaskId::from("abcdef012345".to_owned()))
+        );
+        assert_eq!(
+            link_destination(&link(LinkKind::Commit, "1a2b3c"), None),
+            LinkDestination::Copy("1a2b3c".into())
+        );
+    }
+
+    /// The board's settings make a rule from what is chosen: an enter rule
+    /// on the first lane unless one is chosen, idle days a number, and a
+    /// name from the action when none is typed.
+    #[test]
+    fn a_rule_draft_becomes_a_rule_request() {
+        use agentdocker_core::{RuleAction, Trigger};
+        let (mut app, _commands, _messages) = app();
+        let root = PathBuf::from("/repo");
+        app.shell.catalog.projects.push(crate::catalog::Entry {
+            project: ProjectRef::directory(&root),
+            pinned: true,
+            label: None,
+        });
+        app.shell.catalog.selected = Some(root);
+        app.shell.rule_draft.value = "Ready for eyes".into();
+        let Ok(Request::RuleCreate {
+            name,
+            trigger,
+            action,
+            board,
+            ..
+        }) = app.rule_request()
+        else {
+            panic!("a rule")
+        };
+        assert_eq!(name, "Comment");
+        assert_eq!(board.as_deref(), Some("main"));
+        assert_eq!(
+            trigger,
+            Trigger::Enter {
+                lane: "backlog".into()
+            }
+        );
+        assert_eq!(
+            action,
+            RuleAction::Comment {
+                text: "Ready for eyes".into()
+            }
+        );
+        app.shell.rule_draft.idle = true;
+        app.shell.rule_draft.days = "soon".into();
+        assert!(app.rule_request().is_err(), "days are a number");
+        app.shell.rule_draft.days = "3".into();
+        app.shell.rule_draft.lane = "review".into();
+        let _ = app.update(Message::RuleAction(RuleActionKind::Start));
+        assert!(
+            app.shell.rule_draft.value.is_empty(),
+            "the comment's words go"
+        );
+        assert!(app.rule_request().is_err(), "no installed runtime to start");
+    }
+
+    /// Board keys act only on the board, and Esc closes what is open there
+    /// innermost first.
+    #[test]
+    fn board_keys_switch_layout_and_density_and_esc_closes_innermost_first() {
+        let (mut app, _commands, _messages) = app();
+        app.screen = Screen::Board;
+        let press = |app: &mut App, key: keyboard::Key| {
+            let _ = app.update(Message::Event(iced::Event::Keyboard(
+                keyboard::Event::KeyPressed {
+                    key: key.clone(),
+                    modified_key: key,
+                    physical_key: keyboard::key::Physical::Unidentified(
+                        keyboard::key::NativeCode::Unidentified,
+                    ),
+                    location: keyboard::Location::Standard,
+                    modifiers: keyboard::Modifiers::default(),
+                    text: None,
+                    repeat: false,
+                },
+            )));
+        };
+        press(&mut app, keyboard::Key::Character("v".into()));
+        assert_eq!(app.shell.board_layout, BoardLayout::Table);
+        press(&mut app, keyboard::Key::Character("d".into()));
+        assert!(app.shell.board_dense);
+        app.shell.board_query = "login".into();
+        app.shell.quick_add = Some("ready".into());
+        app.shell.card_menu = Some(CardMenu::Start);
+        let esc = || keyboard::Key::Named(keyboard::key::Named::Escape);
+        press(&mut app, esc());
+        assert!(app.shell.card_menu.is_none());
+        assert!(app.shell.quick_add.is_some(), "one at a time");
+        press(&mut app, esc());
+        assert!(app.shell.quick_add.is_none());
+        press(&mut app, esc());
+        assert!(app.shell.board_query.is_empty());
+        // Elsewhere the letters are nobody's.
+        app.screen = Screen::Agents;
+        press(&mut app, keyboard::Key::Character("v".into()));
+        assert_eq!(app.shell.board_layout, BoardLayout::Table);
     }
 
     /// In a git project the launch form starts a session in its own
@@ -7754,5 +8500,63 @@ mod tests {
         assert!(!state.save_enabled);
         assert!(state.error.unwrap().contains("preserved"));
         assert_eq!(std::fs::read(path).unwrap(), b"not JSON");
+    }
+}
+
+/// The whole of a card's links, replacing its own.
+fn update_links(task: agentdocker_core::TaskId, links: Vec<agentdocker_core::Link>) -> Request {
+    Request::TaskUpdate {
+        agent: agentdocker_core::HUMAN.into(),
+        task: task.to_string(),
+        title: None,
+        acceptance: None,
+        assignee: None,
+        links: Some(links),
+        description: None,
+        priority: None,
+        size: None,
+        due: None,
+        external_blocker: None,
+        parent: None,
+        blocked_by: None,
+        tags: None,
+        plan: None,
+    }
+}
+
+/// Where opening a link goes.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum LinkDestination {
+    /// A URL, or a path, opened with the system's app for it.
+    Open(String),
+    /// Another card, opened in place.
+    Card(agentdocker_core::TaskId),
+    /// Something with nowhere to open (a commit, a message, a memory):
+    /// its words go to the clipboard.
+    Copy(String),
+}
+
+/// Where a link opens: a URL or a pull request URL in the browser, a path
+/// (relative to the project) in its app, a card in place; anything else is
+/// copied.
+pub(super) fn link_destination(
+    link: &agentdocker_core::Link,
+    project: Option<&str>,
+) -> LinkDestination {
+    use agentdocker_core::LinkKind;
+    let target = link.target.trim();
+    let web = target.starts_with("https://") || target.starts_with("http://");
+    match link.kind {
+        LinkKind::Url | LinkKind::Pr if web => LinkDestination::Open(target.to_owned()),
+        LinkKind::Path => {
+            let path = std::path::Path::new(target);
+            let path = match project {
+                Some(root) if path.is_relative() => std::path::Path::new(root).join(path),
+                _ => path.to_path_buf(),
+            };
+            LinkDestination::Open(path.display().to_string())
+        }
+        LinkKind::Task => LinkDestination::Card(agentdocker_core::TaskId::from(target.to_owned())),
+        _ => LinkDestination::Copy(target.to_owned()),
     }
 }

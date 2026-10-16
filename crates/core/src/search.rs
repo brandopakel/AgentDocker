@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn slips_prefixes_and_every_word() {
-        let cards = vec![card("AD-1", "Refactor the authentication middleware", "")];
+        let cards = [card("AD-1", "Refactor the authentication middleware", "")];
         assert!(score("authentcation", &cards[0]).is_some(), "one slip");
         assert!(
             score("athuentication", &cards[0]).is_some(),

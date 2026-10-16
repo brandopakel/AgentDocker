@@ -220,7 +220,18 @@ The app remembers the selected project and keeps quiet projects available.
   place (its fields, comments and history). Agents pull the next ready card;
   a lane says its count and turns red past its limit. The toolbar searches,
   shows only high-priority cards, those waiting on something, those waiting
-  for you or those nobody holds, switches boards and edits a board's lanes.
+  for you, those nobody holds, those an agent holds or those with some tags,
+  switches between lanes and a table of every card (`v`), between roomy and
+  compact cards (`d`), switches boards, and edits a board's lanes, tags and
+  rules. `n` adds a card to the first lane, `/` searches, Esc closes what is
+  open. An open card keeps its plan, files and links (open, copy, add,
+  remove) and starts an agent on itself.
+- **To-do**, in the sidebar, is every project's open cards that are yours,
+  your agents' or nobody's that you filed; the circle ticks one done, the
+  row opens it on its board.
+- **More → Plans** is the project's plans (specs in Markdown that cards
+  carry out) and its files: write and save a plan, set where it stands, open
+  the cards that carry it out; add a file, open one with its app.
 
 On narrow windows the selected session replaces the list, with **Back to sessions**
 to return. Wide windows show actions beside the list. The human `user` identity
@@ -523,7 +534,9 @@ turn. A copied instruction is not executed by AgentDocker.
 | `renew` / `release` | Extend or give up a lease you hold |
 | `leases` | Every lease held right now |
 | `waiting` | Claims waiting for a resource, oldest first |
-| `task` | The board of work. `task create "Fix login" --acceptance "SSO works" --lane ready --priority high --size m --due 2026-11-02 --tag auth --blocked-by AD-7 --link pr:#176` files a card and prints its key (`AD-12`); `--parent`, `--description` and `--blocker "waiting on legal"` say more, and `--board` files it on another board. `task create-many cards.json` files up to 50 at once, all or none, each able to name another of the batch by its `ref` as its parent or in `--blocked-by`. `task pull --as <agent>` takes the next ready card (the first in the board's pull source, free and waiting on nothing; it says how many are held or waiting when there is none), `task pull AD-12 --as <agent>` that card; either holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`). `task move AD-12 review --comment "ready for eyes"` moves it to a lane by slug, name or category (`--after`/`--before` another card places it; an agent moves only a card it holds; back to Ready or to Done ends the hold). `task show AD-12` is the card in full: fields, comments, history, what it waits on. `task update AD-12 --assignee bob --priority low --tag ui` edits it (`--size ""`, `--due ""`, `--parent ""`, `--no-tags`, `--no-blocked-by`, `--no-links` clear). `task comment AD-12 "…" [--reply-to <comment>]`, `task comment-edit <comment> "…"`, `task comment-delete <comment>`. `task archive AD-12`, `task unarchive AD-12`, `task archive-lane done`. `task boards`, `task board-create Sprint --template agents` (classic, agents or simple), `task board-update sprint --lanes lanes.json --pull-source approved`. `task list [--board B] [--lane L] [--assignee me --as <agent>\|none] [--open] [--query words] [--tag T] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts) |
+| `task` | The board of work. `task create "Fix login" --acceptance "SSO works" --lane ready --priority high --size m --due 2026-11-02 --tag auth --blocked-by AD-7 --link pr:#176` files a card and prints its key (`AD-12`); `--parent`, `--description` and `--blocker "waiting on legal"` say more, and `--board` files it on another board. `task create-many cards.json` files up to 50 at once, all or none, each able to name another of the batch by its `ref` as its parent or in `--blocked-by`. `task pull --as <agent>` takes the next ready card (the first in the board's pull source, free and waiting on nothing; it says how many are held or waiting when there is none), `task pull AD-12 --as <agent>` that card; either holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`). `task move AD-12 review --comment "ready for eyes"` moves it to a lane by slug, name or category (`--after`/`--before` another card places it; an agent moves only a card it holds; back to Ready or to Done ends the hold). `task show AD-12` is the card in full: fields, comments, history, what it waits on. `task update AD-12 --assignee bob --priority low --tag ui` edits it (`--size ""`, `--due ""`, `--parent ""`, `--no-tags`, `--no-blocked-by`, `--no-links` clear). `task comment AD-12 "…" [--reply-to <comment>]`, `task comment-edit <comment> "…"`, `task comment-delete <comment>`. `task archive AD-12`, `task unarchive AD-12`, `task archive-lane done`. `task boards`, `task board-create Sprint --template agents` (classic, agents or simple), `task board-update sprint --lanes lanes.json --pull-source approved`. `task search "logn page"` finds cards by words, slips forgiven, a key exactly. `task start AD-12 --runtime codex` starts an agent on a card nobody holds and hands it the card. `task rules`, `task rule-add "Stale review" --idle review --days 14 --comment "Still waiting?"` (or `--enter LANE`; `--move LANE`, `--archive`, `--start RUNTIME [--max N]`), `task rule-off|rule-on|rule-rm <id>`. `task tags`, `task tag ui --color teal [--rename frontend]`, `task tag-rm ui`; `--plan` on `create` and `update` names the plan a card carries out. `task list [--board B] [--lane L] [--assignee me --as <agent>\|none] [--open] [--query words] [--tag T] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts) |
+| `plan` | A project's plans, specs in Markdown that cards carry out: `plan list [--all]`, `plan show <id>`, `plan new "Auth rewrite" --body spec.md` (or `-` for stdin), `plan edit <id> [--title …] [--body FILE] [--status draft\|active\|done\|archived]` |
+| `file` | A project's files, kept beside the work: `file list [--task AD-12]`, `file put notes.md [--task AD-12] [--name …]` (at most 4 MiB; the same name again is a new version), `file get <id> [--out PATH]`, `file link <id> AD-12 [--unlink]`, `file rm <id>` |
 | `pause` | `agentdocker pause "sleeping the laptop"` tells every agent in this directory's project to hold: they get the reason as a `pause` message and their new leases are refused until `agentdocker pause --lift`; `--project` names another project; `pause --list` lists what is paused and why |
 
 ### Know what changed
@@ -658,8 +671,16 @@ about us:
 
 `contests` · `enter_contest` · `submit_entry`
 
-`list_tasks` · `my_tasks` · `get_task` · `create_task` · `create_tasks` ·
-`pull_task` · `move_task` · `update_task` · `comment_task` · `archive_task`
+`list_tasks` · `my_tasks` · `get_task` · `search_tasks` · `create_task` ·
+`create_tasks` · `pull_task` · `move_task` · `update_task` · `comment_task` ·
+`archive_task` · `list_tags` · `create_tag`
+
+`list_plans` · `get_plan` · `save_plan` · `list_files` · `get_file` ·
+`put_file` · `link_file`
+
+A browser agent on the remote connector has the messaging tools and
+`list_tasks`, `get_task`, `search_tasks`, `comment_task`, `list_plans` and
+`get_plan`.
 
 Results are compact rather than pretty-printed, and most answer with a
 projection — the fields an agent uses, not every field the daemon keeps.
@@ -816,6 +837,19 @@ separate operation: stopping terminates managed agents.
 Newest first. Only what changes how the product is used.
 
 ### Unreleased
+
+- **Rules, tags, plans and files on the board.** A board's rules comment on,
+  move, archive or start an agent on a card when it comes into a lane or
+  has sat there some days (`task rule-add`, the board's settings). A
+  project's tags have colours, and an agent tags only with the project's
+  (`create_tag` makes one). Plans are specs in Markdown that cards carry out
+  (`plan`, `save_plan`), and project files sit beside them, linked to cards
+  (`file`, `put_file`). `task start` (or **Start an agent** on a card)
+  launches an agent on a card and hands it the card; a start rule keeps a
+  lane worked. `task search` and `search_tasks` find cards by words with
+  slips forgiven. The desktop adds To-do, a table layout, compact cards,
+  tag and agent filters, board shortcuts, and opening, copying and adding
+  links. Browser agents can read the board, plans and comment on cards.
 
 - **A full board, for agents.** A board is lanes you name, each with
   a category (Backlog, Ready, In progress, Review, Blocked, Done, Cancelled),

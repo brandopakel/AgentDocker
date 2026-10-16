@@ -101,7 +101,7 @@ impl State {
                 )
             })
             .unwrap_or_default();
-        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        files.sort_by_key(|f| f.name.to_lowercase());
         files
     }
 
@@ -121,7 +121,7 @@ impl State {
                 .flatten()
             })
             .collect();
-        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        files.sort_by_key(|f| f.name.to_lowercase());
         files
     }
 

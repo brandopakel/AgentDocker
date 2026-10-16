@@ -882,7 +882,11 @@ impl App {
     fn in_project(&self) -> bool {
         !matches!(
             self.screen,
-            Screen::Questions | Screen::Runtimes | Screen::Settings | Screen::Desktop
+            Screen::Questions
+                | Screen::Runtimes
+                | Screen::Settings
+                | Screen::Desktop
+                | Screen::Todo
         )
     }
     /// The strip across the bottom while the person restarts a daemon older
@@ -1297,9 +1301,10 @@ impl App {
             // over Agents, two tabs read as selected at once.
             let more_selected = matches!(
                 self.screen,
-                Screen::Journal | Screen::Leases | Screen::Console | Screen::Usage
+                Screen::Journal | Screen::Leases | Screen::Console | Screen::Usage | Screen::Plans
             );
             let more_label = match self.screen {
+                Screen::Plans => "Plans",
                 Screen::Journal => "History",
                 Screen::Leases => "Files in use",
                 Screen::Console => "Commands",
@@ -1379,6 +1384,8 @@ impl App {
             Screen::Chat => self.project_chat_view(c),
             Screen::Agents => self.sessions(c),
             Screen::Board => self.board_view(c),
+            Screen::Todo => self.todo_view(c),
+            Screen::Plans => self.plans_view(c),
             Screen::Usage => self.usage_view(c),
             Screen::Questions if self.has_conversations() => self.messages_view(c),
             Screen::Questions => self.questions(c),
@@ -1731,6 +1738,14 @@ impl App {
             project_page,
         ));
         nav = nav.push(self.nav_item(
+            "todo",
+            "To-do",
+            Icon::Todo,
+            None,
+            Message::Navigate(Screen::Todo),
+            self.screen == Screen::Todo,
+        ));
+        nav = nav.push(self.nav_item(
             "inbox",
             if self.has_conversations() {
                 "Messages"
@@ -2044,6 +2059,7 @@ impl App {
             )
         };
         let mut items = column![
+            place("project-tab-Plans", "Plans".to_owned(), Screen::Plans),
             place("project-tab-Journal", "History".to_owned(), Screen::Journal),
             place(
                 "project-tab-Leases",
