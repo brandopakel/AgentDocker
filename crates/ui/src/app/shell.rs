@@ -21,6 +21,8 @@ pub(super) struct State {
     pub review_delivery: bool,
     pub session_message: bool,
     pub session_drafts: BTreeMap<String, SessionDraft>,
+    /// Denial notes on their way to their agents, by question.
+    pub deny_notes: BTreeMap<MessageId, DenyNote>,
     /// Text only, keyed by the original question ID. Never restores approval or sending state.
     pub answers: BTreeMap<MessageId, String>,
     /// Nonsecret form edits stay in memory; ordinary drafts never receive them.
@@ -279,6 +281,15 @@ pub(super) struct TextDraft {
     pub readiness: Option<agentdocker_core::SendReadiness>,
     pub readiness_expanded: bool,
     edited_since_send: bool,
+}
+
+/// Words sent with an accepted denial, kept until the daemon takes them.
+#[derive(Clone, Debug)]
+pub(super) struct DenyNote {
+    pub agent: String,
+    pub text: String,
+    /// Why it was refused; then it waits for the agent's message box.
+    pub failed: Option<String>,
 }
 
 #[derive(Default)]
@@ -3014,9 +3025,6 @@ impl App {
         Task::batch(tasks)
     }
 
-    /// What waits on the person in every project: open questions, and
-    /// sessions stopped at a prompt in their own terminal. The rows Needs
-    /// you holds when it shows them all.
     /// The agents whose notice stopped being true, forgotten as noticed:
     /// no open question from them, nothing finished the person has not
     /// looked at, and not stopped at a prompt. An agent with an open
@@ -3046,6 +3054,59 @@ impl App {
         stale
     }
 
+    /// Denial notes the daemon refused go into their agent's message box,
+    /// where the person sees them and can send them again, once no send of
+    /// its own is on its way there: nothing typed is lost, and the
+    /// composer's pending send stays its own.
+    pub(super) fn place_failed_notes(&mut self) {
+        let ready: Vec<MessageId> = self
+            .shell
+            .deny_notes
+            .iter()
+            .filter(|(_, note)| {
+                note.failed.is_some()
+                    && self
+                        .shell
+                        .session_drafts
+                        .get(&note.agent)
+                        .is_none_or(|entry| entry.draft.sending.is_none())
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ready {
+            let Some(note) = self.shell.deny_notes.remove(&id) else {
+                continue;
+            };
+            let existing = self
+                .shell
+                .session_drafts
+                .get(&note.agent)
+                .map(|entry| entry.draft.text.clone())
+                .unwrap_or_default();
+            let text = if existing.trim().is_empty() {
+                note.text.clone()
+            } else {
+                format!("{existing}\n\n{}", note.text)
+            };
+            let name = self.name_of(&note.agent);
+            if self
+                .shell
+                .edit_draft(DraftKind::Session, note.agent.clone(), text)
+            {
+                self.say(format!(
+                    "Your note to {name} was not sent ({}); it is in the message box to {name}.",
+                    note.failed.as_deref().unwrap_or("refused")
+                ));
+            } else {
+                // Draft storage is full: it stays here, and the error says why.
+                self.shell.deny_notes.insert(id, note);
+            }
+        }
+    }
+
+    /// What waits on the person in every project: open questions, and
+    /// sessions stopped at a prompt in their own terminal. The rows Needs
+    /// you holds when it shows them all.
     pub(crate) fn waiting_on_you(&self) -> usize {
         let now = Utc::now();
         self.questions.iter().filter(|q| !q.expired(now)).count()
@@ -4339,6 +4400,156 @@ mod tests {
         let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
         assert_eq!(commands.try_iter().count(), 0);
         assert_eq!(app.shell.answers[&id], "earlier draft");
+    }
+
+    /// Deny with words: the denial is the one answer sent, and the words
+    /// go to the agent as a message only once the denial is accepted.
+    /// Allow sends none.
+    #[test]
+    fn a_denial_carries_its_note_to_the_agent_once_accepted() {
+        let (mut app, commands, messages) = app();
+        app.connected = Ok(());
+        for (choice, noted) in [("Deny", true), ("Allow", false)] {
+            let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
+                command: "rm -rf build".into(),
+                cwd: "/owned".into(),
+                reason: "Fixture".into(),
+            };
+            let id = MessageId::from(format!("question-{choice}"));
+            app.questions.push(Question {
+                id: id.clone(),
+                from: "asker".into(),
+                to: agentdocker_core::Destination::Agent("user".into()),
+                text: presentation.text(),
+                presentation: Some(presentation),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+            });
+            let _ = app.update(Message::Draft(
+                id.clone(),
+                "  Use the fixture script instead  ".into(),
+            ));
+            let _ = app.update(Message::AnswerChoice(id.clone(), choice.into()));
+            assert!(
+                matches!(commands.try_iter().collect::<Vec<_>>().as_slice(), [Cmd::Answer(message, answer)] if message == &id && answer == choice),
+                "{choice}: the choice alone is the answer"
+            );
+            messages.send(Msg::Answered(id.clone(), Ok(()))).unwrap();
+            app.drain();
+            let told = commands.try_iter().any(|cmd| {
+                matches!(cmd, Cmd::DenyNote(question, to, text) if question == id && to == "asker" && text == "Denied `rm -rf build`: Use the fixture script instead")
+            });
+            assert_eq!(told, noted, "{choice}");
+            assert!(!app.shell.answers.contains_key(&id));
+            assert_eq!(
+                app.shell.deny_notes.contains_key(&id),
+                noted,
+                "kept until taken"
+            );
+        }
+    }
+
+    /// A note refused after its denial was accepted is not lost: it goes
+    /// into the agent's message box. Its completion never touches the
+    /// composer's own pending send; a refused note waits for that send to
+    /// finish before it goes in.
+    #[test]
+    fn a_refused_denial_note_lands_in_the_message_box_and_leaves_other_sends_alone() {
+        let (mut app, commands, messages) = app();
+        app.connected = Ok(());
+        let note = "Denied `rm -rf build`: Use the fixture script instead";
+        let deny = |app: &mut App, id: &str| -> MessageId {
+            let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
+                command: "rm -rf build".into(),
+                cwd: "/owned".into(),
+                reason: "Fixture".into(),
+            };
+            let id = MessageId::from(id.to_owned());
+            app.questions.push(Question {
+                id: id.clone(),
+                from: "asker".into(),
+                to: agentdocker_core::Destination::Agent("user".into()),
+                text: presentation.text(),
+                presentation: Some(presentation),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+            });
+            let _ = app.update(Message::Draft(
+                id.clone(),
+                "Use the fixture script instead".into(),
+            ));
+            let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
+            id
+        };
+
+        // (1) The denial is accepted, then the note is refused.
+        let first = deny(&mut app, "first");
+        messages.send(Msg::Answered(first.clone(), Ok(()))).unwrap();
+        app.drain();
+        messages
+            .send(Msg::DenyNoteSent(
+                first.clone(),
+                Err("the project is paused".into()),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(app.shell.deny_notes.is_empty());
+        assert_eq!(app.shell.session_drafts["asker"].draft.text, note);
+        let _ = commands.try_iter().count();
+
+        // (2) An ordinary send to the same agent is in flight while a
+        // second note comes back: taken, it leaves that send alone;
+        // refused, it waits for that send, then joins the message box.
+        let _ = app.update(Message::SessionDraft("asker".into(), "hello".into()));
+        let _ = app
+            .shell
+            .session_drafts
+            .get_mut("asker")
+            .unwrap()
+            .draft
+            .begin();
+        let second = deny(&mut app, "second");
+        messages
+            .send(Msg::Answered(second.clone(), Ok(())))
+            .unwrap();
+        app.drain();
+        messages
+            .send(Msg::DenyNoteSent(second.clone(), Ok(())))
+            .unwrap();
+        app.drain();
+        let entry = &app.shell.session_drafts["asker"];
+        assert_eq!(
+            entry.draft.sending.as_deref(),
+            Some("hello"),
+            "still its own"
+        );
+        assert_eq!(entry.draft.text, "hello");
+
+        let third = deny(&mut app, "third");
+        messages.send(Msg::Answered(third.clone(), Ok(()))).unwrap();
+        app.drain();
+        messages
+            .send(Msg::DenyNoteSent(third.clone(), Err("disconnected".into())))
+            .unwrap();
+        app.drain();
+        assert!(
+            app.shell.deny_notes.contains_key(&third),
+            "waits for the send"
+        );
+        assert_eq!(app.shell.session_drafts["asker"].draft.text, "hello");
+        messages
+            .send(Msg::SessionSent(
+                "asker".into(),
+                Ok(super::super::QueuedSend {
+                    message: MessageId::from("sent".to_owned()),
+                    readiness: None,
+                }),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(app.shell.deny_notes.is_empty());
+        assert_eq!(app.shell.session_drafts["asker"].draft.text, note);
+        assert!(app.shell.session_drafts["asker"].draft.sending.is_none());
     }
 
     /// Command+N opens the launch form, as in every session manager, and
