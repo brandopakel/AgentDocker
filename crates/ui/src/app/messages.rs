@@ -21,7 +21,7 @@ use iced::{
     widget::{Space, column, container, responsive, row, scrollable, text},
 };
 use look::{
-    count_divider, day_divider, disc, key_hint, link, section_label, status_line, tinted,
+    count_divider, day_divider, disc, link, section_label, status_line, tinted,
     unread_divider, with_presence,
 };
 
@@ -505,8 +505,8 @@ impl App {
         if unread > 0 && summary.mentions > 0 {
             content = content.push(pill(
                 format!("@{}", summary.mentions),
-                c.accent,
-                iced::Color::WHITE,
+                c.accent_soft,
+                c.accent_ink,
                 c,
             ));
         }
@@ -1205,22 +1205,13 @@ impl App {
                 .unwrap_or_else(|| format!("compose-{conversation}")),
         };
         let recipients = self.mention_recipients(conversation);
-        // The footer: what the keys do, as far as the width allows, and
-        // the one send action. Enter sends, as it does everywhere people
-        // type to each other; the arrow is the same action for the pointer.
-        let mut hints = row![key_hint("Enter", "send", c)]
-            .spacing(14)
-            .align_y(Center);
-        if available.width >= 400.0 {
-            hints = hints.push(key_hint("Shift+Enter", "new line", c));
-        }
-        if available.width >= 540.0 && can_send && !recipients.is_empty() {
-            hints = hints.push(key_hint("@", "mention", c));
-        }
+        // The footer is the one send action. Enter sends, as it does
+        // everywhere people type to each other; the arrow is the same
+        // action for the pointer.
         let send = custom_sized(
             format!("send-{key}"),
             if sending { "Sending…" } else { "Send" },
-            container(icon(Icon::ArrowUp, iced::Color::WHITE, 14.0)).center(16),
+            container(icon(Icon::ArrowUp, c.on_primary, 14.0)).center(16),
             submit.clone(),
             false,
             Kind::Primary,
@@ -1228,7 +1219,7 @@ impl App {
             iced::Length::Shrink,
         );
         let footer = container(
-            row![container(hints).width(Fill).clip(true), send]
+            row![Space::new().width(Fill), send]
                 .spacing(8)
                 .align_y(Center),
         )
@@ -1560,8 +1551,6 @@ impl App {
         let mention_names = self.mention_names();
         let Some(summary) = self.open_summary() else {
             return empty(
-                "Pick a conversation",
-                "Each project's chat and your direct messages with your agents are on the left.",
                 None,
                 c,
             );

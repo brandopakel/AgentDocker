@@ -693,8 +693,6 @@ impl App {
         let other_count = self.runtimes.iter().filter(|r| !r.installed()).count();
         if runtimes.is_empty() {
             page = page.push(empty(
-                "No supported tools found",
-                "Install Claude Code or Codex, then come back here.",
                 None,
                 c,
             ));
@@ -1865,8 +1863,6 @@ impl App {
     pub(super) fn terminal_view(&self, c: Colors) -> Element<'_, Message> {
         let Some(terminal) = &self.terminal else {
             return empty(
-                "No terminal open",
-                "Select a managed session and open its terminal.",
                 None,
                 c,
             );

@@ -235,8 +235,6 @@ impl App {
     pub(super) fn usage_view(&self, c: Colors) -> Element<'_, Message> {
         let Some(project) = self.selected_project_root() else {
             return empty(
-                "Pick a project",
-                "Usage is a project's: choose one on the left.",
                 None,
                 c,
             );
@@ -334,8 +332,6 @@ impl App {
         if report.rows.is_empty() {
             page = page.push(if collection_off(report) {
                 empty(
-                    "Collection is off",
-                    "Enable it in agentd.toml ([usage] enabled = true) to read the providers' local usage logs. Existing totals remain available.",
                     None,
                     c,
                 )

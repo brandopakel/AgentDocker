@@ -107,8 +107,6 @@ impl App {
     pub(super) fn board_view(&self, c: Colors) -> Element<'_, Message> {
         let Some(entry) = self.shell.catalog.selected() else {
             return super::view::empty(
-                "Pick a project",
-                "The board is a project's: choose one on the left.",
                 None,
                 c,
             );

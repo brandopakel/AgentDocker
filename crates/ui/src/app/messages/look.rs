@@ -4,7 +4,7 @@
 //! what each one says is decided by the screens that use them.
 use super::super::icons::{Icon, icon};
 use super::super::style::{Colors, RADIUS_SM, mix, weight};
-use super::super::view::{dot, kbd, small};
+use super::super::view::dot;
 use crate::app::Message;
 use crate::controls::{Kind, custom};
 use iced::{
@@ -253,17 +253,6 @@ pub(in crate::app) fn flush_link<'a>(
         Kind::Inline,
         [2, 0],
     )
-}
-
-/// A keycap and what it does: `Enter` send.
-pub(in crate::app) fn key_hint<'a>(key: &str, does: &str, c: Colors) -> Element<'a, Message> {
-    row![
-        kbd(key.to_owned(), c),
-        small(does.to_owned(), c).size(11.5).color(c.faint),
-    ]
-    .spacing(5)
-    .align_y(Center)
-    .into()
 }
 
 /// A slim scrollbar that keeps its own lane, `gap` points beside the

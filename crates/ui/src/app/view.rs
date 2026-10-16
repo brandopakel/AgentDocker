@@ -57,12 +57,13 @@ pub(super) fn links<'a>(links: &[agentdocker_core::Link], c: Colors) -> Element<
 pub(super) fn small<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
     text(value.into()).size(12).color(c.muted)
 }
-/// A section label: short, quiet, set in capitals.
+/// A section label: short, quiet, in sentence case. Tracked capitals
+/// read as generated; the words stay the size of the text they head.
 pub(super) fn eyebrow<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
-    text(value.into().to_uppercase())
-        .size(11)
+    text(value.into())
+        .size(12)
         .color(c.faint)
-        .font(weight(iced::font::Weight::Semibold))
+        .font(weight(iced::font::Weight::Medium))
 }
 fn mono<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
     text(value.into())
@@ -353,34 +354,21 @@ fn mark() -> iced::widget::image::Handle {
 fn brand<'a>(_r: Colors) -> Element<'a, Message> {
     iced::widget::image(mark()).width(22).height(22).into()
 }
-/// Nothing here yet, said kindly: the mark in a quiet tile, a title, one
-/// sentence and at most one action. No frame: an empty place should not
-/// look like a thing to read.
-pub(super) fn empty<'a>(
-    title_text: &'a str,
-    hint: &'a str,
-    extra: Option<Element<'a, Message>>,
-    c: Colors,
-) -> Element<'a, Message> {
-    let tile = container(
-        iced::widget::image(mark())
-            .width(26)
-            .height(26)
-            .opacity(if c.dark { 0.75_f32 } else { 0.9_f32 }),
-    )
-    .center(48)
-    .style(move |_| c.tile(super::style::RADIUS_LG));
-    let mut body = column![
-        tile,
-        Space::new().height(4),
-        heading(title_text, 16),
-        note(hint, c).align_x(Center),
-    ]
-    .spacing(6)
-    .align_x(Center);
-    if let Some(extra) = extra {
-        body = body.push(Space::new().height(8)).push(extra);
-    }
+/// Nothing here yet: the mark in a quiet tile, or the one thing to do.
+/// No words: an empty place should not look like a thing to read.
+pub(super) fn empty<'a>(extra: Option<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
+    let body: Element<'a, Message> = match extra {
+        Some(extra) => extra,
+        None => container(
+            iced::widget::image(mark())
+                .width(22)
+                .height(22)
+                .opacity(if c.dark { 0.35_f32 } else { 0.4_f32 }),
+        )
+        .center(44)
+        .style(move |_| c.tile(super::style::RADIUS_LG))
+        .into(),
+    };
     container(body)
         .padding([36, 20])
         .width(Fill)
@@ -1782,10 +1770,7 @@ impl App {
             Message::Navigate(Screen::Runtimes),
             self.screen == Screen::Runtimes,
         ));
-        nav = nav
-            .push(Space::new().height(18))
-            .push(container(eyebrow("Projects", r)).padding([0, 10]))
-            .push(Space::new().height(4));
+        nav = nav.push(Space::new().height(22));
         let mut projects = column![].spacing(1).width(Fill);
         let shared = self.shell.catalog.shared_names();
         // Folders discovered under a scratch directory and never pinned
@@ -1811,7 +1796,7 @@ impl App {
             // made one, the fold opens by itself for a live or selected
             // scratch project — the one rule in `temporary_fold_open`.
             let open = self.temporary_fold_open();
-            let label = format!("Temporary ({})", temporary.len());
+            let label = "Temporary".to_owned();
             let mut fold = row![
                 text(if open { "▾" } else { "▸" }).size(11).color(r.muted),
                 eyebrow(label.clone(), r).width(Fill),
@@ -2214,7 +2199,7 @@ impl App {
         let chevron = crate::controls::split_primary_glyph(
             "launch-menu",
             "Choose a tool to launch",
-            icon(Icon::ChevronDown, iced::Color::WHITE, 12.0),
+            icon(Icon::ChevronDown, c.on_primary, 12.0),
             ready.then_some(Message::LaunchMenu),
         );
         let menu = self.shell.launch_menu.then(|| {
@@ -2559,80 +2544,29 @@ impl App {
                 // A search that found nothing says what it looked for and
                 // offers the way back.
                 panel_col = panel_col.push(empty(
-                    "No matching sessions",
-                    "Try another name, tool, or branch.",
-                    Some(
-                        column![
-                            small(
-                                format!("Nothing matches “{}”.", self.shell.search.trim()),
-                                c
-                            ),
-                            action(
-                                "session-search-clear",
-                                "Clear search",
-                                Some(Message::Search(String::new())),
-                                false,
-                            )
-                        ]
-                        .spacing(10)
-                        .align_x(Center)
-                        .into(),
-                    ),
+                    Some(action(
+                        "session-search-clear",
+                        "Clear search",
+                        Some(Message::Search(String::new())),
+                        false,
+                    )),
                     c,
                 ));
-            }
-            let (title_text, hint) = if !self.shell.search.is_empty() {
-                ("", "")
             } else {
-                match filter {
-                    Filter::Current if self.all_projects() => (
-                        "No agents running",
-                        "Start Claude Code or Codex in any folder and it appears here, \
-                         or choose a project on the left and launch one.",
-                    ),
-                    Filter::Current => (
-                        "No agents in this project",
-                        "Press Launch agent, or start Claude Code or Codex in this folder \
-                         and it appears here.",
-                    ),
-                    Filter::NeedsInput => (
-                        "Nothing needs your input",
-                        "When an agent asks you something, it appears here and in Inbox.",
-                    ),
-                    Filter::Earlier => ("No sessions", "Nothing has run here yet."),
-                }
-            };
-            if !title_text.is_empty() {
-                // An empty project offers its next step, not only a
-                // description of it, with the key that does it anywhere.
+                // An empty project offers its next step and nothing to read.
                 let next = (filter == Filter::Current
                     && !self.all_projects()
-                    && self.shell.catalog.selected().is_some()
-                    && self.shell.search.trim().is_empty())
+                    && self.shell.catalog.selected().is_some())
                 .then(|| -> Element<'_, Message> {
-                    row![
-                        primary(
-                            "empty-launch",
-                            "Launch agent…",
-                            (self.connected.is_ok() && self.shell.project_available != Some(false))
-                                .then_some(Message::OpenLaunch),
-                        ),
-                        kbd(
-                            if cfg!(target_os = "macos") {
-                                "⌘N"
-                            } else {
-                                "Ctrl+N"
-                            },
-                            c
-                        ),
-                    ]
-                    .spacing(10)
-                    .align_y(Center)
-                    .into()
+                    primary(
+                        "empty-launch",
+                        "Launch agent…",
+                        (self.connected.is_ok() && self.shell.project_available != Some(false))
+                            .then_some(Message::OpenLaunch),
+                    )
                 });
                 // An empty list shows the shape of what will fill it.
-                panel_col = panel_col
-                    .push(column![ghost_rows(c), empty(title_text, hint, next, c)].spacing(0));
+                panel_col = panel_col.push(column![ghost_rows(c), empty(next, c)].spacing(0));
             }
         }
         if filter == Filter::Current && !earlier.is_empty() {
@@ -3824,8 +3758,6 @@ impl App {
     fn journal_view(&self, c: Colors) -> Element<'_, Message> {
         if self.journal.is_empty() {
             return empty(
-                "No activity recorded yet",
-                "Commits, arrivals, finished work and notes from this project appear here.",
                 None,
                 c,
             );
@@ -4020,8 +3952,6 @@ impl App {
             return column![
                 intro,
                 empty(
-                    "Nothing in use",
-                    "When an agent claims a file or resource in this project it appears here.",
                     None,
                     c,
                 )

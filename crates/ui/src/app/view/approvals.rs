@@ -1478,8 +1478,6 @@ impl App {
 
         if threads.is_empty() {
             return empty(
-                "You're all caught up",
-                "Questions and messages from your agents appear here, one conversation per agent.",
                 None,
                 c,
             );
