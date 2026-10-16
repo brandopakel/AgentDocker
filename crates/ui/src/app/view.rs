@@ -272,26 +272,6 @@ fn meter<'a>(fraction: f32, fill: iced::Color, c: Colors) -> Element<'a, Message
         .style(move |_| c.dot(alpha(c.text, 0.08)))
         .into()
 }
-/// The strip along the top of a pane: what it holds, and one quiet fact.
-fn pane_header<'a>(
-    title_text: &'a str,
-    meta: impl Into<String>,
-    c: Colors,
-) -> Element<'a, Message> {
-    column![
-        container(
-            row![
-                eyebrow(title_text, c).width(Fill),
-                small(meta, c).color(c.faint)
-            ]
-            .spacing(12)
-            .align_y(Center),
-        )
-        .padding([10, 16]),
-        rule(c)
-    ]
-    .into()
-}
 pub(super) fn rule<'a>(c: Colors) -> Element<'a, Message> {
     container(Space::new().width(Fill).height(1))
         .style(move |_| c.rule())
@@ -3679,17 +3659,7 @@ impl App {
             }
             rows = rows.push(self.history_row(entry, c));
         }
-        container(column![
-            pane_header(
-                "Activity",
-                format!(
-                    "{} of the latest {JOURNAL_WINDOW} · earlier entries stay in the journal",
-                    self.journal.len()
-                ),
-                c
-            ),
-            rows
-        ])
+        container(rows)
         .width(Fill)
         .style(move |_| c.card_style())
         .into()
@@ -3776,10 +3746,6 @@ impl App {
     /// meter of the time left that turns amber under one fifth; and the
     /// time itself.
     fn coordination(&self, c: Colors) -> Element<'_, Message> {
-        let intro = note(
-            "What each agent has said it is working on. Others wait, or ask, before touching the same thing.",
-            c,
-        );
         let now = Utc::now();
         let mut rows = column![].width(Fill);
         let mut count = 0;
@@ -3859,27 +3825,12 @@ impl App {
             rows = rows.push(container(line).padding([10, 16]));
         }
         if count == 0 {
-            return column![
-                intro,
-                empty(
-                    None,
-                    c,
-                )
-            ]
-            .spacing(12)
-            .into();
+            return empty(None, c);
         }
-        column![
-            intro,
-            container(column![
-                pane_header("Files in use", format!("{count} held"), c),
-                rows
-            ])
+        container(rows)
             .width(Fill)
             .style(move |_| c.card_style())
-        ]
-        .spacing(12)
-        .into()
+            .into()
     }
 }
 
