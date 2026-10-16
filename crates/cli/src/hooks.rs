@@ -110,18 +110,22 @@ pub enum Host {
     Codex,
 }
 
-/// Whether a Claude Code `Notification` says the session stopped for the
-/// person: a permission prompt or a question dialog in its terminal. The
-/// reminder that a finished turn is waiting for input is not one; `Stop`
-/// already said it is idle.
-fn waits_for_person(input: &HookInput) -> bool {
+/// What a Claude Code `Notification` says the session stopped for the
+/// person for, if it did: a permission prompt or a question dialog in its
+/// terminal. The reminder that a finished turn is waiting for input is not
+/// one; `Stop` already said it is idle.
+fn wait_for_person(input: &HookInput) -> Option<agentdocker_core::WaitReason> {
+    use agentdocker_core::WaitReason;
     match input.notification_type.as_deref() {
-        Some(kind) => matches!(kind, "permission_prompt" | "elicitation_dialog"),
+        Some("permission_prompt") => Some(WaitReason::Permission),
+        Some("elicitation_dialog") => Some(WaitReason::Question),
+        Some(_) => None,
         // Before `notification_type` existed, only the text told them apart.
         None => input
             .message
             .as_deref()
-            .is_some_and(|text| text.starts_with("Claude needs your permission")),
+            .is_some_and(|text| text.starts_with("Claude needs your permission"))
+            .then_some(WaitReason::Permission),
     }
 }
 
@@ -334,6 +338,9 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             // Lifecycle observations are independent of coordination output:
             // an older daemon or failed activity report cannot discard a
             // lease denial or acknowledge undelivered messages.
+            let waiting = (input.hook_event_name == "Notification")
+                .then(|| wait_for_person(&input))
+                .flatten();
             let activity = match input.hook_event_name.as_str() {
                 "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => {
                     Some(agentdocker_core::ReportedActivity::Working)
@@ -342,7 +349,7 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                     Some(agentdocker_core::ReportedActivity::Working)
                 }
                 "Stop" => Some(agentdocker_core::ReportedActivity::Idle),
-                "Notification" if waits_for_person(&input) => {
+                "Notification" if waiting.is_some() => {
                     Some(agentdocker_core::ReportedActivity::Waiting)
                 }
                 _ => None,
@@ -367,7 +374,8 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             {
                 let _ = tokio::time::timeout_at(deadline, async {
                     if let Some(agent) = session_agent(&client, &input).await? {
-                        report_hook_completion(&client, &agent, activity, emitted_bytes).await?;
+                        report_hook_completion(&client, &agent, activity, waiting, emitted_bytes)
+                            .await?;
                     }
                     Ok::<_, anyhow::Error>(())
                 })
@@ -382,6 +390,7 @@ async fn report_hook_completion<B: Backend>(
     backend: &B,
     agent: &AgentRecord,
     activity: Option<agentdocker_core::ReportedActivity>,
+    reason: Option<agentdocker_core::WaitReason>,
     emitted_bytes: usize,
 ) -> Result<()> {
     crate::input_status::adapter_contact(
@@ -398,6 +407,7 @@ async fn report_hook_completion<B: Backend>(
                 observation: agentdocker_core::ActivityObservation {
                     activity,
                     observed_at: chrono::Utc::now(),
+                    reason,
                 },
             })
             .await
@@ -1961,26 +1971,37 @@ mod tests {
             message: message.map(str::to_owned),
             ..HookInput::default()
         };
-        assert!(waits_for_person(&event(Some("permission_prompt"), None)));
-        assert!(waits_for_person(&event(Some("elicitation_dialog"), None)));
+        use agentdocker_core::WaitReason;
+        assert_eq!(
+            wait_for_person(&event(Some("permission_prompt"), None)),
+            Some(WaitReason::Permission)
+        );
+        assert_eq!(
+            wait_for_person(&event(Some("elicitation_dialog"), None)),
+            Some(WaitReason::Question)
+        );
         for kind in ["idle_prompt", "auth_success", ""] {
-            assert!(
-                !waits_for_person(&event(
+            assert_eq!(
+                wait_for_person(&event(
                     Some(kind),
                     Some("Claude needs your permission to use Bash")
                 )),
+                None,
                 "{kind}"
             );
         }
-        assert!(waits_for_person(&event(
-            None,
-            Some("Claude needs your permission to use Bash")
-        )));
-        assert!(!waits_for_person(&event(
-            None,
-            Some("Claude is waiting for your input")
-        )));
-        assert!(!waits_for_person(&event(None, None)));
+        assert_eq!(
+            wait_for_person(&event(
+                None,
+                Some("Claude needs your permission to use Bash")
+            )),
+            Some(WaitReason::Permission)
+        );
+        assert_eq!(
+            wait_for_person(&event(None, Some("Claude is waiting for your input"))),
+            None
+        );
+        assert_eq!(wait_for_person(&event(None, None)), None);
     }
     use crate::client::mock::Mock;
 
@@ -2414,6 +2435,7 @@ mod tests {
             &backend,
             &session,
             Some(agentdocker_core::ReportedActivity::Idle),
+            None,
             123,
         )
         .await
@@ -2443,7 +2465,7 @@ mod tests {
                     "activity refused",
                 ),
             ]);
-            report_hook_completion(&backend, &session, activity, 0)
+            report_hook_completion(&backend, &session, activity, None, 0)
                 .await
                 .unwrap();
             let calls = backend.requests();
