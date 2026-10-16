@@ -29,7 +29,8 @@ CI and private fixtures do not establish physical or fresh-login acceptance.
 The beta.14 candidate now also refuses a one-step merge while Git has an
 operation in progress, including detached rebase and sequencer states. The
 Changes panel shows this blocker before empty-branch messaging or worktree
-removal controls; a rendered-control regression covers detached rebases. A final
+removal controls, retaining the last merge error beside the blocker. A rendered
+text/control regression covers detached rebases and merge-hook failure context. A final
 unreadable operation check refuses execution. Failed merge commands preserve
 Git's state for inspection instead of aborting a possibly concurrent operation
 belonging to the person. Local real-Git reproduction confirms the old abort

@@ -4376,15 +4376,32 @@ mod tests {
     /// The controls an element offers, in the order drawn: each one's id,
     /// its label and what pressing it sends.
     fn offered(
-        mut element: iced::Element<'_, crate::app::Message>,
+        element: iced::Element<'_, crate::app::Message>,
     ) -> Vec<(String, String, Option<crate::app::Message>)> {
+        inspected(element).controls
+    }
+
+    #[derive(Default)]
+    struct Inspected {
+        controls: Vec<(String, String, Option<crate::app::Message>)>,
+        text: Vec<String>,
+    }
+
+    /// Inspect actual text and accessibility controls in the laid-out widget tree.
+    fn inspected(mut element: iced::Element<'_, crate::app::Message>) -> Inspected {
         use iced::advanced::widget::{Operation, Tree, operation::Outcome};
         use iced::advanced::{Layout, layout};
-        #[derive(Default)]
-        struct Offered(Vec<(String, String, Option<crate::app::Message>)>);
-        impl Operation for Offered {
+        impl Operation for Inspected {
             fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
                 operate(self);
+            }
+            fn text(
+                &mut self,
+                _: Option<&iced::advanced::widget::Id>,
+                _: iced::Rectangle,
+                text: &str,
+            ) {
+                self.text.push(text.to_owned());
             }
             fn custom(
                 &mut self,
@@ -4393,7 +4410,7 @@ mod tests {
                 state: &mut dyn std::any::Any,
             ) {
                 if let Some(semantic) = state.downcast_ref::<crate::accessibility::Semantic>() {
-                    self.0.push((
+                    self.controls.push((
                         semantic.id.clone(),
                         semantic.label.clone(),
                         semantic.action.clone(),
@@ -4411,11 +4428,11 @@ mod tests {
             &renderer,
             &layout::Limits::new(iced::Size::ZERO, iced::Size::new(900.0, 600.0)),
         );
-        let mut offered = Offered::default();
+        let mut offered = Inspected::default();
         element
             .as_widget_mut()
             .operate(&mut tree, Layout::new(&node), &renderer, &mut offered);
-        offered.0
+        offered
     }
 
     #[test]
@@ -4443,6 +4460,8 @@ mod tests {
         app.branch_review = Some((agent.id.to_string(), Ok(review.clone())));
         let controls = offered(app.changes_section(&agent, c).unwrap());
         assert!(controls.iter().any(|(id, _, _)| id == "remove-worktree"));
+        let reason = "Git did not confirm the merge: the pre-merge-commit hook rejected it";
+        app.merge_outcome = Some((agent.id.to_string(), Err(reason.to_owned())));
         for (operation, target) in [
             (Operation::Merge, Some("main")),
             (Operation::Rebase, None),
@@ -4451,14 +4470,34 @@ mod tests {
             review.in_progress = Some(operation);
             review.target = target.map(str::to_owned);
             app.branch_review = Some((agent.id.to_string(), Ok(review.clone())));
-            let controls = offered(app.changes_section(&agent, c).unwrap());
+            let shown = inspected(app.changes_section(&agent, c).unwrap());
             assert_eq!(
-                controls
+                shown
+                    .controls
                     .iter()
                     .map(|(id, _, _)| id.as_str())
                     .collect::<Vec<_>>(),
                 ["review-refresh"],
                 "pending operation must not offer worktree removal: {operation:?}"
+            );
+            assert!(
+                shown.text.iter().any(|line| line == reason),
+                "the merge failure must remain visible beside its operation blocker"
+            );
+            assert!(
+                shown
+                    .text
+                    .iter()
+                    .any(|line| line.contains(operation.named())),
+                "the actual operation reason is rendered: {:?}",
+                shown.text
+            );
+            assert!(
+                !shown
+                    .text
+                    .iter()
+                    .any(|line| line.starts_with("Nothing on ")),
+                "an operation is not an empty branch"
             );
         }
     }
