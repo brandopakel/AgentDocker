@@ -833,27 +833,13 @@ impl App {
             .map(|v| format!(" · {v}"))
             .unwrap_or_default();
         let needs_action = self.tool_needs_action(runtime, c);
-        // A tool taking messages says so at the right, where a button
-        // would otherwise be; every other state is a dot and its words
-        // under the name.
-        let status: Element<'a, Message> = if state.ready {
-            text(format!("{}{version}", state.word))
-                .size(12)
-                .color(c.muted)
-                .width(Fill)
-                .into()
-        } else {
-            row![
-                dot(state.tone, 7.0, c),
-                text(format!("{}{version}", state.word))
-                    .size(12)
-                    .color(c.muted)
-                    .width(Fill)
-            ]
-            .spacing(7)
-            .align_y(Center)
-            .into()
-        };
+        // The state is a dot beside the name; its words show when the dot
+        // is pointed at.
+        let status = super::view::tip(
+            container(dot(state.tone, 7.0, c)).padding(4),
+            format!("{}{version}", state.word),
+            c,
+        );
         let mut trailing = row![].spacing(6).align_y(Center);
         if needs_action {
             let id = format!("setup-{}", runtime.name);
@@ -866,9 +852,6 @@ impl App {
             } else {
                 action(id, "Set up", press, false)
             });
-        } else if state.ready {
-            trailing =
-                trailing.push(container(status_word("Connected", c.green, c)).padding([0, 6]));
         }
         trailing = trailing.push(disclosure(
             format!("connection-details-{}", runtime.name),
@@ -881,8 +864,9 @@ impl App {
             head = head.push(tool_mark(&runtime.label, &runtime.name, c));
         }
         head = head.push(
-            column![text(runtime.label.clone()).size(14).font(MEDIUM), status]
-                .spacing(3)
+            row![text(runtime.label.clone()).size(14).font(MEDIUM), status]
+                .spacing(4)
+                .align_y(Center)
                 .width(Fill),
         );
         head = head.push(trailing);
@@ -938,7 +922,7 @@ impl App {
                     "Setup knows zsh, bash and fish. Start claude with --dangerously-load-development-channels server:agentdocker yourself.",
                 ),
             };
-            let mut value = column![status_word(word, tone, c), small(why, c)].spacing(4);
+            let mut value = column![super::view::tip(status_word(word, tone, c), why, c)].spacing(4);
             // A `claude` typed in a terminal only sees messages at its next
             // prompt unless the shell adds the channel flag; one reviewed
             // change does that, and this is where the person looks for it.

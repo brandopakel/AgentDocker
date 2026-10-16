@@ -3416,14 +3416,15 @@ impl App {
     /// the chosen one marked like a selected radio.
     fn launch_view(&self, c: Colors) -> Element<'_, Message> {
         // Start from what the agent should do: the prompt first, the tool
-        // as a chip under it, everything else behind More options.
-        let header = column![heading("Launch an agent", 16)].spacing(4);
+        // as a chip under it, the switches as one row of their own labels,
+        // everything else behind More options. No title: the button names
+        // the dialog.
         let ready =
             !self.shell.launching && self.shell.launch_runtime.is_some() && self.connected.is_ok();
         let prompt = crate::controls::composer(
             "launch-prompt",
             "launch",
-            "What should it work on? Sent as its first message (optional)",
+            "What should it work on?",
             &self.shell.launch_prompt,
             Message::LaunchPrompt,
             !self.shell.launching,
@@ -3469,9 +3470,9 @@ impl App {
                     iced::Length::Shrink,
                 ))
                 .style(move |_| container::Style {
-                    background: chosen.then(|| c.accent_soft.into()),
+                    background: chosen.then(|| c.raised.into()),
                     border: iced::Border {
-                        color: if chosen { c.accent } else { c.line_strong },
+                        color: if chosen { c.text } else { c.line_strong },
                         width: 1.0,
                         radius: 999.0.into(),
                     },
@@ -3480,66 +3481,34 @@ impl App {
             );
         }
         let mut body = column![prompt, chips.wrap()].spacing(10);
+        // The switches say what they are on their own faces; what each
+        // means shows when it is pointed at.
+        let mut switches = row![].spacing(8).align_y(Center);
         if matches!(
             self.shell.launch_runtime.as_deref(),
             Some("claude-code" | "codex")
         ) {
             // The normal launch has a receiver. Turning it off is explicit;
             // provider consent remains a separate provider-owned step.
-            body = body.push(Space::new().height(4)).push(
-                row![
-                    column![
-                        text("Messages while idle")
-                            .size(14)
-                            .font(weight(iced::font::Weight::Medium)),
-                        small(
-                            if !self.shell.launch_channel {
-                                "Messages may wait until you interact with this session."
-                            } else if self.shell.launch_runtime.as_deref() == Some("codex") {
-                                "Opens a Codex conversation here. Messages wait until the current turn finishes."
-                            } else {
-                                "Connects Claude's experimental channel. Complete Claude's consent in the terminal."
-                            },
-                            c
-                        )
-                    ]
-                    .spacing(2)
-                    .width(Fill),
-                    action(
-                        "launch-idle-input",
-                        if self.shell.launch_channel {
-                            "Idle messages: On"
-                        } else {
-                            "Idle messages: Off"
-                        },
-                        (!self.shell.launching)
-                            .then_some(Message::LaunchChannel(!self.shell.launch_channel)),
-                        self.shell.launch_channel,
-                    ),
-                ]
-                .spacing(12)
-                .align_y(Center),
-            );
-        }
-        if self.shell.launch_runtime.is_some()
-            && !matches!(
-                self.shell.launch_runtime.as_deref(),
-                Some("claude-code" | "codex")
-            )
-        {
-            body = body.push(small(
-                "Automatic idle delivery is not available for this tool.",
-                c,
-            ));
-        }
-        if self.shell.launch_runtime.as_deref() == Some("codex")
-            && let Some(root) = &self.shell.launch_codex_untrusted
-        {
-            body = body.push(small(
-                format!(
-                    "Codex trust for {} is not confirmed. Open Codex in this folder to review trust and permission settings before launching.",
-                    shorten_home(root)
+            switches = switches.push(tip(
+                action(
+                    "launch-idle-input",
+                    if self.shell.launch_channel {
+                        "Idle messages: On"
+                    } else {
+                        "Idle messages: Off"
+                    },
+                    (!self.shell.launching)
+                        .then_some(Message::LaunchChannel(!self.shell.launch_channel)),
+                    self.shell.launch_channel,
                 ),
+                if !self.shell.launch_channel {
+                    "Messages wait until you interact with this session"
+                } else if self.shell.launch_runtime.as_deref() == Some("codex") {
+                    "Messages wait until the current turn finishes"
+                } else {
+                    "Connects Claude's channel; consent in the terminal"
+                },
                 c,
             ));
         }
@@ -3548,38 +3517,38 @@ impl App {
         // ignores that the project lists in `.worktreeinclude` are copied
         // in. A folder that is not a git repository has no branches.
         if self.launch_project_is_git() {
-            body = body.push(Space::new().height(4)).push(
-                row![
-                    column![
-                        text("Own worktree")
-                            .size(14)
-                            .font(weight(iced::font::Weight::Medium)),
-                        small(
-                            if self.shell.launch_worktree {
-                                "Works on its own branch in its own folder; review and merge its changes from Changes. Files listed in .worktreeinclude are copied in."
-                            } else {
-                                "Works directly in the project folder, on its current branch."
-                            },
-                            c
-                        )
-                    ]
-                    .spacing(2)
-                    .width(Fill),
-                    action(
-                        "launch-worktree",
-                        if self.shell.launch_worktree {
-                            "Own worktree: On"
-                        } else {
-                            "Own worktree: Off"
-                        },
-                        (!self.shell.launching)
-                            .then_some(Message::LaunchWorktree(!self.shell.launch_worktree)),
-                        self.shell.launch_worktree,
-                    ),
-                ]
-                .spacing(12)
-                .align_y(Center),
-            );
+            switches = switches.push(tip(
+                action(
+                    "launch-worktree",
+                    if self.shell.launch_worktree {
+                        "Own worktree: On"
+                    } else {
+                        "Own worktree: Off"
+                    },
+                    (!self.shell.launching)
+                        .then_some(Message::LaunchWorktree(!self.shell.launch_worktree)),
+                    self.shell.launch_worktree,
+                ),
+                if self.shell.launch_worktree {
+                    "Its own branch and folder; merge from Changes"
+                } else {
+                    "Works in the project folder, on its branch"
+                },
+                c,
+            ));
+        }
+        body = body.push(switches.wrap());
+        if self.shell.launch_runtime.as_deref() == Some("codex")
+            && let Some(root) = &self.shell.launch_codex_untrusted
+        {
+            body = body.push(tip(
+                status_word("Trust unconfirmed", c.amber, c),
+                format!(
+                    "Open Codex in {} to review trust before launching",
+                    shorten_home(root)
+                ),
+                c,
+            ));
         }
         // The name, the arguments and the exact command: there when wanted.
         body = body.push(custom_sized(
@@ -3617,59 +3586,18 @@ impl App {
         ));
         if self.shell.launch_more {
             body = body
-                .push(eyebrow("Name", c))
                 .push(input(
                     "launch-name",
-                    "Optional; one is made up otherwise",
+                    "Name",
                     &self.shell.launch_name,
                     Message::LaunchName,
                 ))
-                .push(eyebrow("Arguments", c))
                 .push(input(
                     "launch-arguments",
-                    "Command arguments (optional)",
+                    "Arguments",
                     &self.shell.launch_arguments,
                     Message::LaunchArguments,
                 ));
-        }
-        if self.shell.launch_more
-            && let Some(runtime) = self
-                .runtimes
-                .iter()
-                .find(|r| Some(&r.name) == self.shell.launch_runtime.as_ref())
-        {
-            body = body.push(
-                container(
-                    row![
-                        text("$").size(12).font(Font::MONOSPACE).color(c.amber),
-                        text(format!(
-                            "{} {}",
-                            runtime
-                                .cli
-                                .as_ref()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_default(),
-                            self.shell.launch_arguments
-                        ))
-                        .size(12)
-                        .font(Font::MONOSPACE)
-                        .color(c.muted)
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                    ]
-                    .spacing(8),
-                )
-                .padding([8, 10])
-                .width(Fill)
-                .style(move |_| container::Style {
-                    background: Some(if c.dark { c.ground } else { c.hover }.into()),
-                    border: iced::Border {
-                        color: c.line,
-                        width: 1.0,
-                        radius: super::style::RADIUS_SM.into(),
-                    },
-                    ..Default::default()
-                }),
-            );
         }
         let footer = row![
             Space::new().width(Fill),
@@ -3691,9 +3619,7 @@ impl App {
         .spacing(8)
         .align_y(Center);
         column![
-            container(header).padding([18, 20]),
-            rule(c),
-            scrollable(container(body).padding([16, 20])).height(iced::Shrink),
+            scrollable(container(body).padding([18, 20])).height(iced::Shrink),
             rule(c),
             container(footer).padding([12, 20]),
         ]

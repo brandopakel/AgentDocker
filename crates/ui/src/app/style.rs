@@ -44,8 +44,6 @@ pub struct Colors {
     pub card: Color,
     /// Secondary-button fill, segmented tracks, keycaps and icon tiles.
     pub raised: Color,
-    /// A row or a quiet control under the pointer.
-    pub hover: Color,
     /// Menus, popovers and tooltips: the one surface above a card.
     pub overlay: Color,
     pub text: Color,
@@ -87,7 +85,6 @@ impl Colors {
                 sidebar: color!(0x1a1a18),
                 card: color!(0x1c1c1a),
                 raised: color!(0x272724),
-                hover: color!(0x21211f),
                 overlay: color!(0x242421),
                 text: color!(0xecece8),
                 muted: color!(0xa3a39c),
@@ -114,7 +111,6 @@ impl Colors {
                 sidebar: color!(0xefefec),
                 card: Color::WHITE,
                 raised: color!(0xe9e9e5),
-                hover: color!(0xf0f0ed),
                 overlay: Color::WHITE,
                 text: color!(0x1b1b19),
                 muted: color!(0x565651),
@@ -145,14 +141,13 @@ impl Colors {
     /// The roles inside the navigation rail: the page's own ink on the
     /// sidebar step, so a view drawn in the rail reads the same as on the
     /// page. Every rail colour comes from here: `ground` is the rail
-    /// itself, `raised` the selected row and `hover` the row under the
-    /// pointer, both a wash of the ink rather than a new hue.
+    /// itself and `raised` the selected row, a wash of the ink rather
+    /// than a new hue.
     pub fn rail(self) -> Self {
         Self {
             ground: self.sidebar,
             card: self.sidebar,
             raised: mix(self.sidebar, self.text, 0.07),
-            hover: mix(self.sidebar, self.text, 0.04),
             line: mix(self.sidebar, self.text, 0.10),
             line_strong: mix(self.sidebar, self.text, 0.18),
             ..self
@@ -384,11 +379,9 @@ mod tests {
                 (c, c.ground, "ground"),
                 (c, c.card, "card"),
                 (c, c.raised, "raised"),
-                (c, c.hover, "hover"),
                 (c, c.overlay, "overlay"),
                 (rail, rail.ground, "rail"),
                 (rail, rail.raised, "selected rail row"),
-                (rail, rail.hover, "rail row under the pointer"),
             ] {
                 assert!(
                     contrast(roles.text, ground) > 7.0,

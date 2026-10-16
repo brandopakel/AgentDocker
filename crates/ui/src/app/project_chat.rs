@@ -2,7 +2,7 @@
 use super::icons::{Icon, icon};
 use super::messages::look::link;
 use super::style::{Colors, weight};
-use super::view::{agent_mark, dot, hint, note, rule, standing_glyph, standing_tone};
+use super::view::{agent_mark, dot, hint, rule, standing_glyph, standing_tone};
 use super::*;
 use crate::controls::{Kind, custom, custom_sized};
 use iced::{
@@ -185,46 +185,24 @@ impl App {
                 format!("Answer {} questions", asking.len())
             };
             body = body.push(
-                container(
+                container(custom(
+                    "chat-needs-input",
+                    spoken,
                     row![
                         dot(c.amber, 6.0, c),
-                        text(if asking.len() == 1 {
-                            "1 question waiting".to_owned()
-                        } else {
-                            format!("{} questions waiting", asking.len())
-                        })
-                        .size(12.5)
-                        .font(weight(iced::font::Weight::Medium))
-                        .width(Fill),
-                        custom(
-                            "chat-needs-input",
-                            spoken,
-                            text("Answer")
-                                .size(12)
-                                .line_height(iced::Pixels(16.0))
-                                .font(weight(iced::font::Weight::Medium)),
-                            Some(Message::OpenQuestion(first.id.clone())),
-                            false,
-                            Kind::Secondary,
-                            [4, 10],
-                        ),
+                        text(format!("Answer {}", asking.len()))
+                            .size(12)
+                            .line_height(iced::Pixels(16.0))
+                            .font(weight(iced::font::Weight::Medium)),
                     ]
-                    .spacing(8)
+                    .spacing(6)
                     .align_y(Center),
-                )
-                .padding(iced::Padding {
-                    top: 6.0,
-                    right: 6.0,
-                    bottom: 6.0,
-                    left: 10.0,
-                })
-                .style(move |_| c.attention_style(c.amber)),
-            );
-        }
-        if agents.is_empty() {
-            body = body.push(
-                container(note("Launch an agent to work on this project.", c).size(12))
-                    .padding([0, 8]),
+                    Some(Message::OpenQuestion(first.id.clone())),
+                    false,
+                    Kind::Secondary,
+                    [5, 10],
+                ))
+                .padding([0, 8]),
             );
         }
         let mut rows = column![].spacing(2);
@@ -353,9 +331,6 @@ impl App {
                 Kind::Secondary,
                 [5, 10],
             ));
-        }
-        if agents.is_empty() {
-            strip = strip.push(note("Launch an agent to work on this project.", c).size(12));
         }
         for agent in agents {
             let id = agent.id.to_string();
