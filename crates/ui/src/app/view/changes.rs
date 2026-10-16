@@ -61,14 +61,11 @@ impl App {
         let review = match result {
             Ok(review) => review,
             Err(reason) => {
-                return Some(
-                    column![
-                        eyebrow("Changes", c),
-                        small(format!("Could not be read: {reason}"), c)
-                    ]
-                    .spacing(6)
-                    .into(),
-                );
+                return Some(error_line(
+                    "changes-error",
+                    &format!("Changes could not be read: {reason}"),
+                    c,
+                ));
             }
         };
         let blockers = review.blockers();
@@ -100,7 +97,6 @@ impl App {
         let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
         let mut section = column![
             row![
-                eyebrow("Changes", c),
                 Space::new().width(Fill),
                 ghost(
                     "review-refresh",
@@ -126,9 +122,19 @@ impl App {
             .as_ref()
             .filter(|(outcome_for, _)| outcome_for == id)
             .map(|(_, outcome)| -> Element<'_, Message> {
+                // Done is a tick whose words (the restore command among
+                // them) are its tooltip and name; a refusal is one line.
                 match outcome {
-                    Ok(said) => text(said.clone()).size(12.5).color(c.green).into(),
-                    Err(reason) => text(reason.clone()).size(12.5).color(c.amber).into(),
+                    Ok(words) => tip(
+                        super::said(
+                            format!("merge-outcome-{id}"),
+                            words.clone(),
+                            container(icon(Icon::Check, c.green, 14.0)).padding(3),
+                        ),
+                        words.clone(),
+                        c,
+                    ),
+                    Err(reason) => error_line(format!("merge-outcome-{id}"), reason, c),
                 }
             });
         // A detached rebase has no commit list. Show its blocker before
@@ -196,7 +202,7 @@ impl App {
             let open = self.shell.diff_file.as_deref() == Some(file.path.as_str());
             let counts = match (file.added, file.removed) {
                 (Some(a), Some(r)) => format!("+{a} −{r}"),
-                _ => "binary".to_owned(),
+                _ => String::new(),
             };
             files = files.push(custom(
                 format!("changes-file-{}", file.path),
@@ -305,24 +311,21 @@ impl App {
         let head = review.head.clone().unwrap_or_default();
         let merging = self.merging.as_deref() == Some(id.as_str());
         let ready = blockers.is_empty() && !merging && self.connected.is_ok();
-        section = section.push(primary(
-            "merge-branch",
-            if merging {
-                "Merging…".to_owned()
-            } else {
-                format!("Merge into {target}")
-            },
-            ready.then(|| Message::MergeBranch(id.clone(), head)),
+        // The command it runs is its tooltip, so nothing about it is a
+        // surprise.
+        section = section.push(tip(
+            primary(
+                "merge-branch",
+                if merging {
+                    "Merging…".to_owned()
+                } else {
+                    format!("Merge into {target}")
+                },
+                ready.then(|| Message::MergeBranch(id.clone(), head)),
+            ),
+            format!("git merge --no-ff {branch}, in the {target} checkout"),
+            c,
         ));
-        // The command it runs, so nothing about it is a surprise.
-        section = section.push(
-            text(format!(
-                "git merge --no-ff {branch}, in the {target} checkout"
-            ))
-            .size(11.5)
-            .font(Font::MONOSPACE)
-            .color(c.faint),
-        );
         if let Some(outcome) = outcome {
             section = section.push(outcome);
         }
@@ -338,14 +341,17 @@ impl App {
         c: Colors,
     ) -> Element<'_, Message> {
         let Some(lines) = lines.filter(|l| !l.is_empty()) else {
-            return container(small(
-                if review.truncated {
-                    "This diff is too large to show here; the file list is complete."
-                } else {
-                    "No text changes to show (a binary file, or a rename)."
-                },
-                c,
-            ))
+            // Too large to show is a mark that says so; a binary file or a
+            // rename has nothing to show and shows nothing.
+            return container(if review.truncated {
+                super::alert_mark(
+                    "diff-too-large",
+                    "This diff is too large to show here; the file list is complete.",
+                    c,
+                )
+            } else {
+                Space::new().height(0).into()
+            })
             .padding([4, 24])
             .into();
         };
@@ -378,10 +384,12 @@ impl App {
         }
         if lines.len() > FILE_LINES {
             body = body.push(
-                container(small(
-                    format!("{} more lines not shown.", lines.len() - FILE_LINES),
-                    c,
-                ))
+                container(
+                    text(format!("+{}", lines.len() - FILE_LINES))
+                        .size(11.5)
+                        .font(Font::MONOSPACE)
+                        .color(c.faint),
+                )
                 .padding([4, 8]),
             );
         }
@@ -404,20 +412,9 @@ impl App {
         target: &str,
         c: Colors,
     ) -> Element<'_, Message> {
-        let check = |ok: bool, said: String| -> Element<'_, Message> {
-            row![
-                text(if ok { "✓" } else { "•" })
-                    .size(12.5)
-                    .color(if ok { c.green } else { c.amber })
-                    .width(14),
-                text(said)
-                    .size(12.5)
-                    .color(if ok { c.muted } else { c.text }),
-            ]
-            .spacing(6)
-            .align_y(Center)
-            .into()
-        };
+        // Only what stops the merge is shown: one line each, the mark
+        // and its words, none for what is fine.
+        let blocked = |words: String| error_line("merge-blocker", &words, c);
         let mut list = column![].spacing(3);
         // The person's own operation under way in the main folder is the
         // one thing to say: nothing else was weighed while it lasts.
@@ -425,45 +422,31 @@ impl App {
             .iter()
             .find(|b| matches!(b, Blocker::InProgress(_)))
         {
-            return list.push(check(false, b.label(target))).into();
+            return list.push(blocked(b.label(target))).into();
         }
-        list = list.push(
-            match blockers
-                .iter()
-                .find(|b| matches!(b, Blocker::Uncommitted(_)))
-            {
-                Some(b) => check(false, b.label(target)),
-                None => check(true, "work committed".to_owned()),
-            },
-        );
-        list = list.push(
-            match blockers
-                .iter()
-                .find(|b| matches!(b, Blocker::TargetDirty(_)))
-            {
-                Some(b) => check(false, b.label(target)),
-                None => check(true, format!("{target} has nothing uncommitted")),
-            },
-        );
-        list = list.push(
-            match blockers.iter().find(|b| matches!(b, Blocker::Conflicts(_))) {
-                Some(b) => check(
-                    false,
-                    format!("{}: {}", b.label(target), review.conflicts.join(", ")),
-                ),
-                None => check(true, "no conflicts".to_owned()),
-            },
-        );
-        if let Some(b) = blockers.iter().find(|b| matches!(b, Blocker::Held(_))) {
-            let who: Vec<String> = review
-                .held
-                .iter()
-                .map(|(path, by)| format!("{by} holds {path}"))
-                .collect();
-            list = list.push(check(
-                false,
-                format!("{} ({})", b.label(target), who.join("; ")),
-            ));
+        for b in blockers.iter().filter(|b| {
+            matches!(
+                b,
+                Blocker::Uncommitted(_)
+                    | Blocker::TargetDirty(_)
+                    | Blocker::Conflicts(_)
+                    | Blocker::Held(_)
+            )
+        }) {
+            list = list.push(blocked(match b {
+                Blocker::Conflicts(_) => {
+                    format!("{}: {}", b.label(target), review.conflicts.join(", "))
+                }
+                Blocker::Held(_) => {
+                    let who: Vec<String> = review
+                        .held
+                        .iter()
+                        .map(|(path, by)| format!("{by} holds {path}"))
+                        .collect();
+                    format!("{} ({})", b.label(target), who.join("; "))
+                }
+                _ => b.label(target),
+            }));
         }
         list.into()
     }

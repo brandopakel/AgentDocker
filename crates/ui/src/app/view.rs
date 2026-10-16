@@ -4255,14 +4255,19 @@ mod tests {
             review.target = target.map(str::to_owned);
             app.branch_review = Some((agent.id.to_string(), Ok(review.clone())));
             let shown = inspected(app.changes_section(&agent, c).unwrap());
-            assert_eq!(
-                shown
-                    .controls
-                    .iter()
-                    .map(|(id, _, _)| id.as_str())
-                    .collect::<Vec<_>>(),
-                ["review-refresh"],
-                "pending operation must not offer worktree removal: {operation:?}"
+            // The marks beside the blocker and the failure are named labels,
+            // not actions: the only action is Refresh.
+            let ids: Vec<&str> = shown
+                .controls
+                .iter()
+                .map(|(id, _, _)| id.as_str())
+                .collect();
+            assert!(
+                ids.contains(&"review-refresh")
+                    && !ids
+                        .iter()
+                        .any(|id| *id == "remove-worktree" || *id == "merge-branch"),
+                "pending operation must not offer worktree removal: {operation:?} {ids:?}"
             );
             assert!(
                 shown.text.iter().any(|line| line == reason),

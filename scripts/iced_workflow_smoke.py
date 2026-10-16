@@ -824,7 +824,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 step("click", id="projects"), step("click", id=f"project-{repo}"),
                 step("click", id="project-tab-Agents"),
                 step("click", id=f"session-{reviewer['id']}"),
-                step("wait_text", text="feat/login → main"), step("wait_text", text="work committed"),
+                step("wait_text", text="feat/login → main"), step("wait_control", id="merge-branch", present=True),
                 step("click", id="changes-file-login.rs"), step("wait_text", text="+fn login() {}"),
                 step("capture", name="review-changes"),
                 step("click", id="merge-branch"), step("wait_text", text="Merged into main"),
