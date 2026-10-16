@@ -137,13 +137,25 @@ pub(super) fn time_left<'a>(
     c: Colors,
 ) -> Element<'a, Message> {
     let secs = (question.expires_at - now).num_seconds();
-    if secs <= 0 {
-        return status_word("Expired", c.faint, c);
-    }
-    let left = remaining_fraction(question.asked_at, question.expires_at, now);
+    // An empty faint ring is over; a filling one says how long is left.
+    // Either way the words are its tooltip and its name.
+    let (left, tone, words) = if secs <= 0 {
+        (0.0, c.faint, "Expired".to_owned())
+    } else {
+        let left = remaining_fraction(question.asked_at, question.expires_at, now);
+        (
+            left,
+            window_tone(left, c),
+            format!("{} left", super::super::span(secs)),
+        )
+    };
     super::tip(
-        container(ring(left, window_tone(left, c), 14.0, c)).padding(3),
-        format!("{} left", super::super::span(secs)),
+        super::said(
+            format!("time-left-{}", question.id),
+            words.clone(),
+            container(ring(left, tone, 14.0, c)).padding(3),
+        ),
+        words,
         c,
     )
 }
@@ -418,13 +430,33 @@ fn chrome(c: Colors) -> iced::Color {
 }
 
 /// One label and value of a card's detail lines.
-fn detail<'a>(label: &'a str, value: Element<'a, Message>, c: Colors) -> Element<'a, Message> {
+/// A fact of a request: its kind as a faint glyph, named on the pointer,
+/// and the value.
+fn detail<'a>(
+    glyph: Icon,
+    label: &'a str,
+    value: Element<'a, Message>,
+    c: Colors,
+) -> Element<'a, Message> {
     row![
-        text(label).size(12).color(c.faint).width(56),
+        super::tip(icon(glyph, c.faint, 13.0), label, c),
         container(value).width(Fill)
     ]
-    .spacing(12)
+    .spacing(10)
     .into()
+}
+
+/// An answer on its way: a ring, named Sending.
+fn sending_mark<'a>(id: &MessageId, c: Colors) -> Element<'a, Message> {
+    super::tip(
+        super::said(
+            format!("sending-{id}"),
+            "Sending",
+            container(icon(Icon::Ring, c.faint, 14.0)).padding(3),
+        ),
+        "Sending",
+        c,
+    )
 }
 
 /// A footer receipt: what was chosen, while it is on its way.
@@ -481,22 +513,24 @@ fn waiting_row<'a>(
 /// in the faint ink, the rest in the quiet ink and clipped to the line.
 fn waiting_words<'a>(
     subject: String,
-    aside: Option<&'a str>,
-    predicate: String,
+    mark: Option<Element<'a, Message>>,
+    predicate: Option<String>,
     narrow: bool,
     c: Colors,
 ) -> Element<'a, Message> {
-    let mut who = row![
+    let mut who = row![].spacing(6).align_y(Center);
+    if let Some(mark) = mark {
+        who = who.push(mark);
+    }
+    who = who.push(
         text(subject)
             .size(13)
             .font(weight(iced::font::Weight::Medium))
-            .wrapping(iced::widget::text::Wrapping::None)
-    ]
-    .spacing(6)
-    .align_y(Center);
-    if let Some(aside) = aside {
-        who = who.push(text(aside).size(12).color(c.faint));
-    }
+            .wrapping(iced::widget::text::Wrapping::None),
+    );
+    let Some(predicate) = predicate else {
+        return who.into();
+    };
     let what = container(
         text(predicate)
             .size(13)
@@ -590,7 +624,13 @@ impl App {
                 spoken(
                     format!("needs-you-line-{}", question.id),
                     sentence,
-                    waiting_words(name, (!live).then_some("· session ended"), what, narrow, c),
+                    waiting_words(
+                        name,
+                        (!live).then(|| icon(Icon::Leave, c.faint, 12.0)),
+                        Some(what),
+                        narrow,
+                        c,
+                    ),
                 ),
                 Some(time_left(question, now, c)),
                 actions,
@@ -618,23 +658,23 @@ impl App {
             };
             // What for, when its adapter could tell: a permission to give
             // and a question to answer are different errands.
-            let what = match self.activity.get(id.as_str()) {
+            // The errand is its glyph; the words are the row's name.
+            let (what, glyph) = match self.activity.get(id.as_str()) {
                 Some(agentdocker_core::Activity::Waiting {
                     reason: Some(agentdocker_core::WaitReason::Permission),
                     ..
-                }) => "wants permission in its terminal",
+                }) => ("wants permission in its terminal", Icon::Shield),
                 Some(agentdocker_core::Activity::Waiting {
                     reason: Some(agentdocker_core::WaitReason::Question),
                     ..
-                }) => "has a question in its terminal",
-                _ => "is waiting for you in its terminal",
-            }
-            .to_owned();
+                }) => ("has a question in its terminal", Icon::Question),
+                _ => ("is waiting for you in its terminal", Icon::Hourglass),
+            };
             rows.push(waiting_row(
                 spoken(
                     format!("needs-you-line-waiting-{id}"),
                     format!("{name} {what}"),
-                    waiting_words(name, None, what, narrow, c),
+                    waiting_words(name, Some(icon(glyph, c.amber, 13.0)), None, narrow, c),
                 ),
                 None,
                 compact(
@@ -665,13 +705,7 @@ impl App {
                     spoken(
                         format!("needs-you-line-process-{}", process.pid),
                         format!("{tool} is running here, not connected"),
-                        waiting_words(
-                            tool,
-                            None,
-                            "is running here, not connected".to_owned(),
-                            narrow,
-                            c,
-                        ),
+                        waiting_words(tool, None, None, narrow, c),
                     ),
                     None,
                     compact(
@@ -698,13 +732,7 @@ impl App {
                         spoken(
                             format!("needs-you-line-tool-{}", runtime.name),
                             format!("{} needs setup", runtime.label),
-                            waiting_words(
-                                runtime.label.clone(),
-                                None,
-                                "needs setup".to_owned(),
-                                narrow,
-                                c,
-                            ),
+                            waiting_words(runtime.label.clone(), None, None, narrow, c),
                         ),
                         None,
                         compact(
@@ -724,21 +752,23 @@ impl App {
             return None;
         }
         let total = rows.len();
-        let mut header = row![
-            dot(if guidance { c.cyan } else { c.amber }, 7.0, c),
-            text(if guidance {
-                "To get started"
-            } else {
-                "Needs you"
-            })
-            .size(13)
-            .font(weight(iced::font::Weight::Semibold))
-        ]
-        .spacing(8)
-        .align_y(Center);
+        // The card's head is its dot and, when something waits, how many;
+        // its name is said, not drawn.
+        let mut header = row![dot(if guidance { c.cyan } else { c.amber }, 7.0, c)]
+            .spacing(8)
+            .align_y(Center);
         if !guidance {
             header = header.push(count_chip(total, true, c));
         }
+        let header = spoken(
+            "needs-you-header".to_owned(),
+            if guidance {
+                "To get started".to_owned()
+            } else {
+                format!("Needs you, {total}")
+            },
+            header,
+        );
         let mut list = column![container(header).padding([10, 16]).width(Fill)].width(Fill);
         let shown = if self.shell.needs_you_expanded {
             total
@@ -803,26 +833,47 @@ impl App {
             }) => {
                 let id = question.id.clone();
                 let authority = agentdocker_core::mcp_url_authority(url).unwrap_or_default();
-                let mut body = column![
-                    text(format!("Continue on the website requested by {server}?"))
-                        .size(15).font(weight(iced::font::Weight::Semibold)),
-                    small(format!("{} · asked {}", self.name_of(&question.from), ago(now, question.asked_at)), c),
-                    self.answer_window(question, c),
-                    text(message.clone()).size(13),
-                    text(format!("Website: {authority}")).size(14).font(weight(iced::font::Weight::Semibold)),
-                    text(url.clone()).size(13).font(Font::MONOSPACE)
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                    text("Copy the link and open it in your browser if you consent. Enter any private information only on that website. Accept records your consent; it does not confirm the website interaction finished.").size(13).color(c.muted),
-                ].spacing(12).width(Fill);
+                // The server and the address are the card; what consenting
+                // means is Accept's tooltip, an encoded name the alert mark.
+                let mut site = row![
+                    text(authority.to_string())
+                        .size(14)
+                        .font(weight(iced::font::Weight::Semibold))
+                ]
+                .spacing(6)
+                .align_y(Center);
                 if authority
                     .to_ascii_lowercase()
                     .split('.')
                     .any(|part| part.starts_with("xn--"))
                 {
-                    body = body.push(text("This address uses an encoded international domain name. Check it carefully before opening.").size(13).color(c.amber));
+                    site = site.push(super::alert_mark(
+                        format!("encoded-domain-{id}"),
+                        "This address uses an encoded international domain name. Check it carefully before opening.",
+                        c,
+                    ));
                 }
+                let mut body = column![
+                    row![
+                        text(server.clone())
+                            .size(15)
+                            .font(weight(iced::font::Weight::Semibold))
+                            .width(Fill),
+                        self.answer_window(question, c)
+                    ]
+                    .spacing(8)
+                    .align_y(Center),
+                    text(message.clone()).size(13),
+                    site,
+                    text(url.clone())
+                        .size(13)
+                        .font(Font::MONOSPACE)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                ]
+                .spacing(12)
+                .width(Fill);
                 if let Some(chosen) = chosen {
-                    body = body.push(receipt(chosen, Some("Sending your decision".into()), c));
+                    body = body.push(receipt(chosen, None, c));
                 } else {
                     body = body.push(action(
                         format!("copy-question-url-{id}"),
@@ -830,25 +881,36 @@ impl App {
                         enabled.then(|| Message::CopyQuestionUrl(id.clone())),
                         false,
                     ));
-                    for (index, (label, description)) in [
-                        ("Accept", "I consent to continue on this website"),
-                        ("Decline", "I do not consent to this request"),
+                    for (index, (label, means)) in [
+                        (
+                            "Accept",
+                            "Consent to continue on this website. Enter private information only there; Accept does not confirm the website finished.",
+                        ),
+                        ("Decline", "Do not consent to this request"),
                         ("Cancel", "Dismiss without a decision"),
                     ]
                     .into_iter()
                     .enumerate()
                     {
-                        body = body.push(choice(
-                            format!("answer-choice-{id}-{index}"),
-                            label.into(),
-                            description,
-                            enabled.then(|| Message::AnswerChoice(id.clone(), label.into())),
+                        body = body.push(super::tip(
+                            choice(
+                                format!("answer-choice-{id}-{index}"),
+                                label.into(),
+                                "",
+                                enabled.then(|| Message::AnswerChoice(id.clone(), label.into())),
+                                c,
+                            ),
+                            means,
                             c,
                         ));
                     }
                 }
                 if let Some(error) = self.shell.answer_errors.get(&id) {
-                    body = body.push(notice_line("Not sent", Some(error.clone()), c.amber, c));
+                    body = body.push(super::error_line(
+                        format!("not-sent-{id}"),
+                        &format!("Not sent: {error}"),
+                        c,
+                    ));
                 }
                 container(body)
                     .padding(16)
@@ -928,7 +990,11 @@ impl App {
         // The caller validated the complete presentation; keep rendering safe
         // if another caller later supplies an unsupported schema.
         let Ok(form) = McpForm::parse(schema) else {
-            return text("This form cannot be reviewed. Use the provider terminal.").into();
+            return super::alert_mark(
+                format!("form-unsupported-{id}"),
+                "This form cannot be reviewed. Use the provider terminal.",
+                c,
+            );
         };
         let initial = Draft::new(schema, &form);
         let draft = self
@@ -937,45 +1003,42 @@ impl App {
             .get(&id)
             .filter(|d| &d.schema == schema)
             .unwrap_or(&initial);
+        // The server and its message are the card; the fields carry
+        // their own names, and what submitting means is Submit's tooltip.
         let mut body = column![
-            text(format!("Provide information to {server}?")).size(15).font(weight(iced::font::Weight::Semibold)),
-            self.answer_window(question, c),
+            row![
+                text(server.to_owned())
+                    .size(15)
+                    .font(weight(iced::font::Weight::Semibold))
+                    .width(Fill),
+                self.answer_window(question, c)
+            ]
+            .spacing(8)
+            .align_y(Center),
             text(message.to_owned()).size(13),
-            text("Review the fields before submitting. Do not enter passwords, API keys, access tokens or payment credentials. Submitted form answers are retained in this conversation. Unsubmitted form edits last until this window closes.").size(13).color(c.muted),
-        ].spacing(12).width(Fill);
+        ]
+        .spacing(12)
+        .width(Fill);
         for (index, field) in form.fields.iter().enumerate() {
             let initial_value = super::super::forms::FieldValue::initial(field);
             let value = draft.fields.get(&field.key).unwrap_or(&initial_value);
-            let label = if field.title == field.key {
-                field.title.clone()
+            // A required field's name ends with an asterisk; what it takes
+            // is said when the name is pointed at.
+            let label = if field.required {
+                format!("{} *", field.title)
             } else {
-                format!("{} ({})", field.title, field.key)
+                field.title.clone()
             };
-            let mut item = column![
-                text(format!(
-                    "{label} · {}",
-                    if field.required {
-                        "Required"
-                    } else {
-                        "Optional"
-                    }
-                ))
-                .size(14),
-                text(field.hint()).size(12).color(c.muted),
-            ]
-            .spacing(6)
-            .width(Fill);
+            let mut item = column![super::tip(text(label.clone()).size(14), field.hint(), c)]
+                .spacing(6)
+                .width(Fill);
             if !field.description.is_empty() {
                 item = item.push(text(field.description.clone()).size(13));
             }
             if !field.required {
                 item = item.push(action(
                     format!("form-include-{id}-{index}"),
-                    if value.included {
-                        "Omit this field"
-                    } else {
-                        "Include this field"
-                    },
+                    if value.included { "Omit" } else { "Include" },
                     enabled.then(|| {
                         Message::FormInclude(id.clone(), field.key.clone(), !value.included)
                     }),
@@ -1014,11 +1077,7 @@ impl App {
                     options, multiple, ..
                 } => {
                     for (option_index, (key, title)) in options.iter().enumerate() {
-                        let label = if key == title {
-                            title.clone()
-                        } else {
-                            format!("{title} ({key})")
-                        };
+                        let label = title.clone();
                         item = item.push(action(
                             format!("form-option-{id}-{index}-{option_index}"),
                             label,
@@ -1037,13 +1096,17 @@ impl App {
             body = body.push(item);
         }
         if let Some(chosen) = chosen {
-            body = body.push(receipt(chosen, Some("Sending your response".into()), c));
+            body = body.push(receipt(chosen, None, c));
         } else {
-            body = body.push(action(
-                format!("form-submit-{id}"),
-                "Submit",
-                enabled.then(|| Message::FormSubmit(id.clone())),
-                false,
+            body = body.push(super::tip(
+                action(
+                    format!("form-submit-{id}"),
+                    "Submit",
+                    enabled.then(|| Message::FormSubmit(id.clone())),
+                    false,
+                ),
+                "Do not enter passwords, API keys, access tokens or payment credentials. Submitted answers are kept in this conversation.",
+                c,
             ));
             for label in ["Decline", "Cancel"] {
                 body = body.push(action(
@@ -1055,7 +1118,7 @@ impl App {
             }
         }
         if let Some(error) = self.shell.answer_errors.get(&id) {
-            body = body.push(text(error.clone()).size(13).color(c.red));
+            body = body.push(super::error_line(format!("form-error-{id}"), error, c));
         }
         container(body)
             .padding(16)
@@ -1091,14 +1154,6 @@ impl App {
                 .size(15)
                 .line_height(iced::Pixels(22.0))
                 .font(weight(iced::font::Weight::Semibold)),
-            small(
-                format!(
-                    "{} · asked {}",
-                    self.name_of(&question.from),
-                    ago(now, question.asked_at)
-                ),
-                c
-            )
         ]
         .spacing(2)
         .width(Fill);
@@ -1111,7 +1166,7 @@ impl App {
             ));
         }
         let state: Element<'_, Message> = if busy {
-            status_word("Sending", c.muted, c)
+            sending_mark(&id, c)
         } else {
             self.answer_window(question, c)
         };
@@ -1161,7 +1216,7 @@ impl App {
                         if options.is_empty() {
                             "Your answer"
                         } else {
-                            "Or write an answer"
+                            "Your answer"
                         },
                         &answer,
                         move |text| Message::Draft(draft_id.clone(), text),
@@ -1175,7 +1230,11 @@ impl App {
             );
         }
         if let Some(error) = self.shell.answer_errors.get(&id) {
-            body = body.push(notice_line("Not sent", Some(error.clone()), c.amber, c));
+            body = body.push(super::error_line(
+                format!("not-sent-{id}"),
+                &format!("Not sent: {error}"),
+                c,
+            ));
         }
         container(body)
             .padding(16)
@@ -1209,22 +1268,19 @@ impl App {
             Request::Access(_) => (Icon::Shield, "asks for more access"),
         };
         let state: Element<'_, Message> = if busy {
-            status_word("Sending", c.muted, c)
+            sending_mark(&id, c)
         } else {
             self.answer_window(question, c)
         };
         let strip = container(
             row![
-                icon(glyph, c.muted, 14.0),
-                row![
-                    text(self.name_of(&question.from))
-                        .size(12)
-                        .font(weight(iced::font::Weight::Medium))
-                        .color(c.text),
-                    text(wants).size(12).color(c.muted)
-                ]
-                .spacing(4)
-                .width(Fill),
+                // What it wants is its glyph, said when pointed at.
+                super::tip(icon(glyph, c.muted, 14.0), wants, c),
+                text(self.name_of(&question.from))
+                    .size(12)
+                    .font(weight(iced::font::Weight::Medium))
+                    .color(c.text)
+                    .width(Fill),
                 state
             ]
             .spacing(8)
@@ -1265,15 +1321,19 @@ impl App {
                     .color(c.text)
                     .width(Fill)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                custom_sized(
-                    format!("copy-command-{id}"),
+                super::tip(
+                    custom_sized(
+                        format!("copy-command-{id}"),
+                        "Copy command",
+                        container(icon(Icon::Copy, c.muted, 14.0)).center(20),
+                        Some(Message::CopyGuidance(command.to_owned())),
+                        false,
+                        Kind::Ghost,
+                        [0, 0],
+                        iced::Length::Shrink,
+                    ),
                     "Copy command",
-                    container(icon(Icon::Copy, c.muted, 14.0)).center(20),
-                    Some(Message::CopyGuidance(command.to_owned())),
-                    false,
-                    Kind::Ghost,
-                    [0, 0],
-                    iced::Length::Shrink,
+                    c
                 )
             ]
             .spacing(8)
@@ -1318,6 +1378,7 @@ impl App {
             });
 
         let mut details = column![detail(
+            Icon::Projects,
             "Folder",
             mono(cwd.to_owned(), c)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
@@ -1328,6 +1389,7 @@ impl App {
         .width(Fill);
         if let Some(reason) = reason {
             details = details.push(detail(
+                Icon::Note,
                 "Reason",
                 text(reason.to_owned()).size(13).color(c.text).into(),
                 c,
@@ -1340,21 +1402,15 @@ impl App {
             let draft = id.clone();
             details = details.push(crate::controls::input_enabled(
                 format!("deny-note-{id}"),
-                "Why not, or what to do instead (sent with Deny)",
+                "Why not?",
                 self.shell.answers.get(&id).map_or("", String::as_str),
                 move |words| Message::Draft(draft.clone(), words),
                 enabled,
             ));
         }
 
-        let left: Element<'_, Message> = if expired {
-            small("No longer waiting for an answer", c).into()
-        } else {
-            text(format!("Asked {}", ago(now, question.asked_at)))
-                .size(12)
-                .color(c.faint)
-                .into()
-        };
+        // The ring at the top says how long is left, or that it is over.
+        let left: Element<'_, Message> = Space::new().width(0).into();
         let mut actions = row![].spacing(6).align_y(Center);
         if let Some(chosen) = chosen {
             actions = actions.push(receipt_chip(chosen, c));
@@ -1421,9 +1477,13 @@ impl App {
         .width(Fill);
         if let Some(error) = self.shell.answer_errors.get(&id) {
             frame = frame.push(
-                container(notice_line("Not sent", Some(error.clone()), c.amber, c))
-                    .padding([0, 12])
-                    .width(Fill),
+                container(super::error_line(
+                    format!("not-sent-{id}"),
+                    &format!("Not sent: {error}"),
+                    c,
+                ))
+                .padding([0, 12])
+                .width(Fill),
             );
             frame = frame.push(Space::new().height(10));
         }
@@ -1936,9 +1996,9 @@ mod tests {
             serde_json::json!({"count":3,"yes":false})
         );
         assert_eq!(app.shell.answers[&id], "unrelated old draft");
-        assert!(
-            seen(app.question_card(&question, Colors::new(false))).reads("Sending your response")
-        );
+        // The receipt is the choice itself, with no sentence beside it.
+        let during = seen(app.question_card(&question, Colors::new(false)));
+        assert!(during.reads("Submit") && !during.reads("Sending your response"));
         app.sending.clear();
         app.questions[0].expires_at = Utc::now() - chrono::Duration::seconds(1);
         let _ = app.update(Message::FormSubmit(id));
@@ -1960,7 +2020,7 @@ mod tests {
         );
         let before = seen(app.question_card(&question, Colors::new(false)));
         assert!(before.reads("https://xn--bcher-kva.example/consent?state=fixture"));
-        assert!(before.reads("Website: xn--bcher-kva.example"));
+        assert!(before.reads("xn--bcher-kva.example"));
         assert!(before.reads("This address uses an encoded international domain name. Check it carefully before opening."));
         assert!(before.control("copy-question-url-url").unwrap().3);
         for (index, label) in ["Accept", "Decline", "Cancel"].iter().enumerate() {
@@ -1977,7 +2037,7 @@ mod tests {
         let _ = app.update(Message::AnswerChoice(question.id.clone(), "Accept".into()));
         let during = seen(app.question_card(&question, Colors::new(false)));
         assert!(during.control("copy-question-url-url").is_none());
-        assert!(during.reads("Sending your decision"));
+        assert!(during.reads("Accept") && !during.reads("Sending your decision"));
         app.sending.clear();
         let mut expired = question;
         expired.expires_at = Utc::now() - chrono::Duration::seconds(1);
@@ -2297,8 +2357,8 @@ mod tests {
         assert_eq!((answer.1.as_str(), answer.3), ("Answer", true));
         assert!(view.reads("Needs you"));
         assert!(
-            !view.reads("left"),
-            "the ring says the time left; its words are on the pointer"
+            view.reads("left"),
+            "the ring is named with the time left, its words on the pointer"
         );
     }
 
