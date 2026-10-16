@@ -21,6 +21,56 @@ fn line(text: Option<String>) -> Option<String> {
     text.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty())
 }
 
+/// The git operation under way in the checkout at `root`, by the markers
+/// in its own git directory (a linked worktree has its own).
+async fn in_progress(root: &Path) -> Result<Option<review::Operation>, String> {
+    let git_dir = PathBuf::from(
+        line(read(root, &["rev-parse", "--absolute-git-dir"]).await)
+            .ok_or("could not locate the main folder's git directory")?,
+    );
+    let mut present = Vec::new();
+    for marker in [
+        "rebase-merge",
+        "rebase-apply",
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "BISECT_LOG",
+        "sequencer",
+    ] {
+        match git_dir.join(marker).try_exists() {
+            Ok(true) => present.push(marker),
+            Ok(false) => {}
+            Err(_) => return Err("could not read the main folder's git operation state".into()),
+        }
+    }
+    Ok(review::Operation::from_markers(|marker| {
+        present.contains(&marker)
+    }))
+}
+
+/// A failed command cannot prove that a pending operation belongs to it.
+/// In particular, a person may start a merge after our last marker read.
+/// Leave Git's state available for inspection; never abort or reset here.
+async fn merge_commit(root: &Path, head: &str, branch: &str) -> Result<(), String> {
+    match git(
+        root.to_path_buf(),
+        vec![
+            "merge".into(),
+            "--no-ff".into(),
+            "-m".into(),
+            format!("Merge branch '{branch}'"),
+            head.to_owned(),
+        ],
+    )
+    .await
+    {
+        Ok(output) if output.success => Ok(()),
+        Ok(output) => Err(output.text),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// Keep a large patch within its byte budget without splitting a UTF-8 character.
 /// Prefer a complete line; a single oversized line still gets a safe prefix.
 fn patch_prefix(patch: &str) -> &str {
@@ -56,6 +106,9 @@ async fn gather(
         held,
         ..Review::default()
     };
+    // The display is best effort; the mutating path requires a successful
+    // fresh operation read before it is allowed to run Git.
+    review.in_progress = in_progress(&root).await.ok().flatten();
     if (dir == root && review.branch == review.target) || head.is_none() {
         return review;
     }
@@ -199,7 +252,8 @@ impl Daemon {
 
     /// Merge an agent's branch into the main checkout's branch with a
     /// merge commit — only if its head is still the one the person looked
-    /// at and nothing stops it, and never leaving a half-made merge.
+    /// at and nothing stops it. On execution failure leave Git's state for
+    /// the person to inspect; another operation may have started meanwhile.
     pub(super) async fn merge_branch(&self, from: &str, reference: &str, head: &str) -> Response {
         let (agent, dir, root) = match self.review_checkout(reference) {
             Ok(v) => v,
@@ -235,30 +289,28 @@ impl Daemon {
         let _committing = person
             .is_some()
             .then(|| Committing::mark(self, root.clone()));
+        // A failed observation is not evidence that the checkout is free.
+        match in_progress(&root).await {
+            Ok(Some(operation)) => {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    format!(
+                        "not merged: {}",
+                        review::Blocker::InProgress(operation).label(&target)
+                    ),
+                );
+            }
+            Ok(None) => {}
+            Err(reason) => return Response::error(ErrorCode::Unavailable, reason),
+        }
         let before = line(read(&root, &["rev-parse", "HEAD"]).await);
-        let message = format!("Merge branch '{branch}'");
-        let merged = git(
-            root.clone(),
-            vec![
-                "merge".into(),
-                "--no-ff".into(),
-                "-m".into(),
-                message,
-                head.to_owned(),
-            ],
-        )
-        .await;
-        let failed = match merged {
-            Ok(output) if output.success => None,
-            Ok(output) => Some(output.text),
-            Err(e) => Some(e.to_string()),
-        };
-        if let Some(reason) = failed {
-            // Nothing is left half-made: a merge git started is undone.
-            let _ = git(root.clone(), vec!["merge".into(), "--abort".into()]).await;
+        if let Err(reason) = merge_commit(&root, head, &branch).await {
             return Response::error(
                 ErrorCode::Conflict,
-                format!("not merged, and {target} is as it was: {}", reason.trim()),
+                format!(
+                    "Git did not confirm the merge; inspect {target} in the main folder before continuing: {}",
+                    reason.trim()
+                ),
             );
         }
         let Some(commit) = line(read(&root, &["rev-parse", "HEAD"]).await) else {
@@ -455,5 +507,167 @@ mod tests {
         ));
         assert_eq!(head_of(&root).await, before);
         assert!(!root.join(".git/MERGE_HEAD").exists());
+
+        // The person's own merge under way in the main folder, with every
+        // file already resolved: said, and never run into or undone.
+        // Main takes the agent's line, so the branch would merge cleanly:
+        // only the marker stands in the way. Before the check, git refused
+        // the merge and the cleanup's `merge --abort` undid theirs.
+        std::fs::write(root.join("shared.txt"), "the agent's\n").unwrap();
+        run(&root, &["commit", "-qam", "Take the agent's line"]).await;
+        let review = reviewed(&daemon).await;
+        assert!(review.conflicts.is_empty(), "{:?}", review.conflicts);
+        let head = review.head.unwrap();
+        run(
+            &root,
+            &["merge", "--no-commit", "--no-ff", "-s", "ours", &head],
+        )
+        .await;
+        assert!(
+            read(&root, &["status", "--porcelain"])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let pending = operation_files(&root);
+        let review = reviewed(&daemon).await;
+        assert_eq!(review.in_progress, Some(review::Operation::Merge));
+        assert_eq!(
+            review.blockers(),
+            [review::Blocker::InProgress(review::Operation::Merge)]
+        );
+        let before = head_of(&root).await;
+        assert!(refused(daemon.merge_branch("user", "otter", &head).await));
+        assert!(
+            root.join(".git/MERGE_HEAD").exists(),
+            "the person's merge is still theirs"
+        );
+        assert_eq!(head_of(&root).await, before);
+        assert_eq!(operation_files(&root), pending);
+    }
+
+    /// Each marker git leaves names its operation, a rebase first, as git
+    /// itself reads them.
+    #[test]
+    fn the_markers_in_a_git_directory_name_the_operation_under_way() {
+        use review::Operation;
+        let with = |markers: &'static [&'static str]| {
+            Operation::from_markers(|marker| markers.contains(&marker))
+        };
+        assert_eq!(with(&[]), None);
+        assert_eq!(with(&["MERGE_HEAD"]), Some(Operation::Merge));
+        assert_eq!(
+            with(&["rebase-merge", "MERGE_HEAD"]),
+            Some(Operation::Rebase)
+        );
+        assert_eq!(with(&["rebase-apply"]), Some(Operation::Rebase));
+        assert_eq!(with(&["CHERRY_PICK_HEAD"]), Some(Operation::CherryPick));
+        assert_eq!(with(&["REVERT_HEAD"]), Some(Operation::Revert));
+        assert_eq!(with(&["BISECT_LOG"]), Some(Operation::Bisect));
+        assert_eq!(with(&["sequencer"]), Some(Operation::Other));
+    }
+
+    fn operation_files(root: &Path) -> Vec<Option<Vec<u8>>> {
+        ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "ORIG_HEAD"]
+            .iter()
+            .map(|name| std::fs::read(root.join(".git").join(name)).ok())
+            .collect()
+    }
+
+    async fn merge_fixture(root: &Path) -> String {
+        run(root, &["init", "-q", "-b", "main"]).await;
+        run(root, &["config", "user.email", "test@example.com"]).await;
+        run(root, &["config", "user.name", "Test"]).await;
+        run(root, &["config", "commit.gpgsign", "false"]).await;
+        std::fs::write(root.join("base.txt"), "base\n").unwrap();
+        run(root, &["add", "."]).await;
+        run(root, &["commit", "-qm", "base"]).await;
+        run(root, &["checkout", "-qb", "person"]).await;
+        std::fs::write(root.join("person.txt"), "personal\n").unwrap();
+        run(root, &["add", "."]).await;
+        run(root, &["commit", "-qm", "personal"]).await;
+        run(root, &["checkout", "-q", "main"]).await;
+        run(root, &["checkout", "-qb", "agent"]).await;
+        std::fs::write(root.join("agent.txt"), "agent\n").unwrap();
+        run(root, &["add", "."]).await;
+        run(root, &["commit", "-qm", "agent"]).await;
+        let agent = head_of(root).await;
+        run(root, &["checkout", "-q", "main"]).await;
+        agent
+    }
+
+    #[tokio::test]
+    async fn failed_merge_preserves_a_persons_operation_started_after_the_last_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let agent = merge_fixture(root).await;
+        assert_eq!(in_progress(root).await.unwrap(), None);
+        // The person acts after the final precheck, before our Git command.
+        run(
+            root,
+            &["merge", "--no-commit", "--no-ff", "-s", "ours", "person"],
+        )
+        .await;
+        assert!(
+            read(root, &["status", "--porcelain"])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let before = operation_files(root);
+        assert!(before[0].is_some());
+        let head = head_of(root).await;
+        assert!(merge_commit(root, &agent, "agent").await.is_err());
+        assert_eq!(
+            operation_files(root),
+            before,
+            "the person's merge remains intact"
+        );
+        assert_eq!(head_of(root).await, head);
+    }
+
+    #[tokio::test]
+    async fn missing_git_directory_is_not_a_clean_operation_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(in_progress(&tmp.path().join("missing")).await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unreadable_marker_is_not_a_clean_operation_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        merge_fixture(tmp.path()).await;
+        let marker = tmp.path().join(".git/rebase-merge");
+        std::os::unix::fs::symlink("rebase-merge", &marker).unwrap();
+        assert!(in_progress(tmp.path()).await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejected_merge_commit_is_left_available_for_the_person_to_inspect() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let agent = merge_fixture(root).await;
+        let hook = root.join(".git/hooks/pre-merge-commit");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let head = head_of(root).await;
+        assert!(merge_commit(root, &agent, "agent").await.is_err());
+        assert_eq!(head_of(root).await, head);
+        assert_eq!(
+            std::fs::read_to_string(root.join(".git/MERGE_HEAD"))
+                .unwrap()
+                .trim(),
+            agent
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("agent.txt")).unwrap(),
+            "agent\n"
+        );
+        assert_eq!(
+            in_progress(root).await.unwrap(),
+            Some(review::Operation::Merge)
+        );
     }
 }

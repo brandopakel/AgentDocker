@@ -119,6 +119,16 @@ def fixture_controller(psutil, binding, executable):
 
 
 def remove_fixture(root):
+    root = Path(root).resolve()
+    if os.name == 'nt':
+        # Provider plugin trees may exceed MAX_PATH even when the host's
+        # long-path opt-in is disabled. Keep deletion and containment checks
+        # in the same absolute extended namespace; never weaken ACL checks.
+        value = str(root)
+        if not value.startswith('\\\\?\\'):
+            value = '\\\\?\\UNC\\' + value[2:] if value.startswith('\\\\') else '\\\\?\\' + value
+        root = Path(value)
+
     def clear_readonly(function, path, error):
         candidate = Path(path)
         metadata = candidate.lstat()
