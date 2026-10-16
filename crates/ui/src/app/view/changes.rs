@@ -172,35 +172,26 @@ impl App {
                         c,
                     ));
                 } else {
-                    // Git deletes the branch only when it sees it merged:
-                    // with nothing left on it, it does; after a squash on
-                    // GitHub, it keeps it. The button says which before it
-                    // is pressed, as Tower's "Safe to delete" does.
-                    let keeps = !review.commits.is_empty();
+                    // Upstream configuration, not this review's commit list,
+                    // controls Git's branch deletion check at execution time.
                     let removing = self.removing_worktree.as_deref() == Some(id.as_str());
                     section = section.push(action(
                         "remove-worktree",
-                        &if removing {
-                            "Removing…".to_owned()
-                        } else if keeps {
-                            format!("Remove worktree (keeps {branch})")
+                        if removing {
+                            "Removing…"
                         } else {
-                            "Remove worktree and branch".to_owned()
+                            "Remove worktree (may delete its branch)"
                         },
                         (!removing && self.connected.is_ok())
                             .then(|| Message::RemoveWorktree(id.clone())),
                         false,
                     ));
-                    // What it runs, as Merge says what it runs.
+                    // The outcome depends on the branch state when Git runs.
                     let worktree = review.checkout.display();
                     section = section.push(
-                        text(if keeps {
-                            format!(
-                                "git worktree remove {worktree} · git keeps {branch}: it does not see the squash as merged"
-                            )
-                        } else {
-                            format!("git worktree remove {worktree} · git branch -d {branch}")
-                        })
+                        text(format!(
+                            "Git also attempts non-force branch deletion using its current upstream or HEAD. The result reports whether the branch was kept. Worktree: {worktree}"
+                        ))
                         .size(11.5)
                         .font(Font::MONOSPACE)
                         .color(c.faint),
@@ -548,40 +539,61 @@ mod tests {
         let after = seen(app.changes_section(&agent, c).expect("changes"));
         assert!(after.control("merge-branch").is_none());
         assert!(after.reads("Merged on GitHub as #340."));
-        // Git does not see a squash as merged: the button says the branch
-        // stays, and the line under it says what runs.
+        // A squash and an empty commit list cannot predict branch -d:
+        // an upstream can make Git delete either branch at execution time.
         let remove = after.control("remove-worktree").expect("remove");
-        assert_eq!(remove.1, "Remove worktree (keeps claude/feature)");
-        assert!(after.reads("git worktree remove /fixture/alpha-wt/feature"));
-
-        // With nothing left on the branch, git deletes it too; once it
-        // has, the outcome says how to bring it back.
+        assert_eq!(remove.1, "Remove worktree (may delete its branch)");
+        assert!(after.reads("using its current upstream or HEAD"));
         if let Some((_, Ok(review))) = app.branch_review.as_mut() {
             review.commits.clear();
-            review.head = Some("1a2b3c4d5e6f".into());
+            review.head = Some("stale-reviewed-head".into());
         }
         let clean = seen(app.changes_section(&agent, c).expect("changes"));
         assert_eq!(
             clean.control("remove-worktree").expect("remove").1,
-            "Remove worktree and branch"
+            "Remove worktree (may delete its branch)"
         );
-        assert!(clean.reads("git branch -d claude/feature"));
         let _ = app.update(Message::RemoveWorktree(agent.id.to_string()));
+        let actual =
+            "Deleted branch renamed-after-review (was 1234567890abcdef1234567890abcdef12345678).";
         _messages
             .send(crate::app::Msg::WorktreeRemoved(
                 agent.id.to_string(),
-                Ok(true),
+                Ok((true, Some(actual.into()))),
             ))
             .unwrap();
         app.drain();
-        let said = app
-            .merge_outcome
-            .as_ref()
-            .and_then(|(_, said)| said.as_ref().ok());
+        let said = app.merge_outcome.as_ref().unwrap().1.as_ref().unwrap();
+        assert_eq!(said, &format!("Worktree and branch removed. {actual}"));
+        assert!(!said.contains("claude/feature"));
+        assert!(!said.contains("stale-reviewed-head"));
+
+        // Older daemons may omit the note; no cached identity is substituted.
+        _messages
+            .send(crate::app::Msg::WorktreeRemoved(
+                agent.id.to_string(),
+                Ok((true, None)),
+            ))
+            .unwrap();
+        app.drain();
         assert_eq!(
-            said.map(String::as_str),
-            Some(
-                "Worktree and branch removed. claude/feature was at 1a2b3c4: git branch claude/feature 1a2b3c4 brings it back."
+            app.merge_outcome.as_ref().unwrap().1.as_deref(),
+            Ok("Worktree and branch removed.")
+        );
+        _messages
+            .send(crate::app::Msg::WorktreeRemoved(
+                agent.id.to_string(),
+                Ok((
+                    false,
+                    Some("branch actual is kept: Git refused deletion".into()),
+                )),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.merge_outcome.as_ref().unwrap().1.as_deref(),
+            Ok(
+                "Worktree removed; its branch was not deleted. branch actual is kept: Git refused deletion"
             )
         );
     }
