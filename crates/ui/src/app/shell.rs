@@ -160,16 +160,19 @@ pub(super) struct State {
     pub wait_timer: bool,
     /// What is to be asked of the notification centre, in order, one at a
     /// time: a withdrawal always lands after the post it takes back, and
-    /// an older withdrawal never meets a newer post of the same agent.
+    /// an older withdrawal never meets a newer post of the same agent. The
+    /// daemon posts outside this queue, so its notices never share a tag
+    /// with the window's: each question has its own.
     pub notice_queue: std::collections::VecDeque<NoticeOp>,
     /// One operation is with the notification centre now.
     pub notice_busy: bool,
     /// The operations started, in order, for the tests to read.
     #[cfg(test)]
     pub notice_log: Vec<String>,
-    /// Agents whose notification may still sit in the notification
-    /// centre: the ones this window posted, and those with a question the
-    /// daemon posted. Each is taken back once it stops being true.
+    /// Tags of notifications that may still sit in the notification
+    /// centre: this window's notices about agents (`window_tag`), and the
+    /// open questions the daemon posted (`question_tag`). Each is taken
+    /// back once it stops being true.
     pub noticed: BTreeSet<String>,
     /// What this window last said it shows (`viewing.json`), and when.
     pub viewing: Option<(agentdocker_host::notify::Viewing, Instant)>,
@@ -214,10 +217,14 @@ impl State {
     }
 }
 
-/// The words of a failed notification reply, and why it failed, until
-/// they are in the conversation's draft, copied, or dismissed.
+/// The tag this window posts its notice about an agent under: one per
+/// agent, a newer replacing its last, never shared with the daemon's.
+pub fn window_tag(agent: &str) -> String {
+    format!("window.{agent}")
+}
+
 /// One request of the notification centre: post an agent's notice, or
-/// take back those of some agents.
+/// take back some notices by tag.
 #[derive(Clone, Debug)]
 pub enum NoticeOp {
     Post(Box<agentdocker_host::notify::Notification>),
@@ -232,17 +239,20 @@ impl NoticeOp {
             Self::Post(notice) => {
                 let _ = crate::notify::post_notification(&notice);
             }
-            Self::Withdraw(agents) => crate::notify::withdraw(&agents),
+            Self::Withdraw(tags) => crate::notify::withdraw(&tags),
         }
     }
     #[cfg(test)]
     fn describe(&self) -> String {
         match self {
             Self::Post(notice) => format!("post {}", notice.tag.as_deref().unwrap_or_default()),
-            Self::Withdraw(agents) => format!("withdraw {}", agents.join(",")),
+            Self::Withdraw(tags) => format!("withdraw {}", tags.join(",")),
         }
     }
 }
+
+/// The words of a failed notification reply, and why it failed, until
+/// they are in the conversation's draft, copied, or dismissed.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplyRecovery {
@@ -2898,7 +2908,7 @@ impl App {
         }
         // An agent finished, or stopped for the person in its own terminal,
         // while they were away: a quiet notice, one per agent, replacing
-        // its last (the daemon's question notices share the identifier).
+        // its last.
         let finished = std::mem::take(&mut self.shell.finish_notices)
             .into_iter()
             .map(|id| (id, false));
@@ -2965,9 +2975,9 @@ impl App {
                     None => then.to_owned(),
                 },
                 action: None,
-                tag: Some(format!("agent.{id}")),
+                tag: Some(window_tag(&id)),
             };
-            self.shell.noticed.insert(id.clone());
+            self.shell.noticed.insert(window_tag(&id));
             self.shell
                 .notice_queue
                 .push_back(NoticeOp::Post(Box::new(notice)));
@@ -3011,31 +3021,38 @@ impl App {
         Task::batch(tasks)
     }
 
-    /// The agents whose notice stopped being true, forgotten as noticed:
-    /// no open question from them, nothing finished the person has not
-    /// looked at, and not stopped at a prompt. An agent with an open
-    /// question counts as noticed, since the daemon posts those.
+    /// The tags whose notice stopped being true, forgotten as noticed: a
+    /// question no longer open, and an agent with no open question, nothing
+    /// finished the person has not looked at, and not stopped at a prompt.
+    /// Every open question counts as noticed, since the daemon posts those.
     pub(super) fn stale_notices(&mut self) -> Vec<String> {
         let now = Utc::now();
-        for question in self.questions.iter().filter(|q| !q.expired(now)) {
-            self.shell.noticed.insert(question.from.clone());
-        }
+        let open: BTreeSet<String> = self
+            .questions
+            .iter()
+            .filter(|q| !q.expired(now))
+            .map(|q| agentdocker_host::notify::question_tag(q.id.as_str()))
+            .collect();
+        self.shell.noticed.extend(open.iter().cloned());
         let stale: Vec<String> = self
             .shell
             .noticed
             .iter()
-            .filter(|id| {
-                !self.needs_input(id)
-                    && !self.shell.unviewed_done.contains(*id)
-                    && !self
-                        .agents
-                        .iter()
-                        .any(|a| a.id.as_str() == id.as_str() && self.waits_for_person(a))
+            .filter(|tag| match tag.strip_prefix("window.") {
+                Some(id) => {
+                    !self.needs_input(id)
+                        && !self.shell.unviewed_done.contains(id)
+                        && !self
+                            .agents
+                            .iter()
+                            .any(|a| a.id.as_str() == id && self.waits_for_person(a))
+                }
+                None => !open.contains(*tag),
             })
             .cloned()
             .collect();
-        for id in &stale {
-            self.shell.noticed.remove(id);
+        for tag in &stale {
+            self.shell.noticed.remove(tag);
         }
         stale
     }

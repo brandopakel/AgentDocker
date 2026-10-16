@@ -6453,7 +6453,7 @@ pub(crate) mod tests {
         app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
         let _ = app.update(Message::WaitGrace);
         assert!(pending(&app).is_empty());
-        assert!(app.shell.noticed.contains(&id), "told");
+        assert!(app.shell.noticed.contains(&shell::window_tag(&id)), "told");
         // A stop answered inside the grace is never told.
         app.shell.noticed.clear();
         step(&mut app, &id, working());
@@ -6461,7 +6461,7 @@ pub(crate) mod tests {
         step(&mut app, &id, working());
         let _ = app.update(Message::Tick);
         assert!(pending(&app).is_empty());
-        assert!(!app.shell.noticed.contains(&id));
+        assert!(!app.shell.noticed.contains(&shell::window_tag(&id)));
 
         // In front, the window shows it; nothing is posted.
         app.shell.wait_notices.clear();
@@ -6481,16 +6481,16 @@ pub(crate) mod tests {
 
         // Noticed and still true: kept. Looking at it makes it stale, and
         // the update takes it back.
-        app.shell.noticed.insert(id.clone());
+        app.shell.noticed.insert(shell::window_tag(&id));
         assert!(app.stale_notices().is_empty());
         let _ = app.update(Message::SelectSession(id.clone()));
-        assert!(!app.shell.noticed.contains(&id));
+        assert!(!app.shell.noticed.contains(&shell::window_tag(&id)));
         // A wait is kept while it lasts and taken back, once, when it ends.
         step(&mut app, &id, waiting());
-        app.shell.noticed.insert(id.clone());
+        app.shell.noticed.insert(shell::window_tag(&id));
         assert!(app.stale_notices().is_empty(), "waiting is still true");
         step(&mut app, &id, working());
-        assert_eq!(app.stale_notices(), std::slice::from_ref(&id));
+        assert_eq!(app.stale_notices(), [shell::window_tag(&id)]);
         assert!(app.stale_notices().is_empty());
     }
 
@@ -6519,8 +6519,8 @@ pub(crate) mod tests {
             since: now,
             reason: None,
         };
-        let post = format!("post agent.{id}");
-        let withdraw = format!("withdraw {id}");
+        let post = format!("post window.{id}");
+        let withdraw = format!("withdraw window.{id}");
 
         step(&mut app, &id, working());
         step(&mut app, &id, waiting());
@@ -6547,6 +6547,52 @@ pub(crate) mod tests {
         let _ = app.update(Message::NoticeDone);
         assert!(!app.shell.notice_busy);
         assert!(app.shell.notice_queue.is_empty());
+    }
+
+    /// The daemon posts question notices outside the window's queue, each
+    /// under its own question's tag: a withdrawal of an answered question
+    /// that waits behind another operation, while the same agent asks
+    /// again and the daemon posts that, takes back only the answered one.
+    #[test]
+    fn taking_back_an_answered_question_never_removes_a_newer_one() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.shell.unfocused = true;
+        let question = |id: &str| Question {
+            id: MessageId::from(id.to_owned()),
+            from: "asker".into(),
+            to: agentdocker_core::Destination::Agent("user".into()),
+            text: "Continue?".into(),
+            presentation: None,
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        };
+        let first = agentdocker_host::notify::question_tag("first");
+        let second = agentdocker_host::notify::question_tag("second");
+        app.questions = vec![question("first")];
+        let _ = app.update(Message::Tick);
+        assert!(app.shell.noticed.contains(&first));
+        // Another operation is with the centre: the withdrawal waits.
+        app.shell.notice_busy = true;
+        app.questions.clear();
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.shell.notice_queue.len(), 1);
+        // The same agent asks again; the daemon posts it under its own tag.
+        app.questions = vec![question("second")];
+        let _ = app.update(Message::Tick);
+        let _ = app.update(Message::NoticeDone);
+        assert_eq!(app.shell.notice_log, [format!("withdraw {first}")]);
+        assert!(app.shell.noticed.contains(&second), "still open");
+        let _ = app.update(Message::NoticeDone);
+        assert!(app.shell.notice_queue.is_empty(), "nothing takes it back");
+        // Answered in its turn, it is taken back by its own tag.
+        app.questions.clear();
+        let _ = app.update(Message::Tick);
+        assert_eq!(
+            app.shell.notice_log,
+            [format!("withdraw {first}"), format!("withdraw {second}")]
+        );
     }
 
     #[test]
