@@ -431,6 +431,41 @@ pub(super) fn status_word<'a>(
     .into()
 }
 
+/// When a provider's limit lifts, on the person's own clock: soon as a
+/// count with the time (*resets in 42 min (15:00)*), later as the day and
+/// the time; one already past says so. Round four found every extension
+/// studied says it this way rather than in UTC.
+pub(super) fn reset_words<Tz: chrono::TimeZone>(
+    now: chrono::DateTime<Utc>,
+    reset: chrono::DateTime<Utc>,
+    zone: &Tz,
+) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let left = reset - now;
+    if left <= chrono::Duration::zero() {
+        return "should have reset by now".to_owned();
+    }
+    let local = reset.with_timezone(zone);
+    let minutes = (left.num_seconds() + 59) / 60;
+    if minutes < 60 {
+        format!("resets in {minutes} min ({})", local.format("%H:%M"))
+    } else if left < chrono::Duration::hours(24) {
+        let (hours, minutes) = (minutes / 60, minutes % 60);
+        if minutes == 0 {
+            format!("resets in {hours} h ({})", local.format("%H:%M"))
+        } else {
+            format!(
+                "resets in {hours} h {minutes} min ({})",
+                local.format("%H:%M")
+            )
+        }
+    } else {
+        format!("resets {}", local.format("%b %-d, %H:%M"))
+    }
+}
+
 /// The tone a standing is drawn and worded in: amber for the person,
 /// red for a failure, the accent for news, quiet for the rest.
 pub(super) fn standing_tone(
@@ -2954,7 +2989,11 @@ impl App {
                 let issue = state.issue.as_ref().expect("blocked");
                 if let Some(reset) = issue.reset_at {
                     body = body.push(small(
-                        format!("Provider reset: {} UTC", reset.format("%b %d %H:%M")),
+                        format!(
+                            "{} {}.",
+                            issue.kind.label(),
+                            reset_words(Utc::now(), reset, &chrono::Local)
+                        ),
                         c,
                     ));
                 }
@@ -4164,6 +4203,38 @@ mod tests {
         app.desktop.update = None;
         app.connected = Err("gone".into());
         assert!(app.service_chip(r).is_some(), "reconnecting");
+    }
+
+    /// A limit's reset reads on the person's clock: minutes, then hours
+    /// and minutes, then a day; a past one says so.
+    #[test]
+    fn a_provider_reset_reads_in_local_time() {
+        use chrono::TimeZone;
+        let zone = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 15, 21, 18, 0)
+            .unwrap();
+        let at = |minutes: i64| now + chrono::Duration::minutes(minutes);
+        assert_eq!(
+            super::reset_words(now, at(42), &zone),
+            "resets in 42 min (15:00)"
+        );
+        assert_eq!(
+            super::reset_words(now, at(190), &zone),
+            "resets in 3 h 10 min (17:28)"
+        );
+        assert_eq!(
+            super::reset_words(now, at(120), &zone),
+            "resets in 2 h (16:18)"
+        );
+        assert_eq!(
+            super::reset_words(now, at(26 * 60), &zone),
+            "resets Oct 16, 16:18"
+        );
+        assert_eq!(
+            super::reset_words(now, at(-5), &zone),
+            "should have reset by now"
+        );
     }
 
     #[test]
