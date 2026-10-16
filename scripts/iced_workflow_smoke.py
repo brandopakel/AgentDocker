@@ -477,35 +477,35 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                  step("wait_control", id=f"reply-thread-{routed}", present=False),
                                  step("click", id="thread-back"), step("click", id=f"thread-{agent['id']}"),
                                  step("wait_text", text="Keep this narrow draft"), step("capture", name="narrow-draft-kept"),
-                                 # The board: the person files a card as Ready, it is for the
-                                 # taking; the fixture agent pulls it on the daemon (the gated
-                                 # action below) and the card shows its holder; the person
-                                 # opens it, reads what done means, moves it on and archives it.
+                                 # The board: the person files a card with Backlog's quick add;
+                                 # the Ready card is for the taking; the fixture agent pulls it
+                                 # on the daemon (the gated action below) and the card shows
+                                 # its holder; the person opens it, reads what done means,
+                                 # moves it on and archives it.
                                  step("resize", width=1180, height=760), step("click", id="projects"),
                                  step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"), step("click", id="project-tab-Board"),
-                                 step("wait_control", id="task-title", present=True),
                                  step("wait_control", id=f"task-{card['id']}", present=True),
-                                 step("fill", id="task-title", text="Write the fixture notes"),
-                                 step("fill", id="task-acceptance", text="Notes cover the fixture routes"),
-                                 step("click", id="task-file-backlog"), step("wait_text", text="Write the fixture notes"),
+                                 step("click", id="lane-add-card-backlog"),
+                                 step("fill", id="quick-add-backlog", text="Write the fixture notes"),
+                                 step("click", id="quick-add-backlog"), step("wait_text", text="Write the fixture notes"),
                                  step("click", id=f"task-{card['id']}"), step("wait_text", text="Login works with SSO and a password"),
                                  step("wait_text", text="unassigned"), step("capture", name="board-ready")]
                 board_gate = len(narrow_steps)
                 narrow_steps += [step("wait_text_absent", text="unassigned"), step("wait_text", text="narrow-fixture"),
                                  step("capture", name="board-pulled"),
-                                 # Back is offered in every column but Backlog, so the move to
-                                 # Review is awaited by the next step's label changing to Done.
-                                 step("click", id=f"task-next-{card['id']}"), step("wait_text", text="Done \u203a"),
+                                 # Back is offered in every lane but the first, so the move to
+                                 # Review is awaited by the next move's name changing to Done.
+                                 step("click", id=f"task-next-{card['id']}"), step("wait_text", text="To Done"),
                                  step("click", id=f"task-next-{card['id']}"), step("wait_control", id=f"task-next-{card['id']}", present=False),
                                  step("capture", name="board-done"),
                                  step("click", id=f"task-archive-{card['id']}"), step("wait_control", id=f"task-{card['id']}", present=False)]
                 def pull_card():
                     cards = {c["id"]: c for c in rpc(endpoint, {"op": "tasks", "project": str(project)})["tasks"]}
                     filed = [c for c in cards.values() if c["title"] == "Write the fixture notes"]
-                    assert len(filed) == 1 and filed[0]["column"] == "backlog" and filed[0]["acceptance"] == "Notes cover the fixture routes", cards
+                    assert len(filed) == 1 and filed[0]["column"] == "backlog" and filed[0]["lane"] == "backlog", cards
                     assert cards[card["id"]]["column"] == "ready", cards
                     pulled = rpc(endpoint, {"op": "task_pull", "agent": narrow["id"], "task": card["id"]})
-                    assert pulled["type"] == "task" and pulled["task"]["assignee"] == narrow["id"] and pulled["task"]["column"] == "in_progress", pulled
+                    assert pulled["type"] == "task_detail" and pulled["task"]["assignee"] == narrow["id"] and pulled["task"]["column"] == "in_progress" and pulled["lease"]["resource"] == f"task:{pulled['task']['id']}", pulled
                     # The pull holds the card as a task:<id> lease with its title as the note.
                     held = rpc(endpoint, {"op": "leases", "resource": f"task:{card['id']}"})["leases"]
                     assert [(l["holder"], l["note"]) for l in held] == [(narrow["id"], card["title"])], held
@@ -621,8 +621,8 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("fill", id="session-message-text", text="Keep this session across reopen\nSecond line 日本語"),
                         step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                         step("click", id="project-tab-Board"),
-                        step("fill", id="task-title", text="Unfiled card café 日本語"),
-                        step("fill", id="task-acceptance", text="Check reopen without filing"),
+                        step("click", id="lane-add-card-backlog"),
+                        step("fill", id="quick-add-backlog", text="Unfiled card café 日本語"),
                     ]
                     report["constrained_panes_window"] = launch("constrained-panes", pane_steps)
                     kept = json.loads(catalog_path.read_text())["panes"]
@@ -641,7 +641,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 assert saved_drafts["channels"] == {}, saved_drafts
                 assert saved_drafts["answers"][draft_question] == answer_marker, saved_drafts
                 assert saved_drafts["boards"][str(project)] == {
-                    "title": "Unfiled card café 日本語", "acceptance": "Check reopen without filing"
+                    "title": "Unfiled card café 日本語", "acceptance": ""
                 }, saved_drafts
                 cards_before_reopen = rpc(endpoint, {"op": "tasks", "project": str(project), "archived": True})["tasks"]
                 restored_steps = [
@@ -667,7 +667,6 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                     step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                     step("click", id="project-tab-Board"),
                     step("wait_text", text="Unfiled card café 日本語"),
-                    step("wait_text", text="Check reopen without filing"),
                     step("capture", name="restored-board-draft"),
                 ]
                 report["restored_drafts_window"] = launch("restored-drafts", restored_steps)

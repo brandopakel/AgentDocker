@@ -670,17 +670,29 @@ impl App {
         let mut body = column![container(header).padding([2, 4])]
             .spacing(8)
             .width(Fill);
-        if let Some((open, words)) = &self.shell.quick_add
-            && *open == slug
-        {
+        let draft = self
+            .selected_project_root()
+            .and_then(|project| self.shell.task_drafts.get(&project));
+        let words = draft.map_or("", |d| d.title.as_str());
+        let here = match &self.shell.quick_add {
+            Some(open) => *open == slug,
+            // Words saved before the window last closed show where filing
+            // starts.
+            None => !words.trim().is_empty() && board.lanes.first().is_some_and(|l| l.slug == slug),
+        };
+        if here {
+            let sending = draft.is_some_and(|d| d.sending());
             body = body.push(input_submitting(
                 format!("quick-add-{slug}"),
                 "Title",
                 words,
-                Message::QuickAddText,
-                true,
-                (!words.trim().is_empty()).then_some(Message::QuickAddFile),
+                Message::TaskTitle,
+                !sending,
+                (!words.trim().is_empty() && !sending).then_some(Message::QuickAddFile),
             ));
+            if let Some(error) = draft.and_then(|d| d.error.as_deref()) {
+                body = body.push(super::view::error_line("quick-add-error", error, c));
+            }
         }
         for card in cards {
             body = body.push(self.card(card, board, inline_detail, c));

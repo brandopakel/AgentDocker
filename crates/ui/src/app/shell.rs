@@ -78,8 +78,9 @@ pub(super) struct State {
     /// The board's search words and filters: this window's, not saved.
     pub board_query: String,
     pub board_filters: BoardFilters,
-    /// A lane's quick-add field, open with its words.
-    pub quick_add: Option<(String, String)>,
+    /// The lane whose quick-add field is open. Its words are the
+    /// project's card draft (`task_drafts`), saved with the other drafts.
+    pub quick_add: Option<String>,
     /// The open card's fields as the person edits them.
     pub card_draft: CardDraft,
     /// A card being dragged, and the lane (and card) it would land at.
@@ -798,9 +799,9 @@ pub enum Message {
     /// The board's search words, and its filter toggles.
     BoardQuery(String),
     BoardFilter(BoardFilterKind),
-    /// A lane's quick add: open (or close) it, its words, file them.
+    /// A lane's quick add: open (or close) it, and file its words (typed
+    /// as `TaskTitle`) there.
     QuickAdd(Option<String>),
-    QuickAddText(String),
     QuickAddFile,
     /// The open card's fields as the person edits them, and saving them.
     CardField(CardFieldKind, String),
@@ -1736,43 +1737,14 @@ impl App {
                         .edit_draft(DraftKind::TaskAcceptance, project, acceptance);
                 }
             }
-            Message::TaskFile(column) => {
-                if let Some(project) = self.selected_project_root()
-                    && let Some(draft) = self.shell.task_drafts.get_mut(&project)
-                    && !draft.sending()
-                    && !draft.title.trim().is_empty()
-                {
-                    self.task_requests += 1;
-                    let request = self.task_requests;
-                    draft.sending = Some(request);
-                    draft.error = None;
-                    let title = draft.title.trim().to_owned();
-                    let acceptance = draft.acceptance.trim().to_owned();
-                    let board = self.board_on_view();
-                    let lane = board
-                        .as_ref()
-                        .and_then(|b| b.first(column))
-                        .map(|l| l.slug.clone());
-                    let cmd = Cmd::TaskCreate {
-                        project,
-                        request,
-                        title,
-                        acceptance,
-                        column,
-                        lane,
-                        board: board
-                            .map(|b| b.slug)
-                            .filter(|s| s != agentdocker_core::board::MAIN),
-                    };
-                    self.send(cmd);
-                }
-            }
+            Message::TaskFile(column) => self.file_card(column, None),
             Message::TaskMove(task, to) => self.send(Cmd::TaskMove {
                 task,
                 to,
                 before: None,
                 comment: None,
             }),
+
             Message::TaskOpen(task) => {
                 if self.task_open.as_ref() == Some(&task) {
                     self.task_open = None;
@@ -1827,43 +1799,29 @@ impl App {
                 }
             }
             Message::QuickAdd(lane) => {
+                let words = self
+                    .selected_project_root()
+                    .and_then(|project| self.shell.task_drafts.get(&project))
+                    .is_some_and(|draft| !draft.title.trim().is_empty());
                 self.shell.quick_add = match (lane, self.shell.quick_add.take()) {
-                    (Some(lane), Some((open, words))) if open == lane => {
-                        // Pressed again: closed, unless words wait in it.
-                        (!words.trim().is_empty()).then_some((open, words))
-                    }
-                    (Some(lane), _) => Some((lane, String::new())),
-                    (None, _) => None,
+                    // Pressed again: closed, unless words wait in it.
+                    (Some(lane), Some(open)) if open == lane => words.then_some(open),
+                    (lane, _) => lane,
                 };
             }
-            Message::QuickAddText(words) => {
-                if let Some((_, text)) = self.shell.quick_add.as_mut() {
-                    *text = words
-                        .chars()
-                        .take(agentdocker_core::task::TITLE_CHARS)
-                        .collect();
-                }
-            }
             Message::QuickAddFile => {
-                if let Some(project) = self.selected_project_root()
-                    && let Some(board) = self.board_on_view()
-                    && let Some((lane, words)) = self.shell.quick_add.take()
-                    && !words.trim().is_empty()
-                    && let Some(category) = board.lane(&lane).map(|l| l.category)
-                {
-                    self.task_requests += 1;
-                    let request = self.task_requests;
-                    self.send(Cmd::TaskCreate {
-                        project,
-                        request,
-                        title: words.trim().to_owned(),
-                        acceptance: String::new(),
-                        column: category,
-                        lane: Some(lane.clone()),
-                        board: Some(board.slug).filter(|s| s != agentdocker_core::board::MAIN),
-                    });
-                    // The field stays open for the next one.
-                    self.shell.quick_add = Some((lane, String::new()));
+                if let Some(board) = self.board_on_view() {
+                    let lane = self
+                        .shell
+                        .quick_add
+                        .clone()
+                        .or_else(|| board.lanes.first().map(|l| l.slug.clone()))
+                        .and_then(|slug| board.lane(&slug).cloned());
+                    if let Some(lane) = lane {
+                        // The field stays open for the next one.
+                        self.shell.quick_add = Some(lane.slug.clone());
+                        self.file_card(lane.category, Some(lane.slug));
+                    }
                 }
             }
             Message::CardField(kind, words) => {
@@ -3544,6 +3502,42 @@ impl App {
         }
     }
 
+    /// File the project's card draft in a lane (the first of `column` when
+    /// none is named). Only its own reply clears the draft, so a refusal
+    /// keeps the words and typing waits for the answer.
+    fn file_card(&mut self, column: agentdocker_core::Column, lane: Option<String>) {
+        if let Some(project) = self.selected_project_root()
+            && let Some(draft) = self.shell.task_drafts.get_mut(&project)
+            && !draft.sending()
+            && !draft.title.trim().is_empty()
+        {
+            self.task_requests += 1;
+            let request = self.task_requests;
+            draft.sending = Some(request);
+            draft.error = None;
+            let title = draft.title.trim().to_owned();
+            let acceptance = draft.acceptance.trim().to_owned();
+            let board = self.board_on_view();
+            let lane = lane.or_else(|| {
+                board
+                    .as_ref()
+                    .and_then(|b| b.first(column))
+                    .map(|l| l.slug.clone())
+            });
+            self.send(Cmd::TaskCreate {
+                project,
+                request,
+                title,
+                acceptance,
+                column,
+                lane,
+                board: board
+                    .map(|b| b.slug)
+                    .filter(|s| s != agentdocker_core::board::MAIN),
+            });
+        }
+    }
+
     /// What waits on the person in every project: open questions, and
     /// sessions stopped at a prompt in their own terminal. The rows Needs
     /// you holds when it shows them all.
@@ -4440,6 +4434,31 @@ mod tests {
         app.drain();
         assert_eq!(app.shell.task_drafts[&alpha_root].title, "");
         assert!(app.shell.task_drafts[&alpha_root].sending.is_none());
+
+        // A lane's quick add types into the same saved draft and files it
+        // in that lane; it stays open for the next card.
+        let _ = app.update(Message::QuickAdd(Some("review".into())));
+        let _ = app.update(Message::TaskTitle("From the review lane".into()));
+        assert!(
+            app.shell
+                .draft_snapshot()
+                .boards
+                .contains_key(alpha_root.as_str()),
+            "saved with the drafts"
+        );
+        let _ = app.update(Message::QuickAddFile);
+        assert!(requests.try_iter().any(|c| matches!(
+            c,
+            Cmd::TaskCreate { ref lane, ref title, .. }
+                if lane.as_deref() == Some("review") && title == "From the review lane"
+        )));
+        assert_eq!(app.shell.quick_add.as_deref(), Some("review"));
+        let request = app.shell.task_drafts[&alpha_root].sending.expect("filing");
+        messages
+            .send(Msg::TaskCreated(alpha_root.clone(), request, Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.shell.task_drafts[&alpha_root].title, "");
 
         // Beta's draft is beta's: alpha's text waits while beta is on view.
         let _ = app.update(Message::TaskTitle("alpha again".into()));
