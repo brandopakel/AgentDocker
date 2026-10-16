@@ -21,6 +21,8 @@ pub(super) struct State {
     pub review_delivery: bool,
     pub session_message: bool,
     pub session_drafts: BTreeMap<String, SessionDraft>,
+    /// The branch and tip of the worktree being removed, as reviewed.
+    pub removing_tip: Option<(String, String)>,
     /// Text only, keyed by the original question ID. Never restores approval or sending state.
     pub answers: BTreeMap<MessageId, String>,
     /// Nonsecret form edits stay in memory; ordinary drafts never receive them.
@@ -1776,6 +1778,14 @@ impl App {
             }
             Message::RemoveWorktree(id) => {
                 if self.removing_worktree.is_none() && self.connected.is_ok() {
+                    // The branch's tip as reviewed, so the outcome can say
+                    // how to bring a deleted branch back.
+                    self.shell.removing_tip = self
+                        .branch_review
+                        .as_ref()
+                        .filter(|(agent, _)| agent == &id)
+                        .and_then(|(_, review)| review.as_ref().ok())
+                        .and_then(|review| Some((review.branch.clone()?, review.head.clone()?)));
                     self.removing_worktree = Some(id.clone());
                     self.merge_outcome = None;
                     self.send(Cmd::WorktreeRemove(id));

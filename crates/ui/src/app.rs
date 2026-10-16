@@ -1186,12 +1186,20 @@ impl App {
                 }
                 Msg::WorktreeRemoved(agent, result) => {
                     self.removing_worktree = None;
-                    let said = result.map(|branch| {
-                        if branch {
-                            "Worktree and branch removed.".to_owned()
-                        } else {
-                            "Worktree removed; its branch is kept.".to_owned()
+                    let tip = self.shell.removing_tip.take();
+                    let said = result.map(|removed| match (removed, tip) {
+                        // A deleted branch is one command from back.
+                        (true, Some((branch, head))) => {
+                            let short: String = head.chars().take(7).collect();
+                            format!(
+                                "Worktree and branch removed. {branch} was at {short}: git branch {branch} {short} brings it back."
+                            )
                         }
+                        (true, None) => "Worktree and branch removed.".to_owned(),
+                        (false, Some((branch, _))) => {
+                            format!("Worktree removed; {branch} is kept.")
+                        }
+                        (false, None) => "Worktree removed; its branch is kept.".to_owned(),
                     });
                     self.merge_outcome = Some((agent.clone(), said));
                     self.send(Cmd::Agents);

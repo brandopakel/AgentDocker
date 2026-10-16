@@ -250,8 +250,12 @@ nothing is left to merge — or its pull request has merged on GitHub (*Merged o
 GitHub as #340.*), where a squash leaves the branch's own commits uncounted by
 the main branch, so no Merge is offered — the next step is right there: while the session runs
 the section says its worktree stays until it is done; once it has ended,
-**Remove its worktree** removes the folder (only when it is clean) and its branch
-when git considers it merged; the branch is kept, and the section says so, when not. **Details** reveals the session ID, process,
+**Remove worktree and branch** removes the folder (only when it is clean) and its
+branch, which git considers merged; after a squash merge on GitHub git does not,
+and the button reads **Remove worktree (keeps <branch>)**. The git commands it
+runs are printed under it, as Merge's is, and once a branch is deleted the
+outcome says how to bring it back (*<branch> was at 1a2b3c4: git branch <branch>
+1a2b3c4 brings it back.*). **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
 
 Diff previews stay within 512 KiB, ending on a complete line when possible and
