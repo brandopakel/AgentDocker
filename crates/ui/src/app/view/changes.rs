@@ -114,6 +114,16 @@ impl App {
         ]
         .spacing(8)
         .width(Fill);
+        // A detached rebase has no commit list. Show its blocker before
+        // empty-branch messaging or cleanup controls, which would imply
+        // that the worktree has been merged and is safe to remove.
+        if review.in_progress.is_some() {
+            return Some(
+                section
+                    .push(self.merge_checklist(review, &blockers, &target, c))
+                    .into(),
+            );
+        }
         // What the last merge said stays under the section, also once
         // there is nothing left to merge.
         let outcome = self

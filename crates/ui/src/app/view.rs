@@ -4418,6 +4418,51 @@ mod tests {
         offered.0
     }
 
+    #[test]
+    fn an_operation_blocks_empty_review_cleanup_even_when_the_target_is_detached() {
+        use agentdocker_core::review::{Operation, Review};
+        let (tx, _commands) = crate::app::queue::channel();
+        let (_sender, rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::bare(tx, rx);
+        let c = super::Colors::new(false);
+        let mut agent = agentdocker_core::AgentRecord::new(
+            agentdocker_core::AgentSpec::default(),
+            false,
+            Utc::now(),
+        );
+        agent.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        let mut review = Review {
+            agent: agent.id.clone(),
+            checkout: "repo/worktree".into(),
+            target_checkout: "repo".into(),
+            branch: Some("feature".into()),
+            target: Some("main".into()),
+            ..Review::default()
+        };
+        // A truly empty branch still offers the person's cleanup action.
+        app.branch_review = Some((agent.id.to_string(), Ok(review.clone())));
+        let controls = offered(app.changes_section(&agent, c).unwrap());
+        assert!(controls.iter().any(|(id, _, _)| id == "remove-worktree"));
+        for (operation, target) in [
+            (Operation::Merge, Some("main")),
+            (Operation::Rebase, None),
+            (Operation::CherryPick, Some("main")),
+        ] {
+            review.in_progress = Some(operation);
+            review.target = target.map(str::to_owned);
+            app.branch_review = Some((agent.id.to_string(), Ok(review.clone())));
+            let controls = offered(app.changes_section(&agent, c).unwrap());
+            assert_eq!(
+                controls
+                    .iter()
+                    .map(|(id, _, _)| id.as_str())
+                    .collect::<Vec<_>>(),
+                ["review-refresh"],
+                "pending operation must not offer worktree removal: {operation:?}"
+            );
+        }
+    }
+
     /// Open in… is there only with an editor installed: one opens the
     /// folder straight in it (*Open in Zed*), several open a menu listing
     /// the one chosen last first, each row opening the folder it was built
