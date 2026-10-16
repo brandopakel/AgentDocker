@@ -106,11 +106,39 @@ fn rows_body<'a>(rows: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Mess
     let mut list = column![].width(Fill);
     for (index, item) in rows.into_iter().enumerate() {
         if index > 0 {
-            list = list.push(container(rule(c)).padding([0, 16]));
+            list = list.push(container(rule(c)).padding([0, 14]));
         }
         list = list.push(item);
     }
     list.into()
+}
+
+/// A group of settings as a macOS form draws one: its name, and a line of
+/// why, above the box, and the rows inside it. Ice, Stats and System
+/// Settings all put the name outside; a strip inside the card cost every
+/// group a header row.
+fn form_section<'a>(
+    title_text: &'a str,
+    description: Option<&'a str>,
+    body: impl Into<Element<'a, Message>>,
+    c: Colors,
+) -> Element<'a, Message> {
+    let mut head = column![
+        text(title_text)
+            .size(13)
+            .font(weight(iced::font::Weight::Semibold))
+    ]
+    .spacing(2);
+    if let Some(description) = description {
+        head = head.push(text(description).size(12).color(c.muted));
+    }
+    column![
+        container(head).padding([0, 4]),
+        container(body).width(Fill).style(move |_| c.card_style()),
+    ]
+    .spacing(6)
+    .width(Fill)
+    .into()
 }
 
 /// A settings row: what it is and one line of why on the left, the
@@ -124,17 +152,17 @@ fn setting<'a>(
     container(
         row![
             column![
-                text(title_text.into()).size(14).font(MEDIUM),
-                text(description.into()).size(13).color(c.muted)
+                text(title_text.into()).size(13),
+                text(description.into()).size(12).color(c.muted)
             ]
-            .spacing(2)
+            .spacing(1)
             .width(Fill),
             control.into()
         ]
         .spacing(16)
         .align_y(Center),
     )
-    .padding([12, 16])
+    .padding([8, 14])
     .width(Fill)
     .into()
 }
@@ -150,15 +178,15 @@ fn field_row<'a>(
     container(
         column![
             column![
-                text(title_text.into()).size(14).font(MEDIUM),
-                text(description.into()).size(13).color(c.muted)
+                text(title_text.into()).size(13),
+                text(description.into()).size(12).color(c.muted)
             ]
-            .spacing(2),
+            .spacing(1),
             control.into()
         ]
-        .spacing(10),
+        .spacing(8),
     )
-    .padding([12, 16])
+    .padding([8, 14])
     .width(Fill)
     .into()
 }
@@ -1470,9 +1498,8 @@ impl App {
     /// at its right.
     pub(super) fn settings_view(&self, c: Colors) -> Element<'_, Message> {
         let s = &self.settings;
-        let appearance = section(
+        let appearance = form_section(
             "Appearance",
-            None,
             None,
             rows_body(
                 vec![
@@ -1560,9 +1587,8 @@ impl App {
         for palette in crate::theme::PALETTES {
             swatches = swatches.push(self.palette_swatch(palette, c));
         }
-        let terminal = section(
+        let terminal = form_section(
             "Terminal",
-            None,
             None,
             rows_body(
                 vec![
@@ -1609,35 +1635,51 @@ impl App {
                     alternatives = alternatives.push(keys(combo, c));
                 }
                 container(
-                    row![text(what).size(14).width(Fill), alternatives]
+                    row![text(what).size(13).width(Fill), alternatives]
                         .spacing(16)
                         .align_y(Center),
                 )
-                .padding([10, 16])
+                .padding([6, 14])
                 .width(Fill)
                 .into()
             };
-        let keyboard = section(
+        let keyboard = form_section(
             "Keyboard and accessibility",
-            Some("Every control is reachable from the keyboard. Text fields support native input methods.".to_owned()),
-            None,
+            Some(
+                "Every control is reachable from the keyboard. Text fields support native input methods.",
+            ),
             rows_body(
                 vec![
                     shortcut(
                         "Jump to a place, project or action",
-                        vec![if mac { vec!["⌘", "K"] } else { vec!["Ctrl", "K"] }],
+                        vec![if mac {
+                            vec!["⌘", "K"]
+                        } else {
+                            vec!["Ctrl", "K"]
+                        }],
                     ),
                     shortcut("Move between controls", vec![vec!["Tab"], vec!["⇧", "Tab"]]),
-                    shortcut("Activate the focused control", vec![vec!["Enter"], vec!["Space"]]),
+                    shortcut(
+                        "Activate the focused control",
+                        vec![vec!["Enter"], vec!["Space"]],
+                    ),
                     shortcut(
                         "Switch sections",
-                        vec![if mac { vec!["⌘", "1–4"] } else { vec!["Ctrl", "1–4"] }],
+                        vec![if mac {
+                            vec!["⌘", "1–4"]
+                        } else {
+                            vec!["Ctrl", "1–4"]
+                        }],
                     ),
                     shortcut("Close details or a draft launch form", vec![vec!["Esc"]]),
                     shortcut("Leave terminal input", vec![vec!["F6"]]),
                     shortcut(
                         "Detach the terminal",
-                        vec![if mac { vec!["⌃", "]"] } else { vec!["Ctrl", "]"] }],
+                        vec![if mac {
+                            vec!["⌃", "]"]
+                        } else {
+                            vec!["Ctrl", "]"]
+                        }],
                     ),
                     shortcut(
                         "Copy the terminal selection",
@@ -1706,16 +1748,9 @@ impl App {
                 .into(),
             );
         }
-        let installation = section(
-            "Installation",
-            None,
-            None,
-            rows_body(installation_rows, c),
-            c,
-        );
-        let diagnostics = section(
+        let installation = form_section("Installation", None, rows_body(installation_rows, c), c);
+        let diagnostics = form_section(
             "Diagnostics",
-            None,
             None,
             container(kv_list(
                 vec![
@@ -1734,7 +1769,7 @@ impl App {
             c,
         );
         column![appearance, terminal, keyboard, installation, diagnostics]
-            .spacing(16)
+            .spacing(20)
             .into()
     }
 
