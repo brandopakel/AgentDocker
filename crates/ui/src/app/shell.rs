@@ -4296,6 +4296,7 @@ mod tests {
                     number: 7,
                     url: "https://example.com/7".into(),
                     status,
+                    head: None,
                 })),
             )])
         };
