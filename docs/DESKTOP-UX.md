@@ -636,7 +636,7 @@ Settings controls light/dark appearance, text size, terminal palette and row
 spacing. Preferences are stored privately in the AgentDocker state directory.
 A malformed preference file is preserved and reported rather than silently reset.
 **Daily update checks** is off by default. Enable it to check once per day while
-the app is open; a known update appears in the footer. Download and installation
+the app is open; a known update appears at the foot of the sidebar. Download and installation
 remain explicit actions. A check reads the stable channel and, on a preview
 (beta) installation or once **Allow preview builds** is on, the preview channel
 too, and offers the newer: a beta user is offered the final release. A beta
@@ -648,12 +648,15 @@ downloads only after **Allow preview builds**. When nothing has been published y
 update published yet**; a check that fails says **Could not check for
 updates** and why (no connection to GitHub, say), never *Installation failed*.
 
-The footer says whether the window is connected. When the background service
-(the daemon) is older than the app — an older version, or another installed
-release of the same version, which is what an update installed underneath a
-running daemon looks like — the footer says so in one quiet line, with both
-versions and an amber dot, and offers **Restart…**. Its confirmation, an amber
-strip with **Restart** and **Cancel**, says what a restart costs:
+The foot of the sidebar, above **Add project…**, says something about the
+background service only when there is something to say, and then one thing: it
+is not reachable yet (*Reconnecting to the background service…*); or it is older
+than the app — an older version, or another installed release of the same
+version, which is what an update installed underneath a running daemon looks
+like — with both versions, an amber dot and **Restart…**; or an update is ready
+to install. A healthy service says nothing and takes no room. The restart's
+confirmation, an amber strip across the bottom with **Restart** and **Cancel**,
+says what a restart costs:
 how many sessions AgentDocker itself started will stop (and how many are set to
 start again); sessions started in a terminal keep running and reconnect. A
 request the older service has never heard of reads *The background service is
