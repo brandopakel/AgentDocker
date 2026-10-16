@@ -1068,6 +1068,33 @@ impl App {
         // The window is always the first layer of one stack, dialogs or
         // none, so opening one keeps its scroll offsets and field state.
         let mut layers = vec![window];
+        // What just happened floats at the window's foot for a moment and
+        // goes, rather than standing under the title as a line to read.
+        if !self.status.is_empty() {
+            let toast = container(
+                row![
+                    dot(c.accent, 6.0, c),
+                    text(self.status.clone())
+                        .size(13)
+                        .color(c.text)
+                        .wrapping(iced::widget::text::Wrapping::Word)
+                ]
+                .spacing(8)
+                .align_y(Center),
+            )
+            .padding([8, 14])
+            .max_width(520)
+            .style(move |_| c.overlay_style());
+            layers.push(
+                container(toast)
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Center)
+                    .align_y(iced::alignment::Vertical::Bottom)
+                    .padding(20)
+                    .into(),
+            );
+        }
         if self.shell.launch {
             // The launch form is a dialog over the window: a scrim (a flat
             // wash, no blur) that closes it when pressed, and the form
@@ -1134,30 +1161,18 @@ impl App {
                 c,
             ));
         }
-        let mut header_words = column![title(title_text, 20)].spacing(2).width(Fill);
-        if in_project && let Some(entry) = self.shell.catalog.selected() {
-            header_words = header_words.push(
-                text(shorten_home(&entry.project.root))
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .color(c.faint)
-                    .wrapping(iced::widget::text::Wrapping::None),
-            );
-        } else if in_project && self.shell.catalog.unassigned {
-            header_words = header_words.push(note("Sessions without a known project", c));
-        } else if !in_project {
-            header_words = header_words.push(note(
-                match self.screen {
-                    Screen::Questions if self.has_conversations() => {
-                        "Each project's chat and your direct messages"
-                    }
-                    Screen::Questions => "Questions and messages waiting for you",
-                    Screen::Runtimes => "Connect and configure your agent tools",
-                    _ => "Appearance, terminal, installation and diagnostics",
-                },
-                c,
-            ));
-        }
+        // The title alone; a project's folder shows when it is pointed at.
+        let header_words: Element<'_, Message> =
+            match self.shell.catalog.selected().filter(|_| in_project) {
+                Some(entry) => container(tip(
+                    title(title_text, 20),
+                    shorten_home(&entry.project.root),
+                    c,
+                ))
+                .width(Fill)
+                .into(),
+                None => container(title(title_text, 20)).width(Fill).into(),
+            };
         heading_row = heading_row.push(header_words);
         let mut tools = row![].spacing(8).align_y(Center);
         if in_project && let Some(pause) = self.pause_controls(c) {
@@ -1203,25 +1218,7 @@ impl App {
         if in_project && let Some(form) = self.pause_form(c) {
             content = content.push(form);
         }
-        if let Err(error) = &self.connected {
-            content = content.push(attention(
-                column![
-                    row![
-                        dot(c.amber, 8.0, c),
-                        heading("Connection unavailable", 15).color(c.amber)
-                    ]
-                    .spacing(8)
-                    .align_y(Center),
-                    note(
-                        format!("{error}\nShowing the last update. Reconnecting…"),
-                        c
-                    )
-                ]
-                .spacing(7),
-                c.amber,
-                c,
-            ));
-        }
+        // A lost connection is the rail foot's one line, not a banner here.
         if let Some(error) = &self.shell.drafts.error {
             let mut controls = row![].spacing(8);
             if self.shell.drafts.readable {
@@ -1256,19 +1253,6 @@ impl App {
                 c.amber,
                 c,
             ));
-        }
-        if !self.status.is_empty() {
-            content = content.push(
-                row![
-                    dot(c.accent, 7.0, c),
-                    text(self.status.clone())
-                        .size(13)
-                        .font(weight(iced::font::Weight::Medium))
-                        .color(c.accent_ink)
-                ]
-                .spacing(8)
-                .align_y(Center),
-            );
         }
         if in_project && !self.all_projects() {
             let mut tabs = row![].spacing(18);

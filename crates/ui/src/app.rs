@@ -78,7 +78,7 @@ const CONFIRM_WITHIN: Duration = Duration::from_secs(5);
 /// Nothing lives only there — a failed setup keeps its plan, a lost
 /// socket has its own indicator — so letting it go is safe, and a line
 /// that never expires is a line the eye stops reading.
-const STATUS_FOR: Duration = Duration::from_secs(20);
+const STATUS_FOR: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
