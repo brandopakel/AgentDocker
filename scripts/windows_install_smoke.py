@@ -19,6 +19,8 @@ import time
 import uuid
 import zipfile
 
+from windows_native_codex_smoke import remove_fixture
+
 
 @contextmanager
 def hold_update_extraction(downloads):
@@ -91,6 +93,20 @@ def hold_update_extraction(downloads):
         watcher.join(timeout=5)
         if watcher.is_alive():
             raise AssertionError('fixture extraction watcher did not stop')
+
+
+def finish_fixture(report, scratch, save):
+    """Retain failed fixtures and always persist cleanup failures in the report."""
+    try:
+        if report['result'] == 'passed':
+            remove_fixture(scratch)
+            report['scratch_removed'] = not scratch.exists()
+    except Exception as error:
+        report['result'] = 'failed'
+        report['cleanup_error'] = f'{type(error).__name__}: {error}'
+        raise
+    finally:
+        save()
 
 
 def main():
@@ -495,10 +511,7 @@ def main():
     finally:
         # Keep failed scratch for diagnosis; never erase unexpected contents
         # as part of a failed trial's cleanup.
-        if report['result'] == 'passed':
-            shutil.rmtree(scratch)
-            report['scratch_removed'] = not scratch.exists()
-        save()
+        finish_fixture(report, scratch, save)
 
 
 if __name__ == '__main__':
