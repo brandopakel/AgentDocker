@@ -26,6 +26,30 @@ remain open. Native Codex, managed secret input and live daemon replacement stay
 experimental. Existing-account and synthetic-provider evidence is scoped below;
 CI and private fixtures do not establish physical or fresh-login acceptance.
 
+All six merged-source CI workflows for beta.14/source 32950e14 (#349) passed
+on their first attempt. Publication remains held after scheduled fuzz run
+38894343793 exposed an outdated token-filter oracle: an owner-only role
+request was permitted by the daemon but missing from the oracle's allowlist.
+The original crash and logs are retained and reproduced locally. The correction
+covers all five omitted owner-only operations and tests impersonation before
+identity rewriting. The saved crash replay, 35 credential cases and a 120-second
+token-filter campaign passed. Source eee8393f then passed the standard gate,
+review and all four Linux fuzz targets. Windows run 38940623574 passed all 62
+extracted-package checks but failed cleanup: a three-second probe timeout escaped
+the rescue daemon's ten-second readiness loop. Cleanup now retains timed-out
+probes within that same budget, fails explicitly if no answer arrives, and saves
+the rescue process's startup log. The original failure is retained; its OS-level
+latency cause and the separate historical first-start failures remain unknown.
+Source b80eb228 subsequently passed the standard gate and all six platform CI
+workflows on their first attempt; its Windows archive and complete cleanup were
+independently verified. Review then found that a probe returning success after
+its deadline could still pass. The waiter now checks the clock after every probe;
+regressions cover late success and success exactly at the deadline. Later-head CI
+and review are tracked on [PR #368](https://github.com/brandopakel/AgentDocker/pull/368),
+without relabeling the completed b80eb228 evidence. Hosted acceptance remains open.
+These corrections change test coverage/cleanup, not endpoint permissions or
+production startup deadlines.
+
 The beta.14 candidate now also refuses a one-step merge while Git has an
 operation in progress, including detached rebase and sequencer states. The
 Changes panel shows this blocker before empty-branch messaging or worktree
