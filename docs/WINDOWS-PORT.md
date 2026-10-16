@@ -797,7 +797,10 @@ times; ten stable minutes reset the budget. A clean exit stays stopped, and
 Scheduler-level retries are disabled. Strict setup errors remain fatal while
 the native-command boundary captures ordinary stderr and its actual exit code.
 Scheduler operations stage at most 512 KiB of UTF-8 script in a fresh private
-temporary file. A short encoded loader reads it after its writer is closed,
+temporary file directly under the user home, with protected creation and ancestry checks.
+It does not depend on shared Temp permissions or a caller-only TMP override, and
+does not create the daemon state home for a cold read-only query. A short encoded
+loader reads it after its writer is closed,
 avoiding Windows' command-line limit while retaining exact ownership checks.
 The temporary file is removed after the bounded command exits.
 
