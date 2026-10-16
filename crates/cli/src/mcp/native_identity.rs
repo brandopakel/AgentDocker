@@ -102,8 +102,10 @@ impl Context {
         // Reuse the daemon's cached-host predicate while also supporting the
         // explicitly authenticated dedicated server accepted by this receiver.
         let cached = procinfo::detached_codex_app_server(&host.argv);
-        let dedicated = procinfo::is_codex_binary(&host.argv)
-            && host.argv.iter().any(|v| v == "app-server")
+        // --program accepts an explicitly selected native image under any
+        // filename. This shape only opts into binding resolution: the kernel
+        // image/birth and accepted server record still prove authority below.
+        let dedicated = host.argv.iter().any(|v| v == "app-server")
             && host.argv.iter().any(|v| v == "--listen");
         if !cached && !dedicated {
             return Ok(None);
@@ -268,6 +270,68 @@ mod tests {
             assert!(profile_from_executable(&root.join(suffix)).is_err());
         }
         assert!(profile_from_executable(Path::new("relative/bin/codex")).is_err());
+    }
+
+    #[test]
+    fn native_identity_accepts_renamed_dedicated_host_only_with_binding_proof() {
+        let pid = std::process::id();
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        for name in ["codex-x86_64-pc-windows-msvc.exe", "private-provider"] {
+            let process = procinfo::Process {
+                pid,
+                ppid: 0,
+                argv: vec![
+                    name.into(),
+                    "app-server".into(),
+                    "--listen".into(),
+                    "ws://127.0.0.1:12345".into(),
+                ],
+            };
+            let context = Context::from_host(pid, cwd.clone(), std::slice::from_ref(&process))
+                .unwrap()
+                .expect("an explicitly selected native executable need not be named codex");
+            assert!(context.profile.is_none());
+            assert_eq!(context.host.started_at, procinfo::start_time(pid).unwrap());
+            assert_eq!(
+                context.executable,
+                procinfo::executable_path_of(pid)
+                    .unwrap()
+                    .canonicalize()
+                    .unwrap()
+            );
+            let (_, mut agent, meta) = fixture();
+            agent.spec.workdir = Some(cwd.clone());
+            let calls = std::cell::Cell::new(0);
+            let error = context
+                .select(
+                    vec![agent.clone()],
+                    &meta,
+                    |_| true,
+                    |_| {
+                        calls.set(calls.get() + 1);
+                        anyhow::bail!("unaccepted host");
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(calls.get(), 1);
+            assert_eq!(error.to_string(), "unaccepted host");
+            assert_eq!(
+                context
+                    .select(vec![agent.clone()], &meta, |_| true, |_| Ok(()))
+                    .unwrap()
+                    .id,
+                agent.id
+            );
+            for missing in ["app-server", "--listen"] {
+                let mut other = process.clone();
+                other.argv.retain(|arg| arg != missing);
+                assert!(
+                    Context::from_host(pid, cwd.clone(), &[other])
+                        .unwrap()
+                        .is_none()
+                );
+            }
+        }
     }
 
     fn fixture() -> (Context, AgentRecord, Value) {

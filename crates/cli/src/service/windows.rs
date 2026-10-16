@@ -156,17 +156,17 @@ fn evaluate(layout: &Layout, script: &str) -> Result<String> {
 // Base64 on the command line expands that beyond CreateProcessW's 32,767 UTF-16
 // unit limit. Keep only this short loader in argv; the bounded script lives in a
 // fresh owner-only temporary file until the entire bounded command has ended.
-fn stage_script(script: &str) -> Result<(tempfile::TempPath, String)> {
+// Stage under the user home: a Scheduler child does not inherit the caller's
+// TMP, and a shared Temp directory can be writable by other local principals.
+// Private creation still validates ancestry and does not create a state home.
+fn stage_script(user_home: &Path, script: &str) -> Result<(tempfile::TempPath, String)> {
     use std::io::Write;
     if script.len() > 512 * 1024 {
         bail!("Windows service operation script exceeds its size bound");
     }
     let mut file = tempfile::Builder::new()
         .prefix("agentdocker-service-")
-        .make_in(
-            std::env::temp_dir(),
-            agentdocker_host::dirs::create_private_file,
-        )?;
+        .make_in(user_home, agentdocker_host::dirs::create_private_file)?;
     file.write_all(script.as_bytes())?;
     // Close the writer before .NET opens its read-only handle (FileShare.Read).
     // TempPath still removes this private file on success, error or timeout.
@@ -222,7 +222,7 @@ pub(crate) fn evaluate_at(user_home: &Path, script: &str) -> Result<String> {
     let script = format!(
         "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new();{tracing}Write-AgentDockerServiceTrace 'powershell-start';{script};Write-AgentDockerServiceTrace 'powershell-complete'"
     );
-    let (_script_file, loader) = stage_script(&script)?;
+    let (_script_file, loader) = stage_script(user_home, &script)?;
     let argv = vec![
         powershell()?.to_string_lossy().into_owned(),
         "-NoProfile".into(),
@@ -709,14 +709,16 @@ mod tests {
     fn long_scheduler_operations_keep_exact_private_content_off_the_command_line() {
         let script = format!("# {}\n'ü literal $(not code)'", "long action ".repeat(4000));
         assert!(encoded(&script).len() > 32_767);
-        let (path, loader) = stage_script(&script).unwrap();
+        let (_temp, layout, _receipt) = fixture();
+        let (path, loader) = stage_script(&layout.user_home, &script).unwrap();
+        assert_eq!(path.parent(), Some(layout.user_home.as_path()));
         let retained = path.to_path_buf();
         agentdocker_host::dirs::read_private_file(&path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), script);
         assert!(loader.len() < 30_000);
         drop(path);
         assert!(!retained.exists());
-        assert!(stage_script(&"x".repeat(512 * 1024 + 1)).is_err());
+        assert!(stage_script(&layout.user_home, &"x".repeat(512 * 1024 + 1)).is_err());
     }
 
     #[test]

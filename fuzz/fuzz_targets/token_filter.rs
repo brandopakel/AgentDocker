@@ -101,8 +101,44 @@ fuzz_target!(|data: &[u8]| {
         Request::Claim { ttl_secs, .. } | Request::Renew { ttl_secs, .. } => Some(*ttl_secs),
         _ => None,
     };
+    // Check the requested actor too: checking only the returned canonical ID
+    // would miss a filter that silently rewrote a foreign actor to the owner.
+    let actor = match &input.request {
+        Request::Inspect { agent }
+        | Request::Reads { agent }
+        | Request::Inbox { agent, .. }
+        | Request::DeliveryQueue { agent }
+        | Request::AckInbox { agent, .. }
+        | Request::ReportProvider { agent, .. }
+        | Request::ReportActivity { agent, .. }
+        | Request::RecordEmission { agent, .. }
+        | Request::Role { agent, .. }
+        | Request::Release { agent, .. }
+        | Request::ReleaseAll { agent, .. }
+        | Request::JournalAdd { agent, .. }
+        | Request::Observe { agent, .. }
+        | Request::Stale { agent, .. }
+        | Request::Claim { agent, .. }
+        | Request::Renew { agent, .. }
+        | Request::Send { from: agent, .. } => Some(agent.as_str()),
+        Request::Journal {
+            digest: Some(digest),
+            ..
+        } => Some(digest.reader.as_str()),
+        _ => None,
+    };
+    // The registry also accepts unique ID prefixes. Resolve the reference
+    // independently of the restricted filter under test.
+    let impersonates_owner = actor.is_some_and(|actor| {
+        f.daemon
+            .resolve(actor)
+            .ok()
+            .map(|id| id.to_string())
+            .as_deref()
+            != Some(f.agent.as_str())
+    });
     let result = f.daemon.restricted_request(token, input.request);
-    if token != f.token {
+    if token != f.token || impersonates_owner {
         assert!(
             matches!(result, Err(response) if matches!(*response, Response::Error { code: ErrorCode::Forbidden, .. }))
         );
@@ -123,7 +159,12 @@ fuzz_target!(|data: &[u8]| {
         Request::Inspect { agent }
         | Request::Reads { agent }
         | Request::Inbox { agent, .. }
+        | Request::DeliveryQueue { agent }
         | Request::AckInbox { agent, .. }
+        | Request::ReportProvider { agent, .. }
+        | Request::ReportActivity { agent, .. }
+        | Request::RecordEmission { agent, .. }
+        | Request::Role { agent, .. }
         | Request::Release { agent, .. }
         | Request::ReleaseAll { agent, .. }
         | Request::JournalAdd { agent, .. } => assert_eq!(agent, f.agent),
