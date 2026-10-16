@@ -869,6 +869,8 @@ pub enum Message {
     WaitGrace,
     /// Run its highlighted row (Enter).
     CommandSubmit,
+    /// Run the highlighted row's second action (⌘Enter), if it has one.
+    CommandSubmitAlt,
     /// Run one of its rows, by id.
     CommandRun(String),
     /// Escape: clear the search, else back out of a page, else close.
@@ -2779,6 +2781,7 @@ impl App {
             | Message::CommandQuery(_)
             | Message::CommandMove(_)
             | Message::CommandSubmit
+            | Message::CommandSubmitAlt
             | Message::CommandRun(_)
             | Message::CommandEscape
             | Message::CommandBack) => tasks.push(self.command_palette(message)),
