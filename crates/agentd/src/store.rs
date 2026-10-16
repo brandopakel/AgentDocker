@@ -652,6 +652,31 @@ impl Store {
         Ok(())
     }
 
+    /// Write some documents and delete others, with their events, as one
+    /// commit: a tag renamed on every card, a rule or a file deleted.
+    pub fn documents_change(
+        &self,
+        put: &[(&str, String, String)],
+        delete: &[(&str, String)],
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = write_transaction(&self.conn)?;
+        for (kind, id, json) in put {
+            self.conn.execute(
+                "INSERT INTO documents (kind,id,json) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json",
+                params![kind, id, json],
+            )?;
+        }
+        for (kind, id) in delete {
+            self.delete_document(kind, id)?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Documents of a kind whose JSON field `field` (`task`, `project`,
     /// `key`) equals `value`, oldest id first, at most `limit`.
     pub fn documents_where<T: serde::de::DeserializeOwned>(

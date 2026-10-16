@@ -699,6 +699,9 @@ pub enum Request {
         blocked_by: Vec<String>,
         #[serde(default)]
         tags: Vec<String>,
+        /// The plan it carries out, by id or title.
+        #[serde(default)]
+        plan: Option<String>,
     },
     /// File up to fifty cards at once, all or none: each may name the
     /// others it is part of or waits on by its `ref`. Answers `task_batch`
@@ -802,6 +805,9 @@ pub enum Request {
         /// Replaces its tags whole when given.
         #[serde(default)]
         tags: Option<Vec<String>>,
+        /// The plan it carries out, by id or title; empty clears it.
+        #[serde(default)]
+        plan: Option<String>,
     },
     /// Off the board, kept for the record. Answers `ok`.
     TaskArchive {
@@ -877,6 +883,165 @@ pub enum Request {
         pull_source: Option<String>,
         #[serde(default)]
         pull_target: Option<String>,
+    },
+    /// A board's rules, or every board's of the project. Answers `rules`.
+    Rules {
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        board: Option<String>,
+    },
+    /// A rule on a board: when a card comes into a lane, or has sat in
+    /// one for some days, comment, move, archive or start an agent on it.
+    /// The person's to do. Answers `rule`.
+    RuleCreate {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        board: Option<String>,
+        name: String,
+        trigger: crate::Trigger,
+        action: crate::RuleAction,
+    },
+    /// Change a rule, or turn it off or on. Answers `rule`.
+    RuleUpdate {
+        from: String,
+        rule: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        trigger: Option<crate::Trigger>,
+        #[serde(default)]
+        action: Option<crate::RuleAction>,
+        #[serde(default)]
+        enabled: Option<bool>,
+    },
+    /// Delete a rule. Answers `ok`.
+    RuleDelete {
+        from: String,
+        rule: String,
+    },
+    /// Start an agent of `runtime` on a card nobody holds: it is handed
+    /// the card and told to work on it. The person's to do. Answers
+    /// `agent`.
+    TaskStart {
+        from: String,
+        task: String,
+        runtime: String,
+        #[serde(default)]
+        args: Vec<String>,
+        /// The checkout to start it in; one of the project's the daemon
+        /// knows when absent.
+        #[serde(default)]
+        workdir: Option<std::path::PathBuf>,
+    },
+    /// A project's tags. Answers `tags`.
+    Tags {
+        #[serde(default)]
+        project: Option<String>,
+    },
+    /// Make a tag, or change one's colour or name (a rename follows it on
+    /// every card). Answers `tag`.
+    TagSave {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        name: String,
+        #[serde(default)]
+        color: Option<crate::TagColor>,
+        #[serde(default)]
+        rename: Option<String>,
+    },
+    /// Delete a tag, and take it off every card. The person's to do.
+    /// Answers `ok`.
+    TagDelete {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        name: String,
+    },
+    /// Cards that answer some words, best first: a key exactly, else
+    /// every word somewhere on the card, slips forgiven. Every project's
+    /// when none is named; archived ones only when asked. Answers `tasks`.
+    TaskSearch {
+        query: String,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        archived: bool,
+        #[serde(default = "default_search_limit")]
+        limit: usize,
+    },
+    /// A project's plans, without their bodies. Answers `plans`.
+    Plans {
+        #[serde(default)]
+        project: Option<String>,
+        /// Archived plans too.
+        #[serde(default)]
+        archived: bool,
+    },
+    /// One plan in full, with the cards that carry it out. Answers
+    /// `plan`.
+    PlanGet {
+        plan: String,
+    },
+    /// Write a plan: a new one when `plan` is absent, else a change to
+    /// it. Answers `plan`.
+    PlanSave {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        plan: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        body: Option<String>,
+        #[serde(default)]
+        status: Option<crate::PlanStatus>,
+    },
+    /// A project's files, or one card's. Answers `files`.
+    Files {
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        task: Option<String>,
+    },
+    /// Keep a file in the project: `text`, or `base64` for other bytes
+    /// (at most 4 MiB). A name the project has already is a new version
+    /// of that file. `task` links it to a card. Answers `file`.
+    FilePut {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        name: String,
+        #[serde(default)]
+        media_type: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        base64: Option<String>,
+        #[serde(default)]
+        task: Option<String>,
+    },
+    /// A file and its bytes: `text` when it reads as text, else
+    /// `base64`. Answers `file_content`.
+    FileGet {
+        file: String,
+    },
+    /// Link a file to a card, or unlink it. Answers `file`.
+    FileLink {
+        from: String,
+        file: String,
+        task: String,
+        #[serde(default)]
+        unlink: bool,
+    },
+    /// Delete a file. Its uploader or the person. Answers `ok`.
+    FileDelete {
+        from: String,
+        file: String,
     },
     /// One page of a project's cards, Backlog to Done, oldest first
     /// within a column; archived ones only when asked; from `offset`, at
@@ -1312,10 +1477,19 @@ pub struct BatchCard {
     pub blocked_by: Vec<String>,
     pub tags: Vec<String>,
     pub links: Vec<crate::Link>,
+    /// The plan it carries out, by id or title.
+    pub plan: Option<String>,
 }
 
 fn default_tasks_limit() -> usize {
     TASKS_LIMIT
+}
+
+/// A search answers at most this many cards unless asked for fewer.
+pub const SEARCH_LIMIT: usize = 20;
+
+fn default_search_limit() -> usize {
+    SEARCH_LIMIT
 }
 
 fn default_history_limit() -> usize {
@@ -1658,6 +1832,12 @@ pub enum Response {
         /// The `task:<id>` lease a pull took.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lease: Option<crate::Lease>,
+        /// The plan it carries out, without its body.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan: Option<crate::Plan>,
+        /// The project's files linked to it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<crate::ProjectFile>,
     },
     /// A pull with no card named found none to take: what is in the pull
     /// source, how many are held by others and how many wait on
@@ -1688,6 +1868,41 @@ pub enum Response {
     /// Cards taken off the board at once.
     Archived {
         count: usize,
+    },
+    Rules {
+        rules: Vec<crate::Rule>,
+    },
+    Rule {
+        rule: crate::Rule,
+    },
+    Tags {
+        tags: Vec<crate::Tag>,
+    },
+    Tag {
+        tag: crate::Tag,
+    },
+    Plans {
+        plans: Vec<crate::Plan>,
+    },
+    /// A plan in full, and the cards that carry it out.
+    Plan {
+        plan: crate::Plan,
+        #[serde(default)]
+        tasks: Vec<crate::Task>,
+    },
+    Files {
+        files: Vec<crate::ProjectFile>,
+    },
+    File {
+        file: crate::ProjectFile,
+    },
+    /// A file and its bytes: `text`, or `base64` when they are not text.
+    FileContent {
+        file: crate::ProjectFile,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base64: Option<String>,
     },
     Tasks {
         tasks: Vec<crate::Task>,

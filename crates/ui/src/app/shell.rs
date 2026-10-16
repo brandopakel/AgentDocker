@@ -4366,6 +4366,9 @@ mod tests {
             parent: None,
             blocked_by: Vec::new(),
             tags: Vec::new(),
+            plan: None,
+            lane_since: None,
+            fired: Vec::new(),
         };
         app.request_tasks();
         let (ask, _, _) = board_asks(&requests).pop().expect("asked");
@@ -4532,6 +4535,9 @@ mod tests {
                     parent: None,
                     blocked_by: Vec::new(),
                     tags: Vec::new(),
+                    plan: None,
+                    lane_since: None,
+                    fired: Vec::new(),
                 })
                 .collect::<Vec<_>>()
         };
