@@ -278,6 +278,9 @@ impl State {
                 if catalog.selected().is_none() {
                     catalog.selected = None;
                 }
+                // Folders removed before the hooks read this list are out of
+                // their hands from the first start of a build that writes it.
+                let _ = agentdocker_host::coordination::write(home, &catalog.hidden);
                 (catalog, None, true)
             }
             Err(error) => (

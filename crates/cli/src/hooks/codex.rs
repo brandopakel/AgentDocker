@@ -248,6 +248,10 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     if !input.is_root() {
         return Ok(());
     }
+    // A folder the person took off AgentDocker's list is left alone.
+    if agentdocker_host::coordination::excluded(&agentdocker_host::dirs::home(), &input.cwd) {
+        return Ok(());
+    }
     if activity(&input.hook_event_name).is_none() && input.hook_event_name != "SessionStart" {
         return Ok(());
     }

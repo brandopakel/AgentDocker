@@ -21,6 +21,7 @@ pub mod usage;
 pub mod vcs;
 
 pub mod content;
+pub mod coordination;
 
 pub mod command;
 pub mod connector;

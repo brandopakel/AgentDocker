@@ -177,7 +177,12 @@ folder's), **Pin**/**Unpin**, and **Remove from list**, which keeps the folder
 off the list even when its sessions are discovered again, until you add it
 again (the list of removed folders is bounded like the project list, at 512;
 at the bound a removal is refused with a message and the project stays, so
-nothing removed earlier comes back on its own). **More → Forget project** does the same for the selected project. None
+nothing removed earlier comes back on its own). **More → Forget project** does the same for the selected project.
+A removed folder is also out of AgentDocker's hands: its hooks leave the
+sessions working there alone — no read-before-write guard, no leases, no
+messages or journal put in front of the model — until you add it again (the
+desktop keeps the list in `uncoordinated.json` in the AgentDocker home, which
+every hook reads first). None
 of these deletes files or stops sessions. Two projects with one name show
 their parent folder under it, on one line. A folder discovered because an
 agent ran there leaves the list by itself once it no longer exists, and a
