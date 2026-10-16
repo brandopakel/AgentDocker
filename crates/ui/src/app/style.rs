@@ -1,15 +1,14 @@
-//! Shared visual roles; status is always accompanied by a text label.
+//! Shared visual roles.
 //!
-//! Neutral surfaces, with colour spent only on state and on the one
-//! primary action: every agent app studied for the 2026-10 redesign keeps
-//! its sidebar a step off the page rather than a contrasting block, and
-//! keeps text muted by default so what needs the person stands out. The
-//! blue of the mark is the accent: primary actions, selection, and "new to
-//! you". Light and dark keep the same roles so the hierarchy reads
-//! identically; the rail is the sidebar step of either (`Colors::rail`).
+//! One neutral family, a step apart from surface to surface, with colour
+//! spent only on state. The one primary action is filled with ink, not a
+//! hue, so the page reads as type and space first; blue is the signal for
+//! "new to you", "active" and focus, and green, amber and red are standing.
+//! Light and dark keep the same roles so the hierarchy reads identically;
+//! the rail is the sidebar step of either (`Colors::rail`).
 //!
-//! Depth comes from tint and hairline, never from blur: rail under ground
-//! under card under raised, with `overlay` the only surface above a card.
+//! Depth comes from tone steps, never from blur: rail under ground under
+//! card under raised, with `overlay` the only surface above a card.
 //! Radii follow one scale (`RADIUS_*`): keycaps and checkboxes 4, controls
 //! 6, menus and tracks 8, cards and panels 10.
 use iced::{Border, Color, Font, Theme, color, widget::container};
@@ -23,11 +22,11 @@ pub const RADIUS_MD: f32 = 8.0;
 /// Cards and panels.
 pub const RADIUS_LG: f32 = 10.0;
 
-/// The interface face. Inter is bundled (Regular, Medium, SemiBold; SIL OFL),
-/// so weights and glyph coverage are the same on every host. The system
-/// sans on macOS has no Bold face for the default family and borrows
-/// heavier glyphs from a monospace fallback, which is how this started.
-pub const UI: Font = Font::with_name("Inter");
+/// The interface face. IBM Plex Sans is bundled (Regular, Medium, SemiBold;
+/// SIL OFL), so weights and glyph coverage are the same on every host. The
+/// system sans on macOS has no Bold face for the default family and borrows
+/// heavier glyphs from a monospace fallback, which is why one is bundled.
+pub const UI: Font = Font::with_name("IBM Plex Sans");
 
 /// `UI` at a weight.
 pub const fn weight(weight: iced::font::Weight) -> Font {
@@ -57,14 +56,20 @@ pub struct Colors {
     pub line: Color,
     /// Inputs, outline buttons and unchecked controls.
     pub line_strong: Color,
-    /// Primary actions and the selected mark.
+    /// The signal: new to you, active, focus.
     pub accent: Color,
-    /// A primary action under the pointer.
+    /// A signal-filled control under the pointer.
     pub accent_hover: Color,
-    /// Tinted ground behind a selected control.
+    /// Tinted ground behind a signal.
     pub accent_soft: Color,
     /// Ink on `accent_soft`.
     pub accent_ink: Color,
+    /// The one primary action's fill: ink.
+    pub primary: Color,
+    /// The primary action under the pointer.
+    pub primary_hover: Color,
+    /// The label on `primary`.
+    pub on_primary: Color,
     pub cyan: Color,
     pub green: Color,
     pub amber: Color,
@@ -78,50 +83,56 @@ impl Colors {
         if dark {
             Self {
                 dark,
-                ground: color!(0x141416),
-                sidebar: color!(0x1a1a1d),
-                card: color!(0x1b1b1e),
-                raised: color!(0x26262a),
-                hover: color!(0x212124),
-                overlay: color!(0x232327),
-                text: color!(0xededef),
-                muted: color!(0xa0a0a8),
-                faint: color!(0x92929b),
-                line: color!(0x2a2a2e),
-                line_strong: color!(0x3a3a40),
-                accent: color!(0x2c6ae4),
-                accent_hover: color!(0x2a63d6),
-                accent_soft: color!(0x1a2540),
-                accent_ink: color!(0xb7cdfd),
+                ground: color!(0x151514),
+                sidebar: color!(0x1a1a18),
+                card: color!(0x1c1c1a),
+                raised: color!(0x272724),
+                hover: color!(0x21211f),
+                overlay: color!(0x242421),
+                text: color!(0xecece8),
+                muted: color!(0xa3a39c),
+                faint: color!(0x94948d),
+                line: color!(0x2c2c29),
+                line_strong: color!(0x3c3c38),
+                accent: color!(0x7096e6),
+                accent_hover: color!(0x86a6eb),
+                accent_soft: color!(0x1d2638),
+                accent_ink: color!(0xb9cbf3),
+                primary: color!(0xecece8),
+                primary_hover: color!(0xd4d4cf),
+                on_primary: color!(0x151514),
                 cyan: color!(0x2fc4dd),
-                green: color!(0x46c08a),
-                amber: color!(0xe3ab39),
-                red: color!(0xee6b68),
-                danger: color!(0xc43b3b),
+                green: color!(0x4cbf8c),
+                amber: color!(0xe0aa3e),
+                red: color!(0xec6c66),
+                danger: color!(0xc23c38),
             }
         } else {
             Self {
                 dark,
-                ground: color!(0xf7f7f8),
-                sidebar: color!(0xf0f0f2),
+                ground: color!(0xf6f6f4),
+                sidebar: color!(0xefefec),
                 card: Color::WHITE,
-                raised: color!(0xececef),
-                hover: color!(0xf2f2f4),
+                raised: color!(0xe9e9e5),
+                hover: color!(0xf0f0ed),
                 overlay: Color::WHITE,
-                text: color!(0x18181b),
-                muted: color!(0x55555e),
-                faint: color!(0x5f5f68),
-                line: color!(0xe4e4e7),
-                line_strong: color!(0xd1d1d6),
-                accent: color!(0x2563eb),
-                accent_hover: color!(0x1d55d0),
-                accent_soft: color!(0xe8efff),
-                accent_ink: color!(0x1a45a8),
+                text: color!(0x1b1b19),
+                muted: color!(0x565651),
+                faint: color!(0x62625c),
+                line: color!(0xe4e4df),
+                line_strong: color!(0xcfcfc9),
+                accent: color!(0x2d5bb9),
+                accent_hover: color!(0x264fa3),
+                accent_soft: color!(0xe9eefa),
+                accent_ink: color!(0x234894),
+                primary: color!(0x1b1b19),
+                primary_hover: color!(0x34342f),
+                on_primary: color!(0xf9f9f7),
                 cyan: color!(0x0a7c96),
-                green: color!(0x1b7f50),
-                amber: color!(0x9a5f12),
-                red: color!(0xc43b3b),
-                danger: color!(0xc43b3b),
+                green: color!(0x1b7a4d),
+                amber: color!(0x94590f),
+                red: color!(0xbf3a36),
+                danger: color!(0xbf3a36),
             }
         }
     }
@@ -399,13 +410,17 @@ mod tests {
                 contrast(c.accent_ink, c.accent_soft) >= 4.5,
                 "selected ink, dark={dark}"
             );
-            for fill in [c.accent, c.accent_hover, c.danger] {
+            for fill in [c.primary, c.primary_hover] {
                 assert!(
-                    contrast(Color::WHITE, fill) >= 4.5,
-                    "white label on a filled action, dark={dark}: {}",
-                    contrast(Color::WHITE, fill)
+                    contrast(c.on_primary, fill) >= 4.5,
+                    "label on the primary action, dark={dark}: {}",
+                    contrast(c.on_primary, fill)
                 );
             }
+            assert!(
+                contrast(Color::WHITE, c.danger) >= 4.5,
+                "white label on an armed destructive action, dark={dark}"
+            );
             for tone in [c.green, c.amber, c.red] {
                 assert!(
                     contrast(tone, c.card) >= 4.5,

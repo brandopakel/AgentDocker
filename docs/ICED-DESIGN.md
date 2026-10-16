@@ -201,14 +201,18 @@ control does, its id or its accessible label:
   A project row's **⋯** shows only under the pointer, on the selected row and
   while its menu is open; elsewhere it is drawn transparent but stays a
   control for the keyboard and assistive technology.
-- **Type.** Inter is bundled (`crates/ui/src/fonts/`, Regular, Medium and
-  SemiBold, SIL Open Font License; the license text ships beside the files and
-  belongs in the app bundle's licenses). It is the default face, so weights and
-  glyph coverage no longer depend on the host: the macOS system sans had no
+- **Type.** IBM Plex Sans is bundled (`crates/ui/src/fonts/`, Regular, Medium
+  and SemiBold, SIL Open Font License; the license text ships beside the files
+  and belongs in the app bundle's licenses). It is the default face, so weights
+  and glyph coverage do not depend on the host: the macOS system sans had no
   Bold face for the default family and borrowed heavier glyphs from a
   monospace fallback. Headings are SemiBold; Bold is never requested. Section
-  eyebrows are 11-point capitals; paths and identifiers use the system
-  monospace.
+  labels are sentence case, never tracked capitals; paths and identifiers use
+  the system monospace.
+- **Colour.** One neutral family, a tone step from surface to surface. The
+  primary action is filled with ink (near-black in light, near-white in dark),
+  not a hue; blue is the signal for new, active and focus; green, amber and red
+  are standing. The rail carries the mark alone, without a wordmark.
 - **Jump to… (⌘K, Ctrl+K elsewhere).** A search-looking field under the
   brand (`command-palette`) and the shortcut from anywhere, including a
   focused text field, open one palette (`app/palette.rs`): a search field

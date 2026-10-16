@@ -434,7 +434,7 @@ fn button_style(
     // sits on, so one rule reads on the ground, a card and the rail.
     let wash = |amount: f32| alpha(c.text, amount);
     let (mut background, mut text, mut border) = match (kind, selected) {
-        (Kind::Primary, _) => (c.accent, iced::Color::WHITE, clear),
+        (Kind::Primary, _) => (c.primary, c.on_primary, clear),
         (Kind::Danger, _) => (c.danger, iced::Color::WHITE, clear),
         (Kind::Destructive, _) => (clear, c.red, clear),
         (Kind::Tab, true) => (clear, c.text, clear),
@@ -447,8 +447,8 @@ fn button_style(
         (Kind::Segment, false) => (clear, c.muted, clear),
         (Kind::Nav, true) => (c.raised, c.text, clear),
         (Kind::Nav, false) => (clear, mix(c.text, c.ground, 0.18), clear),
-        (Kind::Secondary, true) => (c.accent_soft, c.accent_ink, alpha(c.accent, 0.35)),
-        (_, true) => (c.accent_soft, c.accent_ink, clear),
+        (Kind::Secondary, true) => (c.raised, c.text, c.line_strong),
+        (_, true) => (c.raised, c.text, clear),
         (Kind::Secondary, false) => (clear, c.text, c.line_strong),
         (Kind::Ghost, false) => (clear, c.muted, clear),
         (Kind::Quiet | Kind::Inline, false) => (clear, c.text, clear),
@@ -456,14 +456,14 @@ fn button_style(
     let lift = |pressed: bool| {
         let amount = if pressed { 0.08 } else { 0.05 };
         match (kind, selected) {
-            (Kind::Primary, _) if pressed => mix(c.accent, iced::Color::BLACK, 0.12),
-            (Kind::Primary, _) => c.accent_hover,
+            (Kind::Primary, _) if pressed => mix(c.primary_hover, c.ground, 0.12),
+            (Kind::Primary, _) => c.primary_hover,
             (Kind::Danger, _) => mix(c.danger, iced::Color::BLACK, amount * 1.6),
             (Kind::Destructive, _) => alpha(c.red, amount * 2.0),
             (Kind::Tab, _) | (Kind::Segment, true) => background,
             (Kind::Nav, true) => mix(c.raised, c.text, amount * 0.5),
             (Kind::Secondary | Kind::Quiet | Kind::Inline | Kind::Ghost, true) => {
-                mix(c.accent_soft, c.accent, amount * 1.2)
+                mix(c.raised, c.text, amount)
             }
             _ => wash(amount),
         }
@@ -631,7 +631,7 @@ pub fn tab<'a>(
                 iced::widget::container::Style {
                     background: Some(
                         if selected {
-                            c.accent
+                            c.text
                         } else {
                             iced::Color::TRANSPARENT
                         }

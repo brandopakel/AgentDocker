@@ -438,7 +438,7 @@ class WindowsDesktopPackaging(unittest.TestCase):
         for name in self.names:
             self.assertEqual((app / name).read_bytes(), (self.binaries / name).read_bytes())
         self.assertEqual((app / "licenses/LICENSE-AgentDocker.txt").read_bytes(), (ROOT / "LICENSE").read_bytes())
-        self.assertEqual((app / "licenses/LICENSE-Inter.txt").read_bytes(), (ROOT / "crates/ui/src/fonts/LICENSE-Inter.txt").read_bytes())
+        self.assertEqual((app / "licenses/LICENSE-IBMPlexSans.txt").read_bytes(), (ROOT / "crates/ui/src/fonts/LICENSE-IBMPlexSans.txt").read_bytes())
         self.assertIn("desktop install --from . --local-preview", (app / "README.txt").read_text(encoding="utf-8"))
         self.assertEqual((self.output / (archive.name + ".sha256")).read_text().strip(), info["artifacts"][archive.name] + "  " + archive.name)
 

@@ -349,20 +349,9 @@ fn mark() -> iced::widget::image::Handle {
     })
     .clone()
 }
-/// The mark and the two-tone wordmark, on the rail. Two plain texts
-/// rather than one rich text: the rich text widget resolves heavier faces
-/// differently and lands on a monospace fallback for the system sans.
-fn brand<'a>(r: Colors) -> Element<'a, Message> {
-    row![
-        iced::widget::image(mark()).width(26).height(26),
-        row![
-            heading("Agent", 16).color(r.text),
-            heading("Docker", 16).color(super::style::mix(r.accent, iced::Color::WHITE, 0.3))
-        ]
-    ]
-    .spacing(9)
-    .align_y(Center)
-    .into()
+/// The mark alone on the rail: the window title already names the app.
+fn brand<'a>(_r: Colors) -> Element<'a, Message> {
+    iced::widget::image(mark()).width(22).height(22).into()
 }
 /// Nothing here yet, said kindly: the mark in a quiet tile, a title, one
 /// sentence and at most one action. No frame: an empty place should not
