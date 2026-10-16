@@ -32,8 +32,15 @@ session's behalf; the CLI recipe stays beside it as the alternative.
 ## Projects
 
 **Jump to…** at the top of the sidebar, or ⌘K (Ctrl+K on Linux and Windows) from
-anywhere, finds a place, a project or an action by typing a few letters: Enter
-goes there, Escape steps back. **Launch agent…** in it lists the installed tools.
+anywhere, finds an agent, a place, a project or an action by typing a few
+letters: Enter goes there, Escape steps back. With nothing typed it leads with
+the agents that call for you, loudest first, so ⌘K then Enter reaches the most
+urgent; typing finds any live agent by its name, its project or the word for
+where it stands (*waiting*, *failed*, *working*). On an agent, ⌘Enter goes to
+its terminal instead, and the footer says so. Initials work (*cc* for Claude
+Code), and three or more letters in order find what nothing else did.
+**Launch agent…** in it lists the installed tools.
+Agents in a forgotten project stay out of Jump to until you add that project again.
 
 With no saved selection, the app opens on **All projects**, with sessions grouped
 under their project names. A saved project or Other sessions view is restored.
@@ -118,8 +125,10 @@ palette has one **Open in** row per editor for the selected project.
 **Needs you** shows only what waits on you: questions (**Answer**; a question
 from a session that has since ended says so before you write), and sessions
 stopped at a permission prompt or question in their own terminal (*Claude Code
-is waiting for you in its terminal* — **Go to Terminal** takes you there; their
-row reads *waiting for you* in amber). Seen across
+wants permission in its terminal*, or *has a question in its terminal*, or *is
+waiting for you in its terminal* when its hooks did not say which — **Go to
+Terminal** takes you there; their row reads *wants permission*, *has a question*
+or *waiting for you* in amber). Seen across
 projects, each row starts with its project's name (*keel · Claude Code · Badger
 asks: …*). A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not
@@ -613,7 +622,7 @@ Settings controls light/dark appearance, text size, terminal palette and row
 spacing. Preferences are stored privately in the AgentDocker state directory.
 A malformed preference file is preserved and reported rather than silently reset.
 **Daily update checks** is off by default. Enable it to check once per day while
-the app is open; a known update appears in the footer. Download and installation
+the app is open; a known update appears at the foot of the sidebar. Download and installation
 remain explicit actions. A check reads the stable channel and, on a preview
 (beta) installation or once **Allow preview builds** is on, the preview channel
 too, and offers the newer: a beta user is offered the final release. A beta
@@ -625,12 +634,15 @@ downloads only after **Allow preview builds**. When nothing has been published y
 update published yet**; a check that fails says **Could not check for
 updates** and why (no connection to GitHub, say), never *Installation failed*.
 
-The footer says whether the window is connected. When the background service
-(the daemon) is older than the app — an older version, or another installed
-release of the same version, which is what an update installed underneath a
-running daemon looks like — the footer says so in one quiet line, with both
-versions and an amber dot, and offers **Restart…**. Its confirmation, an amber
-strip with **Restart** and **Cancel**, says what a restart costs:
+The foot of the sidebar, above **Add project…**, says something about the
+background service only when there is something to say, and then one thing: it
+is not reachable yet (*Reconnecting to the background service…*); or it is older
+than the app — an older version, or another installed release of the same
+version, which is what an update installed underneath a running daemon looks
+like — with both versions, an amber dot and **Restart…**; or an update is ready
+to install. A healthy service says nothing and takes no room. The restart's
+confirmation, an amber strip across the bottom with **Restart** and **Cancel**,
+says what a restart costs:
 how many sessions AgentDocker itself started will stop (and how many are set to
 start again); sessions started in a terminal keep running and reconnect. A
 request the older service has never heard of reads *The background service is
