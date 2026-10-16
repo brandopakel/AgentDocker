@@ -26,6 +26,17 @@ remain open. Native Codex, managed secret input and live daemon replacement stay
 experimental. Existing-account and synthetic-provider evidence is scoped below;
 CI and private fixtures do not establish physical or fresh-login acceptance.
 
+All six merged-source CI workflows for beta.14/source 32950e14 (#349) passed
+on their first attempt. Publication remains held after scheduled fuzz run
+38894343793 exposed an outdated token-filter oracle: an owner-only role
+request was permitted by the daemon but missing from the oracle's allowlist.
+The original crash and logs are retained and reproduced locally. The correction
+covers all five omitted owner-only operations and tests impersonation before
+identity rewriting. The saved crash replay, 35 credential cases and a 120-second
+token-filter campaign passed. The standard gate and final review/CI remain
+required before release.
+This correction changes test coverage, not the restricted endpoint's permissions.
+
 The beta.14 candidate now also refuses a one-step merge while Git has an
 operation in progress, including detached rebase and sequencer states. The
 Changes panel shows this blocker before empty-branch messaging or worktree

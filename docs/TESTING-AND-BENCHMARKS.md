@@ -187,8 +187,15 @@ and scoped read-only workspace records are exercised; changing or removing
 required mount evidence must fail. The token-filter
 target creates an isolated daemon registry and tests the actual restricted
 request filter with valid, altered and revoked credentials, another agent,
-an outside-project peer and symlink escapes. It never dispatches generated
-requests, starts user commands or contacts a provider. Its private database is
+an outside-project peer and symlink escapes. The oracle covers owner-only role,
+delivery-queue, provider/activity-report and emitted-byte operations. Seeds cover
+each operation with the owner, another agent and a revoked credential; a
+deterministic daemon test additionally checks invalid credentials and owner
+name/full-ID/unique-prefix canonicalization without changing payloads. The fuzz
+oracle checks the original requested actor as well as the returned canonical ID,
+so a filter that silently rewrites a foreign actor cannot pass. It never dispatches
+generated requests, starts user commands or contacts a provider. New restricted
+operations must update this independent oracle and its credential seeds. Its private database is
 removed by the campaign driver on success or failure. Direct token-target runs
 must set `AGENTDOCKER_FUZZ_ROOT` to a new private disposable directory and remove
 it afterwards. The driver sets an explicit 10-second per-input timeout and
