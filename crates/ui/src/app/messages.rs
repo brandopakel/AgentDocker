@@ -1601,33 +1601,27 @@ impl App {
                 c.ground,
             ));
         }
+        // The name alone; what the room is about shows when it is
+        // pointed at. In a project's Chat the header already names it.
         title_row = title_row.push(
-            column![
-                container(
-                    text(label.clone())
-                        .size(16)
-                        .font(weight(iced::font::Weight::Semibold))
-                        .wrapping(iced::widget::text::Wrapping::None)
-                )
-                .width(Fill)
-                .clip(true),
-                container(
-                    text(topic)
-                        .size(12)
-                        .color(c.muted)
-                        .wrapping(iced::widget::text::Wrapping::None)
-                )
-                .width(Fill)
-                .clip(true),
-            ]
-            .spacing(1)
-            .width(Fill),
+            container(super::view::tip(
+                text(label.clone())
+                    .size(16)
+                    .font(weight(iced::font::Weight::Semibold))
+                    .wrapping(iced::widget::text::Wrapping::None),
+                topic,
+                c,
+            ))
+            .width(Fill)
+            .clip(true),
         );
-        let header = container(title_row).padding(iced::Padding {
-            top: 2.0,
-            right: 0.0,
-            bottom: 10.0,
-            left: 0.0,
+        let header = (self.screen != Screen::Chat).then(|| {
+            container(title_row).padding(iced::Padding {
+                top: 2.0,
+                right: 0.0,
+                bottom: 10.0,
+                left: 0.0,
+            })
         });
 
         let history = self.history.get(&key);
@@ -1743,9 +1737,12 @@ impl App {
             self.composer(&composer_key, None, placeholder.clone(), can_send, c, size)
         })
         .height(iced::Shrink);
+        let mut top = column![];
+        if let Some(header) = header {
+            top = top.push(header).push(rule(c));
+        }
         column![
-            header,
-            rule(c),
+            top,
             container(
                 scrollable(container(list).padding(iced::Padding {
                     top: 4.0,
