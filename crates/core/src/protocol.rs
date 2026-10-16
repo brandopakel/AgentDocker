@@ -671,6 +671,57 @@ pub enum Request {
         /// Typed references on the card: at most sixteen.
         #[serde(default)]
         links: Vec<crate::Link>,
+        /// The board, by slug or name; the project's main board when
+        /// absent.
+        #[serde(default)]
+        board: Option<String>,
+        /// The lane, by slug, name or category (`review` is the first
+        /// Review lane); `column`'s first lane, or the first lane, when
+        /// absent.
+        #[serde(default)]
+        lane: Option<String>,
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        priority: Option<crate::Priority>,
+        #[serde(default)]
+        size: Option<crate::Size>,
+        #[serde(default)]
+        due: Option<chrono::NaiveDate>,
+        /// Something off the board it waits on.
+        #[serde(default)]
+        external_blocker: String,
+        /// The card it is part of, by key, id or unique prefix.
+        #[serde(default)]
+        parent: Option<String>,
+        /// Cards that must be done first, by key, id or unique prefix.
+        #[serde(default)]
+        blocked_by: Vec<String>,
+        #[serde(default)]
+        tags: Vec<String>,
+    },
+    /// File up to fifty cards at once, all or none: each may name the
+    /// others it is part of or waits on by its `ref`. Answers `task_batch`
+    /// with each ref's key, or `invalid` listing every problem.
+    TaskCreateMany {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        board: Option<String>,
+        /// The lane every card goes to unless it names its own.
+        #[serde(default)]
+        lane: Option<String>,
+        /// Tags every card gets besides its own.
+        #[serde(default)]
+        tags: Vec<String>,
+        cards: Vec<BatchCard>,
+    },
+    /// One card in full: its board's lanes, its comments, its history,
+    /// the cards it waits on and the cards that are part of it. Answers
+    /// `task_detail`.
+    TaskGet {
+        task: String,
     },
     /// An agent takes a Ready card nobody holds: it becomes theirs, in
     /// progress, held as the `task:<id>` lease. Answers `task`, or
@@ -680,21 +731,47 @@ pub enum Request {
     /// caller expects to take it from (itself, for its own lapsed hold),
     /// and the pull is refused if the card names somebody else or that
     /// hold is live.
+    ///
+    /// With no `task` named, the pull takes the first card in the board's
+    /// pull source that is free or already the caller's and waits on
+    /// nothing open; when there is none it answers `nothing_ready`, which
+    /// is not an error. A successful pull answers `task_detail`, with the
+    /// lease it took.
     TaskPull {
         agent: String,
-        task: String,
+        #[serde(default)]
+        task: Option<String>,
         #[serde(default)]
         take_over_from: Option<String>,
+        /// Where to pull from when no card is named: the caller's project
+        /// and its main board by default.
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        board: Option<String>,
     },
     /// Move a card: its assignee may, the person always may. Answers
-    /// `task`, or `forbidden`.
+    /// `task`, or `forbidden`. `to` names a lane by slug, name or
+    /// category; `column`, the older form, names a category. `after` or
+    /// `before` place it beside another card in that lane, and `comment`
+    /// says why, on the card, in the same change.
     TaskMove {
         agent: String,
         task: String,
-        column: crate::Column,
+        #[serde(default)]
+        column: Option<crate::Column>,
+        #[serde(default)]
+        to: Option<String>,
+        #[serde(default)]
+        after: Option<String>,
+        #[serde(default)]
+        before: Option<String>,
+        #[serde(default)]
+        comment: Option<String>,
     },
-    /// Edit a card's words, or (the person only) who holds it:
-    /// `assignee: ""` takes it away. Answers `task`.
+    /// Edit a card's words and fields, or (the person only) who holds it:
+    /// `assignee: ""` takes it away. Each field left out stays; an empty
+    /// `size`, `due` or `parent` clears it. Answers `task`.
     TaskUpdate {
         agent: String,
         task: String,
@@ -707,17 +784,110 @@ pub enum Request {
         /// Replaces the card's links whole when given.
         #[serde(default)]
         links: Option<Vec<crate::Link>>,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        priority: Option<crate::Priority>,
+        #[serde(default)]
+        size: Option<String>,
+        #[serde(default)]
+        due: Option<String>,
+        #[serde(default)]
+        external_blocker: Option<String>,
+        #[serde(default)]
+        parent: Option<String>,
+        /// Replaces the cards it waits on whole when given.
+        #[serde(default)]
+        blocked_by: Option<Vec<String>>,
+        /// Replaces its tags whole when given.
+        #[serde(default)]
+        tags: Option<Vec<String>>,
     },
     /// Off the board, kept for the record. Answers `ok`.
     TaskArchive {
         agent: String,
         task: String,
     },
+    /// Back on the board where it was; the person's to do. Answers
+    /// `task`.
+    TaskUnarchive {
+        agent: String,
+        task: String,
+    },
+    /// Every card in one lane off the board at once; the person's to do.
+    /// Answers `archived` with how many went.
+    TaskArchiveLane {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        board: Option<String>,
+        lane: String,
+    },
+    /// Say something on a card, or reply to a comment on it (one level).
+    /// Answers `comment`.
+    TaskComment {
+        from: String,
+        task: String,
+        body: String,
+        #[serde(default)]
+        reply_to: Option<String>,
+    },
+    /// Its author rewrites a comment. Answers `comment`.
+    TaskCommentEdit {
+        from: String,
+        comment: String,
+        body: String,
+    },
+    /// Its author or the person deletes a comment; its place in the
+    /// thread is kept. Answers `ok`.
+    TaskCommentDelete {
+        from: String,
+        comment: String,
+    },
+    /// A project's boards: its main board, made from the classic lanes
+    /// the first time it is asked for, and any others. Answers `boards`.
+    Boards {
+        #[serde(default)]
+        project: Option<String>,
+    },
+    /// A new board from a template (`classic`, `agents`, `simple`); the
+    /// person's to do. Answers `board`.
+    BoardCreate {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        name: String,
+        #[serde(default = "default_board_template")]
+        template: String,
+    },
+    /// Rename a board, or reshape its lanes and which it pulls from and
+    /// into; the person's to do. A card in a lane that goes sits in the
+    /// first lane of its category. Answers `board`.
+    BoardUpdate {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        board: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        lanes: Option<Vec<crate::Lane>>,
+        #[serde(default)]
+        pull_source: Option<String>,
+        #[serde(default)]
+        pull_target: Option<String>,
+    },
     /// One page of a project's cards, Backlog to Done, oldest first
     /// within a column; archived ones only when asked; from `offset`, at
     /// most `limit` (1–500, 100 by default) and within a page's byte
     /// budget, and `more` says whether the board goes on past them —
     /// the next page starts at `offset + tasks.len()`. Answers `tasks`.
+    ///
+    /// The filters narrow it: a board, a lane (slug, name or category),
+    /// whose it is (`assignee`: an agent, `me` with `agent` naming the
+    /// caller, or `none`), only open cards, words in its key, title or
+    /// description, a tag. Without a project, every project's cards.
     Tasks {
         #[serde(default)]
         project: Option<String>,
@@ -729,6 +899,21 @@ pub enum Request {
         offset: usize,
         #[serde(default = "default_tasks_limit")]
         limit: usize,
+        #[serde(default)]
+        board: Option<String>,
+        #[serde(default)]
+        lane: Option<String>,
+        #[serde(default)]
+        assignee: Option<String>,
+        /// Who is asking, for `assignee: me`.
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        open: bool,
+        #[serde(default)]
+        query: Option<String>,
+        #[serde(default)]
+        tag: Option<String>,
     },
 
     /// Announce a task several agents will attempt, with the measure
@@ -1102,6 +1287,33 @@ pub const TASKS_LIMIT_MAX: usize = 500;
 /// holds at least one card whatever its size.
 pub const TASKS_PAGE_BYTES: usize = 768 * 1024;
 
+fn default_board_template() -> String {
+    "classic".to_owned()
+}
+
+/// One card of a batch: what `TaskCreate` takes, and a `ref` the others
+/// in the batch name it by.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BatchCard {
+    #[serde(rename = "ref")]
+    pub reference: Option<String>,
+    pub title: String,
+    pub acceptance: String,
+    pub description: String,
+    pub lane: Option<String>,
+    pub priority: Option<crate::Priority>,
+    pub size: Option<crate::Size>,
+    pub due: Option<chrono::NaiveDate>,
+    pub external_blocker: String,
+    /// A ref in the batch, or a card already on the board.
+    pub parent: Option<String>,
+    /// Refs in the batch, or cards already on the board.
+    pub blocked_by: Vec<String>,
+    pub tags: Vec<String>,
+    pub links: Vec<crate::Link>,
+}
+
 fn default_tasks_limit() -> usize {
     TASKS_LIMIT
 }
@@ -1426,6 +1638,56 @@ pub enum Response {
     },
     Task {
         task: crate::Task,
+    },
+    /// A card in full (`task_get`, a successful pull).
+    TaskDetail {
+        task: crate::Task,
+        /// The board it is on.
+        board: crate::Board,
+        #[serde(default)]
+        comments: Vec<crate::Comment>,
+        /// Newest last, at most the last hundred.
+        #[serde(default)]
+        history: Vec<crate::TaskEntry>,
+        /// The cards it waits on, as they are now.
+        #[serde(default)]
+        blockers: Vec<crate::Task>,
+        /// The cards that are part of it.
+        #[serde(default)]
+        children: Vec<crate::Task>,
+        /// The `task:<id>` lease a pull took.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease: Option<crate::Lease>,
+    },
+    /// A pull with no card named found none to take: what is in the pull
+    /// source, how many are held by others and how many wait on
+    /// something. Not an error.
+    NothingReady {
+        project: crate::ProjectId,
+        board: String,
+        source: String,
+        total: usize,
+        held: usize,
+        blocked: usize,
+    },
+    /// A batch filed: the cards, and each ref's key.
+    TaskBatch {
+        tasks: Vec<crate::Task>,
+        #[serde(default)]
+        refs: std::collections::BTreeMap<String, String>,
+    },
+    Comment {
+        comment: crate::Comment,
+    },
+    Boards {
+        boards: Vec<crate::Board>,
+    },
+    Board {
+        board: crate::Board,
+    },
+    /// Cards taken off the board at once.
+    Archived {
+        count: usize,
     },
     Tasks {
         tasks: Vec<crate::Task>,

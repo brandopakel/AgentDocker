@@ -164,17 +164,48 @@ enum Cmd {
         title: String,
         acceptance: String,
         column: agentdocker_core::Column,
+        /// The lane by slug, and the board, when the person chose them.
+        lane: Option<String>,
+        board: Option<String>,
     },
-    /// The person moves a card, or an agent it is handed to does.
+    /// The person moves a card to a lane, beside a card, with a word.
     TaskMove {
         task: agentdocker_core::TaskId,
-        column: agentdocker_core::Column,
+        to: String,
+        before: Option<agentdocker_core::TaskId>,
+        comment: Option<String>,
     },
-    TaskAssign {
+    /// The person changes what a card says or who holds it.
+    TaskEdit {
         task: agentdocker_core::TaskId,
-        assignee: Option<agentdocker_core::AgentId>,
+        change: CardChange,
     },
     TaskArchive(agentdocker_core::TaskId),
+    /// The person says something on a card.
+    TaskComment {
+        task: agentdocker_core::TaskId,
+        body: String,
+    },
+    /// One card in full, for its open detail.
+    TaskDetail(agentdocker_core::TaskId),
+    /// A project's boards.
+    Boards(String),
+    /// A board's lanes reshaped, or a new board, for a project.
+    BoardSave {
+        project: String,
+        board: agentdocker_core::Board,
+    },
+    BoardCreate {
+        project: String,
+        name: String,
+        template: String,
+    },
+    /// Every card in a lane off the board.
+    TaskArchiveLane {
+        project: String,
+        board: String,
+        lane: String,
+    },
     /// The projects that are paused, and why.
     Pauses,
     /// The person tells a project's agents to hold, with the reason.
@@ -352,6 +383,10 @@ enum Msg {
     WorktreeRemoved(String, Result<bool, String>),
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
+    /// One card in full, or why it could not be read.
+    TaskDetail(agentdocker_core::TaskId, Result<CardDetail, String>),
+    /// A project's boards, or why they could not be read.
+    Boards(String, Result<Vec<agentdocker_core::Board>, String>),
     Pauses(Vec<agentdocker_core::Pause>),
     /// The pause or resume the person asked for a project, done or
     /// refused; the project says which form or control it answers.
@@ -550,6 +585,12 @@ pub struct App {
     task_requests: u64,
     /// A card whose acceptance text is open.
     task_open: Option<agentdocker_core::TaskId>,
+    /// The open card in full: its board, comments and history.
+    card: Option<CardDetail>,
+    /// Each project's boards, by project root.
+    boards: BTreeMap<String, Vec<agentdocker_core::Board>>,
+    /// Cards that changed a moment ago, and when: they flash once.
+    flashes: BTreeMap<agentdocker_core::TaskId, Instant>,
     /// The projects told to hold, and why.
     pauses: Vec<agentdocker_core::Pause>,
     /// The pause being written, while its form is open: bound to the
@@ -703,6 +744,9 @@ impl App {
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
+            card: None,
+            boards: BTreeMap::new(),
+            flashes: BTreeMap::new(),
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
@@ -788,6 +832,9 @@ impl App {
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
+            card: None,
+            boards: BTreeMap::new(),
+            flashes: BTreeMap::new(),
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
@@ -915,8 +962,14 @@ impl App {
                     self.shell.adopting.remove(&pid);
                 }
                 Cmd::TaskMove { .. }
-                | Cmd::TaskAssign { .. }
+                | Cmd::TaskEdit { .. }
                 | Cmd::TaskArchive(_)
+                | Cmd::TaskComment { .. }
+                | Cmd::TaskDetail(_)
+                | Cmd::Boards(_)
+                | Cmd::BoardSave { .. }
+                | Cmd::BoardCreate { .. }
+                | Cmd::TaskArchiveLane { .. }
                 | Cmd::AdoptAll
                 | Cmd::Stop(_)
                 | Cmd::ResumeProvider(..)
@@ -1241,8 +1294,27 @@ impl App {
                     self.request_tasks();
                 }
                 Msg::TaskChanged(result) => match result {
-                    Ok(()) => self.request_tasks(),
+                    Ok(()) => {
+                        self.request_tasks();
+                        if let Some(open) = self.task_open.clone() {
+                            self.send(Cmd::TaskDetail(open));
+                        }
+                    }
                     Err(error) => self.say(error),
+                },
+                Msg::TaskDetail(task, result) => {
+                    if self.task_open.as_ref() == Some(&task) {
+                        match result {
+                            Ok(detail) => self.card = Some(detail),
+                            Err(error) => self.say(error),
+                        }
+                    }
+                }
+                Msg::Boards(project, result) => match result {
+                    Ok(boards) => {
+                        self.boards.insert(project, boards);
+                    }
+                    Err(error) => self.say(format!("The boards could not be read: {error}")),
                 },
                 Msg::Pauses(pauses) => self.pauses = pauses,
                 Msg::Paused(request, result) => self.complete_pause(request, result),
@@ -1751,11 +1823,27 @@ impl App {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
-            EventKind::TaskCreated { .. }
-            | EventKind::TaskPulled { .. }
-            | EventKind::TaskMoved { .. }
-            | EventKind::TaskUpdated { .. }
-            | EventKind::TaskArchived { .. } => self.request_tasks(),
+            EventKind::TaskCreated { task, .. }
+            | EventKind::TaskPulled { task, .. }
+            | EventKind::TaskMoved { task, .. }
+            | EventKind::TaskUpdated { task, .. }
+            | EventKind::TaskArchived { task, .. }
+            | EventKind::TaskUnarchived { task, .. }
+            | EventKind::TaskCommented { task, .. }
+            | EventKind::TaskCommentChanged { task, .. } => {
+                // The card that changed flashes once; an open one is read
+                // again in full.
+                self.flashes.insert(task.clone(), Instant::now());
+                if self.task_open.as_ref() == Some(task) {
+                    self.send(Cmd::TaskDetail(task.clone()));
+                }
+                self.request_tasks();
+            }
+            EventKind::BoardChanged { .. } => {
+                if let Some(project) = self.selected_project_root() {
+                    self.send(Cmd::Boards(project));
+                }
+            }
             // Collection moved: the report on view is read again, only
             // while it is on view.
             EventKind::UsageRecorded { .. }
@@ -2143,6 +2231,9 @@ impl App {
                 None => 0,
             };
             let limit = on_view.clamp(agentdocker_core::protocol::TASKS_LIMIT, BOARD_KEEP);
+            if !self.boards.contains_key(&project) {
+                self.send(Cmd::Boards(project.clone()));
+            }
             let request = self.next_board_ask(&project, 0);
             self.send(Cmd::Tasks {
                 project,
@@ -2976,6 +3067,13 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 archived: false,
                 offset,
                 limit,
+                board: None,
+                lane: None,
+                assignee: None,
+                agent: None,
+                open: false,
+                query: None,
+                tag: None,
             }) {
                 Ok(Response::Tasks { tasks, more }) => Ok((tasks, more)),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -3071,6 +3169,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             title,
             acceptance,
             column,
+            lane,
+            board,
         } => {
             let result = match client.call(&Request::TaskCreate {
                 from: agentdocker_core::HUMAN.into(),
@@ -3079,6 +3179,16 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 acceptance,
                 column: Some(column),
                 links: Vec::new(),
+                board,
+                lane,
+                description: String::new(),
+                priority: None,
+                size: None,
+                due: None,
+                external_blocker: String::new(),
+                parent: None,
+                blocked_by: Vec::new(),
+                tags: Vec::new(),
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -3087,11 +3197,20 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::TaskCreated(project, request, result))
         }
-        Cmd::TaskMove { task, column } => {
+        Cmd::TaskMove {
+            task,
+            to,
+            before,
+            comment,
+        } => {
             let result = match client.call(&Request::TaskMove {
                 agent: agentdocker_core::HUMAN.into(),
                 task: task.to_string(),
-                column,
+                column: None,
+                to: Some(to),
+                after: None,
+                before: before.map(|b| b.to_string()),
+                comment,
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -3100,14 +3219,22 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::TaskChanged(result))
         }
-        Cmd::TaskAssign { task, assignee } => {
+        Cmd::TaskEdit { task, change } => {
             let result = match client.call(&Request::TaskUpdate {
                 agent: agentdocker_core::HUMAN.into(),
                 task: task.to_string(),
-                title: None,
-                acceptance: None,
-                assignee: Some(assignee.map(|a| a.to_string()).unwrap_or_default()),
+                title: change.title,
+                acceptance: change.acceptance,
+                assignee: change.assignee,
                 links: None,
+                description: change.description,
+                priority: change.priority,
+                size: change.size,
+                due: change.due,
+                external_blocker: change.external_blocker,
+                parent: None,
+                blocked_by: None,
+                tags: change.tags,
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -3122,6 +3249,132 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 task: task.to_string(),
             }) {
                 Ok(Response::Ok) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskChanged(result))
+        }
+        Cmd::TaskComment { task, body } => {
+            let result = match client.call(&Request::TaskComment {
+                from: agentdocker_core::HUMAN.into(),
+                task: task.to_string(),
+                body,
+                reply_to: None,
+            }) {
+                Ok(Response::Comment { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskChanged(result))
+        }
+        Cmd::TaskDetail(task) => {
+            let result = match client.call(&Request::TaskGet {
+                task: task.to_string(),
+            }) {
+                Ok(Response::TaskDetail {
+                    task: card,
+                    board,
+                    comments,
+                    history,
+                    blockers,
+                    children,
+                    ..
+                }) => Ok(CardDetail {
+                    task: card,
+                    board,
+                    comments,
+                    history,
+                    blockers,
+                    children,
+                }),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskDetail(task, result))
+        }
+        Cmd::Boards(project) => {
+            let result = match client.call(&Request::Boards {
+                project: Some(project.clone()),
+            }) {
+                Ok(Response::Boards { boards }) => Ok(boards),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::Boards(project, result))
+        }
+        Cmd::BoardSave { project, board } => {
+            let result = match client.call(&Request::BoardUpdate {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project.clone()),
+                board: board.slug.clone(),
+                name: Some(board.name.clone()),
+                lanes: Some(board.lanes.clone()),
+                pull_source: Some(board.pull_source.clone()),
+                pull_target: Some(board.pull_target.clone()),
+            }) {
+                Ok(Response::Board { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            match result {
+                Ok(()) => Some(Msg::Boards(
+                    project.clone(),
+                    match client.call(&Request::Boards {
+                        project: Some(project),
+                    })? {
+                        Response::Boards { boards } => Ok(boards),
+                        other => Err(unexpected_reply(&other)),
+                    },
+                )),
+                Err(error) => Some(Msg::TaskChanged(Err(error))),
+            }
+        }
+        Cmd::BoardCreate {
+            project,
+            name,
+            template,
+        } => {
+            let result = match client.call(&Request::BoardCreate {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project.clone()),
+                name,
+                template,
+            }) {
+                Ok(Response::Board { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            match result {
+                Ok(()) => Some(Msg::Boards(
+                    project.clone(),
+                    match client.call(&Request::Boards {
+                        project: Some(project),
+                    })? {
+                        Response::Boards { boards } => Ok(boards),
+                        other => Err(unexpected_reply(&other)),
+                    },
+                )),
+                Err(error) => Some(Msg::TaskChanged(Err(error))),
+            }
+        }
+        Cmd::TaskArchiveLane {
+            project,
+            board,
+            lane,
+        } => {
+            let result = match client.call(&Request::TaskArchiveLane {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project),
+                board: Some(board),
+                lane,
+            }) {
+                Ok(Response::Archived { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
@@ -3923,6 +4176,35 @@ impl TaskDraft {
         self.sending.is_some()
     }
 }
+
+/// A card in full, as its open detail shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CardDetail {
+    pub task: agentdocker_core::Task,
+    pub board: agentdocker_core::Board,
+    pub comments: Vec<agentdocker_core::Comment>,
+    pub history: Vec<agentdocker_core::TaskEntry>,
+    pub blockers: Vec<agentdocker_core::Task>,
+    pub children: Vec<agentdocker_core::Task>,
+}
+
+/// What the person changes on a card: each field given is set; an
+/// empty size, due or parent clears it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CardChange {
+    pub title: Option<String>,
+    pub acceptance: Option<String>,
+    pub description: Option<String>,
+    pub assignee: Option<String>,
+    pub priority: Option<agentdocker_core::Priority>,
+    pub size: Option<String>,
+    pub due: Option<String>,
+    pub external_blocker: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
+/// How long a changed card flashes.
+pub(crate) const FLASH_FOR: Duration = Duration::from_millis(1400);
 
 const PAUSE_CONTROLS: usize = 64;
 

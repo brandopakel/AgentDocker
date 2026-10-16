@@ -1,4 +1,6 @@
 //! `agentdocker`: command-line client for `agentd`.
+// The MCP tool schemas are one `json!` each; the board's are deep.
+#![recursion_limit = "256"]
 
 mod agentfile;
 mod attach;
@@ -919,16 +921,22 @@ struct TaskArgs {
 
 #[derive(Subcommand)]
 enum TaskAction {
-    /// File a card: a title, what done means, and the column (Backlog
-    /// unless said).
+    /// File a card: a title, what done means, and where (Backlog unless
+    /// said). Prints its key.
     Create {
         title: String,
         /// What done means; an agent reads it before moving the card.
         #[arg(long, default_value = "")]
         acceptance: String,
-        /// backlog, ready, in-progress, review or done.
+        /// backlog, ready, in-progress, review, done, blocked or cancelled.
         #[arg(long)]
         column: Option<String>,
+        /// A lane by slug, name or category; overrides --column.
+        #[arg(long)]
+        lane: Option<String>,
+        /// Board slug or name (default: the project's main board).
+        #[arg(long)]
+        board: Option<String>,
         /// Project id, root or unique prefix (default: this directory's).
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
@@ -939,12 +947,31 @@ enum TaskAction {
         /// path, commit, pr, url, task, message or memory.
         #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
         links: Vec<agentdocker_core::Link>,
+        #[command(flatten)]
+        fields: CardFields,
     },
-    /// Take a Ready card nobody holds: yours, in progress. Refused if it
-    /// is held or not ready.
+    /// File cards from a JSON file (or - for stdin): an array of cards,
+    /// each like create's fields with an optional `ref` the others name
+    /// as their parent or in blocked_by. All or none; prints each ref's
+    /// key.
+    CreateMany {
+        file: PathBuf,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long)]
+        board: Option<String>,
+        #[arg(long)]
+        lane: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+    /// One card in full: fields, comments and history.
+    Show { task: String },
+    /// Take a card from the pull source nobody else holds: yours, in the
+    /// pull target. With no card named, the next ready one.
     Pull {
-        /// Card id or unique prefix.
-        task: String,
+        /// Card key, id or unique prefix; the next ready card when absent.
+        task: Option<String>,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: Option<String>,
         /// Take over a card whose holder's lease lapsed, naming that
@@ -952,17 +979,30 @@ enum TaskAction {
         /// card names somebody else or the hold is live.
         #[arg(long, value_name = "AGENT")]
         take_over_from: Option<String>,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long)]
+        board: Option<String>,
     },
-    /// Move a card to a column: its holder may, the person always may.
+    /// Move a card to a lane: its holder may, the person always may.
     Move {
         task: String,
-        /// backlog, ready, in-progress, review or done.
-        column: String,
+        /// A lane by slug, name or category (review, done…).
+        to: String,
+        /// Why, said on the card in the same change.
+        #[arg(long)]
+        comment: Option<String>,
+        /// Put it just after this card in the lane.
+        #[arg(long, conflicts_with = "before")]
+        after: Option<String>,
+        /// Put it just before this card in the lane.
+        #[arg(long)]
+        before: Option<String>,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: Option<String>,
     },
-    /// Edit a card's words, or hand it to somebody (`--assignee ""` takes
-    /// it away).
+    /// Edit a card's words and fields, or hand it to somebody
+    /// (`--assignee ""` takes it away).
     Update {
         task: String,
         #[arg(long)]
@@ -979,6 +1019,44 @@ enum TaskAction {
         links: Vec<agentdocker_core::Link>,
         #[arg(long, conflicts_with = "links")]
         no_links: bool,
+        #[arg(long)]
+        description: Option<String>,
+        /// high, normal or low.
+        #[arg(long)]
+        priority: Option<String>,
+        /// s, m or l; empty clears it.
+        #[arg(long)]
+        size: Option<String>,
+        /// YYYY-MM-DD; empty clears it.
+        #[arg(long)]
+        due: Option<String>,
+        /// Something off the board it waits on; empty clears it.
+        #[arg(long)]
+        blocker: Option<String>,
+        /// The card it is part of; empty clears it.
+        #[arg(long)]
+        parent: Option<String>,
+        /// Replace the cards it waits on (repeatable); `--no-blocked-by`
+        /// clears them.
+        #[arg(long = "blocked-by")]
+        blocked_by: Vec<String>,
+        #[arg(long, conflicts_with = "blocked_by")]
+        no_blocked_by: bool,
+        /// Replace its tags (repeatable); `--no-tags` clears them.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        #[arg(long, conflicts_with = "tags")]
+        no_tags: bool,
+    },
+    /// Say something on a card.
+    Comment {
+        task: String,
+        body: String,
+        /// The comment this answers.
+        #[arg(long)]
+        reply_to: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
     },
     /// Take a card off the board, kept for the record.
     Archive {
@@ -986,13 +1064,54 @@ enum TaskAction {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: Option<String>,
     },
-    /// The board, Backlog to Done.
+    /// Put an archived card back where it was.
+    Unarchive { task: String },
+    /// Take every card in a lane off the board.
+    ArchiveLane {
+        lane: String,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long)]
+        board: Option<String>,
+    },
+    /// A project's boards and their lanes.
+    Boards {
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+    },
+    /// A new board from a template: classic, agents or simple.
+    BoardCreate {
+        name: String,
+        #[arg(long, default_value = "classic")]
+        template: String,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+    },
+    /// The board, lane by lane.
     List {
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
-        /// One column only.
+        /// One category only.
         #[arg(long)]
         column: Option<String>,
+        #[arg(long)]
+        board: Option<String>,
+        /// One lane only, by slug, name or category.
+        #[arg(long)]
+        lane: Option<String>,
+        /// Whose: an agent, me (with --as), or none.
+        #[arg(long)]
+        assignee: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// Only cards not done, cancelled or archived.
+        #[arg(long)]
+        open: bool,
+        /// Words in the key, title, description or acceptance.
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long)]
+        tag: Option<String>,
         /// Include archived cards.
         #[arg(long)]
         archived: bool,
@@ -1005,6 +1124,34 @@ enum TaskAction {
         #[arg(long, default_value_t = 0)]
         offset: usize,
     },
+}
+
+/// A card's fields beside its words, as `task create` takes them.
+#[derive(Args)]
+struct CardFields {
+    #[arg(long, default_value = "")]
+    description: String,
+    /// high, normal or low.
+    #[arg(long)]
+    priority: Option<String>,
+    /// s, m or l.
+    #[arg(long)]
+    size: Option<String>,
+    /// YYYY-MM-DD.
+    #[arg(long)]
+    due: Option<String>,
+    /// Something off the board it waits on.
+    #[arg(long, default_value = "")]
+    blocker: String,
+    /// The card it is part of.
+    #[arg(long)]
+    parent: Option<String>,
+    /// A card that must be done first (repeatable).
+    #[arg(long = "blocked-by")]
+    blocked_by: Vec<String>,
+    /// A tag (repeatable).
+    #[arg(long = "tag")]
+    tags: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -2170,8 +2317,17 @@ async fn run() -> Result<()> {
             let column_of = |text: Option<String>| -> Result<Option<agentdocker_core::Column>> {
                 text.map(|t| {
                     agentdocker_core::Column::parse(&t).with_context(|| {
-                        format!("no column called {t}; backlog, ready, in-progress, review or done")
+                        format!(
+                            "no column called {t}; backlog, ready, in-progress, review, done, blocked or cancelled"
+                        )
                     })
+                })
+                .transpose()
+            };
+            let priority_of = |text: Option<String>| -> Result<Option<agentdocker_core::Priority>> {
+                text.map(|t| {
+                    agentdocker_core::Priority::parse(&t)
+                        .with_context(|| format!("no priority called {t}; high, normal or low"))
                 })
                 .transpose()
             };
@@ -2179,8 +2335,8 @@ async fn run() -> Result<()> {
             let card_line = |task: &agentdocker_core::Task| {
                 let mut line = format!(
                     "{}  {:<12} {}{}",
-                    task.id,
-                    task.column.label(),
+                    task.handle(),
+                    task.lane.as_deref().unwrap_or(task.column.as_str()),
                     task.title,
                     task.assignee
                         .as_ref()
@@ -2192,14 +2348,78 @@ async fn run() -> Result<()> {
                 }
                 line
             };
+            let detail = |response: Response| match response {
+                Response::TaskDetail {
+                    task,
+                    board,
+                    comments,
+                    history,
+                    blockers,
+                    children,
+                    lease,
+                } => {
+                    println!("{}", card_line(&task));
+                    println!(
+                        "  board {} · lane {}",
+                        board.slug,
+                        board.lane_of(&task).name
+                    );
+                    if !task.acceptance.is_empty() {
+                        println!("  done when: {}", task.acceptance);
+                    }
+                    if !task.description.is_empty() {
+                        println!("\n{}\n", task.description);
+                    }
+                    for blocker in &blockers {
+                        println!("  waits on {}  {}", blocker.handle(), blocker.title);
+                    }
+                    for child in &children {
+                        println!("  part      {}  {}", child.handle(), child.title);
+                    }
+                    for comment in &comments {
+                        println!(
+                            "  {} {}: {}",
+                            comment.created_at.format("%Y-%m-%d %H:%M"),
+                            comment.author,
+                            comment.body
+                        );
+                    }
+                    for entry in &history {
+                        println!(
+                            "  {} {} {}",
+                            entry.at.format("%Y-%m-%d %H:%M"),
+                            entry.by,
+                            serde_json::to_string(&entry.action).unwrap_or_default()
+                        );
+                    }
+                    if let Some(lease) = lease {
+                        println!("  lease {} until {}", lease.id, lease.expires_at);
+                    }
+                }
+                Response::NothingReady {
+                    source,
+                    total,
+                    held,
+                    blocked,
+                    ..
+                } => {
+                    println!(
+                        "nothing ready in {source}: {total} there, {held} held by others, {blocked} waiting on something"
+                    );
+                }
+                _ => {}
+            };
             match args.action {
                 TaskAction::Create {
                     title,
                     acceptance,
                     column,
+                    lane,
+                    board,
                     project,
                     from,
                     links,
+                    fields,
                 } => {
                     let request = Request::TaskCreate {
                         from: sender::resolve(&client, from)
@@ -2210,43 +2430,117 @@ async fn run() -> Result<()> {
                         acceptance,
                         column: column_of(column)?,
                         links,
+                        board,
+                        lane,
+                        description: fields.description,
+                        priority: priority_of(fields.priority)?,
+                        size: fields
+                            .size
+                            .map(|s| {
+                                agentdocker_core::Size::parse(&s)
+                                    .with_context(|| format!("no size called {s}; s, m or l"))
+                            })
+                            .transpose()?,
+                        due: fields
+                            .due
+                            .map(|d| {
+                                chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
+                                    .with_context(|| format!("{d} is not a day: YYYY-MM-DD"))
+                            })
+                            .transpose()?,
+                        external_blocker: fields.blocker,
+                        parent: fields.parent,
+                        blocked_by: fields.blocked_by,
+                        tags: fields.tags,
                     };
                     if let Response::Task { task } = client.call(&request).await? {
-                        println!("{}", task.id);
+                        println!("{}", task.handle());
                         eprintln!("{}", card_line(&task));
                     }
+                }
+                TaskAction::CreateMany {
+                    file,
+                    project,
+                    board,
+                    lane,
+                    from,
+                } => {
+                    let text = if file.as_os_str() == "-" {
+                        let mut text = String::new();
+                        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                        text
+                    } else {
+                        std::fs::read_to_string(&file)
+                            .with_context(|| format!("reading {}", file.display()))?
+                    };
+                    let cards: Vec<agentdocker_core::protocol::BatchCard> =
+                        serde_json::from_str(&text).context("the file is a JSON array of cards")?;
+                    let request = Request::TaskCreateMany {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        board,
+                        lane,
+                        tags: Vec::new(),
+                        cards,
+                    };
+                    if let Response::TaskBatch { tasks, refs } = client.call(&request).await? {
+                        for task in &tasks {
+                            println!("{}", card_line(task));
+                        }
+                        for (reference, key) in refs {
+                            eprintln!("{reference} = {key}");
+                        }
+                    }
+                }
+                TaskAction::Show { task } => {
+                    detail(client.call(&Request::TaskGet { task }).await?);
                 }
                 TaskAction::Pull {
                     task,
                     agent,
                     take_over_from,
+                    project,
+                    board,
                 } => {
                     let agent = sender::resolve(&client, agent)
                         .await?
                         .context("pull as an agent: give --as")?;
-                    if let Response::Task { task } = client
-                        .call(&Request::TaskPull {
-                            agent,
-                            task,
-                            take_over_from,
-                        })
-                        .await?
-                    {
-                        println!("{}", card_line(&task));
-                    }
+                    let project = match (&task, project) {
+                        (None, None) => Some(here()?),
+                        (_, project) => project,
+                    };
+                    detail(
+                        client
+                            .call(&Request::TaskPull {
+                                agent,
+                                task,
+                                take_over_from,
+                                project,
+                                board,
+                            })
+                            .await?,
+                    );
                 }
                 TaskAction::Move {
                     task,
-                    column,
+                    to,
+                    comment,
+                    after,
+                    before,
                     agent,
                 } => {
-                    let column = column_of(Some(column))?.expect("given");
                     let request = Request::TaskMove {
                         agent: sender::resolve(&client, agent)
                             .await?
                             .unwrap_or_else(|| HUMAN.into()),
                         task,
-                        column,
+                        column: None,
+                        to: Some(to),
+                        after,
+                        before,
+                        comment,
                     };
                     if let Response::Task { task } = client.call(&request).await? {
                         println!("{}", card_line(&task));
@@ -2260,7 +2554,26 @@ async fn run() -> Result<()> {
                     agent,
                     links,
                     no_links,
+                    description,
+                    priority,
+                    size,
+                    due,
+                    blocker,
+                    parent,
+                    blocked_by,
+                    no_blocked_by,
+                    tags,
+                    no_tags,
                 } => {
+                    let replace = |given: Vec<String>, clear: bool| {
+                        if clear {
+                            Some(Vec::new())
+                        } else if given.is_empty() {
+                            None
+                        } else {
+                            Some(given)
+                        }
+                    };
                     let request = Request::TaskUpdate {
                         agent: sender::resolve(&client, agent)
                             .await?
@@ -2276,9 +2589,35 @@ async fn run() -> Result<()> {
                         } else {
                             Some(links)
                         },
+                        description,
+                        priority: priority_of(priority)?,
+                        size,
+                        due,
+                        external_blocker: blocker,
+                        parent,
+                        blocked_by: replace(blocked_by, no_blocked_by),
+                        tags: replace(tags, no_tags),
                     };
                     if let Response::Task { task } = client.call(&request).await? {
                         println!("{}", card_line(&task));
+                    }
+                }
+                TaskAction::Comment {
+                    task,
+                    body,
+                    reply_to,
+                    from,
+                } => {
+                    let request = Request::TaskComment {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        task,
+                        body,
+                        reply_to,
+                    };
+                    if let Response::Comment { comment } = client.call(&request).await? {
+                        println!("{}", comment.id);
                     }
                 }
                 TaskAction::Archive { task, agent } => {
@@ -2292,31 +2631,108 @@ async fn run() -> Result<()> {
                         println!("archived");
                     }
                 }
+                TaskAction::Unarchive { task } => {
+                    let request = Request::TaskUnarchive {
+                        agent: HUMAN.into(),
+                        task,
+                    };
+                    if let Response::Task { task } = client.call(&request).await? {
+                        println!("{}", card_line(&task));
+                    }
+                }
+                TaskAction::ArchiveLane {
+                    lane,
+                    project,
+                    board,
+                } => {
+                    let request = Request::TaskArchiveLane {
+                        from: HUMAN.into(),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        board,
+                        lane,
+                    };
+                    if let Response::Archived { count } = client.call(&request).await? {
+                        println!("archived {count}");
+                    }
+                }
+                TaskAction::Boards { project } => {
+                    let request = Request::Boards {
+                        project: Some(project.map_or_else(here, Ok)?),
+                    };
+                    if let Response::Boards { boards } = client.call(&request).await? {
+                        for board in boards {
+                            let lanes: Vec<String> = board
+                                .lanes
+                                .iter()
+                                .map(|l| {
+                                    let mut words = l.name.clone();
+                                    if l.slug == board.pull_source {
+                                        words.push_str(" (pull)");
+                                    }
+                                    words
+                                })
+                                .collect();
+                            println!("{}  {}  {}", board.slug, board.name, lanes.join(" → "));
+                        }
+                    }
+                }
+                TaskAction::BoardCreate {
+                    name,
+                    template,
+                    project,
+                } => {
+                    let request = Request::BoardCreate {
+                        from: HUMAN.into(),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        name,
+                        template,
+                    };
+                    if let Response::Board { board } = client.call(&request).await? {
+                        println!("{}", board.slug);
+                    }
+                }
                 TaskAction::List {
                     project,
                     column,
+                    board,
+                    lane,
+                    assignee,
+                    agent,
+                    open,
+                    query,
+                    tag,
                     archived,
                     limit,
                     offset,
                 } => {
+                    let agent = sender::resolve(&client, agent).await?;
                     let request = Request::Tasks {
                         project: Some(project.map_or_else(here, Ok)?),
                         column: column_of(column)?,
                         archived,
                         offset,
                         limit,
+                        board,
+                        lane,
+                        assignee,
+                        agent,
+                        open,
+                        query,
+                        tag,
                     };
                     if let Response::Tasks { tasks, more } = client.call(&request).await? {
                         if tasks.is_empty() {
-                            println!("no cards on the board");
+                            println!("no cards");
                         } else {
                             let names = agent_names(&client).await;
                             let rows: Vec<Vec<String>> = tasks
                                 .iter()
                                 .map(|t| {
                                     vec![
-                                        t.id.to_string(),
-                                        t.column.label().to_owned(),
+                                        t.handle(),
+                                        t.lane
+                                            .clone()
+                                            .unwrap_or_else(|| t.column.as_str().to_owned()),
                                         t.title.clone(),
                                         t.assignee
                                             .as_ref()
@@ -2335,7 +2751,7 @@ async fn run() -> Result<()> {
                                     ]
                                 })
                                 .collect();
-                            format::table(&["CARD", "COLUMN", "TITLE", "HOLDER", ""], &rows);
+                            format::table(&["CARD", "LANE", "TITLE", "HOLDER", ""], &rows);
                             if more {
                                 println!(
                                     "and more: the board goes on; --offset {} shows the next page",

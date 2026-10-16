@@ -4,6 +4,48 @@ use crate::catalog::Catalog;
 use iced::{Subscription, Task, keyboard, window};
 use std::path::PathBuf;
 
+/// The board's filter toggles: high priority, waiting on something,
+/// waiting for the person, and nobody holding it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct BoardFilters {
+    pub high: bool,
+    pub blocked: bool,
+    pub waiting: bool,
+    pub unassigned: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoardFilterKind {
+    High,
+    Blocked,
+    Waiting,
+    Unassigned,
+}
+
+/// The open card's fields as the person edits them; saved on CardSave.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct CardDraft {
+    pub task: Option<agentdocker_core::TaskId>,
+    pub title: String,
+    pub description: String,
+    pub acceptance: String,
+    pub due: String,
+    pub blocker: String,
+    pub tags: String,
+    pub comment: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardFieldKind {
+    Title,
+    Description,
+    Acceptance,
+    Due,
+    Blocker,
+    Tags,
+    Comment,
+}
+
 #[derive(Default)]
 pub(super) struct State {
     pub catalog: Catalog,
@@ -31,6 +73,20 @@ pub(super) struct State {
     pub forms: BTreeMap<MessageId, super::forms::Draft>,
     /// Card text belongs to its original project; filing state is never restored.
     pub task_drafts: BTreeMap<String, TaskDraft>,
+    /// The board chosen for each project, by its slug; main otherwise.
+    pub board_choice: BTreeMap<String, String>,
+    /// The board's search words and filters: this window's, not saved.
+    pub board_query: String,
+    pub board_filters: BoardFilters,
+    /// A lane's quick-add field, open with its words.
+    pub quick_add: Option<(String, String)>,
+    /// The open card's fields as the person edits them.
+    pub card_draft: CardDraft,
+    /// A card being dragged, and the lane (and card) it would land at.
+    pub dragging: Option<agentdocker_core::TaskId>,
+    pub drag_target: Option<(String, Option<agentdocker_core::TaskId>)>,
+    /// The board's lanes as the person reshapes them, before saving.
+    pub lane_settings: Option<agentdocker_core::Board>,
     pub drafts: crate::drafts::Persistence,
     pub draft_home: PathBuf,
     pub connection_details: Option<String>,
@@ -729,12 +785,49 @@ pub enum Message {
     TaskTitle(String),
     TaskAcceptance(String),
     TaskFile(agentdocker_core::Column),
-    TaskMove(agentdocker_core::TaskId, agentdocker_core::Column),
+    TaskMove(agentdocker_core::TaskId, String),
     TaskOpen(agentdocker_core::TaskId),
     TaskAssign(agentdocker_core::TaskId, Option<agentdocker_core::AgentId>),
     TaskArchive(agentdocker_core::TaskId),
     /// The next page of the board.
     TasksMore,
+    /// Which board of the project is on view.
+    BoardPick(String),
+    /// A new board from a template.
+    BoardNew(String),
+    /// The board's search words, and its filter toggles.
+    BoardQuery(String),
+    BoardFilter(BoardFilterKind),
+    /// A lane's quick add: open (or close) it, its words, file them.
+    QuickAdd(Option<String>),
+    QuickAddText(String),
+    QuickAddFile,
+    /// The open card's fields as the person edits them, and saving them.
+    CardField(CardFieldKind, String),
+    CardPriority(agentdocker_core::Priority),
+    CardSize(Option<agentdocker_core::Size>),
+    CardSave,
+    CardCommentSend,
+    /// Approve a card waiting for the person (to Done), or send it back
+    /// to be pulled again with the comment typed.
+    TaskApprove(agentdocker_core::TaskId),
+    TaskBounce(agentdocker_core::TaskId),
+    /// Dragging a card: picked up, over a lane (and a card), dropped.
+    DragStart(agentdocker_core::TaskId),
+    DragOver(String, Option<agentdocker_core::TaskId>),
+    DragDrop,
+    DragCancel,
+    /// The board's lanes: open their settings, edit, save.
+    LaneSettings,
+    LaneName(usize, String),
+    LaneWip(usize, String),
+    LaneOwner(usize, agentdocker_core::board::Owner),
+    LaneAdd(agentdocker_core::Column),
+    LaneRemove(usize),
+    LaneMove(usize, bool),
+    LanePull(usize),
+    LaneSettingsSave,
+    ArchiveLane(String),
     /// Tell the selected project's agents to hold: open the reason, or
     /// send it, or lift the pause.
     PauseStart(String),
@@ -1653,27 +1746,362 @@ impl App {
                     let request = self.task_requests;
                     draft.sending = Some(request);
                     draft.error = None;
+                    let title = draft.title.trim().to_owned();
+                    let acceptance = draft.acceptance.trim().to_owned();
+                    let board = self.board_on_view();
+                    let lane = board
+                        .as_ref()
+                        .and_then(|b| b.first(column))
+                        .map(|l| l.slug.clone());
                     let cmd = Cmd::TaskCreate {
                         project,
                         request,
-                        title: draft.title.trim().to_owned(),
-                        acceptance: draft.acceptance.trim().to_owned(),
+                        title,
+                        acceptance,
                         column,
+                        lane,
+                        board: board
+                            .map(|b| b.slug)
+                            .filter(|s| s != agentdocker_core::board::MAIN),
                     };
                     self.send(cmd);
                 }
             }
-            Message::TaskMove(task, column) => self.send(Cmd::TaskMove { task, column }),
+            Message::TaskMove(task, to) => self.send(Cmd::TaskMove {
+                task,
+                to,
+                before: None,
+                comment: None,
+            }),
             Message::TaskOpen(task) => {
-                self.task_open = if self.task_open.as_ref() == Some(&task) {
-                    None
+                if self.task_open.as_ref() == Some(&task) {
+                    self.task_open = None;
+                    self.card = None;
                 } else {
-                    Some(task)
-                };
+                    self.card = None;
+                    self.shell.card_draft = self.draft_of(&task);
+                    self.send(Cmd::TaskDetail(task.clone()));
+                    self.task_open = Some(task);
+                }
             }
-            Message::TaskAssign(task, assignee) => self.send(Cmd::TaskAssign { task, assignee }),
+            Message::TaskAssign(task, assignee) => self.send(Cmd::TaskEdit {
+                task,
+                change: super::CardChange {
+                    assignee: Some(assignee.map(|a| a.to_string()).unwrap_or_default()),
+                    ..Default::default()
+                },
+            }),
             Message::TaskArchive(task) => self.send(Cmd::TaskArchive(task)),
             Message::TasksMore => self.request_more_tasks(),
+            Message::BoardPick(slug) => {
+                if let Some(project) = self.selected_project_root() {
+                    self.shell.board_choice.insert(project, slug);
+                    self.task_open = None;
+                    self.card = None;
+                    self.shell.lane_settings = None;
+                }
+            }
+            Message::BoardNew(template) => {
+                if let Some(project) = self.selected_project_root() {
+                    let name = match template.as_str() {
+                        "agents" => "Agents",
+                        "simple" => "Simple",
+                        _ => "Board",
+                    }
+                    .to_owned();
+                    self.send(Cmd::BoardCreate {
+                        project,
+                        name,
+                        template,
+                    });
+                }
+            }
+            Message::BoardQuery(words) => self.shell.board_query = words,
+            Message::BoardFilter(kind) => {
+                let filters = &mut self.shell.board_filters;
+                match kind {
+                    BoardFilterKind::High => filters.high = !filters.high,
+                    BoardFilterKind::Blocked => filters.blocked = !filters.blocked,
+                    BoardFilterKind::Waiting => filters.waiting = !filters.waiting,
+                    BoardFilterKind::Unassigned => filters.unassigned = !filters.unassigned,
+                }
+            }
+            Message::QuickAdd(lane) => {
+                self.shell.quick_add = match (lane, self.shell.quick_add.take()) {
+                    (Some(lane), Some((open, words))) if open == lane => {
+                        // Pressed again: closed, unless words wait in it.
+                        (!words.trim().is_empty()).then_some((open, words))
+                    }
+                    (Some(lane), _) => Some((lane, String::new())),
+                    (None, _) => None,
+                };
+            }
+            Message::QuickAddText(words) => {
+                if let Some((_, text)) = self.shell.quick_add.as_mut() {
+                    *text = words
+                        .chars()
+                        .take(agentdocker_core::task::TITLE_CHARS)
+                        .collect();
+                }
+            }
+            Message::QuickAddFile => {
+                if let Some(project) = self.selected_project_root()
+                    && let Some(board) = self.board_on_view()
+                    && let Some((lane, words)) = self.shell.quick_add.take()
+                    && !words.trim().is_empty()
+                    && let Some(category) = board.lane(&lane).map(|l| l.category)
+                {
+                    self.task_requests += 1;
+                    let request = self.task_requests;
+                    self.send(Cmd::TaskCreate {
+                        project,
+                        request,
+                        title: words.trim().to_owned(),
+                        acceptance: String::new(),
+                        column: category,
+                        lane: Some(lane.clone()),
+                        board: Some(board.slug).filter(|s| s != agentdocker_core::board::MAIN),
+                    });
+                    // The field stays open for the next one.
+                    self.shell.quick_add = Some((lane, String::new()));
+                }
+            }
+            Message::CardField(kind, words) => {
+                let draft = &mut self.shell.card_draft;
+                let field = match kind {
+                    CardFieldKind::Title => &mut draft.title,
+                    CardFieldKind::Description => &mut draft.description,
+                    CardFieldKind::Acceptance => &mut draft.acceptance,
+                    CardFieldKind::Due => &mut draft.due,
+                    CardFieldKind::Blocker => &mut draft.blocker,
+                    CardFieldKind::Tags => &mut draft.tags,
+                    CardFieldKind::Comment => &mut draft.comment,
+                };
+                *field = words
+                    .chars()
+                    .take(agentdocker_core::task::DESCRIPTION_CHARS)
+                    .collect();
+            }
+            Message::CardPriority(priority) => {
+                if let Some(task) = self.task_open.clone() {
+                    self.send(Cmd::TaskEdit {
+                        task,
+                        change: super::CardChange {
+                            priority: Some(priority),
+                            ..Default::default()
+                        },
+                    });
+                }
+            }
+            Message::CardSize(size) => {
+                if let Some(task) = self.task_open.clone() {
+                    self.send(Cmd::TaskEdit {
+                        task,
+                        change: super::CardChange {
+                            size: Some(size.map(|s| s.as_str().to_owned()).unwrap_or_default()),
+                            ..Default::default()
+                        },
+                    });
+                }
+            }
+            Message::CardSave => {
+                if let Some(task) = self.task_open.clone()
+                    && let Some(change) = self.card_change(&task)
+                {
+                    self.send(Cmd::TaskEdit { task, change });
+                }
+            }
+            Message::CardCommentSend => {
+                let body = self.shell.card_draft.comment.trim().to_owned();
+                if let Some(task) = self.task_open.clone()
+                    && !body.is_empty()
+                {
+                    self.shell.card_draft.comment.clear();
+                    self.send(Cmd::TaskComment { task, body });
+                }
+            }
+            Message::TaskApprove(task) => {
+                if let Some(done) = self.board_on_view().and_then(|b| {
+                    b.first(agentdocker_core::Column::Done)
+                        .map(|l| l.slug.clone())
+                }) {
+                    self.send(Cmd::TaskMove {
+                        task,
+                        to: done,
+                        before: None,
+                        comment: None,
+                    });
+                }
+            }
+            Message::TaskBounce(task) => {
+                if let Some(board) = self.board_on_view() {
+                    let words = self.shell.card_draft.comment.trim().to_owned();
+                    self.shell.card_draft.comment.clear();
+                    self.send(Cmd::TaskMove {
+                        task,
+                        to: board.pull_source.clone(),
+                        before: None,
+                        comment: (!words.is_empty()).then_some(words),
+                    });
+                }
+            }
+            Message::DragStart(task) => {
+                self.shell.dragging = Some(task);
+                self.shell.drag_target = None;
+            }
+            Message::DragOver(lane, before) => {
+                if self.shell.dragging.is_some() {
+                    self.shell.drag_target = Some((lane, before));
+                }
+            }
+            Message::DragDrop => {
+                let target = self.shell.drag_target.take();
+                if let Some(task) = self.shell.dragging.take() {
+                    // Let go where it was picked up — on itself, or in its
+                    // own lane with no card to sit before — it was a click.
+                    let here = self.board_on_view().and_then(|board| {
+                        self.tasks
+                            .as_ref()
+                            .and_then(|b| b.cards.iter().find(|t| t.id == task))
+                            .map(|t| board.lane_of(t).slug.clone())
+                    });
+                    match target {
+                        Some((lane, before))
+                            if !(Some(&lane) == here.as_ref()
+                                && before.as_ref().is_none_or(|b| *b == task)) =>
+                        {
+                            self.send(Cmd::TaskMove {
+                                task,
+                                to: lane,
+                                before,
+                                comment: None,
+                            });
+                        }
+                        _ => return self.update(Message::TaskOpen(task)),
+                    }
+                }
+            }
+            Message::DragCancel => {
+                self.shell.dragging = None;
+                self.shell.drag_target = None;
+            }
+            Message::LaneSettings => {
+                self.shell.lane_settings = match self.shell.lane_settings.take() {
+                    Some(_) => None,
+                    None => self.board_on_view(),
+                };
+            }
+            Message::LaneName(index, name) => {
+                if let Some(lane) = self
+                    .shell
+                    .lane_settings
+                    .as_mut()
+                    .and_then(|b| b.lanes.get_mut(index))
+                {
+                    lane.name = name
+                        .chars()
+                        .take(agentdocker_core::board::NAME_CHARS)
+                        .collect();
+                }
+            }
+            Message::LaneWip(index, words) => {
+                if let Some(lane) = self
+                    .shell
+                    .lane_settings
+                    .as_mut()
+                    .and_then(|b| b.lanes.get_mut(index))
+                {
+                    lane.wip = words.trim().parse::<u16>().ok().filter(|n| *n > 0);
+                }
+            }
+            Message::LaneOwner(index, owner) => {
+                if let Some(lane) = self
+                    .shell
+                    .lane_settings
+                    .as_mut()
+                    .and_then(|b| b.lanes.get_mut(index))
+                {
+                    lane.owner = owner;
+                }
+            }
+            Message::LaneAdd(category) => {
+                if let Some(board) = self.shell.lane_settings.as_mut()
+                    && board.lanes.len() < agentdocker_core::board::LANES_MAX
+                {
+                    let base = category.as_str().to_owned();
+                    let mut slug = base.clone();
+                    let mut n = 2;
+                    while board.lane(&slug).is_some() {
+                        slug = format!("{base}-{n}");
+                        n += 1;
+                    }
+                    board.lanes.push(agentdocker_core::Lane::new(
+                        &slug,
+                        category.label(),
+                        category,
+                        agentdocker_core::board::Owner::Any,
+                    ));
+                }
+            }
+            Message::LaneRemove(index) => {
+                if let Some(board) = self.shell.lane_settings.as_mut()
+                    && board.lanes.len() > 1
+                    && index < board.lanes.len()
+                {
+                    board.lanes.remove(index);
+                }
+            }
+            Message::LaneMove(index, up) => {
+                if let Some(board) = self.shell.lane_settings.as_mut() {
+                    let other = if up {
+                        index.checked_sub(1)
+                    } else {
+                        Some(index + 1)
+                    };
+                    if let Some(other) = other.filter(|o| *o < board.lanes.len())
+                        && index < board.lanes.len()
+                    {
+                        board.lanes.swap(index, other);
+                    }
+                }
+            }
+            Message::LanePull(index) => {
+                if let Some(board) = self.shell.lane_settings.as_mut()
+                    && let Some(lane) = board.lanes.get(index)
+                {
+                    match lane.category {
+                        agentdocker_core::Column::Ready => board.pull_source = lane.slug.clone(),
+                        agentdocker_core::Column::InProgress => {
+                            board.pull_target = lane.slug.clone();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Message::LaneSettingsSave => {
+                if let Some(project) = self.selected_project_root()
+                    && let Some(board) = self.shell.lane_settings.take()
+                {
+                    match board.check() {
+                        Ok(()) => self.send(Cmd::BoardSave { project, board }),
+                        Err(error) => {
+                            self.say(error.to_string());
+                            self.shell.lane_settings = Some(board);
+                        }
+                    }
+                }
+            }
+            Message::ArchiveLane(lane) => {
+                if let Some(project) = self.selected_project_root()
+                    && let Some(board) = self.board_on_view()
+                {
+                    self.send(Cmd::TaskArchiveLane {
+                        project,
+                        board: board.slug,
+                        lane,
+                    });
+                }
+            }
             Message::MarkAllRead => {
                 if self.connected.is_ok() {
                     let heads: Vec<(String, u64)> = self
@@ -3703,8 +4131,14 @@ impl App {
                 moves.push((card.id.clone(), to));
             }
         }
+        // A category names its board's first lane of that kind.
         for (task, column) in moves {
-            self.send(Cmd::TaskMove { task, column });
+            self.send(Cmd::TaskMove {
+                task,
+                to: column.as_str().to_owned(),
+                before: None,
+                comment: None,
+            });
         }
     }
 
@@ -3926,6 +4360,18 @@ mod tests {
             updated_at: Utc::now(),
             archived_at: None,
             links: Vec::new(),
+            key: String::new(),
+            board: None,
+            description: String::new(),
+            lane: None,
+            rank: String::new(),
+            priority: Default::default(),
+            size: None,
+            due: None,
+            external_blocker: String::new(),
+            parent: None,
+            blocked_by: Vec::new(),
+            tags: Vec::new(),
         };
         app.request_tasks();
         let (ask, _, _) = board_asks(&requests).pop().expect("asked");
@@ -3947,7 +4393,7 @@ mod tests {
         // Another card is moved and the reply comes: the draft stays.
         let _ = app.update(Message::TaskMove(
             agentdocker_core::TaskId::from("aaaaaaaaaaaa".to_owned()),
-            agentdocker_core::Column::Review,
+            "review".to_owned(),
         ));
         messages.send(Msg::TaskChanged(Ok(()))).unwrap();
         app.drain();
@@ -4012,6 +4458,8 @@ mod tests {
                 title: "beta's card".into(),
                 acceptance: String::new(),
                 column: agentdocker_core::Column::Backlog,
+                lane: None,
+                board: None,
             },
             "the command queue is full",
         );
@@ -4053,6 +4501,18 @@ mod tests {
                     updated_at: Utc::now(),
                     archived_at: None,
                     links: Vec::new(),
+                    key: String::new(),
+                    board: None,
+                    description: String::new(),
+                    lane: None,
+                    rank: String::new(),
+                    priority: Default::default(),
+                    size: None,
+                    due: None,
+                    external_blocker: String::new(),
+                    parent: None,
+                    blocked_by: Vec::new(),
+                    tags: Vec::new(),
                 })
                 .collect::<Vec<_>>()
         };
@@ -4692,7 +5152,7 @@ mod tests {
             commands
                 .try_iter()
                 .filter_map(|cmd| match cmd {
-                    Cmd::TaskMove { column, .. } => Some(column),
+                    Cmd::TaskMove { to, .. } => Column::parse(&to),
                     _ => None,
                 })
                 .collect()

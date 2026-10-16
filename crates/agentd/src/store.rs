@@ -53,6 +53,10 @@ pub struct TaskTransition<'a> {
     /// The document kind and id.
     pub kind: &'a str,
     pub id: &'a str,
+    /// Other documents the same change writes, as (kind, id, JSON): its
+    /// history line, a comment, the board whose key counter moved, the
+    /// other cards of a batch.
+    pub documents: &'a [(&'a str, String, String)],
     /// The events, in order.
     pub events: &'a [Event],
 }
@@ -64,7 +68,11 @@ pub struct TaskTransition<'a> {
 // would leave those conversations with receivers that cannot read their state.
 // Schema 27 gates metadata-only temporary-input fences in delivery ledger 15.
 // A rollback must not select a receiver that cannot retain their no-replay rule.
-pub(crate) const SCHEMA_VERSION: i64 = 27;
+// Schema 28 keeps boards as data: a card names its board and lane and carries
+// fields, comments and a history (`board`, `task_comment` and `task_entry`
+// documents). A card may sit in a Blocked or Cancelled lane an older daemon
+// cannot read, and an older daemon rewriting a card would drop its fields.
+pub(crate) const SCHEMA_VERSION: i64 = 28;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS usage_emissions (
@@ -85,6 +93,9 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS documents_agent ON documents (kind, json_extract(json, '$.agent'));
 CREATE INDEX IF NOT EXISTS documents_author ON documents (kind, json_extract(json, '$.from'));
 CREATE INDEX IF NOT EXISTS documents_version ON documents (kind, json_extract(json, '$.checkout'), json_extract(json, '$.before'));
+CREATE INDEX IF NOT EXISTS documents_task ON documents (kind, json_extract(json, '$.task'));
+CREATE INDEX IF NOT EXISTS documents_project ON documents (kind, json_extract(json, '$.project'));
+CREATE INDEX IF NOT EXISTS documents_key ON documents (kind, json_extract(json, '$.key'));
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -562,7 +573,8 @@ impl Store {
              AND (?3 OR json_extract(json, '$.archived_at') IS NULL)
              ORDER BY CASE json_extract(json, '$.column')
                  WHEN 'backlog' THEN 0 WHEN 'ready' THEN 1 WHEN 'in_progress' THEN 2
-                 WHEN 'review' THEN 3 ELSE 4 END,
+                 WHEN 'review' THEN 3 WHEN 'done' THEN 4 WHEN 'blocked' THEN 5 ELSE 6 END,
+               COALESCE(json_extract(json, '$.rank'), ''),
                json_extract(json, '$.created_at'), id
              LIMIT ?4 OFFSET ?5",
         )?;
@@ -607,11 +619,62 @@ impl Store {
             self.delete_lease(lease)?;
         }
         self.put_document(transition.kind, transition.id, value)?;
+        for (kind, id, json) in transition.documents {
+            self.conn.execute(
+                "INSERT INTO documents (kind,id,json) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json",
+                params![kind, id, json],
+            )?;
+        }
         for event in transition.events {
             self.append_event(event)?;
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Documents and the events that announce them, as one commit.
+    pub fn documents_with_events(
+        &self,
+        documents: &[(&str, String, String)],
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = write_transaction(&self.conn)?;
+        for (kind, id, json) in documents {
+            self.conn.execute(
+                "INSERT INTO documents (kind,id,json) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json",
+                params![kind, id, json],
+            )?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Documents of a kind whose JSON field `field` (`task`, `project`,
+    /// `key`) equals `value`, oldest id first, at most `limit`.
+    pub fn documents_where<T: serde::de::DeserializeOwned>(
+        &self,
+        kind: &str,
+        field: &str,
+        value: &str,
+        limit: usize,
+    ) -> Result<Vec<T>> {
+        let path = match field {
+            "task" => "$.task",
+            "project" => "$.project",
+            "key" => "$.key",
+            _ => anyhow::bail!("documents are not indexed by {field}"),
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT json FROM documents WHERE kind=?1 AND json_extract(json, ?2) = ?3 ORDER BY id LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(
+            params![kind, path, value, i64::try_from(limit).unwrap_or(i64::MAX)],
+            |row| row.get::<_, String>(0),
+        )?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
     }
 
     /// Atomically persist a typed recovery document before publishing its event.
@@ -826,7 +889,9 @@ impl Store {
         // v22 adds the receiver upgrade intent on a binding; v23 adds the
         // `pause` document, a person's hold on a project's agents. Neither
         // rewrites a row: the bump is so an older daemon refuses the
-        // database rather than open it and quietly not hold anyone.
+        // database rather than open it and quietly not hold anyone. v28's
+        // boards, comments and card history are new documents too; a card
+        // without a board is on its project's main board, made on demand.
         Ok(())
     }
 

@@ -416,6 +416,15 @@ pub fn event_line(event: &Event) -> String {
         } => format!("card moved       {task} to {column} by {by}"),
         EventKind::TaskUpdated { task, by, .. } => format!("card edited      {task} by {by}"),
         EventKind::TaskArchived { task, by, .. } => format!("card archived    {task} by {by}"),
+        EventKind::TaskUnarchived { task, by, .. } => format!("card restored    {task} by {by}"),
+        EventKind::TaskCommented { task, by, .. } => format!("card comment     {task} by {by}"),
+        EventKind::TaskCommentChanged {
+            task, by, deleted, ..
+        } => format!(
+            "card comment {}  {task} by {by}",
+            if *deleted { "gone" } else { "edit" }
+        ),
+        EventKind::BoardChanged { board, by, .. } => format!("board changed    {board} by {by}"),
         EventKind::WebhookFailed {
             name,
             kind,

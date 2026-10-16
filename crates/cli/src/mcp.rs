@@ -924,6 +924,7 @@ impl<B: Backend> McpServer<B> {
                     .cloned()
                     .ok_or((INVALID_PARAMS, "arguments must be an object".to_owned()))?;
                 object.insert("op".into(), json!("tasks"));
+                object.insert("agent".into(), json!(me));
                 if !object.contains_key("project") {
                     let project = match self
                         .backend
@@ -970,20 +971,58 @@ impl<B: Backend> McpServer<B> {
                     .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
                 self.forward(request).await
             }
-            "pull_task" | "move_task" => {
-                let op = if name == "pull_task" {
-                    "task_pull"
-                } else {
-                    "task_move"
+            "pull_task" | "move_task" | "update_task" | "archive_task" => {
+                let op = match name {
+                    "pull_task" => "task_pull",
+                    "move_task" => "task_move",
+                    "update_task" => "task_update",
+                    _ => "task_archive",
                 };
+                let mut arguments = arguments;
+                // `column`, the older form, names a category; `to` names
+                // a lane, and a category is a lane name too.
+                if name == "move_task"
+                    && let Some(object) = arguments.as_object_mut()
+                    && !object.contains_key("to")
+                    && let Some(column) = object.remove("column")
+                {
+                    object.insert("to".into(), column);
+                }
                 self.forward(tagged_request(arguments, op, &me)?).await
             }
-            "create_task" => {
+            "get_task" => {
+                let request = serde_json::from_value(json!({
+                    "op": "task_get",
+                    "task": arguments.get("task").cloned().unwrap_or(Value::Null),
+                }))
+                .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
+                self.forward(request).await
+            }
+            "my_tasks" => {
+                // The caller's open cards in every project, or in one.
                 let mut object = arguments
                     .as_object()
                     .cloned()
                     .ok_or((INVALID_PARAMS, "arguments must be an object".to_owned()))?;
-                object.insert("op".into(), json!("task_create"));
+                object.insert("op".into(), json!("tasks"));
+                object.insert("assignee".into(), json!("me"));
+                object.insert("agent".into(), json!(me));
+                object.insert("open".into(), json!(true));
+                let request = serde_json::from_value(Value::Object(object))
+                    .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
+                self.forward(request).await
+            }
+            "create_task" | "create_tasks" | "comment_task" => {
+                let op = match name {
+                    "create_task" => "task_create",
+                    "create_tasks" => "task_create_many",
+                    _ => "task_comment",
+                };
+                let mut object = arguments
+                    .as_object()
+                    .cloned()
+                    .ok_or((INVALID_PARAMS, "arguments must be an object".to_owned()))?;
+                object.insert("op".into(), json!(op));
                 object.insert("from".into(), json!(me));
                 let request = serde_json::from_value(Value::Object(object))
                     .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
@@ -1783,7 +1822,9 @@ fn annotations(name: &str) -> Value {
         "whoami" | "list_agents" | "inspect_agent" | "list_leases" | "activity" | "overlap"
         | "open_questions" | "read_journal" | "wait_for_messages" | "check_stale" | "read_set"
         | "list_checkpoints" | "list_handoffs" | "list_channels" | "contests" | "list_tasks"
-        | "worktree_diff" | "validation_results" | "usage" => (true, false, true, false),
+        | "get_task" | "my_tasks" | "worktree_diff" | "validation_results" | "usage" => {
+            (true, false, true, false)
+        }
         // Saying and recording: additive, repeatable.
         "report_activity" | "report_provider_status" | "observe_paths" | "renew" => {
             (false, false, true, false)
@@ -1796,9 +1837,8 @@ fn annotations(name: &str) -> Value {
         "send_message" | "ask_human" | "answer_question" | "journal_note" | "claim" | "release"
         | "save_checkpoint" | "handoff" | "resume_checkpoint" | "commit" | "create_worktree"
         | "open_channel" | "close_channel" | "request_review" | "review" | "enter_contest"
-        | "submit_entry" | "create_task" | "move_task" | "pull_task" => {
-            (false, false, false, false)
-        }
+        | "submit_entry" | "create_task" | "create_tasks" | "move_task" | "pull_task"
+        | "update_task" | "comment_task" | "archive_task" => (false, false, false, false),
         // Changes files in a checkout: an uncommitted merge.
         "integrate_worktree" => (false, true, false, false),
         // Runs whatever command it is given.
@@ -2184,12 +2224,18 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "list_tasks",
-            "description": "The project's board of work: cards in columns (backlog, ready, in_progress, review, done), each with a title and what done means. Ready cards are there to be pulled.",
+            "description": "The project's board of work: cards in lanes, each with a key (AD-12), a title and what done means; each lane stands for a category (backlog, ready, in_progress, review, done, blocked, cancelled). Cards in the board's pull source are there to be pulled. Narrow it by lane, by whose it is (assignee: an agent, me or none), to open cards, by words or by tag.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "project": { "type": "string", "description": "Project id or path; your own when absent." },
-                    "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done"] },
+                    "board": { "type": "string", "description": "Board slug or name; the project's main board when absent." },
+                    "lane": { "type": "string", "description": "A lane by slug, name or category." },
+                    "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done", "blocked", "cancelled"] },
+                    "assignee": { "type": "string", "description": "Whose: an agent name or id, me, or none." },
+                    "open": { "type": "boolean", "description": "Only cards not done, cancelled or archived." },
+                    "query": { "type": "string", "description": "Words in the key, title, description or acceptance." },
+                    "tag": { "type": "string" },
                     "archived": { "type": "boolean", "description": "Include cards taken off the board." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "At most this many cards (100 by default), within a page's byte budget; the reply's `more` says whether the board goes on." },
                     "offset": { "type": "integer", "minimum": 0, "description": "Skip this many cards: the next page starts at offset + the cards returned." }
@@ -2214,40 +2260,157 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "pull_task",
-            "description": "Take a Ready card nobody holds: it becomes yours, in progress, and you hold its task:<id> lease (four hours; renew it during long work — an exit releases it; pulling your own held card renews it). Refused if somebody holds it or it is not ready, so two agents never work the same card. A card whose holder's lease lapsed is refused too, with hold: lapsed: take it over only by naming that holder in take_over_from, when you know they are gone or the person said so. Read its acceptance text before you start.",
+            "description": "Take a card from the board's pull source (Ready on most boards) that nobody else holds: it becomes yours, in the pull target, and you hold its task:<id> lease (four hours; renew it during long work — an exit releases it; pulling your own held card renews it). Name no card to take the next ready one: the first in board order that is free or yours and waits on nothing open; when there is none the answer says nothing_ready with what is there, which is not an error. Refused if somebody holds it, so two agents never work the same card. A card whose holder's lease lapsed is refused too, with hold: lapsed: take it over only by naming that holder in take_over_from, when you know they are gone or the person said so. The answer is the card in full — its description, acceptance, comments, history and the cards it waits on — and the lease: read the acceptance before you start.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "task": { "type": "string", "description": "Card id or unique prefix." },
-                    "take_over_from": { "type": "string", "description": "The holder whose lapsed hold you take the card from (yourself, for your own). Refused if the card names somebody else or that hold is live." }
+                    "task": { "type": "string", "description": "Card key (AD-12), id or unique prefix; the next ready card when absent." },
+                    "take_over_from": { "type": "string", "description": "The holder whose lapsed hold you take the card from (yourself, for your own). Refused if the card names somebody else or that hold is live." },
+                    "project": { "type": "string", "description": "Where to pull the next card from; your own project when absent." },
+                    "board": { "type": "string", "description": "Board slug or name; the main board when absent." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "move_task",
+            "description": "Move a card you hold to another lane — review when it is ready for eyes (the first Review lane), done when its acceptance text is met. Name the lane by slug, name or category; the answer lists the board's lanes when nothing matches. Say why in comment and it goes on the card in the same change. after or before put it beside another card in that lane. Only the card's holder or the person moves it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "Card key, id or unique prefix." },
+                    "to": { "type": "string", "description": "Lane slug, name or category (review, done…)." },
+                    "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done", "blocked", "cancelled"], "description": "The older form of to: a category." },
+                    "comment": { "type": "string", "description": "Why, on the card." },
+                    "after": { "type": "string", "description": "Put it just after this card in the lane." },
+                    "before": { "type": "string", "description": "Put it just before this card in the lane." }
                 },
                 "required": ["task"],
                 "additionalProperties": false
             }
         }),
         json!({
-            "name": "move_task",
-            "description": "Move a card you hold to another column — review when it is ready for eyes, done when its acceptance text is met. Only the card's holder or the person moves it.",
+            "name": "get_task",
+            "description": "One card in full: its words and fields, the board's lanes, its comments, its last hundred history lines, the cards it waits on and the cards that are part of it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "task": { "type": "string" },
-                    "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done"] }
+                    "task": { "type": "string", "description": "Card key (AD-12), id or unique prefix." }
                 },
-                "required": ["task", "column"],
+                "required": ["task"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "my_tasks",
+            "description": "Your open cards, in every project or in one: what you hold and have not finished.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Only this project." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "update_task",
+            "description": "Change what a card you hold says: its title, acceptance, description, priority, size, due day, outside blocker, parent, the cards it waits on, its tags or its links. Fields left out stay; an empty size, due or parent clears it; tags, blocked_by and links replace the card's whole. Only its holder (or the person) edits it, and only the person reassigns it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "Card key, id or unique prefix." },
+                    "title": { "type": "string" },
+                    "acceptance": { "type": "string" },
+                    "description": { "type": "string", "description": "What the work is, at length (Markdown)." },
+                    "priority": { "type": "string", "enum": ["high", "normal", "low"] },
+                    "size": { "type": "string", "enum": ["s", "m", "l"] },
+                    "due": { "type": "string", "format": "date", "description": "YYYY-MM-DD." },
+                    "external_blocker": { "type": "string", "description": "Something off the board it waits on (a vendor, a DNS change); a pull with no card named passes it by." },
+                    "tags": { "type": "array", "maxItems": 8, "items": { "type": "string" } },
+                    "parent": { "type": "string", "description": "The card it is part of; empty to clear." },
+                    "blocked_by": { "type": "array", "maxItems": 16, "items": { "type": "string" }, "description": "Cards that must be done first." },
+                    "links": { "type": "array", "maxItems": 16, "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
+                },
+                "required": ["task"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "comment_task",
+            "description": "Say something on a card — what you found, what is left, why you moved it. A reply to a comment hangs under it, one level deep. The person and every agent reading the card see it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "Card key, id or unique prefix." },
+                    "body": { "type": "string", "maxLength": 4000 },
+                    "reply_to": { "type": "string", "description": "The comment this answers." }
+                },
+                "required": ["task", "body"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "archive_task",
+            "description": "Take a card you finished (done or cancelled) off the board, kept for the record.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "Card key, id or unique prefix." }
+                },
+                "required": ["task"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "create_tasks",
+            "description": "File up to fifty cards at once, all or none — a split of work, say. Give each a ref and the others can name it as their parent or in blocked_by; every problem is listed at once. The answer gives each ref's key.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Project id or path; your own when absent." },
+                    "board": { "type": "string" },
+                    "lane": { "type": "string", "description": "Where every card goes unless it says; backlog when absent." },
+                    "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags every card gets." },
+                    "cards": { "type": "array", "minItems": 1, "maxItems": 50, "items": { "type": "object", "properties": {
+                        "ref": { "type": "string", "description": "A name the other cards in the batch use for this one." },
+                        "title": { "type": "string" },
+                        "acceptance": { "type": "string" },
+                        "lane": { "type": "string" },
+                        "description": { "type": "string", "description": "What the work is, at length (Markdown)." },
+                    "priority": { "type": "string", "enum": ["high", "normal", "low"] },
+                    "size": { "type": "string", "enum": ["s", "m", "l"] },
+                    "due": { "type": "string", "format": "date", "description": "YYYY-MM-DD." },
+                    "external_blocker": { "type": "string", "description": "Something off the board it waits on (a vendor, a DNS change); a pull with no card named passes it by." },
+                    "tags": { "type": "array", "maxItems": 8, "items": { "type": "string" } },
+                        "parent": { "type": "string", "description": "A ref in the batch, or a card on the board." },
+                        "blocked_by": { "type": "array", "items": { "type": "string" }, "description": "Refs in the batch, or cards on the board." },
+                        "links": { "type": "array", "maxItems": 16, "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
+                    }, "required": ["title"], "additionalProperties": false } }
+                },
+                "required": ["cards"],
                 "additionalProperties": false
             }
         }),
         json!({
             "name": "create_task",
-            "description": "File a card on the board: a title, what done means, and the column (backlog unless said; ready when it is for anyone to pull).",
+            "description": "File a card on the board: a title, what done means, and where (backlog unless said; the pull source when it is for anyone to pull). It gets a key such as AD-12.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "title": { "type": "string" },
                     "acceptance": { "type": "string", "description": "What done means." },
-                    "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done"] },
+                    "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done", "blocked", "cancelled"] },
+                    "lane": { "type": "string", "description": "A lane by slug, name or category; overrides column." },
+                    "board": { "type": "string", "description": "Board slug or name; the main board when absent." },
                     "project": { "type": "string", "description": "Project id or path; your own when absent." },
+                    "description": { "type": "string", "description": "What the work is, at length (Markdown)." },
+                    "priority": { "type": "string", "enum": ["high", "normal", "low"] },
+                    "size": { "type": "string", "enum": ["s", "m", "l"] },
+                    "due": { "type": "string", "format": "date", "description": "YYYY-MM-DD." },
+                    "external_blocker": { "type": "string", "description": "Something off the board it waits on (a vendor, a DNS change); a pull with no card named passes it by." },
+                    "tags": { "type": "array", "maxItems": 8, "items": { "type": "string" } },
+                    "parent": { "type": "string", "description": "The card it is part of." },
+                    "blocked_by": { "type": "array", "maxItems": 16, "items": { "type": "string" }, "description": "Cards that must be done first." },
                     "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
                 },
                 "required": ["title"],

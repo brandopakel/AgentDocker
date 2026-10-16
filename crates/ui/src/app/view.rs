@@ -1270,10 +1270,25 @@ impl App {
             ] {
                 let selected = self.screen == screen
                     || (screen == Screen::Agents && self.screen == Screen::Terminal);
+                // The Board tab counts the cards waiting for the person.
+                let mark = icon(glyph, if selected { c.text } else { c.muted }, 15.0);
+                let waiting = if screen == Screen::Board {
+                    self.board_waiting()
+                } else {
+                    0
+                };
+                let mark: Element<'_, Message> = if waiting > 0 {
+                    row![mark, count_chip(waiting, true, c)]
+                        .spacing(5)
+                        .align_y(Center)
+                        .into()
+                } else {
+                    mark
+                };
                 tabs = tabs.push(tab(
                     format!("project-tab-{screen:?}"),
                     label,
-                    Some(icon(glyph, if selected { c.text } else { c.muted }, 15.0)),
+                    Some(mark),
                     Some(Message::Navigate(screen)),
                     selected,
                 ));
