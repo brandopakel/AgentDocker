@@ -211,6 +211,27 @@ pub(super) fn tip<'a>(
     .into()
 }
 
+/// A state shown as a dot: its words are the dot's tooltip and its
+/// accessible name, so a reader (and the workflow driver) hears what the
+/// eye reads from the colour.
+pub(super) fn status_dot<'a>(
+    id: impl Into<String>,
+    tone: iced::Color,
+    words: impl Into<String>,
+    c: Colors,
+) -> Element<'a, Message> {
+    let words = words.into();
+    let dot = crate::controls::Control {
+        content: container(dot(tone, 6.0, c)).padding(4).into(),
+        semantic: crate::accessibility::Semantic {
+            role: accesskit::Role::Label,
+            ..crate::accessibility::Semantic::button(id.into(), words.clone(), None)
+        },
+        button: false,
+    };
+    tip(dot, words, c)
+}
+
 pub(super) fn hint<'a>(
     content: impl Into<Element<'a, Message>>,
     label: impl Into<String>,

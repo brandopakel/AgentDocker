@@ -803,8 +803,9 @@ impl App {
         let needs_action = self.tool_needs_action(runtime, c);
         // The state is a dot beside the name; its words show when the dot
         // is pointed at.
-        let status = super::view::tip(
-            container(dot(state.tone, 7.0, c)).padding(4),
+        let status = super::view::status_dot(
+            format!("tool-state-{}", runtime.name),
+            state.tone,
             format!("{}{version}", state.word),
             c,
         );

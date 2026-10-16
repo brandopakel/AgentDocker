@@ -711,19 +711,10 @@ impl App {
             );
         }
         list = list.push(section_label("Projects", c));
-        if projects.is_empty() {
-            list = list.push(container(note("No project chat yet.", c).size(12)).padding([2, 8]));
-        }
         for (_, summary) in projects {
             list = list.push(self.conversation_row(summary, None, row_width, c));
         }
         list = list.push(section_label("Direct messages", c));
-        if direct.is_empty() {
-            list = list.push(
-                container(note("No direct messages yet. + writes to an agent.", c).size(12))
-                    .padding([2, 8]),
-            );
-        }
         for summary in direct {
             list = list.push(self.conversation_row(summary, Some(true), row_width, c));
         }
@@ -1379,13 +1370,20 @@ impl App {
                     c.accent,
                 ));
             }
-            status = status.push(status_line(
+            // The receiver's state is its dot, the words on the pointer and
+            // in its name, beside the way to put it right.
+            let mut line = row![super::view::status_dot(
+                format!("input-readiness-{key}"),
                 Self::readiness_tone(readiness, c),
                 readiness,
-                c.muted,
-                actions,
-                c,
-            ));
+                c
+            )]
+            .spacing(6)
+            .align_y(Center);
+            for item in actions {
+                line = line.push(item);
+            }
+            status = status.push(line);
         }
         // The pane supplies its actual remaining height after headers and
         // compact agent controls. Keep typing visible while feedback scrolls.
@@ -1492,9 +1490,7 @@ impl App {
                 .font(weight(iced::font::Weight::Semibold))
         ]
         .spacing(10);
-        if agents.is_empty() {
-            body = body.push(note("No agent is running here to message.", c).size(12));
-        } else {
+        if !agents.is_empty() {
             let rows = agents
                 .into_iter()
                 .map(|agent| {
@@ -1654,13 +1650,7 @@ impl App {
         }
         match history {
             None => list = list.push(container(note("Loading…", c)).padding([16, 8])),
-            Some(messages) if messages.is_empty() => {
-                list = list.push(
-                    container(note("Nothing said here yet.", c))
-                        .padding([24, 8])
-                        .center_x(Fill),
-                );
-            }
+            Some(messages) if messages.is_empty() => {}
             Some(messages) => {
                 // The unread divider sits before the newest `unread` messages
                 // that are not the person's own words.
