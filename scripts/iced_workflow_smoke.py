@@ -260,11 +260,11 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("fill", id="session-search", text=previous["id"]),
                          step("wait_control", id=f"session-{previous['id']}", present=True),
                          step("wait_control", id=f"session-{agent['id']}", present=False),
-                         step("wait_text_absent", text="No matching sessions"),
+                         step("wait_control", id="session-search-clear", present=False),
                          step("capture", name="earlier-search-match"),
                          step("fill", id="session-search", text="fixture-no-session-matches"),
                          step("wait_control", id=f"session-{previous['id']}", present=False),
-                         step("wait_text", text="No matching sessions"),
+                         step("wait_control", id="session-search-clear", present=True),
                          step("fill", id="session-search", text=""),
                          step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("click", id="sessions-attention"), step("wait_control", id=f"session-{agent['id']}", present=True),
@@ -692,7 +692,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             assert not (home / ".codex/config.toml").exists(), "Undo did not restore fixture configuration"
             launched = [a for a in rpc(endpoint, {"op": "list", "all": True})["agents"] if a["spec"]["name"] == "launched-from-iced"]
             assert len(launched) == 1 and launched[0]["status"]["state"] == "exited", launched
-            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_control", id="project-terminal", present=True), step("click", id="project-tab-Agents"), step("wait_text", text="No agents in this project"), step("capture", name="restored-last-project"), step("click", id="sessions-earlier"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-earlier"),
+            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_control", id="project-terminal", present=True), step("click", id="project-tab-Agents"), step("wait_control", id="empty-launch", present=True), step("capture", name="restored-last-project"), step("click", id="sessions-earlier"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-earlier"),
                 step("click", id="command-palette"), step("wait_control", id="palette-search", present=True), step("capture", name="command-palette-dark"),
                 step("click", id="palette-item-action-launch"), step("wait_control", id="palette-back", present=True),
                 step("wait_control", id="palette-item-tool-codex", present=True), step("capture", name="command-palette-tools-dark"),
