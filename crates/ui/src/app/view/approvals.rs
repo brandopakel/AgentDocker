@@ -1496,21 +1496,10 @@ impl App {
         let mut list = column![].spacing(2).width(Fill);
         let mut everyone = row![
             monogram("Everyone", "everyone", 28.0, c),
-            column![
-                text("Everyone")
-                    .size(14)
-                    .font(weight(iced::font::Weight::Medium)),
-                small(
-                    format!(
-                        "{} conversation{}",
-                        threads.len(),
-                        if threads.len() == 1 { "" } else { "s" }
-                    ),
-                    c
-                )
-            ]
-            .spacing(1)
-            .width(Fill)
+            text("Everyone")
+                .size(14)
+                .font(weight(iced::font::Weight::Medium))
+                .width(Fill)
         ]
         .spacing(10)
         .align_y(Center);
@@ -1603,9 +1592,6 @@ impl App {
             .filter(|m| selected.is_none_or(|id| self.canonical_agent(&m.from) == id))
             .collect();
         let shown = self.recent_window(&shown, 30);
-        if shown.is_empty() && self.questions.is_empty() {
-            convo = convo.push(note("No messages yet.", c));
-        }
         let ids: Vec<_> = shown.iter().map(|m| m.id.clone()).collect();
         if ids.len() > 1 {
             let enabled =
@@ -1666,20 +1652,8 @@ impl App {
                 .align_y(Center)
             ]
             .spacing(6);
-            if !live {
-                composer = composer.push(small(
-                    "This agent is not running, so it cannot receive a message.",
-                    c,
-                ));
-            } else if let Some(error) = entry.and_then(|e| e.draft.error.as_ref()) {
+            if let Some(error) = entry.and_then(|e| e.draft.error.as_ref()) {
                 composer = composer.push(notice_line("Not sent", Some(error.clone()), c.amber, c));
-            } else if entry.is_some_and(|e| e.queued.is_some()) && !sending {
-                composer = composer.push(small("Queued for the agent.", c));
-            } else {
-                composer = composer.push(small(
-                    "Send goes to this agent. Send to everyone reaches every agent in its project.",
-                    c,
-                ));
             }
             if let Some(notice) = entry.and_then(|entry| {
                 super::super::send_readiness::notice(
@@ -1694,8 +1668,6 @@ impl App {
                 top: 4.0,
                 ..Default::default()
             }));
-        } else {
-            convo = convo.push(small("Choose a conversation to reply.", c));
         }
 
         if self.narrow() {
