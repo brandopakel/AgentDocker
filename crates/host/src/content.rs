@@ -13,12 +13,87 @@ pub const MISSING: &str = "missing";
 /// Hash a file or an ignore-aware directory tree. Refuse special files and
 /// oversized trees; a failed observation must never become a fresh read mark.
 pub fn fingerprint(path: &Path) -> io::Result<String> {
+    Ok(snapshot(path)?.version)
+}
+
+/// The same bounded observation, retaining the individual directory entries.
+/// Entries are relative paths; a file or an absent root has no entry map.
+#[derive(Clone, Debug)]
+pub struct Snapshot {
+    pub version: String,
+    pub entries: Option<BTreeMap<PathBuf, String>>,
+}
+
+impl Snapshot {
+    /// One entry's identity, without confusing an absent child with its parent.
+    pub fn entry(&self, relative: &Path) -> &str {
+        if relative.as_os_str().is_empty() {
+            return if self.entries.is_some() {
+                "directory"
+            } else {
+                &self.version
+            };
+        }
+        self.entries
+            .as_ref()
+            .and_then(|e| e.get(relative))
+            .map_or(MISSING, String::as_str)
+    }
+
+    /// A conservative payload estimate for bounded ephemeral proof caches.
+    pub fn retained_bytes(&self) -> usize {
+        256 + self.version.len() * 2
+            + self.entries.as_ref().map_or(0, |entries| {
+                entries
+                    .iter()
+                    .map(|(path, version)| 256 + path.as_os_str().len() * 2 + version.len() * 2)
+                    .sum::<usize>()
+            })
+    }
+
+    /// Content differences under a requested path, including removals.
+    /// A directory marker does not stand in for the contents of that directory.
+    pub fn differences(&self, current: &Self, target: &Path) -> Vec<(PathBuf, String)> {
+        let mut paths = std::collections::BTreeSet::new();
+        paths.insert(Path::new(""));
+        for entries in [&self.entries, &current.entries].into_iter().flatten() {
+            paths.extend(entries.keys().map(PathBuf::as_path));
+        }
+        paths
+            .into_iter()
+            .filter(|path| path.starts_with(target) && self.entry(path) != current.entry(path))
+            .map(|path| (path.to_path_buf(), current.entry(path).to_owned()))
+            .collect()
+    }
+}
+
+/// Hash only the entry itself. Watcher proofs never rescan a whole subtree.
+pub fn entry_fingerprint(path: &Path, budget: &mut u64) -> io::Result<String> {
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(MISSING.into()),
+        Err(e) => Err(e),
+        Ok(metadata) if metadata.is_dir() => Ok("directory".into()),
+        Ok(_) => file_digest(path, budget),
+    }
+}
+
+pub fn snapshot(path: &Path) -> io::Result<Snapshot> {
     let mut entries = BTreeMap::new();
     let mut budget = MAX_BYTES;
     match std::fs::symlink_metadata(path) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(MISSING.into()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Ok(Snapshot {
+                version: MISSING.into(),
+                entries: None,
+            });
+        }
         Err(e) => return Err(e),
-        Ok(m) if !m.is_dir() => return file_digest(path, &mut budget),
+        Ok(m) if !m.is_dir() => {
+            return Ok(Snapshot {
+                version: file_digest(path, &mut budget)?,
+                entries: None,
+            });
+        }
         Ok(_) => {}
     }
     for entry in ignore::WalkBuilder::new(path)
@@ -44,13 +119,16 @@ pub fn fingerprint(path: &Path) -> io::Result<String> {
         entries.insert(PathBuf::from(relative), digest);
     }
     let mut hash = Sha256::new();
-    for (path, digest) in entries {
+    for (path, digest) in &entries {
         let bytes = path.as_os_str().as_encoded_bytes();
         hash.update((bytes.len() as u64).to_le_bytes());
         hash.update(bytes);
         hash.update(digest.as_bytes());
     }
-    Ok(format!("sha256:{:x}", hash.finalize()))
+    Ok(Snapshot {
+        version: format!("sha256:{:x}", hash.finalize()),
+        entries: Some(entries),
+    })
 }
 
 fn file_digest(path: &Path, budget: &mut u64) -> io::Result<String> {
@@ -108,6 +186,45 @@ fn file_digest(path: &Path, budget: &mut u64) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshots_distinguish_unseen_removed_and_unchanged_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a"), "a").unwrap();
+        std::fs::write(tmp.path().join("b"), "b").unwrap();
+        let before = snapshot(tmp.path()).unwrap();
+        assert_eq!(before.version, fingerprint(tmp.path()).unwrap());
+        std::fs::write(tmp.path().join("b"), "changed").unwrap();
+        std::fs::create_dir(tmp.path().join("new-dir")).unwrap();
+        let after = snapshot(tmp.path()).unwrap();
+        assert!(before.differences(&after, Path::new("a")).is_empty());
+        assert!(
+            before
+                .differences(&after, Path::new("new-dir/unseen"))
+                .is_empty()
+        );
+        std::fs::remove_file(tmp.path().join("a")).unwrap();
+        let removed = snapshot(tmp.path()).unwrap();
+        assert_eq!(
+            before.differences(&removed, Path::new("a")),
+            vec![(PathBuf::from("a"), MISSING.to_owned())]
+        );
+        let mut budget = 1;
+        assert_eq!(
+            entry_fingerprint(&tmp.path().join("a"), &mut budget).unwrap(),
+            MISSING
+        );
+        assert_eq!(
+            entry_fingerprint(&tmp.path().join("new-dir"), &mut budget).unwrap(),
+            "directory"
+        );
+        assert!(
+            entry_fingerprint(&tmp.path().join("b"), &mut budget)
+                .unwrap()
+                .starts_with("large:")
+        );
+        assert_eq!(budget, 1);
+    }
 
     /// A file past the hashing budget is known by its stamp: the folder is
     /// still observed, and touching the file still changes it.

@@ -668,10 +668,13 @@ the session *waiting* for you; run setup again to add it to an existing install)
 begin and end, what it is about to edit, what it changed, and what it
 should be told before it starts — the journal since it last looked, and
 anything it read that has gone stale. Before an edit, `PreToolUse` refuses
-one to a file someone else changed since the session read it: a file that
-does not exist yet is never refused, and under a folder the session
-observed only a change to that file itself counts — the session's own
-changes never do. In a folder removed from the desktop's project list the
+one to a file changed since the session read it. A folder observation
+remembers children that were deleted; reread their absence before writing
+one back. A target that was and remains absent, or whose content is unchanged
+despite sibling edits, stays fresh while the directory baseline is retained.
+An own edit clears only when its current identity matches recorded evidence.
+Unknown or expired evidence requires a reread; a watcher flush alone cannot
+prove that all operating-system events arrived. In a folder removed from the desktop's project list the
 hooks do nothing at all until it is added back. `PreToolUse` takes a lease on the
 file about to be edited and `Stop` gives those edit leases back when the
 turn ends; a lease the session claimed itself — a worktree, a branch, the

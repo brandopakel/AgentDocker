@@ -100,6 +100,17 @@ unchanged.
 
 ## Provider reliability and parity
 
+The read guard now retains bounded per-entry content evidence so an observed
+folder remembers removed children and an older own/sibling ledger entry cannot
+clear a newer unexplained change. Unchanged targets and proven own edits remain
+usable. Deterministic regressions cover delayed events, changes during a flush,
+directory removal/recreation, submillisecond ledger timestamps and loss of
+cached proof. All 17 targeted tests and strict targeted Clippy pass. Two new
+regressions fail with the original guard implementation and pass after exact
+restoration of the correction. Final CI and review remain pending. Watcher acknowledgement is not
+proof of complete OS delivery; attribution remains best effort. Real-provider
+and cross-platform acceptance remain separate.
+
 | Requirement | Current evidence | Remaining work |
 | --- | --- | --- |
 | Idle delivery and existing sessions | Managed Claude/Codex and physical Windows Claude 2.1.280 have source-specific idle/busy/draft/restart evidence. Reconnect preserves supported launch restrictions/profile selection and refuses ambiguous options. Claude channel consent can recur; plain hooks/MCP cannot wake an idle model. | Current hosted-package acceptance, broader runtime/version coverage, restart/reopen and supported adapter parity. [Claude](CLAUDE-CHANNEL-INPUT.md), [Codex](CODEX-INPUT.md). |

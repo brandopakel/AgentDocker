@@ -56,6 +56,7 @@ mod panes;
 mod pause;
 pub mod policies;
 mod provider;
+mod read_content;
 mod recovery;
 mod relay;
 pub mod reload;
@@ -361,12 +362,11 @@ struct State {
     discovered: Discovered,
     store: Store,
     storage_error: Option<String>,
-    /// Since when the change ledger has missed nothing in each checkout,
-    /// by its project directory: from when the watcher began watching
-    /// it, moved forward by every event the watcher lost, and gone while
-    /// nothing watches it. Only a read taken since then in that checkout
-    /// can be explained by the ledger.
+    /// Watcher attachment/gap boundary for each checkout. An attachment and
+    /// a flush acknowledgement do not prove OS event completeness; clearing a
+    /// changed read additionally requires matching current content evidence.
     ledger_since: HashMap<PathBuf, DateTime<Utc>>,
+    content_proofs: read_content::Proofs,
     /// Whether this process may write the database. Serving is the
     /// ordinary case. Offering a transfer stops every writer here,
     /// request or tick, until the successor accepts (this process exits
@@ -1637,6 +1637,7 @@ impl Daemon {
                 store,
                 storage_error: None,
                 ledger_since: HashMap::new(),
+                content_proofs: read_content::Proofs::default(),
                 coordination: match pending_transfer {
                     Some(transfer) => Coordination::Quiescing {
                         transfer: transfer.id,
@@ -4154,6 +4155,44 @@ impl Daemon {
         })
         .await
         .unwrap_or_default();
+        let observed: Vec<_> = {
+            let state = lock(&self.state);
+            observed
+                .into_iter()
+                .map(|(entry, physical)| {
+                    let expected = physical
+                        .as_deref()
+                        .map_or(Attribution::External, |path| state.attribute(path));
+                    let capture = expected.agent().is_some_and(|agent| {
+                        state
+                            .content_proofs
+                            .interested(agent, &entry.checkout.dir.join(&entry.path))
+                    });
+                    (entry, physical, expected, capture)
+                })
+                .collect()
+        };
+        let observed = tokio::task::spawn_blocking(move || {
+            // Supplementary guard proofs have a batch I/O budget too.
+            let mut proof_budget = 8 * 1024 * 1024;
+            observed
+                .into_iter()
+                .map(|(entry, physical, expected, capture)| {
+                    let version = if capture {
+                        agentdocker_host::content::entry_fingerprint(
+                            &entry.checkout.dir.join(&entry.path),
+                            &mut proof_budget,
+                        )
+                        .ok()
+                    } else {
+                        None
+                    };
+                    (entry, physical, expected, version)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
         let now = Utc::now();
         {
             // One hold of the lock and one durable transaction for the
@@ -4163,6 +4202,7 @@ impl Daemon {
             let mut state = lock(&self.state);
             let mut changes = Vec::with_capacity(observed.len());
             let mut physicals = Vec::with_capacity(observed.len());
+            let mut proofs = Vec::with_capacity(observed.len());
             for (
                 Observed {
                     checkout,
@@ -4170,11 +4210,17 @@ impl Daemon {
                     kind,
                 },
                 physical,
+                expected,
+                version,
             ) in observed
             {
                 let by = physical
                     .as_deref()
                     .map_or(Attribution::External, |path| state.attribute(path));
+                proofs.push((
+                    checkout.dir.join(&path),
+                    if by == expected { version } else { None },
+                ));
                 changes.push(Change {
                     seq: 0,
                     project: checkout.project.clone(),
@@ -4194,8 +4240,11 @@ impl Daemon {
                 state.store_op("change", |store| store.append_changes(&changes))
             };
             if let Some(seqs) = seqs {
-                for ((mut change, physical), seq) in changes.into_iter().zip(physicals).zip(seqs) {
+                for (((mut change, physical), seq), (path, version)) in
+                    changes.into_iter().zip(physicals).zip(seqs).zip(proofs)
+                {
                     change.seq = seq;
+                    state.content_proofs.record(path, &change.by, version, now);
                     // The strongest "working" signal there is: a file changed
                     // under a lease this agent holds. Recording it keeps derived
                     // activity honest for a runtime with no hooks at all.
@@ -19758,6 +19807,15 @@ deny = ["send:all"]
         std::fs::create_dir(root.join("repro/sub")).unwrap();
         assert!(stale("repro/sub/new.txt").await.is_empty());
         // A change nothing recorded stays stale.
+        assert!(matches!(
+            claim(
+                &daemon,
+                "me",
+                &format!("path:{}", root.join("repro/a.txt").display())
+            )
+            .await,
+            Response::Lease { .. }
+        ));
         std::fs::write(root.join("repro/a.txt"), "a2").unwrap();
         assert_eq!(stale("repro/a.txt").await.len(), 1);
         // The ledger says who: the agent's own change to a.txt, someone
@@ -19774,24 +19832,24 @@ deny = ["send:all"]
             head: None,
         };
         std::fs::write(root.join("repro/b.txt"), "b2").unwrap();
-        {
-            let state = lock(&daemon.state);
-            state
-                .store
-                .append_change(&change(
-                    "repro/a.txt",
-                    Attribution::Agent {
-                        agent: me.id.clone(),
-                        lease: agentdocker_core::LeaseId::generate(),
-                        note: None,
+        daemon
+            .record_fs_changes(
+                vec![Observed {
+                    checkout: Checkout {
+                        dir: root.clone(),
+                        project: project.id(),
+                        worktree: None,
                     },
-                ))
-                .unwrap();
-            state
-                .store
-                .append_change(&change("repro/b.txt", Attribution::External))
-                .unwrap();
-        }
+                    path: "repro/a.txt".into(),
+                    kind: ChangeKind::Modified,
+                }],
+                vec![],
+            )
+            .await;
+        lock(&daemon.state)
+            .store
+            .append_change(&change("repro/b.txt", Attribution::External))
+            .unwrap();
         assert!(stale("repro/a.txt").await.is_empty(), "my own edit");
         let theirs = stale("repro/b.txt").await;
         assert_eq!(theirs.len(), 1);
@@ -19801,6 +19859,336 @@ deny = ["send:all"]
             "names the file to reread"
         );
         assert!(stale("repro/sub/new.txt").await.is_empty());
+    }
+
+    async fn content_stale(daemon: &Daemon, path: &str) -> Vec<agentdocker_core::StalePath> {
+        match daemon.stale("me", vec![path.into()]).await {
+            Response::Stale { stale } => stale,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_content_proofs_distinguish_deleted_unseen_and_unchanged_children() {
+        let home = TempDir::new().unwrap();
+        let work = TempDir::new().unwrap();
+        let daemon = open(&home);
+        let me = register_in(&daemon, "me", work.path()).await;
+        let root = me.project.unwrap().dir().to_path_buf();
+        watch_ledger(&daemon, &root);
+        std::fs::create_dir(root.join("repro")).unwrap();
+        std::fs::write(root.join("repro/deleted"), "seen").unwrap();
+        std::fs::write(root.join("repro/untouched"), "keep").unwrap();
+        assert!(matches!(
+            daemon.observe("me", vec!["repro".into()]).await,
+            Response::Reads { .. }
+        ));
+        std::fs::remove_file(root.join("repro/deleted")).unwrap();
+        // No notification has arrived. Reading the parent still observed its child.
+        let removed = content_stale(&daemon, "repro/deleted").await;
+        assert_eq!(
+            removed.len(),
+            1,
+            "a directory observation must remember a deleted child"
+        );
+        assert_eq!(removed[0].path, root.join("repro/deleted"));
+        assert!(removed[0].reason.contains("removed"));
+        assert!(
+            content_stale(&daemon, "repro/never-existed")
+                .await
+                .is_empty()
+        );
+        assert!(content_stale(&daemon, "repro/untouched").await.is_empty());
+        daemon.observe("me", vec!["repro/deleted".into()]).await;
+        assert!(
+            content_stale(&daemon, "repro/deleted").await.is_empty(),
+            "explicitly observed absence"
+        );
+        std::fs::write(root.join("repro/untouched"), "external").unwrap();
+        assert_eq!(content_stale(&daemon, "repro/untouched").await.len(), 1);
+        // Cache eviction does not erase the persistent read mark or manufacture freshness.
+        lock(&daemon.state).content_proofs = read_content::Proofs::default();
+        assert_eq!(content_stale(&daemon, "repro/untouched").await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_content_proofs_refuse_late_external_edits_after_own_and_sibling_rows() {
+        let home = TempDir::new().unwrap();
+        let work = TempDir::new().unwrap();
+        let daemon = open(&home);
+        let me = register_in(&daemon, "me", work.path()).await;
+        let project = me.project.unwrap();
+        let root = project.dir().to_path_buf();
+        watch_ledger(&daemon, &root);
+        std::fs::create_dir(root.join("repro")).unwrap();
+        std::fs::write(root.join("repro/a"), "a1").unwrap();
+        std::fs::write(root.join("repro/b"), "b1").unwrap();
+        let checkout = Checkout {
+            dir: root.clone(),
+            project: project.id(),
+            worktree: None,
+        };
+        let observed = |path: &str| Observed {
+            checkout: checkout.clone(),
+            path: path.into(),
+            kind: ChangeKind::Modified,
+        };
+        daemon.observe("me", vec!["repro".into()]).await;
+        assert!(matches!(
+            claim(
+                &daemon,
+                "me",
+                &format!("path:{}", root.join("repro/a").display())
+            )
+            .await,
+            Response::Lease { .. }
+        ));
+        std::fs::write(root.join("repro/a"), "my edit").unwrap();
+        daemon
+            .record_fs_changes(vec![observed("repro/a")], vec![])
+            .await;
+        assert!(
+            content_stale(&daemon, "repro/a").await.is_empty(),
+            "content-bound own edit still works"
+        );
+        std::fs::write(root.join("repro/a"), "external, event delayed").unwrap();
+        // The mock watcher acknowledges the flush without delivering this event.
+        assert_eq!(
+            content_stale(&daemon, "repro/a").await.len(),
+            1,
+            "an older own entry cannot clear newer bytes"
+        );
+        daemon.observe("me", vec!["repro".into()]).await;
+        assert!(matches!(
+            claim(
+                &daemon,
+                "me",
+                &format!("path:{}", root.join("repro/b").display())
+            )
+            .await,
+            Response::Lease { .. }
+        ));
+        std::fs::write(root.join("repro/b"), "own sibling").unwrap();
+        daemon
+            .record_fs_changes(vec![observed("repro/b")], vec![])
+            .await;
+        assert!(
+            content_stale(&daemon, "repro/a").await.is_empty(),
+            "unchanged target under edited parent"
+        );
+        std::fs::write(root.join("repro/a"), "external after sibling").unwrap();
+        assert_eq!(
+            content_stale(&daemon, "repro/a").await.len(),
+            1,
+            "sibling entries cannot explain a changed target"
+        );
+        daemon.observe("me", vec!["repro".into()]).await;
+        std::fs::write(root.join("repro/a"), "own after reread").unwrap();
+        daemon
+            .record_fs_changes(vec![observed("repro/a")], vec![])
+            .await;
+        assert!(content_stale(&daemon, "repro/a").await.is_empty());
+        lock(&daemon.state)
+            .content_proofs
+            .forget_read(&me.id, &root.join("repro"));
+        assert_eq!(
+            content_stale(&daemon, "repro/a").await.len(),
+            1,
+            "evicted baseline cannot borrow the retained own-change proof"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_content_proofs_recheck_content_after_the_flush_wait() {
+        let home = TempDir::new().unwrap();
+        let work = TempDir::new().unwrap();
+        let daemon = open(&home);
+        let me = register_in(&daemon, "me", work.path()).await;
+        let project = me.project.unwrap();
+        let root = project.dir().to_path_buf();
+        let (sender, mut flushes) = mpsc::channel::<oneshot::Sender<()>>(8);
+        daemon.set_watcher_flush(sender);
+        daemon.ledger_covers(&root, true);
+        std::fs::write(root.join("file"), "read").unwrap();
+        daemon.observe("me", vec!["file".into()]).await;
+        assert!(matches!(
+            claim(
+                &daemon,
+                "me",
+                &format!("path:{}", root.join("file").display())
+            )
+            .await,
+            Response::Lease { .. }
+        ));
+        std::fs::write(root.join("file"), "own edit").unwrap();
+        daemon
+            .record_fs_changes(
+                vec![Observed {
+                    checkout: Checkout {
+                        dir: root.clone(),
+                        project: project.id(),
+                        worktree: None,
+                    },
+                    path: "file".into(),
+                    kind: ChangeKind::Modified,
+                }],
+                vec![],
+            )
+            .await;
+        let check = tokio::spawn({
+            let daemon = daemon.clone();
+            async move { content_stale(&daemon, "file").await }
+        });
+        let ack = flushes.recv().await.unwrap();
+        std::fs::write(root.join("file"), "external during flush wait").unwrap();
+        ack.send(()).unwrap();
+        assert_eq!(
+            check.await.unwrap().len(),
+            1,
+            "pre-flush content cannot authorize post-flush bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_content_proofs_allow_own_removal_but_not_a_recreated_directory() {
+        let home = TempDir::new().unwrap();
+        let work = TempDir::new().unwrap();
+        let daemon = open(&home);
+        let me = register_in(&daemon, "me", work.path()).await;
+        let project = me.project.unwrap();
+        let root = project.dir().to_path_buf();
+        watch_ledger(&daemon, &root);
+        std::fs::create_dir_all(root.join("folder/sub")).unwrap();
+        std::fs::write(root.join("folder/sub/file"), "read").unwrap();
+        daemon.observe("me", vec!["folder".into()]).await;
+        assert!(matches!(
+            claim(
+                &daemon,
+                "me",
+                &format!("path:{}", root.join("folder").display())
+            )
+            .await,
+            Response::Lease { .. }
+        ));
+        std::fs::remove_dir_all(root.join("folder/sub")).unwrap();
+        daemon
+            .record_fs_changes(
+                vec![Observed {
+                    checkout: Checkout {
+                        dir: root.clone(),
+                        project: project.id(),
+                        worktree: None,
+                    },
+                    path: "folder/sub".into(),
+                    kind: ChangeKind::Removed,
+                }],
+                vec![],
+            )
+            .await;
+        assert!(
+            content_stale(&daemon, "folder/sub").await.is_empty(),
+            "a recorded own removal explains its descendants"
+        );
+        std::fs::create_dir(root.join("folder/sub")).unwrap();
+        assert_eq!(
+            content_stale(&daemon, "folder/sub").await.len(),
+            1,
+            "recreated parent cannot reuse the previous removal proof"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_content_proofs_ignore_older_rows_within_the_same_sql_time_bucket() {
+        use chrono::Timelike;
+        let home = TempDir::new().unwrap();
+        let work = TempDir::new().unwrap();
+        let daemon = open(&home);
+        let me = register_in(&daemon, "me", work.path()).await;
+        let project = me.project.unwrap();
+        let root = project.dir().to_path_buf();
+        watch_ledger(&daemon, &root);
+        std::fs::write(root.join("file"), "read").unwrap();
+        let Response::Reads { mut reads } = daemon.observe("me", vec!["file".into()]).await else {
+            panic!("observation failed")
+        };
+        // Pin the read inside a SQL millisecond bucket and safely in the past;
+        // the older external row must be selected by SQL but excluded exactly.
+        let captured_mark = reads[0].clone();
+        reads[0].at = (Utc::now() - chrono::Duration::seconds(1))
+            .with_nanosecond(100_000)
+            .unwrap();
+        {
+            let mut state = lock(&daemon.state);
+            let mark = reads[0].clone();
+            let snapshot = state
+                .content_proofs
+                .baseline(&me.id, &captured_mark)
+                .unwrap();
+            state
+                .store
+                .put_document("reads", me.id.as_str(), &reads)
+                .unwrap();
+            state.content_proofs.observe(&me.id, mark.clone(), snapshot);
+            state
+                .ledger_since
+                .insert(root.clone(), mark.at - chrono::Duration::seconds(1));
+            state
+                .store
+                .append_change(&Change {
+                    seq: 0,
+                    project: project.id(),
+                    checkout: Some(root.clone()),
+                    worktree: None,
+                    path: "file".into(),
+                    kind: ChangeKind::Modified,
+                    at: mark.at - chrono::Duration::nanoseconds(1),
+                    by: Attribution::External,
+                    head: None,
+                })
+                .unwrap();
+            let page = state
+                .store
+                .changes(&ChangesQuery {
+                    project: project.id(),
+                    since_seq: None,
+                    path: Some("file".into()),
+                    agent: None,
+                    limit: 500,
+                    after: Some(mark.at),
+                    before_seq: None,
+                })
+                .unwrap();
+            assert_eq!(page.len(), 1, "fixture must expose the coarse SQL boundary");
+            assert!(page[0].at < mark.at);
+        }
+        assert!(matches!(
+            claim(
+                &daemon,
+                "me",
+                &format!("path:{}", root.join("file").display())
+            )
+            .await,
+            Response::Lease { .. }
+        ));
+        std::fs::write(root.join("file"), "own after read").unwrap();
+        daemon
+            .record_fs_changes(
+                vec![Observed {
+                    checkout: Checkout {
+                        dir: root.clone(),
+                        project: project.id(),
+                        worktree: None,
+                    },
+                    path: "file".into(),
+                    kind: ChangeKind::Modified,
+                }],
+                vec![],
+            )
+            .await;
+        assert!(
+            content_stale(&daemon, "file").await.is_empty(),
+            "an external row before the read cannot invalidate this proven own edit"
+        );
     }
 
     /// A watcher for `checkout` that records nothing on its own and
@@ -19881,6 +20269,15 @@ deny = ["send:all"]
             note: None,
         };
         observe("repro").await;
+        assert!(matches!(
+            claim(
+                &daemon,
+                "me",
+                &format!("path:{}", root.join("repro/a.txt").display())
+            )
+            .await,
+            Response::Lease { .. }
+        ));
         std::fs::write(root.join("repro/a.txt"), "a2").unwrap();
         lock(&daemon.state)
             .store
@@ -19899,10 +20296,20 @@ deny = ["send:all"]
         // Reread, then only my own edit since: clear, once confirmed.
         observe("repro").await;
         std::fs::write(root.join("repro/a.txt"), "a3").unwrap();
-        lock(&daemon.state)
-            .store
-            .append_change(&change(&root, "repro/a.txt", mine()))
-            .unwrap();
+        daemon
+            .record_fs_changes(
+                vec![Observed {
+                    checkout: Checkout {
+                        dir: root.clone(),
+                        project: project.id(),
+                        worktree: None,
+                    },
+                    path: "repro/a.txt".into(),
+                    kind: ChangeKind::Modified,
+                }],
+                vec![],
+            )
+            .await;
         let asked = stale("repro/a.txt");
         flushes.recv().await.unwrap().send(()).unwrap();
         assert!(asked.await.unwrap().is_empty(), "my own edit, confirmed");
@@ -19929,11 +20336,21 @@ deny = ["send:all"]
                     .append_change(&change(&elsewhere, "repro/a.txt", Attribution::External))
                     .unwrap();
             }
-            state
-                .store
-                .append_change(&change(&root, "repro/a.txt", mine()))
-                .unwrap();
         }
+        daemon
+            .record_fs_changes(
+                vec![Observed {
+                    checkout: Checkout {
+                        dir: root.clone(),
+                        project: project.id(),
+                        worktree: None,
+                    },
+                    path: "repro/a.txt".into(),
+                    kind: ChangeKind::Modified,
+                }],
+                vec![],
+            )
+            .await;
         let asked = stale("repro/a.txt");
         flushes.recv().await.unwrap().send(()).unwrap();
         assert_eq!(asked.await.unwrap().len(), 1, "partial page");
