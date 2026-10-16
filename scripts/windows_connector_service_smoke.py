@@ -21,6 +21,19 @@ import urllib.request
 import uuid
 
 
+def publish_fixture_json(path, value, protect):
+    """Publish a fixture record only after its owner and ACL are established."""
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.fixture-')
+    staged = Path(name)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump(value, stream)
+        protect(staged)
+        os.replace(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
 def read_snapshot(path):
     """Read fixture snapshots without blocking the product's atomic replacement."""
     import ctypes as c
@@ -239,10 +252,9 @@ def main():
                 time.sleep(0.1)
         raise TimeoutError(f'owned connector did not become ready: {last}')
 
-    def fixture_json(path, value):
+    def protect_fixture_json(path):
         # Preserve the product-created file's owner/ACL. New synthetic stop/grant
         # files copy the protected running record's ACL, including its owner SID.
-        path.write_text(json.dumps(value), encoding='utf-8')
         # Call the Windows PowerShell/.NET Framework API directly: inherited
         # PSModulePath can resolve Get-Acl to an incompatible PowerShell module.
         # A fresh descriptor marks the copied sections dirty before persistence.
@@ -255,6 +267,11 @@ def main():
             f"$actual=[IO.File]::GetAccessControl({quote(str(path))},$sections);"
             "if($source.GetSecurityDescriptorSddlForm($sections) -cne "
             "$actual.GetSecurityDescriptorSddlForm($sections)){throw 'fixture ACL copy differs'}")
+
+    def fixture_json(path, value):
+        # A valid stop record can be consumed immediately, removing the running
+        # record from which we copy permissions. Finish that copy before publish.
+        publish_fixture_json(path, value, protect_fixture_json)
 
     save()
     try:
