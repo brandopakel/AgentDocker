@@ -240,16 +240,26 @@ pub(super) async fn remove_finished(
     };
     match git(
         root,
-        vec!["branch".into(), "-d".into(), "--".into(), branch.clone()],
+        // Preserve Git's own deletion report and full object ID. A prior
+        // branch review can name a different branch/tip by the time this runs.
+        vec![
+            "-c".into(),
+            "core.abbrev=no".into(),
+            "branch".into(),
+            "-d".into(),
+            "--".into(),
+            branch.clone(),
+        ],
     )
     .await
     {
-        Ok(output) if output.success => Ok((true, None)),
-        Ok(_) => Ok((
+        Ok(output) if output.success => Ok((
+            true,
+            Some(output.stdout.trim().to_owned()).filter(|text| !text.is_empty()),
+        )),
+        Ok(output) => Ok((
             false,
-            Some(format!(
-                "branch {branch} is kept: git does not consider it merged"
-            )),
+            Some(format!("branch {branch} is kept: {}", output.text.trim())),
         )),
         Err(e) => Ok((false, Some(e.to_string()))),
     }
@@ -1222,6 +1232,85 @@ mod lifecycle_tests {
         .await
         .unwrap();
         assert!(output.success, "git {args:?}: {}", output.text);
+    }
+
+    #[tokio::test]
+    async fn removal_reports_current_branch_and_full_tip_when_upstream_allows_squash_deletion() {
+        async fn output(root: &Path, args: &[&str]) -> String {
+            let result = git(root.to_owned(), args.iter().map(|a| (*a).into()).collect())
+                .await
+                .unwrap();
+            assert!(result.success, "git {args:?}: {}", result.text);
+            result.stdout.trim().to_owned()
+        }
+        for tracked in [false, true] {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().join("repo");
+            let worktree = temporary.path().join("worktree");
+            let remote = temporary.path().join("remote.git");
+            std::fs::create_dir(&root).unwrap();
+            run(&root, &["init", "-q", "-b", "main"]).await;
+            run(&root, &["config", "user.email", "fixture@example.invalid"]).await;
+            run(&root, &["config", "user.name", "Fixture"]).await;
+            run(&root, &["commit", "--allow-empty", "-qm", "initial"]).await;
+            add_worktree(root.clone(), &worktree, "old-reviewed-branch", None)
+                .await
+                .unwrap();
+            let reviewed_head = output(&worktree, &["rev-parse", "HEAD"]).await;
+            // Both the branch and its tip change after an earlier UI review.
+            run(&worktree, &["branch", "-m", "current-branch"]).await;
+            std::fs::write(worktree.join("file"), "new work").unwrap();
+            run(&worktree, &["add", "file"]).await;
+            run(&worktree, &["commit", "-qm", "new tip"]).await;
+            let current_head = output(&worktree, &["rev-parse", "HEAD"]).await;
+            assert_ne!(reviewed_head, current_head);
+            if tracked {
+                run(&root, &["init", "--bare", "-q", remote.to_str().unwrap()]).await;
+                run(
+                    &root,
+                    &["remote", "add", "origin", remote.to_str().unwrap()],
+                )
+                .await;
+                run(&worktree, &["push", "-q", "-u", "origin", "current-branch"]).await;
+            }
+            run(&root, &["merge", "--squash", "current-branch"]).await;
+            run(&root, &["commit", "-qm", "squashed work"]).await;
+            assert_eq!(
+                output(&root, &["rev-list", "--count", "main..current-branch"]).await,
+                "1"
+            );
+            let (deleted, note) = remove_finished(root.clone(), worktree.clone())
+                .await
+                .unwrap();
+            assert!(!worktree.exists());
+            assert_eq!(
+                deleted, tracked,
+                "the same squash has different upstream outcomes"
+            );
+            let note = note.expect("Git outcome retained");
+            assert!(note.contains("current-branch"), "{note}");
+            assert!(!note.contains("old-reviewed-branch"));
+            if deleted {
+                assert!(
+                    note.contains(&current_head),
+                    "full deleted tip missing: {note}"
+                );
+                assert!(!note.contains(&reviewed_head));
+                assert!(
+                    output(&root, &["branch", "--list", "current-branch"])
+                        .await
+                        .is_empty()
+                );
+                // The reported full tip really reconstructs the removed branch.
+                run(&root, &["branch", "--", "current-branch", &current_head]).await;
+            } else {
+                assert!(note.contains("kept"), "{note}");
+            }
+            assert_eq!(
+                output(&root, &["rev-parse", "current-branch"]).await,
+                current_head
+            );
+        }
     }
 
     /// A new worktree gets the ignored files `.worktreeinclude` names and
