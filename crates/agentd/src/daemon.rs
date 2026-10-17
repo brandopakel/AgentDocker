@@ -4990,6 +4990,17 @@ impl Daemon {
             if !ruling.is_allowed() {
                 return state.refuse(&sender, &action, ruling);
             }
+            // A role's room by its channel id is that role: a rule on
+            // `send:role:<role>` governs both spellings.
+            if let Destination::Channel(channel) = &to
+                && let Some(role) = state.room_role(channel)
+            {
+                let action = format!("send:role:{role}");
+                let ruling = state.permits(&sender, &action);
+                if !ruling.is_allowed() {
+                    return state.refuse(&sender, &action, ruling);
+                }
+            }
         }
         let mut envelope = Envelope::new(from, to, kind, payload, reply_to, Utc::now());
         envelope.links = links;

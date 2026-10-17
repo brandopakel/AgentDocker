@@ -708,6 +708,14 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+        // Its room opens with it, in the same commit.
+        assert!(matches!(
+            events.recv().await,
+            Ok(Event {
+                kind: EventKind::ChannelOpened { .. },
+                ..
+            })
+        ));
         assert!(matches!(
             role(&daemon, "recipient", Some("reviewer")).await,
             Response::Agent { .. }
@@ -982,6 +990,76 @@ mod tests {
         let state = lock(&daemon.state);
         assert!(state.registry.holders("reviewer", None).is_empty());
         assert!(!state.channels.get(&room).unwrap().is_open());
+    }
+
+    /// A role's room by its channel id is that role, for policy as for
+    /// routing; a holder that puts the role down leaves the room, saved even
+    /// with nobody left to tell, and is no guest when another takes it up.
+    #[tokio::test]
+    async fn a_rooms_role_governs_its_channel_id_and_former_holders_leave_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _root) = fixture(&tmp).await;
+        let give = |agent: &str, add: &[&str], remove: &[&str]| Request::RoleAssign {
+            from: HUMAN.into(),
+            agent: agent.into(),
+            add: add.iter().map(|r| (*r).to_owned()).collect(),
+            remove: remove.iter().map(|r| (*r).to_owned()).collect(),
+        };
+        assert!(matches!(
+            daemon.handle(give("recipient", &["reviewer"], &[])).await,
+            Response::Agent { .. }
+        ));
+        assert!(matches!(
+            send_to(&daemon, "sender", "role:reviewer").await,
+            Response::Sent { .. }
+        ));
+        let Destination::Channel(room) = inbox(&daemon, "recipient").await[0].to.clone() else {
+            panic!("the notice is said in the room");
+        };
+        let (recipient, other, sender) = {
+            let state = lock(&daemon.state);
+            let id_of = |name: &str| state.registry.resolve(name).unwrap();
+            (id_of("recipient"), id_of("other"), id_of("sender"))
+        };
+        // Put down by its only holder: out of the room, though nobody is
+        // left in it to tell.
+        assert!(matches!(
+            daemon.handle(give("recipient", &[], &["reviewer"])).await,
+            Response::Agent { .. }
+        ));
+        {
+            let state = lock(&daemon.state);
+            assert!(!state.channels[&room].members.contains(&recipient));
+        }
+        // Taken up by another: the sender stays a guest, the former holder
+        // is none.
+        assert!(matches!(
+            daemon.handle(give("other", &["reviewer"], &[])).await,
+            Response::Agent { .. }
+        ));
+        {
+            let state = lock(&daemon.state);
+            let members = state.room_members(&state.channels[&room]);
+            assert!(members.contains(&other));
+            assert!(members.contains(&sender));
+            assert!(!members.contains(&recipient), "{members:?}");
+        }
+        // A rule against the role holds for the room's channel id too.
+        std::fs::write(
+            daemon.home.join("policy.toml"),
+            "[[rule]]\nname = \"no reviewers\"\ndeny = [\"send:role:reviewer\"]\n",
+        )
+        .unwrap();
+        daemon.reload_policies();
+        for to in ["role:reviewer".to_owned(), format!("channel:{room}")] {
+            assert!(
+                matches!(
+                    send_to(&daemon, "sender", &to).await,
+                    Response::Error { .. }
+                ),
+                "{to} is refused"
+            );
+        }
     }
 
     #[tokio::test]

@@ -358,6 +358,28 @@ impl Store {
         Ok(())
     }
 
+    /// An agent's roles, the rooms that follow them and their events, as one
+    /// commit: a role and its room's members are never out of step.
+    pub fn roles_change(
+        &self,
+        record: Option<&AgentRecord>,
+        rooms: &[agentdocker_core::channel::Channel],
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = write_transaction(&self.conn)?;
+        if let Some(record) = record {
+            self.upsert_agent(record)?;
+        }
+        for room in rooms {
+            self.put_document("channel", room.id.as_str(), room)?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Native exit, released protection, closed channels and replay are one commit.
     pub fn agent_exit(
         &self,

@@ -20,8 +20,10 @@ fn built_in() -> DateTime<Utc> {
 
 impl State {
     /// What the store holds for a project's roles: the person's changes to
-    /// the built-in ones, removals included, and their own.
-    fn stored_roles(&mut self, project: &ProjectId) -> Vec<RoleDef> {
+    /// the built-in ones, removals included, and their own. A store that
+    /// cannot say is a failure, never an empty palette: that would hide the
+    /// person's roles and bring back the ones they took out.
+    fn stored_roles(&mut self, project: &ProjectId) -> Result<Vec<RoleDef>, Box<Response>> {
         self.store_read("roles", |store| {
             store.documents_where::<RoleDef>(
                 ROLE,
@@ -30,11 +32,22 @@ impl State {
                 role::ROLES_PER_PROJECT,
             )
         })
-        .unwrap_or_default()
+        .ok_or_else(|| {
+            Box::new(self.storage_failure().unwrap_or_else(|| {
+                Response::error(ErrorCode::StorageUnavailable, "the roles could not be read")
+            }))
+        })
     }
 
-    pub(in crate::daemon) fn project_roles(&mut self, project: &ProjectId) -> Vec<RoleDef> {
-        role::catalog(project, self.stored_roles(project), built_in())
+    pub(in crate::daemon) fn project_roles(
+        &mut self,
+        project: &ProjectId,
+    ) -> Result<Vec<RoleDef>, Box<Response>> {
+        Ok(role::catalog(
+            project,
+            self.stored_roles(project)?,
+            built_in(),
+        ))
     }
 }
 
@@ -47,8 +60,9 @@ impl Daemon {
             Ok(project) => project,
             Err(response) => return *response,
         };
-        Response::RoleCatalog {
-            roles: lock(&self.state).project_roles(&project),
+        match lock(&self.state).project_roles(&project) {
+            Ok(roles) => Response::RoleCatalog { roles },
+            Err(response) => *response,
         }
     }
 
@@ -83,7 +97,10 @@ impl Daemon {
             return error;
         }
         let name = name.trim().to_owned();
-        let stored = state.stored_roles(&project);
+        let stored = match state.stored_roles(&project) {
+            Ok(stored) => stored,
+            Err(response) => return *response,
+        };
         let catalog = role::catalog(&project, stored.clone(), built_in());
         let now = Utc::now();
         let mut def = match &existing {
@@ -116,7 +133,10 @@ impl Daemon {
                         ..removed.clone()
                     },
                     None => {
-                        if stored.len() >= role::ROLES_PER_PROJECT {
+                        // Every address the project has, built-in, taken out
+                        // or the person's, against the same bound the palette
+                        // is read with.
+                        if role::addresses(&project, &stored) >= role::ROLES_PER_PROJECT {
                             return Response::error(
                                 ErrorCode::Invalid,
                                 "a project has at most 24 roles",
@@ -188,13 +208,18 @@ impl Daemon {
         if let Some(error) = state.write_failure() {
             return error;
         }
-        let Some(def) = state
-            .project_roles(&project)
-            .into_iter()
-            .find(|r| r.role == address)
-        else {
+        let roles = match state.project_roles(&project) {
+            Ok(roles) => roles,
+            Err(response) => return *response,
+        };
+        let Some(def) = roles.into_iter().find(|r| r.role == address) else {
             return Response::error(ErrorCode::NotFound, format!("no role is called {address}"));
         };
+        // Its holders put it down and its room closes first, so a retry after
+        // a failure still finds the role to take out.
+        if let Err(response) = state.retire_role(&project, &def.role) {
+            return *response;
+        }
         let built_in_role = role::defaults(&project, built_in())
             .iter()
             .any(|r| r.role == def.role);
@@ -216,10 +241,6 @@ impl Daemon {
             deleted: true,
         }];
         if let Some(error) = state.commit_change("role", put, delete, kinds) {
-            return error;
-        }
-        // Nobody holds a role the project no longer has, and its room closes.
-        if let Some(error) = state.retire_role(&project, &def.role) {
             return error;
         }
         Response::Ok

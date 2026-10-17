@@ -5,6 +5,12 @@
 //! live holder hears, with whoever wrote to it, so one thread carries the
 //! role's conversation for its whole life. A room follows who holds the role
 //! rather than invitations, and is never closed because its holders left.
+//!
+//! A role and its room change together: an agent's roles and the members of
+//! the rooms they touch are one commit, so a holder that puts a role down is
+//! out of its room even when nobody is left to tell. What `agentd` says in a
+//! room about it comes after, and a word that cannot be delivered (a full
+//! inbox) changes nothing that was decided.
 use super::*;
 use agentdocker_core::agent::{ROLE_LABEL, check_role, join_roles};
 use agentdocker_core::channel::ChannelSubject;
@@ -42,26 +48,26 @@ impl State {
     }
 
     /// The room of `role` in `project`, made or opened again, its members
-    /// brought up to who holds the role now, with `guest` among them: the
-    /// channel to publish with, and its events. With `holders_needed`, a role
-    /// nobody holds is `not_found`; without, the room is staged for a notice
-    /// even so. `leaving` is taken out of its members.
+    /// brought up to who holds the role now — `joining` among them, before
+    /// its record says so — with `guest` (a sender, to hear the answers): the
+    /// channel to commit, and its events. With `holders_needed`, a role nobody
+    /// holds is `not_found`.
     pub(super) fn stage_role_room(
         &mut self,
         project: &ProjectId,
         role: &str,
         guest: Option<&AgentId>,
-        leaving: Option<&AgentId>,
+        joining: Option<&AgentId>,
         holders_needed: bool,
         now: DateTime<Utc>,
     ) -> Result<(Channel, Vec<EventKind>), Box<Response>> {
-        let holders: Vec<AgentId> = self
+        let mut holders: Vec<AgentId> = self
             .registry
             .holders(role, Some(project))
             .into_iter()
             .map(|a| a.id.clone())
-            .filter(|id| Some(id) != leaving)
             .collect();
+        holders.extend(joining.cloned());
         if holders_needed && holders.is_empty() {
             return Err(Box::new(Response::error(
                 ErrorCode::NotFound,
@@ -70,8 +76,8 @@ impl State {
         }
         let title = self
             .project_roles(project)
-            .into_iter()
-            .find(|r| r.role == role)
+            .ok()
+            .and_then(|roles| roles.into_iter().find(|r| r.role == role))
             .map_or_else(|| role.to_owned(), |r| r.name);
         let mut events = Vec::new();
         let (mut room, made) = match self.role_room(project, role).cloned() {
@@ -107,10 +113,10 @@ impl State {
         {
             room.name = Some(role.to_owned());
         }
+        // Who wrote to it and still runs. A holder that put the role down was
+        // taken out of the members when it did, so it is never one of these.
         let guests = room.members.iter().filter(|m| {
-            !holders.contains(m)
-                && Some(*m) != leaving
-                && self.registry.get(m).is_some_and(|a| a.status.is_live())
+            !holders.contains(m) && self.registry.get(m).is_some_and(|a| a.status.is_live())
         });
         let mut members: Vec<AgentId> = holders.iter().chain(guests).cloned().collect();
         if let Some(guest) = guest
@@ -142,21 +148,50 @@ impl State {
         Ok((room, events))
     }
 
-    /// Say something in a role's room as the daemon: who took the role up or
-    /// put it down. The room is made if this is the first word in it.
-    fn role_notice(
+    /// Commit an agent's record (when it changed), the rooms that follow it
+    /// and their events, as one.
+    fn commit_roles(
         &mut self,
-        project: &ProjectId,
-        role: &str,
-        leaving: Option<&AgentId>,
-        text: String,
-    ) -> Option<Response> {
+        record: Option<AgentRecord>,
+        rooms: Vec<Channel>,
+        kinds: Vec<EventKind>,
+        now: DateTime<Utc>,
+    ) -> Result<(), Box<Response>> {
+        let events: Vec<Event> = kinds
+            .into_iter()
+            .map(|kind| Event::new(kind, now))
+            .collect();
+        let committed = self.commit(
+            "role",
+            events,
+            |store, events| store.roles_change(record.as_ref(), &rooms, events),
+            |state, _, ()| {
+                if let Some(record) = &record {
+                    *state.registry.get_mut(&record.id).expect("resolved agent") = record.clone();
+                }
+                for room in &rooms {
+                    state.channels.insert(room.id.clone(), room.clone());
+                }
+            },
+        );
+        if committed == Persisted::Committed {
+            return Ok(());
+        }
+        Err(Box::new(self.write_failure().unwrap_or_else(|| {
+            Response::error(ErrorCode::Internal, "the roles were not recorded")
+        })))
+    }
+
+    /// Say something in a role's room as the daemon: who took the role up or
+    /// put it down. A word to a room with nobody in it, or one a full inbox
+    /// refuses, is left unsaid: the role and its room are already right.
+    fn role_notice(&mut self, project: &ProjectId, role: &str, text: String) {
         let now = Utc::now();
-        let (room, events) = self
-            .stage_role_room(project, role, None, leaving, false, now)
-            .ok()?;
+        let Ok((room, events)) = self.stage_role_room(project, role, None, None, false, now) else {
+            return;
+        };
         if room.members.is_empty() {
-            return None;
+            return;
         }
         let envelope = Envelope::new(
             "agentd",
@@ -167,11 +202,15 @@ impl State {
             now,
         );
         let response = self.publish_with_channel(envelope, None, Some((room, events, None)), None);
-        (!matches!(response, Response::Sent { .. })).then_some(response)
+        if !matches!(response, Response::Sent { .. }) {
+            info!(%role, ?response, "a role's notice was not said");
+        }
     }
 
-    /// Write `roles` as an agent's set, with `role_set`, the same way for the
-    /// one-role `role` request and for `role_assign`.
+    /// Write `roles` as an agent's set, with `role_set`, and bring the rooms
+    /// of the roles it took up or put down along in the same commit: the
+    /// same way for the one-role `role` request, `role_assign`, and a role
+    /// taken out of the palette.
     pub(super) fn write_roles(
         &mut self,
         id: &AgentId,
@@ -182,6 +221,7 @@ impl State {
         if record.spec.labels.get(ROLE_LABEL) == roles.as_ref() {
             return Ok(record);
         }
+        let before: Vec<String> = record.roles().into_iter().map(str::to_owned).collect();
         match &roles {
             Some(roles) => {
                 record
@@ -193,26 +233,32 @@ impl State {
                 record.spec.labels.remove(ROLE_LABEL);
             }
         }
-        let event = agentdocker_core::Event::new(
-            EventKind::RoleSet {
-                agent: id.clone(),
-                project: record.project.as_ref().map(ProjectRef::id),
-                role: roles,
-            },
-            now,
-        );
-        let _ = self.transition(
-            "role",
-            event,
-            |store, event| store.agent_transition(&record, event),
-            |state| {
-                *state.registry.get_mut(id).expect("resolved agent") = record.clone();
-            },
-        );
-        match self.write_failure() {
-            Some(error) => Err(Box::new(error)),
-            None => Ok(record),
+        let after: Vec<String> = record.roles().into_iter().map(str::to_owned).collect();
+        let project = record.project.as_ref().map(ProjectRef::id);
+        let mut rooms = Vec::new();
+        let mut kinds = vec![EventKind::RoleSet {
+            agent: id.clone(),
+            project: project.clone(),
+            role: roles,
+        }];
+        if let Some(project) = &project {
+            for gained in after.iter().filter(|r| !before.contains(r)) {
+                let (room, events) =
+                    self.stage_role_room(project, gained, None, Some(id), false, now)?;
+                rooms.push(room);
+                kinds.extend(events);
+            }
+            for lost in before.iter().filter(|r| !after.contains(r)) {
+                if let Some(mut room) = self.role_room(project, lost).cloned()
+                    && room.members.contains(id)
+                {
+                    room.members.retain(|m| m != id);
+                    rooms.push(room);
+                }
+            }
         }
+        self.commit_roles(Some(record.clone()), rooms, kinds, now)?;
+        Ok(record)
     }
 
     /// Give an agent roles from its project's palette, or take some away:
@@ -251,7 +297,10 @@ impl State {
                 "an agent outside any project has no roles",
             );
         };
-        let catalog = self.project_roles(&project);
+        let catalog = match self.project_roles(&project) {
+            Ok(catalog) => catalog,
+            Err(response) => return *response,
+        };
         let unknown: Vec<&str> = add
             .iter()
             .filter(|r| !catalog.iter().any(|c| &c.role == *r))
@@ -302,28 +351,28 @@ impl State {
                     }
                 })
                 .unwrap_or_else(|| role.clone());
-            if let Some(error) = self.role_notice(
+            self.role_notice(
                 &project,
                 role,
-                None,
                 format!("{} now holds {words}", record.spec.name),
-            ) {
-                return error;
-            }
+            );
         }
         for role in &lost {
-            if let Some(error) = self.role_notice(
+            self.role_notice(
                 &project,
                 role,
-                Some(&id),
                 format!("{} no longer holds {role}", record.spec.name),
-            ) {
-                return error;
-            }
+            );
         }
         Response::Agent {
             agent: self.registry.get(&id).cloned().unwrap_or(record),
         }
+    }
+
+    /// The role a channel speaks for, when it is a role's room: a word to
+    /// it by its channel id is a word to that role, for policy as for routing.
+    pub(super) fn room_role(&self, channel: &ChannelId) -> Option<String> {
+        self.channels.get(channel).and_then(|c| c.role.clone())
     }
 
     /// An agent's message to one of its project's roles, said in that role's
@@ -372,8 +421,13 @@ impl State {
     }
 
     /// Take a role out of every agent of a project that holds it, and close
-    /// its room: what follows taking the role out of the palette.
-    pub(super) fn retire_role(&mut self, project: &ProjectId, role: &str) -> Option<Response> {
+    /// its room: what taking the role out of the palette needs first, so a
+    /// retry after a failure still finds the role to take out.
+    pub(super) fn retire_role(
+        &mut self,
+        project: &ProjectId,
+        role: &str,
+    ) -> Result<(), Box<Response>> {
         let holders: Vec<AgentRecord> = self
             .registry
             .all()
@@ -384,14 +438,19 @@ impl State {
         let now = Utc::now();
         for holder in holders {
             let roles = join_roles(holder.roles().into_iter().filter(|r| *r != role));
-            if let Err(response) = self.write_roles(&holder.id, roles, now) {
-                return Some(*response);
-            }
+            self.write_roles(&holder.id, roles, now)?;
         }
-        let mut room = self
-            .role_room(project, role)
-            .filter(|c| c.is_open())?
-            .clone();
+        if self.role_room(project, role).is_none_or(|c| !c.is_open()) {
+            return Ok(());
+        }
+        self.role_notice(
+            project,
+            role,
+            format!("The role {role} was taken out of the project"),
+        );
+        let Some(mut room) = self.role_room(project, role).cloned() else {
+            return Ok(());
+        };
         let members = self.room_members(&room);
         room.members = members;
         room.closed_at = Some(now);
@@ -400,16 +459,6 @@ impl State {
             channel: room.id.clone(),
             resolution: room.resolution.clone(),
         };
-        let envelope = Envelope::new(
-            "agentd",
-            Destination::Channel(room.id.clone()),
-            "channel",
-            json!({"channel": room.id.as_str(), "title": room.title(), "text": format!("The role {role} was taken out of the project")}),
-            None,
-            now,
-        );
-        let response =
-            self.publish_with_channel(envelope, None, Some((room, vec![event], None)), None);
-        (!matches!(response, Response::Sent { .. })).then_some(response)
+        self.commit_roles(None, vec![room], vec![event], now)
     }
 }
