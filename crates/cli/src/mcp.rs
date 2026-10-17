@@ -1625,13 +1625,16 @@ impl<B: Backend> McpServer<B> {
             .await
             .map_err(transport)?
         {
-            Response::Agents { agents, .. } => {
-                agents.into_iter().map(|a| a.id.to_string()).collect()
-            }
+            // The person's own records are left out: their questions, to
+            // whoever, are not provably this project's.
+            Response::Agents { agents, .. } => agents
+                .into_iter()
+                .filter(|a| a.spec.runtime != agentdocker_core::HUMAN_RUNTIME)
+                .map(|a| a.id.to_string())
+                .collect(),
             _ => Default::default(),
         };
-        // Only questions this project's agents asked: the person's own, to
-        // whoever, are not provably this project's.
+        // Only questions this project's agents asked.
         let questions = questions
             .into_iter()
             .filter(|q| askers.contains(&q.from))
@@ -3008,12 +3011,21 @@ mod tests {
             asked_at: now,
             expires_at: now,
         };
+        // The person, registered in this project too: their question to
+        // another project is not this one's.
+        let mut person = in_project("person1", "/p/keel");
+        person.spec.runtime = agentdocker_core::HUMAN_RUNTIME.into();
         let s = server(vec![
             Response::Questions {
-                questions: vec![question("abc123"), question("other"), question("user")],
+                questions: vec![
+                    question("abc123"),
+                    question("other"),
+                    question("user"),
+                    question("person1"),
+                ],
             },
             Response::Agents {
-                agents: vec![me.clone()],
+                agents: vec![me.clone(), person],
                 aliases: Default::default(),
             },
         ])
@@ -3030,7 +3042,8 @@ mod tests {
         assert!(
             listed.contains("q-abc123")
                 && !listed.contains("q-other")
-                && !listed.contains("q-user"),
+                && !listed.contains("q-user")
+                && !listed.contains("q-person1"),
             "{listed}"
         );
 
