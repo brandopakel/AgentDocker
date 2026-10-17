@@ -215,9 +215,12 @@ The app remembers the selected project and keeps quiet projects available.
 - **Pause…** on the project header asks for a reason and tells every agent in
   the project to hold; the daemon refuses their new leases until **Resume**.
   What an agent already holds, it keeps; only you can pause or resume.
-- **Board** (in review as PR #176) is the project's cards: file work with a
-  title and what done means, agents pull Ready cards once, and the columns
-  say where everything is.
+- **Board** is the project's cards, lane by lane: type a title at the foot of
+  a lane to file one there, drag a card to move it, click it to open it in
+  place (its fields, comments and history). Agents pull the next ready card;
+  a lane says its count and turns red past its limit. The toolbar searches,
+  shows only high-priority cards, those waiting on something, those waiting
+  for you or those nobody holds, switches boards and edits a board's lanes.
 
 On narrow windows the selected session replaces the list, with **Back to sessions**
 to return. Wide windows show actions beside the list. The human `user` identity
@@ -520,7 +523,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `renew` / `release` | Extend or give up a lease you hold |
 | `leases` | Every lease held right now |
 | `waiting` | Claims waiting for a resource, oldest first |
-| `task` | The board of work: `task create "Fix login" --acceptance "SSO works" --column ready --link pr:#176 --link path:crates/core/src/task.rs` files a card (a `--link` is `kind:target` — path, commit, pr, url, task, message or memory — and `task update --link …` replaces them, `--no-links` clears them); `task pull <id> --as <agent>` takes a Ready card once and holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`, naming whom it is expected from); `task move <id> review` (an agent moves only a card it holds; back to Ready or to Done ends the hold), `task update <id> --assignee bob` (a hand ends the old hold and takes the lease for a running agent), `task archive <id>`, `task list [--column ready] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts) |
+| `task` | The board of work. `task create "Fix login" --acceptance "SSO works" --lane ready --priority high --size m --due 2026-11-02 --tag auth --blocked-by AD-7 --link pr:#176` files a card and prints its key (`AD-12`); `--parent`, `--description` and `--blocker "waiting on legal"` say more, and `--board` files it on another board. `task create-many cards.json` files up to 50 at once, all or none, each able to name another of the batch by its `ref` as its parent or in `--blocked-by`. `task pull --as <agent>` takes the next ready card (the first in the board's pull source, free and waiting on nothing; it says how many are held or waiting when there is none), `task pull AD-12 --as <agent>` that card; either holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`). `task move AD-12 review --comment "ready for eyes"` moves it to a lane by slug, name or category (`--after`/`--before` another card places it; an agent moves only a card it holds; back to Ready or to Done ends the hold). `task show AD-12` is the card in full: fields, comments, history, what it waits on. `task update AD-12 --assignee bob --priority low --tag ui` edits it (`--size ""`, `--due ""`, `--parent ""`, `--no-tags`, `--no-blocked-by`, `--no-links` clear). `task comment AD-12 "…" [--reply-to <comment>]`, `task comment-edit <comment> "…"`, `task comment-delete <comment>`. `task archive AD-12`, `task unarchive AD-12`, `task archive-lane done`. `task boards`, `task board-create Sprint --template agents` (classic, agents or simple), `task board-update sprint --lanes lanes.json --pull-source approved`. `task list [--board B] [--lane L] [--assignee me --as <agent>\|none] [--open] [--query words] [--tag T] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts) |
 | `pause` | `agentdocker pause "sleeping the laptop"` tells every agent in this directory's project to hold: they get the reason as a `pause` message and their new leases are refused until `agentdocker pause --lift`; `--project` names another project; `pause --list` lists what is paused and why |
 
 ### Know what changed
@@ -654,6 +657,9 @@ about us:
 `review`
 
 `contests` · `enter_contest` · `submit_entry`
+
+`list_tasks` · `my_tasks` · `get_task` · `create_task` · `create_tasks` ·
+`pull_task` · `move_task` · `update_task` · `comment_task` · `archive_task`
 
 Results are compact rather than pretty-printed, and most answer with a
 projection — the fields an agent uses, not every field the daemon keeps.
@@ -814,6 +820,25 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **A full board, for agents.** A board is lanes you name, each with
+  a category (Backlog, Ready, In progress, Review, Blocked, Done, Cancelled),
+  whose turn it is (anyone, you, an agent, or a role) and an optional limit;
+  `classic`, `agents` and `simple` templates start one, and a project can
+  have several. Cards have a key (`AD-12`), a description, priority, size, due
+  date, tags, a parent, cards they wait on and a blocker off the board, plus
+  comments with replies and a history of everything done to them. An agent
+  pulls the next ready card that waits on nothing (`task pull`, `pull_task`
+  with no card), sees its own (`my_tasks`), files a plan at once
+  (`create_tasks`) and comments as it goes; you hear nothing you did not do,
+  and an agent hears when you move, hand or comment on its card. The desktop
+  board files with a line at a lane's foot, moves by drag, and opens a card
+  in place. A database written by this build is schema 28: older builds
+  refuse it.
+- **Text only where it is a name.** The desktop says state with marks, dots,
+  rings and meters, named for screen readers and in tooltips; sentences
+  under headings, empty-state captions, key footers and section intros are
+  gone. It is set in IBM Plex Sans, with an ink primary action.
+
 - **A quieter, neutral desktop.** The navy rail is retired for a neutral
   sidebar one step off the page, in both appearances; colour is kept for
   state and the one primary action. Every agent row is one line that leads
@@ -838,7 +863,11 @@ Newest first. Only what changes how the product is used.
   an agent's newer notification replaces its last.
 - **Told when an agent finishes.** While the window is not in front, an agent
   that finishes its turn gets one quiet notification, replacing its last;
-  **When an agent finishes** in Settings turns it off.
+  **When an agent finishes or waits** in Settings turns it off.
+- **Told when an agent waits on you.** An agent that stops at a permission
+  prompt or question in its own terminal while the window is not in front
+  gets one too, saying which. A notice is taken back once it is no longer
+  true, and a finish is not told when your next message is already queued.
 
 - A Claude Code session no longer goes deaf after Claude's own restart.
   Restarting in place re-executes `claude` without the channel flag, so the

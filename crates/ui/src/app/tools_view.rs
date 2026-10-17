@@ -9,7 +9,7 @@
 use super::icons::{Icon, icon};
 use super::style::{Colors, RADIUS_LG, RADIUS_MD, RADIUS_SM, UI, alpha, mix, weight};
 use super::view::{
-    dot, empty, heading, kv_list, note, notice_line, rule, section, segmented, small, status_word,
+    dot, empty, heading, kv_list, note, rule, section, segmented, small, status_word,
 };
 use super::*;
 use crate::controls::{Kind, button as action, custom, ghost, input, primary, segment};
@@ -85,22 +85,6 @@ fn frame<'a>(content: impl Into<Element<'a, Message>>, c: Colors) -> Element<'a,
         .into()
 }
 
-/// A notice that something went wrong: an amber wash, a dot and the words.
-fn alert<'a>(words: impl Into<String>, c: Colors) -> Element<'a, Message> {
-    container(
-        row![
-            dot(c.amber, 7.0, c),
-            text(words.into()).size(13).color(c.text).width(Fill)
-        ]
-        .spacing(10)
-        .align_y(Center),
-    )
-    .padding([10, 14])
-    .width(Fill)
-    .style(move |_| c.attention_style(c.amber))
-    .into()
-}
-
 /// Rows separated by rules inset to the row padding, for a card body.
 fn rows_body<'a>(rows: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
     let mut list = column![].width(Fill);
@@ -113,25 +97,17 @@ fn rows_body<'a>(rows: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Mess
     list.into()
 }
 
-/// A group of settings as a macOS form draws one: its name, and a line of
-/// why, above the box, and the rows inside it. Ice, Stats and System
-/// Settings all put the name outside; a strip inside the card cost every
-/// group a header row.
+/// A group of settings as a macOS form draws one: its name above the box,
+/// and the rows inside it. Ice, Stats and System Settings all put the name
+/// outside; a strip inside the card cost every group a header row.
 fn form_section<'a>(
     title_text: &'a str,
-    description: Option<&'a str>,
     body: impl Into<Element<'a, Message>>,
     c: Colors,
 ) -> Element<'a, Message> {
-    let mut head = column![
-        text(title_text)
-            .size(13)
-            .font(weight(iced::font::Weight::Semibold))
-    ]
-    .spacing(2);
-    if let Some(description) = description {
-        head = head.push(text(description).size(12).color(c.muted));
-    }
+    let head = text(title_text)
+        .size(13)
+        .font(weight(iced::font::Weight::Semibold));
     column![
         container(head).padding([0, 4]),
         container(body).width(Fill).style(move |_| c.card_style()),
@@ -141,54 +117,31 @@ fn form_section<'a>(
     .into()
 }
 
-/// A settings row: what it is and one line of why on the left, the
-/// control on the right.
+/// A settings row: what it is on the left, the control on the right.
 fn setting<'a>(
     title_text: impl Into<String>,
-    description: impl Into<String>,
     control: impl Into<Element<'a, Message>>,
-    c: Colors,
 ) -> Element<'a, Message> {
     container(
-        row![
-            column![
-                text(title_text.into()).size(13),
-                text(description.into()).size(12).color(c.muted)
-            ]
-            .spacing(1)
-            .width(Fill),
-            control.into()
-        ]
-        .spacing(16)
-        .align_y(Center),
+        row![text(title_text.into()).size(13).width(Fill), control.into()]
+            .spacing(16)
+            .align_y(Center),
     )
     .padding([8, 14])
     .width(Fill)
     .into()
 }
 
-/// A field row: title and description over the input, for values too
-/// long to sit beside their name.
+/// A field row: its name over the input, for values too long to sit
+/// beside it.
 fn field_row<'a>(
     title_text: impl Into<String>,
-    description: impl Into<String>,
     control: impl Into<Element<'a, Message>>,
-    c: Colors,
 ) -> Element<'a, Message> {
-    container(
-        column![
-            column![
-                text(title_text.into()).size(13),
-                text(description.into()).size(12).color(c.muted)
-            ]
-            .spacing(1),
-            control.into()
-        ]
-        .spacing(8),
-    )
-    .padding([8, 14])
-    .width(Fill)
-    .into()
+    container(column![text(title_text.into()).size(13), control.into()].spacing(8))
+        .padding([8, 14])
+        .width(Fill)
+        .into()
 }
 
 /// A focusable, labelled control with a style of its own, for the few
@@ -355,35 +308,6 @@ fn stepper<'a>(
     .into()
 }
 
-/// A key or a key combination as keycaps: each key on its own small tile.
-fn keys<'a>(combination: &[&str], c: Colors) -> Element<'a, Message> {
-    let mut caps = row![].spacing(3).align_y(Center);
-    for key in combination {
-        caps = caps.push(
-            container(
-                text((*key).to_owned())
-                    .size(11)
-                    .line_height(iced::Pixels(16.0))
-                    .font(MEDIUM)
-                    .color(c.muted)
-                    .center(),
-            )
-            .padding([1, 6])
-            .width(Length::Shrink)
-            .style(move |_| container::Style {
-                background: Some(c.raised.into()),
-                border: Border {
-                    color: c.line_strong,
-                    width: 1.0,
-                    radius: 5.0.into(),
-                },
-                ..Default::default()
-            }),
-        );
-    }
-    caps.into()
-}
-
 /// A disclosure: muted words and a chevron that says which way it opens.
 fn disclosure<'a>(
     id: impl Into<String>,
@@ -476,59 +400,6 @@ enum Step {
     /// The step that is next, or under way.
     Next,
     Waiting,
-    /// Taken back.
-    Undone,
-}
-
-/// A 16-point tile for a step: a tick when done, an accent dot for the
-/// one that is next, a small square while waiting, a cross when undone.
-fn step_tile<'a>(step: Step, c: Colors) -> Element<'a, Message> {
-    let tile = |content: Element<'a, Message>, tone: iced::Color| -> Element<'a, Message> {
-        container(content)
-            .center(16)
-            .style(move |_| fill_style(alpha(tone, if c.dark { 0.18 } else { 0.14 }), 5.0))
-            .into()
-    };
-    match step {
-        Step::Done => tile(icon(Icon::Check, c.green, 11.0), c.green),
-        Step::Next => tile(dot(c.accent, 6.0, c), c.accent),
-        Step::Undone => tile(icon(Icon::Close, c.faint, 10.0), c.faint),
-        Step::Waiting => container(
-            container(Space::new().width(5).height(5))
-                .style(move |_| fill_style(c.line_strong, 2.0)),
-        )
-        .center(16)
-        .into(),
-    }
-}
-
-/// One row of a step list: its tile, its words, and a quiet fact at the
-/// right in monospace.
-fn step_row<'a>(
-    step: Step,
-    label: impl Into<String>,
-    meta: Option<String>,
-    c: Colors,
-) -> Element<'a, Message> {
-    let ink = match step {
-        Step::Done => c.muted,
-        Step::Next => c.text,
-        Step::Waiting | Step::Undone => c.faint,
-    };
-    let mut line = row![
-        step_tile(step, c),
-        text(label.into())
-            .size(13)
-            .color(ink)
-            .font(if step == Step::Next { MEDIUM } else { UI })
-            .width(Fill)
-    ]
-    .spacing(10)
-    .align_y(Center);
-    if let Some(meta) = meta {
-        line = line.push(mono(meta, 11, c.faint));
-    }
-    container(line).height(28).center_y(28).into()
 }
 
 /// Words for how a tool's integration is wired, and their tone.
@@ -542,7 +413,7 @@ fn wiring_word(wiring: Wiring, c: Colors) -> (&'static str, iced::Color) {
 }
 
 /// The tone that goes with a session's input readiness.
-fn readiness_tone(word: &str, c: Colors) -> iced::Color {
+pub(super) fn readiness_tone(word: &str, c: Colors) -> iced::Color {
     match word {
         "Receiving messages" | "Ready for messages" => c.green,
         "Sent · waiting for the agent to take it" => c.accent,
@@ -569,7 +440,6 @@ struct ToolState<'a> {
     supported: bool,
     unverified: bool,
     missing: bool,
-    ready: bool,
     sessions: Vec<&'a AgentRecord>,
     tone: iced::Color,
     word: String,
@@ -661,7 +531,6 @@ impl App {
             supported,
             unverified,
             missing,
-            ready,
             sessions,
             tone,
             word,
@@ -672,11 +541,16 @@ impl App {
     /// open, then one card with a row per tool.
     pub(super) fn connections(&self, c: Colors) -> Element<'_, Message> {
         let mut page = column![].spacing(16).width(Fill);
+        // Busy is a ring, a failure one line beside the alert mark.
         if self.setup_busy {
-            page = page.push(notice_line("Checking…", None, c.accent, c));
+            page = page.push(super::view::said(
+                "setup-busy",
+                "Checking…",
+                icon(Icon::Ring, c.accent, 14.0),
+            ));
         }
         if let Some(error) = &self.shell.setup_error {
-            page = page.push(alert(error.clone(), c));
+            page = page.push(super::view::error_line("setup-error", error, c));
         }
         if let Some(plan) = &self.setup_plan {
             page = page.push(self.setup_view(plan, c));
@@ -692,12 +566,7 @@ impl App {
         runtimes.sort_by_key(|r| !r.installed());
         let other_count = self.runtimes.iter().filter(|r| !r.installed()).count();
         if runtimes.is_empty() {
-            page = page.push(empty(
-                "No supported tools found",
-                "Install Claude Code or Codex, then come back here.",
-                None,
-                c,
-            ));
+            page = page.push(empty(None, c));
         }
         // One filled action on the screen: the first tool that needs
         // setting up; the others' Set up step down to an outline, and all
@@ -713,11 +582,7 @@ impl App {
             })
             .collect();
         if other_count > 0 {
-            let words = if self.shell.other_tools {
-                "Hide other tools".to_owned()
-            } else {
-                format!("Other supported tools ({other_count})")
-            };
+            let words = format!("Other tools ({other_count})");
             rows.push(
                 container(custom(
                     "other-tools",
@@ -762,7 +627,7 @@ impl App {
         if !self.discovered.is_empty() {
             page = page.push(action(
                 "register-all-discovered",
-                format!("Connect all {} running sessions", self.discovered.len()),
+                format!("Connect all ({})", self.discovered.len()),
                 self.connected.is_ok().then_some(Message::AdoptAll),
                 false,
             ));
@@ -783,8 +648,13 @@ impl App {
                         format!("saved-setup-{id}"),
                         format!("{phase} · {id}"),
                         row![
-                            mono(id.clone(), 12, c.text).width(Fill),
-                            status_word(phase.clone(), tone, c),
+                            mono(short_id(&id).to_owned(), 12, c.text).width(Fill),
+                            super::view::status_dot(
+                                format!("saved-setup-phase-{id}"),
+                                tone,
+                                phase.clone(),
+                                c
+                            ),
                             icon(Icon::ChevronRight, c.faint, 13.0)
                         ]
                         .spacing(12)
@@ -798,13 +668,7 @@ impl App {
                     .into()
                 })
                 .collect();
-            page = page.push(section(
-                "Setup history",
-                Some("Setups saved on this machine. Open one to see it again.".to_owned()),
-                None,
-                column(rows),
-                c,
-            ));
+            page = page.push(section("Setup history", None, column(rows), c));
         }
         page.into()
     }
@@ -835,27 +699,14 @@ impl App {
             .map(|v| format!(" · {v}"))
             .unwrap_or_default();
         let needs_action = self.tool_needs_action(runtime, c);
-        // A tool taking messages says so at the right, where a button
-        // would otherwise be; every other state is a dot and its words
-        // under the name.
-        let status: Element<'a, Message> = if state.ready {
-            text(format!("{}{version}", state.word))
-                .size(12)
-                .color(c.muted)
-                .width(Fill)
-                .into()
-        } else {
-            row![
-                dot(state.tone, 7.0, c),
-                text(format!("{}{version}", state.word))
-                    .size(12)
-                    .color(c.muted)
-                    .width(Fill)
-            ]
-            .spacing(7)
-            .align_y(Center)
-            .into()
-        };
+        // The state is a dot beside the name; its words show when the dot
+        // is pointed at.
+        let status = super::view::status_dot(
+            format!("tool-state-{}", runtime.name),
+            state.tone,
+            format!("{}{version}", state.word),
+            c,
+        );
         let mut trailing = row![].spacing(6).align_y(Center);
         if needs_action {
             let id = format!("setup-{}", runtime.name);
@@ -868,9 +719,6 @@ impl App {
             } else {
                 action(id, "Set up", press, false)
             });
-        } else if state.ready {
-            trailing =
-                trailing.push(container(status_word("Connected", c.green, c)).padding([0, 6]));
         }
         trailing = trailing.push(disclosure(
             format!("connection-details-{}", runtime.name),
@@ -883,8 +731,9 @@ impl App {
             head = head.push(tool_mark(&runtime.label, &runtime.name, c));
         }
         head = head.push(
-            column![text(runtime.label.clone()).size(14).font(MEDIUM), status]
-                .spacing(3)
+            row![text(runtime.label.clone()).size(14).font(MEDIUM), status]
+                .spacing(4)
+                .align_y(Center)
                 .width(Fill),
         );
         head = head.push(trailing);
@@ -914,8 +763,8 @@ impl App {
             status_word(word, tone, c)
         };
         let mut facts: Vec<(String, Element<'a, Message>)> = vec![
-            ("Tools (MCP)".into(), wired(runtime.mcp)),
-            ("Live activity (hooks)".into(), wired(runtime.hooks)),
+            ("MCP".into(), wired(runtime.mcp)),
+            ("Hooks".into(), wired(runtime.hooks)),
         ];
         if runtime.name == "claude-code" {
             let (word, tone, why) = match runtime.shell {
@@ -940,7 +789,8 @@ impl App {
                     "Setup knows zsh, bash and fish. Start claude with --dangerously-load-development-channels server:agentdocker yourself.",
                 ),
             };
-            let mut value = column![status_word(word, tone, c), small(why, c)].spacing(4);
+            let mut value =
+                column![super::view::tip(status_word(word, tone, c), why, c)].spacing(4);
             // A `claude` typed in a terminal only sees messages at its next
             // prompt unless the shell adds the channel flag; one reviewed
             // change does that, and this is where the person looks for it.
@@ -956,36 +806,15 @@ impl App {
                     .padding(padding(4.0, 0.0, 2.0, 0.0)),
                 );
             }
-            facts.push(("Terminal launches".into(), value.into()));
+            facts.push(("Shell".into(), value.into()));
         }
-        facts.extend([
-            (
-                "Vendor".into(),
-                text(runtime.vendor.to_string()).size(13).into(),
-            ),
-            (
-                "Version".into(),
-                text(
-                    runtime
-                        .version
-                        .as_deref()
-                        .unwrap_or("Version unknown")
-                        .to_owned(),
-                )
-                .size(13)
-                .into(),
-            ),
-            (
-                "Command".into(),
-                match &runtime.cli {
-                    Some(path) => mono(tilde(path), 12, c.text).into(),
-                    None => text("No command-line tool found")
-                        .size(13)
-                        .color(c.muted)
-                        .into(),
-                },
-            ),
-        ]);
+        // What is known, and nothing about what is not.
+        if let Some(version) = &runtime.version {
+            facts.push(("Version".into(), text(version.clone()).size(13).into()));
+        }
+        if let Some(path) = &runtime.cli {
+            facts.push(("Command".into(), mono(tilde(path), 12, c.text).into()));
+        }
         for app in &runtime.apps {
             facts.push((
                 "Application".into(),
@@ -997,133 +826,100 @@ impl App {
                 "Browser".into(),
                 text(super::extension_words(extension)).size(13).into(),
             ));
-            if let Some(bridge) = &extension.bridge {
-                facts.push(("Bridge".into(), mono(tilde(bridge), 12, c.text).into()));
-            }
         }
         let mut notes: Vec<Element<'a, Message>> = Vec::new();
         if runtime.in_browser() && state.installed {
-            notes.push(Element::from(note(
-                agentdocker_core::runtime::IN_BROWSER,
-                c,
-            )));
             // The connector is what brings a browser agent here: its
             // address and pairing code are what the person needs at the
             // vendor's settings and on the consent page, and this card is
             // where they look for them.
             match &self.connector {
                 Some(serving) => {
+                    // Where to paste it is the address's tooltip.
                     facts.push((
-                        "Connector".into(),
-                        mono(serving.mcp_url(), 12, c.text).into(),
+                        "URL".into(),
+                        super::view::tip(
+                            mono(serving.mcp_url(), 12, c.text),
+                            super::add_connector_words(&runtime.name),
+                            c,
+                        ),
                     ));
                     facts.push((
-                        "Pairing code".into(),
-                        column![
-                            mono(serving.pairing_code.clone(), 13, c.text),
-                            small(
-                                "Typed on the consent page, which also asks which project the agent joins",
-                                c
-                            )
-                        ]
-                        .spacing(2)
-                        .into(),
-                    ));
-                    facts.push((
-                        "Add it".into(),
-                        text(super::add_connector_words(&runtime.name))
-                            .size(13)
-                            .into(),
+                        "Code".into(),
+                        mono(serving.pairing_code.clone(), 13, c.text).into(),
                     ));
                 }
                 None => {
-                    facts.push(("Connector".into(), status_word("Not running", c.faint, c)));
+                    facts.push((
+                        "Connector".into(),
+                        super::view::status_dot(
+                            format!("connector-off-{}", runtime.name),
+                            c.faint,
+                            "Not running",
+                            c,
+                        ),
+                    ));
                     if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
-                        notes.push(Element::from(note(
-                            "Enable a connection for Claude and ChatGPT. It starts at login and uses a public HTTPS tunnel; each browser account still needs your consent. Existing service settings are preserved.", c)));
-                        notes.push(Element::from(note(
-                            "Tailscale keeps the same address and needs Funnel enabled. Cloudflare gives a new address after each restart, so saved browser connections must be added again.", c)));
                         let busy = |tunnel| self.connector_busy == Some(tunnel);
                         notes.push(Element::from(
                             row![
-                                action(
-                                    format!("connector-tailscale-{}", runtime.name),
-                                    if busy(super::ConnectorTunnel::Tailscale) {
-                                        "Starting…"
-                                    } else {
-                                        "Enable with Tailscale"
-                                    },
-                                    self.connector_busy.is_none().then_some(
-                                        Message::ConnectorEnable(super::ConnectorTunnel::Tailscale)
+                                super::view::tip(
+                                    action(
+                                        format!("connector-tailscale-{}", runtime.name),
+                                        if busy(super::ConnectorTunnel::Tailscale) {
+                                            "Starting…"
+                                        } else {
+                                            "Tailscale"
+                                        },
+                                        self.connector_busy.is_none().then_some(
+                                            Message::ConnectorEnable(
+                                                super::ConnectorTunnel::Tailscale
+                                            )
+                                        ),
+                                        false
                                     ),
-                                    false
+                                    "Same address; needs Funnel",
+                                    c
                                 ),
-                                action(
-                                    format!("connector-cloudflare-{}", runtime.name),
-                                    if busy(super::ConnectorTunnel::Cloudflared) {
-                                        "Starting…"
-                                    } else {
-                                        "Enable with Cloudflare"
-                                    },
-                                    self.connector_busy.is_none().then_some(
-                                        Message::ConnectorEnable(
-                                            super::ConnectorTunnel::Cloudflared
-                                        )
+                                super::view::tip(
+                                    action(
+                                        format!("connector-cloudflare-{}", runtime.name),
+                                        if busy(super::ConnectorTunnel::Cloudflared) {
+                                            "Starting…"
+                                        } else {
+                                            "Cloudflare"
+                                        },
+                                        self.connector_busy.is_none().then_some(
+                                            Message::ConnectorEnable(
+                                                super::ConnectorTunnel::Cloudflared
+                                            )
+                                        ),
+                                        false
                                     ),
-                                    false
+                                    "A new address after each restart",
+                                    c
                                 ),
                             ]
                             .spacing(8)
                             .wrap(),
                         ));
-                    } else {
-                        notes.push(Element::from(note("Browser connector login services are currently available on macOS and Linux.", c)));
                     }
                     if let Some(error) = &self.connector_error {
-                        notes.push(Element::from(alert(error.clone(), c)));
+                        notes.push(super::view::error_line("connector-error", error, c));
                     }
                 }
             }
         }
         for why in &runtime.incomplete {
-            notes.push(Element::from(note(
+            notes.push(super::view::alert_mark(
+                format!("inventory-incomplete-{}", runtime.name),
                 format!("Inventory incomplete: {why}"),
                 c,
-            )));
-        }
-        if state.installed
-            && state.supported
-            && !state.missing
-            && !state.unverified
-            && !state.reporting
-        {
-            notes.push(Element::from(note(
-                "Setup is saved. Start a fresh session to load it. Approve only the \
-                 integration prompts shown by the provider.",
-                c,
-            )));
-        }
-        if !state.sessions.is_empty()
-            && !state.ready
-            && matches!(runtime.name.as_str(), "codex" | "claude-code")
-            && state.sessions.iter().any(|agent| {
-                agent.input_delivery.as_ref().is_none_or(|delivery| {
-                    Some(delivery.process_started_at) != agent.process_started_at
-                })
-            })
-        {
-            notes.push(Element::from(note(
-                if runtime.name == "claude-code" {
-                    "Hooks cannot start an idle turn. New Claude launches use Idle messages: On and require channel consent. Existing sessions need a safe reconnect; queued messages stay with their current record."
-                } else {
-                    "Hooks cannot start an idle turn. Codex sessions need their message delivery connected. New launches here use Idle messages: On."
-                },
-                c,
-            )));
+            ));
         }
         let mut details = column![kv_list(facts, c)].spacing(16).width(Fill);
         if !state.sessions.is_empty() {
-            let mut sessions = column![super::view::eyebrow("Sessions", c)].spacing(10);
+            let mut sessions = column![].spacing(10);
             let now = Utc::now();
             for agent in &state.sessions {
                 let seen = |kind| {
@@ -1132,7 +928,9 @@ impl App {
                     })
                 };
                 let contact = |name: &str, seen: bool| {
-                    status_word(
+                    super::view::status_dot(
+                        format!("contact-{name}-{}", agent.id),
+                        if seen { c.green } else { c.faint },
                         format!(
                             "{name}: {}",
                             if seen {
@@ -1141,7 +939,6 @@ impl App {
                                 "no recent contact"
                             }
                         ),
-                        if seen { c.green } else { c.faint },
                         c,
                     )
                 };
@@ -1152,7 +949,12 @@ impl App {
                             .size(13)
                             .font(MEDIUM)
                             .width(Fill),
-                        status_word(readiness, readiness_tone(readiness, c), c)
+                        super::view::status_dot(
+                            format!("tool-session-readiness-{}", agent.id),
+                            readiness_tone(readiness, c),
+                            readiness,
+                            c
+                        )
                     ]
                     .spacing(12)
                     .align_y(Center),
@@ -1254,35 +1056,24 @@ impl App {
                     field(check, "detail")
                 ));
             }
-            let ok = problems.is_empty();
-            let mut line = column![
-                row![
-                    text(label).size(14).font(MEDIUM).width(Fill),
-                    if ok {
-                        status_word("Configuration checked", c.green, c)
-                    } else {
-                        status_word("Needs attention", c.amber, c)
-                    }
-                ]
+            // Checked is a tick; a problem the alert mark, with what is
+            // wrong on the pointer and in its name.
+            let mark: Element<'_, Message> = if problems.is_empty() {
+                super::view::said(
+                    format!("health-ok-{label}"),
+                    "Configuration checked",
+                    icon(Icon::Check, c.green, 14.0),
+                )
+            } else {
+                super::view::alert_mark(format!("health-{label}"), problems.join("\n"), c)
+            };
+            let line = row![text(label).size(14).font(MEDIUM).width(Fill), mark]
                 .spacing(12)
-                .align_y(Center)
-            ]
-            .spacing(4);
-            for problem in problems {
-                line = line.push(small(problem, c));
-            }
+                .align_y(Center);
             rows.push(container(line).padding([10, 16]).width(Fill).into());
-        }
-        if rows.is_empty() {
-            rows.push(
-                container(note("No installed tool to check.", c))
-                    .padding([10, 16])
-                    .into(),
-            );
         }
         section(
             "Connection check",
-            Some(field(health, "daemon")),
             Some(ghost("close-health", "Close", Some(Message::SetupClose))),
             rows_body(rows, c),
             c,
@@ -1306,15 +1097,12 @@ impl App {
         let shell_plan = changes
             .iter()
             .any(|change| field(change, "channel") == "shell");
-        let title_text = match (&tool, phase.as_str()) {
-            (Some(_), "applied") if shell_plan => "Terminal launches will wake".to_owned(),
-            (Some(_), "undone") if shell_plan => "Shell change undone".to_owned(),
-            (Some(_), _) if shell_plan => "Wake terminal sessions".to_owned(),
-            (Some(tool), "applied") => format!("{tool} setup saved"),
-            (Some(tool), "undone") => format!("{tool} setup undone"),
-            (Some(tool), _) => format!("Connect {tool}"),
-            (None, "applied") => "Setup saved".to_owned(),
-            (None, _) => "Nothing to connect".to_owned(),
+        // The card is named for what it sets up; its state is the
+        // footer's dot.
+        let title_text = match &tool {
+            Some(_) if shell_plan => "Shell".to_owned(),
+            Some(tool) => tool.clone(),
+            None => "Setup".to_owned(),
         };
         let applied = phase == "applied";
         let undone = phase == "undone";
@@ -1323,44 +1111,27 @@ impl App {
         let mut files: Vec<(String, Vec<String>)> = Vec::new();
         for change in &changes {
             let what = match field(change, "channel").as_str() {
-                "mcp" => "Tools (MCP)".to_owned(),
-                "activity hooks" | "hooks" => "Live activity (hooks)".to_owned(),
-                "shell" => "Terminal launches wake (shell startup file)".to_owned(),
+                "mcp" => "MCP".to_owned(),
+                "activity hooks" | "hooks" => "Hooks".to_owned(),
+                "shell" => "Shell".to_owned(),
                 other => other.to_owned(),
             };
             let line = format!("{what}: {}", field(change, "action"));
             let path = change["path"]
                 .as_str()
                 .map(|p| tilde(std::path::Path::new(p)))
-                .unwrap_or_else(|| "unknown".to_owned());
+                .unwrap_or_default();
             match files.iter_mut().find(|(p, _)| *p == path) {
                 Some((_, lines)) => lines.push(line),
                 None => files.push((path, vec![line])),
             }
         }
-        let summary = if any {
-            format!(
-                "{} {} in {} {}",
-                changes.len(),
-                if changes.len() == 1 {
-                    "change"
-                } else {
-                    "changes"
-                },
-                files.len(),
-                if files.len() == 1 { "file" } else { "files" }
-            )
-        } else {
-            "Everything this tool needs is already in place.".to_owned()
-        };
         let header = container(
             row![
                 container(icon(Icon::File, c.muted, 16.0))
                     .center(32)
                     .style(move |_| c.tile(RADIUS_MD)),
-                column![heading(title_text, 15), small(summary, c)]
-                    .spacing(2)
-                    .width(Fill)
+                heading(title_text, 15).width(Fill)
             ]
             .spacing(12)
             .align_y(Center),
@@ -1368,92 +1139,27 @@ impl App {
         .padding([12, 15]);
         let mut body = column![].spacing(14).width(Fill);
         if any {
-            let (apply_step, load_step) = match phase.as_str() {
-                "applied" => (Step::Done, Step::Next),
-                "undone" => (Step::Undone, Step::Waiting),
-                _ => (Step::Next, Step::Waiting),
-            };
-            body = body.push(
-                column![
-                    step_row(Step::Done, "Preview what changes", None, c),
-                    step_row(
-                        apply_step,
-                        match phase.as_str() {
-                            "applied" => "Saved",
-                            "undone" => "Taken back",
-                            "applying" => "Applying…",
-                            _ => "Connect to save it",
-                        },
-                        applied.then(|| short_id(&id)),
-                        c
-                    ),
-                    step_row(
-                        load_step,
-                        if shell_plan {
-                            "Open a new terminal to load it"
-                        } else {
-                            "Start a fresh session to load it"
-                        },
-                        None,
-                        c
-                    ),
-                ]
-                .spacing(2),
-            );
             for (path, lines) in files {
                 body = body.push(diff_block(path, lines, undone, c));
             }
-        }
-        let expanded = self.shell.connection_details.as_deref() == Some("setup-plan");
-        if expanded {
-            let mut facts: Vec<(String, Element<'_, Message>)> = vec![
-                ("Plan".into(), mono(id.clone(), 12, c.text).into()),
-                ("State".into(), text(phase.clone()).size(13).into()),
-            ];
-            if let Some(executable) = plan["executable"].as_str() {
-                facts.push(("Command".into(), mono(executable, 12, c.text).into()));
-            }
-            for change in &changes {
-                facts.push((
-                    "File".into(),
-                    mono(field(change, "path"), 12, c.text).into(),
-                ));
-            }
-            let mut technical = column![kv_list(facts, c)].spacing(8);
-            for note_text in plan["notes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|s| s.as_str())
-            {
-                technical = technical.push(small(note_text, c));
-            }
-            body = body.push(technical);
         }
         let applicable = !self.setup_busy
             && matches!(phase.as_str(), "prepared" | "applying")
             && any
             && plan_id.is_some();
         let (state_word, tone) = match phase.as_str() {
-            "applied" => ("Saved", c.green),
+            "applied" if shell_plan => ("Saved; open a new terminal to load it", c.green),
+            "applied" => ("Saved; start a fresh session to load it", c.green),
             "undone" => ("Undone", c.faint),
             "applying" => ("Applying…", c.accent),
             _ if !any => ("Nothing to change", c.faint),
             _ => ("Waiting for you", c.amber),
         };
-        let mut buttons = row![
-            disclosure(
-                "setup-details",
-                expanded,
-                Some(Message::ConnectionDetails("setup-plan".into())),
-                c
-            ),
-            ghost(
-                "close-setup",
-                "Close",
-                (!self.setup_busy).then_some(Message::SetupClose),
-            )
-        ]
+        let mut buttons = row![ghost(
+            "close-setup",
+            "Close",
+            (!self.setup_busy).then_some(Message::SetupClose),
+        )]
         .spacing(4)
         .align_y(Center);
         if applied && plan_id.is_some() {
@@ -1473,7 +1179,7 @@ impl App {
         }
         let footer = container(
             row![
-                container(status_word(state_word, tone, c)).width(Fill),
+                container(super::view::status_dot("setup-state", tone, state_word, c)).width(Fill),
                 buttons
             ]
             .spacing(12)
@@ -1488,7 +1194,7 @@ impl App {
             )
         });
         let mut card = column![header, rule(c)].width(Fill);
-        if any || expanded {
+        if any {
             card = card.push(container(body).padding([14, 16]));
         }
         frame(card.push(rule(c)).push(footer), c)
@@ -1500,12 +1206,10 @@ impl App {
         let s = &self.settings;
         let appearance = form_section(
             "Appearance",
-            None,
             rows_body(
                 vec![
                     setting(
                         "Theme",
-                        "Light or dark.",
                         segmented(
                             vec![
                                 segment(
@@ -1523,11 +1227,9 @@ impl App {
                             ],
                             c,
                         ),
-                        c,
                     ),
                     setting(
                         "Text size",
-                        "Every word in the window.",
                         stepper(
                             (
                                 "smaller-ui",
@@ -1544,11 +1246,9 @@ impl App {
                             ),
                             c,
                         ),
-                        c,
                     ),
                     setting(
-                        "When an agent finishes",
-                        "A quiet notification while the window is not in front, one per agent.",
+                        "Notifications",
                         switch(
                             "notify-finished",
                             if s.notify_finished {
@@ -1560,11 +1260,9 @@ impl App {
                             Some(Message::NotifyFinished(!s.notify_finished)),
                             c,
                         ),
-                        c,
                     ),
                     setting(
-                        "Roomier rows",
-                        "More space between rows, for a window you watch rather than read.",
+                        "Roomy rows",
                         switch(
                             "roomy-rows",
                             if s.roomy {
@@ -1576,7 +1274,6 @@ impl App {
                             Some(Message::Roomy(!s.roomy)),
                             c,
                         ),
-                        c,
                     ),
                 ],
                 c,
@@ -1589,12 +1286,10 @@ impl App {
         }
         let terminal = form_section(
             "Terminal",
-            None,
             rows_body(
                 vec![
                     setting(
-                        "Text size",
-                        "Agent terminals and command output.",
+                        "Terminal text",
                         stepper(
                             (
                                 "smaller-terminal",
@@ -1611,84 +1306,8 @@ impl App {
                             ),
                             c,
                         ),
-                        c,
                     ),
-                    field_row(
-                        "Palette",
-                        "The colours agent terminals and command output are drawn in.",
-                        swatches.wrap().vertical_spacing(12),
-                        c,
-                    ),
-                ],
-                c,
-            ),
-            c,
-        );
-        let mac = cfg!(target_os = "macos");
-        let shortcut =
-            |what: &'static str, combos: Vec<Vec<&'static str>>| -> Element<'_, Message> {
-                let mut alternatives = row![].spacing(6).align_y(Center);
-                for (index, combo) in combos.iter().enumerate() {
-                    if index > 0 {
-                        alternatives = alternatives.push(text("or").size(12).color(c.faint));
-                    }
-                    alternatives = alternatives.push(keys(combo, c));
-                }
-                container(
-                    row![text(what).size(13).width(Fill), alternatives]
-                        .spacing(16)
-                        .align_y(Center),
-                )
-                .padding([6, 14])
-                .width(Fill)
-                .into()
-            };
-        let keyboard = form_section(
-            "Keyboard and accessibility",
-            Some(
-                "Every control is reachable from the keyboard. Text fields support native input methods.",
-            ),
-            rows_body(
-                vec![
-                    shortcut(
-                        "Jump to a place, project or action",
-                        vec![if mac {
-                            vec!["⌘", "K"]
-                        } else {
-                            vec!["Ctrl", "K"]
-                        }],
-                    ),
-                    shortcut("Move between controls", vec![vec!["Tab"], vec!["⇧", "Tab"]]),
-                    shortcut(
-                        "Activate the focused control",
-                        vec![vec!["Enter"], vec!["Space"]],
-                    ),
-                    shortcut(
-                        "Switch sections",
-                        vec![if mac {
-                            vec!["⌘", "1–4"]
-                        } else {
-                            vec!["Ctrl", "1–4"]
-                        }],
-                    ),
-                    shortcut("Close details or a draft launch form", vec![vec!["Esc"]]),
-                    shortcut("Leave terminal input", vec![vec!["F6"]]),
-                    shortcut(
-                        "Detach the terminal",
-                        vec![if mac {
-                            vec!["⌃", "]"]
-                        } else {
-                            vec!["Ctrl", "]"]
-                        }],
-                    ),
-                    shortcut(
-                        "Copy the terminal selection",
-                        if mac {
-                            vec![vec!["⌘", "C"]]
-                        } else {
-                            vec![vec!["Ctrl", "⇧", "C"]]
-                        },
-                    ),
+                    field_row("Terminal colours", swatches.wrap().vertical_spacing(12)),
                 ],
                 c,
             ),
@@ -1696,8 +1315,7 @@ impl App {
         );
         let mut installation_rows = vec![
             setting(
-                "Daily update checks",
-                "Looks for a newer release once a day. Nothing downloads or installs on its own.",
+                "Update checks",
                 switch(
                     "automatic-update-checks",
                     if self.shell.catalog.updates.enabled {
@@ -1711,11 +1329,9 @@ impl App {
                     )),
                     c,
                 ),
-                c,
             ),
             setting(
-                "Installation and versions",
-                "Preview and apply installs, rollbacks and cleanup.",
+                "Installation",
                 custom(
                     "installation",
                     "Manage installation and retained versions",
@@ -1733,42 +1349,21 @@ impl App {
                     Kind::Secondary,
                     [7, 10],
                 ),
-                c,
             ),
         ];
         if self.desktop.update_check_error {
             installation_rows.push(
-                container(notice_line(
+                container(super::view::alert_mark(
+                    "update-check-failed",
                     "Couldn’t check for updates.",
-                    Some("Try again in Installation.".to_owned()),
-                    c.amber,
                     c,
                 ))
                 .padding([10, 16])
                 .into(),
             );
         }
-        let installation = form_section("Installation", None, rows_body(installation_rows, c), c);
-        let diagnostics = form_section(
-            "Diagnostics",
-            None,
-            container(kv_list(
-                vec![
-                    (
-                        "Local daemon".to_owned(),
-                        mono(self.socket.clone(), 12, c.text).into(),
-                    ),
-                    (
-                        "Preferences".to_owned(),
-                        mono(tilde(&self.home.join("workspace.json")), 12, c.text).into(),
-                    ),
-                ],
-                c,
-            ))
-            .padding([12, 16]),
-            c,
-        );
-        column![appearance, terminal, keyboard, installation, diagnostics]
+        let installation = form_section("Installation", rows_body(installation_rows, c), c);
+        column![appearance, terminal, installation]
             .spacing(20)
             .into()
     }
@@ -1864,12 +1459,7 @@ impl App {
     /// with the state in a word and Detach at the right.
     pub(super) fn terminal_view(&self, c: Colors) -> Element<'_, Message> {
         let Some(terminal) = &self.terminal else {
-            return empty(
-                "No terminal open",
-                "Select a managed session and open its terminal.",
-                None,
-                c,
-            );
+            return empty(None, c);
         };
         let ended = matches!(terminal.status(), Status::Ended(_));
         let scrolled = terminal.scrolled_back();
@@ -1972,23 +1562,9 @@ impl App {
             .width(Fill)
             .style(move |_| fill_style(ground, iced::border::bottom(RADIUS_LG - 1.0))),
         );
-        let hint = row![
-            keys(&["F6"], c),
-            small("leaves terminal input", c),
-            text("·").size(12).color(c.faint),
-            keys(
-                if cfg!(target_os = "macos") {
-                    &["⌃", "]"]
-                } else {
-                    &["Ctrl", "]"]
-                },
-                c
-            ),
-            small("detaches", c)
-        ]
-        .spacing(6)
-        .align_y(Center);
-        column![frame(pane, c), hint].spacing(10).into()
+        // The keys out of the terminal (F6, ⌃]) are in the terminal's
+        // spoken name and in Settings, not under it.
+        frame(pane, c)
     }
 
     /// AgentDocker commands as a command panel: the prompt and the input
@@ -2145,10 +1721,14 @@ impl App {
         let p = &self.desktop;
         let mut screen = column![self.update_banner(c)].spacing(16);
         if p.busy {
-            screen = screen.push(notice_line("Verifying installation…", None, c.accent, c));
+            screen = screen.push(super::view::said(
+                "installation-busy",
+                "Verifying installation…",
+                icon(Icon::Ring, c.accent, 14.0),
+            ));
         }
         if let Some(error) = &p.error {
-            screen = screen.push(alert(error.clone(), c));
+            screen = screen.push(super::view::error_line("installation-error", error, c));
         }
         if let Some(report) = p
             .report
@@ -2161,7 +1741,7 @@ impl App {
         let narrow = self.narrow();
         let source_input = input(
             "desktop-source",
-            "Application bundle or extracted package",
+            "Package",
             &p.source,
             Message::DesktopSource,
         );
@@ -2180,28 +1760,20 @@ impl App {
                 .into()
         };
         let mut rows = vec![
-            field_row(
-                "Package",
-                "An application bundle, or a release package you extracted.",
-                source,
-                c,
-            ),
+            field_row("Package", source),
             field_row(
                 "Prefix",
-                "Where releases are kept. Empty uses your home.",
                 input(
                     "desktop-prefix",
-                    "Installation prefix (empty uses your home)",
+                    "Prefix",
                     &p.prefix,
                     Message::DesktopPrefix,
                 ),
-                c,
             ),
         ];
         if cfg!(target_os = "macos") {
             rows.push(setting(
                 "Preview builds",
-                "Allow releases from the preview channel to download and install.",
                 switch(
                     "desktop-local",
                     if p.local_preview {
@@ -2213,7 +1785,6 @@ impl App {
                     (!p.busy).then_some(Message::DesktopLocal(!p.local_preview)),
                     c,
                 ),
-                c,
             ));
         }
         rows.push(
@@ -2235,14 +1806,6 @@ impl App {
         );
         screen = screen.push(section(
             "Install from a package",
-            Some(
-                if narrow {
-                    "Preview first; activation takes effect on the next launch."
-                } else {
-                    "Preview an install, rollback, or cleanup before applying it. Activation takes effect on the next app launch; running agents continue."
-                }
-                .to_owned(),
-            ),
             None,
             rows_body(rows, c),
             c,
@@ -2355,19 +1918,37 @@ impl App {
             sentence = "Couldn’t reach the release feed. Try again.".to_owned();
         }
         if p.checking_updates {
-            actions = actions.push(small("Checking…", c));
+            actions = actions.push(super::view::said(
+                "update-checking",
+                "Checking…",
+                icon(Icon::Ring, c.accent, 14.0),
+            ));
         }
-        let disc = container(icon(glyph, tone, 18.0))
-            .center(36)
-            .style(move |_| c.dot(alpha(tone, if c.dark { 0.16 } else { 0.12 })));
-        let mut words = column![
-            text(headline).size(14).font(MEDIUM),
-            text(sentence).size(13).color(c.muted)
-        ]
-        .spacing(2)
-        .width(Fill);
+        // The disc says the state; its words are its tooltip and name, and
+        // the line beside it is the version alone.
+        let version_line = headline
+            .rsplit_once(" — ")
+            .map(|(_, version)| version.to_owned())
+            .or_else(|| installed.map(|v| v.to_string()))
+            .unwrap_or_default();
+        let disc = super::view::tip(
+            super::view::said(
+                "update-state",
+                format!("{headline}. {sentence}"),
+                container(icon(glyph, tone, 18.0))
+                    .center(36)
+                    .style(move |_| c.dot(alpha(tone, if c.dark { 0.16 } else { 0.12 }))),
+            ),
+            sentence.clone(),
+            c,
+        );
+        let mut words = row![text(version_line).size(14).font(MEDIUM)]
+            .spacing(6)
+            .align_y(Center)
+            .width(Fill);
         if update.is_some_and(|u| u["state_schema_change"] == true) {
-            words = words.push(small(
+            words = words.push(super::view::alert_mark(
+                "update-schema-change",
                 "This release changes the daemon's state schema: after installing, rollback needs a matching state backup.",
                 c,
             ));
@@ -2430,9 +2011,14 @@ impl App {
         }
         match status {
             Some(installation) if installation.is_null() => rows.push(
-                container(note("No managed installation at this prefix.", c))
-                    .padding([10, 16])
-                    .into(),
+                container(super::view::status_dot(
+                    "installation-none",
+                    c.faint,
+                    "No managed installation at this prefix.",
+                    c,
+                ))
+                .padding([10, 16])
+                .into(),
             ),
             Some(installation) => {
                 for (key, word, tone) in [
@@ -2452,23 +2038,15 @@ impl App {
                     }
                 }
             }
-            None => match update.and_then(|u| {
-                u["installed_version"]
-                    .as_str()
-                    .or(u["running_version"].as_str())
-            }) {
-                Some(version) => {
+            None => {
+                if let Some(version) = update.and_then(|u| {
+                    u["installed_version"]
+                        .as_str()
+                        .or(u["running_version"].as_str())
+                }) {
                     rows.push(version_row(version.to_owned(), None, "Current", c.green))
                 }
-                None => rows.push(
-                    container(note(
-                        "Show installed versions to read what is installed at this prefix.",
-                        c,
-                    ))
-                    .padding([10, 16])
-                    .into(),
-                ),
-            },
+            }
         }
         let mut maintenance = row![].spacing(4).align_y(Center);
         for (operation, label) in [
@@ -2486,7 +2064,6 @@ impl App {
         rows.push(container(maintenance.wrap()).padding([6, 10]).into());
         section(
             "Versions",
-            None,
             Some(action(
                 "desktop-status",
                 "Show installed versions",
@@ -2525,7 +2102,11 @@ impl App {
                 ));
             }
             if facts.is_empty() {
-                body = body.push(note("Nothing to remove.", c));
+                body = body.push(super::view::said(
+                    "nothing-to-remove",
+                    "Nothing to remove.",
+                    icon(Icon::Check, c.faint, 14.0),
+                ));
             } else {
                 body = body.push(kv_list(facts, c));
             }
@@ -2615,10 +2196,10 @@ impl App {
             card = card.push(rule(c)).push(
                 container(
                     row![
-                        container(status_word("Waiting for you", c.amber, c)).width(Fill),
+                        Space::new().width(Fill),
                         primary(
                             "desktop-apply",
-                            "Apply this reviewed plan",
+                            "Apply",
                             p.apply().map(|_| Message::DesktopApply),
                         )
                     ]
@@ -2635,19 +2216,7 @@ impl App {
                 }),
             );
         }
-        let title_text = if preview {
-            "Review this plan"
-        } else {
-            "Installation report"
-        };
-        frame(
-            column![
-                container(heading(title_text, 15)).padding([12, 16]),
-                rule(c),
-                card
-            ],
-            c,
-        )
+        frame(card, c)
     }
 }
 
@@ -2760,12 +2329,12 @@ fn stage_list<'a>(stages: Vec<(Step, &str, Option<String>)>, c: Colors) -> Eleme
         let tone = match step {
             Step::Done => c.green,
             Step::Next => c.accent,
-            Step::Waiting | Step::Undone => c.faint,
+            Step::Waiting => c.faint,
         };
         let glyph: Element<'a, Message> = match step {
             Step::Done => icon(Icon::Check, tone, 11.0),
             Step::Next => dot(tone, 6.0, c),
-            Step::Waiting | Step::Undone => Space::new().width(0).height(0).into(),
+            Step::Waiting => Space::new().width(0).height(0).into(),
         };
         let node = container(glyph)
             .center(20)

@@ -30,22 +30,27 @@ that same destination. A terminal answer alone does not reach the app chat.
 Confirm a pause only after work has actually stopped. Routine stale notices
 and receipt confirmations do not need another chat response.
 
-The project may have a board of work: `list_tasks` shows cards in columns
-(backlog, ready, in_progress, review, done), each with a title and what done
-means; a card may carry typed `links` (path, commit, pr, url, task, message,
-memory) — read them first. When you file a card, send a message or hand work
-over, put what the reader should open in `links` rather than in prose. Take
-work with `pull_task` on a Ready card — it becomes yours, in
-progress, and nobody else can take it; if it is refused, somebody holds it, so
-pull another. The pull holds the card as a `task:<id>` lease for four hours:
-`renew` it during longer work (pulling your own held card renews it too); your
-exit releases it. A card whose holder's lease has lapsed is refused with `hold:
-lapsed`: take it over only by naming that holder in `take_over_from`, when you
-know they are gone or the person told you to, and never as a way to work a card
-somebody may still be on. Read the card's acceptance text before starting.
-Move it with `move_task` to review when it is ready for eyes and to done when
-the acceptance text is met; file follow-up work with `create_task`. Do not
-move cards you do not hold.
+The project may have a board of work: `list_tasks` shows its cards lane by
+lane (each lane has a category: backlog, ready, in_progress, review, blocked,
+done, cancelled), `my_tasks` the ones you hold, and `get_task` one in full —
+its fields, comments, history and the cards it waits on. A card has a key
+(`AD-12`), a title and what done means; it may carry typed `links` (path,
+commit, pr, url, task, message, memory) — read them first. When you file a
+card, send a message or hand work over, put what the reader should open in
+`links` rather than in prose. Take work with `pull_task`: with no card named
+it takes the next ready one that waits on nothing, and says so when there is
+none; it becomes yours, in progress, and nobody else can take it; if a card
+you name is refused, somebody holds it, so pull another. The pull holds the
+card as a `task:<id>` lease for four hours: `renew` it during longer work
+(pulling your own held card renews it too); your exit releases it. A card
+whose holder's lease has lapsed is refused with `hold: lapsed`: take it over
+only by naming that holder in `take_over_from`, when you know they are gone or
+the person told you to, and never as a way to work a card somebody may still
+be on. Read the card's acceptance text before starting, and say what you find
+on it with `comment_task`. Move it with `move_task`, with a `comment` saying
+why, to review when it is ready for eyes and to done when the acceptance text
+is met; file follow-up work with `create_task`, or a plan of several cards at
+once with `create_tasks`. Do not move cards you do not hold.
 
 Message kinds `pause` and `resume` are reserved for committed project lifecycle
 changes; ordinary sends cannot use them. Check the current project state before

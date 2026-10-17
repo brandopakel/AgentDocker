@@ -456,7 +456,7 @@ def run(args):
                     "messages": inbox(fresh)})["type"] == "ok"
                 card = rpc(endpoint, {"op": "task_create", "from": fresh,
                     "title": fresh, "acceptance": "preserve this work", "column": "ready"})["task"]
-                assert rpc(endpoint, {"op": "task_pull", "agent": fresh, "task": card["id"]})["type"] == "task"
+                assert rpc(endpoint, {"op": "task_pull", "agent": fresh, "task": card["id"]})["type"] == "task_detail"
                 card = rpc(endpoint, {"op": "task_move", "agent": fresh,
                     "task": card["id"], "column": "done"})["task"]
                 early = channel_for(fresh, initialize=False)
