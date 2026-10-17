@@ -2166,18 +2166,27 @@ impl App {
                 file,
             }),
             Message::CardMenu(menu) => {
-                self.shell.card_menu = (self.shell.card_menu != Some(menu)).then_some(menu);
-                if menu == CardMenu::Start && self.runtimes.is_empty() {
-                    self.send(Cmd::Runtimes);
+                if menu == CardMenu::Start
+                    && !self
+                        .task_open
+                        .as_ref()
+                        .is_some_and(|id| self.card_startable(id))
+                {
+                    self.shell.card_menu = None;
+                } else {
+                    self.shell.card_menu = (self.shell.card_menu != Some(menu)).then_some(menu);
+                    if menu == CardMenu::Start && self.runtimes.is_empty() {
+                        self.send(Cmd::Runtimes);
+                    }
                 }
             }
             Message::StartAgent(runtime) => {
                 self.shell.card_menu = None;
-                if let Some(detail) = &self.card {
+                if let Some(id) = self.task_open.as_ref().filter(|id| self.card_startable(id)) {
                     let workdir = self.selected_project_root().map(PathBuf::from);
                     self.board_act(Request::TaskStart {
                         from: agentdocker_core::HUMAN.into(),
-                        task: detail.task.id.to_string(),
+                        task: id.to_string(),
                         runtime,
                         args: Vec::new(),
                         workdir,

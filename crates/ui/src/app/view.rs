@@ -4254,6 +4254,143 @@ mod tests {
         offered
     }
 
+    /// Dependencies outside the current page still govern both the rendered
+    /// Start action and an action queued before a newer detail arrived.
+    #[test]
+    fn board_start_uses_complete_detail_and_rechecks_stale_actions() {
+        use crate::app::shell::{BoardLayout, CardMenu};
+        use crate::app::{CardDetail, Cmd, Message, Msg, Screen};
+        use agentdocker_core::{Column, Request};
+        let (tx, commands) = crate::app::queue::channel();
+        let (messages, rx) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = crate::app::App::bare(tx, rx);
+        let dir = tempfile::tempdir().unwrap();
+        let project = agentdocker_core::ProjectRef::directory(dir.path());
+        let root = project.root.display().to_string();
+        app.shell.catalog.remember(project.clone(), true);
+        app.shell.catalog.selected = Some(project.root.clone());
+        app.connected = Ok(());
+        app.screen = Screen::Board;
+        app.shell.board_layout = BoardLayout::Table;
+        let now = chrono::Utc::now();
+        let card = |id: &str| -> agentdocker_core::Task {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "project": project.id(), "title": id,
+                "acceptance": "", "column": "ready", "assignee": null,
+                "created_by": "user", "created_at": now, "updated_at": now,
+                "archived_at": null, "links": []
+            }))
+            .unwrap()
+        };
+        let blocker = card("bbbbbbbbbbbb");
+        let mut dependent = card("aaaaaaaaaaaa");
+        dependent.blocked_by.push(blocker.id.clone());
+        app.request_tasks();
+        let request = commands
+            .try_iter()
+            .find_map(|c| match c {
+                Cmd::Tasks { request, .. } => Some(request),
+                _ => None,
+            })
+            .unwrap();
+        messages
+            .send(Msg::Tasks(
+                root,
+                request,
+                Ok((vec![dependent.clone()], true)),
+            ))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::TaskOpen(dependent.id.clone()));
+        let detail = CardDetail {
+            task: dependent.clone(),
+            board: agentdocker_core::Board::main(project.id(), "test", now),
+            comments: vec![],
+            history: vec![],
+            blockers: vec![blocker],
+            children: vec![],
+            plan: None,
+            files: vec![],
+        };
+        messages
+            .send(Msg::TaskDetail(
+                dependent.id.clone(),
+                Ok(Box::new(detail.clone())),
+            ))
+            .unwrap();
+        app.drain();
+        let start = |app: &crate::app::App| {
+            offered(app.board_view(super::Colors::new(false)))
+                .into_iter()
+                .find(|(id, _, _)| id == "card-start")
+        };
+        assert!(app.tasks.as_ref().unwrap().more);
+        assert_eq!(app.tasks.as_ref().unwrap().cards.len(), 1);
+        assert!(
+            start(&app).is_none(),
+            "an open prerequisite on a later page blocks Start"
+        );
+        let take_starts = || {
+            commands
+                .try_iter()
+                .filter_map(|c| match c {
+                    Cmd::BoardAct { request, .. } => match *request {
+                        Request::TaskStart { task, .. } => Some(task),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let _ = app.update(Message::CardMenu(CardMenu::Start));
+        assert_eq!(app.shell.card_menu, None);
+        let _ = app.update(Message::StartAgent("codex".into()));
+        assert!(take_starts().is_empty());
+
+        // A closed prerequisite permits the action even though the board page
+        // still has the old card. Use the actual rendered button's callback.
+        app.card.as_mut().unwrap().blockers[0].column = Column::Done;
+        let (_, _, action) = start(&app).expect("closed prerequisite permits Start");
+        let _ = app.update(action.unwrap());
+        assert_eq!(app.shell.card_menu, Some(CardMenu::Start));
+        let _ = app.update(Message::StartAgent("codex".into()));
+        assert_eq!(take_starts(), vec![dependent.id.to_string()]);
+
+        // A queued click must not bypass a newer blocker or a changed card.
+        let _ = app.update(Message::CardMenu(CardMenu::Start));
+        app.card.as_mut().unwrap().blockers[0].column = Column::Ready;
+        assert!(start(&app).is_none());
+        let _ = app.update(Message::StartAgent("codex".into()));
+        assert!(take_starts().is_empty());
+        assert_eq!(app.shell.card_menu, None);
+        app.card.as_mut().unwrap().blockers.clear();
+        assert!(
+            start(&app).is_none(),
+            "missing dependency details are not proof of completion"
+        );
+        app.card.as_mut().unwrap().task.id = "cccccccccccc".to_owned().into();
+        assert!(
+            start(&app).is_none(),
+            "another card's detail cannot authorize this one"
+        );
+        let _ = app.update(Message::StartAgent("codex".into()));
+        assert!(take_starts().is_empty());
+        app.card = None;
+        assert!(start(&app).is_none(), "wait for the opened card's detail");
+        let _ = app.update(Message::StartAgent("codex".into()));
+        assert!(take_starts().is_empty());
+
+        // The detail's own task fields also take precedence over the page.
+        app.card = Some(detail);
+        app.card.as_mut().unwrap().task.blocked_by.clear();
+        app.card.as_mut().unwrap().blockers.clear();
+        assert!(start(&app).is_some());
+        app.card.as_mut().unwrap().task.external_blocker = "approval".into();
+        assert!(start(&app).is_none());
+        let _ = app.update(Message::StartAgent("codex".into()));
+        assert!(take_starts().is_empty());
+    }
+
     #[test]
     fn an_operation_blocks_empty_review_cleanup_even_when_the_target_is_detached() {
         use agentdocker_core::review::{Operation, Review};

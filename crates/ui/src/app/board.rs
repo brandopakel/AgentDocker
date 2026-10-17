@@ -1594,6 +1594,26 @@ impl App {
             .into()
     }
 
+    /// Only the opened card's full detail can authorize a start. The board
+    /// page may omit prerequisites; missing detail keeps the action unavailable.
+    pub(super) fn card_startable(&self, id: &TaskId) -> bool {
+        self.connected.is_ok()
+            && self.task_open.as_ref() == Some(id)
+            && self
+                .card
+                .as_ref()
+                .filter(|d| &d.task.id == id)
+                .is_some_and(|detail| {
+                    agentdocker_core::rule::startable(&detail.task, |blocker| {
+                        detail
+                            .blockers
+                            .iter()
+                            .find(|t| &t.id == blocker)
+                            .is_none_or(Task::open)
+                    })
+                })
+    }
+
     /// Below a card's fields: the plan it carries out, its files, its
     /// links, and the tools to change them or start an agent on it.
     fn card_extras(&self, task: &Task, c: Colors) -> Element<'_, Message> {
@@ -1659,12 +1679,8 @@ impl App {
         .align_y(Center);
         // A card that waits on an open card, or on something off the
         // board, is not started on, as it is not pulled.
-        let open_blocker = |id: &agentdocker_core::TaskId| {
-            self.tasks
-                .as_ref()
-                .is_some_and(|b| b.cards.iter().any(|t| &t.id == id && t.open()))
-        };
-        if agentdocker_core::rule::startable(task, open_blocker) {
+        let startable = self.card_startable(&task.id);
+        if startable {
             tools = tools.push(icon_button(
                 "card-start".into(),
                 "Start an agent on it".into(),
@@ -1677,7 +1693,7 @@ impl App {
         // A menu open on the card: its choices are names.
         let mut choices = row![].spacing(6).align_y(Center);
         match menu {
-            Some(CardMenu::Start) => {
+            Some(CardMenu::Start) if startable => {
                 for runtime in self.runtimes.iter().filter(|r| r.cli.is_some()) {
                     choices = choices.push(ghost(
                         format!("card-start-{}", runtime.name),
@@ -1721,7 +1737,7 @@ impl App {
                     ));
                 }
             }
-            None => {}
+            Some(CardMenu::Start) | None => {}
         }
         if menu.is_some() {
             extras = extras.push(choices.wrap());
