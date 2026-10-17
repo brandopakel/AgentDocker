@@ -382,14 +382,15 @@ reason) in a Review lane that is the person's, **Hand to** an agent running
 here or nobody, **Archive**, then its tools — **Plan** (the project's plans
 to choose from, or none), **Attach a file** (the project's files), **Add a
 file from disk**, **Add a link** (URL, PR, path, commit or card, and the
-target) and, on a card nobody holds, **Start an agent on it** (the installed
-command-line agents) — the plan it carries out (opened on Plans), its files
-(opened with the system's app from a private copy, or unlinked), its links
-(a URL or a pull request in the browser, a path in its app, a card in place,
-anything else copied; each with copy and remove), the cards it waits on and
-those part of it, its comments with replies and a composer, and its
-history. A card an agent is started on moves into the pull target, held by
-that agent, and the agent is told to work on it.
+target) and, on a card nobody holds that waits on nothing, **Start an agent
+on it** (the installed command-line agents) — the plan it carries out
+(opened on Plans), its files (opened with the system's app from a private
+copy, or unlinked), its links (a URL or a pull request in the browser, a
+path in its app, a card in place, anything else copied; each with copy and
+remove), the cards it waits on and those part of it, its comments with
+replies and a composer, and its history. A card an agent is started on
+moves into the pull target, held by that agent, and the agent is told to
+work on it.
 
 **To-do**, in the sidebar under Projects, is every project's open cards in
 three groups, each named by its mark: yours, your agents', and those you

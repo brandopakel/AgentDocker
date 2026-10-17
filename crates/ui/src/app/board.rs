@@ -1657,7 +1657,14 @@ impl App {
         ]
         .spacing(2)
         .align_y(Center);
-        if agentdocker_core::rule::startable(task) {
+        // A card that waits on an open card, or on something off the
+        // board, is not started on, as it is not pulled.
+        let open_blocker = |id: &agentdocker_core::TaskId| {
+            self.tasks
+                .as_ref()
+                .is_some_and(|b| b.cards.iter().any(|t| &t.id == id && t.open()))
+        };
+        if agentdocker_core::rule::startable(task, open_blocker) {
             tools = tools.push(icon_button(
                 "card-start".into(),
                 "Start an agent on it".into(),

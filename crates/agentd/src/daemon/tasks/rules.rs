@@ -60,6 +60,46 @@ impl State {
     }
 
     /// Live agents a rule started, and cards it is starting one on.
+    /// Why an agent may not be started on `task` now, or `None` when it
+    /// may: what a pull would refuse, its blockers looked up among its
+    /// project's cards.
+    pub(in crate::daemon) fn start_refusal(&mut self, task: &Task) -> Option<Response> {
+        let cards = if task.blocked_by.is_empty() {
+            Vec::new()
+        } else {
+            match self.project_cards(&task.project) {
+                Ok(cards) => cards,
+                Err(response) => return Some(*response),
+            }
+        };
+        let open = |id: &TaskId| cards.iter().any(|t| &t.id == id && t.open());
+        if rule::startable(task, open) {
+            return None;
+        }
+        let waits: Vec<String> = cards
+            .iter()
+            .filter(|t| task.blocked_by.contains(&t.id) && t.open())
+            .map(Task::handle)
+            .collect();
+        Some(if task.assignee.is_some() || !task.open() {
+            Response::error(
+                ErrorCode::Conflict,
+                "the card is held, ended or archived; an agent starts on a card nobody holds",
+            )
+        } else if !waits.is_empty() {
+            Response::Error {
+                code: ErrorCode::Conflict,
+                message: format!("the card waits on {}", waits.join(", ")),
+                details: Some(serde_json::json!({ "blocked_by": waits })),
+            }
+        } else {
+            Response::error(
+                ErrorCode::Conflict,
+                "the card waits on something off the board",
+            )
+        })
+    }
+
     fn started_by(&self, rule: &Rule) -> usize {
         let live = self
             .registry
@@ -190,12 +230,12 @@ impl State {
                 )));
             }
             RuleAction::Start { runtime, args, max } => {
-                if !rule::startable(&task)
+                if self.start_refusal(&task).is_some()
                     || self.starting_cards.contains_key(&task.id)
                     || self.started_by(rule) >= *max as usize
                 {
-                    // Full, or somebody has it: the minute's sweep tries
-                    // again while it waits.
+                    // Full, waiting, or somebody has it: the minute's
+                    // sweep tries again while it waits.
                     return Ok(None);
                 }
                 self.starting_cards
@@ -262,7 +302,11 @@ impl State {
                         // A start rule keeps its lane worked: cards that
                         // came in while it was full, or before it was made.
                         (Trigger::Enter { lane: l }, RuleAction::Start { .. }) => {
-                            rule.on_enter(card, &lane) && *l == lane && rule::startable(card)
+                            rule.on_enter(card, &lane)
+                                && *l == lane
+                                && rule::startable(card, |id| {
+                                    cards.iter().any(|t| &t.id == id && t.open())
+                                })
                         }
                         _ => false,
                     };
@@ -596,11 +640,8 @@ impl Daemon {
                 Ok(task) => task,
                 Err(response) => return *response,
             };
-            if !rule::startable(&task) {
-                return Response::error(
-                    ErrorCode::Conflict,
-                    "the card is held, ended or archived; an agent starts on a card nobody holds",
-                );
+            if let Some(refusal) = state.start_refusal(&task) {
+                return refusal;
             }
             if state.starting_cards.contains_key(&task.id) {
                 return Response::error(ErrorCode::Conflict, "an agent is starting on it already");
@@ -677,6 +718,18 @@ impl Daemon {
                 ),
             );
         };
+        // The inventory took a while: a card taken or blocked since is not
+        // started on.
+        {
+            let mut state = lock(&self.state);
+            let fresh = match state.resolve_task(start.task.as_str()) {
+                Ok(task) => task,
+                Err(response) => return *response,
+            };
+            if let Some(refusal) = state.start_refusal(&fresh) {
+                return refusal;
+            }
+        }
         let mut command = vec![cli.to_string_lossy().into_owned()];
         command.extend(start.args.iter().cloned());
         let mut labels = BTreeMap::from([(
@@ -708,13 +761,15 @@ impl Daemon {
             Ok(task) => task,
             Err(response) => return *response,
         };
-        if !rule::startable(&task) {
-            // Taken while it started: it says so, and finds other work.
-            let text = format!(
-                "{} {} was taken before you started; pull another card.",
-                task.handle(),
-                task.title
-            );
+        if state.start_refusal(&task).is_some() {
+            // Taken or blocked while it started: it says so, and finds
+            // other work.
+            let why = if task.assignee.is_none() && task.open() {
+                "is blocked now"
+            } else {
+                "was taken before you started"
+            };
+            let text = format!("{} {} {why}; pull another card.", task.handle(), task.title);
             state.tell_holder(&start.from, &agent.id, &task, text);
             return Response::Agent { agent };
         }

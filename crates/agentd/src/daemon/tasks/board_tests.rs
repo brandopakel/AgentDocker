@@ -676,3 +676,118 @@ async fn an_agent_is_started_on_a_card_only_by_the_person() {
         "free to start on again"
     );
 }
+
+/// A card that waits, on an open card or on something off the board, is
+/// not started on by the person or by a start rule, as a pull would not
+/// take it; once what it waits on clears, both start on it.
+#[tokio::test]
+async fn a_waiting_card_is_started_on_only_once_it_clears() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let first = card(
+        d.handle(create(HUMAN, &f.work, "Schema first", None, &[]))
+            .await,
+    );
+    let mut filing = create(HUMAN, &f.work, "Port it", Some("ready"), &[]);
+    if let Request::TaskCreate {
+        blocked_by,
+        external_blocker,
+        ..
+    } = &mut filing
+    {
+        *blocked_by = vec![first.id.to_string()];
+        *external_blocker = "the vendor's sign-off".into();
+    }
+    let waiting = card(d.handle(filing).await);
+    let start = || Request::TaskStart {
+        from: HUMAN.into(),
+        task: waiting.id.to_string(),
+        runtime: "no-such-runtime".into(),
+        args: Vec::new(),
+        workdir: None,
+    };
+    let refused = d.handle(start()).await;
+    assert!(
+        matches!(&refused, Response::Error { code: ErrorCode::Conflict, message, .. }
+            if message.contains(&first.handle())),
+        "{refused:?}"
+    );
+    assert!(matches!(
+        d.handle(Request::RuleCreate {
+            from: HUMAN.into(),
+            project: Some(f.work.clone()),
+            board: None,
+            name: "Work Ready".into(),
+            trigger: Trigger::Enter {
+                lane: "ready".into()
+            },
+            action: RuleAction::Start {
+                runtime: "no-such-runtime".into(),
+                args: Vec::new(),
+                max: 2,
+            },
+        })
+        .await,
+        Response::Rule { .. }
+    ));
+    assert!(
+        lock(&d.state).sweep_rules(Utc::now()).is_empty(),
+        "a start rule launches nothing on it"
+    );
+
+    // The card it waits on ends; the thing off the board still holds it.
+    card(
+        d.handle(Request::TaskMove {
+            agent: HUMAN.into(),
+            task: first.id.to_string(),
+            column: None,
+            to: Some("done".into()),
+            after: None,
+            before: None,
+            comment: None,
+        })
+        .await,
+    );
+    let refused = d.handle(start()).await;
+    assert!(
+        matches!(&refused, Response::Error { code: ErrorCode::Conflict, message, .. }
+            if message.contains("off the board")),
+        "{refused:?}"
+    );
+    assert!(lock(&d.state).sweep_rules(Utc::now()).is_empty());
+
+    // Cleared: the person's start gets as far as the runtime, and the
+    // rule's sweep starts on it.
+    card(
+        d.handle(Request::TaskUpdate {
+            agent: HUMAN.into(),
+            task: waiting.id.to_string(),
+            title: None,
+            acceptance: None,
+            assignee: None,
+            links: None,
+            description: None,
+            priority: None,
+            size: None,
+            due: None,
+            external_blocker: Some(String::new()),
+            parent: None,
+            blocked_by: None,
+            tags: None,
+            plan: None,
+        })
+        .await,
+    );
+    assert!(matches!(
+        d.handle(start()).await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+    let starts = lock(&d.state).sweep_rules(Utc::now());
+    assert_eq!(
+        starts.iter().map(|s| &s.task).collect::<Vec<_>>(),
+        [&waiting.id]
+    );
+}

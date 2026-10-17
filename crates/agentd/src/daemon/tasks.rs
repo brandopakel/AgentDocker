@@ -3404,6 +3404,7 @@ mod tests {
                     parent: None,
                     blocked_by: Some(vec![foreign.clone()]),
                     tags: None,
+                    plan: None,
                 })
                 .await,
             Response::Error {

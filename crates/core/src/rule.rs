@@ -3,7 +3,7 @@
 //! What a rule does is the daemon's; whether and when it acts is here.
 use crate::board::{Board, BoardError, NAME_CHARS};
 use crate::task::{COMMENT_CHARS, Task};
-use crate::{Column, ProjectId};
+use crate::{Column, ProjectId, TaskId};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -230,12 +230,16 @@ pub fn start_prompt(task: &Task) -> String {
     prompt
 }
 
-/// A card a rule may start an agent on: one nobody holds yet, still to
-/// do.
-pub fn startable(task: &Task) -> bool {
+/// A card an agent may be started on: one nobody holds yet, still to
+/// do, and waiting on nothing — no open card it is blocked by
+/// (`open_blocker` says which are), nothing off the board. What a pull
+/// asks of a card, so a start never takes one a pull would refuse.
+pub fn startable(task: &Task, open_blocker: impl Fn(&TaskId) -> bool) -> bool {
     task.assignee.is_none()
         && task.archived_at.is_none()
         && !matches!(task.column, Column::Done | Column::Cancelled)
+        && task.external_blocker.trim().is_empty()
+        && !task.blocked_by.iter().any(open_blocker)
 }
 
 #[cfg(test)]
@@ -382,7 +386,27 @@ mod tests {
         assert!(!rule.on_enter(&task, "review"));
         task.board = Some("sprint".into());
         assert!(!rule.on_enter(&task, "ready"), "another board");
-        assert!(startable(&card("ready", now)));
+        assert!(startable(&card("ready", now), |_| false));
         assert!(start_prompt(&card("ready", now)).contains("Work on card"));
+    }
+
+    #[test]
+    fn a_card_that_waits_is_not_startable() {
+        let now = Utc::now();
+        let blocker = card("in_progress", now);
+        let mut waiting = card("ready", now);
+        waiting.blocked_by.push(blocker.id.clone());
+        assert!(
+            !startable(&waiting, |id| id == &blocker.id),
+            "an open blocker"
+        );
+        assert!(startable(&waiting, |_| false), "its blocker ended");
+        waiting.external_blocker = "the vendor's sign-off".into();
+        assert!(!startable(&waiting, |_| false), "something off the board");
+        waiting.external_blocker = "  ".into();
+        assert!(startable(&waiting, |_| false));
+        let mut held = card("ready", now);
+        held.assignee = Some("codex".into());
+        assert!(!startable(&held, |_| false));
     }
 }
