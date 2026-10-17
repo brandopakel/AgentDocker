@@ -6638,6 +6638,58 @@ pub(crate) mod tests {
         assert!(app.stale_notices().is_empty());
     }
 
+    fn wait_grace_respects_changed_notification_eligibility(focus: bool) {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let worker = record("worker", "claude-code", Some(4242));
+        let id = worker.id.to_string();
+        app.agents.push(worker);
+        app.shell.unfocused = true;
+        let fresh = BTreeMap::from([(
+            id.clone(),
+            Activity::Waiting {
+                since: Utc::now(),
+                reason: Some(agentdocker_core::WaitReason::Permission),
+            },
+        )]);
+        app.note_completions(&fresh);
+        app.activity = fresh;
+        assert_eq!(app.shell.wait_notices.len(), 1);
+        let _ = app.update(Message::Tick);
+        assert!(app.shell.wait_timer);
+        assert!(app.shell.notice_log.is_empty());
+
+        // The person returns or opts out while the grace timer is pending.
+        // Drive the actual event handler, then let the outstanding timer fire.
+        let event = if focus {
+            Message::Event(iced::Event::Window(iced::window::Event::Focused))
+        } else {
+            Message::NotifyFinished(false)
+        };
+        let _ = app.update(event);
+        for (_, since) in &mut app.shell.wait_notices {
+            *since -= shell::WAIT_GRACE;
+        }
+        let _ = app.update(Message::WaitGrace);
+        assert!(
+            app.shell.notice_log.is_empty(),
+            "a wait must not notify after focus or notification eligibility changes"
+        );
+        assert!(app.shell.notice_queue.is_empty());
+        assert!(!app.shell.noticed.contains(&shell::window_tag(&id)));
+    }
+
+    #[test]
+    fn wait_grace_does_not_notify_after_window_focus() {
+        wait_grace_respects_changed_notification_eligibility(true);
+    }
+
+    #[test]
+    fn wait_grace_does_not_notify_after_notifications_are_disabled() {
+        wait_grace_respects_changed_notification_eligibility(false);
+    }
+
     /// The notification centre is asked one thing at a time, in order: a
     /// wait that ends while its post is still in flight is taken back only
     /// after that post lands, and a fresh wait during the withdrawal is

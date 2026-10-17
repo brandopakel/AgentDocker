@@ -3023,6 +3023,7 @@ impl App {
         // it comes due, since an unfocused window sweeps only twice a
         // minute.
         let now = Instant::now();
+        let telling = self.shell.unfocused && self.settings.notify_finished && self.smoke.is_none();
         let mut due = Vec::new();
         let mut young = Vec::new();
         for (id, since) in std::mem::take(&mut self.shell.wait_notices) {
@@ -3030,7 +3031,7 @@ impl App {
                 .agents
                 .iter()
                 .any(|a| a.id.as_str() == id && self.waits_for_person(a));
-            if !still {
+            if !telling || !still {
                 continue;
             }
             if now.duration_since(since) >= WAIT_GRACE {

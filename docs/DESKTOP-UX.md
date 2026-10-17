@@ -528,7 +528,9 @@ your next message to it is already queued, since it goes straight on to that.
 An agent that stops for you in its own terminal is told the same way (*Badger
 wants permission*, *has a question* or *is waiting for you · In keel. It is
 waiting in its terminal.*) once the stop has lasted two seconds, so a prompt you
-answer at once, at the terminal, never notifies. A notice is taken back from Notification Center
+answer at once, at the terminal, never notifies. Returning to the app or turning
+these notifications off during that delay cancels the pending notice. A notice is
+taken back from Notification Center
 once it is no longer true: the question was answered, the agent moved on from
 its prompt, or you looked at what it finished. Each question's notice is its own,
 so taking back an answered one never removes a newer question from the same
