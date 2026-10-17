@@ -8377,6 +8377,16 @@ impl State {
                     canonical.adapter_contacts.insert(*kind, contact.clone());
                 }
             }
+            // A duplicate's read of the session's queue was the session's.
+            if let Some(read) = &record.queue_read
+                && Some(read.process_started_at) == canonical.process_started_at
+                && canonical.queue_read.as_ref().is_none_or(|ours| {
+                    ours.process_started_at != read.process_started_at
+                        || read.observed_at > ours.observed_at
+                })
+            {
+                canonical.queue_read = Some(read.clone());
+            }
         }
         let retired: Vec<AgentId> = retired.iter().map(|r| r.id.clone()).collect();
         let kind = EventKind::SessionDuplicatesFolded {
@@ -10449,6 +10459,65 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         assert!(!agentdocker_core::input::unreachable(&record, later));
+    }
+
+    /// The session's only read of its queue went through a duplicate
+    /// record: the fold keeps it, so the session is not taken for one that
+    /// cannot receive.
+    #[tokio::test]
+    async fn a_fold_keeps_the_duplicates_read_of_the_sessions_queue() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let checkout = TempDir::new().unwrap();
+        std::fs::write(checkout.path().join("Agentfile.toml"), "").unwrap();
+        let moved = checkout.path().join("artifacts");
+        std::fs::create_dir_all(&moved).unwrap();
+        let Response::Agent { agent: kept } = register_session(
+            &daemon,
+            "claude-code-2923",
+            checkout.path(),
+            Some("83083752"),
+        )
+        .await
+        else {
+            panic!("the session registers")
+        };
+        let born = kept.process_started_at.expect("a live process's birth");
+        assert!(kept.queue_read.is_none());
+        let read = agentdocker_core::AdapterContact {
+            process_started_at: born,
+            observed_at: Utc::now(),
+        };
+        let drifted = {
+            let mut record = AgentRecord::new(
+                AgentSpec {
+                    name: "claude-83083752".into(),
+                    runtime: "claude-code".into(),
+                    workdir: Some(moved.canonicalize().unwrap()),
+                    labels: BTreeMap::from([
+                        ("session_id".into(), "83083752".into()),
+                        ("via".into(), "hook".into()),
+                    ]),
+                    ..AgentSpec::default()
+                },
+                false,
+                kept.created_at + chrono::Duration::minutes(35),
+            );
+            record.project = kept.project.clone();
+            record.pid = kept.pid;
+            record.process_started_at = Some(born);
+            record.status = AgentStatus::Running;
+            record.queue_read = Some(read.clone());
+            let mut state = lock(&daemon.state);
+            state.store.upsert_agent(&record).unwrap();
+            state.registry.insert(record.clone()).unwrap();
+            record
+        };
+        daemon.check_liveness();
+        let state = lock(&daemon.state);
+        let record = state.registry.get(&drifted.id).unwrap();
+        assert_eq!(record.id, kept.id, "folded into the record that stays");
+        assert_eq!(record.queue_read.as_ref(), Some(&read));
     }
 
     /// Register something that could be matched with another half.
