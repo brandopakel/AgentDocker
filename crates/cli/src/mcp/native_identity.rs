@@ -632,6 +632,30 @@ mod tests {
         assert!(!unbound(&twice), "two terminals are refused, not unbound");
     }
 
+    /// A shared Codex server also serves conversations started in a terminal,
+    /// which read their own queue when a message does not fit the hook: the
+    /// inbox tools stay listed, refused only for a bound conversation.
+    #[tokio::test]
+    async fn a_shared_codex_server_lists_the_inbox_tools_terminal_conversations_need() {
+        use crate::{client::mock::Mock, mcp::McpServer};
+        let (context, _, _) = fixture();
+        let mut server = McpServer::new(Mock::with(vec![]), context.unbound_identity());
+        server.native_context = Some(context);
+        let listed = server
+            .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}))
+            .await
+            .unwrap();
+        let names: Vec<&str> = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        for tool in ["read_inbox", "wait_for_messages", "acknowledge_messages"] {
+            assert!(names.contains(&tool), "{tool} is listed");
+        }
+    }
+
     /// A dedicated server earns authority only through an accepted binding:
     /// a terminal is never found for it, and nothing is asked of the daemon.
     #[tokio::test]

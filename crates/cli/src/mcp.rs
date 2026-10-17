@@ -657,7 +657,11 @@ impl<B: Backend> McpServer<B> {
                             .is_some_and(|name| REMOTE_TOOLS.contains(&name))
                     });
                 }
-                if self.codex_input || self.native_context.is_some() || self.native_input {
+                // A shared Codex server also serves conversations started in a
+                // terminal, which read their own queue: the inbox tools stay
+                // listed, and a call is refused only for a bound conversation,
+                // whose receiver owns delivery.
+                if self.codex_input || self.native_input {
                     tools.retain(|tool| {
                         !matches!(
                             tool["name"].as_str(),
@@ -673,7 +677,7 @@ impl<B: Backend> McpServer<B> {
                         )
                     });
                 }
-                if self.claude_channel || self.native_context.is_some() || self.native_input {
+                if self.claude_channel || self.native_input {
                     for tool in &mut tools {
                         if tool["name"] == "ask_human" {
                             tool["description"] = if self.claude_channel {
@@ -725,7 +729,7 @@ impl<B: Backend> McpServer<B> {
         }
         if self.native_context.is_some() {
             result["instructions"] = json!(format!(
-                "AgentDocker tools act as the live root Codex conversation verified by its native input binding. Call whoami to inspect that identity. Conversation metadata is required for every tool call; missing, child or ambiguous bindings are refused. Queued messages arrive through the native receiver, which owns acknowledgements. ask_human posts immediately and its answer returns through that queue. Finish the turn while waiting.\n\n{}",
+                "AgentDocker tools act as the live root Codex conversation: its native input binding, or the terminal that resumed it. Call whoami to inspect that identity. Conversation metadata is required for every tool call; missing, child or ambiguous bindings are refused. A bound conversation's queued messages arrive through the native receiver, which owns acknowledgements, and its inbox tools are refused. A conversation started in a terminal gets its messages in hook context; read_inbox reads any the hook could not fit and acknowledge_messages confirms them. ask_human posts immediately and its answer arrives as a message. Finish the turn while waiting.\n\n{}",
                 crate::skill::instructions(false)
             ));
         }
