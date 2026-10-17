@@ -6,6 +6,7 @@ An October 1 retention audit found that the private `/tmp` evidence files had ex
 
 | Date | Trial | Source | Result | Record |
 | --- | --- | --- | --- | --- |
+| 2026-10-16 | Hosted Mac Codex 0.163 account UUID reopen and offline delivery | `10b57894` | **PASS, scoped:** five checks/two real turns; same canonical agent/thread, original receipt plus one offline message delivered once without bootstrap input; 16 owned generations retired, 11 protected generations and saved configuration unchanged. Synthetic PTY/existing auth; physical, fresh-login and sleep/reboot gates remain. |
 | 2026-09-07 | claude profile setup | `a65d956` | Portable coordination skill merged in #149 and is included in the recorded installed d14610b7 candidate built from source 3785e810; fresh-session acceptance remains open. | [2026-09-07-claude-profile-setup.json](https://github.com/brandopakel/AgentDocker/blob/5656fe8f/docs/verification/2026-09-07-claude-profile-setup.json) |
 | 2026-09-07 | desktop maintenance | `815f8eea` | owned native desktop fixtures; private paths and captures excluded | [2026-09-07-desktop-maintenance.json](https://github.com/brandopakel/AgentDocker/blob/5656fe8f/docs/verification/2026-09-07-desktop-maintenance.json) |
 | 2026-09-07 | identity lifecycle | `50b78dc9` | Packaged adapter lifecycle with a synthetic host; separate from actual model-provider trials | [2026-09-07-identity-lifecycle.json](https://github.com/brandopakel/AgentDocker/blob/5656fe8f/docs/verification/2026-09-07-identity-lifecycle.json) |
