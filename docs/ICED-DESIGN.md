@@ -18,8 +18,8 @@ Identity follows the existing host project discovery rules. A canonical physical
 repository root joins pinned folders, discovered processes and registered
 sessions. Registered project fingerprints supersede weaker discovery metadata.
 Linked worktrees stay grouped under their repository; individual sessions retain
-checkout and branch details. A launch uses the selected repository root shown
-in the header. Other sessions have their own entry when a project cannot
+checkout and branch details. A launch uses the selected repository root, the
+folder on the header title's tooltip. Other sessions have their own entry when a project cannot
 be established. An installed desktop provider alone does not reveal its projects.
 
 The app restores the last selected project and appearance on launch. Restoring
@@ -59,10 +59,10 @@ where to check the permission if the action times out.
 
 | Destination | Everyday purpose |
 | --- | --- |
-| Projects | All projects home; selecting a project opens its shared Chat with a compact list of current agents. Agents is the second tab; Board, History, Files in use and AgentDocker commands are under More. Open project terminal is visible in the project header. |
+| Projects | All projects home; selecting a project opens its shared Chat with a compact list of current agents. Agents is the second tab and Board the third; History, Files in use, Usage and AgentDocker commands are under More. Open project terminal is visible in the project header. |
 | Inbox | Questions, retained answer drafts and messages addressed to the user; Messages (conversations, threads, read cursors) against a daemon that keeps them |
 | Tools (rail id `connections`) | Installed tools and connection status. **Set up** appears for an installed tool missing MCP or hooks when no active session report exists. Expanded Details offers **Review setup**, health and history; setup plans use **Connect**, and applied plans offer **Undo** |
-| Settings | Appearance, installation, retained versions and diagnostics |
+| Settings | Appearance, terminal, update checks, installation and retained versions |
 
 Light and dark appearances share the same hierarchy and the same visual
 system, which is drawn from the mark. The October 2 redesign follows the
@@ -71,10 +71,10 @@ and one or more patterns per surface); only the look changed, never what a
 control does, its id or its accessible label:
 
 - **Brand.** The rail leads with the cube mark (`crates/ui/src/mark.png`, the
-  transparent mark downscaled to 96 px, drawn in a 26-point slot) and
-  the two-tone wordmark: *Agent* in the rail's ink, *Docker* in a lightened
-  accent that reads on navy.
-  The mark also anchors empty states at reduced opacity.
+  transparent mark downscaled to 96 px, drawn at 22 points) and no wordmark:
+  the window title names the app. An empty place is the mark in a quiet tile
+  at reduced opacity, or the one thing to do there, with no title or sentence
+  (`view::empty`).
 - **Every project has its own mark.** A rounded tile with the project's
   initial on a tint derived from the project's identity (`style::identity`:
   an FNV hash of the repository fingerprint, or of a root-path UUID without one,
@@ -109,8 +109,8 @@ control does, its id or its accessible label:
   the same way (`view::standing_glyph`, `view::standing_tone`): an amber dot
   for needs you, a red triangle for failed, a muted dot for working, an
   hourglass for parked, a dashed ring for starting, an accent dot for news,
-  nothing for idle or ended. The word comes in a tooltip; a row prints it
-  only when it calls for the person.
+  nothing for idle or ended. The word comes in a tooltip, and a session
+  row's spoken name says what the agent is doing; no row prints it.
 - **Finished, not yet viewed.** When a session's activity goes from working
   or blocked to idle or finished while the user is not looking at its project
   in a focused window, the session is marked unviewed: its standing is
@@ -120,13 +120,14 @@ control does, its id or its accessible label:
   session or going to its terminal clears it, as does the session starting to
   work again; waiting for the person (`Activity::Waiting`) is not finished and
   drops the mark. An idle report on its own never counts as viewing, and the
-  observed state stays in the row's meta line unchanged. Window-local state,
+  observed state stays in the row's spoken name unchanged. Window-local state,
   never persisted (`shell::State::unviewed_done`, filled by
   `App::note_completions`).
 - **Pull request chip.** An agent row whose branch has a pull request on
   GitHub carries one `Kind::Inline` chip (`App::pull_request_chip`): the
   number and a glyph for its checks — `Icon::Check` green, an amber dot,
-  `Icon::Close` red — or *merged*; it opens the page with `/usr/bin/open` or
+  `Icon::Close` red — or, once merged, the muted done glyph
+  (`Icon::LaneDone`); its words are its spoken name; it opens the page with `/usr/bin/open` or
   `xdg-open`, the URL one argument. `pull_request.rs` reads it with
   `gh pr list --repo <owner/name> --head=<branch> --state all --json …`, the
   repository taken from the git configuration's GitHub remote (upstream, then
@@ -136,20 +137,21 @@ control does, its id or its accessible label:
   a branch is asked again after two minutes, or fifteen seconds once the
   window regains focus. A failed lookup keeps the last answer; nothing is
   persisted.
-- **Colour roles** live in `app/style.rs`: ground, rail, card, raised, hover,
+- **Colour roles** live in `app/style.rs`: ground, rail, card, raised,
   overlay, text, muted, faint, line, line-strong, accent, accent-hover,
-  accent-soft/ink, cyan, green, amber, red and danger (the solid fill of an
-  armed destructive action). Since October 14 the surfaces are neutral greys
-  (dark ground `#141416`, light `#f7f7f8` with white cards) and colour is
-  spent on state and the one primary action: every app in the teardown keeps
+  accent-soft/ink, primary, primary-hover, on-primary, cyan, green, amber, red
+  and danger (the solid fill of an armed destructive action). The surfaces are
+  one neutral family (dark ground `#151514`, light `#f6f6f4` with white cards)
+  and colour is spent on state, the one primary action filled with ink. Every
+  app in the teardown keeps
   its sidebar a step off the page, never a contrasting block, so the navy
   rail is retired. `Colors::rail()` is the sidebar step of either appearance
   (lighter than the page in dark, darker in light) with washes of the ink for
   the selected and hovered rows. A unit test keeps text, muted and faint ink
   above WCAG thresholds on every page surface and on the rail and its rows;
-  white labels on the filled actions and status words on a card are checked
-  too.
-- **One radius scale** (`RADIUS_XS` 4 keycaps and checkboxes, `RADIUS_SM` 6
+  the label on the primary action, white on the armed danger fill and status
+  tones on a card are checked too.
+- **One radius scale** (`RADIUS_XS` 4 checkboxes and an empty list's placeholder bars, `RADIUS_SM` 6
   controls, rows and tooltips, `RADIUS_MD` 8 menus, tracks and tiles,
   `RADIUS_LG` 10 cards) and one control height: a 13-point Medium label on an
   18-point line inside 7 points of padding is 32 points, for buttons, inputs
@@ -166,10 +168,16 @@ control does, its id or its accessible label:
   under two percent (measured 2026-09-10 on the packaged build). Cards and
   panels get depth from tint and hairline only. Tiny shadows on tooltips and
   the selected segment are a few hundred pixels and remain.
-- **Status is a glyph, and a word where it matters.** The standing glyph sits
-  on every agent row; the word is in its tooltip, printed on the row only for
-  needs you and failed, and printed beside a dot in the session panel. Cyan
-  marks a pinned project or a process available to connect.
+- **Status is a mark that says its words.** The standing glyph sits on every
+  agent row and beside the name in the session panel, where its tooltip adds
+  the tool and where the agent runs; no row prints the word. Elsewhere a state
+  is a dot (`view::status_dot`), a failure the amber alert mark
+  (`view::alert_mark`, or `view::error_line` with its first line clipped
+  beside it) and a time left a ring or a meter, each with its words as its
+  tooltip and its accessible name; any other glyph that stands for words
+  carries them as its accessible name through `view::said`, usually with the
+  same words on the pointer. A screen reader and the workflow driver hear
+  what the eye reads. Cyan marks a process available to connect.
 - **Controls have kinds** (`controls::Kind`) on one ladder: one filled
   *primary* action per screen, *secondary* actions as hairline outlines with
   no fill, *ghost* words for tertiary actions (Cancel, Dismiss, Details,
@@ -177,7 +185,9 @@ control does, its id or its accessible label:
   *inline* words with the same quiet look at their own width), underline
   *tabs*, *segments*, *nav* rows inked with the rail's roles, red
   *destructive* words for a menu's Remove or Forget, and a solid red *danger*
-  fill for an armed stop. Hover and press are washes of the ink over whatever
+  fill for an armed stop. The primary fill is ink (`primary`, its label
+  `on_primary`), and a selected control is a neutral wash with the full ink,
+  never the accent. Hover and press are washes of the ink over whatever
   the control sits on, so one rule reads on the ground, a card and the rail.
   The keyboard focus ring is a 2-point accent edge drawn inside the control.
   Every kind is the same keyboard-focusable, AccessKit-labelled control; a
@@ -201,27 +211,37 @@ control does, its id or its accessible label:
   A project row's **⋯** shows only under the pointer, on the selected row and
   while its menu is open; elsewhere it is drawn transparent but stays a
   control for the keyboard and assistive technology.
-- **Type.** Inter is bundled (`crates/ui/src/fonts/`, Regular, Medium and
-  SemiBold, SIL Open Font License; the license text ships beside the files and
-  belongs in the app bundle's licenses). It is the default face, so weights and
-  glyph coverage no longer depend on the host: the macOS system sans had no
+- **Type.** IBM Plex Sans is bundled (`crates/ui/src/fonts/`, Regular, Medium
+  and SemiBold, SIL Open Font License; the license text ships beside the files
+  and belongs in the app bundle's licenses). It is the default face, so weights
+  and glyph coverage do not depend on the host: the macOS system sans had no
   Bold face for the default family and borrowed heavier glyphs from a
   monospace fallback. Headings are SemiBold; Bold is never requested. Section
-  eyebrows are 11-point capitals; paths and identifiers use the system
-  monospace.
+  labels are sentence case, never tracked capitals; paths and identifiers use
+  the system monospace.
+- **Colour.** One neutral family, a tone step from surface to surface. The
+  primary action is filled with ink (near-black in light, near-white in dark),
+  not a hue; blue is the signal for new, active and focus; green, amber and red
+  are standing. The rail carries the mark alone, without a wordmark.
 - **Jump to… (⌘K, Ctrl+K elsewhere).** A search-looking field under the
   brand (`command-palette`) and the shortcut from anywhere, including a
   focused text field, open one palette (`app/palette.rs`): a search field
-  (`palette-search`) over grouped rows — Agents (unsearched, only those whose
+  (`palette-search`) over grouped rows, the groups parted by hairlines rather
+  than headings — Agents (unsearched, only those whose
   standing calls for attention, loudest first; searched, every live one, its
   standing word in the description; the row's mark is its standing glyph or
-  its tool's logo; a row may carry a second action, run with ⌘Enter and named
-  in the footer while highlighted, which for an agent is its terminal), Go to
+  its tool's logo; a row may carry a second action, run with ⌘Enter and
+  marked with a terminal glyph while highlighted, which for an agent is its
+  terminal), Go to
   (All projects, Messages or
-  Inbox, Tools, Settings, with their ⌘2–⌘4 keycaps), Projects (each with its
-  mark and folder), Actions (Launch agent… with a nested page of installed
+  Inbox, Tools, Settings, with their ⌘2–⌘4 shortcuts), Projects (each with its
+  mark), Actions (Launch agent… with a nested page of installed
   tools, Open project terminal, Pause…, Add project…, the other appearance)
-  — each row an existing message (`palette-item-<kind>-<key>`). Matching is
+  — each row an existing message (`palette-item-<kind>-<key>`). A row's
+  description (an agent's standing word, a project's folder) is searched and
+  spoken, and its shortcut and second action spoken, none of them drawn:
+  there are no keycaps and no key footer, and a search that matches nothing
+  shows the search glyph. Matching is
   case-insensitive, in tiers that never mix: label prefix, then every term
   starting a label word or the label's initials starting with the query, then
   a substring, then words of the description, then (three or more letters)
@@ -236,11 +256,11 @@ control does, its id or its accessible label:
   of a few peers: the session filters and the theme. The track is an inset
   with a hairline; the selected segment is a card-coloured thumb with a
   hairline (and, in light, a one-point shadow), the others muted words.
-- **Marks explain themselves.** Where a mark has no words beside it (the
-  rail's project tiles), pointing at it shows a tooltip with the words the row
-  would otherwise print: live agents, pinned or discovered, and how many
-  finished unviewed (`hint`); an icon button says its name (`tip`); dots that
-  already sit next to their words get no tooltip. The hover target is padded to about sixteen points; the mark itself
+- **Marks explain themselves.** Where a mark has no words beside it, pointing
+  at it shows them: a rail project tile gives the folder, how many agents are
+  live and how many finished unviewed (`hint`); an icon button says its name
+  (`tip`); a status mark says its words (`status_dot`, `alert_mark`, `said`
+  under a `tip`). The hover target is padded to about sixteen points; the mark itself
   stays small. Verified with the real macOS pointer (a CGEvent helper moving
   the cursor over the running release window while the smoke captured the
   frame), not only with widget callbacks.
@@ -254,29 +274,34 @@ control does, its id or its accessible label:
   therefore rationed rather than made cheap. State arrives through the
   daemon's event stream and the workers' wake, never by polling for a
   redraw; the clock sweep that keeps "12s ago", a question's time left and
-  the status line honest runs every two seconds while the window has focus
+  the toast's eight seconds (`STATUS_FOR`) honest runs every two seconds while the window has focus
   and every thirty while it does not (`FOCUSED_SWEEP`, `UNFOCUSED_SWEEP`),
   since nobody reads those labels in a window they are not looking at; and a
   wake becomes one frame forty milliseconds later (`WAKE_SETTLE`), so the
   seven answers to a sweep's snapshot requests, which land within a few
   milliseconds of each other, are one frame rather than seven.
-- **Board, History, Files in use, Usage.** The five lanes are
-  tinted wells with no border, headed by the lane's dot, name and a count
-  chip; cards are hairline cards (no shadow) whose edge firms under the
-  pointer and turns accent when open. Filing lives at the foot of the Ready
-  lane, and its **Add to Ready** is the board's one filled action; a card's
-  forward move is an outline, its back move a ghost. History is one row
+- **Board, History, Files in use, Usage.** A board's lanes are tinted wells
+  with no border (a lane that is the drop target firms its edge; one past
+  its limit tints red), headed by the lane's shape, name and a count; cards
+  are hairline cards (no shadow) whose edge firms under the pointer, turns
+  accent when open and red for high priority. A card is dragged with a
+  `mouse_area` press, and released over a lane or beside a card it moves
+  there; released where it was pressed, it opens in place. Every card stays
+  one AccessKit control named by its key, title, lane and holder, so the
+  keyboard and the smoke open it as before. Filing is a title line at each
+  lane's foot. An open card's moves are icon buttons named in their
+  tooltips; its **Save** is the card's one filled action. History is one row
   grammar in one card: an icon tile per journal kind, the line, a muted line
   of kind, branch and short sha, the time at the right. Usage leads with
   range and grouping as segmented controls and four totals, then one framed
-  table with capital micro headers and right-aligned numbers (a share bar
+  table with sentence-case headers and right-aligned numbers (a share bar
   from 1180 points wide).
 - **Messages** (`app/messages.rs`, helpers in `app/messages/look.rs`). The
-  conversation list is **Projects** — each project's chat on its project
-  monogram, named for the project, opening that project's Chat — then
-  **Direct messages**, rows of a 28-point mark with a presence dot, the name
-  over one line of preview, cut with an ellipsis, and a quiet unread count
-  (the `@n` count in the accent). Only conversations with something in them
+  conversation list is the project chats — each project's chat on its project
+  monogram, named for the project, opening that project's Chat — then, under
+  a rule and with no group label, the direct messages, rows of a 28-point mark
+  with a presence dot, the name alone, cut with an ellipsis, and a quiet
+  unread count (the `@n` count in the accent). Only conversations with something in them
   are listed, an ended session's only while it holds something unread, and
   nothing folds: what two agents said to each other is not listed. `#all`, channels, the
   daemon's contested-path rooms and its notices to an agent are not listed
@@ -284,66 +309,96 @@ control does, its id or its accessible label:
   arrives (`App::read_hidden_conversations`, once per newest message), and
   the CLI reads them (`agentdocker history`, `agentdocker channels`). The
   history groups messages into runs at render time — one mark and one header
-  (name, kind as a word, time) until the sender or kind changes, five minutes
+  (the name, its time on the pointer, a question or hand-off as its glyph)
+  until the sender or kind changes, five minutes
   pass or a message names the person — with flat rows in the full text
-  colour; AgentDocker's notices are single muted lines on a small disc.
-  Unread rows are tinted under the **New** divider; the open thread's message
+  colour; AgentDocker's notices are single muted lines on a small disc. The
+  day and the start of the unread part are bare rules named for a reader
+  (`said`); unread rows are tinted under the accent **New** rule; the open thread's message
   and a notification's target carry a 2-point accent rail, a mention an
-  amber one. **Reply** is drawn only under the pointer or keyboard focus
+  amber one. The person's own message carries one delivery dot in its lead
+  state's tone, the summary its name and every recipient its tooltip.
+  **Reply** is drawn only under the pointer or keyboard focus
   (Iced's `hover` widget), so it is always present for the driver and
   assistive technology. `controls::framed_composer` is the field, a hairline
-  and a footer of keycap hints and a 28-point send arrow (`send-<key>`,
-  spoken *Send*), the whole frame showing focus; one status line under it
-  says the error, the queued state with **Details**, recoveries or the
-  recipient's readiness. Mention offers float above it. The thread quotes
+  and a footer holding only a 28-point send arrow (`send-<key>`,
+  spoken *Send*), the whole frame showing focus; the keys are in the field's
+  spoken name. Lines under it say the error, the queued state with
+  **Details** and recoveries, and the recipient's readiness is a named dot
+  beside **Connection**. Mention offers float above it. The thread is headed by
+  the channel glyph, where it is on the pointer, and quotes
   its parent on the accent rail; the new-conversation form is a card listing
-  the agents a direct message can go to. A question put to every agent
-  shows its card in the direct conversation with whoever asked it. The project chat's side panel
-  lists agents as a mark, the name over *status · 3m* and a terminal glyph.
+  the agents a direct message can go to. Loading is a faint ring. A question put to every agent
+  shows its card in the direct conversation with whoever asked it. A
+  conversation's header is its name, the topic on its tooltip, and a
+  project's Chat has none. The project chat's side panel
+  lists agents as the standing glyph, the mark and the name (*status · 3m* on
+  its tooltip), the pull request chip and a chevron to the agent's details,
+  under **All agents** and, when agents ask, **Answer N**.
 - **Tools, Settings, Installation** (`app/tools_view.rs`). Tools is one card of
-  rows: a two-letter mark on the tool's tint, the name over a dot and its
-  status words, then one action — **Set up** filled only for the first tool
+  rows: a two-letter mark on the tool's tint, the name beside a state dot
+  whose tooltip and accessible name carry its status words and version, then
+  one action — **Set up** filled only for the first tool
   that needs it (an outline for the rest, and for all while a setup is under
-  review), a green **Connected** word for a tool taking messages — and a
-  **Details** disclosure with a definition list. A setup review is one card:
-  the change count, a step list with small state tiles, a block per file
-  with a path header, +N and tinted lines with a left bar, and a footer whose
-  one filled action is **Connect**. Settings is a grouped form, as macOS
-  forms are (`form_section`): each group's name, 13 pt semibold, and an
-  optional 12 pt line of why sit above a card of rows; a row is a 13 pt title
-  over a 12 pt muted line on the left and the control on the right, padded
-  8 by 14, with rules inset 14 (the same rows serve Installation and the
-  connection check); keyboard rows are 13 pt, padded 6 by 14: the theme as a
-  segmented control, text sizes as `− 14 pt +` steppers, switches for roomier
-  rows, daily update checks and preview builds, terminal palettes as preview
-  swatches with an accent ring, the keyboard as keycap rows. The terminal
+  review) — and a
+  **Details** disclosure with a definition list of the facts the tool has (MCP,
+  Hooks, Shell, Version, Command, Browser, URL, Code), its live sessions as a
+  name with a readiness dot and MCP and Hooks contact dots, and no
+  explanatory notes: where to paste the connector URL is its tooltip, and an
+  incomplete inventory the alert mark. Busy is a ring and a failure one line
+  beside the alert mark. The connection check is a tick or the alert mark
+  per tool, the problems on its tooltip. A setup review is one card named
+  for its tool (or Shell): a block per file
+  with a path header, +N and its MCP, Hooks or Shell lines tinted with a left
+  bar, and a footer of the state's named dot whose one filled action is
+  **Connect**. Settings is a grouped form, as macOS
+  forms are (`form_section`): each group's name, 13 pt semibold, sits above a
+  card of rows; a row is its 13 pt name on the left and the control on the
+  right, padded 8 by 14, with rules inset 14 (the same rows serve
+  Installation), and no row or group has a line of why: the theme as a
+  segmented control, text sizes as `− 14 pt +` steppers, switches for
+  notifications, roomier rows, update checks and preview builds, terminal
+  colours as preview swatches with an accent ring. The terminal
   pane has a header (status dot, agent over its folder in mono, Live and a
-  small Detach) above the grid on its palette's ground; Commands is a panel
-  with an amber `$` prompt. Installation leads with one update row (**Later**
-  as a ghost, the update the one filled action; `UpdateLater` steps it down
-  for that version, window-local), then versions in mono with status words
-  and a stage rail for a plan under review.
+  small Detach) above the grid on its palette's ground, and no key footer;
+  Commands is a panel
+  with an amber `$` prompt. Installation leads with one update row: a disc
+  whose tooltip and accessible name say what the state means, the version
+  alone, then **Later**
+  as a ghost and the update the one filled action (`UpdateLater` steps it down
+  for that version, window-local); a schema change is the alert mark, busy a
+  ring and a failure one line. Then versions in mono with status words, the
+  Package and Prefix fields, and a stage rail for a plan under review.
 - **Questions and approvals** (`app/view/approvals.rs`). A question card is
-  headed by an amber tile, the question as its title, who asked and when, and
-  the time left as a small ring and words. Structured choices are full-width
+  headed by an amber tile, the question as its title (an MCP request leads
+  with its server instead), and the time left as a small ring whose words
+  (*4m left*, *Expired*) are its tooltip and accessible name; an answer on its
+  way is a faint ring named *Sending*, and a refusal one line beside the
+  alert mark. Structured choices are full-width
   option rows in one card, the label on the left and its consequence on the
   right (the consequence is also the option's accessible value), a refusal
   (Deny, Cancel, Stop) in red; once one is chosen the others go and the
   chosen row stays filled, with a tick, while the answer is delivered
   (`shell::State::chosen_answers`, display only). A request to run, change
-  files or reach the network is one framed card: a strip saying who wants
-  to run what and the time left, the command in a darker mono well behind an
-  amber `$` with a copy button, Folder and Reason as detail lines, and a
+  files or reach the network is one framed card: a strip of the request's
+  glyph (what it wants, on the pointer), who asks and the time-left ring, the
+  command in a darker mono well behind an
+  amber `$` with a copy button, the folder and the reason as lines led by
+  faint glyphs named on the pointer, the deny note's *Why not?* line, and a
   footer that steps down — solid Allow, outline Review changes (file
-  requests), plain-word Deny. **Needs you** is one card headed by an amber
-  dot, the words and a count chip, its rows the agent, the ask on one line,
+  requests), plain-word Deny. Consent and form-safety wording are Accept's
+  and Submit's tooltips, a required form field an asterisk with what it takes
+  on the pointer, and an encoded domain the alert mark. **Needs you** is one
+  card headed by an amber dot and a count chip (spoken *Needs you, n*), its
+  rows the asker (with the leave glyph once its session has ended, or the
+  errand's glyph for a wait at its own terminal), the ask on one line,
   the ring and **Answer** as an outline, with **Show N more** as a ghost.
-- **Meters.** A lease row carries a thin bar of the time left on it; it turns
-  amber under one fifth. A question carries the time left to answer it as a
-  small ring drawn once per change of fraction (cached like the glyphs),
-  red under one fifth. Session rows say when they started. Panels that hold a
-  series (Activity) start with a pane header: what the pane holds on the left,
-  one quiet fact on the right.
+- **Meters.** A lease row carries a thin bar of the time left on it, the time
+  on its tooltip; it turns amber under one fifth. A question carries the time
+  left to answer it as a small ring drawn once per change of fraction (cached
+  like the glyphs), red under one fifth. Rows do not say when a session
+  started, and a screen that holds a series (History, Files in use) is its
+  card of rows with no pane header.
 - **Rail glyphs are drawn, not shipped.** `app/icons.rs` strokes five icons
   (folder, envelope, joined nodes, sliders, plus) on a sixteen-point grid
   through the canvas widget, inked in the row's own colour, so they stay crisp
@@ -372,13 +427,16 @@ control does, its id or its accessible label:
   `new-direct-<agent>`; a mention offer `mention-<agent>`. On the Board
   Usage under More (`project-tab-Usage`): `usage-since-24h|7d|30d`,
   `usage-by-Agent|Model|Provider|Hour`. On the Board
-  tab (`project-tab-Board`): `task-title`, `task-acceptance`,
-  `task-file-ready`, `task-file-backlog`, a card `task-<id>` (opens it),
-  its moves `task-back-<id>`/`task-next-<id>`, `task-hand-<id>-<agent>`,
-  `task-release-<id>`, `task-archive-<id>`; `board-more` for the next
-  page. When the page beside the rail is at least ~800 px wide the five
-  lanes share it and the open card's detail — title, acceptance text,
-  moves — sits beneath them; narrower than that (a narrow window, or a
+  tab (`project-tab-Board`): a lane's `lane-add-card-<lane>` opens its
+  `quick-add-<lane>` (activating it files), `lane-archive-<lane>`, a card
+  `task-<id>` (opens it), its moves `task-back-<id>`/`task-next-<id>`,
+  `task-approve-<id>`/`task-bounce-<id>` in a Review lane that is the
+  person's, `task-hand-<id>-<agent>`, `task-release-<id>`,
+  `task-archive-<id>`, `task-close-<id>`; `board-<slug>` switches boards;
+  `board-more` for the next page. When the page beside the rail fits every lane at 150 points with
+  12 between (about 800 for the classic five) the lanes share it and the
+  open card's detail — its fields, moves, comments and history — sits
+  beneath them; narrower than that (a narrow window, or a
   wide rail in a small one), the lanes stack and the detail sits under
   its card. A composer's
   accessibility node carries its send as the input's action, which is what
@@ -390,21 +448,26 @@ control does, its id or its accessible label:
 - **Layout.** A neutral rail (236 points to begin with, 204 when narrow) whose
   selected entry is a wash of the ink; a project row shows its loudest agent's
   glyph, a number only for agents that need the person, and a semibold name
-  when something there is new. Then a workspace that leads with one toolbar
-  line: the project's mark, its name over its path in mono, then three icon
+  when something there is new; the rail has no Projects label. Only a project has a page header;
+  elsewhere the selected rail row names the screen. It is one toolbar
+  line: the project's mark, its name (its folder on the name's tooltip), then three icon
   buttons named in tooltips (**Pause…**, the project terminal, **Open in…**)
   and the one labelled and filled action, the **Launch agent…** split button whose chevron lists the installed tools
-  (`launch-menu`, `launch-with-<tool>`). Then the section tabs (glyph and
-  label, a 2-point accent bar under the selected one on the tabs' hairline).
+  (`launch-menu`, `launch-with-<tool>`, each tool's command path on its
+  tooltip). Then the section tabs (glyph and
+  label, a 2-point bar in the text colour under the selected one on the tabs' hairline).
   Typing a pause reason is its own tinted row under the header; while paused
-  the header says **Paused · reason** in amber beside **Resume**. **Launch
-  agent…** opens a dialog over a flat scrim (no blur) that starts from the
+  the header shows the amber pause mark, the reason on its tooltip (spoken
+  *Paused · reason*), beside **Resume**. **Launch
+  agent…** opens a dialog over a flat scrim (no blur), with no title, that starts from the
   prompt, as every launch surface in the teardown does: a composer (*What
   should it work on?*, sent as the new agent's first message once it is
-  launched, optional), the installed tools as chips under it, the idle
-  delivery switch for Claude and Codex and **Own worktree**, then **More
-  options** for the name, the arguments and the exact command in a mono
-  well, and Cancel and Launch at the foot. Pressing the scrim closes it. The rail and the workspace, and on the
+  launched, optional), the installed tools as chips under it (a chosen one a
+  neutral chip with an ink edge), the idle
+  delivery switch for Claude and Codex and **Own worktree** on one row, each
+  saying what it means on its tooltip, then **More
+  options** for the name and the arguments, each field named by its
+  placeholder, and Cancel and Launch at the foot. Pressing the scrim closes it. The rail and the workspace, and on the
   Messages screen the sidebar, the conversation and the thread, are
   `pane_grid` panes with a draggable divider between each (`app/panes.rs`):
   the widths are kept in logical pixels, not shares, so a window resize
@@ -425,21 +488,29 @@ control does, its id or its accessible label:
   fixed rail and the one column on view. Lists are rows inside a panel; prose sits in cards; the terminal
   and command output sit in a bezel of the chosen terminal palette's ground.
   Filters sit left and search right on one row. The background service is
-  said once, at the rail's foot (`service_chip`), and only when it calls for
+  said once, at the rail's foot (`service_chip`), as a dot and a word with the
+  full words on the dot's tooltip, and only when it calls for
   something: reconnecting, older than the app with **Restart…**
   (`daemon-restart`), or an update to install (`open-available-update`); a
-  healthy one says nothing, as in Docker Desktop and Tailscale. The bottom
-  strip exists only while a restart is confirmed or under way.
+  healthy one says nothing, as in Docker Desktop and Tailscale, and a lost
+  connection has no second banner on the page. The bottom
+  strip exists only while a restart is confirmed or under way. What just
+  happened is a toast at the window's foot for eight seconds (`STATUS_FOR`),
+  and a success the screen already shows (an answer, a launch, a rename, a
+  saved setup) raises none; a page error is one clipped line beside the
+  alert mark, with **Dismiss**.
   The agents list is one card of one-line rows separated by rules: the
   standing glyph, the tool's small mark, the name (semibold when it calls for
-  the person, muted when ended), and one trailing slot holding the first that
-  applies: what the person must do (*needs input*, *failed*), the pull
-  request chip, or how long (coarse: *now*, *3m*, *1h 12m*); tool, branch
-  and tokens are in the name's tooltip, and an action only where there is one
-  (**Reconnect here**). The chat's agent list uses the same row. An empty list shows three faint static rows in
+  the person, muted when ended), and one trailing slot: the time left to
+  answer as a ring while the agent needs the person, else the pull
+  request chip; no status word or age is printed. Tool, branch
+  and tokens are in the name's tooltip, the row's spoken name adds what it is
+  doing, and an action shows only where there is one
+  (**Reconnect here**). The chat's agent list uses the same row, with what the
+  agent is doing and for how long on the name's tooltip. An empty list shows three faint static rows in
   the shape of what will fill it; an empty project adds its next step, **Launch agent…**
-  with its key (`empty-launch`), as Emdash's empty states do; a search that finds nothing says what it
-  looked for and offers **Clear search** (`session-search-clear`). A
+  (`empty-launch`), and no words, as Emdash's empty states do; a search that finds nothing
+  offers **Clear search** (`session-search-clear`) alone. A
   session's panel has one filled action — **Answer** when it asks something,
   otherwise its terminal — Details as a definition list, and Stop at the
   foot: the first press turns that slot solid red, **Confirm stop**, with a
@@ -448,13 +519,20 @@ control does, its id or its accessible label:
   per project, open questions on Inbox) and in the filter chips; the header does not repeat
   them. Messages in Inbox are transcript lines (when · who · what)
   rather than a card per message, following the chat clients in the iced
-  showcase (Halloy); the pane-header, footer-bar and inline-meter patterns come
-  from Kraken Desktop and Sniffnet there.
+  showcase (Halloy); the footer-bar and inline-meter patterns come
+  from Kraken Desktop and Sniffnet there. As a rule, text on a screen is the
+  labels of controls and the person's data (names, message bodies, card
+  titles, paths), with one- or two-word placeholders: subtitles, explanatory
+  paragraphs, empty-state sentences, key-hint footers and ids under headings
+  are left out, and words that carry information move to a tooltip or a
+  mark's accessible name.
 
-Blue marks selection and primary actions; status always has words. Session
+Blue marks what is new, active and focused; selection is a neutral wash and
+the primary action ink. Status always has words, as the tooltip and
+accessible name of its mark where the screen shows only the mark. Session
 actions sit beside a wide list and replace a narrow one, with an explicit
 return button. Long content scrolls; focused controls are revealed.
-Socket paths and installation internals live in diagnostics and detailed reports.
+The socket path is not shown; installation internals live in the plan a preview shows.
 Shared Chat is the project default. The Agents tab defaults to current sessions;
 finished runs sit in the collapsed Earlier
 group under them (`sessions-earlier`) and unanswered questions have a
@@ -473,7 +551,7 @@ and one count, under the record that stays (`identity::keeper`: input
 delivered through it, then the first registered) until the daemon's sweep folds
 the other into it. A browser agent from the connector counts as live only
 within an hour of its last tool call (`AgentRecord::is_present`); past that it
-reads **not connected** under **Earlier**, still registered. Unknown identities
+sits under **Earlier**, *not connected* in its spoken name, still registered. Unknown identities
 and distinct registered sessions remain separate. Legacy duplicate registry reconciliation is the offline `identity-repair`
 command (IDENTITY-REPAIR.md (in git history)); applying it to the production
 database remains a manual step.
@@ -482,7 +560,8 @@ database remains a manual step.
 
 - Observed process, installed tool, configured integration and current activity
   are separate facts. The app displays daemon observations and keeps unknown
-  states explicit. Disconnection retains the last snapshot with a stale notice.
+  states explicit. Disconnection retains the last snapshot, said once by the
+  rail foot's *Reconnecting…*; the session panel's readiness dot adds *Last known*.
 - Questions preserve drafts across navigation and failed sends. Duplicate sends
   are disabled while waiting. A successful reply means delivery, not proof that
   an agent consumed it or resumed work.
@@ -658,7 +737,7 @@ a conversation's header and no `#all` or contested-room rows; the daemon and
 CLI keep all of them (`agentdocker channels`, `agentdocker channel …`,
 `agentdocker history <conversation>`). A notification about a channel or `#all`
 message opens the direct conversation with its sender (an agent) or Messages,
-with the history command in the status line; a reply typed into such a
+with the history command in a toast; a reply typed into such a
 notification is refused with the `agentdocker send --to …` command instead.
 
 The new-conversation button keeps a compact width beside search; opening its form does not divide the search row into two equally wide controls. Its accessible name is “New message” (or “Close” for the open form).

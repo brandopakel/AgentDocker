@@ -479,23 +479,55 @@ pub enum EventKind {
         /// The `task:<id>` lease the pull took; it is the holding.
         lease: crate::LeaseId,
     },
-    /// A card moved columns, by its assignee or the person.
+    /// A card moved lanes, by its assignee or the person.
     TaskMoved {
         task: crate::TaskId,
         project: ProjectId,
         by: String,
         column: crate::Column,
+        /// The lane it went to, by slug.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lane: Option<String>,
     },
-    /// A card's words or holder changed.
+    /// A card's words, fields or holder changed: which, by name.
     TaskUpdated {
         task: crate::TaskId,
         project: ProjectId,
         by: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fields: Vec<String>,
     },
     /// A card left the board.
     TaskArchived {
         task: crate::TaskId,
         project: ProjectId,
+        by: String,
+    },
+    /// A card came back on the board.
+    TaskUnarchived {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+    },
+    /// Somebody said something on a card.
+    TaskCommented {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+        comment: crate::CommentId,
+    },
+    /// A comment was rewritten, or deleted.
+    TaskCommentChanged {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+        comment: crate::CommentId,
+        deleted: bool,
+    },
+    /// A board was made, renamed or reshaped.
+    BoardChanged {
+        project: ProjectId,
+        board: String,
         by: String,
     },
     /// A webhook sink gave up on deliveries: which sink (by its configured

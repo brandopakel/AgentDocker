@@ -78,7 +78,7 @@ const CONFIRM_WITHIN: Duration = Duration::from_secs(5);
 /// Nothing lives only there — a failed setup keeps its plan, a lost
 /// socket has its own indicator — so letting it go is safe, and a line
 /// that never expires is a line the eye stops reading.
-const STATUS_FOR: Duration = Duration::from_secs(20);
+const STATUS_FOR: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
@@ -164,17 +164,48 @@ enum Cmd {
         title: String,
         acceptance: String,
         column: agentdocker_core::Column,
+        /// The lane by slug, and the board, when the person chose them.
+        lane: Option<String>,
+        board: Option<String>,
     },
-    /// The person moves a card, or an agent it is handed to does.
+    /// The person moves a card to a lane, beside a card, with a word.
     TaskMove {
         task: agentdocker_core::TaskId,
-        column: agentdocker_core::Column,
+        to: String,
+        before: Option<agentdocker_core::TaskId>,
+        comment: Option<String>,
     },
-    TaskAssign {
+    /// The person changes what a card says or who holds it.
+    TaskEdit {
         task: agentdocker_core::TaskId,
-        assignee: Option<agentdocker_core::AgentId>,
+        change: CardChange,
     },
     TaskArchive(agentdocker_core::TaskId),
+    /// The person says something on a card.
+    TaskComment {
+        task: agentdocker_core::TaskId,
+        body: String,
+    },
+    /// One card in full, for its open detail.
+    TaskDetail(agentdocker_core::TaskId),
+    /// A project's boards.
+    Boards(String),
+    /// A board's lanes reshaped, or a new board, for a project.
+    BoardSave {
+        project: String,
+        board: agentdocker_core::Board,
+    },
+    BoardCreate {
+        project: String,
+        name: String,
+        template: String,
+    },
+    /// Every card in a lane off the board.
+    TaskArchiveLane {
+        project: String,
+        board: String,
+        lane: String,
+    },
     /// The projects that are paused, and why.
     Pauses,
     /// The person tells a project's agents to hold, with the reason.
@@ -352,6 +383,10 @@ enum Msg {
     WorktreeRemoved(String, Result<(bool, Option<String>), String>),
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
+    /// One card in full, or why it could not be read.
+    TaskDetail(agentdocker_core::TaskId, Result<Box<CardDetail>, String>),
+    /// A project's boards, or why they could not be read.
+    Boards(String, Result<Vec<agentdocker_core::Board>, String>),
     Pauses(Vec<agentdocker_core::Pause>),
     /// The pause or resume the person asked for a project, done or
     /// refused; the project says which form or control it answers.
@@ -497,7 +532,6 @@ pub struct App {
     status: String,
     last_refresh: Instant,
     last_runtimes: Instant,
-    socket: String,
     client: Option<Arc<Client>>,
     terminal: Option<Terminal>,
     console_input: String,
@@ -551,6 +585,12 @@ pub struct App {
     task_requests: u64,
     /// A card whose acceptance text is open.
     task_open: Option<agentdocker_core::TaskId>,
+    /// The open card in full: its board, comments and history.
+    card: Option<CardDetail>,
+    /// Each project's boards, by project root.
+    boards: BTreeMap<String, Vec<agentdocker_core::Board>>,
+    /// Cards that changed a moment ago, and when: they flash once.
+    flashes: BTreeMap<agentdocker_core::TaskId, Instant>,
     /// The projects told to hold, and why.
     pauses: Vec<agentdocker_core::Pause>,
     /// The pause being written, while its form is open: bound to the
@@ -676,7 +716,6 @@ impl App {
             status: String::new(),
             last_refresh: Instant::now(),
             last_runtimes: Instant::now(),
-            socket: client.socket().display().to_string(),
             client: Some(client),
             terminal: None,
             console_input: String::new(),
@@ -705,6 +744,9 @@ impl App {
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
+            card: None,
+            boards: BTreeMap::new(),
+            flashes: BTreeMap::new(),
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
@@ -763,7 +805,6 @@ impl App {
             status: String::new(),
             last_refresh: Instant::now(),
             last_runtimes: Instant::now(),
-            socket: String::new(),
             client: None,
             terminal: None,
             console_input: String::new(),
@@ -791,6 +832,9 @@ impl App {
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
+            card: None,
+            boards: BTreeMap::new(),
+            flashes: BTreeMap::new(),
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
@@ -930,8 +974,14 @@ impl App {
                     self.shell.adopting.remove(&pid);
                 }
                 Cmd::TaskMove { .. }
-                | Cmd::TaskAssign { .. }
+                | Cmd::TaskEdit { .. }
                 | Cmd::TaskArchive(_)
+                | Cmd::TaskComment { .. }
+                | Cmd::TaskDetail(_)
+                | Cmd::Boards(_)
+                | Cmd::BoardSave { .. }
+                | Cmd::BoardCreate { .. }
+                | Cmd::TaskArchiveLane { .. }
                 | Cmd::AdoptAll
                 | Cmd::Stop(_)
                 | Cmd::ResumeProvider(..)
@@ -1090,7 +1140,6 @@ impl App {
                             {
                                 self.shell.notification_message = None;
                             }
-                            self.say("Messages dismissed");
                         }
                         Err(reason) => self.say(reason),
                     }
@@ -1255,8 +1304,27 @@ impl App {
                     self.request_tasks();
                 }
                 Msg::TaskChanged(result) => match result {
-                    Ok(()) => self.request_tasks(),
+                    Ok(()) => {
+                        self.request_tasks();
+                        if let Some(open) = self.task_open.clone() {
+                            self.send(Cmd::TaskDetail(open));
+                        }
+                    }
                     Err(error) => self.say(error),
+                },
+                Msg::TaskDetail(task, result) => {
+                    if self.task_open.as_ref() == Some(&task) {
+                        match result {
+                            Ok(detail) => self.card = Some(*detail),
+                            Err(error) => self.say(error),
+                        }
+                    }
+                }
+                Msg::Boards(project, result) => match result {
+                    Ok(boards) => {
+                        self.boards.insert(project, boards);
+                    }
+                    Err(error) => self.say(format!("The boards could not be read: {error}")),
                 },
                 Msg::Pauses(pauses) => self.pauses = pauses,
                 Msg::Paused(request, result) => self.complete_pause(request, result),
@@ -1285,7 +1353,6 @@ impl App {
                     }
                 }
                 Msg::SecretCompleted => {
-                    self.say("Temporary input action acknowledged by AgentDocker; this is not a provider receipt.");
                     self.send(Cmd::SecretReviews);
                 }
                 Msg::Questions(questions) => {
@@ -1383,9 +1450,8 @@ impl App {
                                 self.shell.pending_answer_reveal = None;
                                 self.shell.reveal_next_question = true;
                             }
-                            self.say("answered");
-                            // After the answer is told, so a note the queue
-                            // will not take says so last.
+                            // The answer is on screen; the note goes to its
+                            // agent after it.
                             if let Some(cmd) = note_send {
                                 self.send(cmd);
                             }
@@ -1446,7 +1512,7 @@ impl App {
                 Msg::Adopted(pid, result) => {
                     self.shell.adopting.remove(&pid);
                     match result {
-                        Ok(name) => self.say(format!("Connected {name}")),
+                        Ok(_) => {}
                         Err(error) => self.say(format!("Could not connect that session: {error}")),
                     }
                 }
@@ -1462,7 +1528,6 @@ impl App {
                     self.daemon_restarting = false;
                     match result {
                         Ok(()) => {
-                            self.say("The background service restarted");
                             // Ask again now, so the notice clears without
                             // waiting for a reconnect to notice.
                             self.send(Cmd::Ping);
@@ -1498,10 +1563,6 @@ impl App {
                                 value["plans"].as_array().cloned().unwrap_or_default();
                         }
                         Ok(value) => {
-                            self.say(format!(
-                                "Setup {}",
-                                value["phase"].as_str().unwrap_or("updated")
-                            ));
                             self.setup_plan = Some(value);
                             self.send(Cmd::Runtimes);
                         }
@@ -1538,7 +1599,6 @@ impl App {
                             // else would show it.
                             self.shell.attach_when_listed = Some((id, None));
                             self.send(Cmd::Agents);
-                            self.say("Agent launched");
                         }
                         Err(error) => self.shell.error = Some(error),
                     }
@@ -1551,7 +1611,6 @@ impl App {
                             self.shell.selected = Some(id.clone());
                             self.shell.attach_when_listed = Some((id, generation));
                             self.send(Cmd::Agents);
-                            self.say("Session reconnected; it continues in its pane");
                         }
                         Err(error) => self.shell.error = Some(error),
                     }
@@ -1697,11 +1756,10 @@ impl App {
                 }
                 Msg::DenyNoteSent(question, result) => match result {
                     Ok(()) => {
-                        if let Some(note) = self.shell.deny_notes.remove(&question) {
-                            // Its saved copy goes with it.
+                        // Its saved copy goes with it; the note is in the
+                        // conversation, nothing more to say.
+                        if self.shell.deny_notes.remove(&question).is_some() {
                             self.shell.drafts.changed();
-                            let name = self.name_of(&note.agent);
-                            self.say(format!("Told {name} why"));
                         }
                     }
                     Err(error) => {
@@ -1786,11 +1844,27 @@ impl App {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
-            EventKind::TaskCreated { .. }
-            | EventKind::TaskPulled { .. }
-            | EventKind::TaskMoved { .. }
-            | EventKind::TaskUpdated { .. }
-            | EventKind::TaskArchived { .. } => self.request_tasks(),
+            EventKind::TaskCreated { task, .. }
+            | EventKind::TaskPulled { task, .. }
+            | EventKind::TaskMoved { task, .. }
+            | EventKind::TaskUpdated { task, .. }
+            | EventKind::TaskArchived { task, .. }
+            | EventKind::TaskUnarchived { task, .. }
+            | EventKind::TaskCommented { task, .. }
+            | EventKind::TaskCommentChanged { task, .. } => {
+                // The card that changed flashes once; an open one is read
+                // again in full.
+                self.flashes.insert(task.clone(), Instant::now());
+                if self.task_open.as_ref() == Some(task) {
+                    self.send(Cmd::TaskDetail(task.clone()));
+                }
+                self.request_tasks();
+            }
+            EventKind::BoardChanged { .. } => {
+                if let Some(project) = self.selected_project_root() {
+                    self.send(Cmd::Boards(project));
+                }
+            }
             // Collection moved: the report on view is read again, only
             // while it is on view.
             EventKind::UsageRecorded { .. }
@@ -1884,8 +1958,21 @@ impl App {
     /// a separate question, answered here once and then only by the user.
     /// A completion on the screen the user is looking at, in a focused
     /// window, is viewed as it happens; every other one waits for them.
+    /// A session that stops for the person in its own terminal while the
+    /// window is not in front is told as well.
     fn note_completions(&mut self, fresh: &BTreeMap<String, Activity>) {
+        let telling = self.shell.unfocused && self.settings.notify_finished && self.smoke.is_none();
         for (id, now) in fresh {
+            if telling
+                && matches!(now, Activity::Waiting { .. })
+                && !matches!(self.activity.get(id), Some(Activity::Waiting { .. }))
+                && self
+                    .agents
+                    .iter()
+                    .any(|a| a.id.as_str() == id && a.status.is_live())
+            {
+                self.shell.wait_notices.push((id.clone(), Instant::now()));
+            }
             let was_busy = matches!(
                 self.activity.get(id),
                 Some(Activity::Working { .. } | Activity::Blocked { .. })
@@ -1908,8 +1995,11 @@ impl App {
                 });
             if !on_screen {
                 self.shell.unviewed_done.insert(id.clone());
-                // Away from the window altogether: say so, quietly.
-                if self.shell.unfocused && self.settings.notify_finished && self.smoke.is_none() {
+                // Away from the window altogether: say so, quietly, unless
+                // a message from them already waits for it: it goes on to
+                // that next, and "finished" would be stale on arrival.
+                let has_next = self.queued_inputs.get(id).is_some_and(|queued| *queued > 0);
+                if telling && !has_next {
                     self.shell.finish_notices.push(id.clone());
                 }
             }
@@ -2162,6 +2252,9 @@ impl App {
                 None => 0,
             };
             let limit = on_view.clamp(agentdocker_core::protocol::TASKS_LIMIT, BOARD_KEEP);
+            if !self.boards.contains_key(&project) {
+                self.send(Cmd::Boards(project.clone()));
+            }
             let request = self.next_board_ask(&project, 0);
             self.send(Cmd::Tasks {
                 project,
@@ -2953,15 +3046,15 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             } => Some(Msg::Journal(project, head_seq, entries)),
             _ => None,
         },
-        Cmd::Rename(agent, name) => Some(Msg::Status(
-            match client.call(&Request::Rename { agent, name })? {
-                Response::Agent { agent } => format!("Renamed to {}", agent.spec.name),
-                Response::Error { message, .. } => {
-                    format!("Could not rename: {}", crate::client::explain(&message))
-                }
-                other => unexpected_reply(&other),
-            },
-        )),
+        // A rename that took says nothing: the name on the row changes.
+        Cmd::Rename(agent, name) => match client.call(&Request::Rename { agent, name })? {
+            Response::Agent { .. } => None,
+            Response::Error { message, .. } => Some(Msg::Status(format!(
+                "Could not rename: {}",
+                crate::client::explain(&message)
+            ))),
+            other => Some(Msg::Status(unexpected_reply(&other))),
+        },
         Cmd::Ping => match client.call(&Request::Ping)? {
             Response::Pong {
                 version,
@@ -2995,6 +3088,13 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 archived: false,
                 offset,
                 limit,
+                board: None,
+                lane: None,
+                assignee: None,
+                agent: None,
+                open: false,
+                query: None,
+                tag: None,
             }) {
                 Ok(Response::Tasks { tasks, more }) => Ok((tasks, more)),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -3094,6 +3194,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             title,
             acceptance,
             column,
+            lane,
+            board,
         } => {
             let result = match client.call(&Request::TaskCreate {
                 from: agentdocker_core::HUMAN.into(),
@@ -3102,6 +3204,16 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 acceptance,
                 column: Some(column),
                 links: Vec::new(),
+                board,
+                lane,
+                description: String::new(),
+                priority: None,
+                size: None,
+                due: None,
+                external_blocker: String::new(),
+                parent: None,
+                blocked_by: Vec::new(),
+                tags: Vec::new(),
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -3110,11 +3222,20 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::TaskCreated(project, request, result))
         }
-        Cmd::TaskMove { task, column } => {
+        Cmd::TaskMove {
+            task,
+            to,
+            before,
+            comment,
+        } => {
             let result = match client.call(&Request::TaskMove {
                 agent: agentdocker_core::HUMAN.into(),
                 task: task.to_string(),
-                column,
+                column: None,
+                to: Some(to),
+                after: None,
+                before: before.map(|b| b.to_string()),
+                comment,
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -3123,14 +3244,22 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::TaskChanged(result))
         }
-        Cmd::TaskAssign { task, assignee } => {
+        Cmd::TaskEdit { task, change } => {
             let result = match client.call(&Request::TaskUpdate {
                 agent: agentdocker_core::HUMAN.into(),
                 task: task.to_string(),
-                title: None,
-                acceptance: None,
-                assignee: Some(assignee.map(|a| a.to_string()).unwrap_or_default()),
+                title: change.title,
+                acceptance: change.acceptance,
+                assignee: change.assignee,
                 links: None,
+                description: change.description,
+                priority: change.priority,
+                size: change.size,
+                due: change.due,
+                external_blocker: change.external_blocker,
+                parent: None,
+                blocked_by: None,
+                tags: change.tags,
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -3145,6 +3274,132 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 task: task.to_string(),
             }) {
                 Ok(Response::Ok) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskChanged(result))
+        }
+        Cmd::TaskComment { task, body } => {
+            let result = match client.call(&Request::TaskComment {
+                from: agentdocker_core::HUMAN.into(),
+                task: task.to_string(),
+                body,
+                reply_to: None,
+            }) {
+                Ok(Response::Comment { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskChanged(result))
+        }
+        Cmd::TaskDetail(task) => {
+            let result = match client.call(&Request::TaskGet {
+                task: task.to_string(),
+            }) {
+                Ok(Response::TaskDetail {
+                    task: card,
+                    board,
+                    comments,
+                    history,
+                    blockers,
+                    children,
+                    ..
+                }) => Ok(Box::new(CardDetail {
+                    task: card,
+                    board,
+                    comments,
+                    history,
+                    blockers,
+                    children,
+                })),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskDetail(task, result))
+        }
+        Cmd::Boards(project) => {
+            let result = match client.call(&Request::Boards {
+                project: Some(project.clone()),
+            }) {
+                Ok(Response::Boards { boards }) => Ok(boards),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::Boards(project, result))
+        }
+        Cmd::BoardSave { project, board } => {
+            let result = match client.call(&Request::BoardUpdate {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project.clone()),
+                board: board.slug.clone(),
+                name: Some(board.name.clone()),
+                lanes: Some(board.lanes.clone()),
+                pull_source: Some(board.pull_source.clone()),
+                pull_target: Some(board.pull_target.clone()),
+            }) {
+                Ok(Response::Board { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            match result {
+                Ok(()) => Some(Msg::Boards(
+                    project.clone(),
+                    match client.call(&Request::Boards {
+                        project: Some(project),
+                    })? {
+                        Response::Boards { boards } => Ok(boards),
+                        other => Err(unexpected_reply(&other)),
+                    },
+                )),
+                Err(error) => Some(Msg::TaskChanged(Err(error))),
+            }
+        }
+        Cmd::BoardCreate {
+            project,
+            name,
+            template,
+        } => {
+            let result = match client.call(&Request::BoardCreate {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project.clone()),
+                name,
+                template,
+            }) {
+                Ok(Response::Board { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            match result {
+                Ok(()) => Some(Msg::Boards(
+                    project.clone(),
+                    match client.call(&Request::Boards {
+                        project: Some(project),
+                    })? {
+                        Response::Boards { boards } => Ok(boards),
+                        other => Err(unexpected_reply(&other)),
+                    },
+                )),
+                Err(error) => Some(Msg::TaskChanged(Err(error))),
+            }
+        }
+        Cmd::TaskArchiveLane {
+            project,
+            board,
+            lane,
+        } => {
+            let result = match client.call(&Request::TaskArchiveLane {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project),
+                board: Some(board),
+                lane,
+            }) {
+                Ok(Response::Archived { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
@@ -3282,8 +3537,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             let Response::Processes { processes } = client.call(&Request::Discover)? else {
                 return Ok(None);
             };
-            let mut adopted = 0;
-            for process in processes {
+            for (adopted, process) in processes.into_iter().enumerate() {
                 client
                     .call(&Request::Adopt {
                         pid: process.pid,
@@ -3296,19 +3550,16 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                             if adopted == 1 { "" } else { "s" }
                         )
                     })?;
-                adopted += 1;
             }
-            Some(Msg::Status(format!(
-                "Connected {adopted} session{}",
-                if adopted == 1 { "" } else { "s" }
-            )))
+            // Connected sessions move into the list: nothing to say.
+            None
         }
         Cmd::Stop(agent) => {
             client.call(&Request::Stop {
                 agent,
                 force: false,
             })?;
-            Some(Msg::Status("Stopping the session…".into()))
+            None
         }
         Cmd::ResumeProvider(agent, blocked_at) => {
             let response = client.call(&Request::ResumeProvider { agent, blocked_at })?;
@@ -3317,9 +3568,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 "Delivery could not be resumed: {}",
                 refusal(&response)
             );
-            Some(Msg::Status(
-                "Delivery resumed; previously received input will not be replayed".into(),
-            ))
+            None
         }
         Cmd::RetryController(agent) => {
             let response = client.call(&Request::RetryController { agent })?;
@@ -3328,10 +3577,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 "Message delivery could not be started again: {}",
                 refusal(&response)
             );
-            Some(Msg::Status(
-                "The receiver will be started again within a second; queued input waits for it"
-                    .into(),
-            ))
+            None
         }
         Cmd::Launch(spec) => match client.call(&Request::Run { spec: *spec })? {
             Response::Agent { agent } => Some(Msg::Launched(Ok(agent.id.to_string()))),
@@ -3966,6 +4212,35 @@ impl TaskDraft {
         self.sending.is_some()
     }
 }
+
+/// A card in full, as its open detail shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CardDetail {
+    pub task: agentdocker_core::Task,
+    pub board: agentdocker_core::Board,
+    pub comments: Vec<agentdocker_core::Comment>,
+    pub history: Vec<agentdocker_core::TaskEntry>,
+    pub blockers: Vec<agentdocker_core::Task>,
+    pub children: Vec<agentdocker_core::Task>,
+}
+
+/// What the person changes on a card: each field given is set; an
+/// empty size, due or parent clears it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CardChange {
+    pub title: Option<String>,
+    pub acceptance: Option<String>,
+    pub description: Option<String>,
+    pub assignee: Option<String>,
+    pub priority: Option<agentdocker_core::Priority>,
+    pub size: Option<String>,
+    pub due: Option<String>,
+    pub external_blocker: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
+/// How long a changed card flashes.
+pub(crate) const FLASH_FOR: Duration = Duration::from_millis(1400);
 
 const PAUSE_CONTROLS: usize = 64;
 
@@ -6542,6 +6817,149 @@ pub(crate) mod tests {
         step(&mut app, &id, working());
         step(&mut app, &id, Activity::Finished);
         assert!(app.shell.unviewed_done.contains(&id));
+    }
+
+    /// Away from the window, an agent that stops for the person is told
+    /// once per stop; one that finishes with the person's next message
+    /// already queued is not told as finished; and a notice is taken back
+    /// once it is no longer true.
+    #[test]
+    fn a_wait_is_told_a_queued_finish_is_not_and_stale_notices_are_taken_back() {
+        fn step(app: &mut App, id: &str, activity: Activity) {
+            let fresh = BTreeMap::from([(id.to_owned(), activity)]);
+            app.note_completions(&fresh);
+            app.activity = fresh;
+        }
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut worker = record("worker", "claude-code", Some(4242));
+        worker.project = Some(ProjectRef::directory("/fixture/alpha"));
+        let id = worker.id.to_string();
+        app.agents.push(worker);
+        app.shell.unfocused = true;
+        let now = Utc::now();
+        let working = || Activity::Working { since: now };
+        let idle = || Activity::Idle { since: now };
+        let waiting = || Activity::Waiting {
+            since: now,
+            reason: Some(agentdocker_core::WaitReason::Permission),
+        };
+
+        step(&mut app, &id, working());
+        step(&mut app, &id, waiting());
+        step(&mut app, &id, waiting());
+        let pending = |app: &App| -> Vec<String> {
+            app.shell
+                .wait_notices
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        assert_eq!(pending(&app), std::slice::from_ref(&id), "once per stop");
+
+        // Told only once the stop has lasted the grace; a wake is set for
+        // then, as the unfocused window sweeps rarely.
+        let _ = app.update(Message::Tick);
+        assert_eq!(pending(&app), std::slice::from_ref(&id), "too young yet");
+        assert!(app.shell.wait_timer);
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        assert!(pending(&app).is_empty());
+        assert!(app.shell.noticed.contains(&id), "told");
+        // A stop answered inside the grace is never told.
+        app.shell.noticed.clear();
+        step(&mut app, &id, working());
+        step(&mut app, &id, waiting());
+        step(&mut app, &id, working());
+        let _ = app.update(Message::Tick);
+        assert!(pending(&app).is_empty());
+        assert!(!app.shell.noticed.contains(&id));
+
+        // In front, the window shows it; nothing is posted.
+        app.shell.wait_notices.clear();
+        app.shell.unfocused = false;
+        step(&mut app, &id, working());
+        step(&mut app, &id, waiting());
+        assert!(app.shell.wait_notices.is_empty());
+
+        // A finish with the person's next message queued goes on to it.
+        app.shell.unfocused = true;
+        app.queued_inputs.insert(id.clone(), 1);
+        step(&mut app, &id, working());
+        step(&mut app, &id, idle());
+        assert!(app.shell.finish_notices.is_empty());
+        assert!(app.shell.unviewed_done.contains(&id), "still not looked at");
+        app.queued_inputs.clear();
+
+        // Noticed and still true: kept. Looking at it makes it stale, and
+        // the update takes it back.
+        app.shell.noticed.insert(id.clone());
+        assert!(app.stale_notices().is_empty());
+        let _ = app.update(Message::SelectSession(id.clone()));
+        assert!(!app.shell.noticed.contains(&id));
+        // A wait is kept while it lasts and taken back, once, when it ends.
+        step(&mut app, &id, waiting());
+        app.shell.noticed.insert(id.clone());
+        assert!(app.stale_notices().is_empty(), "waiting is still true");
+        step(&mut app, &id, working());
+        assert_eq!(app.stale_notices(), std::slice::from_ref(&id));
+        assert!(app.stale_notices().is_empty());
+    }
+
+    /// The notification centre is asked one thing at a time, in order: a
+    /// wait that ends while its post is still in flight is taken back only
+    /// after that post lands, and a fresh wait during the withdrawal is
+    /// posted after it, so neither a late post nor an old withdrawal wins.
+    #[test]
+    fn notices_are_posted_and_taken_back_in_order_one_at_a_time() {
+        fn step(app: &mut App, id: &str, activity: Activity) {
+            let fresh = BTreeMap::from([(id.to_owned(), activity)]);
+            app.note_completions(&fresh);
+            app.activity = fresh;
+        }
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut worker = record("worker", "claude-code", Some(4242));
+        worker.project = Some(ProjectRef::directory("/fixture/alpha"));
+        let id = worker.id.to_string();
+        app.agents.push(worker);
+        app.shell.unfocused = true;
+        let now = Utc::now();
+        let working = || Activity::Working { since: now };
+        let waiting = || Activity::Waiting {
+            since: now,
+            reason: None,
+        };
+        let post = format!("post agent.{id}");
+        let withdraw = format!("withdraw {id}");
+
+        step(&mut app, &id, working());
+        step(&mut app, &id, waiting());
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        assert_eq!(app.shell.notice_log, std::slice::from_ref(&post));
+        assert!(app.shell.notice_busy, "the post is in flight");
+
+        // The wait ends before the post lands: its withdrawal waits.
+        step(&mut app, &id, working());
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.shell.notice_log, std::slice::from_ref(&post));
+        assert_eq!(app.shell.notice_queue.len(), 1);
+        let _ = app.update(Message::NoticeDone);
+        assert_eq!(app.shell.notice_log, [post.clone(), withdraw.clone()]);
+
+        // A fresh wait while that withdrawal is in flight is posted after.
+        step(&mut app, &id, waiting());
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        assert_eq!(app.shell.notice_log.len(), 2, "behind the withdrawal");
+        let _ = app.update(Message::NoticeDone);
+        assert_eq!(app.shell.notice_log, [post.clone(), withdraw, post]);
+        let _ = app.update(Message::NoticeDone);
+        assert!(!app.shell.notice_busy);
+        assert!(app.shell.notice_queue.is_empty());
     }
 
     #[test]

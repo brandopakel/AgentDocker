@@ -648,6 +648,18 @@ fn repair_moves_typed_protection_and_membership_and_refuses_self_review() {
         updated_at: now(),
         archived_at: Some(now()),
         links: Vec::new(),
+        key: String::new(),
+        board: None,
+        description: String::new(),
+        lane: None,
+        rank: String::new(),
+        priority: Default::default(),
+        size: None,
+        due: None,
+        external_blocker: String::new(),
+        parent: None,
+        blocked_by: Vec::new(),
+        tags: Vec::new(),
     };
     store.put_document("task", card.id.as_str(), &card).unwrap();
     let lease = Lease {
@@ -1166,6 +1178,18 @@ fn resumed_cards_keep_their_work_without_inventing_a_hold() {
         updated_at: now(),
         archived_at: None,
         links: Vec::new(),
+        key: String::new(),
+        board: None,
+        description: String::new(),
+        lane: None,
+        rank: String::new(),
+        priority: Default::default(),
+        size: None,
+        due: None,
+        external_blocker: String::new(),
+        parent: None,
+        blocked_by: Vec::new(),
+        tags: Vec::new(),
     };
     store.put_document("task", task.id.as_str(), &task).unwrap();
     let lease = Lease {

@@ -4,6 +4,48 @@ use crate::catalog::Catalog;
 use iced::{Subscription, Task, keyboard, window};
 use std::path::PathBuf;
 
+/// The board's filter toggles: high priority, waiting on something,
+/// waiting for the person, and nobody holding it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct BoardFilters {
+    pub high: bool,
+    pub blocked: bool,
+    pub waiting: bool,
+    pub unassigned: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoardFilterKind {
+    High,
+    Blocked,
+    Waiting,
+    Unassigned,
+}
+
+/// The open card's fields as the person edits them; saved on CardSave.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct CardDraft {
+    pub task: Option<agentdocker_core::TaskId>,
+    pub title: String,
+    pub description: String,
+    pub acceptance: String,
+    pub due: String,
+    pub blocker: String,
+    pub tags: String,
+    pub comment: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardFieldKind {
+    Title,
+    Description,
+    Acceptance,
+    Due,
+    Blocker,
+    Tags,
+    Comment,
+}
+
 #[derive(Default)]
 pub(super) struct State {
     pub catalog: Catalog,
@@ -29,6 +71,21 @@ pub(super) struct State {
     pub forms: BTreeMap<MessageId, super::forms::Draft>,
     /// Card text belongs to its original project; filing state is never restored.
     pub task_drafts: BTreeMap<String, TaskDraft>,
+    /// The board chosen for each project, by its slug; main otherwise.
+    pub board_choice: BTreeMap<String, String>,
+    /// The board's search words and filters: this window's, not saved.
+    pub board_query: String,
+    pub board_filters: BoardFilters,
+    /// The lane whose quick-add field is open. Its words are the
+    /// project's card draft (`task_drafts`), saved with the other drafts.
+    pub quick_add: Option<String>,
+    /// The open card's fields as the person edits them.
+    pub card_draft: CardDraft,
+    /// A card being dragged, and the lane (and card) it would land at.
+    pub dragging: Option<agentdocker_core::TaskId>,
+    pub drag_target: Option<(String, Option<agentdocker_core::TaskId>)>,
+    /// The board's lanes as the person reshapes them, before saving.
+    pub lane_settings: Option<agentdocker_core::Board>,
     pub drafts: crate::drafts::Persistence,
     pub draft_home: PathBuf,
     pub connection_details: Option<String>,
@@ -161,6 +218,25 @@ pub(super) struct State {
     /// Agents that finished while the window was not in front, waiting to
     /// be told: posted off the window's thread after the update.
     pub finish_notices: Vec<String>,
+    /// Agents that stopped for the person in their own terminal while the
+    /// window was not in front, and since when: told once the stop has
+    /// lasted `WAIT_GRACE`, so a prompt answered at once never notifies.
+    pub wait_notices: Vec<(String, Instant)>,
+    /// A wake is set for the first pending wait notice to come due.
+    pub wait_timer: bool,
+    /// What is to be asked of the notification centre, in order, one at a
+    /// time: a withdrawal always lands after the post it takes back, and
+    /// an older withdrawal never meets a newer post of the same agent.
+    pub notice_queue: std::collections::VecDeque<NoticeOp>,
+    /// One operation is with the notification centre now.
+    pub notice_busy: bool,
+    /// The operations started, in order, for the tests to read.
+    #[cfg(test)]
+    pub notice_log: Vec<String>,
+    /// Agents whose notification may still sit in the notification
+    /// centre: the ones this window posted, and those with a question the
+    /// daemon posted. Each is taken back once it stops being true.
+    pub noticed: BTreeSet<String>,
     /// What this window last said it shows (`viewing.json`), and when.
     pub viewing: Option<(agentdocker_host::notify::Viewing, Instant)>,
     /// Cards this window has moved on by their holder's pull request, and
@@ -206,6 +282,34 @@ impl State {
 
 /// The words of a failed notification reply, and why it failed, until
 /// they are in the conversation's draft, copied, or dismissed.
+/// One request of the notification centre: post an agent's notice, or
+/// take back those of some agents.
+#[derive(Clone, Debug)]
+pub enum NoticeOp {
+    Post(Box<agentdocker_host::notify::Notification>),
+    Withdraw(Vec<String>),
+}
+
+impl NoticeOp {
+    /// Done off the window's thread; the outcome is the person's business
+    /// (a refused notification is not an error the window can fix).
+    fn run(self) {
+        match self {
+            Self::Post(notice) => {
+                let _ = crate::notify::post_notification(&notice);
+            }
+            Self::Withdraw(agents) => crate::notify::withdraw(&agents),
+        }
+    }
+    #[cfg(test)]
+    fn describe(&self) -> String {
+        match self {
+            Self::Post(notice) => format!("post {}", notice.tag.as_deref().unwrap_or_default()),
+            Self::Withdraw(agents) => format!("withdraw {}", agents.join(",")),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplyRecovery {
     pub message: MessageId,
@@ -223,6 +327,10 @@ pub const REPLY_RECOVERIES: usize = 8;
 /// The clock sweep while the window has focus: "12s ago" labels, the
 /// status line clearing, a question's time left.
 pub const FOCUSED_SWEEP: Duration = Duration::from_secs(2);
+/// How long a stop for the person lasts before it is told: a prompt the
+/// person answers at once, at the terminal, is not news (Roo Code waits
+/// two seconds too).
+pub const WAIT_GRACE: Duration = Duration::from_secs(2);
 /// The same sweep while it does not: nobody reads those labels, and each
 /// tick paints the whole window.
 pub const UNFOCUSED_SWEEP: Duration = Duration::from_secs(30);
@@ -719,12 +827,49 @@ pub enum Message {
     TaskTitle(String),
     TaskAcceptance(String),
     TaskFile(agentdocker_core::Column),
-    TaskMove(agentdocker_core::TaskId, agentdocker_core::Column),
+    TaskMove(agentdocker_core::TaskId, String),
     TaskOpen(agentdocker_core::TaskId),
     TaskAssign(agentdocker_core::TaskId, Option<agentdocker_core::AgentId>),
     TaskArchive(agentdocker_core::TaskId),
     /// The next page of the board.
     TasksMore,
+    /// Which board of the project is on view.
+    BoardPick(String),
+    /// A new board from a template.
+    BoardNew(String),
+    /// The board's search words, and its filter toggles.
+    BoardQuery(String),
+    BoardFilter(BoardFilterKind),
+    /// A lane's quick add: open (or close) it, and file its words (typed
+    /// as `TaskTitle`) there.
+    QuickAdd(Option<String>),
+    QuickAddFile,
+    /// The open card's fields as the person edits them, and saving them.
+    CardField(CardFieldKind, String),
+    CardPriority(agentdocker_core::Priority),
+    CardSize(Option<agentdocker_core::Size>),
+    CardSave,
+    CardCommentSend,
+    /// Approve a card waiting for the person (to Done), or send it back
+    /// to be pulled again with the comment typed.
+    TaskApprove(agentdocker_core::TaskId),
+    TaskBounce(agentdocker_core::TaskId),
+    /// Dragging a card: picked up, over a lane (and a card), dropped.
+    DragStart(agentdocker_core::TaskId),
+    DragOver(String, Option<agentdocker_core::TaskId>),
+    DragDrop,
+    DragCancel,
+    /// The board's lanes: open their settings, edit, save.
+    LaneSettings,
+    LaneName(usize, String),
+    LaneWip(usize, String),
+    LaneOwner(usize, agentdocker_core::board::Owner),
+    LaneAdd(agentdocker_core::Column),
+    LaneRemove(usize),
+    LaneMove(usize, bool),
+    LanePull(usize),
+    LaneSettingsSave,
+    ArchiveLane(String),
     /// Tell the selected project's agents to hold: open the reason, or
     /// send it, or lift the pause.
     PauseStart(String),
@@ -855,7 +1000,8 @@ pub enum Message {
     MarkUnread(String),
     /// A notice the window posted itself was taken or refused; either way
     /// nothing changes on screen (a refusal is the person's settings).
-    NoticePosted(Result<(), String>),
+    /// The notification centre finished the operation in hand.
+    NoticeDone,
     DismissError,
     Event(iced::Event),
     Window(window::Id),
@@ -872,6 +1018,8 @@ pub enum Message {
     CommandQuery(String),
     /// Move its highlighted row up or down, round the ends.
     CommandMove(i32),
+    /// A pending wait notice may have come due (`WAIT_GRACE`).
+    WaitGrace,
     /// Run its highlighted row (Enter).
     CommandSubmit,
     /// Run the highlighted row's second action (⌘Enter), if it has one.
@@ -1632,37 +1780,329 @@ impl App {
                         .edit_draft(DraftKind::TaskAcceptance, project, acceptance);
                 }
             }
-            Message::TaskFile(column) => {
-                if let Some(project) = self.selected_project_root()
-                    && let Some(draft) = self.shell.task_drafts.get_mut(&project)
-                    && !draft.sending()
-                    && !draft.title.trim().is_empty()
-                {
-                    self.task_requests += 1;
-                    let request = self.task_requests;
-                    draft.sending = Some(request);
-                    draft.error = None;
-                    let cmd = Cmd::TaskCreate {
-                        project,
-                        request,
-                        title: draft.title.trim().to_owned(),
-                        acceptance: draft.acceptance.trim().to_owned(),
-                        column,
-                    };
-                    self.send(cmd);
+            Message::TaskFile(column) => self.file_card(column, None),
+            Message::TaskMove(task, to) => self.send(Cmd::TaskMove {
+                task,
+                to,
+                before: None,
+                comment: None,
+            }),
+
+            Message::TaskOpen(task) => {
+                if self.task_open.as_ref() == Some(&task) {
+                    self.task_open = None;
+                    self.card = None;
+                } else {
+                    self.card = None;
+                    self.shell.card_draft = self.draft_of(&task);
+                    self.send(Cmd::TaskDetail(task.clone()));
+                    self.task_open = Some(task);
                 }
             }
-            Message::TaskMove(task, column) => self.send(Cmd::TaskMove { task, column }),
-            Message::TaskOpen(task) => {
-                self.task_open = if self.task_open.as_ref() == Some(&task) {
-                    None
-                } else {
-                    Some(task)
-                };
-            }
-            Message::TaskAssign(task, assignee) => self.send(Cmd::TaskAssign { task, assignee }),
+            Message::TaskAssign(task, assignee) => self.send(Cmd::TaskEdit {
+                task,
+                change: super::CardChange {
+                    assignee: Some(assignee.map(|a| a.to_string()).unwrap_or_default()),
+                    ..Default::default()
+                },
+            }),
             Message::TaskArchive(task) => self.send(Cmd::TaskArchive(task)),
             Message::TasksMore => self.request_more_tasks(),
+            Message::BoardPick(slug) => {
+                if let Some(project) = self.selected_project_root() {
+                    self.shell.board_choice.insert(project, slug);
+                    self.task_open = None;
+                    self.card = None;
+                    self.shell.lane_settings = None;
+                }
+            }
+            Message::BoardNew(template) => {
+                if let Some(project) = self.selected_project_root() {
+                    let name = match template.as_str() {
+                        "agents" => "Agents",
+                        "simple" => "Simple",
+                        _ => "Board",
+                    }
+                    .to_owned();
+                    self.send(Cmd::BoardCreate {
+                        project,
+                        name,
+                        template,
+                    });
+                }
+            }
+            Message::BoardQuery(words) => self.shell.board_query = words,
+            Message::BoardFilter(kind) => {
+                let filters = &mut self.shell.board_filters;
+                match kind {
+                    BoardFilterKind::High => filters.high = !filters.high,
+                    BoardFilterKind::Blocked => filters.blocked = !filters.blocked,
+                    BoardFilterKind::Waiting => filters.waiting = !filters.waiting,
+                    BoardFilterKind::Unassigned => filters.unassigned = !filters.unassigned,
+                }
+            }
+            Message::QuickAdd(lane) => {
+                let words = self
+                    .selected_project_root()
+                    .and_then(|project| self.shell.task_drafts.get(&project))
+                    .is_some_and(|draft| !draft.title.trim().is_empty());
+                self.shell.quick_add = match (lane, self.shell.quick_add.take()) {
+                    // Pressed again: closed, unless words wait in it.
+                    (Some(lane), Some(open)) if open == lane => words.then_some(open),
+                    (lane, _) => lane,
+                };
+            }
+            Message::QuickAddFile => {
+                if let Some(board) = self.board_on_view() {
+                    let lane = self
+                        .shell
+                        .quick_add
+                        .clone()
+                        .or_else(|| board.lanes.first().map(|l| l.slug.clone()))
+                        .and_then(|slug| board.lane(&slug).cloned());
+                    if let Some(lane) = lane {
+                        // The field stays open for the next one.
+                        self.shell.quick_add = Some(lane.slug.clone());
+                        self.file_card(lane.category, Some(lane.slug));
+                    }
+                }
+            }
+            Message::CardField(kind, words) => {
+                let draft = &mut self.shell.card_draft;
+                let field = match kind {
+                    CardFieldKind::Title => &mut draft.title,
+                    CardFieldKind::Description => &mut draft.description,
+                    CardFieldKind::Acceptance => &mut draft.acceptance,
+                    CardFieldKind::Due => &mut draft.due,
+                    CardFieldKind::Blocker => &mut draft.blocker,
+                    CardFieldKind::Tags => &mut draft.tags,
+                    CardFieldKind::Comment => &mut draft.comment,
+                };
+                *field = words
+                    .chars()
+                    .take(agentdocker_core::task::DESCRIPTION_CHARS)
+                    .collect();
+            }
+            Message::CardPriority(priority) => {
+                if let Some(task) = self.task_open.clone() {
+                    self.send(Cmd::TaskEdit {
+                        task,
+                        change: super::CardChange {
+                            priority: Some(priority),
+                            ..Default::default()
+                        },
+                    });
+                }
+            }
+            Message::CardSize(size) => {
+                if let Some(task) = self.task_open.clone() {
+                    self.send(Cmd::TaskEdit {
+                        task,
+                        change: super::CardChange {
+                            size: Some(size.map(|s| s.as_str().to_owned()).unwrap_or_default()),
+                            ..Default::default()
+                        },
+                    });
+                }
+            }
+            Message::CardSave => {
+                if let Some(task) = self.task_open.clone()
+                    && let Some(change) = self.card_change(&task)
+                {
+                    self.send(Cmd::TaskEdit { task, change });
+                }
+            }
+            Message::CardCommentSend => {
+                let body = self.shell.card_draft.comment.trim().to_owned();
+                if let Some(task) = self.task_open.clone()
+                    && !body.is_empty()
+                {
+                    self.shell.card_draft.comment.clear();
+                    self.send(Cmd::TaskComment { task, body });
+                }
+            }
+            Message::TaskApprove(task) => {
+                if let Some(done) = self.board_on_view().and_then(|b| {
+                    b.first(agentdocker_core::Column::Done)
+                        .map(|l| l.slug.clone())
+                }) {
+                    self.send(Cmd::TaskMove {
+                        task,
+                        to: done,
+                        before: None,
+                        comment: None,
+                    });
+                }
+            }
+            Message::TaskBounce(task) => {
+                if let Some(board) = self.board_on_view() {
+                    let words = self.shell.card_draft.comment.trim().to_owned();
+                    self.shell.card_draft.comment.clear();
+                    self.send(Cmd::TaskMove {
+                        task,
+                        to: board.pull_source.clone(),
+                        before: None,
+                        comment: (!words.is_empty()).then_some(words),
+                    });
+                }
+            }
+            Message::DragStart(task) => {
+                self.shell.dragging = Some(task);
+                self.shell.drag_target = None;
+            }
+            Message::DragOver(lane, before) => {
+                if self.shell.dragging.is_some() {
+                    self.shell.drag_target = Some((lane, before));
+                }
+            }
+            Message::DragDrop => {
+                let target = self.shell.drag_target.take();
+                if let Some(task) = self.shell.dragging.take() {
+                    // Let go where it was picked up — on itself, or in its
+                    // own lane with no card to sit before — it was a click.
+                    let here = self.board_on_view().and_then(|board| {
+                        self.tasks
+                            .as_ref()
+                            .and_then(|b| b.cards.iter().find(|t| t.id == task))
+                            .map(|t| board.lane_of(t).slug.clone())
+                    });
+                    match target {
+                        Some((lane, before))
+                            if !(Some(&lane) == here.as_ref()
+                                && before.as_ref().is_none_or(|b| *b == task)) =>
+                        {
+                            self.send(Cmd::TaskMove {
+                                task,
+                                to: lane,
+                                before,
+                                comment: None,
+                            });
+                        }
+                        _ => return self.update(Message::TaskOpen(task)),
+                    }
+                }
+            }
+            Message::DragCancel => {
+                self.shell.dragging = None;
+                self.shell.drag_target = None;
+            }
+            Message::LaneSettings => {
+                self.shell.lane_settings = match self.shell.lane_settings.take() {
+                    Some(_) => None,
+                    None => self.board_on_view(),
+                };
+            }
+            Message::LaneName(index, name) => {
+                if let Some(lane) = self
+                    .shell
+                    .lane_settings
+                    .as_mut()
+                    .and_then(|b| b.lanes.get_mut(index))
+                {
+                    lane.name = name
+                        .chars()
+                        .take(agentdocker_core::board::NAME_CHARS)
+                        .collect();
+                }
+            }
+            Message::LaneWip(index, words) => {
+                if let Some(lane) = self
+                    .shell
+                    .lane_settings
+                    .as_mut()
+                    .and_then(|b| b.lanes.get_mut(index))
+                {
+                    lane.wip = words.trim().parse::<u16>().ok().filter(|n| *n > 0);
+                }
+            }
+            Message::LaneOwner(index, owner) => {
+                if let Some(lane) = self
+                    .shell
+                    .lane_settings
+                    .as_mut()
+                    .and_then(|b| b.lanes.get_mut(index))
+                {
+                    lane.owner = owner;
+                }
+            }
+            Message::LaneAdd(category) => {
+                if let Some(board) = self.shell.lane_settings.as_mut()
+                    && board.lanes.len() < agentdocker_core::board::LANES_MAX
+                {
+                    let base = category.as_str().to_owned();
+                    let mut slug = base.clone();
+                    let mut n = 2;
+                    while board.lane(&slug).is_some() {
+                        slug = format!("{base}-{n}");
+                        n += 1;
+                    }
+                    board.lanes.push(agentdocker_core::Lane::new(
+                        &slug,
+                        category.label(),
+                        category,
+                        agentdocker_core::board::Owner::Any,
+                    ));
+                }
+            }
+            Message::LaneRemove(index) => {
+                if let Some(board) = self.shell.lane_settings.as_mut()
+                    && board.lanes.len() > 1
+                    && index < board.lanes.len()
+                {
+                    board.lanes.remove(index);
+                }
+            }
+            Message::LaneMove(index, up) => {
+                if let Some(board) = self.shell.lane_settings.as_mut() {
+                    let other = if up {
+                        index.checked_sub(1)
+                    } else {
+                        Some(index + 1)
+                    };
+                    if let Some(other) = other.filter(|o| *o < board.lanes.len())
+                        && index < board.lanes.len()
+                    {
+                        board.lanes.swap(index, other);
+                    }
+                }
+            }
+            Message::LanePull(index) => {
+                if let Some(board) = self.shell.lane_settings.as_mut()
+                    && let Some(lane) = board.lanes.get(index)
+                {
+                    match lane.category {
+                        agentdocker_core::Column::Ready => board.pull_source = lane.slug.clone(),
+                        agentdocker_core::Column::InProgress => {
+                            board.pull_target = lane.slug.clone();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Message::LaneSettingsSave => {
+                if let Some(project) = self.selected_project_root()
+                    && let Some(board) = self.shell.lane_settings.take()
+                {
+                    match board.check() {
+                        Ok(()) => self.send(Cmd::BoardSave { project, board }),
+                        Err(error) => {
+                            self.say(error.to_string());
+                            self.shell.lane_settings = Some(board);
+                        }
+                    }
+                }
+            }
+            Message::ArchiveLane(lane) => {
+                if let Some(project) = self.selected_project_root()
+                    && let Some(board) = self.board_on_view()
+                {
+                    self.send(Cmd::TaskArchiveLane {
+                        project,
+                        board: board.slug,
+                        lane,
+                    });
+                }
+            }
             Message::MarkAllRead => {
                 if self.connected.is_ok() {
                     let heads: Vec<(String, u64)> = self
@@ -2358,7 +2798,6 @@ impl App {
                     .collect();
                 calling.sort();
                 if calling.is_empty() {
-                    self.say("Nothing needs you");
                 } else {
                     // From the one on screen to the next, round again at
                     // the end, so pressing it again walks the whole queue.
@@ -2665,7 +3104,10 @@ impl App {
                 self.shell.catalog.appearance = Some(self.settings.clone());
                 self.shell.changed();
             }
-            Message::NoticePosted(_) => {}
+            // The update's tail starts the next one, if any.
+            Message::NoticeDone => self.shell.notice_busy = false,
+            // The update's tail tells what has come due and sets the next.
+            Message::WaitGrace => self.shell.wait_timer = false,
             Message::MarkUnread(id) => {
                 self.shell.unviewed_done.insert(id);
                 // Marked from its own panel: close it, or opening it again
@@ -2945,28 +3387,102 @@ impl App {
                 self.shell.viewing = Some((now, Instant::now()));
             }
         }
-        // An agent finished while the person was away: a quiet notice,
-        // one per agent, replacing its last.
-        for id in std::mem::take(&mut self.shell.finish_notices) {
+        // An agent finished, or stopped for the person in its own terminal,
+        // while they were away: a quiet notice, one per agent, replacing
+        // its last (the daemon's question notices share the identifier).
+        let finished = std::mem::take(&mut self.shell.finish_notices)
+            .into_iter()
+            .map(|id| (id, false));
+        // A stop is told once it has lasted the grace; one that ended
+        // inside it is forgotten, and one still young sets a wake for when
+        // it comes due, since an unfocused window sweeps only twice a
+        // minute.
+        let now = Instant::now();
+        let mut due = Vec::new();
+        let mut young = Vec::new();
+        for (id, since) in std::mem::take(&mut self.shell.wait_notices) {
+            let still = self
+                .agents
+                .iter()
+                .any(|a| a.id.as_str() == id && self.waits_for_person(a));
+            if !still {
+                continue;
+            }
+            if now.duration_since(since) >= WAIT_GRACE {
+                due.push(id);
+            } else {
+                young.push((id, since));
+            }
+        }
+        if let Some(soonest) = young.iter().map(|(_, since)| *since).min()
+            && !self.shell.wait_timer
+        {
+            self.shell.wait_timer = true;
+            let left = WAIT_GRACE.saturating_sub(now.duration_since(soonest));
+            tasks.push(Task::perform(
+                async move { tokio::time::sleep(left).await },
+                |()| Message::WaitGrace,
+            ));
+        }
+        self.shell.wait_notices = young;
+        let waiting = due.into_iter().map(|id| (id, true));
+        for (id, waits) in finished.chain(waiting).collect::<Vec<_>>() {
             let Some(agent) = self.agents.iter().find(|a| a.id.as_str() == id) else {
                 continue;
             };
+            let name = self.display_name(agent);
+            let (title, then) = if waits {
+                (
+                    match self.activity.get(id.as_str()) {
+                        Some(Activity::Waiting {
+                            reason: Some(agentdocker_core::WaitReason::Permission),
+                            ..
+                        }) => format!("{name} wants permission"),
+                        Some(Activity::Waiting {
+                            reason: Some(agentdocker_core::WaitReason::Question),
+                            ..
+                        }) => format!("{name} has a question"),
+                        _ => format!("{name} is waiting for you"),
+                    },
+                    "It is waiting in its terminal.",
+                )
+            } else {
+                (format!("{name} finished"), "Click to see what it did.")
+            };
             let notice = agentdocker_host::notify::Notification {
-                title: format!("{} finished", self.display_name(agent)),
+                title,
                 body: match agent.project.as_ref() {
-                    Some(project) => format!("In {}. Click to see what it did.", project.name()),
-                    None => "Click to see what it did.".to_owned(),
+                    Some(project) => format!("In {}. {then}", project.name()),
+                    None => then.to_owned(),
                 },
                 action: None,
-                tag: Some(format!("finished.{id}")),
+                tag: Some(format!("agent.{id}")),
             };
+            self.shell.noticed.insert(id.clone());
+            self.shell
+                .notice_queue
+                .push_back(NoticeOp::Post(Box::new(notice)));
+        }
+        // A notice that stopped being true is taken back: the question was
+        // answered, the agent moved on from its prompt, or the person
+        // looked at what it finished. One left in the centre would send
+        // them to something already done.
+        let stale = self.stale_notices();
+        if !stale.is_empty() && self.smoke.is_none() {
+            self.shell.notice_queue.push_back(NoticeOp::Withdraw(stale));
+        }
+        // One at a time, in order; the next starts when this one is done.
+        if !self.shell.notice_busy
+            && let Some(op) = self.shell.notice_queue.pop_front()
+        {
+            self.shell.notice_busy = true;
+            #[cfg(test)]
+            self.shell.notice_log.push(op.describe());
             tasks.push(Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || crate::notify::post_notification(&notice))
-                        .await
-                        .unwrap_or_else(|e| Err(e.to_string()))
+                    let _ = tokio::task::spawn_blocking(move || op.run()).await;
                 },
-                Message::NoticePosted,
+                |()| Message::NoticeDone,
             ));
         }
         // The dock icon counts the questions waiting on the person, in
@@ -2984,6 +3500,35 @@ impl App {
             _ => crate::accessibility::collect(),
         });
         Task::batch(tasks)
+    }
+
+    /// The agents whose notice stopped being true, forgotten as noticed:
+    /// no open question from them, nothing finished the person has not
+    /// looked at, and not stopped at a prompt. An agent with an open
+    /// question counts as noticed, since the daemon posts those.
+    pub(super) fn stale_notices(&mut self) -> Vec<String> {
+        let now = Utc::now();
+        for question in self.questions.iter().filter(|q| !q.expired(now)) {
+            self.shell.noticed.insert(question.from.clone());
+        }
+        let stale: Vec<String> = self
+            .shell
+            .noticed
+            .iter()
+            .filter(|id| {
+                !self.needs_input(id)
+                    && !self.shell.unviewed_done.contains(*id)
+                    && !self
+                        .agents
+                        .iter()
+                        .any(|a| a.id.as_str() == id.as_str() && self.waits_for_person(a))
+            })
+            .cloned()
+            .collect();
+        for id in &stale {
+            self.shell.noticed.remove(id);
+        }
+        stale
     }
 
     /// Denial notes that did not go, or may not have, go into their
@@ -3041,6 +3586,42 @@ impl App {
                 // Draft storage is full: it stays here, and the error says why.
                 self.shell.deny_notes.insert(id, note);
             }
+        }
+    }
+
+    /// File the project's card draft in a lane (the first of `column` when
+    /// none is named). Only its own reply clears the draft, so a refusal
+    /// keeps the words and typing waits for the answer.
+    fn file_card(&mut self, column: agentdocker_core::Column, lane: Option<String>) {
+        if let Some(project) = self.selected_project_root()
+            && let Some(draft) = self.shell.task_drafts.get_mut(&project)
+            && !draft.sending()
+            && !draft.title.trim().is_empty()
+        {
+            self.task_requests += 1;
+            let request = self.task_requests;
+            draft.sending = Some(request);
+            draft.error = None;
+            let title = draft.title.trim().to_owned();
+            let acceptance = draft.acceptance.trim().to_owned();
+            let board = self.board_on_view();
+            let lane = lane.or_else(|| {
+                board
+                    .as_ref()
+                    .and_then(|b| b.first(column))
+                    .map(|l| l.slug.clone())
+            });
+            self.send(Cmd::TaskCreate {
+                project,
+                request,
+                title,
+                acceptance,
+                column,
+                lane,
+                board: board
+                    .map(|b| b.slug)
+                    .filter(|s| s != agentdocker_core::board::MAIN),
+            });
         }
     }
 
@@ -3631,8 +4212,14 @@ impl App {
                 moves.push((card.id.clone(), to));
             }
         }
+        // A category names its board's first lane of that kind.
         for (task, column) in moves {
-            self.send(Cmd::TaskMove { task, column });
+            self.send(Cmd::TaskMove {
+                task,
+                to: column.as_str().to_owned(),
+                before: None,
+                comment: None,
+            });
         }
     }
 
@@ -3897,6 +4484,18 @@ mod tests {
             updated_at: Utc::now(),
             archived_at: None,
             links: Vec::new(),
+            key: String::new(),
+            board: None,
+            description: String::new(),
+            lane: None,
+            rank: String::new(),
+            priority: Default::default(),
+            size: None,
+            due: None,
+            external_blocker: String::new(),
+            parent: None,
+            blocked_by: Vec::new(),
+            tags: Vec::new(),
         };
         app.request_tasks();
         let (ask, _, _) = board_asks(&requests).pop().expect("asked");
@@ -3918,7 +4517,7 @@ mod tests {
         // Another card is moved and the reply comes: the draft stays.
         let _ = app.update(Message::TaskMove(
             agentdocker_core::TaskId::from("aaaaaaaaaaaa".to_owned()),
-            agentdocker_core::Column::Review,
+            "review".to_owned(),
         ));
         messages.send(Msg::TaskChanged(Ok(()))).unwrap();
         app.drain();
@@ -3966,6 +4565,31 @@ mod tests {
         assert_eq!(app.shell.task_drafts[&alpha_root].title, "");
         assert!(app.shell.task_drafts[&alpha_root].sending.is_none());
 
+        // A lane's quick add types into the same saved draft and files it
+        // in that lane; it stays open for the next card.
+        let _ = app.update(Message::QuickAdd(Some("review".into())));
+        let _ = app.update(Message::TaskTitle("From the review lane".into()));
+        assert!(
+            app.shell
+                .draft_snapshot()
+                .boards
+                .contains_key(alpha_root.as_str()),
+            "saved with the drafts"
+        );
+        let _ = app.update(Message::QuickAddFile);
+        assert!(requests.try_iter().any(|c| matches!(
+            c,
+            Cmd::TaskCreate { ref lane, ref title, .. }
+                if lane.as_deref() == Some("review") && title == "From the review lane"
+        )));
+        assert_eq!(app.shell.quick_add.as_deref(), Some("review"));
+        let request = app.shell.task_drafts[&alpha_root].sending.expect("filing");
+        messages
+            .send(Msg::TaskCreated(alpha_root.clone(), request, Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.shell.task_drafts[&alpha_root].title, "");
+
         // Beta's draft is beta's: alpha's text waits while beta is on view.
         let _ = app.update(Message::TaskTitle("alpha again".into()));
         app.shell.catalog.selected = Some(beta.root.clone());
@@ -3983,6 +4607,8 @@ mod tests {
                 title: "beta's card".into(),
                 acceptance: String::new(),
                 column: agentdocker_core::Column::Backlog,
+                lane: None,
+                board: None,
             },
             "the command queue is full",
         );
@@ -4024,6 +4650,18 @@ mod tests {
                     updated_at: Utc::now(),
                     archived_at: None,
                     links: Vec::new(),
+                    key: String::new(),
+                    board: None,
+                    description: String::new(),
+                    lane: None,
+                    rank: String::new(),
+                    priority: Default::default(),
+                    size: None,
+                    due: None,
+                    external_blocker: String::new(),
+                    parent: None,
+                    blocked_by: Vec::new(),
+                    tags: Vec::new(),
                 })
                 .collect::<Vec<_>>()
         };
@@ -4785,7 +5423,7 @@ mod tests {
             commands
                 .try_iter()
                 .filter_map(|cmd| match cmd {
-                    Cmd::TaskMove { column, .. } => Some(column),
+                    Cmd::TaskMove { to, .. } => Column::parse(&to),
                     _ => None,
                 })
                 .collect()
