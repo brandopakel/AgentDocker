@@ -934,6 +934,11 @@ impl App {
             .agents
             .iter()
             .filter(|a| a.spec.runtime != agentdocker_core::HUMAN_RUNTIME)
+            .filter(|a| {
+                a.project
+                    .as_ref()
+                    .is_none_or(|project| !self.shell.catalog.hidden.contains(&project.root))
+            })
             .map(|a| (self.standing(a), self.display_name(a), a))
             .filter(|(standing, _, a)| {
                 standing.calls_for_attention() || (searching && self.live_session(a))
@@ -1525,6 +1530,81 @@ mod tests {
         let _ = app.update(Message::CommandSubmit);
         assert!(!app.shell.palette.open);
         assert_eq!(app.shell.selected.as_deref(), Some("busy"));
+    }
+
+    /// Forgetting a project hides its attention and searched live sessions;
+    /// explicitly adding it back makes both available again.
+    #[test]
+    fn forgotten_projects_stay_out_of_agent_rows_until_added_back() {
+        let mut app = app();
+        let dir = tempfile::tempdir().unwrap();
+        let hidden = agentdocker_core::ProjectRef::directory(dir.path().join("hidden"));
+        let visible = agentdocker_core::ProjectRef::directory(dir.path().join("visible"));
+        assert!(app.shell.catalog.remember(hidden.clone(), true));
+        assert!(app.shell.catalog.remember(visible.clone(), true));
+        let now = Utc::now();
+        for (name, project) in [
+            ("hidden-asking", Some(hidden.clone())),
+            ("hidden-live", Some(hidden.clone())),
+            ("visible-asking", Some(visible)),
+            ("other-asking", None),
+        ] {
+            let mut agent = AgentRecord::new(
+                agentdocker_core::AgentSpec {
+                    name: name.into(),
+                    runtime: "claude-code".into(),
+                    ..Default::default()
+                },
+                false,
+                now,
+            );
+            agent.id = name.into();
+            agent.project = project;
+            agent.status = agentdocker_core::AgentStatus::Running;
+            agent.pid = Some(4242);
+            agent.process_started_at = Some(now);
+            app.agents.push(agent);
+            if name.ends_with("asking") {
+                app.questions.push(agentdocker_core::Question {
+                    id: format!("question-{name}").into(),
+                    from: name.into(),
+                    to: agentdocker_core::Destination::Agent("human".into()),
+                    text: "Which branch?".into(),
+                    presentation: None,
+                    asked_at: now,
+                    expires_at: now + chrono::Duration::minutes(10),
+                });
+            }
+        }
+        let agents = |app: &App| -> Vec<String> {
+            app.palette_rows()
+                .into_iter()
+                .filter(|item| item.group == Group::Agents)
+                .map(|item| item.label)
+                .collect()
+        };
+        let _ = app.update(Message::CommandPalette);
+        assert_eq!(
+            agents(&app),
+            ["hidden-asking", "other-asking", "visible-asking"]
+        );
+        assert!(app.shell.catalog.remove(&hidden.root).unwrap());
+        assert_eq!(agents(&app), ["other-asking", "visible-asking"]);
+        let _ = app.update(Message::CommandQuery("hidden".into()));
+        assert!(agents(&app).is_empty());
+        // A row rendered before Forget must not reopen the removed project.
+        let _ = app.update(Message::CommandRun(
+            "palette-item-agent-hidden-asking".into(),
+        ));
+        assert!(app.shell.palette.open);
+        assert!(app.shell.selected.is_none());
+        assert!(app.shell.catalog.remember(hidden, true));
+        assert_eq!(agents(&app), ["hidden-asking", "hidden-live"]);
+        let _ = app.update(Message::CommandQuery(String::new()));
+        assert_eq!(
+            agents(&app),
+            ["hidden-asking", "other-asking", "visible-asking"]
+        );
     }
 
     /// The highlight goes round the ends and survives a shorter list.

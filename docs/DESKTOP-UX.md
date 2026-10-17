@@ -50,6 +50,7 @@ spoken name says so. The palette has no key footer, and a row's folder or
 standing word is searched and spoken rather than drawn. Initials work (*cc* for Claude
 Code), and three or more letters in order find what nothing else did.
 **Launch agent…** in it lists the installed tools.
+Agents in a forgotten project stay out of Jump to until you add that project again.
 
 With no saved selection, the app opens on **All projects**, with sessions grouped
 under their project names. A saved project or Other sessions view is restored.
@@ -87,11 +88,12 @@ which runs AgentDocker commands rather than a project shell. Clicking a live age
 in the chat's agent list goes to its terminal; the chevron beside it opens its
 details. An agent AgentDocker started opens its terminal inside the app. One
 started elsewhere is found where it runs: in a tmux or herdr pane, that pane is
-selected first; then, on macOS, its Terminal or iTerm tab is brought forward,
-or in Ghostty (1.3 or later, whose scripting names no tty) the one terminal in
-the agent's folder — when several are there, Ghostty is brought forward and a
-toast says so (macOS asks once to let AgentDocker control that app); any
-other host — an editor's terminal, a JetBrains IDE — is brought to the front. The
+selected first; then, on macOS, its Terminal or iTerm tab is brought forward
+(macOS asks once to let AgentDocker control that app), and any other host —
+Ghostty, an editor's terminal, a JetBrains IDE — is brought to the front. Ghostty
+is not asked for the agent's tab: its scripting (1.3.1) names each terminal's
+folder but no tty or process, and a folder is not an identity (an agent can work
+in another folder than its tab reports, and that folder can be another tab's). The
 standing glyph beside the name in its details says on its tooltip where an
 agent runs (*in Terminal (ttys005)*, *in
 tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
@@ -169,10 +171,14 @@ question without submitting or changing drafts; full approval details remain in
 Inbox, where an approval card also has a line (*Why not?*) for words to go with **Deny** —
 why not, or what to do instead — sent to the agent as your message once the
 denial is accepted, opening with what was refused (*Denied `rm -rf build`: use
-the fixture script instead*); if that message is itself refused (a pause, a lost
-connection), its words go into the agent's message box instead, and a toast
-says so (the provider's own answer is still exactly Deny; Allow sends
-no words). A command a live session asks to run is answered in the row itself:
+the fixture script instead*); if that message is itself refused (a pause, a full
+work queue), its words go into the agent's message box instead and a toast says
+it was not sent; if its answer is lost (a dropped connection), they go there
+too, and the toast says it may have been sent, so check the conversation before
+sending again. Until the daemon takes it the note is saved with the drafts as
+that message-box text, so a window closed meanwhile shows it there on
+reopening, never sent again by itself (the provider's own answer is still
+exactly Deny; Allow sends no words). A command a live session asks to run is answered in the row itself:
 **Deny** and **Allow once** send the same exact answer as the Inbox card, with
 the command in the row's words; file changes, which must be looked at first,
 and every other question open with **Answer**. The first three items are shown; **Show N more** expands the same list and
@@ -225,7 +231,11 @@ A removed folder is also out of AgentDocker's hands: its hooks leave the
 sessions working there alone — no read-before-write guard, no leases, no
 messages or journal put in front of the model — until you add it again (the
 desktop keeps the list in `uncoordinated.json` in the AgentDocker home, which
-every hook reads first). None
+every hook reads first, at most 1 MiB; a list past that is not written).
+A session already registered there still gives back its leases at a turn's
+end and its record at its end. When the list cannot be written, the window
+says the hooks may still coordinate those sessions and tries again every
+30 seconds until it can. None
 of these deletes files or stops sessions. Two projects with one name are told
 apart by the tile's tooltip, which gives each folder, and by the row's spoken
 name, which adds the parent folder. A folder discovered because an
@@ -306,17 +316,20 @@ automatically aborts or resets, since a concurrent operation may belong to you.
 An unreadable final operation check refuses execution. A branch that moved
 since it was read is never merged unseen. Nothing is pushed. Changes are read
 again when the session commits or its branch moves, and with **Refresh**. Once
-nothing is left to merge the section says **Up to date**; once its pull
-request has merged on GitHub it says **Merged #340** and offers no Merge,
-since a squash leaves the branch's own commits uncounted by
-the main branch. Either way the next step is right there: while the session runs
-there is no button, since its worktree stays until it is done; once it has ended,
-**Remove worktree and branch** removes the folder (only when it is clean) and its
-branch, which git considers merged; after a squash merge on GitHub git does not,
-and the button reads **Remove worktree (keeps <branch>)**. The git commands it
-runs are its tooltip, as Merge's is, and once a branch is deleted the
-outcome's tick says on its tooltip how to bring it back (*<branch> was at 1a2b3c4: git branch <branch>
-1a2b3c4 brings it back.*). **Details** reveals the session ID, process,
+nothing is left to merge the section says **Up to date**; once GitHub reports
+a merged pull request whose head matches both the reviewed and the current
+branch head it says **Merged #340** and offers no Merge, since a squash leaves
+the branch's own commits uncounted by the main branch. Either way the next step
+is right there: while the session runs there is no button, since its worktree
+stays until it is done; once it has ended, **Remove worktree (may delete its
+branch)** removes the clean folder, then lets Git attempt non-force branch
+deletion. Git checks the configured upstream, or HEAD when none is configured;
+a squash merge and the displayed commit list do not predict whether the branch
+stays. The git commands it runs are its tooltip, as Merge's is. The outcome is
+Git's actual deletion or refusal report, including the full commit ID when Git
+reports a deletion, never a recovery command built from an earlier branch
+review; the reported commit recreates a deleted branch while Git retains the
+object. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
 
 Diff previews stay within 512 KiB, ending on a complete line when possible and

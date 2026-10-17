@@ -22,18 +22,15 @@ pub struct StalePath {
     pub reason: String,
 }
 
-/// Whether `target` is stale for `agent` when its covering observation,
-/// `mark`, no longer matches the checkout, judged by `changes`: what the
-/// ledger recorded under the mark since it was taken, paths relative to the
-/// checkout. `complete` says the ledger returned every such change.
+/// Whether retained ledger rows prevent an independently content-proven own
+/// change from clearing a read guard. Paths are relative to the checkout;
+/// `complete` refers only to the returned page, never to OS event delivery.
 ///
-/// A directory observation is one fingerprint of a whole tree, so any edit
-/// anywhere in it, the agent's own included, used to make every path
-/// beneath it stale. The ledger says which paths changed and who changed
-/// them. Only a change to the target itself counts, and never one
-/// attributed to the agent asking. A difference the ledger does not account
-/// for, because it recorded nothing under the mark, stays stale: the
-/// checkout changed in a way nothing saw.
+/// The caller must first compare the target's current identity with its read
+/// baseline and matching attributed write evidence. An old own/sibling ledger
+/// row alone cannot explain a newer fingerprint. Empty or partial pages refuse
+/// the exemption; so does a retained external change to the target. Watcher
+/// coverage, application queue draining and content proofs are caller concerns.
 pub fn stale_by_ledger(
     agent: &AgentId,
     mark: &Path,
@@ -41,19 +38,13 @@ pub fn stale_by_ledger(
     changes: &[Change],
     complete: bool,
 ) -> bool {
-    if changes.is_empty() {
+    if changes.is_empty() || !complete {
         return true;
     }
-    let mut relevant = changes
+    changes
         .iter()
         .filter(|change| target == mark || change.path.starts_with(target))
-        .peekable();
-    if relevant.peek().is_none() {
-        // The tree changed elsewhere, and the ledger says where; with a
-        // partial answer the target's own change may be the one missing.
-        return !complete;
-    }
-    relevant.any(|change| change.by.agent() != Some(agent))
+        .any(|change| change.by.agent() != Some(agent))
 }
 
 #[cfg(test)]
@@ -102,6 +93,10 @@ mod tests {
         assert!(
             !stale_by_ledger(&me, dir, target, &mine, true),
             "my own edit"
+        );
+        assert!(
+            stale_by_ledger(&me, dir, target, &mine, false),
+            "partial, showing only my own edit"
         );
         let theirs = [
             change("repro/e2e/main.go", Some("me")),

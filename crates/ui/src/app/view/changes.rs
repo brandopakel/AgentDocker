@@ -86,12 +86,16 @@ impl App {
         let branch = review.branch.clone().unwrap_or_default();
         // Merged on GitHub: a squash or rebase merge leaves the branch's
         // own commits outside the target, so the review still counts
-        // them. Nothing is left to merge here, and the next step is the
+        // them. Only the same reviewed and current head is covered by that
+        // merged pull request. Nothing is left to merge here, and the next step is the
         // cleanup, as the agent apps studied lead with once a pull request
         // has merged.
         let merged_upstream = self
             .pull_request_of(agent)
-            .filter(|pull| pull.status == crate::pull_request::Status::Merged)
+            .filter(|pull| pull.merged_head_matches(review.head.as_deref()))
+            .filter(|_| {
+                agent.vcs.as_ref().and_then(|vcs| vcs.head.as_deref()) == review.head.as_deref()
+            })
             .map(|pull| pull.number);
         let (added, removed) = review.totals();
         let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
@@ -162,33 +166,25 @@ impl App {
             // next step and the person's call, here where they merged it;
             // a running agent keeps its folder until it is done.
             if review.checkout != review.target_checkout && !agent.status.is_live() {
-                // Git deletes the branch only when it sees it merged:
-                // with nothing left on it, it does; after a squash on
-                // GitHub, it keeps it. The button says which before it
-                // is pressed, as Tower's "Safe to delete" does, and
-                // what it runs when pointed at.
-                let keeps = !review.commits.is_empty();
+                // Upstream configuration, not this review's commit list,
+                // decides Git's branch deletion when it runs: the button
+                // says it may delete the branch, and what runs is its
+                // tooltip. The outcome then says what Git did.
                 let removing = self.removing_worktree.as_deref() == Some(id.as_str());
                 let worktree = review.checkout.display();
                 section = section.push(tip(
                     action(
                         "remove-worktree",
-                        &if removing {
-                            "Removing…".to_owned()
-                        } else if keeps {
-                            format!("Remove worktree (keeps {branch})")
+                        if removing {
+                            "Removing…"
                         } else {
-                            "Remove worktree and branch".to_owned()
+                            "Remove worktree (may delete its branch)"
                         },
                         (!removing && self.connected.is_ok())
                             .then(|| Message::RemoveWorktree(id.clone())),
                         false,
                     ),
-                    if keeps {
-                        format!("git worktree remove {worktree}")
-                    } else {
-                        format!("git worktree remove {worktree} · git branch -d {branch}")
-                    },
+                    format!("git worktree remove {worktree} · git branch -d {branch}"),
                     c,
                 ));
             }
@@ -466,12 +462,14 @@ mod tests {
         let mut app = App::bare(commands, results);
         app.connected = Ok(());
         let root = std::path::Path::new("/fixture/alpha");
+        let merged_head = "1111111111111111111111111111111111111111";
+        let new_head = "2222222222222222222222222222222222222222";
         let mut agent = crate::app::tests::record("feature", "claude-code", None);
         agent.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
         agent.project = Some(agentdocker_core::ProjectRef::directory(root));
         agent.vcs = Some(agentdocker_core::VcsState {
             branch: Some("claude/feature".into()),
-            head: None,
+            head: Some(merged_head.into()),
             dirty: None,
             updated_at: Utc::now(),
         });
@@ -482,6 +480,7 @@ mod tests {
                 agent: agent.id.clone(),
                 checkout: "/fixture/alpha-wt/feature".into(),
                 branch: Some("claude/feature".into()),
+                head: Some(merged_head.into()),
                 target_checkout: root.into(),
                 target: Some("main".into()),
                 commits: vec![agentdocker_core::review::Commit {
@@ -503,6 +502,7 @@ mod tests {
                     number: 340,
                     url: "https://github.com/o/n/pull/340".into(),
                     status: Status::Merged,
+                    head: Some(merged_head.into()),
                 })),
             )],
             std::time::Instant::now(),
@@ -510,41 +510,93 @@ mod tests {
         let after = seen(app.changes_section(&agent, c).expect("changes"));
         assert!(after.control("merge-branch").is_none());
         assert!(after.reads("Merged #340"));
-        // Git does not see a squash as merged: the button says the branch
-        // stays; what it runs is its tooltip, not a line under it.
+        // A squash and an empty commit list cannot predict branch -d: an
+        // upstream can make Git delete either branch when it runs. What
+        // runs is the button's tooltip, not a line under it.
         let remove = after.control("remove-worktree").expect("remove");
-        assert_eq!(remove.1, "Remove worktree (keeps claude/feature)");
+        assert_eq!(remove.1, "Remove worktree (may delete its branch)");
         assert!(!after.reads("git worktree remove"));
-
-        // With nothing left on the branch, git deletes it too; once it
-        // has, the outcome says how to bring it back.
+        let merged_commits = app
+            .branch_review
+            .as_ref()
+            .unwrap()
+            .1
+            .as_ref()
+            .unwrap()
+            .commits
+            .clone();
         if let Some((_, Ok(review))) = app.branch_review.as_mut() {
             review.commits.clear();
-            review.head = Some("1a2b3c4d5e6f".into());
         }
         let clean = seen(app.changes_section(&agent, c).expect("changes"));
         assert_eq!(
             clean.control("remove-worktree").expect("remove").1,
-            "Remove worktree and branch"
+            "Remove worktree (may delete its branch)"
         );
         let _ = app.update(Message::RemoveWorktree(agent.id.to_string()));
+        let actual =
+            "Deleted branch renamed-after-review (was 1234567890abcdef1234567890abcdef12345678).";
         _messages
             .send(crate::app::Msg::WorktreeRemoved(
                 agent.id.to_string(),
-                Ok(true),
+                Ok((true, Some(actual.into()))),
             ))
             .unwrap();
         app.drain();
-        let said = app
-            .merge_outcome
-            .as_ref()
-            .and_then(|(_, said)| said.as_ref().ok());
+        let said = app.merge_outcome.as_ref().unwrap().1.as_ref().unwrap();
+        assert_eq!(said, &format!("Worktree and branch removed. {actual}"));
+        assert!(!said.contains("claude/feature"));
+        assert!(!said.contains(merged_head));
+
+        // Older daemons may omit the note; no cached identity is substituted.
+        _messages
+            .send(crate::app::Msg::WorktreeRemoved(
+                agent.id.to_string(),
+                Ok((true, None)),
+            ))
+            .unwrap();
+        app.drain();
         assert_eq!(
-            said.map(String::as_str),
-            Some(
-                "Worktree and branch removed. claude/feature was at 1a2b3c4: git branch claude/feature 1a2b3c4 brings it back."
+            app.merge_outcome.as_ref().unwrap().1.as_deref(),
+            Ok("Worktree and branch removed.")
+        );
+        _messages
+            .send(crate::app::Msg::WorktreeRemoved(
+                agent.id.to_string(),
+                Ok((
+                    false,
+                    Some("branch actual is kept: Git refused deletion".into()),
+                )),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.merge_outcome.as_ref().unwrap().1.as_deref(),
+            Ok(
+                "Worktree removed; its branch was not deleted. branch actual is kept: Git refused deletion"
             )
         );
+
+        app.branch_review
+            .as_mut()
+            .unwrap()
+            .1
+            .as_mut()
+            .unwrap()
+            .commits = merged_commits;
+        // A new registry head must stop offering cleanup even before the
+        // refreshed branch review arrives. The cached PR is still merged.
+        agent.vcs.as_mut().unwrap().head = Some(new_head.into());
+        let moved = seen(app.changes_section(&agent, c).expect("changes"));
+        assert!(moved.control("merge-branch").is_some());
+        assert!(moved.control("remove-worktree").is_none());
+        if let Some((_, Ok(review))) = app.branch_review.as_mut() {
+            review.head = Some(new_head.into());
+        }
+        let refreshed = seen(app.changes_section(&agent, c).expect("changes"));
+        assert!(refreshed.control("merge-branch").is_some());
+        assert!(refreshed.control("remove-worktree").is_none());
+        assert!(!refreshed.reads("Merged #340"));
     }
 
     #[test]
