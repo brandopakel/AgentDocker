@@ -253,6 +253,13 @@ fn mutates(request: &Request) -> bool {
             | Request::Tasks { .. }
             | Request::TaskGet { .. }
             | Request::Boards { .. }
+            | Request::Rules { .. }
+            | Request::Tags { .. }
+            | Request::TaskSearch { .. }
+            | Request::Plans { .. }
+            | Request::PlanGet { .. }
+            | Request::Files { .. }
+            | Request::FileGet { .. }
             | Request::Usage { .. }
             | Request::Events { .. }
             | Request::ResumeEvents { .. }
@@ -364,6 +371,10 @@ struct State {
     discovered: Discovered,
     store: Store,
     storage_error: Option<String>,
+    /// Cards an agent is being started on, by the rule that asked (none
+    /// for the person): not started on twice, and counted against the
+    /// rule's limit until the agent has the card.
+    starting_cards: BTreeMap<agentdocker_core::TaskId, Option<String>>,
     /// Watcher attachment/gap boundary for each checkout. An attachment and
     /// a flush acknowledgement do not prove OS event completeness; clearing a
     /// changed read additionally requires matching current content evidence.
@@ -1638,6 +1649,7 @@ impl Daemon {
                 discovered: Discovered::default(),
                 store,
                 storage_error: None,
+                starting_cards: BTreeMap::new(),
                 ledger_since: HashMap::new(),
                 content_proofs: read_content::Proofs::default(),
                 coordination: match pending_transfer {
@@ -2322,6 +2334,7 @@ impl Daemon {
                 parent,
                 blocked_by,
                 tags,
+                plan,
             } => {
                 let card = agentdocker_core::protocol::BatchCard {
                     reference: None,
@@ -2337,6 +2350,7 @@ impl Daemon {
                     blocked_by,
                     tags,
                     links,
+                    plan,
                 };
                 self.task_file(
                     tasks::Filing {
@@ -2423,6 +2437,7 @@ impl Daemon {
                 parent,
                 blocked_by,
                 tags,
+                plan,
             } => self.task_update(
                 &agent,
                 &task,
@@ -2439,9 +2454,91 @@ impl Daemon {
                     parent,
                     blocked_by,
                     tags,
+                    plan,
                 },
             ),
             Request::TaskArchive { agent, task } => self.task_archive(&agent, &task),
+            Request::Rules { project, board } => self.rules(project, board).await,
+            Request::RuleCreate {
+                from,
+                project,
+                board,
+                name,
+                trigger,
+                action,
+            } => {
+                self.rule_create(&from, project, board, &name, trigger, action)
+                    .await
+            }
+            Request::RuleUpdate {
+                from,
+                rule,
+                name,
+                trigger,
+                action,
+                enabled,
+            } => self.rule_update(&from, &rule, name, trigger, action, enabled),
+            Request::RuleDelete { from, rule } => self.rule_delete(&from, &rule),
+            Request::TaskStart {
+                from,
+                task,
+                runtime,
+                args,
+                workdir,
+            } => self.task_start(&from, &task, runtime, args, workdir).await,
+            Request::Tags { project } => self.tags(project).await,
+            Request::TagSave {
+                from,
+                project,
+                name,
+                color,
+                rename,
+            } => self.tag_save(&from, project, &name, color, rename).await,
+            Request::TagDelete {
+                from,
+                project,
+                name,
+            } => self.tag_delete(&from, project, &name).await,
+            Request::TaskSearch {
+                query,
+                project,
+                archived,
+                limit,
+            } => self.task_search(&query, project, archived, limit).await,
+            Request::Plans { project, archived } => self.plans(project, archived).await,
+            Request::PlanGet { plan } => self.plan_get(&plan),
+            Request::PlanSave {
+                from,
+                project,
+                plan,
+                title,
+                body,
+                status,
+            } => {
+                self.plan_save(&from, project, plan, title, body, status)
+                    .await
+            }
+            Request::Files { project, task } => self.files(project, task).await,
+            Request::FilePut {
+                from,
+                project,
+                name,
+                media_type,
+                text,
+                base64,
+                task,
+            } => {
+                self.file_put(&from, project, &name, media_type, text, base64, task)
+                    .await
+            }
+            Request::FileGet { file } => self.file_get(&file),
+            Request::FileLink {
+                from,
+                file,
+                task,
+                unlink,
+            } => self.file_link(&from, &file, &task, unlink),
+            Request::FileDelete { from, file } => self.file_delete(&from, &file),
             Request::TaskUnarchive { agent, task } => self.task_unarchive(&agent, &task),
             Request::TaskArchiveLane {
                 from,
@@ -10849,6 +10946,7 @@ mod tests {
                 parent: None,
                 blocked_by: Vec::new(),
                 tags: Vec::new(),
+                plan: None,
             })
             .await
         else {

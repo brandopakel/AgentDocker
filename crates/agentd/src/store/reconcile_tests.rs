@@ -660,6 +660,9 @@ fn repair_moves_typed_protection_and_membership_and_refuses_self_review() {
         parent: None,
         blocked_by: Vec::new(),
         tags: Vec::new(),
+        plan: None,
+        lane_since: None,
+        fired: Vec::new(),
     };
     store.put_document("task", card.id.as_str(), &card).unwrap();
     let lease = Lease {
@@ -1190,6 +1193,9 @@ fn resumed_cards_keep_their_work_without_inventing_a_hold() {
         parent: None,
         blocked_by: Vec::new(),
         tags: Vec::new(),
+        plan: None,
+        lane_since: None,
+        fired: Vec::new(),
     };
     store.put_document("task", task.id.as_str(), &task).unwrap();
     let lease = Lease {

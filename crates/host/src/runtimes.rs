@@ -277,7 +277,9 @@ pub fn mcp_command_matches(
                 && args == ["mcp", "--runtime", "claude-code", "--claude-channel"]))
 }
 
-fn adapter_executable_matches(command: &str, marker: &str) -> bool {
+/// Match the executable basename using native naming rules. Windows accepts
+/// case-insensitive names with an optional `.exe`; other platforms match exactly.
+pub fn adapter_executable_matches(command: &str, marker: &str) -> bool {
     let Some(name) = Path::new(command)
         .file_name()
         .and_then(|name| name.to_str())
