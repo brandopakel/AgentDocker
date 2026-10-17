@@ -1283,7 +1283,19 @@ and the earlier draft survived; only three user items existed, and the resumed
 record used ordinary history with no birth allowance. Windows also verified
 actual MCP identity in both terminal generations. The Unix trials configured
 MCP but did not invoke it. These private loopback-model and synthetic-terminal
-trials do not establish real-account or physical-input acceptance. If receiver binding and its cleanup both fail, the original binding error is
+trials do not establish real-account or physical-input acceptance. Published beta.14 (`10b57894`) also passed explicit UUID reopen with actual
+Codex 0.163 and existing accounts on this Mac and independent Oracle Linux. Each
+trial completed two real turns: after native exit, one offline message arrived
+once under the same canonical agent and thread without a bootstrap prompt. The
+original receipt and both exact model replies were retained. All 16 Mac and 49
+Linux owned process generations retired without force. Mac saved settings stayed
+unchanged; the originally absent Linux private configuration was restored exactly
+after all profile users retired. Protected production sessions stayed unchanged.
+These used synthetic terminals and existing authentication; physical input,
+fresh login, unsent drafts through whole-terminal exit and the separate hook-only
+zero-prompt gap remain open.
+
+If receiver binding and its cleanup both fail, the original binding error is
 retained with the cleanup failure as additional context. On Unix, the front end now creates a dedicated group for the internal owner and retains its unreaped child identity until that group is retired. It also owns the capability path before startup, so an internal-owner crash can revoke it. A controlling terminal is handed to the owner group directly, with foreground and mode restoration on cleanup and suspension; stdin is never proxied. Source `4042605a` passed the bounded actual Codex 0.160 owner-crash trial, but failed a separate controlling-terminal suspension: Darwin returned a stopped-child notification to the exit wait. Corrected `368443bc` passed the independent-host suspension/continue and owner-death trial, with foreground and terminal modes restored before host cleanup. Frontend SIGKILL and SIGTERM regressions also passed. All three retained the exact first receipt, revoked the capability, retired their processes and produced no extra model request. These private-model Mac trials do not establish startup-crash, physical keyboard or other-platform acceptance. On Windows, the authenticated internal owner enters an unnamed kill-on-close job
 before starting provider children. Its non-inheritable handle remains until
 process exit; daemon startup happens before admission, and provider descendants

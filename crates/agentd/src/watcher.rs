@@ -289,6 +289,7 @@ async fn drain(
     gap: &AtomicBool,
 ) {
     if gap.swap(false, Ordering::Relaxed) {
+        daemon.ledger_gap();
         daemon.emit(agentdocker_core::EventKind::WatcherGap {
             reason: "event overflow or operating-system watcher error; ledger may be incomplete"
                 .into(),
@@ -328,6 +329,7 @@ fn reconcile_watches(
                 });
             }
             watcher.unwatch(&dir, entry.gitdir.as_deref());
+            daemon.ledger_covers(&dir, false);
             info!(checkout = %dir.display(), "stopped watching");
         }
     }
@@ -355,6 +357,7 @@ fn reconcile_watches(
             continue;
         }
         info!(checkout = %checkout.dir.display(), project = %checkout.project.short(), "watching");
+        daemon.ledger_covers(&checkout.dir, true);
         watched.insert(checkout.dir.clone(), Watched { checkout, gitdir });
     }
 }

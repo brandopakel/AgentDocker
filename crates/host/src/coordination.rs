@@ -42,9 +42,16 @@ pub fn write(home: &Path, roots: &[PathBuf]) -> std::io::Result<()> {
             _ => Ok(()),
         };
     }
-    let bytes = serde_json::to_vec_pretty(&Saved {
+    let bytes = serde_json::to_vec(&Saved {
         roots: roots.to_vec(),
     })?;
+    // What the hooks would not read is not written: the list in place
+    // stays, and the caller hears why.
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err(std::io::Error::other(
+            "the list of removed folders is past 1 MiB; it was not written",
+        ));
+    }
     let mut tmp = tempfile::NamedTempFile::new_in(home)?;
     tmp.write_all(&bytes)?;
     tmp.as_file().sync_all()?;
@@ -68,6 +75,20 @@ pub fn excluded(home: &Path, dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A list the hooks would not read is refused, and the one in place
+    /// stays.
+    #[test]
+    fn a_list_past_the_readers_limit_is_not_written() {
+        let home = tempfile::tempdir().unwrap();
+        let kept = vec![PathBuf::from("/work/kept")];
+        write(home.path(), &kept).unwrap();
+        let long: Vec<PathBuf> = (0..600)
+            .map(|i| PathBuf::from(format!("/work/{i}/{}", "x".repeat(2000))))
+            .collect();
+        assert!(write(home.path(), &long).is_err());
+        assert_eq!(roots(home.path()), kept);
+    }
 
     /// A removed folder and everything in it is excluded until it is added
     /// back; an unreadable list excludes nothing.

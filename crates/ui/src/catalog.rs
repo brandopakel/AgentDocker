@@ -311,11 +311,16 @@ impl Catalog {
         tmp.write_all(&bytes)?;
         tmp.as_file().sync_all()?;
         tmp.persist(&target)?;
-        // The hooks read the removed folders from a file of their own:
-        // removing a project stops AgentDocker coordinating sessions
-        // there, and adding it back starts it again.
-        agentdocker_host::coordination::write(home, &self.hidden)?;
         Ok(())
+    }
+
+    /// Pass the removed folders to the hooks, which read them from a file
+    /// of their own: removing a project stops AgentDocker coordinating
+    /// sessions there, and adding it back starts it again. Kept apart from
+    /// `save` so a failure here is retried on its own, not mistaken for an
+    /// unsaved workspace.
+    pub fn sync_exclusions(&self, home: &Path) -> std::io::Result<()> {
+        agentdocker_host::coordination::write(home, &self.hidden)
     }
 }
 
@@ -508,12 +513,14 @@ mod tests {
         assert_eq!(Catalog::load(&home).unwrap(), catalog);
         // Removing a project takes it out of the hooks' hands too, and
         // adding it back gives it back.
+        catalog.sync_exclusions(&home).unwrap();
         assert_eq!(
             agentdocker_host::coordination::roots(&home),
             [project("alpha").root]
         );
         assert!(catalog.remember(project("alpha"), true));
         catalog.save(&home).unwrap();
+        catalog.sync_exclusions(&home).unwrap();
         assert!(agentdocker_host::coordination::roots(&home).is_empty());
         catalog.remove(&project("alpha").root).unwrap();
         // Two folders called the same are told apart by name.
