@@ -186,8 +186,8 @@ mod tests {
     #[test]
     fn a_generated_word_is_stable_and_a_shared_word_is_told_apart() {
         assert_eq!(
-            word_for("0180d7615186449087095d7aa15ec0bb"),
-            word_for("0180d7615186449087095d7aa15ec0bb")
+            word_for("6f1c2a9b3d7e4c5f8a0b1c2d3e4f5a6b"),
+            word_for("6f1c2a9b3d7e4c5f8a0b1c2d3e4f5a6b")
         );
         // Find two ids that draw the same word and check the tie-break.
         let base = word_for("tie-0");
@@ -247,14 +247,14 @@ mod tests {
         let mut first = record(
             "codex-5124",
             "codex",
-            "0180d7615186449087095d7aa15ec0bb",
+            "6f1c2a9b3d7e4c5f8a0b1c2d3e4f5a6b",
             "/p/a",
         );
         on(&mut first, "main");
         let mut second = record(
             "codex-6250",
             "codex",
-            "ac5c138c2b3f4d8f90c5924988419055",
+            "9b8a7c6d5e4f40312a1b2c3d4e5f6a7b",
             "/p/a",
         );
         on(&mut second, "feature/x");

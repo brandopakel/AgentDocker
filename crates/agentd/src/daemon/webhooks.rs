@@ -756,7 +756,7 @@ mod tests {
             EventKind::MessageSent {
                 message: agentdocker_core::MessageId::from("26beba01be15456fdeadbeef".to_owned()),
                 from: "0a68fb5752f7".into(),
-                to: agentdocker_core::Destination::Agent("ac5c138c2b3f4d8f90c5924988419055".into()),
+                to: agentdocker_core::Destination::Agent("9b8a7c6d5e4f40312a1b2c3d4e5f6a7b".into()),
                 kind: "chat".into(),
             },
             chrono::Utc::now(),

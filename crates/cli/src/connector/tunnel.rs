@@ -456,14 +456,18 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut tunnel =
-            spawn_cloudflared(&named, 6111, Some("keel"), Some("https://ad.example.com"))
-                .await
-                .unwrap();
+        let mut tunnel = spawn_cloudflared(
+            &named,
+            6111,
+            Some("orchard"),
+            Some("https://ad.example.com"),
+        )
+        .await
+        .unwrap();
         assert_eq!(tunnel.public_url, "https://ad.example.com");
-        assert_eq!(tunnel.name.as_deref(), Some("keel"));
+        assert_eq!(tunnel.name.as_deref(), Some("orchard"));
         tunnel.stop().await;
-        let error = spawn_cloudflared(&named, 6111, Some("keel"), None)
+        let error = spawn_cloudflared(&named, 6111, Some("orchard"), None)
             .await
             .unwrap_err()
             .to_string();

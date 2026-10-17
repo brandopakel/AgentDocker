@@ -96,7 +96,7 @@ mod tests {
             pid,
             public_url: "https://node.example.ts.net".into(),
             bind: "127.0.0.1:1".into(),
-            default_project: Some("/p/keel".into()),
+            default_project: Some("/p/orchard".into()),
             pairing_code: "ABCD-EFGH".into(),
             started_at: chrono::Utc::now(),
             tunnel: None,

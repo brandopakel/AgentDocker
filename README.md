@@ -35,9 +35,8 @@ If you know [herdr](https://github.com/herdrdev/herdr), the two are complements 
 
 > Status: **beta, single host.** The native desktop, messaging, agent terminals, reconnect, task board and usage collection are implemented. The current preview is [v0.2.0-beta.13](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.13): the macOS/Linux desktop and an unsigned Windows portable ZIP. The stable download and Homebrew formula remain v0.1.0. First-run and sustained acceptance remain open on every platform, and the full Windows product is unfinished. [Remaining work](docs/REMAINING-WORK.md) says what is done, what has evidence and what is still open.
 
-The first coworker rollout targets **macOS, Linux and native Windows**. Each
-platform needs a downloadable candidate and its own first-run acceptance; the
-Windows foundations alone do not satisfy that requirement. The app is described
+AgentDocker targets **macOS, Linux and native Windows**. Each platform needs a
+downloadable candidate and its own first-run acceptance. The app is described
 screen by screen in [Desktop UX](docs/DESKTOP-UX.md).
 
 ## The Docker analogy
@@ -62,11 +61,11 @@ Idle message delivery needs a provider input adapter as well. The Claude channel
 
 ## Install
 
-**Trying the desktop preview with coworkers:** download
+**Trying the desktop preview:** download
 [v0.2.0-beta.13](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.13)
 explicitly. The default installer and Homebrew commands below still select the
-stable v0.1.0 release. For a source trial, follow
-[the local build instructions](docs/LOCAL-BUILD.md) at an agreed commit. The
+stable v0.1.0 release. To build from source, follow
+[the local build instructions](docs/LOCAL-BUILD.md). The
 release checklist is in [Remaining work](docs/REMAINING-WORK.md).
 
 Preview Mac apps are ad-hoc signed. Packages target macOS and Linux on
@@ -94,7 +93,7 @@ agentdocker daemon install    # optional: run agentd as a login service (launchd
 ```
 
 **macOS previews:** stable releases require Developer ID signing and notarization;
-those credentials are not configured on this development Mac. An unsigned
+the project does not have them yet. An unsigned
 prerelease must be labeled as such and may need a per-app exception in
 **System Settings → Privacy & Security → Open Anyway**, following
 [Apple's instructions](https://support.apple.com/102445). Company policy may
@@ -135,7 +134,7 @@ The daemon keeps scanning for agent processes on its own and announces them as `
 
 - **One host.** Agents on two machines do not see each other; a hand-off bundle carries work across, a shared registry does not.
 - **Waking an idle Claude Code session.** A Claude session takes a message the moment it is next at a prompt, or live if it was launched with the AgentDocker channel (`agentdocker setup claude-code` writes the MCP entry; the session must start with `--dangerously-load-development-channels server:agentdocker` and accept the consent prompt, or be relaunched so — the app tells you when a recipient cannot be woken). **Reconnect here** now resumes an eligible ended Claude session in the app with its conversation and queue; Claude displays its own consent. **Wake terminal sessions** in Tools (or `agentdocker setup --shell`) previews the shell configuration for future Claude launches. Existing plain sessions need a normal exit/reconnect. Codex uses its separate [input adapter](docs/CODEX-INPUT.md), whose startup and version limits remain explicit.
-- **Linux:** CLI/daemon and desktop packages run in x86-64/ARM64 CI, with automated hosted acceptance on Oracle Ubuntu x86-64; hands-on target-distribution acceptance remains open. **Windows:** native pipes, ConPTY, per-user installation/update and Task Scheduler services are implemented. Historical first-start failures remain unexplained. Real-provider accounts, physical input, Start menu and logon/reboot acceptance remain open. See the [Windows port status](docs/WINDOWS-PORT.md).
+- **Linux:** CLI/daemon and desktop packages run in x86-64/ARM64 CI, with automated acceptance on a hosted Ubuntu x86-64 machine; hands-on target-distribution acceptance remains open. **Windows:** native pipes, ConPTY, per-user installation/update and Task Scheduler services are implemented. Historical first-start failures remain unexplained. Real-provider accounts, physical input, Start menu and logon/reboot acceptance remain open. See the [Windows port status](docs/WINDOWS-PORT.md).
 - **Accessibility and input:** the app registers a native accessibility tree and supports keyboard navigation, checked so far only with synthetic input on macOS. Physical keyboard, VoiceOver and IME acceptance remain open.
 - **Provider limits and account resets** are detected and recovered in bounded trials, not over days of real use.
 

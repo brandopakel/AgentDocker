@@ -2,7 +2,7 @@
 
 > Scope: an optional sandbox runtime. AgentDocker is a native daemon and CLI for coordinating agents; it does not require Docker or Podman, and nothing in the core depends on them. This plan covers the adapter that lets an agent run inside a container with closed defaults.
 
-Added September 5, 2026 at the user's request. This extends the current worktree and authenticated-container workstream. Correct stale-context detection and verified session handoff remain the acceptance criteria across engines.
+Correct stale-context detection and verified session handoff remain the acceptance criteria across engines.
 
 | Step | Deliverable | Acceptance |
 |---|---|---|

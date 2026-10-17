@@ -794,7 +794,7 @@ mod tests {
                 .unwrap_err()
                 .contains("plain process")
         );
-        assert!(plain_session_id("218845eb-ba1e-4457-bb5a-e1829f5652dd"));
+        assert!(plain_session_id("5e55a0d1-7c3b-4f2e-9a61-0b4d2c8e7f13"));
         for bad in ["", "-x", "a b", "a;b", &"x".repeat(129)] {
             assert!(!plain_session_id(bad), "{bad:?}");
         }

@@ -3101,7 +3101,7 @@ mod tests {
     /// messaging tools only, is told why, and is refused the rest by name.
     #[tokio::test]
     async fn a_remote_agent_gets_the_messaging_tools_and_nothing_with_a_checkout() {
-        let s = server(vec![]).remote("/p/keel".into());
+        let s = server(vec![]).remote("/p/orchard".into());
         let init = s.handle(rpc(1, "initialize", json!({}))).await.unwrap();
         let instructions = init["result"]["instructions"].as_str().unwrap();
         assert!(instructions.contains("reaching the project keel"));
@@ -3150,13 +3150,13 @@ mod tests {
         s.handle(rpc(
             4,
             "tools/call",
-            json!({"name": "send_message", "arguments": {"to": "project", "text": "hello keel"}}),
+            json!({"name": "send_message", "arguments": {"to": "project", "text": "hello orchard"}}),
         ))
         .await
         .unwrap();
         assert!(matches!(
             s.backend.requests().last().unwrap(),
-            Request::Send { to, .. } if to == "project:/p/keel"
+            Request::Send { to, .. } if to == "project:/p/orchard"
         ));
     }
 

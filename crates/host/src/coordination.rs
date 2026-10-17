@@ -96,7 +96,7 @@ mod tests {
     fn a_removed_folder_and_its_subfolders_are_left_alone_until_added_back() {
         let home = tempfile::tempdir().unwrap();
         let work = tempfile::tempdir().unwrap();
-        let lab = work.path().join("minio-lab");
+        let lab = work.path().join("river-lab");
         let other = work.path().join("other");
         std::fs::create_dir_all(lab.join("reproductions/e2e")).unwrap();
         std::fs::create_dir_all(&other).unwrap();

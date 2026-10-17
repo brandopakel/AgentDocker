@@ -1568,7 +1568,7 @@ mod tests {
             Shared(mock.clone(), down.clone()),
             "https://x.trycloudflare.com".into(),
             Some(agentdocker_core::ProjectRef {
-                root: "/p/keel".into(),
+                root: "/p/orchard".into(),
                 worktree: None,
                 fingerprint: None,
                 source: agentdocker_core::ProjectSource::Directory,
@@ -1874,7 +1874,7 @@ mod tests {
         let html = String::from_utf8_lossy(&form.body);
         assert!(html.contains("<b>Claude (Claude)</b>"), "{html}");
         assert!(
-            html.contains("<option value=\"/p/keel\" selected>keel — /p/keel</option>")
+            html.contains("<option value=\"/p/orchard\" selected>orchard — /p/orchard</option>")
                 && html.contains("name=\"project_path\""),
             "the default project is proposed and any folder may be typed: {html}"
         );
@@ -1962,7 +1962,7 @@ mod tests {
                 Request::Register { spec, pid: None, .. }
                     if spec.name == "claude-browser-test"
                         && spec.runtime == "claude-browser"
-                        && spec.workdir.as_deref() == Some(Path::new("/p/keel"))
+                        && spec.workdir.as_deref() == Some(Path::new("/p/orchard"))
                         && spec.labels.get("connector").map(String::as_str) == Some("true")
             ),
             "the agent is registered when the code is redeemed"
@@ -2033,7 +2033,7 @@ mod tests {
             .handle(post(
                 "/mcp",
                 "application/json",
-                r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"project","text":"to everyone in keel"}}}"#,
+                r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"project","text":"to everyone in orchard"}}}"#,
                 Some(&access),
             ))
             .await;
@@ -2041,7 +2041,7 @@ mod tests {
         assert!(
             matches!(
                 mock.requests().last().unwrap(),
-                Request::Send { to, .. } if to == "project:/p/keel"
+                Request::Send { to, .. } if to == "project:/p/orchard"
             ),
             "a project broadcast names the served project, not this process's directory"
         );
@@ -2059,7 +2059,7 @@ mod tests {
                 .handle(post(
                     "/mcp",
                     "application/json",
-                    r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"claim","arguments":{"resource":"path:/p/keel"}}}"#,
+                    r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"claim","arguments":{"resource":"path:/p/orchard"}}}"#,
                     Some(&access),
                 ))
                 .await,
@@ -2291,7 +2291,7 @@ mod tests {
             .handle(post(
                 "/authorize",
                 "application/x-www-form-urlencoded",
-                &format!("{query}&pairing_code=ABCD-EFGH&agent_name=chatgpt-browser-test&project=%2Fp%2Fkeel"),
+                &format!("{query}&pairing_code=ABCD-EFGH&agent_name=chatgpt-browser-test&project=%2Fp%2Forchard"),
                 None,
             ))
             .await;
@@ -2343,7 +2343,7 @@ mod tests {
                 mock.requests().last(),
                 Some(Request::Register { spec, .. })
                     if spec.runtime == "chatgpt-browser"
-                        && spec.workdir.as_deref() == Some(Path::new("/p/keel"))
+                        && spec.workdir.as_deref() == Some(Path::new("/p/orchard"))
             ),
             "{:?}",
             mock.requests().last()
@@ -2385,7 +2385,7 @@ mod tests {
                 "/authorize",
                 "application/x-www-form-urlencoded",
                 &format!(
-                    "response_type=code&client_id={client_id}&code_challenge={}&code_challenge_method=S256&pairing_code=ABCD-EFGH&project=%2Fp%2Fkeel&project_path={}",
+                    "response_type=code&client_id={client_id}&code_challenge={}&code_challenge_method=S256&pairing_code=ABCD-EFGH&project=%2Fp%2Forchard&project_path={}",
                     oauth::s256(&verifier),
                     http::percent_encode(project)
                 ),
@@ -2400,10 +2400,10 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains("<option value=\"/p/keel\" selected>"),
+            html.contains("<option value=\"/p/orchard\" selected>"),
             "the page comes back with its choices: {html}"
         );
-        let relative = connector.handle(consent("keel")).await;
+        let relative = connector.handle(consent("orchard")).await;
         assert_eq!(relative.status, 400);
         assert!(
             mock.requests().is_empty(),

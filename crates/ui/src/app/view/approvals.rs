@@ -2198,7 +2198,7 @@ mod tests {
                 false,
                 Utc::now(),
             );
-            record.project = Some(agentdocker_core::ProjectRef::directory("/work/keel"));
+            record.project = Some(agentdocker_core::ProjectRef::directory("/work/orchard"));
             record
         };
         let mut asker = agent("asker", "claude-code");
@@ -2234,7 +2234,7 @@ mod tests {
                 .expect("a waiting question"),
         );
         let line = view.control("needs-you-line-ask").expect("the question");
-        assert_eq!(line.1, "keel · asker asks: Merge it?");
+        assert_eq!(line.1, "orchard · asker asks: Merge it?");
         assert!(
             view.control(&format!("needs-you-line-{ended_id}"))
                 .is_none()

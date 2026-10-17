@@ -11045,7 +11045,7 @@ mod tests {
         let daemon = open(&dir);
         let checkout = dir.path().join("checkout");
         std::fs::create_dir(&checkout).unwrap();
-        let session = "218845eb-ba1e-4457-bb5a-e1829f5652dd";
+        let session = "5e55a0d1-7c3b-4f2e-9a61-0b4d2c8e7f13";
         // A session registered the way a terminal session is: by its
         // hooks, with its conversation id, in its checkout.
         let mut ended_spec = spec("claude-code-4242");

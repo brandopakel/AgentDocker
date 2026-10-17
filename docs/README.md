@@ -27,7 +27,7 @@ What each document is for. Status lives in [remaining work](REMAINING-WORK.md), 
 
 - [Remaining work](REMAINING-WORK.md) — the road to v1 and every open item, with its evidence.
 - [Testing and benchmarks](TESTING-AND-BENCHMARKS.md) — the standard gate, coverage, fuzzing, benchmarks, and how results are reported.
-- [Local trial](LOCAL-TRIAL.md) — the first-run and sustained-use trials on real machines.
+- [Trying a candidate](LOCAL-TRIAL.md) — how to try a build on a real machine, stage by stage.
 - [Distribution setup](DISTRIBUTION-SETUP.md) — the tap, the release workflow, what a Developer ID is for.
-- [Verification records](verification/INDEX.md) — one line per trial on real binaries.
+- [Verification history](verification/INDEX.md) — where the evidence from trials on real binaries is kept.
 - [Real-engine verification](../tests/containers/README.md) — the separate Docker/Podman evidence.
