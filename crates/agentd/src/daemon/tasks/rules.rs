@@ -670,29 +670,6 @@ impl Daemon {
     }
 
     async fn start_on_card_inner(self: &Arc<Self>, start: &Start) -> Response {
-        let (task, workdir, git) = {
-            let mut state = lock(&self.state);
-            let task = match state.resolve_task(start.task.as_str()) {
-                Ok(task) => task,
-                Err(response) => return *response,
-            };
-            let workdir = start
-                .workdir
-                .clone()
-                .or_else(|| state.project_dir(&task.project));
-            let git = state.registry.all().any(|r| {
-                r.project
-                    .as_ref()
-                    .is_some_and(|p| p.id() == task.project && p.source == ProjectSource::Git)
-            });
-            (task, workdir, git)
-        };
-        let Some(workdir) = workdir else {
-            return Response::error(
-                ErrorCode::Invalid,
-                "no checkout of the card's project is known here; start the agent from its folder",
-            );
-        };
         let roots = agentdocker_host::runtimes::Roots::from_env();
         let inventory = tokio::task::spawn_blocking(move || {
             agentdocker_host::runtimes::inventory(&roots, "agentdocker")
@@ -718,6 +695,42 @@ impl Daemon {
                 ),
             );
         };
+        self.start_on_card_command(start, cli, agentdocker_host::procinfo::executable_path())
+            .await
+    }
+
+    // Both manual and rule starts use this launch path. The selected provider
+    // and daemon executable are explicit so tests never depend on the user's
+    // PATH, installation or provider profile.
+    pub(super) async fn start_on_card_command(
+        self: &Arc<Self>,
+        start: &Start,
+        cli: PathBuf,
+        executable: std::io::Result<PathBuf>,
+    ) -> Response {
+        let (task, workdir, git) = {
+            let mut state = lock(&self.state);
+            let task = match state.resolve_task(start.task.as_str()) {
+                Ok(task) => task,
+                Err(response) => return *response,
+            };
+            let workdir = start
+                .workdir
+                .clone()
+                .or_else(|| state.project_dir(&task.project));
+            let git = state.registry.all().any(|r| {
+                r.project
+                    .as_ref()
+                    .is_some_and(|p| p.id() == task.project && p.source == ProjectSource::Git)
+            });
+            (task, workdir, git)
+        };
+        let Some(workdir) = workdir else {
+            return Response::error(
+                ErrorCode::Invalid,
+                "no checkout of the card's project is known here; start the agent from its folder",
+            );
+        };
         // The inventory took a while: a card taken or blocked since is not
         // started on.
         {
@@ -740,7 +753,7 @@ impl Daemon {
             labels.insert(rule::STARTED_BY_LABEL.to_owned(), rule.id.clone());
         }
         let handle = task.handle().to_lowercase();
-        let spec = AgentSpec {
+        let mut spec = AgentSpec {
             name: format!("{}-{}", start.runtime, handle),
             runtime: start.runtime.clone(),
             command,
@@ -750,6 +763,9 @@ impl Daemon {
             tty: true,
             ..AgentSpec::default()
         };
+        if let Err(response) = prepare_card_input(&mut spec, executable) {
+            return *response;
+        }
         let agent = match self.run(spec).await {
             Response::Agent { agent } => agent,
             other => return other,
@@ -853,4 +869,44 @@ impl Daemon {
         state.tell_holder(&start.from, &agent.id, &task, rule::start_prompt(&task));
         Response::Agent { agent }
     }
+}
+
+/// A card's first message is queued immediately after launch. Never start a
+/// provider that cannot receive that message while idle. Use the CLI beside
+/// the loaded daemon, not a mutable launch link or a different PATH install.
+fn prepare_card_input(
+    spec: &mut AgentSpec,
+    executable: std::io::Result<PathBuf>,
+) -> Result<(), Box<Response>> {
+    use agentdocker_host::provider_input::{enable_claude_channel, enable_codex_input};
+    let unavailable = |message: String| Box::new(Response::error(ErrorCode::Unavailable, message));
+    let enable = match spec.runtime.as_str() {
+        "claude-code" => enable_claude_channel,
+        "codex" => enable_codex_input,
+        _ => {
+            return Err(unavailable(format!(
+                "starting on a card needs idle message delivery; {} has no supported input adapter",
+                spec.runtime,
+            )));
+        }
+    };
+    let me =
+        executable.map_err(|error| unavailable(format!("Cannot locate this daemon: {error}")))?;
+    let cli = me
+        .parent()
+        .map(|dir| dir.join(format!("agentdocker{}", std::env::consts::EXE_SUFFIX)))
+        .filter(|cli| cli.is_file())
+        .filter(|cli| cli.canonicalize().ok() != me.canonicalize().ok())
+        .ok_or_else(|| {
+            unavailable(
+                "starting on a card requires the agentdocker command-line tool beside this daemon"
+                    .into(),
+            )
+        })?;
+    enable(spec, &cli).map_err(|error| {
+        Box::new(Response::error(
+            ErrorCode::Invalid,
+            format!("Cannot configure delivery of the card: {error}"),
+        ))
+    })
 }

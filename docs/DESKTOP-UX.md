@@ -383,7 +383,7 @@ here or nobody, **Archive**, then its tools — **Plan** (the project's plans
 to choose from, or none), **Attach a file** (the project's files), **Add a
 file from disk**, **Add a link** (URL, PR, path, commit or card, and the
 target) and, on a card nobody holds that waits on nothing, **Start an agent
-on it** (the installed command-line agents, after full dependency details
+on it** (installed Codex and Claude Code, after full dependency details
 load) — the plan it carries out
 (opened on Plans), its files (opened with the system's app from a private
 copy, or unlinked), its links (a URL or a pull request in the browser, a
@@ -393,7 +393,10 @@ replies and a composer, and its history. A card an agent is started on
 moves into the pull target, held by that agent, and the agent is told to
 work on it.
 Start checks the full card details, including prerequisites on later board
-pages, and checks eligibility again when a runtime is selected.
+pages, and checks eligibility again when a runtime is selected. Manual and rule
+starts configure the provider's idle input adapter before launching; an unavailable
+adapter or incompatible launch arguments leaves the card free. Provider trust,
+channel consent and tool permissions still apply in the new terminal.
 
 **To-do**, in the sidebar under Projects, is every project's open cards in
 three groups, each named by its mark: yours, your agents', and those you

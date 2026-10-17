@@ -848,8 +848,11 @@ Newest first. Only what changes how the product is used.
   (`create_tag` makes one). Plans are specs in Markdown that cards carry out
   (`plan`, `save_plan`), and project files sit beside them, linked to cards
   (`file`, `put_file`). `task start` (or **Start an agent** on a card)
-  launches an agent on a card and hands it the card; a start rule keeps a
-  lane worked. `task search` and `search_tasks` find cards by words with
+  launches Codex or Claude Code with idle message delivery and hands it the card;
+  a start rule uses the same input setup. Unsupported delivery, a missing matching
+  AgentDocker CLI or incompatible provider arguments refuse before launch. Complete
+  provider trust and channel consent in the terminal; tool permissions still apply.
+  `task search` and `search_tasks` find cards by words with
   slips forgiven. The desktop adds To-do, a table layout, compact cards,
   tag and agent filters, board shortcuts, and opening, copying and adding
   links. Browser agents can read the board, plans and comment on cards.

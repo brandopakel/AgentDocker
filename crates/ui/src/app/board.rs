@@ -1694,7 +1694,9 @@ impl App {
         let mut choices = row![].spacing(6).align_y(Center);
         match menu {
             Some(CardMenu::Start) if startable => {
-                for runtime in self.runtimes.iter().filter(|r| r.cli.is_some()) {
+                for runtime in self.runtimes.iter().filter(|r| {
+                    r.cli.is_some() && matches!(r.name.as_str(), "codex" | "claude-code")
+                }) {
                     choices = choices.push(ghost(
                         format!("card-start-{}", runtime.name),
                         runtime.label.clone(),
@@ -2094,7 +2096,9 @@ impl App {
             A::Move => what = what.push(lane_chips(F::Value, &draft.value)),
             A::Start => {
                 let mut runtimes = Vec::new();
-                for runtime in self.runtimes.iter().filter(|r| r.cli.is_some()) {
+                for runtime in self.runtimes.iter().filter(|r| {
+                    r.cli.is_some() && matches!(r.name.as_str(), "codex" | "claude-code")
+                }) {
                     runtimes.push(crate::controls::segment(
                         format!("rule-runtime-{}", runtime.name),
                         runtime.label.clone(),

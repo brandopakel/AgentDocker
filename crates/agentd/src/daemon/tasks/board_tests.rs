@@ -791,3 +791,177 @@ async fn a_waiting_card_is_started_on_only_once_it_clears() {
         [&waiting.id]
     );
 }
+
+/// The shared manual/rule path launches the provider's adapter before handing
+/// it a card. These executables capture their actual argv/environment; they do
+/// not run providers, read accounts, or rely on the host's PATH inventory.
+#[cfg(unix)]
+#[tokio::test]
+async fn card_starts_launch_the_input_adapter_and_queue_the_assignment() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+    for (runtime, rule_started) in [("codex", false), ("claude-code", true)] {
+        let f = fixture().await;
+        let d = &f.daemon;
+        let filed = card(
+            d.handle(create(
+                HUMAN,
+                &f.work,
+                "Receive this card",
+                Some("ready"),
+                &[],
+            ))
+            .await,
+        );
+        let bin = f._dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let daemon_exe = bin.join("agentd");
+        let cli = bin.join("agentdocker");
+        let provider = bin.join(runtime);
+        std::fs::write(&daemon_exe, "fixture").unwrap();
+        let script = "#!/bin/sh\nprintf '%s\\n' \"$AGENTDOCKER_CODEX_INPUT\" \"$AGENTDOCKER_CLAUDE_CHANNEL_INPUT\" \"$@\" > launch.txt\nexec /bin/sleep 30\n";
+        for path in [&cli, &provider] {
+            std::fs::write(path, script).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut start = rules::Start {
+            rule: None,
+            task: filed.id.clone(),
+            runtime: runtime.into(),
+            args: vec!["--model".into(), "chosen-model".into()],
+            from: HUMAN.into(),
+            workdir: Some(f.work.clone().into()),
+        };
+        if rule_started {
+            let Response::Rule { rule } = d
+                .handle(Request::RuleCreate {
+                    from: HUMAN.into(),
+                    project: Some(f.work.clone()),
+                    board: None,
+                    name: "Receive Ready".into(),
+                    trigger: Trigger::Enter {
+                        lane: "ready".into(),
+                    },
+                    action: RuleAction::Start {
+                        runtime: runtime.into(),
+                        args: start.args.clone(),
+                        max: 1,
+                    },
+                })
+                .await
+            else {
+                panic!("rule was not created")
+            };
+            start.rule = Some(rule);
+        }
+        let Response::Agent { agent } = d
+            .start_on_card_command(&start, provider.clone(), Ok(daemon_exe))
+            .await
+        else {
+            panic!("card did not start")
+        };
+        let output = PathBuf::from(&f.work).join("launch.txt");
+        let captured = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&output)
+                    && text.contains("chosen-model")
+                {
+                    break text;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        let (assigned, queued) = {
+            let mut state = lock(&d.state);
+            (
+                state.resolve_task(filed.id.as_str()).unwrap(),
+                state.inboxes.get(&agent.id).map_or(0, |queue| queue.len()),
+            )
+        };
+        // Always stop our fixture before assertions can fail, including the
+        // negative control with input preparation disabled.
+        let stopped = d
+            .handle(Request::Stop {
+                agent: agent.id.to_string(),
+                force: false,
+            })
+            .await;
+        assert!(!matches!(stopped, Response::Error { .. }), "{stopped:?}");
+        let captured = captured.expect("fixture command did not write its arguments");
+        let lines: Vec<_> = captured.lines().collect();
+        assert_eq!(assigned.assignee.as_ref(), Some(&agent.id));
+        assert_eq!(queued, 1, "the card is durably queued once");
+        if runtime == "codex" {
+            assert_eq!(lines[..4], ["1", "", "codex-input", "--"]);
+            assert_eq!(lines[4], provider.to_str().unwrap());
+            assert_eq!(lines[5..], ["-c", "model=\"chosen-model\""]);
+        } else {
+            assert_eq!(lines[..3], ["", "1", "--mcp-config"]);
+            let config: serde_json::Value = serde_json::from_str(lines[3]).unwrap();
+            assert_eq!(
+                config["mcpServers"]["agentdocker"]["command"],
+                cli.to_str().unwrap()
+            );
+            assert_eq!(
+                config["mcpServers"]["agentdocker"]["args"],
+                serde_json::json!(["mcp", "--runtime", "claude-code", "--claude-channel"])
+            );
+            assert_eq!(
+                lines[4..],
+                [
+                    "--dangerously-load-development-channels",
+                    "server:agentdocker",
+                    "--model",
+                    "chosen-model"
+                ]
+            );
+            assert_eq!(assigned.fired, [start.rule.unwrap().id]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn card_start_input_failures_leave_the_card_and_registry_unchanged() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let filed = card(
+        d.handle(create(HUMAN, &f.work, "Leave me free", Some("ready"), &[]))
+            .await,
+    );
+    let before = lock(&d.state).registry.all().count();
+    let bin = f._dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let daemon_exe = bin.join(format!("agentd{}", std::env::consts::EXE_SUFFIX));
+    let cli = bin.join(format!("agentdocker{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&daemon_exe, "fixture").unwrap();
+    for (runtime, args, installed, code) in [
+        ("codex", vec![], false, ErrorCode::Unavailable),
+        ("codex", vec!["resume"], true, ErrorCode::Invalid),
+        ("claude-code", vec!["--print"], true, ErrorCode::Invalid),
+        ("aider", vec![], true, ErrorCode::Unavailable),
+    ] {
+        if installed {
+            std::fs::write(&cli, "fixture").unwrap();
+        }
+        let start = rules::Start {
+            rule: None,
+            task: filed.id.clone(),
+            runtime: runtime.into(),
+            args: args.into_iter().map(str::to_owned).collect(),
+            from: HUMAN.into(),
+            workdir: Some(f.work.clone().into()),
+        };
+        let response = d
+            .start_on_card_command(&start, bin.join(runtime), Ok(daemon_exe.clone()))
+            .await;
+        assert!(
+            matches!(&response, Response::Error { code: actual, .. } if *actual == code),
+            "{response:?}"
+        );
+        let mut state = lock(&d.state);
+        assert_eq!(state.resolve_task(filed.id.as_str()).unwrap(), filed);
+        assert_eq!(state.registry.all().count(), before);
+        assert!(state.leases.all().is_empty());
+    }
+}
