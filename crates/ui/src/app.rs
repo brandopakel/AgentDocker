@@ -7141,6 +7141,79 @@ pub(crate) mod tests {
         assert!(app.shell.unviewed_done.contains(&id));
     }
 
+    /// Leaving an already waiting session starts a fresh background grace,
+    /// including after an earlier grace was cancelled by returning to the app.
+    #[test]
+    fn losing_focus_schedules_existing_waits_once_with_a_fresh_grace() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let worker = record("worker", "claude-code", Some(4242));
+        let id = worker.id.to_string();
+        let mut ended = record("ended", "claude-code", Some(4243));
+        ended.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        let waiting = Activity::Waiting {
+            since: Utc::now() - chrono::Duration::hours(1),
+            reason: Some(agentdocker_core::WaitReason::Permission),
+        };
+        let fresh = BTreeMap::from([
+            (id.clone(), waiting.clone()),
+            (ended.id.to_string(), waiting),
+        ]);
+        app.agents.extend([worker, ended]);
+        app.shell.unfocused = false;
+        app.note_completions(&fresh);
+        app.activity = fresh.clone();
+        assert!(app.shell.wait_notices.is_empty());
+        let unfocus = || Message::Event(iced::Event::Window(iced::window::Event::Unfocused));
+        let focus = || Message::Event(iced::Event::Window(iced::window::Event::Focused));
+        let before = Instant::now();
+        let _ = app.update(unfocus());
+        assert_eq!(
+            app.shell.wait_notices.len(),
+            1,
+            "focus loss schedules the existing live wait"
+        );
+        assert_eq!(app.shell.wait_notices[0].0, id);
+        let since = app.shell.wait_notices[0].1;
+        assert!(
+            since >= before,
+            "an old prompt still gets a full background grace"
+        );
+        assert!(app.shell.wait_timer && app.shell.notice_log.is_empty());
+        let _ = app.update(unfocus());
+        app.note_completions(&fresh);
+        assert_eq!(app.shell.wait_notices, vec![(id.clone(), since)]);
+
+        let _ = app.update(focus());
+        assert!(app.shell.wait_notices.is_empty());
+        let before = Instant::now();
+        let _ = app.update(unfocus());
+        assert_eq!(app.shell.wait_notices.len(), 1);
+        assert!(app.shell.wait_notices[0].1 >= before);
+        // A timer left from the earlier focus loss cannot shorten the new grace.
+        let _ = app.update(Message::WaitGrace);
+        assert!(app.shell.notice_log.is_empty());
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        assert_eq!(
+            app.shell.notice_log,
+            vec![format!("post {}", shell::window_tag(&id))]
+        );
+        let _ = app.update(unfocus());
+        assert!(app.shell.wait_notices.is_empty());
+        assert_eq!(
+            app.shell.notice_log.len(),
+            1,
+            "duplicate focus events never repost"
+        );
+
+        let _ = app.update(focus());
+        app.settings.notify_finished = false;
+        let _ = app.update(unfocus());
+        assert!(app.shell.wait_notices.is_empty(), "opt-out still applies");
+    }
+
     /// Away from the window, an agent that stops for the person is told
     /// once per stop; one that finishes with the person's next message
     /// already queued is not told as finished; and a notice is taken back
@@ -7188,7 +7261,7 @@ pub(crate) mod tests {
         app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
         let _ = app.update(Message::WaitGrace);
         assert!(pending(&app).is_empty());
-        assert!(app.shell.noticed.contains(&id), "told");
+        assert!(app.shell.noticed.contains(&shell::window_tag(&id)), "told");
         // A stop answered inside the grace is never told.
         app.shell.noticed.clear();
         step(&mut app, &id, working());
@@ -7196,7 +7269,7 @@ pub(crate) mod tests {
         step(&mut app, &id, working());
         let _ = app.update(Message::Tick);
         assert!(pending(&app).is_empty());
-        assert!(!app.shell.noticed.contains(&id));
+        assert!(!app.shell.noticed.contains(&shell::window_tag(&id)));
 
         // In front, the window shows it; nothing is posted.
         app.shell.wait_notices.clear();
@@ -7216,17 +7289,69 @@ pub(crate) mod tests {
 
         // Noticed and still true: kept. Looking at it makes it stale, and
         // the update takes it back.
-        app.shell.noticed.insert(id.clone());
+        app.shell.noticed.insert(shell::window_tag(&id));
         assert!(app.stale_notices().is_empty());
         let _ = app.update(Message::SelectSession(id.clone()));
-        assert!(!app.shell.noticed.contains(&id));
+        assert!(!app.shell.noticed.contains(&shell::window_tag(&id)));
         // A wait is kept while it lasts and taken back, once, when it ends.
         step(&mut app, &id, waiting());
-        app.shell.noticed.insert(id.clone());
+        app.shell.noticed.insert(shell::window_tag(&id));
         assert!(app.stale_notices().is_empty(), "waiting is still true");
         step(&mut app, &id, working());
-        assert_eq!(app.stale_notices(), std::slice::from_ref(&id));
+        assert_eq!(app.stale_notices(), [shell::window_tag(&id)]);
         assert!(app.stale_notices().is_empty());
+    }
+
+    fn wait_grace_respects_changed_notification_eligibility(focus: bool) {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let worker = record("worker", "claude-code", Some(4242));
+        let id = worker.id.to_string();
+        app.agents.push(worker);
+        app.shell.unfocused = true;
+        let fresh = BTreeMap::from([(
+            id.clone(),
+            Activity::Waiting {
+                since: Utc::now(),
+                reason: Some(agentdocker_core::WaitReason::Permission),
+            },
+        )]);
+        app.note_completions(&fresh);
+        app.activity = fresh;
+        assert_eq!(app.shell.wait_notices.len(), 1);
+        let _ = app.update(Message::Tick);
+        assert!(app.shell.wait_timer);
+        assert!(app.shell.notice_log.is_empty());
+
+        // The person returns or opts out while the grace timer is pending.
+        // Drive the actual event handler, then let the outstanding timer fire.
+        let event = if focus {
+            Message::Event(iced::Event::Window(iced::window::Event::Focused))
+        } else {
+            Message::NotifyFinished(false)
+        };
+        let _ = app.update(event);
+        for (_, since) in &mut app.shell.wait_notices {
+            *since -= shell::WAIT_GRACE;
+        }
+        let _ = app.update(Message::WaitGrace);
+        assert!(
+            app.shell.notice_log.is_empty(),
+            "a wait must not notify after focus or notification eligibility changes"
+        );
+        assert!(app.shell.notice_queue.is_empty());
+        assert!(!app.shell.noticed.contains(&shell::window_tag(&id)));
+    }
+
+    #[test]
+    fn wait_grace_does_not_notify_after_window_focus() {
+        wait_grace_respects_changed_notification_eligibility(true);
+    }
+
+    #[test]
+    fn wait_grace_does_not_notify_after_notifications_are_disabled() {
+        wait_grace_respects_changed_notification_eligibility(false);
     }
 
     /// The notification centre is asked one thing at a time, in order: a
@@ -7254,8 +7379,8 @@ pub(crate) mod tests {
             since: now,
             reason: None,
         };
-        let post = format!("post agent.{id}");
-        let withdraw = format!("withdraw {id}");
+        let post = format!("post window.{id}");
+        let withdraw = format!("withdraw window.{id}");
 
         step(&mut app, &id, working());
         step(&mut app, &id, waiting());
@@ -7282,6 +7407,52 @@ pub(crate) mod tests {
         let _ = app.update(Message::NoticeDone);
         assert!(!app.shell.notice_busy);
         assert!(app.shell.notice_queue.is_empty());
+    }
+
+    /// The daemon posts question notices outside the window's queue, each
+    /// under its own question's tag: a withdrawal of an answered question
+    /// that waits behind another operation, while the same agent asks
+    /// again and the daemon posts that, takes back only the answered one.
+    #[test]
+    fn taking_back_an_answered_question_never_removes_a_newer_one() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.shell.unfocused = true;
+        let question = |id: &str| Question {
+            id: MessageId::from(id.to_owned()),
+            from: "asker".into(),
+            to: agentdocker_core::Destination::Agent("user".into()),
+            text: "Continue?".into(),
+            presentation: None,
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        };
+        let first = agentdocker_host::notify::question_tag("first");
+        let second = agentdocker_host::notify::question_tag("second");
+        app.questions = vec![question("first")];
+        let _ = app.update(Message::Tick);
+        assert!(app.shell.noticed.contains(&first));
+        // Another operation is with the centre: the withdrawal waits.
+        app.shell.notice_busy = true;
+        app.questions.clear();
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.shell.notice_queue.len(), 1);
+        // The same agent asks again; the daemon posts it under its own tag.
+        app.questions = vec![question("second")];
+        let _ = app.update(Message::Tick);
+        let _ = app.update(Message::NoticeDone);
+        assert_eq!(app.shell.notice_log, [format!("withdraw {first}")]);
+        assert!(app.shell.noticed.contains(&second), "still open");
+        let _ = app.update(Message::NoticeDone);
+        assert!(app.shell.notice_queue.is_empty(), "nothing takes it back");
+        // Answered in its turn, it is taken back by its own tag.
+        app.questions.clear();
+        let _ = app.update(Message::Tick);
+        assert_eq!(
+            app.shell.notice_log,
+            [format!("withdraw {first}"), format!("withdraw {second}")]
+        );
     }
 
     #[test]

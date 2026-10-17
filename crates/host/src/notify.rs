@@ -91,6 +91,13 @@ impl Viewing {
 }
 
 /// Visible text is independent of activation metadata.
+/// The tag a question's notification is posted under: its own, not its
+/// asker's, so taking back an answered question can never remove a newer
+/// one from the same agent, whoever posted it and in whatever order.
+pub fn question_tag(message: &str) -> String {
+    format!("question.{message}")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Notification {

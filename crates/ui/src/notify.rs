@@ -274,20 +274,20 @@ pub fn post_notification(notice: &agentdocker_host::notify::Notification) -> Res
     }
 }
 
-/// Take back the notices of these agents, delivered or still pending:
-/// each stopped being true (a question answered, a prompt passed, a
-/// finish looked at). The identifiers are the per-agent ones notices are
-/// posted under, by this window and by the daemon alike.
+/// Take back the notices posted under these tags, delivered or still
+/// pending: each stopped being true (a question answered, a prompt passed,
+/// a finish looked at). A tag names one subject — a question, or this
+/// window's notice about an agent — so nothing newer shares it.
 #[cfg(target_os = "macos")]
-pub fn withdraw(agents: &[String]) {
+pub fn withdraw(tags: &[String]) {
     use objc2_foundation::{NSArray, NSString};
     use objc2_user_notifications::UNUserNotificationCenter;
-    if agents.is_empty() || !in_a_bundle() {
+    if tags.is_empty() || !in_a_bundle() {
         return;
     }
-    let ids: Vec<_> = agents
+    let ids: Vec<_> = tags
         .iter()
-        .map(|agent| NSString::from_str(&format!("dev.agentdocker.agent.{agent}")))
+        .map(|tag| NSString::from_str(&format!("dev.agentdocker.{tag}")))
         .collect();
     let ids = NSArray::from_retained_slice(&ids);
     let centre = UNUserNotificationCenter::currentNotificationCenter();
@@ -296,7 +296,7 @@ pub fn withdraw(agents: &[String]) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn withdraw(_agents: &[String]) {}
+pub fn withdraw(_tags: &[String]) {}
 
 #[cfg(target_os = "macos")]
 pub(crate) fn notification_content(

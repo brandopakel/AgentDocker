@@ -1252,9 +1252,9 @@ impl App {
                         switch(
                             "notify-finished",
                             if s.notify_finished {
-                                "Stop telling me when an agent finishes"
+                                "Stop telling me when an agent finishes or waits"
                             } else {
-                                "Tell me when an agent finishes"
+                                "Tell me when an agent finishes or waits"
                             },
                             s.notify_finished,
                             Some(Message::NotifyFinished(!s.notify_finished)),

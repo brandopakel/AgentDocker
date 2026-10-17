@@ -634,10 +634,17 @@ your next message to it is already queued, since it goes straight on to that.
 An agent that stops for you in its own terminal is told the same way (*Badger
 wants permission*, *has a question* or *is waiting for you · In keel. It is
 waiting in its terminal.*) once the stop has lasted two seconds, so a prompt you
-answer at once, at the terminal, never notifies. A notice is taken back from Notification Center
+answer at once, at the terminal, never notifies. Returning to the app or turning
+these notifications off during that delay cancels the pending notice. If an agent
+is already waiting when you leave the app, its two-second delay starts when the
+window loses focus. Repeated focus events do not reset or duplicate the notice. A notice is
+taken back from Notification Center
 once it is no longer true: the question was answered, the agent moved on from
-its prompt, or you looked at what it finished. Settings → Appearance →
-**Notifications** turns these off. A notification opens the message's conversation
+its prompt, or you looked at what it finished. Each question's notice is its own,
+so taking back an answered one never removes a newer question from the same
+agent, and the window's notices about an agent never share one with the
+daemon's. Settings → Appearance → **Notifications** turns these off; the
+switch’s accessible label names both outcomes. A notification opens the message's conversation
 even after it has been read, and even when the sender's record is gone: the
 archive outlives it. A notification about a message in a channel or to every
 agent (`#all`) opens the direct conversation with its sender when that is an
