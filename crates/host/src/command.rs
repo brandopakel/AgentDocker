@@ -68,6 +68,43 @@ pub fn detach(command: &mut Command) {
     }
 }
 
+/// What a coding session sets in its own environment to say who it is and
+/// how it is confined: AgentDocker's identity for the agent, Claude Code's
+/// session, socket and process, Codex's sandbox markers. A process that
+/// outlives the session, such as an `agentd` started from one of its
+/// commands, leaves them out; otherwise every agent it launched would take
+/// itself for that session, or think itself confined the same way.
+pub fn session_variable(name: &str) -> bool {
+    const NAMES: [&str; 11] = [
+        "AGENTDOCKER_AGENT_ID",
+        "AGENTDOCKER_AGENT_NAME",
+        "AGENTDOCKER_HOME",
+        "AGENTDOCKER_SOCKET",
+        "AGENTDOCKER_NO_AUTOSTART",
+        "AGENTDOCKER_CLAUDE_CHANNEL_INPUT",
+        "AGENTDOCKER_CODEX_INPUT",
+        "CLAUDECODE",
+        "CLAUDE_PID",
+        "CODEX_SANDBOX",
+        "CODEX_SANDBOX_NETWORK_DISABLED",
+    ];
+    NAMES.contains(&name) || name.starts_with("CLAUDE_CODE_")
+}
+
+/// Leave this process's session variables out of `command`'s environment.
+/// Anything set on `command` afterwards still applies.
+pub fn without_session(command: &mut Command) {
+    remove_session(command, std::env::vars_os().map(|(name, _)| name));
+}
+
+fn remove_session(command: &mut Command, names: impl Iterator<Item = std::ffi::OsString>) {
+    for name in names {
+        if name.to_str().is_some_and(session_variable) {
+            command.env_remove(name);
+        }
+    }
+}
+
 /// The launchers this host runs, in the order a Windows shell tries them
 /// unless `PATHEXT` says otherwise: an npm-installed provider is a `.cmd`
 /// shim beside `node.exe`, which is how `claude` and `codex` appear.
@@ -404,5 +441,48 @@ mod windows_tests {
                 .to_string()
                 .contains("output exceeded")
         );
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn a_sessions_own_variables_are_left_out_and_the_rest_kept() {
+        let mut command = Command::new("agentd");
+        remove_session(
+            &mut command,
+            [
+                "CLAUDECODE",
+                "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_CODE_MESSAGING_TOKEN",
+                "AGENTDOCKER_AGENT_ID",
+                "CODEX_SANDBOX_NETWORK_DISABLED",
+                "CODEX_HOME",
+                "HOME",
+                "PATH",
+                "CLAUDE_CONFIG_DIR",
+            ]
+            .into_iter()
+            .map(std::ffi::OsString::from),
+        );
+        let removed: Vec<String> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        for gone in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+            "AGENTDOCKER_AGENT_ID",
+            "CODEX_SANDBOX_NETWORK_DISABLED",
+        ] {
+            assert!(removed.iter().any(|n| n == gone), "{gone} is left out");
+        }
+        for kept in ["CODEX_HOME", "HOME", "PATH", "CLAUDE_CONFIG_DIR"] {
+            assert!(!removed.iter().any(|n| n == kept), "{kept} is kept");
+        }
     }
 }
