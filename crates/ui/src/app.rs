@@ -349,7 +349,7 @@ enum Msg {
     /// A merge made (into which branch, as which commit), or why not.
     BranchMerged(String, Result<(String, String), String>),
     /// A worktree removed (with its branch?), or why not.
-    WorktreeRemoved(String, Result<bool, String>),
+    WorktreeRemoved(String, Result<(bool, Option<String>), String>),
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
     Pauses(Vec<agentdocker_core::Pause>),
@@ -1202,11 +1202,17 @@ impl App {
                 }
                 Msg::WorktreeRemoved(agent, result) => {
                     self.removing_worktree = None;
-                    let said = result.map(|branch| {
-                        if branch {
-                            "Worktree and branch removed.".to_owned()
+                    // The daemon reports the branch Git actually removed or
+                    // retained. Never reconstruct this from a stale review.
+                    let said = result.map(|(removed, note)| {
+                        let outcome = if removed {
+                            "Worktree and branch removed."
                         } else {
-                            "Worktree removed; its branch is kept.".to_owned()
+                            "Worktree removed; its branch was not deleted."
+                        };
+                        match note.filter(|note| !note.trim().is_empty()) {
+                            Some(note) => format!("{outcome} {note}"),
+                            None => outcome.to_owned(),
                         }
                     });
                     self.merge_outcome = Some((agent.clone(), said));
@@ -3028,7 +3034,11 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             let result = match client.call(&Request::WorktreeRemove {
                 agent: agent.clone(),
             }) {
-                Ok(Response::WorktreeRemoved { branch_removed, .. }) => Ok(branch_removed),
+                Ok(Response::WorktreeRemoved {
+                    branch_removed,
+                    note,
+                    ..
+                }) => Ok((branch_removed, note)),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
