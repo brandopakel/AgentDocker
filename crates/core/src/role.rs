@@ -151,6 +151,23 @@ pub fn catalog(project: &ProjectId, stored: Vec<RoleDef>, at: DateTime<Utc>) -> 
     roles
 }
 
+/// How many addresses a project's roles take: the five built in (changed,
+/// taken out or not) and the person's own. Its stored documents are never
+/// more than this, so it is the bound to make a role against.
+pub fn addresses(project: &ProjectId, stored: &[RoleDef]) -> usize {
+    let mut addresses: std::collections::BTreeSet<&str> =
+        ["lead", "implementer", "reviewer", "explorer", "tester"]
+            .into_iter()
+            .collect();
+    addresses.extend(
+        stored
+            .iter()
+            .filter(|r| &r.project == project)
+            .map(|r| r.role.as_str()),
+    );
+    addresses.len()
+}
+
 /// The address a name makes: lowercase letters, digits and single hyphens,
 /// at most forty characters, as [`crate::agent::check_role`] accepts.
 pub fn slug_from(name: &str) -> Option<String> {
@@ -241,6 +258,32 @@ mod tests {
         );
         assert_eq!(roles[2].name, "Code review");
         assert_eq!(roles[2].color, RoleColor::Pink);
+    }
+
+    #[test]
+    fn the_built_in_five_count_against_the_bound() {
+        let project = ProjectId::from("p");
+        let now = Utc::now();
+        assert_eq!(addresses(&project, &[]), 5);
+        let mut stored = defaults(&project, now);
+        stored[0].removed = true;
+        stored.push(RoleDef {
+            role: "docs".into(),
+            ..stored[1].clone()
+        });
+        assert_eq!(
+            addresses(&project, &stored),
+            6,
+            "a removal is still an address"
+        );
+        assert_eq!(
+            defaults(&project, now)
+                .iter()
+                .map(|r| r.role.as_str())
+                .collect::<Vec<_>>(),
+            ["lead", "implementer", "reviewer", "explorer", "tester"],
+            "addresses() counts these five"
+        );
     }
 
     #[test]
