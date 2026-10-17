@@ -224,19 +224,22 @@ where
     S: AsyncWrite + Unpin,
 {
     let mut buffer = [0_u8; 4096];
-    let mut line = String::new();
+    let mut line = Vec::new();
     let mut progressed = false;
     let mut window = WindowWatch::new()?;
 
     loop {
-        line.clear();
         tokio::select! {
-            // What the agent printed.
-            read = tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line) => {
+            // Keep partial frames when input or resize wins the select.
+            // read_until preserves appended bytes across cancellation; clear
+            // them only after the complete response has been decoded.
+            read = tokio::io::AsyncBufReadExt::read_until(&mut reader, b'\n', &mut line) => {
                 if read? == 0 {
                     return Ok(Left::Lost { progressed });
                 }
-                match serde_json::from_str::<Response>(&line)? {
+                let response = serde_json::from_slice::<Response>(&line)?;
+                line.clear();
+                match response {
                     Response::Output { data } => {
                         if let Some(bytes) = protocol::decode_bytes(&data) {
                             progressed |= !bytes.is_empty();
@@ -361,5 +364,79 @@ mod tests {
             .unwrap();
         assert_eq!(left, Left::Lost { progressed: true });
         assert_eq!(String::from_utf8_lossy(&screen), "still here");
+    }
+    /// Typing may win select after only part of a daemon frame was read.
+    /// Wait for the actual partial read and echoed input request, not a timer,
+    /// before releasing the rest of the output frame.
+    #[tokio::test]
+    async fn typing_during_a_partial_output_frame_preserves_the_frame() {
+        use std::{
+            pin::Pin,
+            task::{Context, Poll},
+        };
+        use tokio::io::{AsyncBufReadExt, ReadBuf};
+        struct ObservedRead<R> {
+            inner: R,
+            consumed: Option<tokio::sync::oneshot::Sender<()>>,
+        }
+        impl<R: AsyncRead + Unpin> AsyncRead for ObservedRead<R> {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                let before = buf.filled().len();
+                let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+                if buf.filled().len() > before
+                    && let Some(consumed) = self.consumed.take()
+                {
+                    let _ = consumed.send(());
+                }
+                result
+            }
+        }
+        let output = serde_json::to_vec(&Response::Output {
+            data: protocol::encode_bytes("first é雪 then last".as_bytes()),
+        })
+        .unwrap();
+        let split = output.len() / 2;
+        let (mut daemon, client) = tokio::io::duplex(4096);
+        daemon.write_all(&output[..split]).await.unwrap();
+        let (read_half, write_half) = tokio::io::split(client);
+        let (consumed, partial_read) = tokio::sync::oneshot::channel();
+        let reader = ObservedRead {
+            inner: read_half,
+            consumed: Some(consumed),
+        };
+        let (mut typing, keys) = tokio::io::duplex(64);
+        let mut screen = Vec::new();
+        let driver = async {
+            partial_read.await.unwrap();
+            typing.write_all(b"typed").await.unwrap();
+            let mut daemon = BufReader::new(daemon);
+            let mut request = String::new();
+            daemon.read_line(&mut request).await.unwrap();
+            let Request::AttachInput { data } = serde_json::from_str(&request).unwrap() else {
+                panic!("expected typed input while the output frame is incomplete");
+            };
+            assert_eq!(protocol::decode_bytes(&data).unwrap(), b"typed");
+            daemon.get_mut().write_all(&output[split..]).await.unwrap();
+            daemon.get_mut().write_all(b"\n").await.unwrap();
+            let mut end = serde_json::to_vec(&Response::End).unwrap();
+            end.push(b'\n');
+            daemon.get_mut().write_all(&end).await.unwrap();
+            // Keep the input peer alive until pump consumes End.
+            std::future::pending::<()>().await;
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                result = pump(BufReader::new(reader), write_half, keys, &mut screen) => result,
+                () = driver => unreachable!(),
+            }
+        })
+        .await
+        .expect("partial output/typed input exchange must complete");
+        assert_eq!(result.unwrap(), Left::Ended);
+        assert_eq!(screen, "first é雪 then last".as_bytes());
     }
 }
