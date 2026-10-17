@@ -498,11 +498,31 @@ impl State {
         parent: Option<&str>,
         blocked_by: &[String],
     ) -> Result<(Option<TaskId>, Vec<TaskId>), Box<Response>> {
-        let mut resolve = |reference: &str| -> Result<TaskId, Box<Response>> {
-            if let Some(found) = cards.iter().find(|t| t.key.eq_ignore_ascii_case(reference)) {
+        // Only the project's own cards, the batch being filed among them:
+        // an edge to another project's card would be one nothing else
+        // (cycles, detail, readiness) ever looks at, and a card not yet
+        // committed is in no store to look it up in.
+        let resolve = |reference: &str| -> Result<TaskId, Box<Response>> {
+            let words = reference.trim();
+            if let Some(found) = cards.iter().find(|t| {
+                t.id.as_str() == words || (!t.key.is_empty() && t.key.eq_ignore_ascii_case(words))
+            }) {
                 return Ok(found.id.clone());
             }
-            self.resolve_task(reference).map(|t| t.id)
+            let matches: Vec<&Task> = cards
+                .iter()
+                .filter(|t| words.len() >= 4 && t.id.as_str().starts_with(words))
+                .collect();
+            match matches.as_slice() {
+                [one] => Ok(one.id.clone()),
+                [] => Err(not_found(format!(
+                    "no card of this project matches {words}"
+                ))),
+                _ => Err(Box::new(Response::error(
+                    ErrorCode::Ambiguous,
+                    format!("more than one card matches {words}; give more of the id"),
+                ))),
+            }
         };
         let parent = match parent.map(str::trim).filter(|p| !p.is_empty()) {
             Some(reference) => Some(resolve(reference)?),
@@ -3179,6 +3199,110 @@ mod tests {
             let state = lock(&daemon.state);
             assert!(state.leases.holders_of(&task_resource(&task)).is_empty());
         }
+    }
+
+    /// A batch's cards name each other by ref before any is stored: a
+    /// parent and a blocker resolve within the batch, and a loop through
+    /// them is refused. A card in another project is never an edge: it is
+    /// refused, so a pull cannot pass by a blocker it cannot see.
+    #[tokio::test]
+    async fn batch_refs_resolve_in_the_batch_and_edges_stay_in_the_project() {
+        use agentdocker_core::protocol::BatchCard;
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = dir.path().join("alpha");
+        let beta = dir.path().join("beta");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        let worker = register(&daemon, "worker", &alpha).await;
+        register(&daemon, "other", &beta).await;
+        let card =
+            |reference: &str, title: &str, parent: Option<&str>, blocked: &[&str]| BatchCard {
+                reference: Some(reference.into()),
+                title: title.into(),
+                parent: parent.map(str::to_owned),
+                blocked_by: blocked.iter().map(|b| (*b).to_owned()).collect(),
+                ..BatchCard::default()
+            };
+        let file = |project: &std::path::Path, cards: Vec<BatchCard>| Request::TaskCreateMany {
+            from: HUMAN.into(),
+            project: Some(project.display().to_string()),
+            board: None,
+            lane: Some("ready".into()),
+            tags: Vec::new(),
+            cards,
+        };
+        let Response::TaskBatch { tasks, refs } = daemon
+            .handle(file(
+                &alpha,
+                vec![
+                    card("parent", "Parent", None, &[]),
+                    card("first", "First", Some("parent"), &[]),
+                    card("second", "Second", Some("parent"), &["first"]),
+                ],
+            ))
+            .await
+        else {
+            panic!("a batch with refs files")
+        };
+        assert_eq!(refs.len(), 3);
+        let id_of = |title: &str| tasks.iter().find(|t| t.title == title).unwrap().id.clone();
+        let second = tasks.iter().find(|t| t.title == "Second").unwrap();
+        assert_eq!(second.parent, Some(id_of("Parent")));
+        assert_eq!(second.blocked_by, [id_of("First")]);
+        // A loop through the batch is refused, and nothing is filed.
+        assert!(matches!(
+            daemon
+                .handle(file(
+                    &alpha,
+                    vec![card("a", "A", None, &["b"]), card("b", "B", None, &["a"]),],
+                ))
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        // Another project's card is no blocker here.
+        let Response::TaskBatch { tasks: theirs, .. } = daemon
+            .handle(file(&beta, vec![card("x", "Elsewhere", None, &[])]))
+            .await
+        else {
+            panic!()
+        };
+        let foreign = theirs[0].id.to_string();
+        let refused = daemon
+            .handle(file(&alpha, vec![card("y", "Depends", None, &[&foreign])]))
+            .await;
+        assert!(
+            matches!(&refused, Response::Error { code: ErrorCode::Invalid, message, .. } if message.contains("no card of this project")),
+            "{refused:?}"
+        );
+        assert!(matches!(
+            daemon
+                .handle(Request::TaskUpdate {
+                    agent: HUMAN.into(),
+                    task: id_of("Parent").to_string(),
+                    title: None,
+                    acceptance: None,
+                    assignee: None,
+                    links: None,
+                    description: None,
+                    priority: None,
+                    size: None,
+                    due: None,
+                    external_blocker: None,
+                    parent: None,
+                    blocked_by: Some(vec![foreign.clone()]),
+                    tags: None,
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+        let _ = worker;
     }
 
     /// The board is read a page at a time and says when it goes on; a
