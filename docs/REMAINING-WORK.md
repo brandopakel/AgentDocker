@@ -69,36 +69,37 @@ CI and private fixtures do not establish physical or fresh-login acceptance.
 
 ## Provider reliability and parity
 
-The read guard now retains bounded per-entry content evidence so an observed
-folder remembers removed children and an older own/sibling ledger entry cannot
-clear a newer unexplained change. Unchanged targets and proven own edits remain
-usable. Deterministic regressions cover delayed events, changes during a flush,
-directory removal/recreation, submillisecond ledger timestamps and loss of
-cached proof. All 17 targeted tests and strict targeted Clippy pass. Two new
-regressions fail with the original guard implementation and pass after exact
-restoration of the correction. Final CI and review remain pending. Watcher acknowledgement is not
-proof of complete OS delivery; attribution remains best effort. Real-provider
-and cross-platform acceptance remain separate.
-Proof caches now use ordered eviction and component-prefix lookups, so a watcher
-batch does not scan every agent's retained reads while holding the state lock.
-Their accounting includes the extra path index; eviction, replacement and serial
-overflow remain conservative. Hashing still precedes a flush acknowledgement:
-a heavy proof batch can exceed the 500 ms wait and require a reread. The 256 MiB
-I/O budget bounds work, not wall-clock latency; asynchronous proof installation
-and loaded-host performance acceptance remain open.
-A source-built Mac watcher/IPC trial on `9f7b686e` confirms symlinked registration,
-own-edit exemptions, deleted versus never-existing children and explicit reread
-recovery after cache loss. Both private daemon generations retired unforced,
-scratch was removed and production stayed unchanged. Two earlier observer-format
-failures remain retained. The trial exposed an inaccurate removed-file reason
-without a retained child baseline. Follow-up source corrects that wording and
-aligns watcher proof identities across hashing budgets. All 19 targeted tests
-pass; the combined full gate, final CI and review remain pending.
+The read guard retains bounded per-entry content evidence so an observed folder
+remembers removed children and an older own/sibling ledger entry cannot clear a
+newer unexplained change. Unchanged targets and proven own edits remain usable.
+Regressions cover delayed events, changes during a flush, directory recreation,
+submillisecond ledger timestamps and lost proof; two controls fail with the
+original implementation. Source `8d31b6a1` passed the complete 1,824-Rust/226-Python
+gate with zero retries, including formatting, strict Clippy, docs, doctests,
+all five packages and release build. Final source review found no actionable
+comments; final platform CI is still required before integration.
+
+Proof caches use ordered eviction and component-prefix lookups, so watcher
+batches do not scan every agent's reads while holding the state lock. Accounting
+includes the extra path index; eviction, replacement and serial overflow remain
+conservative. Hashing still precedes flush acknowledgement: a heavy batch can
+exceed the 500 ms wait and require a reread. The 256 MiB I/O budget bounds work,
+not latency. Asynchronous proof installation and loaded-host performance remain
+open. Watcher acknowledgement does not prove complete OS delivery; attribution
+remains best effort, with real-provider and cross-platform acceptance separate.
+
+A Mac watcher/IPC trial on `9f7b686e` confirmed symlinked registration, own-edit
+exemptions, deleted versus never-existing children and reread recovery after cache
+loss. Both private daemon generations retired unforced; scratch was removed and
+production stayed unchanged. Two earlier observer-format failures remain. The
+trial exposed inaccurate removed-file wording without a child baseline; later
+source corrects it and aligns proof identities across hashing budgets. That
+runtime evidence remains specific to its recorded source.
 
 | Requirement | Current evidence | Remaining work |
 | --- | --- | --- |
 | Idle delivery and existing sessions | Hosted beta.14 Mac Claude 2.1.301 passed four idle/busy/draft/reopened deliveries with exact replies, receipts and clean retirement. Its Unicode draft was separately inspected and submitted without retyping; provider metadata changed while normal settings stayed unchanged. Earlier managed Claude/Codex and physical Windows Claude 2.1.280 evidence remains source-specific. Reconnect preserves supported launch restrictions/profile selection and refuses ambiguous options. Claude channel consent can recur; plain hooks/MCP cannot wake an idle model. | Broader runtime/version coverage, restart/reopen and supported adapter parity. [Claude](CLAUDE-CHANNEL-INPUT.md), [Codex](CODEX-INPUT.md). |
-| Native Codex startup and identity | Published beta.14 with actual Codex 0.163 passed five existing-account checks on Oracle Linux and this Mac: native birth, idle/busy delivery, exact receipts, Unicode draft and receiver replacement. Each trial used three real turns and two queued receipts. All 26 Linux and 11 Mac process generations retired without force. Mac verified launch overrides on both children, with 11 protected generations and saved configuration unchanged. Auth/history remained provider-managed. A separate Mac 0.163 real-account UUID reopen passed five checks: original identity/thread and first receipt survived, an offline message arrived once without a bootstrap prompt, and all 16 owned generations retired. Saved configuration and 11 protected generations stayed unchanged. Earlier beta.12 no-config-write partial results and Windows first-history failures remain indexed; those causes are not resolved by these scoped passes. | Keep native launch experimental pending broader current-package/platform, real-account/physical input, desktop adoption, broader versions/startup races, lost-provider replies, Windows journal-boundary faults and unsent drafts through crashes. Recovery never overrides interruption or resends uncertain input automatically. Birth admission requires an owned empty thread; reopen requires persisted history. See [native input](CODEX-INPUT.md). |
+| Native Codex startup and identity | Published beta.14 with actual Codex 0.163 passed five existing-account checks on Oracle Linux and this Mac: native birth, idle/busy delivery, exact receipts, Unicode draft and receiver replacement. Each trial used three real turns and two queued receipts. All 26 Linux and 11 Mac process generations retired without force. Mac verified launch overrides on both children, with 11 protected generations and saved configuration unchanged. Auth/history remained provider-managed. Separate Mac and Oracle 0.163 real-account UUID reopen trials each passed five checks/two turns: original identity/thread and first receipt survived, and offline input arrived once without a bootstrap prompt. All 16 Mac/49 Linux generations retired. Mac settings stayed unchanged; selected Linux private configuration was restored exactly. Protected sessions stayed unchanged. Earlier beta.12 no-config-write partial results and Windows first-history failures remain indexed; those causes are not resolved by these scoped passes. | Keep native launch experimental pending broader current-package/platform, real-account/physical input, desktop adoption, broader versions/startup races, lost-provider replies, Windows journal-boundary faults and unsent drafts through crashes. Recovery never overrides interruption or resends uncertain input automatically. Birth admission requires an owned empty thread; reopen requires persisted history. See [native input](CODEX-INPUT.md). |
 | Identity and uncertain delivery | Native attribution, helper refusal, lost-output and stale-confirmation checks are indexed. Hosted beta.12 Oracle and Mac managed Codex 0.160 passed 600-second real-account MCP questions with ordered steering, one exact tool answer, four ordinary receipts and preserved drafts. All 13 Oracle/11 Mac generations retired with configuration/terminal restored. The first Mac observer failed on an unverified PID; a fresh trial used a bounded, regression-tested observer. Original failure and unknown PID identity remain recorded. Verified helpers can fold into their session. The root’s stale binding was diagnosed without adopting another process or acknowledging input. Physical AWBP hosted beta.13 passed normal, provider/project-held and lost-client-reply queued recovery with 27 checks, exact receipts, 15 retired generations per scenario and clean unforced fixture cleanup. The earlier long-path failure and pre-trial source-format refusals remain preserved. Actual-account, human input and sleep/reboot coverage remain open. | Broader native version/platform review, longer waits, sustained queues, receiver replacement and uncertain-write recovery. Preserve original IDs, conversation, questions and ownership; never replay consumed input or merge by display name. Managed zero-prompt reopen remains unaccepted; native explicit UUID reopen has the scoped draft evidence above. |
 | Audit delivery changes | Source repeats a Claude channel's first unreceived offer once after 30 s, refuses Codex app-servers before 0.154.0, and re-queues a refused `turn/start`. Source-built beta.13 with actual Codex 0.153 refused before a thread; queued input/no receipt and unchanged configuration were verified. Actual Codex 0.160 unloaded an unused thread then refused one unchanged turn request: original input remained untaken, no receipt or automatic retry, prepared attempt cleared. Four/14 generations retired without force. | Broader native/platform/hosted version-floor and turn-refusal coverage, plus an actual Claude channel startup-repeat trial. The turn-refusal fixture explicitly disabled private MCP after the earlier proxy ancestry refusal; it proves transport behavior, not native/MCP/account acceptance. Original encoding, empty-ledger observer and ownership refusals remain indexed; no consumed input was replayed. |
 | Stalled Claude channel | On 2026-10-14 every Claude session on the owner's Mac had been restarted in place, which re-executes `claude` without the channel flag; channels kept offering, each queue paused on an unreceived offer (one since 2026-10-09), and hooks held off, so a project Pause reached no Claude session. Source now lets the parent's flag decide channel input and has hooks deliver a paused channel's queue after transcript recovery finds nothing; a hook test covers both directions. | A trial on a restarted session: the stuck queue delivered at its next tool use, the channel no longer claimed, and a fresh pause reaching every Claude agent. |
