@@ -255,6 +255,7 @@ fn mutates(request: &Request) -> bool {
             | Request::Boards { .. }
             | Request::Rules { .. }
             | Request::Tags { .. }
+            | Request::RoleCatalog { .. }
             | Request::TaskSearch { .. }
             | Request::Plans { .. }
             | Request::PlanGet { .. }
@@ -2499,6 +2500,23 @@ impl Daemon {
                 project,
                 name,
             } => self.tag_delete(&from, project, &name).await,
+            Request::RoleCatalog { project } => self.role_catalog(project).await,
+            Request::RoleSave {
+                from,
+                project,
+                role,
+                name,
+                color,
+                description,
+            } => {
+                self.role_save(&from, project, role, &name, color, description)
+                    .await
+            }
+            Request::RoleDelete {
+                from,
+                project,
+                role,
+            } => self.role_delete(&from, project, &role).await,
             Request::TaskSearch {
                 query,
                 project,

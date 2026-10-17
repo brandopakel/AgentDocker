@@ -1964,6 +1964,7 @@ impl App {
             }
             EventKind::RuleChanged { .. }
             | EventKind::TagChanged { .. }
+            | EventKind::RoleChanged { .. }
             | EventKind::PlanChanged { .. }
             | EventKind::ProjectFileChanged { .. } => {
                 if let Some(project) = self.selected_project_root() {
