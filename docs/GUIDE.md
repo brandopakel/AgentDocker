@@ -830,7 +830,11 @@ Newest first. Only what changes how the product is used.
   an agent's newer notification replaces its last.
 - **Told when an agent finishes.** While the window is not in front, an agent
   that finishes its turn gets one quiet notification, replacing its last;
-  **When an agent finishes** in Settings turns it off.
+  **When an agent finishes or waits** in Settings turns it off.
+- **Told when an agent waits on you.** An agent that stops at a permission
+  prompt or question in its own terminal while the window is not in front
+  gets one too, saying which. A notice is taken back once it is no longer
+  true, and a finish is not told when your next message is already queued.
 
 - A Claude Code session no longer goes deaf after Claude's own restart.
   Restarting in place re-executes `claude` without the channel flag, so the

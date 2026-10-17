@@ -489,8 +489,18 @@ the window keeps a short-lived `viewing.json` in the AgentDocker home for the
 poster), and an agent's newer notification replaces its last one in
 Notification Center rather than stacking. When an agent finishes while the window is
 not in front, the app posts a quiet notice itself (*Badger finished · In keel.
-Click to see what it did.*), one per agent, replacing its last; Settings →
-Appearance → **When an agent finishes** turns it off. A notification opens the message's conversation
+Click to see what it did.*), one per agent, replacing its last — but not when
+your next message to it is already queued, since it goes straight on to that.
+An agent that stops for you in its own terminal is told the same way (*Badger
+wants permission*, *has a question* or *is waiting for you · In keel. It is
+waiting in its terminal.*) once the stop has lasted two seconds, so a prompt you
+answer at once, at the terminal, never notifies. A notice is taken back from Notification Center
+once it is no longer true: the question was answered, the agent moved on from
+its prompt, or you looked at what it finished. Each question's notice is its own,
+so taking back an answered one never removes a newer question from the same
+agent, and the window's notices about an agent never share one with the
+daemon's. Settings → Appearance → **When
+an agent finishes or waits** turns these off. A notification opens the message's conversation
 even after it has been read, and even when the sender's record is gone: the
 archive outlives it. A notification about a message in a channel or to every
 agent (`#all`) opens the direct conversation with its sender when that is an

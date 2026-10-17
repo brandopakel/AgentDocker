@@ -152,6 +152,28 @@ pub(super) struct State {
     /// Agents that finished while the window was not in front, waiting to
     /// be told: posted off the window's thread after the update.
     pub finish_notices: Vec<String>,
+    /// Agents that stopped for the person in their own terminal while the
+    /// window was not in front, and since when: told once the stop has
+    /// lasted `WAIT_GRACE`, so a prompt answered at once never notifies.
+    pub wait_notices: Vec<(String, Instant)>,
+    /// A wake is set for the first pending wait notice to come due.
+    pub wait_timer: bool,
+    /// What is to be asked of the notification centre, in order, one at a
+    /// time: a withdrawal always lands after the post it takes back, and
+    /// an older withdrawal never meets a newer post of the same agent. The
+    /// daemon posts outside this queue, so its notices never share a tag
+    /// with the window's: each question has its own.
+    pub notice_queue: std::collections::VecDeque<NoticeOp>,
+    /// One operation is with the notification centre now.
+    pub notice_busy: bool,
+    /// The operations started, in order, for the tests to read.
+    #[cfg(test)]
+    pub notice_log: Vec<String>,
+    /// Tags of notifications that may still sit in the notification
+    /// centre: this window's notices about agents (`window_tag`), and the
+    /// open questions the daemon posted (`question_tag`). Each is taken
+    /// back once it stops being true.
+    pub noticed: BTreeSet<String>,
     /// What this window last said it shows (`viewing.json`), and when.
     pub viewing: Option<(agentdocker_host::notify::Viewing, Instant)>,
     /// Cards this window has moved on by their holder's pull request, and
@@ -195,8 +217,43 @@ impl State {
     }
 }
 
+/// The tag this window posts its notice about an agent under: one per
+/// agent, a newer replacing its last, never shared with the daemon's.
+pub fn window_tag(agent: &str) -> String {
+    format!("window.{agent}")
+}
+
+/// One request of the notification centre: post an agent's notice, or
+/// take back some notices by tag.
+#[derive(Clone, Debug)]
+pub enum NoticeOp {
+    Post(Box<agentdocker_host::notify::Notification>),
+    Withdraw(Vec<String>),
+}
+
+impl NoticeOp {
+    /// Done off the window's thread; the outcome is the person's business
+    /// (a refused notification is not an error the window can fix).
+    fn run(self) {
+        match self {
+            Self::Post(notice) => {
+                let _ = crate::notify::post_notification(&notice);
+            }
+            Self::Withdraw(tags) => crate::notify::withdraw(&tags),
+        }
+    }
+    #[cfg(test)]
+    fn describe(&self) -> String {
+        match self {
+            Self::Post(notice) => format!("post {}", notice.tag.as_deref().unwrap_or_default()),
+            Self::Withdraw(tags) => format!("withdraw {}", tags.join(",")),
+        }
+    }
+}
+
 /// The words of a failed notification reply, and why it failed, until
 /// they are in the conversation's draft, copied, or dismissed.
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplyRecovery {
     pub message: MessageId,
@@ -214,6 +271,10 @@ pub const REPLY_RECOVERIES: usize = 8;
 /// The clock sweep while the window has focus: "12s ago" labels, the
 /// status line clearing, a question's time left.
 pub const FOCUSED_SWEEP: Duration = Duration::from_secs(2);
+/// How long a stop for the person lasts before it is told: a prompt the
+/// person answers at once, at the terminal, is not news (Roo Code waits
+/// two seconds too).
+pub const WAIT_GRACE: Duration = Duration::from_secs(2);
 /// The same sweep while it does not: nobody reads those labels, and each
 /// tick paints the whole window.
 pub const UNFOCUSED_SWEEP: Duration = Duration::from_secs(30);
@@ -796,7 +857,8 @@ pub enum Message {
     MarkUnread(String),
     /// A notice the window posted itself was taken or refused; either way
     /// nothing changes on screen (a refusal is the person's settings).
-    NoticePosted(Result<(), String>),
+    /// The notification centre finished the operation in hand.
+    NoticeDone,
     DismissError,
     Event(iced::Event),
     Window(window::Id),
@@ -813,6 +875,8 @@ pub enum Message {
     CommandQuery(String),
     /// Move its highlighted row up or down, round the ends.
     CommandMove(i32),
+    /// A pending wait notice may have come due (`WAIT_GRACE`).
+    WaitGrace,
     /// Run its highlighted row (Enter).
     CommandSubmit,
     /// Run one of its rows, by id.
@@ -2585,7 +2649,10 @@ impl App {
                 self.shell.catalog.appearance = Some(self.settings.clone());
                 self.shell.changed();
             }
-            Message::NoticePosted(_) => {}
+            // The update's tail starts the next one, if any.
+            Message::NoticeDone => self.shell.notice_busy = false,
+            // The update's tail tells what has come due and sets the next.
+            Message::WaitGrace => self.shell.wait_timer = false,
             Message::MarkUnread(id) => {
                 self.shell.unviewed_done.insert(id);
                 // Marked from its own panel: close it, or opening it again
@@ -2839,28 +2906,102 @@ impl App {
                 self.shell.viewing = Some((now, Instant::now()));
             }
         }
-        // An agent finished while the person was away: a quiet notice,
-        // one per agent, replacing its last.
-        for id in std::mem::take(&mut self.shell.finish_notices) {
+        // An agent finished, or stopped for the person in its own terminal,
+        // while they were away: a quiet notice, one per agent, replacing
+        // its last.
+        let finished = std::mem::take(&mut self.shell.finish_notices)
+            .into_iter()
+            .map(|id| (id, false));
+        // A stop is told once it has lasted the grace; one that ended
+        // inside it is forgotten, and one still young sets a wake for when
+        // it comes due, since an unfocused window sweeps only twice a
+        // minute.
+        let now = Instant::now();
+        let mut due = Vec::new();
+        let mut young = Vec::new();
+        for (id, since) in std::mem::take(&mut self.shell.wait_notices) {
+            let still = self
+                .agents
+                .iter()
+                .any(|a| a.id.as_str() == id && self.waits_for_person(a));
+            if !still {
+                continue;
+            }
+            if now.duration_since(since) >= WAIT_GRACE {
+                due.push(id);
+            } else {
+                young.push((id, since));
+            }
+        }
+        if let Some(soonest) = young.iter().map(|(_, since)| *since).min()
+            && !self.shell.wait_timer
+        {
+            self.shell.wait_timer = true;
+            let left = WAIT_GRACE.saturating_sub(now.duration_since(soonest));
+            tasks.push(Task::perform(
+                async move { tokio::time::sleep(left).await },
+                |()| Message::WaitGrace,
+            ));
+        }
+        self.shell.wait_notices = young;
+        let waiting = due.into_iter().map(|id| (id, true));
+        for (id, waits) in finished.chain(waiting).collect::<Vec<_>>() {
             let Some(agent) = self.agents.iter().find(|a| a.id.as_str() == id) else {
                 continue;
             };
+            let name = self.display_name(agent);
+            let (title, then) = if waits {
+                (
+                    match self.activity.get(id.as_str()) {
+                        Some(Activity::Waiting {
+                            reason: Some(agentdocker_core::WaitReason::Permission),
+                            ..
+                        }) => format!("{name} wants permission"),
+                        Some(Activity::Waiting {
+                            reason: Some(agentdocker_core::WaitReason::Question),
+                            ..
+                        }) => format!("{name} has a question"),
+                        _ => format!("{name} is waiting for you"),
+                    },
+                    "It is waiting in its terminal.",
+                )
+            } else {
+                (format!("{name} finished"), "Click to see what it did.")
+            };
             let notice = agentdocker_host::notify::Notification {
-                title: format!("{} finished", self.display_name(agent)),
+                title,
                 body: match agent.project.as_ref() {
-                    Some(project) => format!("In {}. Click to see what it did.", project.name()),
-                    None => "Click to see what it did.".to_owned(),
+                    Some(project) => format!("In {}. {then}", project.name()),
+                    None => then.to_owned(),
                 },
                 action: None,
-                tag: Some(format!("finished.{id}")),
+                tag: Some(window_tag(&id)),
             };
+            self.shell.noticed.insert(window_tag(&id));
+            self.shell
+                .notice_queue
+                .push_back(NoticeOp::Post(Box::new(notice)));
+        }
+        // A notice that stopped being true is taken back: the question was
+        // answered, the agent moved on from its prompt, or the person
+        // looked at what it finished. One left in the centre would send
+        // them to something already done.
+        let stale = self.stale_notices();
+        if !stale.is_empty() && self.smoke.is_none() {
+            self.shell.notice_queue.push_back(NoticeOp::Withdraw(stale));
+        }
+        // One at a time, in order; the next starts when this one is done.
+        if !self.shell.notice_busy
+            && let Some(op) = self.shell.notice_queue.pop_front()
+        {
+            self.shell.notice_busy = true;
+            #[cfg(test)]
+            self.shell.notice_log.push(op.describe());
             tasks.push(Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || crate::notify::post_notification(&notice))
-                        .await
-                        .unwrap_or_else(|e| Err(e.to_string()))
+                    let _ = tokio::task::spawn_blocking(move || op.run()).await;
                 },
-                Message::NoticePosted,
+                |()| Message::NoticeDone,
             ));
         }
         // The dock icon counts the questions waiting on the person, in
@@ -2878,6 +3019,42 @@ impl App {
             _ => crate::accessibility::collect(),
         });
         Task::batch(tasks)
+    }
+
+    /// The tags whose notice stopped being true, forgotten as noticed: a
+    /// question no longer open, and an agent with no open question, nothing
+    /// finished the person has not looked at, and not stopped at a prompt.
+    /// Every open question counts as noticed, since the daemon posts those.
+    pub(super) fn stale_notices(&mut self) -> Vec<String> {
+        let now = Utc::now();
+        let open: BTreeSet<String> = self
+            .questions
+            .iter()
+            .filter(|q| !q.expired(now))
+            .map(|q| agentdocker_host::notify::question_tag(q.id.as_str()))
+            .collect();
+        self.shell.noticed.extend(open.iter().cloned());
+        let stale: Vec<String> = self
+            .shell
+            .noticed
+            .iter()
+            .filter(|tag| match tag.strip_prefix("window.") {
+                Some(id) => {
+                    !self.needs_input(id)
+                        && !self.shell.unviewed_done.contains(id)
+                        && !self
+                            .agents
+                            .iter()
+                            .any(|a| a.id.as_str() == id && self.waits_for_person(a))
+                }
+                None => !open.contains(*tag),
+            })
+            .cloned()
+            .collect();
+        for tag in &stale {
+            self.shell.noticed.remove(tag);
+        }
+        stale
     }
 
     /// What waits on the person in every project: open questions, and

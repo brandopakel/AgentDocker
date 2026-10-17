@@ -329,22 +329,30 @@ pub async fn notifier(mut notices: mpsc::Receiver<Notice>, home: PathBuf, socket
         // not keep an entry for every agent that ever spoke.
         last.retain(|_, at| now.duration_since(*at) < NOTIFY_EVERY * 10);
 
-        let notification = Notification {
-            title: title(&notice.from, &notice.kind),
-            body: notify::summarise(&notice.text, NOTICE_CHARS),
-            action: Some(notify::Action {
-                home: home.clone(),
-                socket: socket.clone(),
-                target: notice.target,
-            }),
-            tag: None,
-        };
+        let notification = notification(notice, &home, &socket);
         // Posting spawns a process and waits for it; keep that off the
         // runtime's worker threads.
         let posted = tokio::task::spawn_blocking(move || notify::post(&notification)).await;
         if let Ok(Err(reason)) = posted {
             warn!(%reason, "desktop notification unavailable; message remains in inbox");
         }
+    }
+}
+
+/// What the person is shown for a message. A question has a notification
+/// of its own, which the window takes back once it is answered; anything
+/// else replaces its sender's last.
+fn notification(notice: Notice, home: &Path, socket: &Path) -> Notification {
+    Notification {
+        title: title(&notice.from, &notice.kind),
+        body: notify::summarise(&notice.text, NOTICE_CHARS),
+        tag: (notice.kind == "question")
+            .then(|| notify::question_tag(notice.target.message.as_str())),
+        action: Some(notify::Action {
+            home: home.to_path_buf(),
+            socket: socket.to_path_buf(),
+            target: notice.target,
+        }),
     }
 }
 
@@ -712,6 +720,33 @@ mod tests {
     fn state(dir: &TempDir) -> Arc<Daemon> {
         let home = dir.path().to_path_buf();
         Arc::new(Daemon::open(home.clone(), home.join("sock")).unwrap())
+    }
+
+    /// A question's notification carries its own tag, so the window can
+    /// take it back without touching a newer one from the same agent; any
+    /// other message keeps replacing its sender's last.
+    #[test]
+    fn a_question_is_notified_under_its_own_tag() {
+        let notice = |kind: &str| Notice {
+            from: "asker".into(),
+            kind: kind.into(),
+            text: "Continue?".into(),
+            target: agentdocker_core::NotificationTarget {
+                message: MessageId::from("0123456789abcdef".to_owned()),
+                agent: AgentId::from("asker"),
+                project: None,
+                channel: None,
+            },
+        };
+        let home = Path::new("/fixture/home");
+        let socket = Path::new("/fixture/home/agentd.sock");
+        assert_eq!(
+            notification(notice("question"), home, socket)
+                .tag
+                .as_deref(),
+            Some("question.0123456789abcdef")
+        );
+        assert_eq!(notification(notice("message"), home, socket).tag, None);
     }
 
     fn question(seconds: i64) -> Question {
