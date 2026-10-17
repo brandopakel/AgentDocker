@@ -31,6 +31,14 @@ Run an isolated daemon for manual testing: `AGENTDOCKER_HOME=/tmp/ad-test agentd
 - Protocol changes: update `protocol.rs`, the table in `docs/ARCHITECTURE.md`, and the CLI in the same PR.
 - Errors returned to clients use `ErrorCode`; add a variant rather than overloading `Internal`.
 
+## Roles in this project
+
+In this repository Claude agents implement and Codex agents review (`AGENTS.md` is the reviewers' side). This applies to this project only.
+
+- Open the pull request, then ask for a review with a message to `role:reviewer` naming it. A role resolves within the sender's project, so this never reaches another repository's agents.
+- Fix each finding on your own branch, reply on its thread with the commit, and resolve it. A P1 blocks the merge until it is fixed.
+- Reviewers never push to your branch; if one does, say so and keep the branch yours.
+
 ## Documentation contract
 
 The docs are the record of what the repository does and how far it is delivered — each document the current contract for one thing, and no dated plans, audits or reviews (those were cut on September 21, 2026; history keeps them). A new document needs a reason a line in an existing one cannot serve. Every change that alters behaviour, a contract or a delivery status updates them in the same PR, whoever makes it:
