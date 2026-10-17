@@ -30,9 +30,7 @@ pub(super) fn overrides(
                 .get("command")
                 .and_then(Value::as_str)
                 .is_some_and(|command| {
-                    Path::new(command)
-                        .file_name()
-                        .is_some_and(|file| file == "agentdocker")
+                    agentdocker_host::runtimes::adapter_executable_matches(command, "agentdocker")
                 })
                 && server["args"]
                     .as_array()
@@ -203,5 +201,65 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn mcp_binding_recognizes_native_executable_names_and_preserves_disabled_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let binding = Binding {
+            agent: "owned".into(),
+            socket: directory.path().join("socket"),
+            cwd: directory.path().join("checkout"),
+            provider_home: directory.path().join("provider"),
+        };
+        let cli = directory.path().join("current").join("agentdocker");
+        for (file, recognized) in [
+            ("agentdocker", true),
+            ("agentdocker.exe", cfg!(windows)),
+            ("AgentDocker.EXE", cfg!(windows)),
+            ("agentdocker.exe.bak", false),
+            ("agentdocker-wrapper.exe", false),
+        ] {
+            for name in ["agentdocker", "coordination"] {
+                let config = json!({"mcp_servers":{name:{
+                    "command": directory.path().join("old path with spaces").join(file),
+                    "args": ["mcp", "--runtime", "codex"],
+                    "tools": {"send_message": {"approval_mode": "prompt"}},
+                    "enabled_tools": ["send_message"]
+                }}});
+                let before = config.clone();
+                let result = overrides(&config, &binding, directory.path(), &cli);
+                if !recognized && name == "agentdocker" {
+                    assert!(result.is_err(), "{file}");
+                } else {
+                    let result = result.unwrap();
+                    let bound_name = if recognized { name } else { "agentdocker" };
+                    let prefix = format!("mcp_servers.{bound_name}.");
+                    assert_eq!(result[format!("{prefix}command")], json!(cli));
+                    assert_eq!(result[format!("{prefix}env.AGENTDOCKER_AGENT_ID")], "owned");
+                    assert_eq!(result.as_object().unwrap().len(), 8);
+                    assert!(
+                        result
+                            .as_object()
+                            .unwrap()
+                            .keys()
+                            .all(|key| key.starts_with(&prefix))
+                    );
+                }
+                assert_eq!(config, before);
+                if recognized {
+                    let mut disabled = config;
+                    disabled["mcp_servers"][name]["enabled"] = json!(false);
+                    let before = disabled.clone();
+                    assert!(
+                        overrides(&disabled, &binding, directory.path(), &cli)
+                            .unwrap()
+                            .as_object()
+                            .unwrap()
+                            .is_empty()
+                    );
+                    assert_eq!(disabled, before);
+                }
+            }
+        }
     }
 }
