@@ -32,8 +32,15 @@ session's behalf; the CLI recipe stays beside it as the alternative.
 ## Projects
 
 **Jump to…** at the top of the sidebar, or ⌘K (Ctrl+K on Linux and Windows) from
-anywhere, finds a place, a project or an action by typing a few letters: Enter
-goes there, Escape steps back. **Launch agent…** in it lists the installed tools.
+anywhere, finds an agent, a place, a project or an action by typing a few
+letters: Enter goes there, Escape steps back. With nothing typed it leads with
+the agents that call for you, loudest first, so ⌘K then Enter reaches the most
+urgent; typing finds any live agent by its name, its project or the word for
+where it stands (*waiting*, *failed*, *working*). On an agent, ⌘Enter goes to
+its terminal instead, and the footer says so. Initials work (*cc* for Claude
+Code), and three or more letters in order find what nothing else did.
+**Launch agent…** in it lists the installed tools.
+Agents in a forgotten project stay out of Jump to until you add that project again.
 
 With no saved selection, the app opens on **All projects**, with sessions grouped
 under their project names. A saved project or Other sessions view is restored.
@@ -71,7 +78,10 @@ details. An agent AgentDocker started opens its terminal inside the app. One
 started elsewhere is found where it runs: in a tmux or herdr pane, that pane is
 selected first; then, on macOS, its Terminal or iTerm tab is brought forward
 (macOS asks once to let AgentDocker control that app), and any other host —
-Ghostty, an editor's terminal, a JetBrains IDE — is brought to the front. The
+Ghostty, an editor's terminal, a JetBrains IDE — is brought to the front. Ghostty
+is not asked for the agent's tab: its scripting (1.3.1) names each terminal's
+folder but no tty or process, and a folder is not an identity (an agent can work
+in another folder than its tab reports, and that folder can be another tab's). The
 details header says where an agent runs (*in Terminal (ttys005)*, *in
 tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
 tmux pane**). Nothing is typed into the agent, and no second copy is started.
@@ -125,7 +135,9 @@ or *waiting for you* in amber). Seen across
 projects, each row starts with its project's name (*keel · Claude Code · Badger
 asks: …*). A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not
-here: its row says so in amber, and opening it shows the details — how many
+here: its row says so in amber, and opening it shows the details — for a
+provider's limit, when it lifts on your own clock (*Usage limit resets in 42 min
+(15:00).*), how many
 messages are kept, that resuming the conversation delivers them, **Review** for
 a live session's delivery and **Dismiss** for an ended one's notice, which
 leaves the messages as they are.
@@ -135,7 +147,17 @@ agents that need you, and its name in semibold when something there is new;
 how many agents run is not shown, since it is not a reason to look. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
-Inbox. A command a live session asks to run is answered in the row itself:
+Inbox, where an approval card also has a line for words to go with **Deny** —
+why not, or what to do instead — sent to the agent as your message once the
+denial is accepted, opening with what was refused (*Denied `rm -rf build`: use
+the fixture script instead*); if that message is itself refused (a pause, a full
+work queue), its words go into the agent's message box instead and the status
+line says it was not sent; if its answer is lost (a dropped connection), they go
+there too, and the status line says it may have been sent, so check the
+conversation before sending again. Until the daemon takes it the note is saved
+with the drafts as that message-box text, so a window closed meanwhile shows it
+there on reopening, never sent again by itself (the provider's own answer is
+still exactly Deny; Allow sends no words). A command a live session asks to run is answered in the row itself:
 **Deny** and **Allow once** send the same exact answer as the Inbox card, with
 the command in the row's words; file changes, which must be looked at first,
 and every other question open with **Answer**. The first three items are shown; **Show more** expands the same list and
@@ -179,7 +201,16 @@ folder's), **Pin**/**Unpin**, and **Remove from list**, which keeps the folder
 off the list even when its sessions are discovered again, until you add it
 again (the list of removed folders is bounded like the project list, at 512;
 at the bound a removal is refused with a message and the project stays, so
-nothing removed earlier comes back on its own). **More → Forget project** does the same for the selected project. None
+nothing removed earlier comes back on its own). **More → Forget project** does the same for the selected project.
+A removed folder is also out of AgentDocker's hands: its hooks leave the
+sessions working there alone — no read-before-write guard, no leases, no
+messages or journal put in front of the model — until you add it again (the
+desktop keeps the list in `uncoordinated.json` in the AgentDocker home, which
+every hook reads first, at most 1 MiB; a list past that is not written).
+A session already registered there still gives back its leases at a turn's
+end and its record at its end. When the list cannot be written, the window
+says the hooks may still coordinate those sessions and tries again every
+30 seconds until it can. None
 of these deletes files or stops sessions. Two projects with one name show
 their parent folder under it, on one line. A folder discovered because an
 agent ran there leaves the list by itself once it no longer exists, and a
@@ -255,7 +286,10 @@ automatically aborts or resets, since a concurrent operation may belong to you.
 An unreadable final operation check refuses execution. A branch that moved
 since it was read is never merged unseen. Nothing is pushed. Changes are read
 again when the session commits or its branch moves, and with **Refresh**. Once
-nothing is left to merge, the next step is right there: while the session runs
+nothing is left to merge — or GitHub reports a merged pull request whose head
+matches both the reviewed and current branch head (*Merged on GitHub as #340.*),
+where a squash leaves the branch's own commits uncounted by
+the main branch, so no Merge is offered — the next step is right there: while the session runs
 the section says its worktree stays until it is done; once it has ended,
 **Remove its worktree** removes the folder (only when it is clean) and its branch
 when git considers it merged; the branch is kept, and the section says so, when not. **Details** reveals the session ID, process,
@@ -623,7 +657,7 @@ Settings controls light/dark appearance, text size, terminal palette and row
 spacing. Preferences are stored privately in the AgentDocker state directory.
 A malformed preference file is preserved and reported rather than silently reset.
 **Daily update checks** is off by default. Enable it to check once per day while
-the app is open; a known update appears in the footer. Download and installation
+the app is open; a known update appears at the foot of the sidebar. Download and installation
 remain explicit actions. A check reads the stable channel and, on a preview
 (beta) installation or once **Allow preview builds** is on, the preview channel
 too, and offers the newer: a beta user is offered the final release. A beta
@@ -635,12 +669,15 @@ downloads only after **Allow preview builds**. When nothing has been published y
 update published yet**; a check that fails says **Could not check for
 updates** and why (no connection to GitHub, say), never *Installation failed*.
 
-The footer says whether the window is connected. When the background service
-(the daemon) is older than the app — an older version, or another installed
-release of the same version, which is what an update installed underneath a
-running daemon looks like — the footer says so in one quiet line, with both
-versions and an amber dot, and offers **Restart…**. Its confirmation, an amber
-strip with **Restart** and **Cancel**, says what a restart costs:
+The foot of the sidebar, above **Add project…**, says something about the
+background service only when there is something to say, and then one thing: it
+is not reachable yet (*Reconnecting to the background service…*); or it is older
+than the app — an older version, or another installed release of the same
+version, which is what an update installed underneath a running daemon looks
+like — with both versions, an amber dot and **Restart…**; or an update is ready
+to install. A healthy service says nothing and takes no room. The restart's
+confirmation, an amber strip across the bottom with **Restart** and **Cancel**,
+says what a restart costs:
 how many sessions AgentDocker itself started will stop (and how many are set to
 start again); sessions started in a terminal keep running and reconnect. A
 request the older service has never heard of reads *The background service is

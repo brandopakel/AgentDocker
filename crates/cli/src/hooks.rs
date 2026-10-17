@@ -194,6 +194,41 @@ pub fn session_name_for(input: &HookInput) -> String {
     }
 }
 
+/// Whether the session works in a folder the person took off AgentDocker's
+/// list: then the hook leaves it alone entirely — no guard, no lease, no
+/// context — as removing the project promised.
+fn uncoordinated(input: &HookInput) -> bool {
+    input.cwd.as_deref().is_some_and(|cwd| {
+        agentdocker_host::coordination::excluded(&agentdocker_host::dirs::home(), cwd)
+    })
+}
+
+/// A session already registered before its folder was taken off the list
+/// still ends cleanly: a turn's end gives back the leases this adapter
+/// took, and the session's end its record and the rest. Nothing else — no
+/// guard, no context, no new registration.
+async fn uncoordinated_cleanup<B: Backend>(backend: &B, input: &HookInput) -> Result<()> {
+    match input.hook_event_name.as_str() {
+        "Stop" => {
+            if let Some(me) = session_agent(backend, input).await? {
+                release_held(backend, &me, None, true).await?;
+            }
+        }
+        "SessionEnd" => {
+            if let Some(me) = session_agent(backend, input).await? {
+                release_held(backend, &me, None, false).await?;
+                backend
+                    .call(Request::Deregister {
+                        agent: me.id.to_string(),
+                    })
+                    .await?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub async fn run(client: Client, args: HookArgs) -> Result<()> {
     // A hook that has to start the daemon may wait a moment, not stall
     // the editor: it fails open past this.
@@ -218,6 +253,15 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                 }
             };
             input.runtime = Some("opencode");
+            if uncoordinated(&input) {
+                let cleanup = uncoordinated_cleanup(&client, &input);
+                if let Ok(Err(error)) =
+                    tokio::time::timeout(std::time::Duration::from_secs(1), cleanup).await
+                {
+                    eprintln!("agentdocker hook opencode: {error:#}");
+                }
+                return Ok(());
+            }
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
             if input.hook_event_name == "Delivered" {
                 // Only what reached a completed turn leaves the queue; a lost
@@ -294,6 +338,15 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                     return Ok(());
                 }
             };
+            if uncoordinated(&input) {
+                let cleanup = uncoordinated_cleanup(&client, &input);
+                if let Ok(Err(error)) =
+                    tokio::time::timeout(std::time::Duration::from_secs(1), cleanup).await
+                {
+                    eprintln!("agentdocker hook: {error:#}");
+                }
+                return Ok(());
+            }
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
             // Receipt recovery is independent of hook context delivery. It only
             // accepts provider-recorded channel input followed by a real model
@@ -781,13 +834,17 @@ pub async fn claude_code<B: Backend>(
             // every one is checked and claimed, and the first conflict
             // refuses the whole edit.
             for path in &paths {
-                match backend
+                // A path that is not there is asked about too: the daemon
+                // knows whether this agent read a file there that has since
+                // been removed, which is stale, or never saw one, which is
+                // not.
+                let staleness = backend
                     .call(Request::Stale {
                         agent: me.id.to_string(),
                         paths: vec![path.to_string_lossy().into_owned()],
                     })
-                    .await?
-                {
+                    .await?;
+                match staleness {
                     Response::Stale { stale } if !stale.is_empty() => {
                         return Ok(Some(json!({
                             "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny",
@@ -3079,9 +3136,13 @@ mod tests {
             },
             Response::Reads { reads: vec![] },
         ]);
+        // The edit target exists: only an existing file can be stale.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
         let mut event = input("PreToolUse");
         event.tool_name = Some("Read".into());
-        event.tool_input = Some(json!({"file_path": "file.rs"}));
+        event.tool_input = Some(json!({"file_path": file}));
         assert!(
             claude_code(&backend, &event, &opts())
                 .await
@@ -3132,9 +3193,12 @@ mod tests {
                 details: Some(json!({ "held_by": [{ "note": "refactoring" }] })),
             },
         ]);
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.rs");
+        std::fs::write(&shared, "").unwrap();
         let mut ev = input("PreToolUse");
         ev.tool_name = Some("Edit".into());
-        ev.tool_input = Some(json!({ "file_path": "/tmp/shared.rs" }));
+        ev.tool_input = Some(json!({ "file_path": shared }));
 
         let out = claude_code(&backend, &ev, &opts()).await.unwrap().unwrap();
         let specific = &out["hookSpecificOutput"];
@@ -3231,10 +3295,13 @@ mod tests {
                 details: Some(json!({ "held_by": [{ "note": "refactoring util.py" }] })),
             },
         ]);
+        let dir = tempfile::tempdir().unwrap();
+        let util = dir.path().join("util.py");
+        std::fs::write(&util, "").unwrap();
         let mut ev = input("PreToolUse");
         ev.tool_name = Some("apply_patch".into());
         ev.tool_input = Some(json!({
-            "command": "*** Begin Patch\n*** Update File: /tmp/util.py\n@@\n+x\n*** End Patch"
+            "command": format!("*** Begin Patch\n*** Update File: {}\n@@\n+x\n*** End Patch", util.display())
         }));
         let out = claude_code(&backend, &ev, &opts()).await.unwrap().unwrap();
         assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
@@ -3242,6 +3309,57 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(reason.contains("refactor-peer") && reason.contains("refactoring util.py"));
+    }
+
+    /// Missing paths still go to the daemon for a staleness decision. Here a
+    /// never-observed path is not stale and is claimed; previously observed
+    /// deletions are covered by the separate stale-path refusal regression.
+    #[tokio::test]
+    async fn a_missing_path_is_judged_by_the_daemon() {
+        // Never seen there: the daemon finds nothing stale, and the write
+        // is only claimed.
+        let backend = Mock::with(vec![
+            Response::Agent {
+                agent: agent("claude-01234567", true),
+            },
+            Response::Stale { stale: vec![] },
+            Response::Ok, // stands in for Response::Lease
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut ev = input("PreToolUse");
+        ev.tool_name = Some("Write".into());
+        ev.tool_input = Some(json!({ "file_path": dir.path().join("sub/new.go") }));
+        assert!(claude_code(&backend, &ev, &opts()).await.unwrap().is_none());
+        let requests = backend.requests();
+        assert!(requests.iter().any(|r| matches!(r, Request::Stale { .. })));
+        assert!(requests.iter().any(|r| matches!(r, Request::Claim { .. })));
+        // Read, then removed by someone else: writing it back is refused.
+        let gone = dir.path().join("gone.go");
+        let backend = Mock::with(vec![
+            Response::Agent {
+                agent: agent("claude-01234567", true),
+            },
+            Response::Stale {
+                stale: vec![agentdocker_core::StalePath {
+                    path: gone.clone(),
+                    observed: "sha256:x".into(),
+                    current: Some("missing".into()),
+                    reason: "removed since observation; look again before writing it back".into(),
+                }],
+            },
+        ]);
+        ev.tool_input = Some(json!({ "file_path": gone }));
+        let denied = claude_code(&backend, &ev, &opts()).await.unwrap().unwrap();
+        assert_eq!(
+            denied["hookSpecificOutput"]["permissionDecision"],
+            json!("deny")
+        );
+        assert!(
+            !backend
+                .requests()
+                .iter()
+                .any(|r| matches!(r, Request::Claim { .. }))
+        );
     }
 
     #[tokio::test]
@@ -3535,6 +3653,50 @@ mod tests {
             "a session's end gives everything back"
         );
         assert!(matches!(&requests[2], Request::Deregister { agent } if agent == me.id.as_str()));
+    }
+
+    /// A folder taken off the list leaves its sessions alone, but one that
+    /// was registered still gives back its leases at a turn's end and its
+    /// record at the session's end; anything else asks the daemon nothing.
+    #[tokio::test]
+    async fn an_uncoordinated_session_still_ends_cleanly() {
+        let me = agent("claude-01234567", true);
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Leases { leases: vec![] },
+            Response::Agent { agent: me.clone() },
+        ]);
+        uncoordinated_cleanup(&backend, &input("SessionEnd"))
+            .await
+            .unwrap();
+        let requests = backend.requests();
+        assert!(matches!(
+            &requests[1],
+            Request::ReleaseAll {
+                only_automatic: false,
+                ..
+            }
+        ));
+        assert!(matches!(&requests[2], Request::Deregister { agent } if agent == me.id.as_str()));
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Leases { leases: vec![] },
+        ]);
+        uncoordinated_cleanup(&backend, &input("Stop"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            &backend.requests()[1],
+            Request::ReleaseAll {
+                only_automatic: true,
+                ..
+            }
+        ));
+        let backend = Mock::with(vec![]);
+        uncoordinated_cleanup(&backend, &input("PreToolUse"))
+            .await
+            .unwrap();
+        assert!(backend.requests().is_empty());
     }
 
     #[tokio::test]

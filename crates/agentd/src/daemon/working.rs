@@ -86,21 +86,35 @@ impl Daemon {
             Err(e) => return *e,
         };
         let observed_root = root.clone();
-        let captured = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<ReadMark>> {
-            let mut marks = Vec::new();
-            for raw in paths {
-                let path = checkout_path(&root, &raw)?;
-                let at = Utc::now();
-                let version = content::fingerprint(&path)?;
-                marks.push(ReadMark {
-                    path,
-                    at,
-                    version,
-                    head: head.clone(),
-                });
-            }
-            Ok(marks)
-        })
+        let captured = tokio::task::spawn_blocking(
+            move || -> anyhow::Result<Vec<(ReadMark, Option<Arc<content::Snapshot>>)>> {
+                let mut marks = Vec::new();
+                let mut remaining = super::read_content::CACHE_BYTES;
+                for raw in paths {
+                    let path = checkout_path(&root, &raw)?;
+                    let at = Utc::now();
+                    let snapshot = Arc::new(content::snapshot(&path)?);
+                    let version = snapshot.version.clone();
+                    let bytes = snapshot.retained_bytes();
+                    let proof = if bytes <= remaining {
+                        remaining -= bytes;
+                        Some(snapshot)
+                    } else {
+                        None
+                    };
+                    marks.push((
+                        ReadMark {
+                            path,
+                            at,
+                            version,
+                            head: head.clone(),
+                        },
+                        proof,
+                    ));
+                }
+                Ok(marks)
+            },
+        )
         .await;
         let marks = match captured {
             Ok(Ok(marks)) => marks,
@@ -125,9 +139,11 @@ impl Daemon {
         };
         let mut by_path: BTreeMap<PathBuf, ReadMark> =
             existing.into_iter().map(|m| (m.path.clone(), m)).collect();
-        let paths = marks.iter().map(|m| m.path.clone()).collect();
-        for mark in marks {
+        let paths = marks.iter().map(|(m, _)| m.path.clone()).collect();
+        let mut accepted = Vec::new();
+        for (mark, proof) in marks {
             if by_path.get(&mark.path).is_none_or(|old| old.at <= mark.at) {
+                accepted.push((mark.clone(), proof));
                 by_path.insert(mark.path.clone(), mark);
             }
         }
@@ -141,12 +157,19 @@ impl Daemon {
         if let Err(e) = state.store.put_document("reads", id.as_str(), &reads) {
             return Response::error(ErrorCode::Internal, e.to_string());
         }
+        for (mark, proof) in accepted {
+            if let Some(snapshot) = proof {
+                state.content_proofs.observe(&id, mark, snapshot);
+            } else {
+                state.content_proofs.forget_read(&id, &mark.path);
+            }
+        }
         state.emit(EventKind::ReadsObserved { agent: id, paths });
         Response::Reads { reads }
     }
 
     pub(super) async fn stale(&self, reference: &str, paths: Vec<String>) -> Response {
-        let (_, root, _) = match self.reader_checkout(reference) {
+        let (id, root, _) = match self.reader_checkout(reference) {
             Ok(v) => v,
             Err(e) => return *e,
         };
@@ -154,38 +177,281 @@ impl Daemon {
             Response::Reads { reads } => reads,
             e => return e,
         };
-        let checked = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<StalePath>> {
-            let selected: Vec<ReadMark> = if paths.is_empty() {
-                reads
-            } else {
-                let mut selected = BTreeMap::new();
-                for raw in paths {
-                    let path = checkout_path(&root, &raw)?;
-                    // The newest read covering a target wins. Re-reading a file
-                    // can clear that target without refreshing an entire directory.
-                    if let Some(mark) = reads
-                        .iter()
-                        .filter(|m| path.starts_with(&m.path))
-                        .max_by_key(|m| m.at)
-                    {
-                        selected.insert(mark.path.clone(), mark.clone());
-                    }
-                    for mark in reads.iter().filter(|m| m.path.starts_with(&path)) {
-                        selected.insert(mark.path.clone(), mark.clone());
-                    }
-                }
-                selected.into_values().collect()
-            };
-            Ok(check_reads(&selected))
-        })
-        .await;
-        match checked {
-            Ok(Ok(stale)) => Response::Stale { stale },
-            Ok(Err(e)) => Response::error(ErrorCode::Invalid, e.to_string()),
-            Err(e) => Response::error(ErrorCode::Internal, e.to_string()),
+        let checkout = root.clone();
+        let baselines: HashMap<_, _> = {
+            let state = lock(&self.state);
+            reads
+                .iter()
+                .filter_map(|mark| {
+                    state
+                        .content_proofs
+                        .baseline(&id, mark)
+                        .map(|snapshot| (mark.path.clone(), snapshot))
+                })
+                .collect()
+        };
+        let candidates = match current_reads(
+            root.clone(),
+            reads.clone(),
+            baselines.clone(),
+            paths.clone(),
+        )
+        .await
+        {
+            Ok(candidates) => candidates,
+            Err(error) => return *error,
+        };
+        if candidates.is_empty() {
+            return Response::Stale { stale: Vec::new() };
         }
+        // A flush only acknowledges the application's pending queue; it does
+        // not prove that the OS has delivered every earlier event. Capture
+        // current bytes after the wait, and require matching content proofs.
+        let flushed = self.flush_ledger().await;
+        let candidates = match current_reads(root, reads, baselines, paths).await {
+            Ok(candidates) => candidates,
+            Err(error) => return *error,
+        };
+        let mut stale = Vec::new();
+        let state = lock(&self.state);
+        let (project, watched) = state
+            .registry
+            .get(&id)
+            .and_then(|r| r.project.as_ref())
+            .map(|p| (p.id(), p.dir().to_path_buf()))
+            .unzip();
+        let since = watched.and_then(|dir| state.ledger_since.get(&dir).copied());
+        for ReadCandidate {
+            found,
+            mark,
+            target,
+            current,
+            differences,
+        } in candidates
+        {
+            let explained = match (&current, &differences) {
+                (Some(current), Some(differences)) => {
+                    state
+                        .content_proofs
+                        .explains(&id, &mark, differences, current)
+                }
+                _ => false,
+            };
+            if !explained {
+                stale.push(found);
+                continue;
+            }
+            let covered = flushed && since.is_some_and(|since| since <= mark.at);
+            let (true, Some(project), Some(_), Ok(mark_rel), Ok(target_rel)) = (
+                covered,
+                project.clone(),
+                found.current.as_ref(),
+                mark.path.strip_prefix(&checkout),
+                target.strip_prefix(&checkout),
+            ) else {
+                stale.push(StalePath {
+                    path: target,
+                    ..found
+                });
+                continue;
+            };
+            let query = ChangesQuery {
+                project,
+                since_seq: None,
+                path: Some(mark_rel.to_string_lossy().into_owned()),
+                agent: None,
+                limit: STALE_LEDGER_SCAN,
+                after: Some(mark.at),
+                before_seq: None,
+            };
+            // Whether the page is whole is a property of the page, before
+            // other checkouts' entries are dropped from it.
+            let (changes, complete): (Vec<Change>, bool) = match state.store.changes(&query) {
+                Ok(page) => {
+                    let complete = page.len() < STALE_LEDGER_SCAN;
+                    let changes = page
+                        .into_iter()
+                        // SQLite julianday's coarse precision may include rows
+                        // just before the read. Recheck their exact stored time.
+                        .filter(|c| c.at >= mark.at)
+                        .filter(|c| c.checkout.as_deref().is_none_or(|c| c == checkout))
+                        .collect();
+                    (changes, complete)
+                }
+                Err(_) => {
+                    stale.push(StalePath {
+                        path: target,
+                        ..found
+                    });
+                    continue;
+                }
+            };
+            if agentdocker_core::working_set::stale_by_ledger(
+                &id, mark_rel, target_rel, &changes, complete,
+            ) {
+                stale.push(StalePath {
+                    path: target,
+                    ..found
+                });
+            }
+        }
+        Response::Stale { stale }
     }
 }
+
+struct ReadCandidate {
+    found: StalePath,
+    mark: ReadMark,
+    target: PathBuf,
+    current: Option<Arc<content::Snapshot>>,
+    differences: Option<Vec<(PathBuf, String)>>,
+}
+
+async fn current_reads(
+    root: PathBuf,
+    reads: Vec<ReadMark>,
+    baselines: HashMap<PathBuf, Arc<content::Snapshot>>,
+    paths: Vec<String>,
+) -> Result<Vec<ReadCandidate>, Box<Response>> {
+    match tokio::task::spawn_blocking(move || snapshot_candidates(&root, &reads, &baselines, paths))
+        .await
+    {
+        Ok(Ok(candidates)) => Ok(candidates),
+        Ok(Err(error)) => Err(Box::new(Response::error(
+            ErrorCode::Invalid,
+            error.to_string(),
+        ))),
+        Err(error) => Err(Box::new(Response::error(
+            ErrorCode::Internal,
+            error.to_string(),
+        ))),
+    }
+}
+
+fn snapshot_candidates(
+    root: &Path,
+    reads: &[ReadMark],
+    baselines: &HashMap<PathBuf, Arc<content::Snapshot>>,
+    paths: Vec<String>,
+) -> anyhow::Result<Vec<ReadCandidate>> {
+    let mut asked: BTreeMap<(PathBuf, PathBuf), ReadMark> = BTreeMap::new();
+    if paths.is_empty() {
+        for mark in reads {
+            asked.insert((mark.path.clone(), mark.path.clone()), mark.clone());
+        }
+    } else {
+        for raw in paths {
+            let path = checkout_path(root, &raw)?;
+            // Missing is not synonymous with never observed: a covering
+            // directory snapshot can remember a child that was removed.
+            if let Some(mark) = reads
+                .iter()
+                .filter(|mark| path.starts_with(&mark.path))
+                .max_by_key(|mark| (mark.at, mark.path.components().count()))
+            {
+                asked.insert((mark.path.clone(), path.clone()), mark.clone());
+            }
+            for mark in reads.iter().filter(|mark| mark.path.starts_with(&path)) {
+                asked.insert((mark.path.clone(), mark.path.clone()), mark.clone());
+            }
+        }
+    }
+    // Asked paths are ordered by their covering mark. Keep only that group's
+    // temporary snapshot; candidates may retain snapshots and differences up to
+    // a separate per-request payload budget. Refuse exemptions past either cap.
+    let mut captured_group: Option<(PathBuf, Result<Arc<content::Snapshot>, String>, bool)> = None;
+    let mut snapshot_budget = super::read_content::CACHE_BYTES;
+    let mut difference_budget = super::read_content::CACHE_BYTES;
+    let mut candidates = Vec::new();
+    for ((mark_path, target), mark) in asked {
+        if captured_group
+            .as_ref()
+            .is_none_or(|(path, _, _)| path != &mark_path)
+        {
+            let captured = content::snapshot(&mark.path)
+                .map(Arc::new)
+                .map_err(|error| error.to_string());
+            let retain = captured.as_ref().is_ok_and(|snapshot| {
+                let bytes = snapshot.retained_bytes();
+                if bytes > snapshot_budget {
+                    return false;
+                }
+                snapshot_budget -= bytes;
+                true
+            });
+            captured_group = Some((mark_path, captured, retain));
+        }
+        let (_, captured, retain_snapshot) = captured_group.as_ref().unwrap();
+        let (current, mut differences, reason) = match captured {
+            Ok(current) if current.version == mark.version => continue,
+            Ok(current) => {
+                let relative = target.strip_prefix(&mark.path)?;
+                let differences = baselines
+                    .get(&mark.path)
+                    .map(|baseline| baseline.differences(current, relative));
+                if differences.as_ref().is_some_and(Vec::is_empty) {
+                    continue;
+                }
+                let reason = if current.entry(relative) == content::MISSING {
+                    let existed = (relative.as_os_str().is_empty()
+                        && mark.version != content::MISSING)
+                        || baselines
+                            .get(&mark.path)
+                            .is_some_and(|baseline| baseline.entry(relative) != content::MISSING);
+                    if existed {
+                        "removed since observation; look again before writing it back"
+                    } else {
+                        "path is absent and its previous content is unknown; observe this path again before writing"
+                    }
+                } else {
+                    "content changed since observation; reread before editing"
+                };
+                (Some(current.clone()), differences, reason.to_string())
+            }
+            Err(error) => (
+                None,
+                None,
+                format!("cannot verify current content: {error}"),
+            ),
+        };
+        let found_current = current.as_ref().map(|snapshot| snapshot.version.clone());
+        let retain = *retain_snapshot
+            && differences.as_ref().is_some_and(|changes| {
+                let bytes = changes
+                    .iter()
+                    .map(|(path, version)| 128 + path.as_os_str().len() * 2 + version.len() * 2)
+                    .sum::<usize>();
+                if bytes > difference_budget {
+                    return false;
+                }
+                difference_budget -= bytes;
+                true
+            });
+        let current = if retain {
+            current
+        } else {
+            differences = None;
+            None
+        };
+        candidates.push(ReadCandidate {
+            found: StalePath {
+                path: target.clone(),
+                observed: mark.version.clone(),
+                current: found_current,
+                reason,
+            },
+            mark,
+            target,
+            current,
+            differences,
+        });
+    }
+    Ok(candidates)
+}
+
+/// At most this many ledger entries are read to explain one stale mark;
+/// past it, the mark's targets stay stale.
+const STALE_LEDGER_SCAN: usize = 500;
 
 pub(super) fn checkout_path(root: &Path, raw: &str) -> anyhow::Result<PathBuf> {
     let raw = Path::new(raw);
@@ -209,8 +475,12 @@ pub(super) fn check_reads(reads: &[ReadMark]) -> Vec<StalePath> {
             Ok(current) => Some(StalePath {
                 path: mark.path.clone(),
                 observed: mark.version.clone(),
+                reason: if current == content::MISSING {
+                    "removed since observation; look again before writing it back".into()
+                } else {
+                    "content changed since observation; reread before editing".into()
+                },
                 current: Some(current),
-                reason: "content changed since observation; reread before editing".into(),
             }),
             Err(e) => Some(StalePath {
                 path: mark.path.clone(),

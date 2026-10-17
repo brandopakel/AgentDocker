@@ -289,6 +289,7 @@ async fn drain(
     gap: &AtomicBool,
 ) {
     if gap.swap(false, Ordering::Relaxed) {
+        daemon.ledger_gap();
         daemon.emit(agentdocker_core::EventKind::WatcherGap {
             reason: "event overflow or operating-system watcher error; ledger may be incomplete"
                 .into(),
@@ -328,6 +329,7 @@ fn reconcile_watches(
                 });
             }
             watcher.unwatch(&dir, entry.gitdir.as_deref());
+            daemon.ledger_covers(&dir, false);
             info!(checkout = %dir.display(), "stopped watching");
         }
     }
@@ -355,6 +357,7 @@ fn reconcile_watches(
             continue;
         }
         info!(checkout = %checkout.dir.display(), project = %checkout.project.short(), "watching");
+        daemon.ledger_covers(&checkout.dir, true);
         watched.insert(checkout.dir.clone(), Watched { checkout, gitdir });
     }
 }
@@ -416,7 +419,7 @@ fn classify(
             if is_dir && kind != ChangeKind::Removed {
                 continue;
             }
-            if ignored(dir, path, is_dir) {
+            if ignored(dir, path, is_dir) || transient(relative) {
                 continue;
             }
             if seen.insert((dir.clone(), relative.to_path_buf(), kind)) {
@@ -429,6 +432,28 @@ fn classify(
         }
     }
     (observed, vcs_touched)
+}
+
+/// A file written only to be renamed over another at once: Claude Code's
+/// atomic writes (`main.go.tmp.16971.f1db92465db8`). Its appearing and going
+/// is nobody's edit; recorded, it named the writer's own Write as an
+/// external change and sent the writer a stale notice about itself.
+fn transient(relative: &Path) -> bool {
+    let Some(name) = relative.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let mut parts = name.rsplitn(4, '.');
+    let (Some(token), Some(pid), Some(tmp), Some(stem)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    !stem.is_empty()
+        && tmp == "tmp"
+        && !pid.is_empty()
+        && pid.bytes().all(|b| b.is_ascii_digit())
+        && token.len() == 12
+        && token.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Evaluate global, repository and nested ignore rules with their own roots.
@@ -748,6 +773,28 @@ mod tests {
         assert!(ignored(root, &path, false));
         std::fs::write(root.join("src/.gitignore"), "").unwrap();
         assert!(!ignored(root, &path, false));
+    }
+
+    /// Claude Code's atomic-write temporaries are nobody's edit; ordinary
+    /// names with `tmp` in them still are.
+    #[test]
+    fn atomic_write_temporaries_are_not_changes() {
+        for name in [
+            "main.go.tmp.16971.f1db92465db8",
+            "scripts/lab-server.sh.tmp.16971.83c615f07b0e",
+        ] {
+            assert!(transient(Path::new(name)), "{name}");
+        }
+        for name in [
+            "notes.tmp",
+            "main.go.tmp.16971",
+            "main.go.tmp.x16971.f1db92465db8",
+            "main.go.tmp.16971.f1db9246",
+            "tmp.16971.f1db92465db8",
+            "src/main.go",
+        ] {
+            assert!(!transient(Path::new(name)), "{name}");
+        }
     }
 
     #[test]

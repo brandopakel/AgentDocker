@@ -38,9 +38,21 @@ pub struct PullRequest {
     pub number: u64,
     pub url: String,
     pub status: Status,
+    /// The pull request's head commit, not the current branch ref. Missing
+    /// identity cannot establish that the checkout's current work was merged.
+    pub head: Option<String>,
 }
 
 impl PullRequest {
+    pub fn merged_head_matches(&self, head: Option<&str>) -> bool {
+        self.status == Status::Merged
+            && self
+                .head
+                .as_deref()
+                .zip(head)
+                .is_some_and(|(merged, current)| !merged.is_empty() && merged == current)
+    }
+
     /// The chip's words for assistive technology and the pointer.
     pub fn spoken(&self) -> String {
         let state = match self.status {
@@ -185,7 +197,7 @@ pub fn lookup(key: &Key) -> Result<Option<PullRequest>, String> {
         "--limit".into(),
         "5".into(),
         "--json".into(),
-        "number,state,url,statusCheckRollup".into(),
+        "number,state,url,headRefOid,statusCheckRollup".into(),
     ];
     let quiet = Some(std::ffi::OsStr::new("1"));
     let output = agentdocker_host::command::run_with_env(
@@ -229,6 +241,8 @@ struct RawPull {
     number: u64,
     state: String,
     url: String,
+    #[serde(default, rename = "headRefOid")]
+    head: Option<String>,
     #[serde(default, rename = "statusCheckRollup")]
     checks: Option<Vec<RawCheck>>,
 }
@@ -273,7 +287,7 @@ impl RawCheck {
     }
 }
 
-/// `gh pr list --json number,state,url,statusCheckRollup` read as the chip:
+/// `gh pr list --json number,state,url,headRefOid,statusCheckRollup` read as the chip:
 /// the open pull request if there is one, else the newest if it merged,
 /// else none — a closed one says nothing. Any failed check is a failure,
 /// then any unfinished one is running; skipped and neutral ones pass.
@@ -311,6 +325,7 @@ pub fn parse(json: &str) -> Result<Option<PullRequest>, String> {
         number: chosen.number,
         url: chosen.url,
         status,
+        head: chosen.head,
     }))
 }
 
@@ -522,6 +537,40 @@ mod tests {
     }
 
     #[test]
+    fn merged_state_applies_only_to_the_known_pull_request_head() {
+        let head = "1111111111111111111111111111111111111111";
+        let newer = "2222222222222222222222222222222222222222";
+        let mut raw: serde_json::Value = serde_json::from_str(&pull(340, "MERGED", "")).unwrap();
+        raw["headRefOid"] = head.into();
+        let read = parse(&serde_json::json!([raw.clone()]).to_string())
+            .unwrap()
+            .unwrap();
+        assert!(read.merged_head_matches(Some(head)));
+        assert!(!read.merged_head_matches(Some(newer)));
+        assert!(!read.merged_head_matches(None));
+        raw["state"] = "OPEN".into();
+        assert!(
+            !parse(&serde_json::json!([raw]).to_string())
+                .unwrap()
+                .unwrap()
+                .merged_head_matches(Some(head))
+        );
+        for unknown in [None, Some("".into())] {
+            let unknown = PullRequest {
+                head: unknown,
+                ..read.clone()
+            };
+            assert!(!unknown.merged_head_matches(Some(head)));
+            assert!(!unknown.merged_head_matches(None));
+        }
+        let legacy = parse(&format!("[{}]", pull(340, "MERGED", "")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(legacy.status, Status::Merged);
+        assert!(!legacy.merged_head_matches(Some(head)));
+    }
+
+    #[test]
     fn the_open_pull_request_wins_and_a_closed_one_says_nothing() {
         let both = format!(
             "[{},{}]",
@@ -641,6 +690,7 @@ mod tests {
             number: 1,
             url: "https://github.com/o/n/pull/1".into(),
             status: Status::Passed,
+            head: None,
         };
         cache.answered(
             vec![
