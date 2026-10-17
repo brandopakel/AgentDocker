@@ -499,6 +499,8 @@ fn spawn_agentd(socket: &Path, home: &Path) -> Result<std::process::Child> {
         .with_context(|| format!("cannot open {}", log_path.display()))?;
     let mut command = Command::new(&exe);
     agentdocker_host::command::detach(&mut command);
+    // The daemon outlives whichever session's command started it.
+    agentdocker_host::command::without_session(&mut command);
     command
         .arg("--socket")
         .arg(socket)

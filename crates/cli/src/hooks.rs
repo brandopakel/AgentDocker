@@ -750,7 +750,7 @@ pub async fn claude_code<B: Backend>(
         "SessionStart" => {
             let me = ensure_registered(backend, input).await?;
             let agents = all_agents(backend).await?;
-            let inbox = drain_inbox(backend, &me).await?;
+            let inbox = drain_inbox(backend, &me, input).await?;
             report_vcs(backend, &me, input).await;
             let mut text = orientation(&me, &agents, &inbox);
             let digest = journal_digest(backend, &me, opts.digest_entries, opts.digest_chars).await;
@@ -776,7 +776,7 @@ pub async fn claude_code<B: Backend>(
                         .await?;
                 }
             }
-            let inbox = drain_inbox(backend, &me).await?;
+            let inbox = drain_inbox(backend, &me, input).await?;
             report_vcs(backend, &me, input).await;
             let agents = if inbox.is_empty() {
                 Vec::new()
@@ -919,7 +919,7 @@ pub async fn claude_code<B: Backend>(
             if opts.no_wake || input.stop_hook_active {
                 return Ok(None);
             }
-            let inbox = drain_inbox(backend, &me).await?;
+            let inbox = drain_inbox(backend, &me, input).await?;
             if inbox.is_empty() {
                 return Ok(None);
             }
@@ -1593,7 +1593,18 @@ async fn all_agents<B: Backend>(backend: &B) -> Result<Vec<AgentRecord>> {
     }
 }
 
-async fn drain_inbox<B: Backend>(backend: &B, me: &AgentRecord) -> Result<Vec<Envelope>> {
+/// The root session's queue, emptied into this hook's answer. A subagent's
+/// hooks carry the root's session and land on its record, but what they
+/// answer reaches the subagent, whose report is all the root ever sees:
+/// they never take the root's messages.
+async fn drain_inbox<B: Backend>(
+    backend: &B,
+    me: &AgentRecord,
+    input: &HookInput,
+) -> Result<Vec<Envelope>> {
+    if input.agent_id.is_some() {
+        return Ok(Vec::new());
+    }
     match backend
         .call(Request::Inbox {
             agent: me.id.to_string(),
@@ -3564,6 +3575,27 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("ping")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_subagents_hooks_leave_the_root_sessions_messages_queued() {
+        let me = agent("claude-01234567", true);
+        let mut child = input("PostToolUse");
+        child.agent_id = Some("child".into());
+        let backend = Mock::with(vec![Response::Agent { agent: me.clone() }]);
+        assert!(
+            claude_code(&backend, &child, &opts())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !backend
+                .requests()
+                .iter()
+                .any(|r| matches!(r, Request::Inbox { .. } | Request::AckInbox { .. })),
+            "the root's queue is neither read nor acknowledged"
         );
     }
 

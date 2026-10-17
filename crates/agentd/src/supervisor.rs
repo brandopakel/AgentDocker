@@ -257,6 +257,7 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
         OwnerMode::InProcess => OwnerLink::InProcess(tokio::spawn(crate::owner::serve(launch))),
         OwnerMode::Process(executable) => {
             let mut command = std::process::Command::new(executable);
+            agentdocker_host::command::without_session(&mut command);
             command
                 .arg("--session-owner")
                 .env("AGENTDOCKER_HOME", &daemon.home)

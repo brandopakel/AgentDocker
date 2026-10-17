@@ -268,6 +268,10 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
     let owner_started_at = agentdocker_host::procinfo::start_time(std::process::id())
         .context("cannot read the session owner's own process birth; refusing to own a child")?;
     let mut command = Command::new(&launch.command[0]);
+    // A session the daemon was started from is not this agent's: its
+    // variables go, and the launch's own (an input mode among them) and
+    // the ones below come back.
+    agentdocker_host::command::without_session(&mut command);
     command
         .args(&launch.command[1..])
         .envs(&launch.env)
