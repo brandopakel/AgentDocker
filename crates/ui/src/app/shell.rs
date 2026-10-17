@@ -2764,6 +2764,25 @@ impl App {
                 }
             }
             Message::Event(iced::Event::Window(window::Event::Unfocused)) => {
+                // A prompt may already be waiting when the person leaves.
+                // Start its grace now; repeated focus events must not reset
+                // the timer or repost a notice that is still present.
+                if !self.shell.unfocused && self.settings.notify_finished && self.smoke.is_none() {
+                    let since = Instant::now();
+                    for agent in &self.agents {
+                        let id = agent.id.as_str();
+                        if self.waits_for_person(agent)
+                            && !self
+                                .shell
+                                .wait_notices
+                                .iter()
+                                .any(|(pending, _)| pending == id)
+                            && !self.shell.noticed.contains(&window_tag(id))
+                        {
+                            self.shell.wait_notices.push((id.to_owned(), since));
+                        }
+                    }
+                }
                 self.shell.unfocused = true;
                 if let Some(id) = self.shell.window {
                     tasks.push(crate::accessibility::focus(id, false));

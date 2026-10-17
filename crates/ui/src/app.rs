@@ -6560,6 +6560,79 @@ pub(crate) mod tests {
         assert!(app.shell.unviewed_done.contains(&id));
     }
 
+    /// Leaving an already waiting session starts a fresh background grace,
+    /// including after an earlier grace was cancelled by returning to the app.
+    #[test]
+    fn losing_focus_schedules_existing_waits_once_with_a_fresh_grace() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let worker = record("worker", "claude-code", Some(4242));
+        let id = worker.id.to_string();
+        let mut ended = record("ended", "claude-code", Some(4243));
+        ended.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        let waiting = Activity::Waiting {
+            since: Utc::now() - chrono::Duration::hours(1),
+            reason: Some(agentdocker_core::WaitReason::Permission),
+        };
+        let fresh = BTreeMap::from([
+            (id.clone(), waiting.clone()),
+            (ended.id.to_string(), waiting),
+        ]);
+        app.agents.extend([worker, ended]);
+        app.shell.unfocused = false;
+        app.note_completions(&fresh);
+        app.activity = fresh.clone();
+        assert!(app.shell.wait_notices.is_empty());
+        let unfocus = || Message::Event(iced::Event::Window(iced::window::Event::Unfocused));
+        let focus = || Message::Event(iced::Event::Window(iced::window::Event::Focused));
+        let before = Instant::now();
+        let _ = app.update(unfocus());
+        assert_eq!(
+            app.shell.wait_notices.len(),
+            1,
+            "focus loss schedules the existing live wait"
+        );
+        assert_eq!(app.shell.wait_notices[0].0, id);
+        let since = app.shell.wait_notices[0].1;
+        assert!(
+            since >= before,
+            "an old prompt still gets a full background grace"
+        );
+        assert!(app.shell.wait_timer && app.shell.notice_log.is_empty());
+        let _ = app.update(unfocus());
+        app.note_completions(&fresh);
+        assert_eq!(app.shell.wait_notices, vec![(id.clone(), since)]);
+
+        let _ = app.update(focus());
+        assert!(app.shell.wait_notices.is_empty());
+        let before = Instant::now();
+        let _ = app.update(unfocus());
+        assert_eq!(app.shell.wait_notices.len(), 1);
+        assert!(app.shell.wait_notices[0].1 >= before);
+        // A timer left from the earlier focus loss cannot shorten the new grace.
+        let _ = app.update(Message::WaitGrace);
+        assert!(app.shell.notice_log.is_empty());
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        assert_eq!(
+            app.shell.notice_log,
+            vec![format!("post {}", shell::window_tag(&id))]
+        );
+        let _ = app.update(unfocus());
+        assert!(app.shell.wait_notices.is_empty());
+        assert_eq!(
+            app.shell.notice_log.len(),
+            1,
+            "duplicate focus events never repost"
+        );
+
+        let _ = app.update(focus());
+        app.settings.notify_finished = false;
+        let _ = app.update(unfocus());
+        assert!(app.shell.wait_notices.is_empty(), "opt-out still applies");
+    }
+
     /// Away from the window, an agent that stops for the person is told
     /// once per stop; one that finishes with the person's next message
     /// already queued is not told as finished; and a notice is taken back
