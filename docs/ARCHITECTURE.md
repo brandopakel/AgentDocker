@@ -1149,7 +1149,9 @@ and derived `input_readiness`; verbose records retain both. Readiness is
 `session_ended`, `unreachable`, `unverified`, `paused`, `stale`,
 `awaiting_first_receipt` or `verified`. Unreachable is a live session that
 nothing of its current process has ever reached AgentDocker from — no hook or
-MCP contact, no receiver — two minutes after it started
+MCP contact, no receiver, and nothing it did since registering (reading its own
+inbox, a heartbeat, a report, a send or a lease moves `last_seen`) — two
+minutes after it started
 (`input::unreachable`). A terminal Codex that names no thread, a runtime with
 no adapter here, or a session started before setup is in this state. Senders see it as the `unreachable`
 send issue ("Can't receive messages") with what would connect the session,

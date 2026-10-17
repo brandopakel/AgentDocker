@@ -65,8 +65,9 @@ impl InputReadiness {
 pub const FIRST_CONTACT_GRACE: chrono::Duration = chrono::Duration::minutes(2);
 
 /// A live session nothing of has ever reached AgentDocker, for this process:
-/// no hook or MCP contact and no input receiver, past the grace after it
-/// started. Its queue waits for a read nobody makes — a terminal Codex that
+/// no hook or MCP contact, no input receiver, and nothing it did since it
+/// registered — reading its own inbox, a heartbeat, a report, a send, a
+/// lease all move `last_seen` — past the grace after it started. Its queue waits for a read nobody makes — a terminal Codex that
 /// names no thread, a runtime with no adapter here, a session started before
 /// AgentDocker was set up. A browser agent checks in when it is used, and a
 /// process of unknown birth cannot be told from another, so neither is.
@@ -74,6 +75,7 @@ pub fn unreachable(agent: &crate::AgentRecord, now: DateTime<Utc>) -> bool {
     let Some(born) = agent.process_started_at else {
         return false;
     };
+    let registered = agent.started_at.unwrap_or(agent.created_at).max(born);
     agent.status.is_live()
         && agent.spec.runtime != crate::HUMAN_RUNTIME
         && !agent.via_connector()
@@ -82,7 +84,10 @@ pub fn unreachable(agent: &crate::AgentRecord, now: DateTime<Utc>) -> bool {
             .adapter_contacts
             .values()
             .any(|contact| contact.process_started_at == born)
-        && now - agent.started_at.unwrap_or(agent.created_at).max(born) >= FIRST_CONTACT_GRACE
+        // A session that polls its own queue (`agentdocker inbox --as`) has
+        // no adapter; that it acted at all is its contact.
+        && agent.last_seen <= registered + chrono::Duration::seconds(5)
+        && now - registered >= FIRST_CONTACT_GRACE
 }
 
 /// Why the daemon paused an agent's input delivery. The daemon writes these
@@ -499,6 +504,15 @@ mod tests {
             assert_eq!(
                 InputReadiness::for_agent(&agent, later),
                 InputReadiness::Unreachable
+            );
+            // A session reading its own queue is heard from: last seen after
+            // it started.
+            let mut polling = agent.clone();
+            polling.last_seen = birth + chrono::Duration::minutes(1);
+            assert_eq!(
+                InputReadiness::for_agent(&polling, later + chrono::Duration::days(1)),
+                InputReadiness::Unverified,
+                "{runtime}: polls its inbox"
             );
             // Any contact from this process, however old, means something of
             // it is wired: it may wait, it is not unreachable.
