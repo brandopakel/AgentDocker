@@ -498,7 +498,20 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                  step("click", id=f"task-next-{card['id']}"), step("wait_text", text="To Done"),
                                  step("click", id=f"task-next-{card['id']}"), step("wait_control", id=f"task-next-{card['id']}", present=False),
                                  step("capture", name="board-done"),
-                                 step("click", id=f"task-archive-{card['id']}"), step("wait_control", id=f"task-{card['id']}", present=False)]
+                                 # Every card as a row, then back to lanes.
+                                 step("click", id="board-layout"), step("wait_control", id=f"task-row-{card['id']}", present=True),
+                                 step("capture", name="board-table"),
+                                 step("click", id="board-layout"), step("wait_control", id=f"task-{card['id']}", present=True),
+                                 step("click", id=f"task-archive-{card['id']}"), step("wait_control", id=f"task-{card['id']}", present=False),
+                                 # To-do: the card the person filed, that nobody holds.
+                                 step("click", id="todo"), step("wait_text", text="Write the fixture notes"),
+                                 step("capture", name="todo"),
+                                 # Plans: a new plan, written and saved, in the list.
+                                 step("click", id="projects"), step("click", id=f"project-{project}"),
+                                 step("click", id="project-more"), step("click", id="project-tab-Plans"),
+                                 step("click", id="plan-new"), step("fill", id="plan-title", text="Fixture plan"),
+                                 step("click", id="plan-save"), step("wait_text", text="Fixture plan, Draft"),
+                                 step("capture", name="plans")]
                 def pull_card():
                     cards = {c["id"]: c for c in rpc(endpoint, {"op": "tasks", "project": str(project)})["tasks"]}
                     filed = [c for c in cards.values() if c["title"] == "Write the fixture notes"]

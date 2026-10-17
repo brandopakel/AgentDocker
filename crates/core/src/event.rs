@@ -530,6 +530,45 @@ pub enum EventKind {
         board: String,
         by: String,
     },
+    /// A board's rule was made, changed or deleted.
+    RuleChanged {
+        project: ProjectId,
+        board: String,
+        rule: String,
+        by: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deleted: bool,
+    },
+    /// A rule acted on a card (what it did has its own event too).
+    RuleFired {
+        project: ProjectId,
+        rule: String,
+        task: crate::TaskId,
+    },
+    /// A project's tag was made, recoloured, renamed or deleted.
+    TagChanged {
+        project: ProjectId,
+        name: String,
+        by: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        renamed_to: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deleted: bool,
+    },
+    /// A plan was written or changed.
+    PlanChanged {
+        project: ProjectId,
+        plan: String,
+        by: String,
+    },
+    /// A project file was kept, linked, unlinked or deleted.
+    ProjectFileChanged {
+        project: ProjectId,
+        file: String,
+        by: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deleted: bool,
+    },
     /// A webhook sink gave up on deliveries: which sink (by its configured
     /// name, never its address), the last event kind it could not post,
     /// why in a word (`refused`, `unreachable`, `timeout`, `too_large`,

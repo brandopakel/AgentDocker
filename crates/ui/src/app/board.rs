@@ -94,6 +94,21 @@ fn tag_tone(tag: &str, c: Colors) -> iced::Color {
     identity(tag, c.dark).1
 }
 
+/// A catalog colour in the theme's tones.
+pub(super) fn tone_of(color: agentdocker_core::TagColor, c: Colors) -> iced::Color {
+    use agentdocker_core::TagColor as T;
+    match color {
+        T::Gray => c.faint,
+        T::Red => c.red,
+        T::Orange => mix(c.red, c.amber, 0.5),
+        T::Yellow => c.amber,
+        T::Green => c.green,
+        T::Teal => mix(c.green, c.accent, 0.5),
+        T::Blue => c.accent,
+        T::Purple => mix(c.accent, c.red, 0.45),
+    }
+}
+
 /// A lane's name on a board, by slug; the slug when it is gone.
 fn lane_name(board: &agentdocker_core::Board, slug: &str) -> String {
     board
@@ -203,17 +218,33 @@ impl App {
         let filters = self.shell.board_filters;
         let words = self.shell.board_query.trim().to_lowercase();
         let lane = board.lane_of(task);
+        let by_agent = task
+            .assignee
+            .as_ref()
+            .is_some_and(|a| !self.is_human(a.as_str()));
         (words.is_empty()
             || task.key.to_lowercase() == words
             || task.title.to_lowercase().contains(&words)
             || task.description.to_lowercase().contains(&words)
-            || task.tags.iter().any(|t| t.contains(&words)))
+            || task.tags.iter().any(|t| t.contains(&words))
+            || (words.chars().count() >= 2
+                && agentdocker_core::search::score(&words, task).is_some()))
+            && self.shell.board_tags.iter().all(|t| task.tags.contains(t))
+            && (!filters.agent || by_agent)
             && (!filters.high || task.priority == Priority::High)
             && (!filters.blocked
                 || !task.external_blocker.trim().is_empty()
                 || !task.blocked_by.is_empty())
             && (!filters.waiting || (lane.owner == Owner::Human && lane.category == Column::Review))
             && (!filters.unassigned || task.assignee.is_none())
+    }
+
+    /// A tag's colour: the catalog's, else one from its name.
+    pub(super) fn tag_color(&self, tag: &str, c: Colors) -> iced::Color {
+        self.selected_project_root()
+            .and_then(|p| self.workspaces.get(&p))
+            .and_then(|w| w.tags.iter().find(|t| t.name == tag))
+            .map_or_else(|| tag_tone(tag, c), |t| tone_of(t.color, c))
     }
 
     /// Cards in lanes that wait for the person, on the board on view: the
@@ -260,8 +291,23 @@ impl App {
         let mut page = column![self.board_toolbar(&root, &board, c)]
             .spacing(14)
             .width(Fill);
+        if self.shell.tags_menu {
+            page = page.push(self.tags_menu(&root, c));
+        }
         if let Some(settings) = &self.shell.lane_settings {
             page = page.push(self.lane_settings(settings, c));
+        }
+        if self.shell.board_layout == super::shell::BoardLayout::Table {
+            page = page.push(self.board_table(all, c));
+            if more && all.len() < BOARD_KEEP {
+                page = page.push(action(
+                    "board-more",
+                    if loading { "Loading…" } else { "Show more" },
+                    (self.connected.is_ok() && !loading).then_some(Message::TasksMore),
+                    false,
+                ));
+            }
+            return page.into();
         }
         let lanes_fit = board.lanes.len() as f32 * LANE_WIDTH
             + (board.lanes.len().saturating_sub(1)) as f32 * 12.0;
@@ -399,7 +445,98 @@ impl App {
                 filters.unassigned,
                 F::Unassigned,
             ))
+            .push(toggle(
+                "board-filter-agent",
+                Icon::Sessions,
+                "Held by an agent",
+                filters.agent,
+                F::Agent,
+            ))
+            .push(tip(
+                custom_sized(
+                    "board-tags",
+                    "Tags",
+                    row![
+                        icon(
+                            Icon::Tag,
+                            if self.shell.board_tags.is_empty() {
+                                c.muted
+                            } else {
+                                c.text
+                            },
+                            14.0
+                        ),
+                        if self.shell.board_tags.is_empty() {
+                            Element::from(Space::new().width(0))
+                        } else {
+                            count_chip(self.shell.board_tags.len(), false, c)
+                        },
+                    ]
+                    .spacing(4)
+                    .align_y(Center),
+                    Some(Message::TagsMenu),
+                    self.shell.tags_menu,
+                    Kind::Ghost,
+                    [6, 6],
+                    iced::Length::Shrink,
+                ),
+                "Tags",
+                c,
+            ))
             .push(Space::new().width(Fill))
+            .push({
+                let table = self.shell.board_layout == super::shell::BoardLayout::Table;
+                let words = if table { "Lanes" } else { "Table" };
+                tip(
+                    custom_sized(
+                        "board-layout",
+                        words,
+                        container(icon(
+                            if table { Icon::Board } else { Icon::Rows },
+                            c.muted,
+                            14.0,
+                        ))
+                        .center(18),
+                        Some(Message::BoardLayout),
+                        false,
+                        Kind::Ghost,
+                        [6, 6],
+                        iced::Length::Shrink,
+                    ),
+                    words,
+                    c,
+                )
+            })
+            .push({
+                let words = if self.shell.board_dense {
+                    "Roomy"
+                } else {
+                    "Compact"
+                };
+                tip(
+                    custom_sized(
+                        "board-density",
+                        words,
+                        container(icon(
+                            if self.shell.board_dense {
+                                Icon::ChevronDown
+                            } else {
+                                Icon::ChevronUp
+                            },
+                            c.muted,
+                            14.0,
+                        ))
+                        .center(18),
+                        Some(Message::BoardDense),
+                        false,
+                        Kind::Ghost,
+                        [6, 6],
+                        iced::Length::Shrink,
+                    ),
+                    words,
+                    c,
+                )
+            })
             .push(tip(
                 custom_sized(
                     "board-new",
@@ -586,11 +723,22 @@ impl App {
         ]
         .spacing(8)
         .align_y(Center);
-        container(column![rows, footer].spacing(12))
-            .padding([12, 14])
-            .width(Fill)
-            .style(move |_| c.card_style())
-            .into()
+        let hairline = || container(Space::new().width(Fill).height(1)).style(move |_| c.rule());
+        container(
+            column![
+                rows,
+                footer,
+                hairline(),
+                self.tag_settings(c),
+                hairline(),
+                self.rule_settings(settings, c),
+            ]
+            .spacing(12),
+        )
+        .padding([12, 14])
+        .width(Fill)
+        .style(move |_| c.card_style())
+        .into()
     }
 
     fn lane<'a>(
@@ -763,7 +911,7 @@ impl App {
             words.push(format!("size {}", size.as_str()));
         }
         for tag in task.tags.iter().take(4) {
-            marks = marks.push(dot(tag_tone(tag, c), 6.0, c));
+            marks = marks.push(dot(self.tag_color(tag, c), 6.0, c));
         }
         if !task.tags.is_empty() {
             words.push(task.tags.join(", "));
@@ -798,7 +946,8 @@ impl App {
             }
             None => {}
         }
-        let head = column![
+        let dense = self.shell.board_dense;
+        let mut head = column![
             text(task.key.clone())
                 .size(11)
                 .font(iced::Font::MONOSPACE)
@@ -807,10 +956,12 @@ impl App {
                 .size(13)
                 .font(weight(iced::font::Weight::Medium))
                 .wrapping(iced::widget::text::Wrapping::Word),
-            foot,
         ]
-        .spacing(5)
+        .spacing(if dense { 2 } else { 5 })
         .width(Fill);
+        if !dense {
+            head = head.push(foot);
+        }
         // The control's name says what the marks show, so a screen
         // reader — and the smoke — hear the card whole.
         let mut label = format!("{} {}", task.handle(), task.title);
@@ -840,9 +991,9 @@ impl App {
         let ready = task.assignee.is_none() && lane.slug == board.pull_source;
         let face = container(head)
             .padding(iced::Padding {
-                top: 9.0,
+                top: if dense { 5.0 } else { 9.0 },
                 right: 11.0,
-                bottom: 9.0,
+                bottom: if dense { 5.0 } else { 9.0 },
                 left: 11.0,
             })
             .width(Fill)
@@ -1163,9 +1314,7 @@ impl App {
         let mut body = column![head, fields, settings, hand.wrap()]
             .spacing(12)
             .width(Fill);
-        if !task.links.is_empty() {
-            body = body.push(super::view::links(&task.links, c));
-        }
+        body = body.push(self.card_extras(task, c));
         // What the daemon knows beyond the card: the cards around it, the
         // talk on it and what happened to it.
         if let Some(detail) = self.card.as_ref().filter(|d| d.task.id == id) {
@@ -1295,6 +1444,696 @@ impl App {
             .padding([14, 16])
             .width(Fill)
             .style(move |_| c.card_style())
+            .into()
+    }
+}
+
+impl App {
+    /// The project's tags as toggles: a card shows when it carries every
+    /// tag turned on.
+    fn tags_menu(&self, root: &str, c: Colors) -> Element<'_, Message> {
+        let tags = self
+            .workspaces
+            .get(root)
+            .map(|w| w.tags.clone())
+            .unwrap_or_default();
+        let mut chips = row![].spacing(6).align_y(Center);
+        for tag in tags {
+            let on = self.shell.board_tags.contains(&tag.name);
+            chips = chips.push(custom_sized(
+                format!("board-tag-{}", tag.name),
+                tag.name.clone(),
+                row![
+                    dot(tone_of(tag.color, c), 7.0, c),
+                    text(tag.name.clone())
+                        .size(12)
+                        .color(if on { c.text } else { c.muted }),
+                ]
+                .spacing(5)
+                .align_y(Center),
+                Some(Message::TagFilter(tag.name.clone())),
+                on,
+                Kind::Ghost,
+                [4, 8],
+                iced::Length::Shrink,
+            ));
+        }
+        chips.wrap().into()
+    }
+
+    /// Every card of the project, each a row — key, title, its lane's
+    /// mark, its holder, priority, due day and tags — through the same
+    /// search and filters; a row opens its card under the table.
+    fn board_table(&self, all: &[Task], c: Colors) -> Element<'_, Message> {
+        let boards = self
+            .selected_project_root()
+            .and_then(|p| self.boards.get(&p))
+            .cloned()
+            .unwrap_or_default();
+        let Some(main) = self.board_on_view() else {
+            return super::view::empty(None, c);
+        };
+        let board_of = |task: &Task| -> agentdocker_core::Board {
+            let slug = task.board.as_deref().unwrap_or(board::MAIN);
+            boards
+                .iter()
+                .find(|b| b.slug == slug)
+                .cloned()
+                .unwrap_or_else(|| main.clone())
+        };
+        let mut cards: Vec<(&Task, agentdocker_core::Board)> = all
+            .iter()
+            .filter(|t| t.archived_at.is_none())
+            .map(|t| (t, board_of(t)))
+            .filter(|(t, b)| self.shown(t, b))
+            .collect();
+        cards.sort_by(|(a, x), (b, y)| {
+            let at = |t: &Task, board: &agentdocker_core::Board| {
+                board
+                    .lanes
+                    .iter()
+                    .position(|l| l.slug == board.lane_of(t).slug)
+                    .unwrap_or(0)
+            };
+            (a.board.as_deref().unwrap_or(board::MAIN) != board::MAIN)
+                .cmp(&(b.board.as_deref().unwrap_or(board::MAIN) != board::MAIN))
+                .then(at(a, x).cmp(&at(b, y)))
+                .then(board::order(a, b))
+        });
+        let today = chrono::Local::now().date_naive();
+        let mut rows = column![].spacing(2).width(Fill);
+        for (task, board) in &cards {
+            let lane = board.lane_of(task);
+            let mut marks = row![].spacing(6).align_y(Center);
+            if task.priority == Priority::High {
+                marks = marks.push(tip(icon(Icon::Alert, c.red, 12.0), "High priority", c));
+            }
+            if let Some(due) = task.due {
+                let tone = match board::due_state(due, today) {
+                    DueState::Overdue => c.red,
+                    DueState::Today => c.amber,
+                    DueState::Later => c.faint,
+                };
+                marks = marks.push(tip(
+                    icon(Icon::Clock, tone, 12.0),
+                    due.format("%b %-d").to_string(),
+                    c,
+                ));
+            }
+            for tag in task.tags.iter().take(4) {
+                marks = marks.push(tip(dot(self.tag_color(tag, c), 6.0, c), tag.clone(), c));
+            }
+            let holder: Element<'_, Message> = match &task.assignee {
+                Some(agent) => {
+                    let name = self.name_of(agent.as_str());
+                    tip(self.agent_mark_for(agent.as_str(), &name, 16.0, c), name, c)
+                }
+                None => Space::new().width(16).into(),
+            };
+            let open = self.task_open.as_ref() == Some(&task.id);
+            let mut label = format!("{} {} — {}", task.handle(), task.title, lane.name);
+            if boards.len() > 1 {
+                label.push_str(&format!(" on {}", board.name));
+            }
+            rows = rows.push(custom_sized(
+                format!("task-row-{}", task.id),
+                label,
+                row![
+                    container(
+                        text(task.key.clone())
+                            .size(11)
+                            .font(iced::Font::MONOSPACE)
+                            .color(c.faint)
+                    )
+                    .width(64),
+                    tip(
+                        icon(lane_glyph(lane.category), lane_tone(lane.category, c), 13.0),
+                        lane.name.clone(),
+                        c
+                    ),
+                    container(text(first_line(&task.title, 140)).size(13)).width(Fill),
+                    marks,
+                    holder,
+                ]
+                .spacing(10)
+                .align_y(Center),
+                Some(Message::TaskOpen(task.id.clone())),
+                open,
+                Kind::Ghost,
+                [7, 10],
+                Fill,
+            ));
+            if open {
+                rows = rows.push(self.card_detail(task, board, c));
+            }
+        }
+        container(rows)
+            .padding(6)
+            .width(Fill)
+            .style(move |_| c.card_style())
+            .into()
+    }
+
+    /// Only the opened card's full detail can authorize a start. The board
+    /// page may omit prerequisites; missing detail keeps the action unavailable.
+    pub(super) fn card_startable(&self, id: &TaskId) -> bool {
+        self.connected.is_ok()
+            && self.task_open.as_ref() == Some(id)
+            && self
+                .card
+                .as_ref()
+                .filter(|d| &d.task.id == id)
+                .is_some_and(|detail| {
+                    agentdocker_core::rule::startable(&detail.task, |blocker| {
+                        detail
+                            .blockers
+                            .iter()
+                            .find(|t| &t.id == blocker)
+                            .is_none_or(Task::open)
+                    })
+                })
+    }
+
+    /// Below a card's fields: the plan it carries out, its files, its
+    /// links, and the tools to change them or start an agent on it.
+    fn card_extras(&self, task: &Task, c: Colors) -> Element<'_, Message> {
+        use super::shell::CardMenu;
+        use agentdocker_core::LinkKind;
+        let connected = self.connected.is_ok();
+        let icon_button = |control: String, words: String, glyph: Icon, tone, message| {
+            tip(
+                custom_sized(
+                    control,
+                    words.clone(),
+                    container(icon(glyph, tone, 14.0)).center(18),
+                    message,
+                    false,
+                    Kind::Ghost,
+                    [6, 6],
+                    iced::Length::Shrink,
+                ),
+                words,
+                c,
+            )
+        };
+        let detail = self.card.as_ref().filter(|d| d.task.id == task.id);
+        let workspace = self
+            .selected_project_root()
+            .and_then(|p| self.workspaces.get(&p));
+        let menu = self.shell.card_menu;
+        let mut tools = row![
+            icon_button(
+                "card-plan".into(),
+                "Plan".into(),
+                Icon::Note,
+                if task.plan.is_some() { c.text } else { c.muted },
+                connected.then_some(Message::CardMenu(CardMenu::Plan)),
+            ),
+            icon_button(
+                "card-attach".into(),
+                "Attach a file".into(),
+                Icon::File,
+                c.muted,
+                connected.then_some(Message::CardMenu(CardMenu::Attach)),
+            ),
+            icon_button(
+                "card-upload".into(),
+                "Add a file from disk".into(),
+                Icon::ArrowUp,
+                c.muted,
+                connected.then_some(Message::FileUpload),
+            ),
+            icon_button(
+                "card-link".into(),
+                "Add a link".into(),
+                Icon::Link,
+                if self.shell.link_kind.is_some() {
+                    c.text
+                } else {
+                    c.muted
+                },
+                connected.then_some(Message::LinkKind(LinkKind::Url)),
+            ),
+        ]
+        .spacing(2)
+        .align_y(Center);
+        // A card that waits on an open card, or on something off the
+        // board, is not started on, as it is not pulled.
+        let startable = self.card_startable(&task.id);
+        if startable {
+            tools = tools.push(icon_button(
+                "card-start".into(),
+                "Start an agent on it".into(),
+                Icon::Play,
+                c.accent,
+                connected.then_some(Message::CardMenu(CardMenu::Start)),
+            ));
+        }
+        let mut extras = column![tools].spacing(8).width(Fill);
+        // A menu open on the card: its choices are names.
+        let mut choices = row![].spacing(6).align_y(Center);
+        match menu {
+            Some(CardMenu::Start) if startable => {
+                for runtime in self.runtimes.iter().filter(|r| {
+                    r.cli.is_some() && matches!(r.name.as_str(), "codex" | "claude-code")
+                }) {
+                    choices = choices.push(ghost(
+                        format!("card-start-{}", runtime.name),
+                        runtime.label.clone(),
+                        connected.then(|| Message::StartAgent(runtime.name.clone())),
+                    ));
+                }
+            }
+            Some(CardMenu::Plan) => {
+                for plan in workspace
+                    .map(|w| w.plans.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|p| p.status != agentdocker_core::PlanStatus::Archived)
+                {
+                    choices = choices.push(ghost(
+                        format!("card-plan-{}", plan.id),
+                        plan.title.clone(),
+                        connected.then(|| Message::CardPlan(Some(plan.id.clone()))),
+                    ));
+                }
+                if task.plan.is_some() {
+                    choices = choices.push(ghost(
+                        "card-plan-none",
+                        "No plan",
+                        connected.then_some(Message::CardPlan(None)),
+                    ));
+                }
+            }
+            Some(CardMenu::Attach) => {
+                for file in workspace
+                    .map(|w| w.files.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|f| !f.tasks.contains(&task.id))
+                {
+                    choices = choices.push(ghost(
+                        format!("card-attach-{}", file.id),
+                        file.name.clone(),
+                        connected.then(|| Message::FileAttach(file.id.clone())),
+                    ));
+                }
+            }
+            Some(CardMenu::Start) | None => {}
+        }
+        if menu.is_some() {
+            extras = extras.push(choices.wrap());
+        }
+        // The plan it carries out: opened on Plans.
+        if let Some(plan) = detail.and_then(|d| d.plan.as_ref()) {
+            extras = extras.push(
+                row![
+                    icon(Icon::Note, c.faint, 12.0),
+                    ghost(
+                        format!("card-open-plan-{}", plan.id),
+                        plan.title.clone(),
+                        Some(Message::PlanOpen(plan.id.clone())),
+                    ),
+                ]
+                .spacing(6)
+                .align_y(Center),
+            );
+        }
+        // Its files: opened with the system's app, or unlinked.
+        for file in detail.map(|d| d.files.as_slice()).unwrap_or_default() {
+            extras = extras.push(
+                row![
+                    icon(Icon::File, c.faint, 12.0),
+                    ghost(
+                        format!("card-file-{}", file.id),
+                        file.name.clone(),
+                        Some(Message::FileOpen(file.id.clone())),
+                    ),
+                    Space::new().width(Fill),
+                    icon_button(
+                        format!("card-file-unlink-{}", file.id),
+                        "Unlink".into(),
+                        Icon::Close,
+                        c.faint,
+                        connected.then(|| Message::FileUnlink(file.id.clone())),
+                    ),
+                ]
+                .spacing(6)
+                .align_y(Center),
+            );
+        }
+        // Its links: open (a card in place, a URL or path in its app),
+        // copy, remove.
+        for (index, link) in task.links.iter().enumerate() {
+            let glyph = match link.kind {
+                LinkKind::Path => Icon::File,
+                LinkKind::Commit => Icon::Commit,
+                LinkKind::Pr => Icon::Code,
+                LinkKind::Url => Icon::Connections,
+                LinkKind::Task => Icon::Board,
+                LinkKind::Message => Icon::Channels,
+                LinkKind::Memory => Icon::Note,
+            };
+            extras = extras.push(
+                row![
+                    tip(icon(glyph, c.faint, 12.0), link.kind.as_str().to_owned(), c),
+                    ghost(
+                        format!("card-link-open-{index}"),
+                        link.target.clone(),
+                        Some(Message::LinkOpen(index)),
+                    ),
+                    Space::new().width(Fill),
+                    icon_button(
+                        format!("card-link-copy-{index}"),
+                        "Copy".into(),
+                        Icon::Copy,
+                        c.faint,
+                        Some(Message::LinkCopy(index)),
+                    ),
+                    icon_button(
+                        format!("card-link-remove-{index}"),
+                        "Remove".into(),
+                        Icon::Close,
+                        c.faint,
+                        connected.then_some(Message::LinkRemove(index)),
+                    ),
+                ]
+                .spacing(6)
+                .align_y(Center),
+            );
+        }
+        if let Some(kind) = self.shell.link_kind {
+            let segment = |label: &'static str, value: LinkKind| {
+                crate::controls::segment(
+                    format!("card-link-kind-{}", value.as_str()),
+                    label,
+                    Some(Message::LinkKind(value)),
+                    kind == value,
+                )
+            };
+            let can_add = connected && !self.shell.link_target.trim().is_empty();
+            extras = extras.push(
+                row![
+                    super::view::segmented(
+                        vec![
+                            segment("URL", LinkKind::Url),
+                            segment("PR", LinkKind::Pr),
+                            segment("Path", LinkKind::Path),
+                            segment("Commit", LinkKind::Commit),
+                            segment("Card", LinkKind::Task),
+                        ],
+                        c
+                    ),
+                    container(input_submitting(
+                        "card-link-target",
+                        "Link",
+                        &self.shell.link_target,
+                        Message::LinkTarget,
+                        connected,
+                        can_add.then_some(Message::LinkAdd),
+                    ))
+                    .width(Fill),
+                    action(
+                        "card-link-add",
+                        "Add",
+                        can_add.then_some(Message::LinkAdd),
+                        false
+                    ),
+                ]
+                .spacing(8)
+                .align_y(Center),
+            );
+        }
+        extras.into()
+    }
+}
+
+impl App {
+    /// The project's tags: each its colour (pressed, the next one) and a
+    /// delete; a new one by name.
+    fn tag_settings(&self, c: Colors) -> Element<'_, Message> {
+        let connected = self.connected.is_ok();
+        let tags = self
+            .selected_project_root()
+            .and_then(|p| self.workspaces.get(&p))
+            .map(|w| w.tags.clone())
+            .unwrap_or_default();
+        let mut chips = row![tip(icon(Icon::Tag, c.faint, 13.0), "Tags", c)]
+            .spacing(8)
+            .align_y(Center);
+        for tag in tags {
+            chips = chips.push(
+                row![
+                    tip(
+                        custom_sized(
+                            format!("tag-color-{}", tag.name),
+                            format!("{}, {}", tag.name, tag.color.as_str()),
+                            container(dot(tone_of(tag.color, c), 9.0, c)).center(14),
+                            connected.then(|| Message::TagRecolor(tag.name.clone())),
+                            false,
+                            Kind::Ghost,
+                            [3, 3],
+                            iced::Length::Shrink,
+                        ),
+                        "Next colour",
+                        c,
+                    ),
+                    text(tag.name.clone()).size(12),
+                    tip(
+                        custom_sized(
+                            format!("tag-delete-{}", tag.name),
+                            format!("Delete {}", tag.name),
+                            container(icon(Icon::Close, c.faint, 10.0)).center(14),
+                            connected.then(|| Message::TagDelete(tag.name.clone())),
+                            false,
+                            Kind::Ghost,
+                            [2, 2],
+                            iced::Length::Shrink,
+                        ),
+                        "Delete",
+                        c,
+                    ),
+                ]
+                .spacing(2)
+                .align_y(Center),
+            );
+        }
+        let can_add = connected && !self.shell.tag_draft.trim().is_empty();
+        chips = chips.push(
+            container(input_submitting(
+                "tag-new",
+                "New tag",
+                &self.shell.tag_draft,
+                Message::TagDraft,
+                connected,
+                can_add.then_some(Message::TagCreate),
+            ))
+            .width(140),
+        );
+        chips.wrap().into()
+    }
+
+    /// The board's rules: each in a line with its switch and a delete; a
+    /// new one from when (into a lane, or idle there some days) and what
+    /// (comment, move, archive, start an agent).
+    fn rule_settings<'a>(
+        &'a self,
+        board: &'a agentdocker_core::Board,
+        c: Colors,
+    ) -> Element<'a, Message> {
+        use super::shell::{RuleActionKind as A, RuleFieldKind as F};
+        let connected = self.connected.is_ok();
+        let rules: Vec<agentdocker_core::Rule> = self
+            .selected_project_root()
+            .and_then(|p| self.workspaces.get(&p))
+            .map(|w| {
+                w.rules
+                    .iter()
+                    .filter(|r| r.board == board.slug)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut list = column![].spacing(4).width(Fill);
+        for rule in rules {
+            list = list.push(
+                row![
+                    tip(
+                        icon(
+                            Icon::Bolt,
+                            if rule.enabled { c.accent } else { c.faint },
+                            13.0
+                        ),
+                        rule.summary(board),
+                        c
+                    ),
+                    container(text(rule.name.clone()).size(12).color(if rule.enabled {
+                        c.text
+                    } else {
+                        c.muted
+                    }))
+                    .width(Fill),
+                    crate::controls::segment(
+                        format!("rule-on-{}", rule.id),
+                        if rule.enabled { "On" } else { "Off" },
+                        connected.then(|| Message::RuleToggle(rule.id.clone(), !rule.enabled)),
+                        rule.enabled,
+                    ),
+                    tip(
+                        custom_sized(
+                            format!("rule-delete-{}", rule.id),
+                            format!("Delete {}", rule.name),
+                            container(icon(Icon::Close, c.faint, 11.0)).center(14),
+                            connected.then(|| Message::RuleDelete(rule.id.clone())),
+                            false,
+                            Kind::Ghost,
+                            [3, 3],
+                            iced::Length::Shrink,
+                        ),
+                        "Delete",
+                        c,
+                    ),
+                ]
+                .spacing(8)
+                .align_y(Center),
+            );
+        }
+        let draft = &self.shell.rule_draft;
+        let lane_chips = |field: F, chosen: &str| {
+            let mut chips = Vec::new();
+            for lane in &board.lanes {
+                chips.push(crate::controls::segment(
+                    format!(
+                        "rule-{}-{}",
+                        if field == F::Lane { "lane" } else { "to" },
+                        lane.slug
+                    ),
+                    lane.name.clone(),
+                    Some(Message::RuleField(field, lane.slug.clone())),
+                    chosen == lane.slug,
+                ));
+            }
+            super::view::segmented(chips, c)
+        };
+        let first = board
+            .lanes
+            .first()
+            .map(|l| l.slug.clone())
+            .unwrap_or_default();
+        let lane = if draft.lane.is_empty() {
+            first.as_str()
+        } else {
+            draft.lane.as_str()
+        };
+        let when = row![
+            tip(icon(Icon::Bolt, c.faint, 13.0), "When", c),
+            super::view::segmented(
+                vec![
+                    crate::controls::segment(
+                        "rule-enter",
+                        "Comes in",
+                        Some(Message::RuleIdle(false)),
+                        !draft.idle,
+                    ),
+                    crate::controls::segment(
+                        "rule-idle",
+                        "Sits",
+                        Some(Message::RuleIdle(true)),
+                        draft.idle,
+                    ),
+                ],
+                c
+            ),
+            lane_chips(F::Lane, lane),
+        ]
+        .spacing(8)
+        .align_y(Center);
+        let mut when = when;
+        if draft.idle {
+            when = when.push(
+                container(input_enabled(
+                    "rule-days",
+                    "Days",
+                    &draft.days,
+                    |words| Message::RuleField(F::Days, words),
+                    true,
+                ))
+                .width(70),
+            );
+        }
+        let kind = |id: &'static str, label: &'static str, value: A| {
+            crate::controls::segment(
+                id,
+                label,
+                Some(Message::RuleAction(value)),
+                draft.action == value,
+            )
+        };
+        let mut what = row![super::view::segmented(
+            vec![
+                kind("rule-comment", "Comment", A::Comment),
+                kind("rule-move", "Move", A::Move),
+                kind("rule-archive", "Archive", A::Archive),
+                kind("rule-start", "Start agent", A::Start),
+            ],
+            c
+        )]
+        .spacing(8)
+        .align_y(Center);
+        match draft.action {
+            A::Comment => {
+                what = what.push(
+                    container(input_enabled(
+                        "rule-text",
+                        "Comment",
+                        &draft.value,
+                        |words| Message::RuleField(F::Value, words),
+                        true,
+                    ))
+                    .width(Fill),
+                );
+            }
+            A::Move => what = what.push(lane_chips(F::Value, &draft.value)),
+            A::Start => {
+                let mut runtimes = Vec::new();
+                for runtime in self.runtimes.iter().filter(|r| {
+                    r.cli.is_some() && matches!(r.name.as_str(), "codex" | "claude-code")
+                }) {
+                    runtimes.push(crate::controls::segment(
+                        format!("rule-runtime-{}", runtime.name),
+                        runtime.label.clone(),
+                        Some(Message::RuleField(F::Value, runtime.name.clone())),
+                        draft.value == runtime.name,
+                    ));
+                }
+                if !runtimes.is_empty() {
+                    what = what.push(super::view::segmented(runtimes, c));
+                }
+            }
+            A::Archive => {}
+        }
+        let add = row![
+            container(input_enabled(
+                "rule-name",
+                "Name",
+                &draft.name,
+                |words| Message::RuleField(F::Name, words),
+                true,
+            ))
+            .width(200),
+            Space::new().width(Fill),
+            action(
+                "rule-add",
+                "Add rule",
+                connected.then_some(Message::RuleCreate),
+                false
+            ),
+        ]
+        .spacing(8)
+        .align_y(Center);
+        column![list, when.wrap(), what.wrap(), add]
+            .spacing(8)
+            .width(Fill)
             .into()
     }
 }

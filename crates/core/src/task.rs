@@ -272,6 +272,17 @@ pub struct Task {
     /// message, a memory for whoever takes it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<crate::Link>,
+    /// The plan (a spec document) it carries out, by id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// When it came into the lane it is in: what an idle rule counts
+    /// from. Its last change, for a card from before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane_since: Option<DateTime<Utc>>,
+    /// The rules that have acted on it in this lane, by id, so an idle
+    /// rule acts once a stay. Cleared when it changes lane.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fired: Vec<String>,
 }
 
 /// A card being filed: everything but who, when and where on the board,
@@ -293,6 +304,7 @@ pub struct NewTask {
     pub blocked_by: Vec<TaskId>,
     pub tags: Vec<String>,
     pub links: Vec<crate::Link>,
+    pub plan: Option<String>,
 }
 
 /// What an update changes: each field left `None` stays as it was; an
@@ -312,6 +324,7 @@ pub struct TaskEdit<'a> {
     pub parent: Option<Option<TaskId>>,
     pub blocked_by: Option<Vec<TaskId>>,
     pub tags: Option<Vec<String>>,
+    pub plan: Option<Option<String>>,
 }
 
 /// Why a change to a card is refused.
@@ -396,6 +409,9 @@ impl Task {
             updated_at: now,
             archived_at: None,
             links: new.links,
+            plan: new.plan,
+            lane_since: Some(now),
+            fired: Vec::new(),
         };
         task.check()?;
         Ok(task)
@@ -481,10 +497,18 @@ impl Task {
         board.lane_of(self)
     }
 
-    /// Put it in a lane: its category comes with it.
-    fn place(&mut self, lane: &Lane) {
+    /// Put it in a lane: its category comes with it, and its stay there
+    /// starts now, with no rule yet acted on it.
+    fn place(&mut self, lane: &Lane, now: DateTime<Utc>) {
         self.column = lane.category;
         self.lane = Some(lane.slug.clone());
+        self.lane_since = Some(now);
+        self.fired.clear();
+    }
+
+    /// When its stay in its lane began.
+    pub fn in_lane_since(&self) -> DateTime<Utc> {
+        self.lane_since.unwrap_or(self.updated_at)
     }
 
     /// An agent takes a card in the board's pull source that nobody else
@@ -520,7 +544,7 @@ impl Task {
             .lane(&board.pull_target)
             .expect("a checked board has its pull target");
         self.assignee = Some(agent.clone());
-        self.place(target);
+        self.place(target, now);
         self.updated_at = now;
         Ok(())
     }
@@ -577,7 +601,7 @@ impl Task {
             }
             return Ok(false);
         }
-        self.place(lane);
+        self.place(lane, now);
         if by_is_human && lane.category.waiting() {
             self.assignee = None;
         }
@@ -660,6 +684,9 @@ impl Task {
             tags.sort();
             tags.dedup();
             set!(tags, tags, "tags");
+        }
+        if let Some(plan) = edit.plan {
+            set!(plan, plan, "plan");
         }
         next.check()?;
         if !changed.is_empty() {

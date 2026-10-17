@@ -12,6 +12,12 @@ use agentdocker_core::task::{
 use agentdocker_core::{Column, HUMAN, LeaseMode, ResourceKey};
 use chrono::DateTime;
 
+#[cfg(test)]
+mod board_tests;
+mod catalog;
+mod plans;
+mod rules;
+
 const DOCUMENT: &str = "task";
 const BOARD: &str = "board";
 const COMMENT: &str = "task_comment";
@@ -310,6 +316,12 @@ impl State {
             .filter(|t| t.parent.as_ref() == Some(&task.id) && t.archived_at.is_none())
             .cloned()
             .collect();
+        let plan = task
+            .plan
+            .as_deref()
+            .and_then(|id| self.plan_by_id(id).ok())
+            .map(|p| p.summary());
+        let files = self.card_files(&task.id);
         Response::TaskDetail {
             task,
             board,
@@ -318,6 +330,8 @@ impl State {
             blockers,
             children,
             lease,
+            plan,
+            files,
         }
     }
 
@@ -456,6 +470,34 @@ impl State {
             what,
             events,
             |store, events| store.documents_with_events(&documents, events),
+            |_, _, ()| {},
+        );
+        if committed != Persisted::Committed {
+            return Some(self.write_failure().unwrap_or_else(|| {
+                Response::error(ErrorCode::Internal, "the change was not recorded")
+            }));
+        }
+        None
+    }
+
+    /// Write some documents and delete others with their events, as one
+    /// commit.
+    fn commit_change(
+        &mut self,
+        what: &'static str,
+        put: Vec<Doc>,
+        delete: Vec<(&'static str, String)>,
+        kinds: Vec<EventKind>,
+    ) -> Option<Response> {
+        let now = Utc::now();
+        let events: Vec<Event> = kinds
+            .into_iter()
+            .map(|kind| Event::new(kind, now))
+            .collect();
+        let committed = self.commit(
+            what,
+            events,
+            |store, events| store.documents_change(&put, &delete, events),
             |_, _, ()| {},
         );
         if committed != Persisted::Committed {
@@ -718,6 +760,7 @@ impl Daemon {
                     blocked_by: Vec::new(),
                     tags,
                     links: card.links.clone(),
+                    plan: None,
                 },
                 &actor.id,
                 now,
@@ -728,6 +771,19 @@ impl Daemon {
                     continue;
                 }
             };
+            if let Some(words) = card.plan.as_deref().filter(|w| !w.trim().is_empty()) {
+                match state.resolve_plan(&project, words) {
+                    Ok(plan) => task.plan = Some(plan.id),
+                    Err(response) => {
+                        let message = match *response {
+                            Response::Error { message, .. } => message,
+                            _ => "no such plan".to_owned(),
+                        };
+                        problems.push(format!("{label}: {message}"));
+                        continue;
+                    }
+                }
+            }
             task.key = match keys.as_mut() {
                 Some(main) => main.take_key(),
                 None => board.take_key(),
@@ -798,11 +854,19 @@ impl Daemon {
                 details: Some(serde_json::json!({ "problems": problems })),
             };
         }
+        // Tags the project does not have: the person's become tags with the
+        // cards; an agent's refuse the filing.
+        let wanted: Vec<String> = filed.iter().flat_map(|t| t.tags.iter().cloned()).collect();
+        let new_tags = match state.tags_for(&project, &actor, &wanted, now) {
+            Ok(docs) => docs,
+            Err(response) => return *response,
+        };
         let mut kinds = Vec::new();
         let mut documents = vec![board_doc(&board)];
         if let Some(main) = &keys {
             documents.push(board_doc(main));
         }
+        documents.extend(new_tags);
         for task in &filed {
             kinds.push(EventKind::TaskCreated {
                 task: task.id.clone(),
@@ -826,6 +890,14 @@ impl Daemon {
         {
             return error;
         }
+        // Rules on the lanes the cards came into act on them now.
+        let mut starts = Vec::new();
+        for task in &filed {
+            let lane = task.lane.clone().unwrap_or_default();
+            starts.extend(state.rules_on_enter(task, &lane));
+        }
+        drop(state);
+        self.spawn_starts(starts);
         if batch {
             Response::TaskBatch { tasks: filed, refs }
         } else {
@@ -1263,6 +1335,14 @@ impl Daemon {
             }
             state.tell_holder(&actor.id, &holder, &task, text);
         }
+        // Rules on the lane it came into act on it now.
+        let starts = if moved {
+            state.rules_on_enter(&task, &lane.slug)
+        } else {
+            Vec::new()
+        };
+        drop(state);
+        self.spawn_starts(starts);
         Response::Task { task }
     }
 
@@ -1350,6 +1430,21 @@ impl Daemon {
         } else {
             (None, None)
         };
+        let new_tags = match change.tags.as_deref() {
+            Some(tags) => match state.tags_for(&task.project, &actor, tags, now) {
+                Ok(docs) => docs,
+                Err(response) => return *response,
+            },
+            None => Vec::new(),
+        };
+        let plan = match change.plan.as_deref().map(str::trim) {
+            None => None,
+            Some("") => Some(None),
+            Some(words) => match state.resolve_plan(&task.project, words) {
+                Ok(plan) => Some(Some(plan.id)),
+                Err(response) => return *response,
+            },
+        };
         let previous = task.clone();
         let fields = match task.update(
             &actor.id,
@@ -1367,6 +1462,7 @@ impl Daemon {
                 parent,
                 blocked_by,
                 tags: change.tags,
+                plan,
             },
             now,
         ) {
@@ -1421,6 +1517,7 @@ impl Daemon {
             },
             now,
         ))];
+        documents.extend(new_tags);
         if fields.contains(&"assignee") {
             documents.push(entry_doc(&TaskEntry::new(
                 &task,
@@ -2039,6 +2136,7 @@ pub(super) struct TaskChange {
     pub parent: Option<String>,
     pub blocked_by: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
+    pub plan: Option<String>,
 }
 
 /// What a listing asks for.
@@ -2138,6 +2236,7 @@ mod tests {
                         parent: None,
                         blocked_by: Vec::new(),
                         tags: Vec::new(),
+                        plan: None,
                     })
                     .await
                 {
@@ -2165,6 +2264,7 @@ mod tests {
                     parent: None,
                     blocked_by: Vec::new(),
                     tags: Vec::new(),
+                    plan: None,
                 })
                 .await,
             Response::Error {
@@ -2198,6 +2298,7 @@ mod tests {
                     parent: None,
                     blocked_by: Vec::new(),
                     tags: Vec::new(),
+                    plan: None,
                 })
                 .await,
             Response::Error {
@@ -2227,6 +2328,7 @@ mod tests {
                 parent: None,
                 blocked_by: Vec::new(),
                 tags: Vec::new(),
+                plan: None,
             })
             .await
         else {
@@ -2251,6 +2353,7 @@ mod tests {
                 parent: None,
                 blocked_by: None,
                 tags: None,
+                plan: None,
             })
             .await
         else {
@@ -2274,6 +2377,7 @@ mod tests {
                 parent: None,
                 blocked_by: None,
                 tags: None,
+                plan: None,
             })
             .await
         else {
@@ -2502,6 +2606,7 @@ mod tests {
                 parent: None,
                 blocked_by: None,
                 tags: None,
+                plan: None,
             })
             .await
         else {
@@ -2651,6 +2756,7 @@ mod tests {
                 parent: None,
                 blocked_by: Vec::new(),
                 tags: Vec::new(),
+                plan: None,
             })
             .await
         else {
@@ -2869,6 +2975,7 @@ mod tests {
                 parent: None,
                 blocked_by: None,
                 tags: None,
+                plan: None,
             })
             .await
         else {
@@ -3009,6 +3116,7 @@ mod tests {
                 parent: None,
                 blocked_by: Vec::new(),
                 tags: Vec::new(),
+                plan: None,
             })
             .await
         else {
@@ -3169,6 +3277,7 @@ mod tests {
                 parent: None,
                 blocked_by: Vec::new(),
                 tags: Vec::new(),
+                plan: None,
             })
             .await
         else {
@@ -3295,6 +3404,7 @@ mod tests {
                     parent: None,
                     blocked_by: Some(vec![foreign.clone()]),
                     tags: None,
+                    plan: None,
                 })
                 .await,
             Response::Error {
@@ -3338,6 +3448,7 @@ mod tests {
                         parent: None,
                         blocked_by: Vec::new(),
                         tags: Vec::new(),
+                        plan: None,
                     })
                     .await,
                 Response::Task { .. }

@@ -433,7 +433,23 @@ control does, its id or its accessible label:
   `task-approve-<id>`/`task-bounce-<id>` in a Review lane that is the
   person's, `task-hand-<id>-<agent>`, `task-release-<id>`,
   `task-archive-<id>`, `task-close-<id>`; `board-<slug>` switches boards;
-  `board-more` for the next page. When the page beside the rail fits every lane at 150 points with
+  `board-more` for the next page; `board-filter-agent`, `board-tags` and
+  `board-tag-<tag>`, `board-layout`, `board-density`; a table row
+  `task-row-<id>`; on an open card `card-plan`, `card-attach`,
+  `card-upload`, `card-link`, `card-start`, their choices `card-plan-<id>`,
+  `card-attach-<id>`, `card-start-<runtime>`, `card-link-kind-<kind>`,
+  `card-link-target`, `card-link-add`, and per file or link
+  `card-file-<id>`, `card-file-unlink-<id>`, `card-link-open-<n>`,
+  `card-link-copy-<n>`, `card-link-remove-<n>`; in the board's settings
+  `tag-new`, `tag-color-<tag>`, `tag-delete-<tag>`, `rule-enter`,
+  `rule-idle`, `rule-lane-<lane>`, `rule-days`, `rule-comment|move|archive|
+  start`, `rule-text`, `rule-to-<lane>`, `rule-runtime-<runtime>`,
+  `rule-name`, `rule-add`, `rule-on-<id>`, `rule-delete-<id>`. To-do
+  (`todo`): `todo-<id>` opens a card, `todo-done-<id>` ticks it. Plans
+  (`project-tab-Plans`): `plan-new`, `plan-<id>`, `plan-title`,
+  `plan-status-set-<status>`, `plan-save`, `plan-card-<id>`, `file-add`,
+  `file-<id>`, `file-delete-<id>`. The plan's Markdown is an Iced
+  `text_editor`, not a composer: Enter is a new line there. When the page beside the rail fits every lane at 150 points with
   12 between (about 800 for the classic five) the lanes share it and the
   open card's detail — its fields, moves, comments and history — sits
   beneath them; narrower than that (a narrow window, or a

@@ -235,6 +235,12 @@ pub const REMOTE_TOOLS: &[&str] = &[
     "read_journal",
     "journal_note",
     "report_activity",
+    "list_tasks",
+    "get_task",
+    "search_tasks",
+    "comment_task",
+    "list_plans",
+    "get_plan",
 ];
 
 /// Run the server on stdin/stdout until the host closes stdin.
@@ -989,6 +995,69 @@ impl<B: Backend> McpServer<B> {
                     object.insert("to".into(), column);
                 }
                 self.forward(tagged_request(arguments, op, &me)?).await
+            }
+            "search_tasks" | "list_tags" | "list_plans" | "list_files" => {
+                let op = match name {
+                    "search_tasks" => "task_search",
+                    "list_tags" => "tags",
+                    "list_plans" => "plans",
+                    _ => "files",
+                };
+                let mut object = arguments
+                    .as_object()
+                    .cloned()
+                    .ok_or((INVALID_PARAMS, "arguments must be an object".to_owned()))?;
+                object.insert("op".into(), json!(op));
+                // The caller's own project unless it names one; a card's
+                // files are the card's.
+                if !object.contains_key("project") && !object.contains_key("task") {
+                    let project = match self
+                        .backend
+                        .call(Request::Inspect { agent: me.clone() })
+                        .await
+                    {
+                        Ok(Response::Agent { agent }) => {
+                            agent.project.as_ref().map(|p| p.id().as_str().to_owned())
+                        }
+                        _ => None,
+                    };
+                    if let Some(project) = project {
+                        object.insert("project".into(), json!(project));
+                    }
+                }
+                let request = serde_json::from_value(Value::Object(object))
+                    .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
+                self.forward(request).await
+            }
+            "get_plan" | "get_file" => {
+                let (op, field) = if name == "get_plan" {
+                    ("plan_get", "plan")
+                } else {
+                    ("file_get", "file")
+                };
+                let request = serde_json::from_value(json!({
+                    "op": op,
+                    field: arguments.get(field).cloned().unwrap_or(Value::Null),
+                }))
+                .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
+                self.forward(request).await
+            }
+            "create_tag" | "save_plan" | "put_file" | "link_file" => {
+                let op = match name {
+                    "create_tag" => "tag_save",
+                    "save_plan" => "plan_save",
+                    "put_file" => "file_put",
+                    _ => "file_link",
+                };
+                let mut object = arguments
+                    .as_object()
+                    .cloned()
+                    .ok_or((INVALID_PARAMS, "arguments must be an object".to_owned()))?;
+                object.insert("op".into(), json!(op));
+                object.insert("from".into(), json!(me));
+                let request = serde_json::from_value(Value::Object(object))
+                    .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
+                self.forward(request).await
             }
             "get_task" => {
                 let request = serde_json::from_value(json!({
@@ -1822,7 +1891,8 @@ fn annotations(name: &str) -> Value {
         "whoami" | "list_agents" | "inspect_agent" | "list_leases" | "activity" | "overlap"
         | "open_questions" | "read_journal" | "wait_for_messages" | "check_stale" | "read_set"
         | "list_checkpoints" | "list_handoffs" | "list_channels" | "contests" | "list_tasks"
-        | "get_task" | "my_tasks" | "worktree_diff" | "validation_results" | "usage" => {
+        | "get_task" | "my_tasks" | "worktree_diff" | "validation_results" | "usage"
+        | "search_tasks" | "list_tags" | "list_plans" | "get_plan" | "list_files" | "get_file" => {
             (true, false, true, false)
         }
         // Saying and recording: additive, repeatable.
@@ -1838,7 +1908,8 @@ fn annotations(name: &str) -> Value {
         | "save_checkpoint" | "handoff" | "resume_checkpoint" | "commit" | "create_worktree"
         | "open_channel" | "close_channel" | "request_review" | "review" | "enter_contest"
         | "submit_entry" | "create_task" | "create_tasks" | "move_task" | "pull_task"
-        | "update_task" | "comment_task" | "archive_task" => (false, false, false, false),
+        | "update_task" | "comment_task" | "archive_task" | "create_tag" | "save_plan"
+        | "put_file" | "link_file" => (false, false, false, false),
         // Changes files in a checkout: an uncommitted merge.
         "integrate_worktree" => (false, true, false, false),
         // Runs whatever command it is given.
@@ -2328,6 +2399,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "external_blocker": { "type": "string", "description": "Something off the board it waits on (a vendor, a DNS change); a pull with no card named passes it by." },
                     "tags": { "type": "array", "maxItems": 8, "items": { "type": "string" } },
                     "parent": { "type": "string", "description": "The card it is part of; empty to clear." },
+                    "plan": { "type": "string", "description": "The plan it carries out, by id or title (`list_plans`); empty to clear." },
                     "blocked_by": { "type": "array", "maxItems": 16, "items": { "type": "string" }, "description": "Cards that must be done first." },
                     "links": { "type": "array", "maxItems": 16, "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
                 },
@@ -2383,6 +2455,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "external_blocker": { "type": "string", "description": "Something off the board it waits on (a vendor, a DNS change); a pull with no card named passes it by." },
                     "tags": { "type": "array", "maxItems": 8, "items": { "type": "string" } },
                         "parent": { "type": "string", "description": "A ref in the batch, or a card on the board." },
+                        "plan": { "type": "string", "description": "The plan it carries out, by id or title (`list_plans`)." },
                         "blocked_by": { "type": "array", "items": { "type": "string" }, "description": "Refs in the batch, or cards on the board." },
                         "links": { "type": "array", "maxItems": 16, "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
                     }, "required": ["title"], "additionalProperties": false } }
@@ -2393,7 +2466,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "create_task",
-            "description": "File a card on the board: a title, what done means, and where (backlog unless said; the pull source when it is for anyone to pull). It gets a key such as AD-12.",
+            "description": "File a card on the board: a title, what done means, and where (backlog unless said; the pull source when it is for anyone to pull). It gets a key such as AD-12. Tags must be the project's (`list_tags`; `create_tag` makes one).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2410,10 +2483,145 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "external_blocker": { "type": "string", "description": "Something off the board it waits on (a vendor, a DNS change); a pull with no card named passes it by." },
                     "tags": { "type": "array", "maxItems": 8, "items": { "type": "string" } },
                     "parent": { "type": "string", "description": "The card it is part of." },
+                    "plan": { "type": "string", "description": "The plan it carries out, by id or title (`list_plans`)." },
                     "blocked_by": { "type": "array", "maxItems": 16, "items": { "type": "string" }, "description": "Cards that must be done first." },
                     "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
                 },
                 "required": ["title"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "search_tasks",
+            "description": "Find cards by words, best first: a key (AD-12) answers exactly; otherwise every word must be somewhere on the card — title, description, acceptance, tags — and small typing slips are forgiven. Your project's cards unless you name one.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "minLength": 2 },
+                    "project": { "type": "string", "description": "Project id or path; your own when absent." },
+                    "archived": { "type": "boolean", "description": "Archived cards too." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "list_tags",
+            "description": "The project's tags and their colours. A card is tagged only with these.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Project id or path; your own when absent." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "create_tag",
+            "description": "Make a tag in the project so cards can carry it, or recolour one.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Letters, digits, -, _ or ., at most 32." },
+                    "color": { "type": "string", "enum": ["gray", "red", "orange", "yellow", "green", "teal", "blue", "purple"] },
+                    "project": { "type": "string", "description": "Project id or path; your own when absent." }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "list_plans",
+            "description": "The project's plans — specs in Markdown that cards carry out — without their bodies; `get_plan` reads one.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Project id or path; your own when absent." },
+                    "archived": { "type": "boolean", "description": "Archived plans too." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "get_plan",
+            "description": "One plan in full: its Markdown and the cards that carry it out.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "plan": { "type": "string", "description": "The plan's id." }
+                },
+                "required": ["plan"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "save_plan",
+            "description": "Write a plan (a spec in Markdown, at most 512 KiB): a new one when `plan` is absent, else a change to that one. Cards name it with their `plan` field.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "plan": { "type": "string", "description": "The plan to change; absent for a new one." },
+                    "title": { "type": "string" },
+                    "body": { "type": "string", "description": "The spec, in Markdown." },
+                    "status": { "type": "string", "enum": ["draft", "active", "done", "archived"] },
+                    "project": { "type": "string", "description": "Project id or path, for a new plan; your own when absent." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "list_files",
+            "description": "The project's files, or one card's: notes, designs, logs kept beside the work.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Project id or path; your own when absent." },
+                    "task": { "type": "string", "description": "Only the files linked to this card." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "get_file",
+            "description": "A project file's bytes: `text` when it reads as text, else `base64`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": { "type": "string", "description": "The file's id, or its name in your project." }
+                },
+                "required": ["file"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "put_file",
+            "description": "Keep a file in the project (at most 4 MiB): `text`, or `base64` for other bytes. A name the project has already is a new version of that file. `task` links it to a card.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Its name in the project, without slashes." },
+                    "text": { "type": "string" },
+                    "base64": { "type": "string" },
+                    "media_type": { "type": "string", "description": "Guessed from the name when absent." },
+                    "task": { "type": "string", "description": "A card to link it to." },
+                    "project": { "type": "string", "description": "Project id or path; your own when absent." }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "link_file",
+            "description": "Link a project file to a card, or unlink it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": { "type": "string" },
+                    "task": { "type": "string" },
+                    "unlink": { "type": "boolean" }
+                },
+                "required": ["file", "task"],
                 "additionalProperties": false
             }
         }),
@@ -2962,7 +3170,17 @@ mod tests {
                 "comment_task",
                 "archive_task",
                 "create_tasks",
-                "create_task"
+                "create_task",
+                "search_tasks",
+                "list_tags",
+                "create_tag",
+                "list_plans",
+                "get_plan",
+                "save_plan",
+                "list_files",
+                "get_file",
+                "put_file",
+                "link_file"
             ]
         );
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object"));

@@ -394,6 +394,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                 daemon.reload_webhooks().await;
             }
             if ticks.is_multiple_of(60) {
+                daemon.run_board_rules();
                 daemon.prune_events();
                 daemon.prune_changes();
                 daemon.apply_journal_retention();
