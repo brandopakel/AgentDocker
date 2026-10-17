@@ -6271,6 +6271,28 @@ impl State {
         Some(record)
     }
 
+    /// Seen, as one that read its own queue: the contact of a session with
+    /// no adapter, bound to its current process.
+    fn touch_reader(&mut self, id: &AgentId) {
+        if let Some(mut record) = self.registry.get(id).cloned() {
+            let now = Utc::now();
+            record.last_seen = now;
+            if let Some(born) = record.process_started_at {
+                record.queue_read = Some(agentdocker_core::AdapterContact {
+                    process_started_at: born,
+                    observed_at: now,
+                });
+            }
+            let committed = self.persist("agent", |store| store.upsert_agent(&record));
+            if committed == Persisted::Committed {
+                *self
+                    .registry
+                    .get_mut(id)
+                    .expect("liveness identity retained") = record;
+            }
+        }
+    }
+
     fn touch(&mut self, id: &AgentId) {
         if let Some(mut record) = self.registry.get(id).cloned() {
             record.last_seen = Utc::now();
@@ -6390,6 +6412,7 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
+        self.touch_reader(&id);
         // Repeated or fabricated IDs do not establish a new receipt. Retain
         // inbox order and record only the accepted work this call removes.
         let wanted: HashSet<&MessageId> = messages.iter().collect();
@@ -6455,7 +6478,7 @@ impl State {
             );
         }
         // A failed liveness write must stop the operation before queue removal.
-        self.touch(&id);
+        self.touch_reader(&id);
         let messages = match self.read_inbox(&id, drain) {
             Ok(messages) => messages,
             Err(error) => return *error,
@@ -8020,6 +8043,7 @@ impl State {
         canonical.vcs = fresh.vcs.clone();
         canonical.reported_activity = fresh.reported_activity.clone();
         canonical.adapter_contacts = fresh.adapter_contacts.clone();
+        canonical.queue_read = fresh.queue_read.clone();
         canonical.provider_availability = None;
         for record in &folded {
             for (key, value) in &record.spec.labels {
@@ -10388,6 +10412,43 @@ mod tests {
             Response::Agent { agent } => agent,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    /// Reading its own queue is a session's contact, bound to its process:
+    /// one with no adapter that takes its messages itself is reachable.
+    #[tokio::test]
+    async fn reading_its_own_queue_is_a_sessions_contact() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let agent = register(&daemon, "poller", Some(child.id())).await;
+        let born = agent.process_started_at.expect("a live process's birth");
+        assert!(agent.queue_read.is_none());
+        assert!(matches!(
+            daemon
+                .handle(Request::Inbox {
+                    agent: agent.id.to_string(),
+                    drain: false,
+                })
+                .await,
+            Response::Messages { .. }
+        ));
+        let read = lock(&daemon.state)
+            .registry
+            .get(&agent.id)
+            .unwrap()
+            .queue_read
+            .clone()
+            .expect("the read is recorded");
+        assert_eq!(read.process_started_at, born);
+        let later = Utc::now() + agentdocker_core::input::FIRST_CONTACT_GRACE * 2;
+        let record = lock(&daemon.state).registry.get(&agent.id).unwrap().clone();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(!agentdocker_core::input::unreachable(&record, later));
     }
 
     /// Register something that could be matched with another half.

@@ -65,9 +65,8 @@ impl InputReadiness {
 pub const FIRST_CONTACT_GRACE: chrono::Duration = chrono::Duration::minutes(2);
 
 /// A live session nothing of has ever reached AgentDocker, for this process:
-/// no hook or MCP contact, no input receiver, and nothing it did since it
-/// registered — reading its own inbox, a heartbeat, a report, a send, a
-/// lease all move `last_seen` — past the grace after it started. Its queue waits for a read nobody makes — a terminal Codex that
+/// no hook or MCP contact, no input receiver, and no read of its own queue
+/// (`queue_read`) — past the grace after it started. Its queue waits for a read nobody makes — a terminal Codex that
 /// names no thread, a runtime with no adapter here, a session started before
 /// AgentDocker was set up. A browser agent checks in when it is used, and a
 /// process of unknown birth cannot be told from another, so neither is.
@@ -85,8 +84,11 @@ pub fn unreachable(agent: &crate::AgentRecord, now: DateTime<Utc>) -> bool {
             .values()
             .any(|contact| contact.process_started_at == born)
         // A session that polls its own queue (`agentdocker inbox --as`) has
-        // no adapter; that it acted at all is its contact.
-        && agent.last_seen <= registered + chrono::Duration::seconds(5)
+        // no adapter; its read is its contact.
+        && agent
+            .queue_read
+            .as_ref()
+            .is_none_or(|read| read.process_started_at != born)
         && now - registered >= FIRST_CONTACT_GRACE
 }
 
@@ -505,10 +507,22 @@ mod tests {
                 InputReadiness::for_agent(&agent, later),
                 InputReadiness::Unreachable
             );
-            // A session reading its own queue is heard from: last seen after
-            // it started.
+            // A session reading its own queue is heard from, however soon
+            // after it started; an earlier process's read is not.
             let mut polling = agent.clone();
-            polling.last_seen = birth + chrono::Duration::minutes(1);
+            polling.queue_read = Some(AdapterContact {
+                process_started_at: birth - chrono::Duration::days(1),
+                observed_at: birth,
+            });
+            assert_eq!(
+                InputReadiness::for_agent(&polling, later),
+                InputReadiness::Unreachable,
+                "{runtime}: another process's read"
+            );
+            polling.queue_read = Some(AdapterContact {
+                process_started_at: birth,
+                observed_at: birth + chrono::Duration::seconds(2),
+            });
             assert_eq!(
                 InputReadiness::for_agent(&polling, later + chrono::Duration::days(1)),
                 InputReadiness::Unverified,

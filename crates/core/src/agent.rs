@@ -368,6 +368,10 @@ pub struct AgentRecord {
     pub provider_availability: Option<crate::ProviderAvailability>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub adapter_contacts: std::collections::BTreeMap<crate::AdapterKind, crate::AdapterContact>,
+    /// When this process last read its own queue (`inbox`, `ack_inbox`): a
+    /// session with no adapter that takes its messages itself is reachable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_read: Option<crate::AdapterContact>,
     /// The external controller that consumes this agent's queued input,
     /// while one is bound. See [`crate::InputBinding`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -550,6 +554,7 @@ impl AgentRecord {
             input_delivery: None,
             provider_availability: None,
             adapter_contacts: Default::default(),
+            queue_read: None,
             input_binding: None,
             legacy_offers: Default::default(),
         }
