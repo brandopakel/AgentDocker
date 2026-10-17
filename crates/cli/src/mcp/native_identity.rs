@@ -1,11 +1,15 @@
 //! Resolve calls from a detached Codex app-server to an existing root binding.
 //! Provider metadata selects a conversation only inside the verified host's
 //! profile and checkout; it cannot create or substitute an agent identity.
+//!
+//! A conversation started in a terminal has no binding: since Codex 0.162 its
+//! hooks and MCP servers run in the shared app-server, not under the terminal.
+//! [`Context::resolve_terminal`] finds it by the terminal that resumed it.
 
 use super::{Identity, McpArgs};
-use agentdocker_core::{AgentRecord, ProcessIdentity, Request, Response};
+use agentdocker_core::{AgentRecord, AgentSpec, ProcessIdentity, Request, Response};
 use agentdocker_host::procinfo;
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{Context as _, Result, bail, ensure};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -52,6 +56,54 @@ impl std::error::Error for TransportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.0.source()
     }
+}
+
+/// No binding names this conversation: a terminal session's, or one that
+/// has not bound yet. Distinct from a binding that exists and was refused.
+#[derive(Debug)]
+pub(crate) struct Unbound;
+
+impl std::fmt::Display for Unbound {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .write_str("Codex conversation has no live native binding in this profile and checkout")
+    }
+}
+
+impl std::error::Error for Unbound {}
+
+/// Whether `error` is only the absence of a binding.
+pub(crate) fn unbound(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<Unbound>().is_some()
+}
+
+/// The root conversation a tool call or hook names. Codex supplies these
+/// outside model-controlled tool arguments. 0.155.1 carries the root session
+/// in x-codex-turn-metadata, while 0.160 also supplies sessionId. Require all
+/// supplied identities to agree; a malformed newer field cannot fall back to
+/// the older one. A child's thread differs from its root session; never route
+/// it into that root's queue or silently fall back to the app-server identity.
+fn root_thread(meta: &Value) -> Result<&str> {
+    let thread = meta["threadId"]
+        .as_str()
+        .context("Codex tool call lacks threadId metadata")?;
+    let turn_metadata = meta.get("x-codex-turn-metadata");
+    let session = match meta.get("sessionId") {
+        Some(value) => value.as_str(),
+        None => turn_metadata.and_then(|value| value["session_id"].as_str()),
+    };
+    ensure!(
+        !thread.is_empty()
+            && thread.len() <= 256
+            && !thread.chars().any(char::is_control)
+            && session == Some(thread)
+            && turn_metadata.is_none_or(|value| {
+                value["thread_id"].as_str() == Some(thread)
+                    && value["session_id"].as_str() == Some(thread)
+            }),
+        "Codex tool call must identify its own root conversation"
+    );
+    Ok(thread)
 }
 
 /// Preserve the established transport diagnostic without mislabelling bindings.
@@ -146,17 +198,22 @@ impl Context {
         }
     }
 
+    fn verify_host(&self) -> Result<()> {
+        ensure!(
+            procinfo::start_time(self.host.pid) == Some(self.host.started_at)
+                && procinfo::executable_path_of(self.host.pid)?.canonicalize()? == self.executable,
+            "detached Codex MCP host identity changed"
+        );
+        Ok(())
+    }
+
     /// Verify the host and select its existing binding, distinguishing backend I/O.
     pub(crate) async fn resolve<B: super::Backend>(
         &self,
         backend: &B,
         meta: &Value,
     ) -> Result<AgentRecord> {
-        ensure!(
-            procinfo::start_time(self.host.pid) == Some(self.host.started_at)
-                && procinfo::executable_path_of(self.host.pid)?.canonicalize()? == self.executable,
-            "detached Codex MCP host identity changed"
-        );
+        self.verify_host()?;
         let Response::Agents { agents, .. } = backend
             .call(Request::List {
                 all: true,
@@ -190,31 +247,7 @@ impl Context {
         alive: impl Fn(&ProcessIdentity) -> bool,
         dedicated: impl Fn(&AgentRecord) -> Result<()>,
     ) -> Result<AgentRecord> {
-        // Codex supplies these outside model-controlled tool arguments.
-        // 0.155.1 carries the root session in x-codex-turn-metadata, while
-        // 0.160 also supplies sessionId. Require all supplied identities to
-        // agree; a malformed newer field cannot fall back to the older one.
-        // A child's thread differs from its root session; never route it into
-        // that root's queue or silently fall back to the app-server identity.
-        let thread = meta["threadId"]
-            .as_str()
-            .context("Codex tool call lacks threadId metadata")?;
-        let turn_metadata = meta.get("x-codex-turn-metadata");
-        let session = match meta.get("sessionId") {
-            Some(value) => value.as_str(),
-            None => turn_metadata.and_then(|value| value["session_id"].as_str()),
-        };
-        ensure!(
-            !thread.is_empty()
-                && thread.len() <= 256
-                && !thread.chars().any(char::is_control)
-                && session == Some(thread)
-                && turn_metadata.is_none_or(|value| {
-                    value["thread_id"].as_str() == Some(thread)
-                        && value["session_id"].as_str() == Some(thread)
-                }),
-            "Codex tool call must identify its own root conversation"
-        );
+        let thread = root_thread(meta)?;
         let mut matches = agents.into_iter().filter(|agent| {
             let Some(binding) = &agent.input_binding else {
                 return false;
@@ -231,9 +264,7 @@ impl Context {
                 && agent.process_started_at == Some(provider.process.started_at)
                 && alive(&provider.process)
         });
-        let agent = matches.next().context(
-            "Codex conversation has no live native binding in this profile and checkout",
-        )?;
+        let agent = matches.next().ok_or_else(|| anyhow::Error::new(Unbound))?;
         ensure!(
             matches.next().is_none(),
             "Codex conversation binding is ambiguous"
@@ -243,6 +274,141 @@ impl Context {
         }
         Ok(agent)
     }
+
+    /// The record of the terminal that resumed this conversation, bound to
+    /// it: for a conversation with no binding, whose hooks and MCP servers
+    /// run in the shared app-server rather than under its terminal. The
+    /// terminal is the one live `codex resume <thread>` in this checkout;
+    /// what was running a conversation the hook names is its proof. A
+    /// conversation started without naming its thread (`codex` alone) has
+    /// none, and stays [`Unbound`].
+    pub(crate) async fn resolve_terminal<B: super::Backend>(
+        &self,
+        backend: &B,
+        meta: &Value,
+    ) -> Result<AgentRecord> {
+        self.verify_host()?;
+        let thread = root_thread(meta)?;
+        let table = procinfo::processes()?;
+        let terminal = self.terminal(&table, thread, procinfo::cwd, procinfo::start_time)?;
+        bind_terminal(backend, &terminal, thread, &self.cwd).await
+    }
+
+    fn terminal(
+        &self,
+        table: &[procinfo::Process],
+        thread: &str,
+        cwd: impl Fn(u32) -> Option<PathBuf>,
+        birth: impl Fn(u32) -> Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<ProcessIdentity> {
+        let launchers = procinfo::codex_launchers(table);
+        let mut found = table.iter().filter(|process| {
+            !launchers.contains(&process.pid)
+                && procinfo::codex_resumes(&process.argv, thread)
+                && cwd(process.pid)
+                    .and_then(|dir| dir.canonicalize().ok())
+                    .as_ref()
+                    == Some(&self.cwd)
+        });
+        let Some(terminal) = found.next() else {
+            return Err(anyhow::Error::new(Unbound));
+        };
+        ensure!(
+            found.next().is_none(),
+            "more than one Codex terminal resumed this conversation"
+        );
+        Ok(ProcessIdentity {
+            pid: terminal.pid,
+            started_at: birth(terminal.pid).context("Codex terminal birth unavailable")?,
+        })
+    }
+}
+
+/// The live record of `terminal` in `checkout`, bound to `thread`: an
+/// existing record learns its conversation (and the daemon may fold it into
+/// the record that held it before), or one is registered. A record bound to
+/// another conversation is refused.
+async fn bind_terminal<B: super::Backend>(
+    backend: &B,
+    terminal: &ProcessIdentity,
+    thread: &str,
+    checkout: &Path,
+) -> Result<AgentRecord> {
+    let Response::Agents { agents, .. } = backend
+        .call(Request::List {
+            all: false,
+            project: Some(checkout.display().to_string()),
+            labels: Default::default(),
+        })
+        .await
+        .map_err(TransportError)?
+    else {
+        bail!("cannot list this checkout's agents");
+    };
+    let mut mine = agents.into_iter().filter(|agent| {
+        agent.spec.runtime == "codex"
+            && agent.status.is_live()
+            && agent.pid == Some(terminal.pid)
+            && agent.process_started_at == Some(terminal.started_at)
+    });
+    let found = mine.next();
+    ensure!(
+        mine.next().is_none(),
+        "Codex terminal has more than one record"
+    );
+    let spec = match found {
+        Some(agent) => match agent
+            .spec
+            .labels
+            .get("session_id")
+            .filter(|s| !s.is_empty())
+        {
+            Some(session) if session == thread => return Ok(agent),
+            Some(_) => bail!("Codex terminal is bound to another conversation"),
+            None => {
+                let mut spec = agent.spec.clone();
+                spec.labels.insert("session_id".into(), thread.to_owned());
+                spec
+            }
+        },
+        None => AgentSpec {
+            name: format!("codex-{}", terminal.pid),
+            runtime: "codex".into(),
+            workdir: Some(checkout.to_owned()),
+            labels: [
+                ("via".to_owned(), "hook".to_owned()),
+                ("session_id".to_owned(), thread.to_owned()),
+            ]
+            .into(),
+            ..AgentSpec::default()
+        },
+    };
+    let agent = match backend
+        .call(Request::Register {
+            spec,
+            pid: Some(terminal.pid),
+            // The terminal's own multiplexer is not readable from the shared
+            // app-server this runs in.
+            session: None,
+        })
+        .await
+        .map_err(TransportError)?
+    {
+        Response::Agent { agent } => agent,
+        Response::Error { message, .. } => bail!("Codex terminal registration refused: {message}"),
+        _ => bail!("unexpected Codex terminal registration response"),
+    };
+    // The id may change: a conversation that ran before takes its terminal
+    // back under the record that held it.
+    ensure!(
+        agent.status.is_live()
+            && agent.spec.runtime == "codex"
+            && agent.pid == Some(terminal.pid)
+            && agent.process_started_at == Some(terminal.started_at)
+            && agent.spec.labels.get("session_id").map(String::as_str) == Some(thread),
+        "Codex terminal registration did not bind this conversation"
+    );
+    Ok(agent)
 }
 
 #[cfg(test)]
@@ -380,6 +546,158 @@ mod tests {
             agent,
             json!({"threadId":"root-thread","sessionId":"root-thread"}),
         )
+    }
+
+    #[test]
+    fn a_terminal_conversation_is_found_by_the_one_terminal_that_resumed_it() {
+        let project = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let (mut context, _, _) = fixture();
+        context.cwd = project.path().canonicalize().unwrap();
+        let process = |pid, ppid, line: &str| procinfo::Process {
+            pid,
+            ppid,
+            argv: line.split(' ').map(str::to_owned).collect(),
+        };
+        let mut table = vec![
+            process(
+                99,
+                1,
+                "node /lib/@openai/codex/bin/codex.js resume root-thread",
+            ),
+            process(100, 99, "codex resume root-thread --yolo"),
+            process(101, 1, "codex resume root-thread"),
+            process(102, 1, "codex resume another-thread"),
+            process(103, 1, "codex"),
+        ];
+        let born = Utc::now();
+        let cwd = |pid| {
+            Some(if pid == 101 {
+                elsewhere.path().to_owned()
+            } else {
+                project.path().to_owned()
+            })
+        };
+        let found = context
+            .terminal(&table, "root-thread", cwd, |_| Some(born))
+            .unwrap();
+        assert_eq!(
+            (found.pid, found.started_at),
+            (100, born),
+            "not its launcher"
+        );
+        let none = context
+            .terminal(&table, "child-thread", cwd, |_| Some(born))
+            .unwrap_err();
+        assert!(unbound(&none), "{none:#}");
+        table.push(process(104, 1, "codex resume root-thread"));
+        let twice = context
+            .terminal(&table, "root-thread", cwd, |_| Some(born))
+            .unwrap_err();
+        assert!(!unbound(&twice), "two terminals are refused, not unbound");
+    }
+
+    #[tokio::test]
+    async fn a_terminal_record_learns_its_conversation_or_is_registered() {
+        use crate::client::mock::Mock;
+        let now = Utc::now();
+        let terminal = ProcessIdentity {
+            pid: 80494,
+            started_at: now,
+        };
+        let checkout = Path::new("/project");
+        let record = |name: &str, session: Option<&str>| {
+            let mut agent = AgentRecord::new(
+                AgentSpec {
+                    name: name.into(),
+                    runtime: "codex".into(),
+                    workdir: Some(checkout.to_owned()),
+                    ..AgentSpec::default()
+                },
+                false,
+                now,
+            );
+            agent.pid = Some(terminal.pid);
+            agent.process_started_at = Some(now);
+            if let Some(session) = session {
+                agent
+                    .spec
+                    .labels
+                    .insert("session_id".into(), session.into());
+            }
+            agent
+        };
+        let listed = |agents: Vec<AgentRecord>| Response::Agents {
+            agents,
+            aliases: Default::default(),
+        };
+
+        // A record without its conversation learns it; the daemon folds it
+        // into the record that held the conversation before.
+        let folded = record("codex-12856", Some("root-thread"));
+        let backend = Mock::with(vec![
+            listed(vec![record("codex-release", None)]),
+            Response::Agent {
+                agent: folded.clone(),
+            },
+        ]);
+        let bound = bind_terminal(&backend, &terminal, "root-thread", checkout)
+            .await
+            .unwrap();
+        assert_eq!(bound.id, folded.id);
+        assert!(matches!(
+            &backend.requests()[1],
+            Request::Register { spec, pid: Some(80494), session: None }
+                if spec.name == "codex-release"
+                    && spec.labels.get("session_id").map(String::as_str) == Some("root-thread")
+        ));
+
+        // Already bound: nothing is registered.
+        let backend = Mock::with(vec![listed(vec![record(
+            "codex-release",
+            Some("root-thread"),
+        )])]);
+        bind_terminal(&backend, &terminal, "root-thread", checkout)
+            .await
+            .unwrap();
+        assert_eq!(backend.requests().len(), 1);
+
+        // No record yet: one is registered for the terminal.
+        let backend = Mock::with(vec![
+            listed(vec![]),
+            Response::Agent {
+                agent: record("codex-80494", Some("root-thread")),
+            },
+        ]);
+        bind_terminal(&backend, &terminal, "root-thread", checkout)
+            .await
+            .unwrap();
+        assert!(matches!(
+            &backend.requests()[1],
+            Request::Register { spec, .. } if spec.name == "codex-80494"
+        ));
+
+        // Bound to another conversation, or answered with a record that is
+        // not this terminal's: refused.
+        let backend = Mock::with(vec![listed(vec![record("codex-release", Some("other"))])]);
+        assert!(
+            bind_terminal(&backend, &terminal, "root-thread", checkout)
+                .await
+                .is_err()
+        );
+        let mut someone_else = record("codex-1", Some("root-thread"));
+        someone_else.pid = Some(1);
+        let backend = Mock::with(vec![
+            listed(vec![]),
+            Response::Agent {
+                agent: someone_else,
+            },
+        ]);
+        assert!(
+            bind_terminal(&backend, &terminal, "root-thread", checkout)
+                .await
+                .is_err()
+        );
     }
 
     #[test]

@@ -462,6 +462,41 @@ pub fn resume_request(argv: &[String]) -> Option<ResumeRequest> {
     None
 }
 
+/// Whether a Codex command line resumed exactly `thread`:
+/// `codex [options] resume <thread> [options]`. Codex 0.162 and later run a
+/// terminal session's hooks and MCP servers in one shared app-server, not
+/// under the terminal, so this is how a hook that names its thread finds
+/// the terminal it belongs to. Like [`resume_request`], a claim about what
+/// the process asked for, which the hook carrying that thread confirms.
+pub fn codex_resumes(argv: &[String], thread: &str) -> bool {
+    if thread.is_empty() || !is_codex_binary(argv) {
+        return false;
+    }
+    let script = executable(argv).as_deref().is_some_and(interpreter);
+    let mut words = argv.iter().skip(if script { 2 } else { 1 });
+    // A value may follow an option that does not carry its own (`-c k=v`).
+    let mut value_may_follow = false;
+    while let Some(word) = words.next() {
+        if word == "--" {
+            return false;
+        }
+        if word == "resume" {
+            return words.next().is_some_and(|next| next == thread);
+        }
+        if word.starts_with('-') {
+            value_may_follow = !word.contains('=');
+            continue;
+        }
+        if value_may_follow {
+            value_may_follow = false;
+            continue;
+        }
+        // Another subcommand, or a prompt: not a resume.
+        return false;
+    }
+    false
+}
+
 /// Codex's interpreter launcher starts a native child and then waits for it. Only
 /// that child is a session. Do not apply a generic parent/child rule: agents
 /// can launch other agents, and those must remain independently discoverable.
@@ -799,6 +834,35 @@ mod tests {
     /// Only Codex's own binary in its detached app-server role is the MCP
     /// host above a 0.160 terminal session; the plain sidecar a receiver
     /// speaks to, the session itself and other programs are not.
+    #[test]
+    fn a_codex_terminal_names_the_thread_it_resumed() {
+        let argv = |line: &str| line.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        let thread = "01a0ca0c-f9fc-7b62-8430-ddb6f67a4be3";
+        for resumed in [
+            format!(
+                "/opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex resume {thread} --yolo"
+            ),
+            format!("codex --yolo resume {thread}"),
+            format!("codex -c model=gpt-x resume {thread}"),
+            format!("codex --model=gpt-x resume {thread}"),
+            format!("node /usr/lib/node_modules/@openai/codex/bin/codex.js resume {thread}"),
+        ] {
+            assert!(codex_resumes(&argv(&resumed), thread), "{resumed}");
+        }
+        for other in [
+            "codex resume another-thread".to_owned(),
+            "codex resume --last".to_owned(),
+            "codex".to_owned(),
+            format!("codex fix the resume {thread}"),
+            format!("codex exec resume {thread}"),
+            format!("codex -- resume {thread}"),
+            format!("claude --resume {thread}"),
+        ] {
+            assert!(!codex_resumes(&argv(&other), thread), "{other}");
+        }
+        assert!(!codex_resumes(&argv("codex resume "), ""));
+    }
+
     #[test]
     fn a_detached_codex_app_server_is_recognised_by_its_own_command_line() {
         let argv = |command: &str| {
