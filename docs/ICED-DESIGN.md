@@ -212,13 +212,20 @@ control does, its id or its accessible label:
 - **Jump to… (⌘K, Ctrl+K elsewhere).** A search-looking field under the
   brand (`command-palette`) and the shortcut from anywhere, including a
   focused text field, open one palette (`app/palette.rs`): a search field
-  (`palette-search`) over grouped rows — Go to (All projects, Messages or
+  (`palette-search`) over grouped rows — Agents (unsearched, only those whose
+  standing calls for attention, loudest first; searched, every live one, its
+  standing word in the description; the row's mark is its standing glyph or
+  its tool's logo; a row may carry a second action, run with ⌘Enter and named
+  in the footer while highlighted, which for an agent is its terminal), Go to
+  (All projects, Messages or
   Inbox, Tools, Settings, with their ⌘2–⌘4 keycaps), Projects (each with its
   mark and folder), Actions (Launch agent… with a nested page of installed
   tools, Open project terminal, Pause…, Add project…, the other appearance)
   — each row an existing message (`palette-item-<kind>-<key>`). Matching is
-  case-insensitive: label prefix, then every term starting a label word, then
-  a substring, then words of the description. Up/Down or Tab move the
+  case-insensitive, in tiers that never mix: label prefix, then every term
+  starting a label word or the label's initials starting with the query, then
+  a substring, then words of the description, then (three or more letters)
+  the query's letters in order in the label. Up/Down or Tab move the
   highlight, Enter runs it, Escape clears the search, then leaves a nested
   page, then closes; Backspace on an empty search leaves a nested page. The
   keys are read by a wrapper at the window root because a focused field
@@ -301,8 +308,12 @@ control does, its id or its accessible label:
   **Details** disclosure with a definition list. A setup review is one card:
   the change count, a step list with small state tiles, a block per file
   with a path header, +N and tinted lines with a left bar, and a footer whose
-  one filled action is **Connect**. Settings is section cards of rows (title
-  and a line on the left, the control on the right): the theme as a
+  one filled action is **Connect**. Settings is a grouped form, as macOS
+  forms are (`form_section`): each group's name, 13 pt semibold, and an
+  optional 12 pt line of why sit above a card of rows; a row is a 13 pt title
+  over a 12 pt muted line on the left and the control on the right, padded
+  8 by 14, with rules inset 14 (the same rows serve Installation and the
+  connection check); keyboard rows are 13 pt, padded 6 by 14: the theme as a
   segmented control, text sizes as `− 14 pt +` steppers, switches for roomier
   rows, daily update checks and preview builds, terminal palettes as preview
   swatches with an accent ring, the keyboard as keycap rows. The terminal
@@ -413,9 +424,12 @@ control does, its id or its accessible label:
   track, a thin scroller in a wash of the ink. A narrow window keeps the
   fixed rail and the one column on view. Lists are rows inside a panel; prose sits in cards; the terminal
   and command output sit in a bezel of the chosen terminal palette's ground.
-  Filters sit left and search right on one row. A status bar says the
-  daemon connection once, as a dot and a word (**Connected — background
-  service**), with the version in mono at the right, so no page repeats them.
+  Filters sit left and search right on one row. The background service is
+  said once, at the rail's foot (`service_chip`), and only when it calls for
+  something: reconnecting, older than the app with **Restart…**
+  (`daemon-restart`), or an update to install (`open-available-update`); a
+  healthy one says nothing, as in Docker Desktop and Tailscale. The bottom
+  strip exists only while a restart is confirmed or under way.
   The agents list is one card of one-line rows separated by rules: the
   standing glyph, the tool's small mark, the name (semibold when it calls for
   the person, muted when ended), and one trailing slot holding the first that

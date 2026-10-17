@@ -1,13 +1,15 @@
 //! The command palette: ⌘K (Control+K elsewhere) from anywhere, or the
-//! rail's **Jump to…**, opens one search over the places, the projects
-//! and the actions the window already offers. It adds nothing new to do:
+//! rail's **Jump to…**, opens one search over the agents, the places, the
+//! projects and the actions the window already offers. It adds nothing
+//! new to do:
 //! every row sends a message some other control already sends, and the
 //! palette closes. **Launch agent…** opens a nested page of the installed
 //! tools. Escape clears the search, then backs out of a nested page, then
 //! closes; Backspace on an empty search backs out too.
 //!
 //! While it is open the search keeps the keyboard: Up, Down and Tab move
-//! the highlighted row, Enter runs it. The rows are still ordinary
+//! the highlighted row, Enter runs it, and ⌘Enter runs its second action
+//! where it has one (an agent's terminal), named in the footer. The rows are still ordinary
 //! accessible controls, pressed by the pointer or by assistive technology.
 //! Nothing animates: the palette is a layer over a flat scrim, placed high
 //! in the window so the field stays put while the list changes length.
@@ -123,6 +125,7 @@ impl Palette {
 /// The groups rows are listed under, in the order they appear unsearched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Group {
+    Agents,
     GoTo,
     Projects,
     Actions,
@@ -131,6 +134,7 @@ pub(super) enum Group {
 impl Group {
     fn heading(self) -> &'static str {
         match self {
+            Group::Agents => "Agents",
             Group::GoTo => "Go to",
             Group::Projects => "Projects",
             Group::Actions => "Actions",
@@ -150,6 +154,12 @@ pub(super) enum Mark {
     },
     /// A tool, by its runtime name: its logo, or the terminal glyph.
     Tool(String),
+    /// An agent: its standing's glyph while it has one to show, else its
+    /// tool's logo.
+    Agent {
+        runtime: String,
+        standing: agentdocker_core::standing::Standing,
+    },
 }
 
 /// What a row shows at its right edge.
@@ -176,6 +186,14 @@ impl Run {
     }
 }
 
+/// A row's second action: run with ⌘Enter, and named in the footer
+/// while the row is highlighted.
+#[derive(Clone, Debug)]
+pub(super) struct Alt {
+    pub label: String,
+    pub message: Box<Message>,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Item {
     /// `palette-item-<kind>-<key>`: the row's control id.
@@ -187,6 +205,7 @@ pub(super) struct Item {
     pub mark: Mark,
     pub hint: Hint,
     pub run: Run,
+    pub alt: Option<Alt>,
 }
 
 /// The lower-case words of `value`: runs of letters and digits.
@@ -199,9 +218,13 @@ fn words(value: &str) -> Vec<&str> {
 
 /// How well a row matches a lower-case, trimmed query; lower is better
 /// and `None` is no match. A label that starts with the query is best;
-/// then one in which every term of the query starts a word; then a label
-/// that holds the query anywhere; last, a row in which every term starts
-/// a word of the label or its description.
+/// then one in which every term of the query starts a word, or whose
+/// words' first letters start with it (`cc` for *Claude Code*); then a
+/// label that holds the query anywhere; then a row in which every term
+/// starts a word of the label or its description; last, for three or
+/// more letters, a label holding them in order. Tiers never mix, as in
+/// the switchers studied: no closeness inside one lifts a row above the
+/// next.
 pub(super) fn rank(query: &str, label: &str, detail: &str) -> Option<u8> {
     let label = label.to_lowercase();
     if label.starts_with(query) {
@@ -212,7 +235,13 @@ pub(super) fn rank(query: &str, label: &str, detail: &str) -> Option<u8> {
         !terms.is_empty() && terms.iter().all(|t| words.iter().any(|w| w.starts_with(t)))
     };
     let mut label_words = words(&label);
-    if starts(&label_words) {
+    let initials: String = label_words
+        .iter()
+        .filter_map(|w| w.chars().next())
+        .collect();
+    if starts(&label_words)
+        || (terms.len() == 1 && query.chars().count() >= 2 && initials.starts_with(query))
+    {
         return Some(1);
     }
     if label.contains(query) {
@@ -220,7 +249,17 @@ pub(super) fn rank(query: &str, label: &str, detail: &str) -> Option<u8> {
     }
     let detail = detail.to_lowercase();
     label_words.extend(words(&detail));
-    starts(&label_words).then_some(3)
+    if starts(&label_words) {
+        return Some(3);
+    }
+    let letters: Vec<char> = query.chars().filter(|c| c.is_alphanumeric()).collect();
+    (letters.len() >= 3 && in_order(&letters, &label)).then_some(4)
+}
+
+/// Whether `letters` appear in `value` in order, gaps allowed.
+fn in_order(letters: &[char], value: &str) -> bool {
+    let mut rest = value.chars();
+    letters.iter().all(|letter| rest.any(|c| c == *letter))
 }
 
 /// The rows a search leaves, best first. Rows stay with their group and
@@ -320,6 +359,7 @@ pub(super) enum Command {
     Palette,
     Move(i32),
     Submit,
+    SubmitAlt,
     Escape,
     Back,
 }
@@ -330,6 +370,7 @@ impl From<Command> for Message {
             Command::Palette => Message::CommandPalette,
             Command::Move(step) => Message::CommandMove(step),
             Command::Submit => Message::CommandSubmit,
+            Command::SubmitAlt => Message::CommandSubmitAlt,
             Command::Escape => Message::CommandEscape,
             Command::Back => Message::CommandBack,
         }
@@ -365,6 +406,7 @@ pub(super) fn handle(
             nested,
         } => match key {
             Key::Named(Named::Escape) => once(Command::Escape),
+            Key::Named(Named::Enter) if modifiers.command() => once(Command::SubmitAlt),
             Key::Named(Named::Enter) => once(Command::Submit),
             Key::Named(Named::ArrowDown) => Handling::Send(Command::Move(1)),
             Key::Named(Named::ArrowUp) => Handling::Send(Command::Move(-1)),
@@ -567,6 +609,14 @@ fn search_field<'a>(placeholder: &str, value: &str, c: Colors) -> Element<'a, Me
     .into()
 }
 
+/// A tool's logo, or the terminal glyph for one without.
+fn tool_mark<'a>(runtime: &str, ink: iced::Color, c: Colors) -> Element<'a, Message> {
+    match super::logos::Logo::for_runtime(runtime) {
+        Some(logo) => super::view::logo_tile(logo, 20.0, c),
+        None => container(icon(Icon::Terminal, ink, 16.0)).center(20).into(),
+    }
+}
+
 /// One row: its mark, its label and quiet description on one line, and
 /// at its right edge the shortcut that does the same, or a chevron for a
 /// row that opens a page. The highlighted row is the selected one.
@@ -575,10 +625,17 @@ fn item_view<'a>(item: &Item, active: bool, c: Colors) -> Element<'a, Message> {
     let mark: Element<'a, Message> = match &item.mark {
         Mark::Glyph(glyph) => container(icon(*glyph, ink, 16.0)).center(20).into(),
         Mark::Monogram { name, seed } => monogram(name, seed, 20.0, c),
-        Mark::Tool(runtime) => match super::logos::Logo::for_runtime(runtime) {
-            Some(logo) => super::view::logo_tile(logo, 20.0, c),
-            None => container(icon(Icon::Terminal, ink, 16.0)).center(20).into(),
-        },
+        Mark::Tool(runtime) => tool_mark(runtime, ink, c),
+        Mark::Agent { runtime, standing } => {
+            use agentdocker_core::standing::Standing;
+            if matches!(standing, Standing::Idle | Standing::Ended) {
+                tool_mark(runtime, ink, c)
+            } else {
+                container(super::view::standing_glyph(*standing, c))
+                    .center(20)
+                    .into()
+            }
+        }
     };
     let mut words = row![
         text(item.label.clone())
@@ -707,9 +764,11 @@ impl App {
             mark: Mark::Glyph(glyph),
             hint,
             run: Run::send(message, None),
+            alt: None,
         };
         let conversations = self.has_conversations();
-        let mut items = vec![
+        let mut items = self.palette_agents();
+        items.extend([
             go(
                 "projects",
                 "All projects",
@@ -754,7 +813,7 @@ impl App {
                 Message::Navigate(Screen::Settings),
                 shortcut("4"),
             ),
-        ];
+        ]);
         for entry in &self.shell.catalog.projects {
             let path = &entry.project.root;
             let name = entry.name();
@@ -775,6 +834,7 @@ impl App {
                 },
                 hint: Hint::None,
                 run: Run::send(Message::SelectProject(path.clone()), None),
+                alt: None,
             });
         }
         let action = |key: &str, label: &str, detail: String, glyph: Icon, hint, run| Item {
@@ -785,6 +845,7 @@ impl App {
             mark: Mark::Glyph(glyph),
             hint,
             run,
+            alt: None,
         };
         // The project's actions are offered when its own controls are
         // enabled, and only then.
@@ -879,6 +940,60 @@ impl App {
         items
     }
 
+    /// The agents, by where they stand. With nothing typed, only those
+    /// that call for the person, loudest first, so ⌘K ↵ reaches the most
+    /// urgent; a search finds every live one by its name, its project or
+    /// the word for its standing (*waiting*, *failed*, *working*). Enter
+    /// opens it; ⌘Enter goes to its terminal when it has one.
+    fn palette_agents(&self) -> Vec<Item> {
+        let searching = !self.shell.palette.query.trim().is_empty();
+        let mut agents: Vec<_> = self
+            .agents
+            .iter()
+            .filter(|a| a.spec.runtime != agentdocker_core::HUMAN_RUNTIME)
+            .filter(|a| {
+                a.project
+                    .as_ref()
+                    .is_none_or(|project| !self.shell.catalog.hidden.contains(&project.root))
+            })
+            .map(|a| (self.standing(a), self.display_name(a), a))
+            .filter(|(standing, _, a)| {
+                standing.calls_for_attention() || (searching && self.live_session(a))
+            })
+            .collect();
+        agents.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+        agents
+            .into_iter()
+            .map(|(standing, name, agent)| {
+                let id = agent.id.to_string();
+                let detail = self
+                    .project_name_of(&id)
+                    .into_iter()
+                    .chain(Some(standing.word().to_owned()))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                Item {
+                    id: format!("palette-item-agent-{id}"),
+                    group: Group::Agents,
+                    label: name,
+                    detail,
+                    mark: Mark::Agent {
+                        runtime: agent.spec.runtime.clone(),
+                        standing,
+                    },
+                    hint: Hint::None,
+                    alt: (Self::terminal_reachable(agent) && !self.shell.terminal_opening).then(
+                        || Alt {
+                            label: Self::terminal_action(agent).to_owned(),
+                            message: Box::new(Message::OpenAgentTerminal(id.clone())),
+                        },
+                    ),
+                    run: Run::send(Message::OpenSession(id), None),
+                }
+            })
+            .collect()
+    }
+
     /// Launch agent…'s page: the installed tools, as its menu lists them.
     fn palette_tools(&self) -> Vec<Item> {
         self.runtimes
@@ -893,6 +1008,7 @@ impl App {
                     mark: Mark::Tool(runtime.name.clone()),
                     hint: Hint::None,
                     run: Run::send(Message::LaunchWith(runtime.name.clone()), None),
+                    alt: None,
                 })
             })
             .collect()
@@ -973,6 +1089,14 @@ impl App {
                 let active = self.shell.palette.active.min(rows.len().saturating_sub(1));
                 if let Some(id) = rows.get(active).map(|item| item.id.clone()) {
                     return self.palette_run(&id);
+                }
+            }
+            Message::CommandSubmitAlt if self.shell.palette.open => {
+                let rows = self.palette_rows();
+                let active = self.shell.palette.active.min(rows.len().saturating_sub(1));
+                if let Some(alt) = rows.into_iter().nth(active).and_then(|item| item.alt) {
+                    self.shell.palette.close();
+                    return self.update(*alt.message);
                 }
             }
             Message::CommandRun(id) => return self.palette_run(&id),
@@ -1084,15 +1208,23 @@ impl App {
                 .align_y(Center)
                 .into()
         };
-        let footer = container(
-            row![
-                tip(&["↵"], "Select"),
-                tip(&["↑", "↓"], "Navigate"),
-                tip(&["esc"], if nested.is_some() { "Back" } else { "Close" }),
-            ]
-            .spacing(16)
-            .align_y(Center),
-        )
+        // The highlighted row's second action, where it has one, is named
+        // with its keys: the one place ⌘Enter is taught.
+        let mut tips = row![tip(&["↵"], "Select")].spacing(16).align_y(Center);
+        if let Some(alt) = rows.get(active).and_then(|item| item.alt.as_ref()) {
+            tips = tips.push(
+                row![
+                    combo(&[MODIFIER, "↵"], c),
+                    text(alt.label.clone()).size(12).color(c.muted)
+                ]
+                .spacing(6)
+                .align_y(Center),
+            );
+        }
+        let footer = container(tips.push(tip(&["↑", "↓"], "Navigate")).push(tip(
+            &["esc"],
+            if nested.is_some() { "Back" } else { "Close" },
+        )))
         .padding([8, 14]);
 
         let panel = container(column![search, hairline(c), results, hairline(c), footer])
@@ -1134,6 +1266,7 @@ mod tests {
             mark: Mark::Glyph(Icon::Projects),
             hint: Hint::None,
             run: Run::send(Message::Tick, None),
+            alt: None,
         }
     }
     fn labels(items: &[Item]) -> Vec<&str> {
@@ -1329,6 +1462,198 @@ mod tests {
             ),
             Handling::Swallow
         ));
+    }
+
+    /// Initials and letters in order find a row, each below every
+    /// stronger match: the tiers never mix.
+    #[test]
+    fn initials_and_letters_in_order_rank_below_the_stronger_matches() {
+        assert_eq!(rank("cc", "Claude Code · Badger", ""), Some(1));
+        assert_eq!(rank("ccb", "Claude Code · Badger", ""), Some(1));
+        assert_eq!(rank("c", "Claude Code · Badger", ""), Some(0));
+        assert_eq!(rank("code b", "Claude Code · Badger", ""), Some(1), "words");
+        assert_eq!(
+            rank("cb", "Claude Code · Badger", ""),
+            None,
+            "initials in order"
+        );
+        assert_eq!(rank("bdgr", "Claude Code · Badger", ""), Some(4));
+        assert_eq!(rank("bd", "Claude Code · Badger", ""), None, "too short");
+        assert_eq!(
+            rank("rgdb", "Claude Code · Badger", ""),
+            None,
+            "out of order"
+        );
+        let found = filter(
+            vec![
+                item(Group::Actions, "Settings", ""),
+                item(Group::Actions, "Use light appearance", ""),
+            ],
+            "set",
+        );
+        assert_eq!(labels(&found), ["Settings", "Use light appearance"]);
+    }
+
+    /// With nothing typed the agents that call for the person come first,
+    /// loudest first; a search finds any live one by the word for its
+    /// standing. Enter opens it; ⌘Enter goes to its terminal, and the
+    /// footer names that.
+    #[test]
+    fn agents_that_need_you_lead_and_command_enter_goes_to_the_terminal() {
+        let mut app = app();
+        app.connected = Ok(());
+        let now = Utc::now();
+        for name in ["asking", "busy", "done", "quiet"] {
+            let mut agent = AgentRecord::new(
+                agentdocker_core::AgentSpec {
+                    name: name.into(),
+                    runtime: "claude-code".into(),
+                    ..Default::default()
+                },
+                false,
+                now,
+            );
+            agent.id = name.into();
+            agent.status = agentdocker_core::AgentStatus::Running;
+            agent.pid = Some(4242);
+            agent.process_started_at = Some(now);
+            app.agents.push(agent);
+        }
+        app.activity.insert(
+            "busy".into(),
+            agentdocker_core::Activity::Working { since: now },
+        );
+        app.activity_seen = true;
+        app.shell.unviewed_done.insert("done".into());
+        app.questions.push(agentdocker_core::Question {
+            id: agentdocker_core::MessageId::from("q1".to_owned()),
+            from: "asking".into(),
+            to: agentdocker_core::Destination::Agent("human".into()),
+            text: "Which branch?".into(),
+            presentation: None,
+            asked_at: now,
+            expires_at: now + chrono::Duration::minutes(10),
+        });
+        let agents = |app: &App| -> Vec<String> {
+            app.palette_rows()
+                .into_iter()
+                .filter(|item| item.group == Group::Agents)
+                .map(|item| item.id)
+                .collect()
+        };
+        let _ = app.update(Message::CommandPalette);
+        assert_eq!(
+            agents(&app),
+            ["palette-item-agent-asking", "palette-item-agent-done"],
+            "unsearched: only those calling, loudest first"
+        );
+        assert_eq!(app.palette_rows()[0].id, "palette-item-agent-asking");
+        let _ = app.update(Message::CommandQuery("working".into()));
+        assert_eq!(agents(&app), ["palette-item-agent-busy"]);
+        let _ = app.update(Message::CommandQuery("quiet".into()));
+        let rows = app.palette_rows();
+        assert_eq!(rows[0].id, "palette-item-agent-quiet");
+        assert_eq!(
+            rows[0].alt.as_ref().map(|alt| alt.label.as_str()),
+            Some(App::terminal_action(&app.agents[3]).as_str())
+        );
+        assert!(matches!(
+            press(
+                Keys::Open {
+                    query_empty: false,
+                    nested: false
+                },
+                keyboard::Key::Named(keyboard::key::Named::Enter),
+                keyboard::Modifiers::COMMAND
+            ),
+            Handling::Send(Command::SubmitAlt)
+        ));
+        let _ = app.update(Message::CommandSubmitAlt);
+        assert!(!app.shell.palette.open);
+        assert!(app.shell.terminal_opening, "its terminal is on its way");
+
+        // Enter opens the session itself.
+        app.shell.terminal_opening = false;
+        let _ = app.update(Message::CommandPalette);
+        let _ = app.update(Message::CommandQuery("busy".into()));
+        let _ = app.update(Message::CommandSubmit);
+        assert!(!app.shell.palette.open);
+        assert_eq!(app.shell.selected.as_deref(), Some("busy"));
+    }
+
+    /// Forgetting a project hides its attention and searched live sessions;
+    /// explicitly adding it back makes both available again.
+    #[test]
+    fn forgotten_projects_stay_out_of_agent_rows_until_added_back() {
+        let mut app = app();
+        let dir = tempfile::tempdir().unwrap();
+        let hidden = agentdocker_core::ProjectRef::directory(dir.path().join("hidden"));
+        let visible = agentdocker_core::ProjectRef::directory(dir.path().join("visible"));
+        assert!(app.shell.catalog.remember(hidden.clone(), true));
+        assert!(app.shell.catalog.remember(visible.clone(), true));
+        let now = Utc::now();
+        for (name, project) in [
+            ("hidden-asking", Some(hidden.clone())),
+            ("hidden-live", Some(hidden.clone())),
+            ("visible-asking", Some(visible)),
+            ("other-asking", None),
+        ] {
+            let mut agent = AgentRecord::new(
+                agentdocker_core::AgentSpec {
+                    name: name.into(),
+                    runtime: "claude-code".into(),
+                    ..Default::default()
+                },
+                false,
+                now,
+            );
+            agent.id = name.into();
+            agent.project = project;
+            agent.status = agentdocker_core::AgentStatus::Running;
+            agent.pid = Some(4242);
+            agent.process_started_at = Some(now);
+            app.agents.push(agent);
+            if name.ends_with("asking") {
+                app.questions.push(agentdocker_core::Question {
+                    id: format!("question-{name}").into(),
+                    from: name.into(),
+                    to: agentdocker_core::Destination::Agent("human".into()),
+                    text: "Which branch?".into(),
+                    presentation: None,
+                    asked_at: now,
+                    expires_at: now + chrono::Duration::minutes(10),
+                });
+            }
+        }
+        let agents = |app: &App| -> Vec<String> {
+            app.palette_rows()
+                .into_iter()
+                .filter(|item| item.group == Group::Agents)
+                .map(|item| item.label)
+                .collect()
+        };
+        let _ = app.update(Message::CommandPalette);
+        assert_eq!(
+            agents(&app),
+            ["hidden-asking", "other-asking", "visible-asking"]
+        );
+        assert!(app.shell.catalog.remove(&hidden.root).unwrap());
+        assert_eq!(agents(&app), ["other-asking", "visible-asking"]);
+        let _ = app.update(Message::CommandQuery("hidden".into()));
+        assert!(agents(&app).is_empty());
+        // A row rendered before Forget must not reopen the removed project.
+        let _ = app.update(Message::CommandRun(
+            "palette-item-agent-hidden-asking".into(),
+        ));
+        assert!(app.shell.palette.open);
+        assert!(app.shell.selected.is_none());
+        assert!(app.shell.catalog.remember(hidden, true));
+        assert_eq!(agents(&app), ["hidden-asking", "hidden-live"]);
+        let _ = app.update(Message::CommandQuery(String::new()));
+        assert_eq!(
+            agents(&app),
+            ["hidden-asking", "other-asking", "visible-asking"]
+        );
     }
 
     /// The highlight goes round the ends and survives a shorter list.

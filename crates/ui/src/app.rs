@@ -6365,7 +6365,10 @@ pub(crate) mod tests {
         let now = Utc::now();
         let working = || Activity::Working { since: now };
         let idle = || Activity::Idle { since: now };
-        let waiting = || Activity::Waiting { since: now };
+        let waiting = || Activity::Waiting {
+            since: now,
+            reason: None,
+        };
 
         // A turn that stops to ask the person is waiting, not done; and
         // waiting that turns idle without working in between finished
