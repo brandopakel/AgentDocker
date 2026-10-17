@@ -393,7 +393,16 @@ fn snapshot_candidates(
                     continue;
                 }
                 let reason = if current.entry(relative) == content::MISSING {
-                    "removed since observation; look again before writing it back"
+                    let existed = (relative.as_os_str().is_empty()
+                        && mark.version != content::MISSING)
+                        || baselines
+                            .get(&mark.path)
+                            .is_some_and(|baseline| baseline.entry(relative) != content::MISSING);
+                    if existed {
+                        "removed since observation; look again before writing it back"
+                    } else {
+                        "path is absent and its previous content is unknown; observe this path again before writing"
+                    }
                 } else {
                     "content changed since observation; reread before editing"
                 };

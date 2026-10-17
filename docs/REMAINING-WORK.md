@@ -110,6 +110,14 @@ regressions fail with the original guard implementation and pass after exact
 restoration of the correction. Final CI and review remain pending. Watcher acknowledgement is not
 proof of complete OS delivery; attribution remains best effort. Real-provider
 and cross-platform acceptance remain separate.
+A source-built Mac watcher/IPC trial on `9f7b686e` confirms symlinked registration,
+own-edit exemptions, deleted versus never-existing children and explicit reread
+recovery after cache loss. Both private daemon generations retired unforced,
+scratch was removed and production stayed unchanged. Two earlier observer-format
+failures remain retained. The trial exposed an inaccurate removed-file reason
+without a retained child baseline. Follow-up source corrects that wording and
+aligns watcher proof identities across hashing budgets. All 19 targeted tests
+pass; the combined full gate, final CI and review remain pending.
 
 | Requirement | Current evidence | Remaining work |
 | --- | --- | --- |

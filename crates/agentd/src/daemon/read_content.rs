@@ -65,7 +65,7 @@ struct ReadContent {
 struct WrittenContent {
     agent: AgentId,
     at: DateTime<Utc>,
-    version: String,
+    identity: content::EntryProof,
 }
 
 #[derive(Default)]
@@ -111,18 +111,18 @@ impl Proofs {
         &mut self,
         path: PathBuf,
         by: &Attribution,
-        version: Option<String>,
+        identity: Option<content::EntryProof>,
         at: DateTime<Utc>,
     ) {
         self.writes.remove(&path);
-        if let (Some(agent), Some(version)) = (by.agent(), version) {
-            let bytes = 512 + path.as_os_str().len() * 2 + version.len() * 2;
+        if let (Some(agent), Some(identity)) = (by.agent(), identity) {
+            let bytes = 512 + path.as_os_str().len() * 2 + identity.retained_bytes();
             self.writes.insert(
                 path,
                 WrittenContent {
                     agent: agent.clone(),
                     at,
-                    version,
+                    identity,
                 },
                 bytes,
             );
@@ -133,7 +133,7 @@ impl Proofs {
         self.writes
             .get(&mark.path.join(relative))
             .is_some_and(|proof| {
-                proof.agent == *agent && proof.at >= mark.at && proof.version == version
+                proof.agent == *agent && proof.at >= mark.at && proof.identity.matches(version)
             })
     }
 

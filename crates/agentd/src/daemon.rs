@@ -4174,16 +4174,17 @@ impl Daemon {
         };
         let observed = tokio::task::spawn_blocking(move || {
             // Supplementary guard proofs have a batch I/O budget too.
-            let mut proof_budget = 8 * 1024 * 1024;
+            let mut proof_budget = agentdocker_host::content::MAX_HASH_BYTES;
             observed
                 .into_iter()
                 .map(|(entry, physical, expected, capture)| {
                     let version = if capture {
-                        agentdocker_host::content::entry_fingerprint(
+                        agentdocker_host::content::entry_proof(
                             &entry.checkout.dir.join(&entry.path),
                             &mut proof_budget,
                         )
                         .ok()
+                        .flatten()
                     } else {
                         None
                     };
@@ -19909,6 +19910,31 @@ deny = ["send:all"]
         // Cache eviction does not erase the persistent read mark or manufacture freshness.
         lock(&daemon.state).content_proofs = read_content::Proofs::default();
         assert_eq!(content_stale(&daemon, "repro/untouched").await.len(), 1);
+        let absent = content_stale(&daemon, "repro/never-existed").await;
+        assert_eq!(absent.len(), 1);
+        assert!(absent[0].reason.contains("absent"));
+        assert!(
+            !absent[0].reason.contains("removed"),
+            "lost child history cannot prove deletion"
+        );
+        daemon
+            .observe("me", vec!["repro/never-existed".into()])
+            .await;
+        assert!(
+            content_stale(&daemon, "repro/never-existed")
+                .await
+                .is_empty()
+        );
+        std::fs::write(root.join("exact"), "seen").unwrap();
+        daemon.observe("me", vec!["exact".into()]).await;
+        lock(&daemon.state).content_proofs = read_content::Proofs::default();
+        std::fs::remove_file(root.join("exact")).unwrap();
+        assert!(
+            content_stale(&daemon, "exact").await[0]
+                .reason
+                .contains("removed"),
+            "an exact persisted mark still proves prior existence"
+        );
     }
 
     #[tokio::test]
@@ -20188,6 +20214,53 @@ deny = ["send:all"]
         assert!(
             content_stale(&daemon, "file").await.is_empty(),
             "an external row before the read cannot invalidate this proven own edit"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_content_proofs_accept_own_edits_larger_than_the_previous_batch_budget() {
+        let home = TempDir::new().unwrap();
+        let work = TempDir::new().unwrap();
+        let daemon = open(&home);
+        let me = register_in(&daemon, "me", work.path()).await;
+        let project = me.project.unwrap();
+        let root = project.dir().to_path_buf();
+        watch_ledger(&daemon, &root);
+        std::fs::write(root.join("medium"), vec![1u8; 9 * 1024 * 1024]).unwrap();
+        daemon.observe("me", vec!["medium".into()]).await;
+        assert!(matches!(
+            claim(
+                &daemon,
+                "me",
+                &format!("path:{}", root.join("medium").display())
+            )
+            .await,
+            Response::Lease { .. }
+        ));
+        std::fs::write(root.join("medium"), vec![2u8; 9 * 1024 * 1024]).unwrap();
+        daemon
+            .record_fs_changes(
+                vec![Observed {
+                    checkout: Checkout {
+                        dir: root.clone(),
+                        project: project.id(),
+                        worktree: None,
+                    },
+                    path: "medium".into(),
+                    kind: ChangeKind::Modified,
+                }],
+                vec![],
+            )
+            .await;
+        assert!(
+            content_stale(&daemon, "medium").await.is_empty(),
+            "matching own-write content must not require repeated rereads"
+        );
+        std::fs::write(root.join("medium"), vec![3u8; 9 * 1024 * 1024]).unwrap();
+        assert_eq!(
+            content_stale(&daemon, "medium").await.len(),
+            1,
+            "later unreported external bytes remain stale"
         );
     }
 
