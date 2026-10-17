@@ -63,8 +63,8 @@ delivered, blue once answered). Its spoken name groups the agents by
 state, problems first, named while there are one or two in a state and counted
 beyond that; pointing at it lists each one's own line. The states are *answered*, *delivered*,
 *received by the model*, *shown to its session, not confirmed*, or why it still
-waits — *waiting for its next prompt*, *waits until it checks in* (a browser
-agent), *delivery paused*, *session ended before taking it*. Nothing says
+waits — *nothing connects its session to AgentDocker*, *waiting for its next
+prompt*, *waits until it checks in* (a browser agent), *delivery paused*, *session ended before taking it*. Nothing says
 *read*: the daemon cannot know it. **Agents** opens the
 session list and **Board** the project's cards. **More** opens a menu of History,
 Files in use, Usage, AgentDocker commands and the project's Pin and Forget; the tab takes the name of the screen on view and is underlined only
