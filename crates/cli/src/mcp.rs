@@ -729,7 +729,7 @@ impl<B: Backend> McpServer<B> {
         }
         if self.native_context.is_some() {
             result["instructions"] = json!(format!(
-                "AgentDocker tools act as the live root Codex conversation: its native input binding, or the terminal that resumed it. Call whoami to inspect that identity. Conversation metadata is required for every tool call; missing, child or ambiguous bindings are refused. A bound conversation's queued messages arrive through the native receiver, which owns acknowledgements, and its inbox tools are refused. A conversation started in a terminal gets its messages in hook context; read_inbox reads any the hook could not fit and acknowledge_messages confirms them. ask_human posts immediately and its answer arrives as a message. Finish the turn while waiting.\n\n{}",
+                "AgentDocker tools act as the live root Codex conversation: its native input binding, or the terminal that resumed it. Call whoami to inspect that identity. Conversation metadata is required for every tool call; missing, child or ambiguous bindings are refused. A bound conversation's queued messages arrive through the native receiver, which owns acknowledgements, and its inbox tools are refused; its ask_human posts immediately and its answer arrives through that receiver; finish the turn while waiting. A conversation started in a terminal gets its messages in hook context; read_inbox reads any the hook could not fit and acknowledge_messages confirms them; its ask_human waits for the answer, as the tool says.\n\n{}",
                 crate::skill::instructions(false)
             ));
         }
