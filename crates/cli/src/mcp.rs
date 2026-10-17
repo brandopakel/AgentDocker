@@ -815,12 +815,27 @@ impl<B: Backend> McpServer<B> {
                 ),
             ));
         }
-        if self.remote {
+        let arguments = if self.remote {
             self.within_project(name, &arguments).await?;
             if name == "open_questions" {
                 return self.project_questions(arguments).await;
             }
-        }
+            // A listing reads the grant's project whatever was asked: an
+            // absent, null or empty project would otherwise read them all.
+            if matches!(name, "list_tasks" | "search_tasks" | "list_plans") {
+                let mut object = arguments
+                    .as_object()
+                    .cloned()
+                    .ok_or((INVALID_PARAMS, "arguments must be an object".to_owned()))?;
+                object.insert("project".into(), json!(self.own_project().await?.as_str()));
+                object.remove("task");
+                Value::Object(object)
+            } else {
+                arguments
+            }
+        } else {
+            arguments
+        };
         let me = self.identity.id.clone();
         // Listings answer with what an agent reads unless it asks for the
         // whole record.
@@ -1582,8 +1597,8 @@ impl<B: Backend> McpServer<B> {
         }
     }
 
-    /// The open questions asked by this project's agents (and the person):
-    /// a connector's session never sees another project's.
+    /// The open questions asked by this project's agents: a connector's
+    /// session never sees another project's, nor the person's own.
     async fn project_questions(&self, arguments: Value) -> Result<Value, (i64, String)> {
         let args: OpenQuestionsArgs = parse(arguments)?;
         let Response::Questions { questions } = self
@@ -1615,9 +1630,11 @@ impl<B: Backend> McpServer<B> {
             }
             _ => Default::default(),
         };
+        // Only questions this project's agents asked: the person's own, to
+        // whoever, are not provably this project's.
         let questions = questions
             .into_iter()
-            .filter(|q| askers.contains(&q.from) || q.from == agentdocker_core::HUMAN)
+            .filter(|q| askers.contains(&q.from))
             .collect();
         Ok(render(Response::Questions { questions }, false))
     }
@@ -2993,10 +3010,10 @@ mod tests {
         };
         let s = server(vec![
             Response::Questions {
-                questions: vec![question("abc123"), question("other")],
+                questions: vec![question("abc123"), question("other"), question("user")],
             },
             Response::Agents {
-                agents: vec![me],
+                agents: vec![me.clone()],
                 aliases: Default::default(),
             },
         ])
@@ -3011,8 +3028,35 @@ mod tests {
             .unwrap();
         let listed = tool_text(&reply).to_string();
         assert!(
-            listed.contains("q-abc123") && !listed.contains("q-other"),
+            listed.contains("q-abc123")
+                && !listed.contains("q-other")
+                && !listed.contains("q-user"),
             "{listed}"
+        );
+
+        // A null project is no way out: every listing reads the grant's.
+        let keel = me.project.as_ref().unwrap().id();
+        let s = server(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Tasks {
+                tasks: Vec::new(),
+                more: false,
+            },
+        ])
+        .remote("/p/keel".into());
+        s.handle(rpc(
+            4,
+            "tools/call",
+            json!({"name": "list_tasks", "arguments": {"project": null}}),
+        ))
+        .await
+        .unwrap();
+        assert!(
+            s.backend.requests().iter().any(
+                |r| matches!(r, Request::Tasks { project: Some(p), .. } if p == keel.as_str())
+            ),
+            "{:?}",
+            s.backend.requests()
         );
     }
 
