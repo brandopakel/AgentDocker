@@ -3896,6 +3896,11 @@ async fn run() -> Result<()> {
                 })
                 .transpose()
             };
+            // Changing the palette is the person's: a command run from an
+            // agent's own shell speaks as that agent, and is refused.
+            let from = sender::resolve(&client, None)
+                .await?
+                .unwrap_or_else(|| HUMAN.into());
             let line = |role: &agentdocker_core::RoleDef| {
                 let mut line = format!(
                     "{:<14}{:<16}{:<8}",
@@ -3922,7 +3927,7 @@ async fn run() -> Result<()> {
                     description,
                 }) => {
                     let request = Request::RoleSave {
-                        from: HUMAN.into(),
+                        from: from.clone(),
                         project,
                         role: None,
                         name,
@@ -3957,7 +3962,7 @@ async fn run() -> Result<()> {
                         },
                     };
                     let request = Request::RoleSave {
-                        from: HUMAN.into(),
+                        from: from.clone(),
                         project,
                         role: Some(role),
                         name,
@@ -3970,7 +3975,7 @@ async fn run() -> Result<()> {
                 }
                 Some(RolesAction::Rm { role }) => {
                     let request = Request::RoleDelete {
-                        from: HUMAN.into(),
+                        from: from.clone(),
                         project,
                         role: role.clone(),
                     };
