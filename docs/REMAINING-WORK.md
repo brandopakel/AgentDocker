@@ -4,21 +4,51 @@ This is the active backlog. Detailed attempts, exact source/cleanup proofs and
 raw failure locations live in [the verification index](verification/INDEX.md).
 A later pass does not erase a failed run or prove its cause.
 
-Published **0.2.0-beta.13** is reviewed source `c9e03f64` (#339), including
-bounded emitted-byte accounting and Linux orphan reaping (#337). All six final
+Published **0.2.0-beta.14** is reviewed source `10b57894` (#368). All six final
 main CI workflows and all 15 release jobs passed. All 31 hosted assets, nine
 archives, five manifests and both preview feeds were independently verified.
-Mac ARM64, Oracle Ubuntu x86_64 and Windows CI passed bounded beta.12 → beta.13
-install/update/rollback/reapply and service checks. Unix terminal, graphical and
+Mac ARM64, Oracle Ubuntu x86_64 and Windows CI passed bounded beta.13 → beta.14
+install/update/rollback/reapply checks. Unix terminal, graphical, service and
 selective pruning checks passed. Stable v0.1.0 and Homebrew remain unchanged.
 
 Ledger 15/schema 27 is unchanged. Hosted Mac/Oracle rollback preserved seeded
-accounting metadata, event cursors and tracking totals through three private
-daemon generations; reapply did not count an existing emission twice. No database
-was restored. This proves stopped-daemon metadata compatibility, not live
-handover or provider continuity. Beta.9/schema26 cannot replace schema27 over
-acknowledged input. Both workspace and fuzz lockfiles resolve beta.13 with
-locked, offline metadata checks; no registry dependency changed.
+accounting metadata, event cursors and tracking totals through stopped-daemon
+rollback/reapply, without counting an existing emission twice. An initial Mac
+fixture incorrectly expected beta.13 to treat an emission as unknown. Exact
+hosted beta.13 replay proved it supports the event; corrected, separately pinned
+fixtures and independent verifiers passed. Original failures remain retained.
+This establishes stopped-daemon metadata compatibility, not live handover or
+provider continuity. Beta.9/schema26 cannot replace schema27 over acknowledged input.
+
+Physical AWBP's first hosted run completed 14 checks, then Python cleanup failed
+on 261/267-character license paths with Windows long paths disabled. Ordinary
+reads reported missing files while extended-path reads succeeded. An isolated
+control reproduced the failure and passed with the existing guarded cleanup
+helper. The corrected, separately pinned hosted harness then passed all 15 checks,
+including 13 daemon/24 connector checks and cleanup. Beta.13 bootstrap launchers
+forwarded to the selected beta.14 service payload; both sets of bytes were verified.
+All eight recorded generations retired, owned tasks and scratch were absent, and
+protected sessions/configuration were unchanged. No PC policy was changed.
+Original failed reports remain; all remaining fixture files were archived or
+matched to retained immutable release bytes before 82 MiB of duplicates were pruned.
+
+The independent physical Windows native Codex 0.160 account trial passed eight
+checks and three actual turns: busy hold, exact receipts, preserved Unicode
+draft, receiver replacement and explicit same-session reopen. All recorded
+process generations retired and configuration was unchanged. Hosted Mac Claude
+2.1.301 passed four correlated idle/busy/draft/reopened deliveries with durable
+receipts and clean retirement. Separate inspected terminal evidence confirms
+the Unicode draft remained and submitted without retyping. Normal Claude settings
+files were unchanged; provider metadata changed during the trial and was not restored.
+The failed first hosted run remains separate from the corrected successful run.
+
+Beta.14 contains the Windows service staging/native launch configuration and
+watcher corrections, durable question recovery, longer pending-question retention,
+activity/pause reporting, and desktop trust/merge/standing changes. Git operations
+in progress block one-step merges; failed merge commands preserve the person's
+Git state. The token-filter oracle and bounded Windows readiness cleanup fixes
+passed final review, local and platform gates. Historical startup failures and
+the older probe latency cause remain unproved; original evidence is retained.
 
 **Full stable release remains incomplete.** Fresh-account, independent-hardware,
 physical-input/accessibility, sleep/reboot and Developer ID/notarization gates
@@ -26,73 +56,12 @@ remain open. Native Codex, managed secret input and live daemon replacement stay
 experimental. Existing-account and synthetic-provider evidence is scoped below;
 CI and private fixtures do not establish physical or fresh-login acceptance.
 
-All six merged-source CI workflows for beta.14/source 32950e14 (#349) passed
-on their first attempt. Publication remains held after scheduled fuzz run
-38894343793 exposed an outdated token-filter oracle: an owner-only role
-request was permitted by the daemon but missing from the oracle's allowlist.
-The original crash and logs are retained and reproduced locally. The correction
-covers all five omitted owner-only operations and tests impersonation before
-identity rewriting. The saved crash replay, 35 credential cases and a 120-second
-token-filter campaign passed. Source eee8393f then passed the standard gate,
-review and all four Linux fuzz targets. Windows run 38940623574 passed all 62
-extracted-package checks but failed cleanup: a three-second probe timeout escaped
-the rescue daemon's ten-second readiness loop. Cleanup now retains timed-out
-probes within that same budget, fails explicitly if no answer arrives, and saves
-the rescue process's startup log. The original failure is retained; its OS-level
-latency cause and the separate historical first-start failures remain unknown.
-Source b80eb228 subsequently passed the standard gate and all six platform CI
-workflows on their first attempt; its Windows archive and complete cleanup were
-independently verified. Review then found that a probe returning success after
-its deadline could still pass. The waiter now checks the clock after every probe;
-regressions cover late success and success exactly at the deadline. Later-head CI
-and review are tracked on [PR #368](https://github.com/brandopakel/AgentDocker/pull/368),
-without relabeling the completed b80eb228 evidence. Hosted acceptance remains open.
-These corrections change test coverage/cleanup, not endpoint permissions or
-production startup deadlines.
-
-The beta.14 candidate now also refuses a one-step merge while Git has an
-operation in progress, including detached rebase and sequencer states. The
-Changes panel shows this blocker before empty-branch messaging or worktree
-removal controls, retaining the last merge error beside the blocker. A rendered
-text/control regression covers detached rebases and merge-hook failure context. A final
-unreadable operation check refuses execution. Failed merge commands preserve
-Git's state for inspection instead of aborting a possibly concurrent operation
-belonging to the person. Local real-Git reproduction confirms the old abort
-deleted a clean pending merge and that a second precheck alone left a race;
-new source requires its own full gate and final review/CI before publication.
-The Codex bridge test also reads its asynchronous inbox once per assertion.
-Prior d55 source passed local/platform CI and review; that evidence is retained
-for its exact tree, not claimed for this revision.
-
-The unpublished beta.14 candidate includes the Windows service staging,
-native Codex launch configuration and watcher responsiveness corrections, plus
-longer pending-question retention, durable question-stream recovery, accurate
-activity/pause reporting and the desktop Codex trust notice. The notice now
-refreshes for notification-driven project changes while the form remains open.
-Explicit commits also accept pending merges whose tree is unchanged, while
-ordinary empty commits remain refused. Git execution failures while checking merge
-state report `unavailable` with their original details. Before the final desktop
-batch, `657a8ed8` passed the full local Mac and Linux CI standard gates, including
-all eleven trust/merge/standing regressions. Its other platform jobs were still
-running or queued when that evidence was recorded. Earlier `f847b1f6` also passed
-Windows CI and 143 physical AWBP application startup checks; the physical
-wrapper cleanup failed on empty config locks, and a separate verified cleanup
-completed without changing the original report.
-The candidate integrates main's desktop standing, launch form, repair actions,
-delivery display and completion-notification changes (#355–358), preserving
-asynchronous Codex trust loading. Ledger 15/state schema 27 is unchanged.
-Publication requires the combined source's standard gates, platform packaging
-and final review, followed by protected-tag publication and hosted beta.13 →
-beta.14 install, update, rollback, reapply and service acceptance. Earlier
-candidate trials do not replace those checks. Stable v0.1.0 and Homebrew remain
-unchanged.
-
 ## Release and first run
 
 | Requirement | Current evidence | Remaining work |
 | --- | --- | --- |
-| Publish and verify the preview | Published beta.13/source `c9e03f64` passed final review/CI, hosted hashes/feeds, bounded Mac/Oracle/Windows install/update/rollback/service checks and Unix pruning. Stable/Homebrew are unchanged; ledger 15/schema 27 is retained. | Keep Windows preview, Mac/Linux preview, stable and Homebrew separate. Stable signing, fresh accounts and independent hardware remain gates. [Distribution contract](DISTRIBUTION-SETUP.md). |
-| First run on every supported platform | Hosted beta.13 passed Mac ARM64/Oracle lifecycle, explicit-version installation, terminal, GUI and service checks plus Windows hosted/service checks. Existing-account provider evidence is separately scoped; it does not prove first login. | Fresh provider authentication, trust/consent and broader provider/platform idle/busy, draft and restart/reopen trials. Existing accounts, synthetic providers and CI do not prove fresh-account acceptance. |
+| Publish and verify the preview | Published beta.14/source `10b57894` passed final review/CI, hosted hashes/feeds, bounded Mac/Oracle/Windows CI install/update/rollback checks and Unix services/pruning. Stable/Homebrew are unchanged; ledger 15/schema 27 is retained. Physical AWBP separately passed all 15 hosted checks with corrected, pinned cleanup; original failures remain. | Keep all channels separate. Stable signing, fresh accounts and independent hardware remain gates. [Distribution contract](DISTRIBUTION-SETUP.md). |
+| First run on every supported platform | Hosted beta.14 passed Mac ARM64/Oracle lifecycle, explicit-version installation, terminal, GUI and service checks plus Windows CI hosted/service checks. Existing-account Mac Claude and physical Windows native Codex delivery passed separately; neither proves first login. | Fresh provider authentication, trust/consent and broader provider/platform idle/busy, draft and restart/reopen trials. Existing accounts, synthetic providers and CI do not prove fresh-account acceptance. |
 | Independent machines and distributions | Available evidence covers the local Mac, Oracle Ubuntu 24.04.4 x86_64, Windows 11 Home build 26200 x64 AWBP and Intel/ARM CI/Rosetta. AWBP testing resumed at the user’s request; normal-user candidate installation/services passed 97 checks and official-filename native Codex passed 22 checks, with earlier failures retained. | Independent second Mac, physical Intel, normal target Linux desktop prerequisites, physical Linux input and broader Windows provider and fresh-login trials. The normal-user service and private-model provider trials do not establish physical input or logon/reboot; retain the failed readiness evidence. [Trial procedure](LOCAL-TRIAL.md). |
 | Stable macOS signing | Preview apps are ad-hoc signed. The owner has not enrolled in the Apple Developer Program; no Developer ID identity is configured. | Configure private signing/notary credentials, sign/notarize/staple the final app and DMG, and test Gatekeeper on an independent Mac. |
 | Mac disk-image contention | Creation/verification retry only their exact transient OS errors and retain unchanged image bytes. Beta.9 ARM/Intel CI images passed on the first attempt; private injected-error/damage tests also passed. Historical OS errors remain unexplained. | Verify later final packages and preserve failures. The original runner OS errors remain unexplained; ordinary first-attempt success does not demonstrate spontaneous recovery. Developer ID/notarization, Gatekeeper and physical Intel acceptance remain separate. |
@@ -121,7 +90,7 @@ pass; the combined full gate, final CI and review remain pending.
 
 | Requirement | Current evidence | Remaining work |
 | --- | --- | --- |
-| Idle delivery and existing sessions | Managed Claude/Codex and physical Windows Claude 2.1.280 have source-specific idle/busy/draft/restart evidence. Reconnect preserves supported launch restrictions/profile selection and refuses ambiguous options. Claude channel consent can recur; plain hooks/MCP cannot wake an idle model. | Current hosted-package acceptance, broader runtime/version coverage, restart/reopen and supported adapter parity. [Claude](CLAUDE-CHANNEL-INPUT.md), [Codex](CODEX-INPUT.md). |
+| Idle delivery and existing sessions | Hosted beta.14 Mac Claude 2.1.301 passed four idle/busy/draft/reopened deliveries with exact replies, receipts and clean retirement. Its Unicode draft was separately inspected and submitted without retyping; provider metadata changed while normal settings stayed unchanged. Earlier managed Claude/Codex and physical Windows Claude 2.1.280 evidence remains source-specific. Reconnect preserves supported launch restrictions/profile selection and refuses ambiguous options. Claude channel consent can recur; plain hooks/MCP cannot wake an idle model. | Broader runtime/version coverage, restart/reopen and supported adapter parity. [Claude](CLAUDE-CHANNEL-INPUT.md), [Codex](CODEX-INPUT.md). |
 | Native Codex startup and identity | Reviewed startup, ownership and recovery changes have scoped Mac/Linux/Windows trials. Hosted beta.8 covered private-model draft/replacement/reopen; beta.10 Oracle covered existing-account delivery. Hosted beta.12 Oracle Codex 0.160 passed five existing-account delivery/draft/replacement checks, but the original strict no-config-write result is PARTIAL: Codex created a screen-reader preference, which was preserved then exactly restored. Windows first-history rejection remains unexplained. | Keep native launch experimental pending broader current-package/platform, real-account/physical input, desktop adoption, broader versions/startup races, lost-provider replies, Windows journal-boundary faults and unsent drafts through crashes. Recovery never overrides interruption or resends uncertain input automatically. Birth admission requires an owned empty thread; reopen requires persisted history. See [native input](CODEX-INPUT.md). |
 | Identity and uncertain delivery | Native attribution, helper refusal, lost-output and stale-confirmation checks are indexed. Hosted beta.12 Oracle and Mac managed Codex 0.160 passed 600-second real-account MCP questions with ordered steering, one exact tool answer, four ordinary receipts and preserved drafts. All 13 Oracle/11 Mac generations retired with configuration/terminal restored. The first Mac observer failed on an unverified PID; a fresh trial used a bounded, regression-tested observer. Original failure and unknown PID identity remain recorded. Verified helpers can fold into their session. The root’s stale binding was diagnosed without adopting another process or acknowledging input. Physical AWBP hosted beta.13 passed normal, provider/project-held and lost-client-reply queued recovery with 27 checks, exact receipts, 15 retired generations per scenario and clean unforced fixture cleanup. The earlier long-path failure and pre-trial source-format refusals remain preserved. Actual-account, human input and sleep/reboot coverage remain open. | Broader native version/platform review, longer waits, sustained queues, receiver replacement and uncertain-write recovery. Preserve original IDs, conversation, questions and ownership; never replay consumed input or merge by display name. Managed zero-prompt reopen remains unaccepted; native explicit UUID reopen has the scoped draft evidence above. |
 | Audit delivery changes | Source repeats a Claude channel's first unreceived offer once after 30 s, refuses Codex app-servers before 0.154.0, and re-queues a refused `turn/start`. Source-built beta.13 with actual Codex 0.153 refused before a thread; queued input/no receipt and unchanged configuration were verified. Actual Codex 0.160 unloaded an unused thread then refused one unchanged turn request: original input remained untaken, no receipt or automatic retry, prepared attempt cleared. Four/14 generations retired without force. | Broader native/platform/hosted version-floor and turn-refusal coverage, plus an actual Claude channel startup-repeat trial. The turn-refusal fixture explicitly disabled private MCP after the earlier proxy ancestry refusal; it proves transport behavior, not native/MCP/account acceptance. Original encoding, empty-ledger observer and ownership refusals remain indexed; no consumed input was replayed. |
@@ -138,12 +107,12 @@ pass; the combined full gate, final CI and review remain pending.
 
 | Requirement | Current evidence | Remaining work |
 | --- | --- | --- |
-| Mac daemon service startup | Explicit kickstart corrected on-demand startup; hosted beta.13 passed 21 service checks/12 restarts. Automatic crash recovery remains unaccepted in the GUI domain. Minimal shell controls also stayed pending after exit/SIGKILL; no unconstrained-domain control establishes the sole cause. | Automatic crash recovery in that GUI domain, login/reboot and independent Mac acceptance. Minimal shell controls also remained pending after nonzero exit and SIGKILL for 40 s, so the behavior is not specific to AgentDocker; no unconstrained-domain control establishes the sole cause. Earlier product failures and the separately refused user-domain control remain indexed. |
-| Native Windows installer and daemon | Per-user Scheduler startup, bounded crash supervision, protected storage, native pipes/ConPTY, reattachment and launcher retirement are implemented. Hosted beta.13 passed beta.12 update/rollback/reapply plus installed daemon/connector service checks. | Start menu/PATH, physical console attachment, real provider shims, broader native daemon/CLI suites, logon/reboot and managed-provider survival. [Windows contract](WINDOWS-PORT.md). |
-| Windows browser connector service | Setup pins tunnel paths and serializes delayed-start ownership. Physical AWBP exposed shared-Temp staging refusal; the candidate stages its protected Scheduler script under the user home. The exact CI package with corrected fixture publication/cleanup passed 60 installer, 13 daemon and 24 connector checks under the normal interactive user, including crash recovery and ownership races. All fixtures retired without force; existing Codex sessions were unchanged. | Hosted release integration, actual tunnels/browser accounts and logon/reboot. Original staging, stop-record ACL-copy and installer-cleanup failures remain indexed. Fixture JSON now receives its protected ACL before atomic publication; installer cleanup uses extended paths and persists cleanup failures. Private fixtures do not replace production services. |
+| Mac daemon service startup | Explicit kickstart corrected on-demand startup; hosted beta.14 passed 21 service checks/12 restarts. Automatic crash recovery remains unaccepted in the GUI domain. Minimal shell controls also stayed pending after exit/SIGKILL; no unconstrained-domain control establishes the sole cause. | Automatic crash recovery in that GUI domain, login/reboot and independent Mac acceptance. Minimal shell controls also remained pending after nonzero exit and SIGKILL for 40 s, so the behavior is not specific to AgentDocker; no unconstrained-domain control establishes the sole cause. Earlier product failures and the separately refused user-domain control remain indexed. |
+| Native Windows installer and daemon | Per-user Scheduler startup, bounded crash supervision, protected storage, native pipes/ConPTY, reattachment and launcher retirement are implemented. Hosted beta.14 passed beta.13 update/rollback/reapply plus installed daemon/connector service checks on Windows CI and physical AWBP; bootstrap launchers forwarded to the verified active payload. | Start menu/PATH, physical console attachment, real provider shims, broader native daemon/CLI suites, logon/reboot and managed-provider survival. [Windows contract](WINDOWS-PORT.md). |
+| Windows browser connector service | Setup pins tunnel paths and serializes delayed-start ownership. Physical AWBP exposed shared-Temp staging refusal; the candidate stages its protected Scheduler script under the user home. The exact CI package with corrected fixture publication/cleanup passed 60 installer, 13 daemon and 24 connector checks under the normal interactive user, including crash recovery and ownership races. The corrected physical hosted beta.14 campaign passed all 13 daemon/24 connector checks through beta.13 bootstrap launchers forwarding to the selected beta.14 payload, plus complete enclosing fixture cleanup. Service tasks/processes were independently absent; existing Codex sessions were unchanged. | Actual tunnels/browser accounts and logon/reboot. Original staging, stop-record ACL-copy and installer-cleanup failures remain indexed. Fixture JSON now receives its protected ACL before atomic publication; installer cleanup uses extended paths and persists cleanup failures. Private fixtures do not replace production services. |
 | Windows terminal stop and receiver recovery | Pending stop is prioritized and failed writes retry before reattachment without consuming input. The corrected Windows package passed; original slow-stop/busy-pipe diagnostics and the separate native first-history rejection remain unexplained. | Retain bounded in-flight/reconnect delay; no loaded-host wall-clock guarantee. Original slow stop and separate busy-named-pipe diagnostic remain unexplained despite the deterministic starvation regression and later passes. Exact failures, sources and cleanup are indexed. |
-| Windows native fixture cleanup | AWBP exposed legacy path-limit failures in both provider plugin and installer license fixtures, with long paths disabled. Ordinary reads failed at 261/262 and 266/272 characters while extended reads succeeded. Shared fixture deletion now uses the absolute extended namespace and retains read-only-file/ACL safeguards. The installer also saves cleanup failures before propagating them. | Native long/read-only regression passed without changing host policy. Corrected hosted recovery passed 27 checks across normal, held and lost-client-reply scenarios; corrected candidate installation/services passed all 97 checks and cleanup. The original queued-recovery scratch was archived, verified and removed; its failed report is unchanged. Both installer failure scratches were archived, independently roundtrip-verified and removed; their failed reports remain unchanged. These scoped results do not resolve unrelated product or physical-input failures. |
-| Native launch configuration parity | Validated launch settings reach both the dedicated server and terminal. New permission overrides, including quoted permission roots, on remote UUID resume are refused before supervision/provider startup, because Codex restores saved permissions. A controlled Mac comparison reproduced a persisted tooltip counter on the published binary and preserved the private profile with the correction. Combined candidate `7dfd7c01` also passed eight existing-account Windows checks: three real turns, exact receipts, Unicode draft, receiver replacement, early permission refusal and UUID reopen without another prompt. All 28 generations retired without force; configuration and protected sessions were independently verified. | Final hosted integration, broader runtime versions, physical input and fresh-login acceptance remain. Retain the earlier sharing/materialization failures and failed permission-override reopen. Codex 0.160 independently seeds its screen-reader marker from saved configuration before CLI layers; forwarding options does not suppress that write. Only the exact known addition was restored, including mtime; unexpected changes remain untouched. |
+| Windows native fixture cleanup | AWBP exposed legacy path-limit failures in both provider plugin and installer license fixtures, with long paths disabled. Ordinary reads failed at 261/262 and 266/272 characters while extended reads succeeded. Shared fixture deletion now uses the absolute extended namespace and retains read-only-file/ACL safeguards. The installer also saves cleanup failures before propagating them. Hosted beta.14 on physical AWBP then exposed the same path limit in the hosted harness: 14 application/service checks passed before final deletion failed. That harness now calls the existing guarded helper; an isolated control reproduced the old failure and confirmed helper cleanup without changing host policy. | Corrected physical hosted acceptance passed all 15 checks and cleanup. Original failed reports remain; the leftover scratch was archived, duplicate release bytes matched and independently verified before pruning. Native long/read-only regression passed without changing host policy. Corrected hosted recovery passed 27 checks across normal, held and lost-client-reply scenarios; corrected candidate installation/services passed all 97 checks and cleanup. The original queued-recovery scratch was archived, verified and removed; its failed report is unchanged. Both installer failure scratches were archived, independently roundtrip-verified and removed; their failed reports remain unchanged. These scoped results do not resolve unrelated product or physical-input failures. |
+| Native launch configuration parity | Validated launch settings reach both the dedicated server and terminal. New permission overrides, including quoted permission roots, on remote UUID resume are refused before supervision/provider startup, because Codex restores saved permissions. A controlled Mac comparison reproduced a persisted tooltip counter on the published binary and preserved the private profile with the correction. Published beta.14/source `10b57894` also passed eight existing-account physical Windows checks: three real turns, exact receipts, Unicode draft, receiver replacement, early permission refusal and UUID reopen without another prompt. Independent cleanup verified all 43 recorded generations across the hosted and native trials retired; native scratch/capabilities, configuration and protected sessions were verified. The separate corrected hosted trial passed all 15 checks and independently verified cleanup; its original failed run remains retained. | Broader runtime versions, physical input and fresh-login acceptance remain. Retain the earlier sharing/materialization failures and failed permission-override reopen. Codex 0.160 independently seeds its screen-reader marker from saved configuration before CLI layers; forwarding options does not suppress that write. Only the exact known addition was restored, including mtime; unexpected changes remain untouched. |
 | Native Codex executable filenames | Physical AWBP beta.13 with Codex 0.160's official download filename misidentified MCP as the app-server; the canonical filename then exposed a venv console-parent fixture error. Source removes the basename gate while retaining accepted-host verification; the console fixture uses the base interpreter with its direct-parent assertion intact. The exact corrected CI package passed all 22 native checks using the official download filename, with original-TUI MCP, draft/reopen, natural retirement and no forced cleanup. | Final hosted integration and broader versions/platforms, broader account and physical input acceptance. Original failed trials required four/five forced fixture retirements; their reports and independently verified cleanup remain retained. The later private-model pass does not establish account or physical acceptance. |
 | Native receiver exit during recovery | The receiver now checks exact provider generation during paused recovery. Its old-behavior regression failed and corrected Windows Codex 0.160 exit probes passed without survivors or receipt changes. Missing original logs prevent proving that historical failure’s cause. | Broader races, versions and hosted-package acceptance. The original failed report omitted that receiver log, so the 30-second recovery wait is a candidate explanation rather than a demonstrated cause of that particular failure. Historical first-start failures remain separate. |
 | Windows Scheduler cold startup | Published service-management scripts allow 60 seconds without mutation retries. Hosted/service checks passed. The earlier 20 second failure spent 17.697 seconds reaching PowerShell’s first trace; later sampling did not reproduce it. | Broader cold-start sampling and physical/logon acceptance. Preserve the original failure; passing lifecycles do not explain OS latency or resolve historical first-start failures. Readiness, process-stop and fixture deadlines remain unchanged. |

@@ -874,10 +874,11 @@ impl App {
             Screen::Questions | Screen::Runtimes | Screen::Settings | Screen::Desktop
         )
     }
-    /// The footer while the daemon is older than this window: what is wrong,
-    /// the one thing that fixes it, and what that costs before it is done.
+    /// The strip across the bottom while the person restarts a daemon older
+    /// than this window: what it costs before it is done, then that it is
+    /// happening. Nothing otherwise.
     fn daemon_notice(&self, c: Colors) -> Option<Element<'_, Message>> {
-        let version = self.daemon_behind_now()?;
+        self.daemon_behind_now()?;
         let connected = self.connected.is_ok();
         let row = if self.daemon_restarting() {
             row![
@@ -913,40 +914,9 @@ impl App {
                 ),
             ]
         } else {
-            // At rest it is one quiet line of the status bar: nothing has
-            // to happen now, so it asks for no more attention than a dot.
-            return Some(
-                column![
-                    rule(c),
-                    container(
-                        row![
-                            dot(c.amber, 7.0, c),
-                            small(
-                                format!(
-                                    "Background service {version} is older than this app ({}).",
-                                    env!("CARGO_PKG_VERSION")
-                                ),
-                                c
-                            ),
-                            ghost(
-                                "daemon-restart",
-                                "Restart…",
-                                connected.then_some(Message::ConfirmDaemonRestart(true)),
-                            ),
-                        ]
-                        .spacing(6)
-                        .align_y(Center),
-                    )
-                    .padding([3, 14])
-                    .width(Fill)
-                    .style(move |_| container::Style {
-                        background: Some(c.sidebar.into()),
-                        text_color: Some(c.text),
-                        ..Default::default()
-                    })
-                ]
-                .into(),
-            );
+            // At rest the rail's foot says it (`service_chip`): nothing has
+            // to happen now, so it takes no width from the page.
+            return None;
         };
         // Confirming or restarting: a strip of the page's own surface,
         // washed amber, carrying the page's controls.
@@ -990,6 +960,14 @@ impl App {
         } else if agent.status.is_live() {
             match self.activity.get(&id) {
                 None | Some(Activity::Unknown) => "running".to_owned(),
+                Some(Activity::Waiting {
+                    reason: Some(agentdocker_core::WaitReason::Permission),
+                    ..
+                }) => "wants permission".to_owned(),
+                Some(Activity::Waiting {
+                    reason: Some(agentdocker_core::WaitReason::Question),
+                    ..
+                }) => "has a question".to_owned(),
                 Some(Activity::Waiting { .. }) => "waiting for you".to_owned(),
                 Some(activity) => activity.label().to_owned(),
             }
@@ -1068,7 +1046,13 @@ impl App {
             .height(Fill)
             .into()
         };
-        let window: Element<'_, Message> = column![workspace, self.footer(c)].into();
+        // The bottom strip is there only while a daemon restart is being
+        // confirmed or done; the service's state lives at the rail's foot.
+        let mut window = column![workspace];
+        if let Some(notice) = self.daemon_notice(c) {
+            window = window.push(notice);
+        }
+        let window: Element<'_, Message> = window.into();
         // The window is always the first layer of one stack, dialogs or
         // none, so opening one keeps its scroll offsets and field state.
         let mut layers = vec![window];
@@ -1426,67 +1410,72 @@ impl App {
         .into()
     }
 
-    /// One quiet line across the bottom, part of the frame with the
-    /// rail: the daemon connection as a dot and a word, and the version.
-    /// Said here once, so the rail and the pages need not repeat it.
-    fn footer(&self, c: Colors) -> Element<'_, Message> {
-        let connected = self.connected.is_ok();
-        if let Some(notice) = self.daemon_notice(c) {
-            return notice;
-        }
-        let r = c.rail();
-        let (tone, word, detail) = if connected {
-            (r.green, "Connected", "— background service")
-        } else {
-            (r.amber, "Reconnecting", "— background service…")
-        };
-        container(
+    /// The background service at the foot of the rail, only when there is
+    /// something to say, and then one thing with at most one action: not
+    /// reachable yet; older than this app, with **Restart…**; or an update
+    /// to install. A healthy service says nothing, as the status apps
+    /// studied do (Docker Desktop, Tailscale); the page keeps its height.
+    fn service_chip(&self, r: Colors) -> Option<Element<'_, Message>> {
+        let line = |tone: iced::Color, words: String| {
             row![
-                dot(tone, 7.0, r),
-                text(word)
+                container(dot(tone, 7.0, r)).padding([5, 0]),
+                text(words)
                     .size(12)
-                    .font(weight(iced::font::Weight::Medium))
-                    .color(tone),
-                text(detail).size(12).color(r.muted).width(Fill),
-                match self.desktop.update_available() {
-                    Some(version) => crate::controls::custom_sized(
-                        "open-available-update",
-                        format!("Update {version} available"),
-                        row![
-                            dot(r.accent_ink, 6.0, r),
-                            text(format!("Update {version} available"))
-                                .size(12)
-                                .color(r.accent_ink)
-                        ]
-                        .spacing(6)
-                        .align_y(Center),
-                        Some(Message::Navigate(Screen::Desktop)),
-                        false,
-                        Kind::Nav,
-                        [2, 8],
-                        iced::Length::Shrink,
-                    ),
-                    None => text(format!("agentdocker {}", env!("CARGO_PKG_VERSION")))
-                        .size(11)
-                        .font(Font::MONOSPACE)
-                        .color(r.faint)
-                        .into(),
-                }
+                    .color(r.muted)
+                    .width(Fill)
+                    .wrapping(iced::widget::text::Wrapping::Word),
             ]
-            .spacing(6)
-            .align_y(Center),
-        )
-        .padding([5, 14])
-        .width(Fill)
-        .style(move |_| container::Style {
-            border: iced::Border {
-                color: r.line,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..r.surface(r.ground, false)
-        })
-        .into()
+            .spacing(8)
+            .align_y(iced::Alignment::Start)
+        };
+        let chip: Element<'_, Message> = if self.connected.is_err() {
+            line(r.amber, "Reconnecting to the background service…".into()).into()
+        } else if let Some(version) = self.daemon_behind_now() {
+            if self.daemon_restarting() || self.shell.confirm_daemon_restart {
+                // The strip across the bottom has it now.
+                return None;
+            }
+            column![
+                line(
+                    r.amber,
+                    format!(
+                        "Background service {version} is older than this app ({}).",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                ),
+                container(ghost(
+                    "daemon-restart",
+                    "Restart…",
+                    Some(Message::ConfirmDaemonRestart(true)),
+                ))
+                .padding(iced::Padding {
+                    left: 9.0,
+                    ..Default::default()
+                }),
+            ]
+            .spacing(2)
+            .into()
+        } else {
+            let version = self.desktop.update_available()?;
+            crate::controls::custom_sized(
+                "open-available-update",
+                format!("Update {version} available"),
+                row![
+                    dot(r.accent_ink, 6.0, r),
+                    text(format!("Update {version} available"))
+                        .size(12)
+                        .color(r.accent_ink)
+                ]
+                .spacing(8)
+                .align_y(Center),
+                Some(Message::Navigate(Screen::Desktop)),
+                false,
+                Kind::Nav,
+                [5, 10],
+                Fill,
+            )
+        };
+        Some(container(chip).padding([4, 0]).width(Fill).into())
     }
 
     /// A destination on the rail: glyph, label and an optional count,
@@ -1873,7 +1862,11 @@ impl App {
             )
             .push(Space::new().height(6))
             .push(container(Space::new().width(Fill).height(1)).style(move |_| r.rule()))
-            .push(Space::new().height(6))
+            .push(Space::new().height(6));
+        if let Some(chip) = self.service_chip(r) {
+            nav = nav.push(container(chip).padding([0, 2]));
+        }
+        let nav = nav
             .push(self.nav_item(
                 "add-project",
                 "Add project…",
@@ -4147,6 +4140,30 @@ pub(super) fn split_style(c: Colors) -> iced::widget::pane_grid::Style {
 
 #[cfg(test)]
 mod tests {
+    /// A healthy service says nothing at the rail's foot; a lost connection
+    /// or an update to install is one line there, and the bottom strip is
+    /// gone unless a restart is being confirmed.
+    #[test]
+    fn the_rail_says_nothing_of_a_healthy_service_and_one_thing_otherwise() {
+        use super::*;
+        let (commands, _requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let c = Colors::new(true);
+        let r = c.rail();
+        app.connected = Ok(());
+        assert!(app.service_chip(r).is_none(), "healthy: nothing");
+        assert!(app.daemon_notice(c).is_none(), "and no bottom strip");
+        app.desktop.update = Some(serde_json::json!({
+            "update_available": true,
+            "available": {"version": "0.2.1"}
+        }));
+        assert!(app.service_chip(r).is_some(), "an update to install");
+        app.desktop.update = None;
+        app.connected = Err("gone".into());
+        assert!(app.service_chip(r).is_some(), "reconnecting");
+    }
+
     #[test]
     fn ended_sessions_group_by_the_day_they_ended() {
         use chrono::TimeZone;

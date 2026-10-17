@@ -242,8 +242,13 @@ pub enum Activity {
     Idle { since: DateTime<Utc> },
     /// Stopped for the person, by its adapter's report: a permission
     /// prompt or a question the provider put in its own terminal. Only
-    /// the person can move it on, from there.
-    Waiting { since: DateTime<Utc> },
+    /// the person can move it on, from there. `reason` says which, when
+    /// the adapter could tell.
+    Waiting {
+        since: DateTime<Utc>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<WaitReason>,
+    },
     /// Not running any more.
     Finished,
 }
@@ -275,10 +280,29 @@ pub enum ReportedActivity {
     Waiting,
 }
 
+/// What a provider stopped for the person for, as its adapter read the
+/// provider's own event kind. Only the kind is kept, never the prompt's
+/// words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitReason {
+    /// A permission prompt: a tool run it wants allowed.
+    Permission,
+    /// A question or a choice it put to the person.
+    Question,
+    /// A kind this build does not know, from a newer adapter.
+    #[serde(other)]
+    Other,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActivityObservation {
     pub activity: ReportedActivity,
     pub observed_at: DateTime<Utc>,
+    /// For a wait, what for, when the adapter could tell. A daemon
+    /// predating it ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<WaitReason>,
 }
 
 impl ActivityObservation {
@@ -305,6 +329,7 @@ impl ActivityObservation {
             },
             ReportedActivity::Waiting => Activity::Waiting {
                 since: self.observed_at,
+                reason: self.reason,
             },
         })
     }
@@ -338,6 +363,7 @@ mod tests {
             let observation = ActivityObservation {
                 activity,
                 observed_at: now,
+                reason: None,
             };
             assert!(observation.current(now).is_some());
             assert!(
@@ -362,17 +388,58 @@ mod tests {
         let observation = ActivityObservation {
             activity: ReportedActivity::Waiting,
             observed_at: now,
+            reason: Some(WaitReason::Permission),
         };
         assert_eq!(
             observation.current(now + chrono::Duration::hours(2)),
-            Some(Activity::Waiting { since: now })
+            Some(Activity::Waiting {
+                since: now,
+                reason: Some(WaitReason::Permission)
+            })
         );
         assert_eq!(observation.current(now + chrono::Duration::hours(12)), None);
         assert_eq!(
             observation.current(now - chrono::Duration::seconds(1)),
             None
         );
-        assert_eq!(Activity::Waiting { since: now }.label(), "waiting");
+        assert_eq!(
+            Activity::Waiting {
+                since: now,
+                reason: None
+            }
+            .label(),
+            "waiting"
+        );
+    }
+
+    /// A report without a reason reads and writes as it did before the
+    /// field, and a reason a newer adapter names is a plain wait here, not
+    /// a refused report.
+    #[test]
+    fn a_wait_reason_is_optional_and_tolerates_newer_kinds() {
+        let now = now();
+        let before = serde_json::json!({"activity": "waiting", "observed_at": now});
+        let read: ActivityObservation = serde_json::from_value(before.clone()).unwrap();
+        assert_eq!(read.reason, None);
+        assert_eq!(serde_json::to_value(&read).unwrap(), before);
+        let named = serde_json::json!({
+            "activity": "waiting", "observed_at": now, "reason": "permission"
+        });
+        let read: ActivityObservation = serde_json::from_value(named.clone()).unwrap();
+        assert_eq!(read.reason, Some(WaitReason::Permission));
+        assert_eq!(serde_json::to_value(&read).unwrap(), named);
+        let newer = serde_json::json!({
+            "activity": "waiting", "observed_at": now, "reason": "sign_in"
+        });
+        let read: ActivityObservation = serde_json::from_value(newer).unwrap();
+        assert_eq!(read.reason, Some(WaitReason::Other));
+        assert_eq!(
+            read.current(now),
+            Some(Activity::Waiting {
+                since: now,
+                reason: Some(WaitReason::Other)
+            })
+        );
     }
 
     fn agent(name: &str) -> AgentId {

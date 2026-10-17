@@ -619,7 +619,20 @@ impl App {
                 Some(project) => format!("{project} · {}", self.display_name(agent)),
                 None => self.display_name(agent),
             };
-            let what = "is waiting for you in its terminal".to_owned();
+            // What for, when its adapter could tell: a permission to give
+            // and a question to answer are different errands.
+            let what = match self.activity.get(id.as_str()) {
+                Some(agentdocker_core::Activity::Waiting {
+                    reason: Some(agentdocker_core::WaitReason::Permission),
+                    ..
+                }) => "wants permission in its terminal",
+                Some(agentdocker_core::Activity::Waiting {
+                    reason: Some(agentdocker_core::WaitReason::Question),
+                    ..
+                }) => "has a question in its terminal",
+                _ => "is waiting for you in its terminal",
+            }
+            .to_owned();
             rows.push(waiting_row(
                 spoken(
                     format!("needs-you-line-waiting-{id}"),
@@ -2285,19 +2298,40 @@ mod tests {
         let id = waiting.id.to_string();
         app.agents.push(waiting);
         app.activity_seen = true;
-        app.activity.insert(
-            id.clone(),
-            agentdocker_core::Activity::Waiting { since: Utc::now() },
-        );
-        let view = seen(app.needs_you(Colors::new(true)).expect("a waiting session"));
-        let line = view
-            .control(&format!("needs-you-line-waiting-{id}"))
-            .expect("the session");
-        assert_eq!(line.1, "builder is waiting for you in its terminal");
-        let go = view
-            .control(&format!("needs-you-terminal-{id}"))
-            .expect("its terminal");
-        assert_eq!(go.1, "Go to Terminal");
+        // Each reason its adapter can name reads as its own errand; one
+        // it cannot name, or a newer one, reads as a plain wait.
+        for (reason, said) in [
+            (None, "builder is waiting for you in its terminal"),
+            (
+                Some(agentdocker_core::WaitReason::Permission),
+                "builder wants permission in its terminal",
+            ),
+            (
+                Some(agentdocker_core::WaitReason::Question),
+                "builder has a question in its terminal",
+            ),
+            (
+                Some(agentdocker_core::WaitReason::Other),
+                "builder is waiting for you in its terminal",
+            ),
+        ] {
+            app.activity.insert(
+                id.clone(),
+                agentdocker_core::Activity::Waiting {
+                    since: Utc::now(),
+                    reason,
+                },
+            );
+            let view = seen(app.needs_you(Colors::new(true)).expect("a waiting session"));
+            let line = view
+                .control(&format!("needs-you-line-waiting-{id}"))
+                .expect("the session");
+            assert_eq!(line.1, said);
+            let go = view
+                .control(&format!("needs-you-terminal-{id}"))
+                .expect("its terminal");
+            assert_eq!(go.1, "Go to Terminal");
+        }
     }
 
     /// Needs you reads each row as one sentence and keeps its action's id.
