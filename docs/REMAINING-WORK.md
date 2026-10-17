@@ -79,6 +79,13 @@ regressions fail with the original guard implementation and pass after exact
 restoration of the correction. Final CI and review remain pending. Watcher acknowledgement is not
 proof of complete OS delivery; attribution remains best effort. Real-provider
 and cross-platform acceptance remain separate.
+Proof caches now use ordered eviction and component-prefix lookups, so a watcher
+batch does not scan every agent's retained reads while holding the state lock.
+Their accounting includes the extra path index; eviction, replacement and serial
+overflow remain conservative. Hashing still precedes a flush acknowledgement:
+a heavy proof batch can exceed the 500 ms wait and require a reread. The 256 MiB
+I/O budget bounds work, not wall-clock latency; asynchronous proof installation
+and loaded-host performance acceptance remain open.
 A source-built Mac watcher/IPC trial on `9f7b686e` confirms symlinked registration,
 own-edit exemptions, deleted versus never-existing children and explicit reread
 recovery after cache loss. Both private daemon generations retired unforced,

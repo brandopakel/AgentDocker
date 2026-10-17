@@ -3311,9 +3311,9 @@ mod tests {
         assert!(reason.contains("refactor-peer") && reason.contains("refactoring util.py"));
     }
 
-    /// A file that is not there yet has nothing to overwrite: its edit asks
-    /// no staleness question, so "read it again" is never the answer, and
-    /// only its lease is taken.
+    /// Missing paths still go to the daemon for a staleness decision. Here a
+    /// never-observed path is not stale and is claimed; previously observed
+    /// deletions are covered by the separate stale-path refusal regression.
     #[tokio::test]
     async fn a_missing_path_is_judged_by_the_daemon() {
         // Never seen there: the daemon finds nothing stale, and the write
