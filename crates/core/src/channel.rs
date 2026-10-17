@@ -210,9 +210,18 @@ pub struct Channel {
     /// Why it closed: what the work settled on, or that everyone left.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
+    /// The role whose room this is: every live agent holding the role in
+    /// the project hears it, with whoever wrote to it. It follows who holds
+    /// the role, and stays one thread for the role's life.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 impl Channel {
+    pub fn is_role_room(&self) -> bool {
+        self.role.is_some()
+    }
+
     pub fn is_open(&self) -> bool {
         self.closed_at.is_none()
     }
@@ -333,6 +342,19 @@ impl Channel {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_room_says_its_role_and_an_older_channel_has_none() {
+        let mut room = channel();
+        assert!(!room.is_role_room());
+        let older = serde_json::to_value(&room).unwrap();
+        assert!(older.get("role").is_none(), "nothing new on the wire");
+        room.role = Some("reviewer".into());
+        let wire = serde_json::to_value(&room).unwrap();
+        assert_eq!(wire["role"], "reviewer");
+        let back: Channel = serde_json::from_value(older).unwrap();
+        assert_eq!(back.role, None);
+    }
+
     fn channel() -> Channel {
         Channel {
             id: ChannelId::from("c1"),
@@ -351,6 +373,7 @@ mod tests {
             reviews: Vec::new(),
             closed_at: None,
             resolution: None,
+            role: None,
         }
     }
 

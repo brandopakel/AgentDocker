@@ -634,6 +634,7 @@ fn repair_moves_typed_protection_and_membership_and_refuses_self_review() {
         reviews: vec![],
         closed_at: None,
         resolution: None,
+        role: None,
     };
     store.put_document("channel", "room", &channel).unwrap();
     let mut card = agentdocker_core::Task {
@@ -1081,6 +1082,7 @@ fn resumed_read_sets_keep_latest_paths_and_roll_back_with_the_queue_and_event() 
         reviews: vec![],
         closed_at: None,
         resolution: None,
+        role: None,
     };
     store
         .put_document("channel", room.id.as_str(), &room)

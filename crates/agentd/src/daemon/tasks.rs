@@ -44,10 +44,10 @@ fn task_resource(task: &Task) -> ResourceKey {
 
 /// Who is acting on a card: an agent by its record, or the person — by
 /// their record, or as the bare `user` a shell speaks as.
-struct Actor {
-    id: String,
-    human: bool,
-    project: Option<ProjectId>,
+pub(in crate::daemon) struct Actor {
+    pub(in crate::daemon) id: String,
+    pub(in crate::daemon) human: bool,
+    pub(in crate::daemon) project: Option<ProjectId>,
 }
 
 /// A document a change writes beside its card: (kind, id, JSON).
@@ -172,7 +172,7 @@ impl State {
         }
     }
 
-    fn actor(&mut self, reference: &str) -> Result<Actor, Box<Response>> {
+    pub(in crate::daemon) fn actor(&mut self, reference: &str) -> Result<Actor, Box<Response>> {
         match self.registry.resolve(reference) {
             Ok(id) => {
                 let record = self.registry.get(&id).cloned();

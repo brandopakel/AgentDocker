@@ -218,6 +218,10 @@ impl Daemon {
         if let Some(error) = state.commit_change("role", put, delete, kinds) {
             return error;
         }
+        // Nobody holds a role the project no longer has, and its room closes.
+        if let Some(error) = state.retire_role(&project, &def.role) {
+            return error;
+        }
         Response::Ok
     }
 }

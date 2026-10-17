@@ -982,6 +982,16 @@ pub enum Request {
         #[serde(default)]
         description: Option<String>,
     },
+    /// Give an agent roles from its project's palette, or take some away.
+    /// The person's to do. Answers `agent`.
+    RoleAssign {
+        from: String,
+        agent: String,
+        #[serde(default)]
+        add: Vec<String>,
+        #[serde(default)]
+        remove: Vec<String>,
+    },
     /// Take a role out of the project's palette. The person's to do.
     /// Answers `ok`.
     RoleDelete {

@@ -1752,11 +1752,18 @@ struct RoleArgs {
     #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
     /// Agent id, name or unique prefix (defaults to this session).
     agent: String,
-    /// The role: one word of lowercase letters, digits and hyphens (`reviewer`).
-    #[arg(required_unless_present = "clear")]
-    role: Option<String>,
-    /// Take the role away.
-    #[arg(long, conflicts_with = "role")]
+    /// The roles it holds from now on, from its project's palette
+    /// (`agentdocker roles`): `reviewer`, or `reviewer tester`.
+    #[arg(conflicts_with_all = ["clear", "add", "remove"])]
+    roles: Vec<String>,
+    /// Give it this role as well; repeat for several.
+    #[arg(long)]
+    add: Vec<String>,
+    /// Take this role from it; repeat for several.
+    #[arg(long)]
+    remove: Vec<String>,
+    /// Take all its roles away.
+    #[arg(long, conflicts_with_all = ["add", "remove"])]
     clear: bool,
 }
 
@@ -3829,12 +3836,50 @@ async fn run() -> Result<()> {
                 other => bail!("unexpected reply to reconnect: {other:?}"),
             }
         }
-        Command::Role(RoleArgs { agent, role, clear }) => {
-            let role = if clear { None } else { role };
-            if let Response::Agent { agent } = client.call(&Request::Role { agent, role }).await? {
-                match agent.role() {
-                    Some(role) => println!("{} is the {role}", agent.spec.name),
-                    None => println!("{} has no role", agent.spec.name),
+        Command::Role(RoleArgs {
+            agent,
+            roles,
+            add,
+            remove,
+            clear,
+        }) => {
+            if roles.is_empty() && add.is_empty() && remove.is_empty() && !clear {
+                bail!("name the roles it holds, or use --add, --remove or --clear");
+            }
+            // Naming its roles, or clearing them, takes away the rest.
+            let (add, remove) = if add.is_empty() && remove.is_empty() {
+                let held = match client
+                    .call(&Request::Inspect {
+                        agent: agent.clone(),
+                    })
+                    .await?
+                {
+                    Response::Agent { agent } => agent
+                        .roles()
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>(),
+                    other => bail!("unexpected reply to inspect: {other:?}"),
+                };
+                let remove = held.into_iter().filter(|r| !roles.contains(r)).collect();
+                (roles, remove)
+            } else {
+                (add, remove)
+            };
+            // The person's to do: a command run from an agent's own shell
+            // speaks as that agent, and is refused.
+            let request = Request::RoleAssign {
+                from: sender::resolve(&client, None)
+                    .await?
+                    .unwrap_or_else(|| HUMAN.into()),
+                agent,
+                add,
+                remove,
+            };
+            if let Response::Agent { agent } = client.call(&request).await? {
+                match agent.roles().as_slice() {
+                    [] => println!("{} holds no role", agent.spec.name),
+                    roles => println!("{} holds {}", agent.spec.name, roles.join(", ")),
                 }
             }
         }
