@@ -542,7 +542,8 @@ its prompt, or you looked at what it finished. Each question's notice is its own
 so taking back an answered one never removes a newer question from the same
 agent, and the window's notices about an agent never share one with the
 daemon's. Settings → Appearance → **When
-an agent finishes or waits** turns these off. A notification opens the message's conversation
+an agent finishes or waits** turns these off. The switch’s accessible label names
+both outcomes. A notification opens the message's conversation
 even after it has been read, and even when the sender's record is gone: the
 archive outlives it. A notification about a message in a channel or to every
 agent (`#all`) opens the direct conversation with its sender when that is an
