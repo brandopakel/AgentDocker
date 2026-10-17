@@ -132,6 +132,13 @@ pub(super) struct State {
     pub saving: bool,
     pending_update: Option<i64>,
     pub save_enabled: bool,
+    /// The removed folders the hooks have, as last written; none until a
+    /// write succeeds. While it differs from the catalog's, the write is
+    /// tried again (every `EXCLUSIONS_RETRY` after a failure) and the error
+    /// says the hooks disagree.
+    pub exclusions_synced: Option<Vec<PathBuf>>,
+    pub exclusions_busy: bool,
+    pub exclusions_failed: Option<(Instant, String)>,
     pub window: Option<window::Id>,
     pub closing: bool,
     pub checked_project: Option<PathBuf>,
@@ -330,10 +337,27 @@ impl State {
                 )),
             ),
         };
+        // Folders removed before the hooks read this list are out of their
+        // hands from the first start of a build that writes it. A failure
+        // is said, and the write retried from the update's tail.
+        let (exclusions_synced, exclusions_failed) = if save_enabled {
+            match catalog.sync_exclusions(home) {
+                Ok(()) => (Some(catalog.hidden.clone()), None),
+                Err(error) => (
+                    None,
+                    Some((Instant::now(), exclusions_message(&error.to_string()))),
+                ),
+            }
+        } else {
+            (None, None)
+        };
+        let error = error.or_else(|| exclusions_failed.as_ref().map(|(_, m)| m.clone()));
         Self {
             catalog,
             error,
             save_enabled,
+            exclusions_synced,
+            exclusions_failed,
             drafts,
             draft_home,
             session_drafts: saved
@@ -747,6 +771,8 @@ pub enum Message {
     Unpin,
     ForgetProject,
     CatalogSaved(u64, Result<(), String>),
+    /// The removed folders as written for the hooks, or why not.
+    ExclusionsSynced(Vec<PathBuf>, Result<(), String>),
     Draft(MessageId, String),
     Answer(MessageId),
     SecretEdit(String, String, Option<agentdocker_core::secret::SecretText>),
@@ -1998,6 +2024,25 @@ impl App {
                     self.shell.closing = true;
                 }
             }
+            Message::ExclusionsSynced(hidden, result) => {
+                self.shell.exclusions_busy = false;
+                match result {
+                    Ok(()) => {
+                        // The disagreement is over: its error goes too.
+                        if let Some((_, message)) = self.shell.exclusions_failed.take()
+                            && self.shell.error.as_deref() == Some(message.as_str())
+                        {
+                            self.shell.error = None;
+                        }
+                        self.shell.exclusions_synced = Some(hidden);
+                    }
+                    Err(error) => {
+                        let message = exclusions_message(&error);
+                        self.shell.error = Some(message.clone());
+                        self.shell.exclusions_failed = Some((Instant::now(), message));
+                    }
+                }
+            }
             Message::CatalogSaved(generation, result) => {
                 self.shell.saving = false;
                 match result {
@@ -2833,6 +2878,31 @@ impl App {
                 move |result| Message::CatalogSaved(generation, result),
             ));
         }
+        // The hooks' list follows the catalog's removed folders, retried
+        // while it fails.
+        if self.shell.save_enabled
+            && !self.shell.exclusions_busy
+            && self.shell.exclusions_synced.as_ref() != Some(&self.shell.catalog.hidden)
+            && self
+                .shell
+                .exclusions_failed
+                .as_ref()
+                .is_none_or(|(at, _)| at.elapsed() >= EXCLUSIONS_RETRY)
+        {
+            self.shell.exclusions_busy = true;
+            let (home, catalog) = (self.home.clone(), self.shell.catalog.clone());
+            let hidden = catalog.hidden.clone();
+            tasks.push(Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        catalog.sync_exclusions(&home).map_err(|e| e.to_string())
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                move |result| Message::ExclusionsSynced(hidden.clone(), result),
+            ));
+        }
         if let Some(generation) = self.shell.drafts.begin(self.shell.closing) {
             let home = self.shell.draft_home.clone();
             let saved = self.shell.draft_snapshot();
@@ -3588,9 +3658,52 @@ impl App {
     }
 }
 
+/// How long a failed write of the hooks' removed folders waits before it
+/// is tried again.
+pub const EXCLUSIONS_RETRY: Duration = Duration::from_secs(30);
+
+/// What the person is told while the hooks' list disagrees with theirs.
+fn exclusions_message(error: &str) -> String {
+    format!(
+        "Removed projects could not be passed to the hooks ({error}); sessions there may still be coordinated. Trying again."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hooks' list of removed folders is written on its own: a
+    /// failure is said and left for a retry rather than stopping the
+    /// workspace from saving, and the retry's success takes the error back.
+    #[test]
+    fn a_failed_exclusion_sync_is_said_and_retried() {
+        let (mut app, _commands, _messages) = app();
+        app.shell.save_enabled = true;
+        let removed = vec![PathBuf::from("/work/gone")];
+        app.shell.catalog.hidden = removed.clone();
+        let _ = app.update(Message::ExclusionsSynced(
+            removed.clone(),
+            Err("disk full".into()),
+        ));
+        assert!(
+            app.shell
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("disk full"))
+        );
+        assert!(app.shell.save_enabled, "the workspace still saves");
+        assert!(app.shell.exclusions_failed.is_some());
+        // Not before the wait; then once more, and its success clears it.
+        let _ = app.update(Message::Tick);
+        assert!(!app.shell.exclusions_busy, "waits {EXCLUSIONS_RETRY:?}");
+        app.shell.exclusions_failed.as_mut().unwrap().0 -= EXCLUSIONS_RETRY;
+        let _ = app.update(Message::Tick);
+        assert!(app.shell.exclusions_busy, "tried again");
+        let _ = app.update(Message::ExclusionsSynced(removed.clone(), Ok(())));
+        assert!(app.shell.error.is_none());
+        assert_eq!(app.shell.exclusions_synced, Some(removed));
+    }
     fn app() -> (App, CommandReceiver, SyncSender<Msg>) {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
