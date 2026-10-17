@@ -77,7 +77,8 @@ submillisecond ledger timestamps and lost proof; two controls fail with the
 original implementation. Source `8d31b6a1` passed the complete 1,824-Rust/226-Python
 gate with zero retries, including formatting, strict Clippy, docs, doctests,
 all five packages and release build. Final source review found no actionable
-comments; final platform CI is still required before integration.
+comments and all final platform checks passed; the correction is merged in main.
+Publication and broader hosted/runtime acceptance remain separate.
 
 Proof caches use ordered eviction and component-prefix lookups, so watcher
 batches do not scan every agent's reads while holding the state lock. Accounting

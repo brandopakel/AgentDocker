@@ -78,7 +78,10 @@ details. An agent AgentDocker started opens its terminal inside the app. One
 started elsewhere is found where it runs: in a tmux or herdr pane, that pane is
 selected first; then, on macOS, its Terminal or iTerm tab is brought forward
 (macOS asks once to let AgentDocker control that app), and any other host —
-Ghostty, an editor's terminal, a JetBrains IDE — is brought to the front. The
+Ghostty, an editor's terminal, a JetBrains IDE — is brought to the front. Ghostty
+is not asked for the agent's tab: its scripting (1.3.1) names each terminal's
+folder but no tty or process, and a folder is not an identity (an agent can work
+in another folder than its tab reports, and that folder can be another tab's). The
 details header says where an agent runs (*in Terminal (ttys005)*, *in
 tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
 tmux pane**). Nothing is typed into the agent, and no second copy is started.
@@ -132,7 +135,9 @@ or *waiting for you* in amber). Seen across
 projects, each row starts with its project's name (*keel · Claude Code · Badger
 asks: …*). A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not
-here: its row says so in amber, and opening it shows the details — how many
+here: its row says so in amber, and opening it shows the details — for a
+provider's limit, when it lifts on your own clock (*Usage limit resets in 42 min
+(15:00).*), how many
 messages are kept, that resuming the conversation delivers them, **Review** for
 a live session's delivery and **Dismiss** for an ended one's notice, which
 leaves the messages as they are.
@@ -142,7 +147,17 @@ agents that need you, and its name in semibold when something there is new;
 how many agents run is not shown, since it is not a reason to look. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
-Inbox. A command a live session asks to run is answered in the row itself:
+Inbox, where an approval card also has a line for words to go with **Deny** —
+why not, or what to do instead — sent to the agent as your message once the
+denial is accepted, opening with what was refused (*Denied `rm -rf build`: use
+the fixture script instead*); if that message is itself refused (a pause, a full
+work queue), its words go into the agent's message box instead and the status
+line says it was not sent; if its answer is lost (a dropped connection), they go
+there too, and the status line says it may have been sent, so check the
+conversation before sending again. Until the daemon takes it the note is saved
+with the drafts as that message-box text, so a window closed meanwhile shows it
+there on reopening, never sent again by itself (the provider's own answer is
+still exactly Deny; Allow sends no words). A command a live session asks to run is answered in the row itself:
 **Deny** and **Allow once** send the same exact answer as the Inbox card, with
 the command in the row's words; file changes, which must be looked at first,
 and every other question open with **Answer**. The first three items are shown; **Show more** expands the same list and
@@ -271,7 +286,10 @@ automatically aborts or resets, since a concurrent operation may belong to you.
 An unreadable final operation check refuses execution. A branch that moved
 since it was read is never merged unseen. Nothing is pushed. Changes are read
 again when the session commits or its branch moves, and with **Refresh**. Once
-nothing is left to merge, the next step is right there: while the session runs
+nothing is left to merge — or GitHub reports a merged pull request whose head
+matches both the reviewed and current branch head (*Merged on GitHub as #340.*),
+where a squash leaves the branch's own commits uncounted by
+the main branch, so no Merge is offered — the next step is right there: while the session runs
 the section says its worktree stays until it is done; once it has ended,
 **Remove its worktree** removes the folder (only when it is clean) and its branch
 when git considers it merged; the branch is kept, and the section says so, when not. **Details** reveals the session ID, process,
