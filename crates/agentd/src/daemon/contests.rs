@@ -117,6 +117,7 @@ impl Daemon {
                 reviews: Vec::new(),
                 closed_at: None,
                 resolution: None,
+                role: None,
             };
             state.install_channel(channel.clone(), &records);
             state.tell_channel(

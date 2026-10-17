@@ -147,6 +147,7 @@ impl State {
             reviews: Vec::new(),
             closed_at: None,
             resolution: None,
+            role: None,
         };
         self.install_channel(channel.clone(), &members);
         self.tell_channel(
@@ -256,7 +257,7 @@ impl State {
         self.channels
             .get(id)
             .filter(|c| c.is_open())
-            .map(|c| c.members.clone())
+            .map(|c| self.room_members(c))
             .unwrap_or_default()
     }
 
@@ -266,7 +267,10 @@ impl State {
         self.channels
             .values()
             .filter(|channel| {
+                // A role's room outlives every holder: it is one thread for
+                // the role, said in again when somebody next holds it.
                 channel.is_open()
+                    && !channel.is_role_room()
                     && channel.has(agent)
                     && !channel
                         .members
@@ -463,6 +467,7 @@ impl Daemon {
             reviews: Vec::new(),
             closed_at: None,
             resolution: None,
+            role: None,
         };
         let names = records
             .iter()
@@ -497,7 +502,7 @@ impl Daemon {
         let response = state.publish_with_channel(
             envelope,
             None,
-            Some((channel.clone(), event, journal)),
+            Some((channel.clone(), vec![event], journal)),
             None,
         );
         if !matches!(response, Response::Sent { .. }) {
@@ -520,6 +525,12 @@ impl Daemon {
         let Some(mut channel) = state.channels.get(&id).cloned() else {
             return Response::error(ErrorCode::NotFound, "channel vanished");
         };
+        if channel.is_role_room() {
+            return Response::error(
+                ErrorCode::Invalid,
+                "a role's room follows who holds the role: give the role instead",
+            );
+        }
         if !channel.is_open() || !matches!(channel.subject, ChannelSubject::Task { .. }) {
             return Response::error(
                 ErrorCode::Invalid,
@@ -555,8 +566,12 @@ impl Daemon {
             None,
             Utc::now(),
         );
-        let response =
-            state.publish_with_channel(envelope, None, Some((channel.clone(), event, None)), None);
+        let response = state.publish_with_channel(
+            envelope,
+            None,
+            Some((channel.clone(), vec![event], None)),
+            None,
+        );
         if !matches!(response, Response::Sent { .. }) {
             return response;
         }
@@ -583,6 +598,12 @@ impl Daemon {
         let Some(mut channel) = state.channels.get(&id).cloned() else {
             return Response::error(ErrorCode::NotFound, "channel vanished");
         };
+        if channel.is_role_room() {
+            return Response::error(
+                ErrorCode::Invalid,
+                "a role's room closes only when its role is taken out of the project",
+            );
+        }
         if !channel.is_open() {
             return Response::Channel {
                 channel: channel.clone(),
@@ -624,7 +645,7 @@ impl Daemon {
         let response = state.publish_with_channel(
             envelope,
             None,
-            Some((channel.clone(), event, journal)),
+            Some((channel.clone(), vec![event], journal)),
             None,
         );
         if !matches!(response, Response::Sent { .. }) {
@@ -703,6 +724,12 @@ impl Daemon {
         let Some(channel) = state.channels.get(&id).cloned() else {
             return Response::error(ErrorCode::NotFound, "channel vanished");
         };
+        if channel.is_role_room() {
+            return Response::error(
+                ErrorCode::Invalid,
+                "a review is asked in a work channel, not a role's room",
+            );
+        }
         if !channel.is_open() {
             return Response::error(ErrorCode::Invalid, "that channel is closed");
         }
@@ -758,6 +785,12 @@ impl Daemon {
             Err(e) => return *e,
         };
         let mut state = lock(&self.state);
+        if state.channels.get(&id).is_some_and(Channel::is_role_room) {
+            return Response::error(
+                ErrorCode::Invalid,
+                "a review is given in a work channel, not a role's room",
+            );
+        }
         let author = match of {
             Some(reference) => match state.resolve(&reference) {
                 Ok(id) => id,
@@ -844,7 +877,7 @@ impl Daemon {
         let response = state.publish_with_channel(
             envelope,
             None,
-            Some((channel.clone(), event, journal)),
+            Some((channel.clone(), vec![event], journal)),
             None,
         );
         if !matches!(response, Response::Sent { .. }) {

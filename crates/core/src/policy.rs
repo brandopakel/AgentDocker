@@ -108,9 +108,15 @@ impl Rule {
                 return false;
             }
         }
-        self.labels
-            .iter()
-            .all(|(key, value)| agent.spec.labels.get(key) == Some(value))
+        // An agent may hold several roles: a rule on one covers each that
+        // holds it.
+        self.labels.iter().all(|(key, value)| {
+            if key == crate::agent::ROLE_LABEL {
+                agent.holds_role(value)
+            } else {
+                agent.spec.labels.get(key) == Some(value)
+            }
+        })
     }
 
     fn label(&self) -> String {
@@ -275,6 +281,28 @@ mod tests {
 
     fn rule(toml: &str) -> Policy {
         toml::from_str(toml).expect("a policy")
+    }
+
+    #[test]
+    fn a_rule_on_a_role_covers_each_agent_that_holds_it_among_others() {
+        let policy = rule(
+            r#"
+[[rule]]
+name = "explorers change nothing"
+labels = { role = "explorer" }
+deny = ["claim:path:/repo/**"]
+"#,
+        );
+        let mut both = agent("a", "codex");
+        both.spec
+            .labels
+            .insert(crate::agent::ROLE_LABEL.into(), "explorer,tester".into());
+        assert!(!policy.check(&both, "claim:path:/repo/x").is_allowed());
+        let mut near = agent("b", "codex");
+        near.spec
+            .labels
+            .insert(crate::agent::ROLE_LABEL.into(), "explorer-2".into());
+        assert!(policy.check(&near, "claim:path:/repo/x").is_allowed());
     }
 
     #[test]

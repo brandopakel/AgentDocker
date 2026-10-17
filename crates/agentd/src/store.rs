@@ -72,6 +72,10 @@ pub struct TaskTransition<'a> {
 // fields, comments and a history (`board`, `task_comment` and `task_entry`
 // documents). A card may sit in a Blocked or Cancelled lane an older daemon
 // cannot read, and an older daemon rewriting a card would drop its fields.
+// Schema 28, unreleased, also carries an agent's roles as a comma-joined set
+// in its `role` label and a role's room as a channel with `role`: an older
+// daemon would match a policy on one role by the whole set, close a room its
+// holders left, and drop `role` rewriting the channel.
 pub(crate) const SCHEMA_VERSION: i64 = 28;
 
 const SCHEMA: &str = "

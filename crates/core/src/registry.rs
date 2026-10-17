@@ -334,20 +334,24 @@ impl Registry {
         if self.live().any(|a| a.spec.name == spelled) {
             return Err(RegistryError::RoleShadowed(role.to_owned()));
         }
-        let holders: Vec<&AgentRecord> = self
-            .live()
-            .filter(|a| a.role() == Some(role))
-            .filter(|a| {
-                project.is_none_or(|wanted| {
-                    a.project.as_ref().is_some_and(|mine| mine.id() == *wanted)
-                })
-            })
-            .collect();
+        let holders = self.holders(role, project);
         match holders.as_slice() {
             [one] => Ok(one.id.clone()),
             [] => Err(RegistryError::RoleNotFound(role.to_owned())),
             _ => Err(RegistryError::RoleAmbiguous(role.to_owned())),
         }
+    }
+
+    /// The live agents holding `role`, in `project` when one is given.
+    pub fn holders(&self, role: &str, project: Option<&ProjectId>) -> Vec<&AgentRecord> {
+        self.live()
+            .filter(|a| a.holds_role(role))
+            .filter(|a| {
+                project.is_none_or(|wanted| {
+                    a.project.as_ref().is_some_and(|mine| mine.id() == *wanted)
+                })
+            })
+            .collect()
     }
 
     pub fn live(&self) -> impl Iterator<Item = &AgentRecord> {

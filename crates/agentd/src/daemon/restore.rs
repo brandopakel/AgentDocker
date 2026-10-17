@@ -1416,6 +1416,7 @@ mod tests {
                 reviews: Vec::new(),
                 closed_at: None,
                 resolution: None,
+                role: None,
             };
             let journal_before = {
                 let mut state = lock(&daemon.state);
