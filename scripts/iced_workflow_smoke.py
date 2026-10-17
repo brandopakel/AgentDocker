@@ -245,7 +245,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          # seeing the mixed-case sidebar label alone cannot pass.
                          step("click", id=f"project-menu-{project}"), step("click", id=f"project-rename-start-{project}"),
                          step("fill", id=f"project-rename-{project}", text="Renamed Project"), step("click", id=f"project-rename-save-{project}"),
-                         step("click", id="projects"), step("wait_text", text="RENAMED PROJECT"), step("capture", name="renamed-all-projects"),
+                         step("click", id="projects"), step("wait_text", text="Renamed Project"), step("capture", name="renamed-all-projects"),
                          step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                          step("click", id=f"project-menu-{project}"), step("click", id=f"project-rename-start-{project}"),
                          step("fill", id=f"project-rename-{project}", text=""), step("click", id=f"project-rename-save-{project}"),
@@ -260,11 +260,11 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("fill", id="session-search", text=previous["id"]),
                          step("wait_control", id=f"session-{previous['id']}", present=True),
                          step("wait_control", id=f"session-{agent['id']}", present=False),
-                         step("wait_text_absent", text="No matching sessions"),
+                         step("wait_control", id="session-search-clear", present=False),
                          step("capture", name="earlier-search-match"),
                          step("fill", id="session-search", text="fixture-no-session-matches"),
                          step("wait_control", id=f"session-{previous['id']}", present=False),
-                         step("wait_text", text="No matching sessions"),
+                         step("wait_control", id="session-search-clear", present=True),
                          step("fill", id="session-search", text=""),
                          step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("click", id="sessions-attention"), step("wait_control", id=f"session-{agent['id']}", present=True),
@@ -284,7 +284,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("wait_text", text="Use API v2"),
                          step("capture", name="inbox-draft"), step("click", id="connections"), step("click", id="inbox"),
                          step("wait_text", text="Use API v2"), step("click", id=f"send-answer-{question['id']}"),
-                         step("wait_text", text="answered"), *review_steps, step("click", id="projects"),
+                         step("wait_control", id=f"send-answer-{question['id']}", present=False), *review_steps, step("click", id="projects"),
                          step("click", id=f"session-{agent['id']}"), step("resize", width=720, height=540), step("wait_control", id="attach-session", present=True),
                          step("capture", name="compact-session"), step("click", id="close-session"),
                          step("wait_control", id=f"session-{agent['id']}", present=True),
@@ -305,11 +305,11 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("click", id="project-more"), step("click", id="project-tab-Usage"), step("wait_control", id="usage-since-24h", present=True),
                          step("wait_text_absent", text="Reading…"), step("capture", name="usage"),
                          step("click", id="connections"), step("capture", name="connections"),
-                         step("click", id="connection-details-codex"), step("wait_text", text="Tools (MCP)"),
+                         step("click", id="connection-details-codex"), step("wait_control", id="connection-health", present=True),
                          step("click", id="setup-review-codex"),
-                         step("wait_text", text="Connect Codex"), step("capture", name="setup-review"),
-                         step("click", id="apply-setup"), step("wait_text", text="Codex setup saved"),
-                         step("click", id="undo-setup"), step("wait_text", text="Codex setup undone"), step("click", id="close-setup"),
+                         step("wait_control", id="apply-setup", present=True), step("capture", name="setup-review"),
+                         step("click", id="apply-setup"), step("wait_control", id="undo-setup", present=True),
+                         step("click", id="undo-setup"), step("wait_control", id="undo-setup", present=False), step("click", id="close-setup"),
                          step("click", id="add-project"), step("fill", id="project-path", text=str(pinned)),
                          step("click", id="pin-folder"), step("wait_text", text="pinned-api"), step("capture", name="pinned-empty-project"),
                          # The row's own menu renames the entry here (nothing on disk) and
@@ -329,7 +329,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          # This fake CLI is a terminal fixture, not a provider input server.
                          step("click", id="launch-more"), step("fill", id="launch-name", text="launched-from-iced"), step("capture", name="launch-dialog"),
                          step("click", id="confirm-launch"),
-                         step("wait_text", text="Agent launched"), step("click", id="project-tab-Agents"), step("click", id="attach-session"),
+                         step("wait_control", id="confirm-launch", present=False), step("click", id="project-tab-Agents"), step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="launched-terminal"), step("click", id="detach-terminal"),
                          step("click", id="stop-session"), step("wait_text", text="Confirm stop"), step("capture", name="confirm-stop"),
                          step("click", id="stop-session"),
@@ -341,7 +341,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("resize", width=720, height=540), step("click", id="larger-ui"), step("click", id="larger-ui"),
                          step("focus", id="installation"), step("wait_focus", id="installation"), step("capture", name="compact-zoom-focus"),
                          step("click", id="installation"), step("capture", name="installation"), step("click", id="projects"),
-                         step("wait_text", text="All projects"), step("click", id=f"project-{pinned}"),
+                         step("wait_control", id=f"project-{pinned}", present=True), step("click", id=f"project-{pinned}"),
                          step("pause", millis=400)]
                 def launch(name, scenario):
                     nonlocal window
@@ -477,35 +477,48 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                  step("wait_control", id=f"reply-thread-{routed}", present=False),
                                  step("click", id="thread-back"), step("click", id=f"thread-{agent['id']}"),
                                  step("wait_text", text="Keep this narrow draft"), step("capture", name="narrow-draft-kept"),
-                                 # The board: the person files a card as Ready, it is for the
-                                 # taking; the fixture agent pulls it on the daemon (the gated
-                                 # action below) and the card shows its holder; the person
-                                 # opens it, reads what done means, moves it on and archives it.
+                                 # The board: the person files a card with Backlog's quick add;
+                                 # the Ready card is for the taking; the fixture agent pulls it
+                                 # on the daemon (the gated action below) and the card shows
+                                 # its holder; the person opens it, reads what done means,
+                                 # moves it on and archives it.
                                  step("resize", width=1180, height=760), step("click", id="projects"),
                                  step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"), step("click", id="project-tab-Board"),
-                                 step("wait_control", id="task-title", present=True),
                                  step("wait_control", id=f"task-{card['id']}", present=True),
-                                 step("fill", id="task-title", text="Write the fixture notes"),
-                                 step("fill", id="task-acceptance", text="Notes cover the fixture routes"),
-                                 step("click", id="task-file-backlog"), step("wait_text", text="Write the fixture notes"),
+                                 step("click", id="lane-add-card-backlog"),
+                                 step("fill", id="quick-add-backlog", text="Write the fixture notes"),
+                                 step("click", id="quick-add-backlog"), step("wait_text", text="Write the fixture notes"),
                                  step("click", id=f"task-{card['id']}"), step("wait_text", text="Login works with SSO and a password"),
                                  step("wait_text", text="unassigned"), step("capture", name="board-ready")]
                 board_gate = len(narrow_steps)
                 narrow_steps += [step("wait_text_absent", text="unassigned"), step("wait_text", text="narrow-fixture"),
                                  step("capture", name="board-pulled"),
-                                 # Back is offered in every column but Backlog, so the move to
-                                 # Review is awaited by the next step's label changing to Done.
-                                 step("click", id=f"task-next-{card['id']}"), step("wait_text", text="Done \u203a"),
+                                 # Back is offered in every lane but the first, so the move to
+                                 # Review is awaited by the next move's name changing to Done.
+                                 step("click", id=f"task-next-{card['id']}"), step("wait_text", text="To Done"),
                                  step("click", id=f"task-next-{card['id']}"), step("wait_control", id=f"task-next-{card['id']}", present=False),
                                  step("capture", name="board-done"),
-                                 step("click", id=f"task-archive-{card['id']}"), step("wait_control", id=f"task-{card['id']}", present=False)]
+                                 # Every card as a row, then back to lanes.
+                                 step("click", id="board-layout"), step("wait_control", id=f"task-row-{card['id']}", present=True),
+                                 step("capture", name="board-table"),
+                                 step("click", id="board-layout"), step("wait_control", id=f"task-{card['id']}", present=True),
+                                 step("click", id=f"task-archive-{card['id']}"), step("wait_control", id=f"task-{card['id']}", present=False),
+                                 # To-do: the card the person filed, that nobody holds.
+                                 step("click", id="todo"), step("wait_text", text="Write the fixture notes"),
+                                 step("capture", name="todo"),
+                                 # Plans: a new plan, written and saved, in the list.
+                                 step("click", id="projects"), step("click", id=f"project-{project}"),
+                                 step("click", id="project-more"), step("click", id="project-tab-Plans"),
+                                 step("click", id="plan-new"), step("fill", id="plan-title", text="Fixture plan"),
+                                 step("click", id="plan-save"), step("wait_text", text="Fixture plan, Draft"),
+                                 step("capture", name="plans")]
                 def pull_card():
                     cards = {c["id"]: c for c in rpc(endpoint, {"op": "tasks", "project": str(project)})["tasks"]}
                     filed = [c for c in cards.values() if c["title"] == "Write the fixture notes"]
-                    assert len(filed) == 1 and filed[0]["column"] == "backlog" and filed[0]["acceptance"] == "Notes cover the fixture routes", cards
+                    assert len(filed) == 1 and filed[0]["column"] == "backlog" and filed[0]["lane"] == "backlog", cards
                     assert cards[card["id"]]["column"] == "ready", cards
                     pulled = rpc(endpoint, {"op": "task_pull", "agent": narrow["id"], "task": card["id"]})
-                    assert pulled["type"] == "task" and pulled["task"]["assignee"] == narrow["id"] and pulled["task"]["column"] == "in_progress", pulled
+                    assert pulled["type"] == "task_detail" and pulled["task"]["assignee"] == narrow["id"] and pulled["task"]["column"] == "in_progress" and pulled["lease"]["resource"] == f"task:{pulled['task']['id']}", pulled
                     # The pull holds the card as a task:<id> lease with its title as the note.
                     held = rpc(endpoint, {"op": "leases", "resource": f"task:{card['id']}"})["leases"]
                     assert [(l["holder"], l["note"]) for l in held] == [(narrow["id"], card["title"])], held
@@ -621,8 +634,8 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("fill", id="session-message-text", text="Keep this session across reopen\nSecond line 日本語"),
                         step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                         step("click", id="project-tab-Board"),
-                        step("fill", id="task-title", text="Unfiled card café 日本語"),
-                        step("fill", id="task-acceptance", text="Check reopen without filing"),
+                        step("click", id="lane-add-card-backlog"),
+                        step("fill", id="quick-add-backlog", text="Unfiled card café 日本語"),
                     ]
                     report["constrained_panes_window"] = launch("constrained-panes", pane_steps)
                     kept = json.loads(catalog_path.read_text())["panes"]
@@ -641,7 +654,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 assert saved_drafts["channels"] == {}, saved_drafts
                 assert saved_drafts["answers"][draft_question] == answer_marker, saved_drafts
                 assert saved_drafts["boards"][str(project)] == {
-                    "title": "Unfiled card café 日本語", "acceptance": "Check reopen without filing"
+                    "title": "Unfiled card café 日本語", "acceptance": ""
                 }, saved_drafts
                 cards_before_reopen = rpc(endpoint, {"op": "tasks", "project": str(project), "archived": True})["tasks"]
                 restored_steps = [
@@ -667,7 +680,6 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                     step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                     step("click", id="project-tab-Board"),
                     step("wait_text", text="Unfiled card café 日本語"),
-                    step("wait_text", text="Check reopen without filing"),
                     step("capture", name="restored-board-draft"),
                 ]
                 report["restored_drafts_window"] = launch("restored-drafts", restored_steps)
@@ -692,7 +704,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             assert not (home / ".codex/config.toml").exists(), "Undo did not restore fixture configuration"
             launched = [a for a in rpc(endpoint, {"op": "list", "all": True})["agents"] if a["spec"]["name"] == "launched-from-iced"]
             assert len(launched) == 1 and launched[0]["status"]["state"] == "exited", launched
-            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_control", id="project-terminal", present=True), step("click", id="project-tab-Agents"), step("wait_text", text="No agents in this project"), step("capture", name="restored-last-project"), step("click", id="sessions-earlier"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-earlier"),
+            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_control", id="project-terminal", present=True), step("click", id="project-tab-Agents"), step("wait_control", id="empty-launch", present=True), step("capture", name="restored-last-project"), step("click", id="sessions-earlier"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-earlier"),
                 step("click", id="command-palette"), step("wait_control", id="palette-search", present=True), step("capture", name="command-palette-dark"),
                 step("click", id="palette-item-action-launch"), step("wait_control", id="palette-back", present=True),
                 step("wait_control", id="palette-item-tool-codex", present=True), step("capture", name="command-palette-tools-dark"),
@@ -746,7 +758,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                      step("wait_text", text=input_status), *send_probe,
                                      step("fill", id=f"reply-{receiver['id']}", text="Keep the connection draft"),
                                      step("click", id=f"input-connection-{conversation}"),
-                                     step("wait_text", text="Tools (MCP)"), step("click", id="inbox"),
+                                     step("wait_control", id="connection-health", present=True), step("click", id="inbox"),
                                      step("wait_text", text="Keep the connection draft"),
                                      step("wait_text", text=input_status), step("capture", name=name+"-composer")])
             rpc(endpoint, {"op": "report_activity", "agent": receiver["id"],
@@ -824,7 +836,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 step("click", id="projects"), step("click", id=f"project-{repo}"),
                 step("click", id="project-tab-Agents"),
                 step("click", id=f"session-{reviewer['id']}"),
-                step("wait_text", text="feat/login → main"), step("wait_text", text="work committed"),
+                step("wait_text", text="feat/login → main"), step("wait_control", id="merge-branch", present=True),
                 step("click", id="changes-file-login.rs"), step("wait_text", text="+fn login() {}"),
                 step("capture", name="review-changes"),
                 step("click", id="merge-branch"), step("wait_text", text="Merged into main"),

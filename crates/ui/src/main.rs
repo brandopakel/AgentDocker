@@ -229,9 +229,9 @@ fn main() -> iced::Result {
         app::App::view,
     )
     .title("AgentDocker")
-    .font(include_bytes!("fonts/Inter-Regular.ttf").as_slice())
-    .font(include_bytes!("fonts/Inter-Medium.ttf").as_slice())
-    .font(include_bytes!("fonts/Inter-SemiBold.ttf").as_slice())
+    .font(include_bytes!("fonts/IBMPlexSans-Regular.ttf").as_slice())
+    .font(include_bytes!("fonts/IBMPlexSans-Medium.ttf").as_slice())
+    .font(include_bytes!("fonts/IBMPlexSans-SemiBold.ttf").as_slice())
     .default_font(app::style::UI)
     .theme(app::App::theme)
     .scale_factor(app::App::scale_factor)

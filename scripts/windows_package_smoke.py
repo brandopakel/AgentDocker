@@ -22,7 +22,7 @@ def extract_checked(archive, destination, manifest):
     names = PACKAGE.binary_names("x86_64-pc-windows-msvc")
     expected = {"AgentDocker/" + name for name in names}
     expected.update({"AgentDocker/build.json", "AgentDocker/README.txt",
-                     "AgentDocker/licenses/LICENSE-Inter.txt",
+                     "AgentDocker/licenses/LICENSE-IBMPlexSans.txt",
                      "AgentDocker/licenses/LICENSE-AgentDocker.txt"})
     if PACKAGE.sha256(archive) != manifest["artifacts"][archive.name]:
         raise ValueError("Windows archive checksum differs from its manifest")

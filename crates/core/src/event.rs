@@ -479,24 +479,95 @@ pub enum EventKind {
         /// The `task:<id>` lease the pull took; it is the holding.
         lease: crate::LeaseId,
     },
-    /// A card moved columns, by its assignee or the person.
+    /// A card moved lanes, by its assignee or the person.
     TaskMoved {
         task: crate::TaskId,
         project: ProjectId,
         by: String,
         column: crate::Column,
+        /// The lane it went to, by slug.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lane: Option<String>,
     },
-    /// A card's words or holder changed.
+    /// A card's words, fields or holder changed: which, by name.
     TaskUpdated {
         task: crate::TaskId,
         project: ProjectId,
         by: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fields: Vec<String>,
     },
     /// A card left the board.
     TaskArchived {
         task: crate::TaskId,
         project: ProjectId,
         by: String,
+    },
+    /// A card came back on the board.
+    TaskUnarchived {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+    },
+    /// Somebody said something on a card.
+    TaskCommented {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+        comment: crate::CommentId,
+    },
+    /// A comment was rewritten, or deleted.
+    TaskCommentChanged {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+        comment: crate::CommentId,
+        deleted: bool,
+    },
+    /// A board was made, renamed or reshaped.
+    BoardChanged {
+        project: ProjectId,
+        board: String,
+        by: String,
+    },
+    /// A board's rule was made, changed or deleted.
+    RuleChanged {
+        project: ProjectId,
+        board: String,
+        rule: String,
+        by: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deleted: bool,
+    },
+    /// A rule acted on a card (what it did has its own event too).
+    RuleFired {
+        project: ProjectId,
+        rule: String,
+        task: crate::TaskId,
+    },
+    /// A project's tag was made, recoloured, renamed or deleted.
+    TagChanged {
+        project: ProjectId,
+        name: String,
+        by: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        renamed_to: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deleted: bool,
+    },
+    /// A plan was written or changed.
+    PlanChanged {
+        project: ProjectId,
+        plan: String,
+        by: String,
+    },
+    /// A project file was kept, linked, unlinked or deleted.
+    ProjectFileChanged {
+        project: ProjectId,
+        file: String,
+        by: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deleted: bool,
     },
     /// A webhook sink gave up on deliveries: which sink (by its configured
     /// name, never its address), the last event kind it could not post,

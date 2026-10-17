@@ -14,7 +14,7 @@ const NAMES: &[&str] = &[
     "AgentDocker/build.json",
     "AgentDocker/README.txt",
     "AgentDocker/licenses/LICENSE-AgentDocker.txt",
-    "AgentDocker/licenses/LICENSE-Inter.txt",
+    "AgentDocker/licenses/LICENSE-IBMPlexSans.txt",
 ];
 const MAX_EXPANDED_BYTES: u64 = 210 * 1024 * 1024;
 

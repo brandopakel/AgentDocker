@@ -251,6 +251,15 @@ fn mutates(request: &Request) -> bool {
             | Request::SearchMessages { .. }
             | Request::Leases { .. }
             | Request::Tasks { .. }
+            | Request::TaskGet { .. }
+            | Request::Boards { .. }
+            | Request::Rules { .. }
+            | Request::Tags { .. }
+            | Request::TaskSearch { .. }
+            | Request::Plans { .. }
+            | Request::PlanGet { .. }
+            | Request::Files { .. }
+            | Request::FileGet { .. }
             | Request::Usage { .. }
             | Request::Events { .. }
             | Request::ResumeEvents { .. }
@@ -362,6 +371,10 @@ struct State {
     discovered: Discovered,
     store: Store,
     storage_error: Option<String>,
+    /// Cards an agent is being started on, by the rule that asked (none
+    /// for the person): not started on twice, and counted against the
+    /// rule's limit until the agent has the card.
+    starting_cards: BTreeMap<agentdocker_core::TaskId, Option<String>>,
     /// Watcher attachment/gap boundary for each checkout. An attachment and
     /// a flush acknowledgement do not prove OS event completeness; clearing a
     /// changed read additionally requires matching current content evidence.
@@ -1636,6 +1649,7 @@ impl Daemon {
                 discovered: Discovered::default(),
                 store,
                 storage_error: None,
+                starting_cards: BTreeMap::new(),
                 ledger_since: HashMap::new(),
                 content_proofs: read_content::Proofs::default(),
                 coordination: match pending_transfer {
@@ -2310,20 +2324,104 @@ impl Daemon {
                 acceptance,
                 column,
                 links,
+                board,
+                lane,
+                description,
+                priority,
+                size,
+                due,
+                external_blocker,
+                parent,
+                blocked_by,
+                tags,
+                plan,
             } => {
-                self.task_create(from, project, title, acceptance, column, links)
-                    .await
+                let card = agentdocker_core::protocol::BatchCard {
+                    reference: None,
+                    title,
+                    acceptance,
+                    description,
+                    lane: None,
+                    priority,
+                    size,
+                    due,
+                    external_blocker,
+                    parent,
+                    blocked_by,
+                    tags,
+                    links,
+                    plan,
+                };
+                self.task_file(
+                    tasks::Filing {
+                        from,
+                        project,
+                        board,
+                        lane,
+                        column,
+                        tags: Vec::new(),
+                        cards: vec![card],
+                    },
+                    false,
+                )
+                .await
             }
+            Request::TaskCreateMany {
+                from,
+                project,
+                board,
+                lane,
+                tags,
+                cards,
+            } => {
+                self.task_file(
+                    tasks::Filing {
+                        from,
+                        project,
+                        board,
+                        lane,
+                        column: None,
+                        tags,
+                        cards,
+                    },
+                    true,
+                )
+                .await
+            }
+            Request::TaskGet { task } => self.task_get(&task),
             Request::TaskPull {
                 agent,
                 task,
                 take_over_from,
-            } => self.task_pull(&agent, &task, take_over_from.as_deref()),
+                project,
+                board,
+            } => {
+                self.task_pull(
+                    &agent,
+                    task.as_deref(),
+                    take_over_from.as_deref(),
+                    project.as_deref(),
+                    board.as_deref(),
+                )
+                .await
+            }
             Request::TaskMove {
                 agent,
                 task,
                 column,
-            } => self.task_move(&agent, &task, column),
+                to,
+                after,
+                before,
+                comment,
+            } => self.task_move(
+                &agent,
+                &task,
+                column,
+                to.as_deref(),
+                after.as_deref(),
+                before.as_deref(),
+                comment.as_deref(),
+            ),
             Request::TaskUpdate {
                 agent,
                 task,
@@ -2331,15 +2429,200 @@ impl Daemon {
                 acceptance,
                 assignee,
                 links,
-            } => self.task_update(&agent, &task, title, acceptance, assignee, links),
+                description,
+                priority,
+                size,
+                due,
+                external_blocker,
+                parent,
+                blocked_by,
+                tags,
+                plan,
+            } => self.task_update(
+                &agent,
+                &task,
+                tasks::TaskChange {
+                    title,
+                    acceptance,
+                    assignee,
+                    links,
+                    description,
+                    priority,
+                    size,
+                    due,
+                    external_blocker,
+                    parent,
+                    blocked_by,
+                    tags,
+                    plan,
+                },
+            ),
             Request::TaskArchive { agent, task } => self.task_archive(&agent, &task),
+            Request::Rules { project, board } => self.rules(project, board).await,
+            Request::RuleCreate {
+                from,
+                project,
+                board,
+                name,
+                trigger,
+                action,
+            } => {
+                self.rule_create(&from, project, board, &name, trigger, action)
+                    .await
+            }
+            Request::RuleUpdate {
+                from,
+                rule,
+                name,
+                trigger,
+                action,
+                enabled,
+            } => self.rule_update(&from, &rule, name, trigger, action, enabled),
+            Request::RuleDelete { from, rule } => self.rule_delete(&from, &rule),
+            Request::TaskStart {
+                from,
+                task,
+                runtime,
+                args,
+                workdir,
+            } => self.task_start(&from, &task, runtime, args, workdir).await,
+            Request::Tags { project } => self.tags(project).await,
+            Request::TagSave {
+                from,
+                project,
+                name,
+                color,
+                rename,
+            } => self.tag_save(&from, project, &name, color, rename).await,
+            Request::TagDelete {
+                from,
+                project,
+                name,
+            } => self.tag_delete(&from, project, &name).await,
+            Request::TaskSearch {
+                query,
+                project,
+                archived,
+                limit,
+            } => self.task_search(&query, project, archived, limit).await,
+            Request::Plans { project, archived } => self.plans(project, archived).await,
+            Request::PlanGet { plan } => self.plan_get(&plan),
+            Request::PlanSave {
+                from,
+                project,
+                plan,
+                title,
+                body,
+                status,
+            } => {
+                self.plan_save(&from, project, plan, title, body, status)
+                    .await
+            }
+            Request::Files { project, task } => self.files(project, task).await,
+            Request::FilePut {
+                from,
+                project,
+                name,
+                media_type,
+                text,
+                base64,
+                task,
+            } => {
+                self.file_put(&from, project, &name, media_type, text, base64, task)
+                    .await
+            }
+            Request::FileGet { file } => self.file_get(&file),
+            Request::FileLink {
+                from,
+                file,
+                task,
+                unlink,
+            } => self.file_link(&from, &file, &task, unlink),
+            Request::FileDelete { from, file } => self.file_delete(&from, &file),
+            Request::TaskUnarchive { agent, task } => self.task_unarchive(&agent, &task),
+            Request::TaskArchiveLane {
+                from,
+                project,
+                board,
+                lane,
+            } => {
+                self.task_archive_lane(&from, project.as_deref(), board.as_deref(), &lane)
+                    .await
+            }
+            Request::TaskComment {
+                from,
+                task,
+                body,
+                reply_to,
+            } => self.task_comment(&from, &task, &body, reply_to.as_deref()),
+            Request::TaskCommentEdit {
+                from,
+                comment,
+                body,
+            } => self.task_comment_change(&from, &comment, Some(&body)),
+            Request::TaskCommentDelete { from, comment } => {
+                self.task_comment_change(&from, &comment, None)
+            }
+            Request::Boards { project } => self.boards(project.as_deref(), None).await,
+            Request::BoardCreate {
+                from,
+                project,
+                name,
+                template,
+            } => {
+                self.board_create(&from, project.as_deref(), &name, &template)
+                    .await
+            }
+            Request::BoardUpdate {
+                from,
+                project,
+                board,
+                name,
+                lanes,
+                pull_source,
+                pull_target,
+            } => {
+                self.board_update(
+                    &from,
+                    project.as_deref(),
+                    &board,
+                    name,
+                    lanes,
+                    pull_source,
+                    pull_target,
+                )
+                .await
+            }
             Request::Tasks {
                 project,
                 column,
                 archived,
                 offset,
                 limit,
-            } => self.tasks(project, column, archived, offset, limit).await,
+                board,
+                lane,
+                assignee,
+                agent,
+                open,
+                query,
+                tag,
+            } => {
+                self.tasks(tasks::TaskQuery {
+                    project,
+                    column,
+                    archived,
+                    offset,
+                    limit,
+                    board,
+                    lane,
+                    assignee,
+                    agent,
+                    open,
+                    query,
+                    tag,
+                })
+                .await
+            }
             Request::Pause {
                 from,
                 project,
@@ -6241,6 +6524,18 @@ impl State {
         if let Some(error) = self.write_failure() {
             return error;
         }
+        // A card's hold renews for its whole four hours unless asked for
+        // longer: a plain renew must not shorten it to a file lease's five
+        // minutes.
+        let card = self
+            .leases
+            .get(lease)
+            .is_some_and(|l| l.resource.as_str().starts_with("task:"));
+        let ttl_secs = if card {
+            ttl_secs.max(tasks::TASK_LEASE_SECS)
+        } else {
+            ttl_secs
+        };
         let result = self
             .leases
             .clone()
@@ -10641,16 +10936,29 @@ mod tests {
                 acceptance: "it is back".to_owned(),
                 column: Some(agentdocker_core::Column::Ready),
                 links: Vec::new(),
+                board: None,
+                lane: None,
+                description: String::new(),
+                priority: None,
+                size: None,
+                due: None,
+                external_blocker: String::new(),
+                parent: None,
+                blocked_by: Vec::new(),
+                tags: Vec::new(),
+                plan: None,
             })
             .await
         else {
             panic!("a card is filed")
         };
-        let Response::Task { task: pulled } = daemon
+        let Response::TaskDetail { task: pulled, .. } = daemon
             .handle(Request::TaskPull {
                 agent: ended.id.to_string(),
-                task: card.id.to_string(),
+                task: Some(card.id.to_string()),
                 take_over_from: None,
+                project: None,
+                board: None,
             })
             .await
         else {
@@ -10874,6 +11182,13 @@ mod tests {
                 archived: false,
                 offset: 0,
                 limit: 10,
+                board: None,
+                lane: None,
+                assignee: None,
+                agent: None,
+                open: false,
+                query: None,
+                tag: None,
             })
             .await
         else {

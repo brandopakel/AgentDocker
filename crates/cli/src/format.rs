@@ -416,6 +416,44 @@ pub fn event_line(event: &Event) -> String {
         } => format!("card moved       {task} to {column} by {by}"),
         EventKind::TaskUpdated { task, by, .. } => format!("card edited      {task} by {by}"),
         EventKind::TaskArchived { task, by, .. } => format!("card archived    {task} by {by}"),
+        EventKind::TaskUnarchived { task, by, .. } => format!("card restored    {task} by {by}"),
+        EventKind::TaskCommented { task, by, .. } => format!("card comment     {task} by {by}"),
+        EventKind::TaskCommentChanged {
+            task, by, deleted, ..
+        } => format!(
+            "card comment {}  {task} by {by}",
+            if *deleted { "gone" } else { "edit" }
+        ),
+        EventKind::BoardChanged { board, by, .. } => format!("board changed    {board} by {by}"),
+        EventKind::RuleChanged {
+            board,
+            rule,
+            by,
+            deleted,
+            ..
+        } => format!(
+            "rule {}     {rule} on {board} by {by}",
+            if *deleted { "gone" } else { "set " }
+        ),
+        EventKind::RuleFired { rule, task, .. } => format!("rule acted       {rule} on {task}"),
+        EventKind::TagChanged {
+            name,
+            by,
+            renamed_to,
+            deleted,
+            ..
+        } => match (renamed_to, deleted) {
+            (_, true) => format!("tag gone         {name} by {by}"),
+            (Some(to), _) => format!("tag renamed      {name} → {to} by {by}"),
+            _ => format!("tag set          {name} by {by}"),
+        },
+        EventKind::PlanChanged { plan, by, .. } => format!("plan written     {plan} by {by}"),
+        EventKind::ProjectFileChanged {
+            file, by, deleted, ..
+        } => format!(
+            "file {}     {file} by {by}",
+            if *deleted { "gone" } else { "kept" }
+        ),
         EventKind::WebhookFailed {
             name,
             kind,
@@ -1235,6 +1273,22 @@ pub fn in_browser_note(labels: &[&str]) -> String {
         if labels.len() == 1 { "is" } else { "are" },
         agentdocker_core::runtime::IN_BROWSER,
     )
+}
+
+/// A rule in a line: `into Review → comment`, by lane slug.
+pub fn rule_line(rule: &agentdocker_core::Rule) -> String {
+    use agentdocker_core::{RuleAction, Trigger};
+    let when = match &rule.trigger {
+        Trigger::Enter { lane } => format!("into {lane}"),
+        Trigger::Idle { lane, days } => format!("{lane} for {days}d"),
+    };
+    let what = match &rule.action {
+        RuleAction::Comment { text } => format!("comment \"{text}\""),
+        RuleAction::Move { lane } => format!("move to {lane}"),
+        RuleAction::Archive => "archive".to_owned(),
+        RuleAction::Start { runtime, max, .. } => format!("start {runtime} (at most {max})"),
+    };
+    format!("{when} → {what}")
 }
 
 #[cfg(test)]

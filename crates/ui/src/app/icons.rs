@@ -118,6 +118,18 @@ pub enum Icon {
     LaneMost,
     /// A full disc with a tick cut out: done.
     LaneDone,
+    /// A luggage tag: a card's tags.
+    Tag,
+    /// Two chain links: a card's links.
+    Link,
+    /// A play triangle: start an agent.
+    Play,
+    /// Three rows: the table layout.
+    Rows,
+    /// A lightning bolt: a board's rules.
+    Bolt,
+    /// An open circle with a tick: what is yours to do.
+    Todo,
 }
 
 /// An icon inked in one colour.
@@ -555,6 +567,79 @@ impl Glyph {
                         style: canvas::Style::Solid(iced::Color::WHITE),
                         ..self.stroke(1.75)
                     },
+                );
+            }
+            Icon::Tag => {
+                let tag = Path::new(|b| {
+                    b.move_to(p(2.5, 3.5));
+                    b.line_to(p(2.5, 8.0));
+                    b.line_to(p(8.5, 14.0));
+                    b.line_to(p(14.0, 8.5));
+                    b.line_to(p(8.0, 2.5));
+                    b.line_to(p(3.5, 2.5));
+                    b.close();
+                });
+                frame.stroke(&tag, stroke);
+                frame.fill(&Path::circle(p(5.75, 5.75), 1.1), self.color);
+            }
+            Icon::Link => {
+                let chain = Path::new(|b| {
+                    b.move_to(p(7.0, 9.0));
+                    b.line_to(p(9.0, 7.0));
+                    b.move_to(p(6.25, 5.25));
+                    b.line_to(p(8.0, 3.5));
+                    b.line_to(p(9.5, 2.75));
+                    b.line_to(p(11.5, 2.75));
+                    b.line_to(p(13.25, 4.5));
+                    b.line_to(p(13.25, 6.5));
+                    b.line_to(p(12.5, 8.0));
+                    b.line_to(p(10.75, 9.75));
+                    b.move_to(p(9.75, 10.75));
+                    b.line_to(p(8.0, 12.5));
+                    b.line_to(p(6.5, 13.25));
+                    b.line_to(p(4.5, 13.25));
+                    b.line_to(p(2.75, 11.5));
+                    b.line_to(p(2.75, 9.5));
+                    b.line_to(p(3.5, 8.0));
+                    b.line_to(p(5.25, 6.25));
+                });
+                frame.stroke(&chain, stroke);
+            }
+            Icon::Play => {
+                let triangle = Path::new(|b| {
+                    b.move_to(p(5.0, 3.0));
+                    b.line_to(p(13.0, 8.0));
+                    b.line_to(p(5.0, 13.0));
+                    b.close();
+                });
+                frame.stroke(&triangle, stroke);
+            }
+            Icon::Rows => {
+                let rows = Path::new(|b| {
+                    for y in [4.0, 8.0, 12.0] {
+                        b.move_to(p(2.5, y));
+                        b.line_to(p(13.5, y));
+                    }
+                });
+                frame.stroke(&rows, stroke);
+            }
+            Icon::Bolt => {
+                let bolt = Path::new(|b| {
+                    b.move_to(p(9.0, 1.75));
+                    b.line_to(p(3.5, 9.0));
+                    b.line_to(p(8.0, 9.0));
+                    b.line_to(p(7.0, 14.25));
+                    b.line_to(p(12.5, 7.0));
+                    b.line_to(p(8.0, 7.0));
+                    b.close();
+                });
+                frame.stroke(&bolt, stroke);
+            }
+            Icon::Todo => {
+                frame.stroke(&Path::circle(p(8.0, 8.0), 6.0), stroke);
+                frame.stroke(
+                    &polyline(&[p(5.25, 8.25), p(7.25, 10.25), p(10.75, 6.25)]),
+                    stroke,
                 );
             }
             Icon::Ring => {

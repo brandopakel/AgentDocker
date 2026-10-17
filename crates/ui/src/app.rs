@@ -15,6 +15,7 @@ mod messages;
 mod naming;
 mod palette;
 pub(crate) mod panes;
+mod plans;
 mod project_chat;
 pub(crate) mod queue;
 mod secret_reviews;
@@ -22,6 +23,7 @@ mod send_readiness;
 mod sessions;
 mod shell;
 pub(crate) mod style;
+mod todo;
 mod tools_view;
 mod usage;
 mod view;
@@ -78,13 +80,17 @@ const CONFIRM_WITHIN: Duration = Duration::from_secs(5);
 /// Nothing lives only there — a failed setup keeps its plan, a lost
 /// socket has its own indicator — so letting it go is safe, and a line
 /// that never expires is a line the eye stops reading.
-const STATUS_FOR: Duration = Duration::from_secs(20);
+const STATUS_FOR: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Chat,
     Agents,
     Board,
+    /// Every project's cards that wait on the person or their agents.
+    Todo,
+    /// A project's plans and files.
+    Plans,
     Usage,
     Questions,
     Terminal,
@@ -164,17 +170,74 @@ enum Cmd {
         title: String,
         acceptance: String,
         column: agentdocker_core::Column,
+        /// The lane by slug, and the board, when the person chose them.
+        lane: Option<String>,
+        board: Option<String>,
     },
-    /// The person moves a card, or an agent it is handed to does.
+    /// The person moves a card to a lane, beside a card, with a word.
     TaskMove {
         task: agentdocker_core::TaskId,
-        column: agentdocker_core::Column,
+        to: String,
+        before: Option<agentdocker_core::TaskId>,
+        comment: Option<String>,
     },
-    TaskAssign {
+    /// The person changes what a card says or who holds it.
+    TaskEdit {
         task: agentdocker_core::TaskId,
-        assignee: Option<agentdocker_core::AgentId>,
+        change: CardChange,
     },
     TaskArchive(agentdocker_core::TaskId),
+    /// The person says something on a card.
+    TaskComment {
+        task: agentdocker_core::TaskId,
+        body: String,
+    },
+    /// One card in full, for its open detail.
+    TaskDetail(agentdocker_core::TaskId),
+    /// A project's boards.
+    Boards(String),
+    /// A board's lanes reshaped, or a new board, for a project.
+    BoardSave {
+        project: String,
+        board: agentdocker_core::Board,
+    },
+    BoardCreate {
+        project: String,
+        name: String,
+        template: String,
+    },
+    /// Every card in a lane off the board.
+    TaskArchiveLane {
+        project: String,
+        board: String,
+        lane: String,
+    },
+    /// A project's tags, rules, plans and files.
+    Workspace(String),
+    /// A change to the board's model (a tag, a rule, a plan, a file, an
+    /// agent started on a card); what it touched is read again after.
+    BoardAct {
+        project: String,
+        request: Box<Request>,
+    },
+    /// Every project's open cards, for To-do.
+    Todo,
+    /// A plan written; its answer opens it.
+    PlanSave {
+        project: String,
+        request: Box<Request>,
+    },
+    /// One plan in full.
+    PlanGet(String),
+    /// A project file's bytes, written to a private temporary folder and
+    /// opened with the system's app for it.
+    FileOpen(String),
+    /// A file from disk kept in the project, linked to a card when named.
+    FileUpload {
+        project: String,
+        path: std::path::PathBuf,
+        task: Option<agentdocker_core::TaskId>,
+    },
     /// The projects that are paused, and why.
     Pauses,
     /// The person tells a project's agents to hold, with the reason.
@@ -352,6 +415,14 @@ enum Msg {
     WorktreeRemoved(String, Result<(bool, Option<String>), String>),
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
+    /// One card in full, or why it could not be read.
+    TaskDetail(agentdocker_core::TaskId, Result<Box<CardDetail>, String>),
+    Workspace(String, Result<Box<Workspace>, String>),
+    BoardActed(String, Result<(), String>),
+    Todo(Result<Vec<agentdocker_core::Task>, String>),
+    Plan(Result<Box<(agentdocker_core::Plan, Vec<agentdocker_core::Task>)>, String>),
+    /// A project's boards, or why they could not be read.
+    Boards(String, Result<Vec<agentdocker_core::Board>, String>),
     Pauses(Vec<agentdocker_core::Pause>),
     /// The pause or resume the person asked for a project, done or
     /// refused; the project says which form or control it answers.
@@ -497,7 +568,6 @@ pub struct App {
     status: String,
     last_refresh: Instant,
     last_runtimes: Instant,
-    socket: String,
     client: Option<Arc<Client>>,
     terminal: Option<Terminal>,
     console_input: String,
@@ -551,6 +621,18 @@ pub struct App {
     task_requests: u64,
     /// A card whose acceptance text is open.
     task_open: Option<agentdocker_core::TaskId>,
+    /// The open card in full: its board, comments and history.
+    card: Option<CardDetail>,
+    /// Each project's boards, by project root.
+    boards: BTreeMap<String, Vec<agentdocker_core::Board>>,
+    /// Each project's tags, rules, plans and files, by project root.
+    workspaces: BTreeMap<String, Workspace>,
+    /// Every project's open cards, for To-do; `None` until read.
+    todo: Option<Vec<agentdocker_core::Task>>,
+    /// The plan open on Plans, with the cards that carry it out.
+    plan_open: Option<(agentdocker_core::Plan, Vec<agentdocker_core::Task>)>,
+    /// Cards that changed a moment ago, and when: they flash once.
+    flashes: BTreeMap<agentdocker_core::TaskId, Instant>,
     /// The projects told to hold, and why.
     pauses: Vec<agentdocker_core::Pause>,
     /// The pause being written, while its form is open: bound to the
@@ -676,7 +758,6 @@ impl App {
             status: String::new(),
             last_refresh: Instant::now(),
             last_runtimes: Instant::now(),
-            socket: client.socket().display().to_string(),
             client: Some(client),
             terminal: None,
             console_input: String::new(),
@@ -705,6 +786,12 @@ impl App {
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
+            card: None,
+            boards: BTreeMap::new(),
+            workspaces: BTreeMap::new(),
+            todo: None,
+            plan_open: None,
+            flashes: BTreeMap::new(),
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
@@ -763,7 +850,6 @@ impl App {
             status: String::new(),
             last_refresh: Instant::now(),
             last_runtimes: Instant::now(),
-            socket: String::new(),
             client: None,
             terminal: None,
             console_input: String::new(),
@@ -791,6 +877,12 @@ impl App {
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
+            card: None,
+            boards: BTreeMap::new(),
+            workspaces: BTreeMap::new(),
+            todo: None,
+            plan_open: None,
+            flashes: BTreeMap::new(),
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
@@ -930,8 +1022,18 @@ impl App {
                     self.shell.adopting.remove(&pid);
                 }
                 Cmd::TaskMove { .. }
-                | Cmd::TaskAssign { .. }
+                | Cmd::TaskEdit { .. }
                 | Cmd::TaskArchive(_)
+                | Cmd::TaskComment { .. }
+                | Cmd::TaskDetail(_)
+                | Cmd::Boards(_)
+                | Cmd::BoardSave { .. }
+                | Cmd::BoardCreate { .. }
+                | Cmd::TaskArchiveLane { .. }
+                | Cmd::BoardAct { .. }
+                | Cmd::PlanSave { .. }
+                | Cmd::FileOpen(_)
+                | Cmd::FileUpload { .. }
                 | Cmd::AdoptAll
                 | Cmd::Stop(_)
                 | Cmd::ResumeProvider(..)
@@ -1090,7 +1192,6 @@ impl App {
                             {
                                 self.shell.notification_message = None;
                             }
-                            self.say("Messages dismissed");
                         }
                         Err(reason) => self.say(reason),
                     }
@@ -1255,7 +1356,68 @@ impl App {
                     self.request_tasks();
                 }
                 Msg::TaskChanged(result) => match result {
-                    Ok(()) => self.request_tasks(),
+                    Ok(()) => {
+                        self.request_tasks();
+                        if let Some(open) = self.task_open.clone() {
+                            self.send(Cmd::TaskDetail(open));
+                        }
+                    }
+                    Err(error) => self.say(error),
+                },
+                Msg::TaskDetail(task, result) => {
+                    if self.task_open.as_ref() == Some(&task) {
+                        match result {
+                            Ok(detail) => self.card = Some(*detail),
+                            Err(error) => self.say(error),
+                        }
+                    }
+                }
+                Msg::Boards(project, result) => match result {
+                    Ok(boards) => {
+                        self.boards.insert(project, boards);
+                    }
+                    Err(error) => self.say(format!("The boards could not be read: {error}")),
+                },
+                Msg::Workspace(project, result) => match result {
+                    Ok(workspace) => {
+                        self.workspaces.insert(project, *workspace);
+                    }
+                    Err(error) => self.say(error),
+                },
+                Msg::BoardActed(project, result) => {
+                    if let Err(error) = result {
+                        self.say(error);
+                    }
+                    self.send(Cmd::Workspace(project));
+                    self.request_tasks();
+                    if let Some(open) = self.task_open.clone() {
+                        self.send(Cmd::TaskDetail(open));
+                    }
+                    if let Some((plan, _)) = &self.plan_open {
+                        self.send(Cmd::PlanGet(plan.id.clone()));
+                    }
+                    if self.screen == Screen::Todo {
+                        self.send(Cmd::Todo);
+                    }
+                }
+                Msg::Todo(result) => match result {
+                    Ok(cards) => self.todo = Some(cards),
+                    Err(error) => self.say(error),
+                },
+                Msg::Plan(result) => match result {
+                    Ok(plan) => {
+                        let (plan, tasks) = *plan;
+                        // A plan read again replaces the one open, unless
+                        // another has been opened since.
+                        if self
+                            .plan_open
+                            .as_ref()
+                            .is_none_or(|(open, _)| open.id == plan.id)
+                        {
+                            self.shell.plan_draft.load(&plan);
+                            self.plan_open = Some((plan, tasks));
+                        }
+                    }
                     Err(error) => self.say(error),
                 },
                 Msg::Pauses(pauses) => self.pauses = pauses,
@@ -1285,7 +1447,6 @@ impl App {
                     }
                 }
                 Msg::SecretCompleted => {
-                    self.say("Temporary input action acknowledged by AgentDocker; this is not a provider receipt.");
                     self.send(Cmd::SecretReviews);
                 }
                 Msg::Questions(questions) => {
@@ -1383,9 +1544,8 @@ impl App {
                                 self.shell.pending_answer_reveal = None;
                                 self.shell.reveal_next_question = true;
                             }
-                            self.say("answered");
-                            // After the answer is told, so a note the queue
-                            // will not take says so last.
+                            // The answer is on screen; the note goes to its
+                            // agent after it.
                             if let Some(cmd) = note_send {
                                 self.send(cmd);
                             }
@@ -1446,7 +1606,7 @@ impl App {
                 Msg::Adopted(pid, result) => {
                     self.shell.adopting.remove(&pid);
                     match result {
-                        Ok(name) => self.say(format!("Connected {name}")),
+                        Ok(_) => {}
                         Err(error) => self.say(format!("Could not connect that session: {error}")),
                     }
                 }
@@ -1462,7 +1622,6 @@ impl App {
                     self.daemon_restarting = false;
                     match result {
                         Ok(()) => {
-                            self.say("The background service restarted");
                             // Ask again now, so the notice clears without
                             // waiting for a reconnect to notice.
                             self.send(Cmd::Ping);
@@ -1498,10 +1657,6 @@ impl App {
                                 value["plans"].as_array().cloned().unwrap_or_default();
                         }
                         Ok(value) => {
-                            self.say(format!(
-                                "Setup {}",
-                                value["phase"].as_str().unwrap_or("updated")
-                            ));
                             self.setup_plan = Some(value);
                             self.send(Cmd::Runtimes);
                         }
@@ -1538,7 +1693,6 @@ impl App {
                             // else would show it.
                             self.shell.attach_when_listed = Some((id, None));
                             self.send(Cmd::Agents);
-                            self.say("Agent launched");
                         }
                         Err(error) => self.shell.error = Some(error),
                     }
@@ -1551,7 +1705,6 @@ impl App {
                             self.shell.selected = Some(id.clone());
                             self.shell.attach_when_listed = Some((id, generation));
                             self.send(Cmd::Agents);
-                            self.say("Session reconnected; it continues in its pane");
                         }
                         Err(error) => self.shell.error = Some(error),
                     }
@@ -1697,11 +1850,10 @@ impl App {
                 }
                 Msg::DenyNoteSent(question, result) => match result {
                     Ok(()) => {
-                        if let Some(note) = self.shell.deny_notes.remove(&question) {
-                            // Its saved copy goes with it.
+                        // Its saved copy goes with it; the note is in the
+                        // conversation, nothing more to say.
+                        if self.shell.deny_notes.remove(&question).is_some() {
                             self.shell.drafts.changed();
-                            let name = self.name_of(&note.agent);
-                            self.say(format!("Told {name} why"));
                         }
                     }
                     Err(error) => {
@@ -1786,11 +1938,50 @@ impl App {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
-            EventKind::TaskCreated { .. }
-            | EventKind::TaskPulled { .. }
-            | EventKind::TaskMoved { .. }
-            | EventKind::TaskUpdated { .. }
-            | EventKind::TaskArchived { .. } => self.request_tasks(),
+            EventKind::TaskCreated { task, .. }
+            | EventKind::TaskPulled { task, .. }
+            | EventKind::TaskMoved { task, .. }
+            | EventKind::TaskUpdated { task, .. }
+            | EventKind::TaskArchived { task, .. }
+            | EventKind::TaskUnarchived { task, .. }
+            | EventKind::TaskCommented { task, .. }
+            | EventKind::TaskCommentChanged { task, .. } => {
+                // The card that changed flashes once; an open one is read
+                // again in full.
+                self.flashes.insert(task.clone(), Instant::now());
+                if self.task_open.as_ref() == Some(task) {
+                    self.send(Cmd::TaskDetail(task.clone()));
+                }
+                self.request_tasks();
+                if self.screen == Screen::Todo {
+                    self.send(Cmd::Todo);
+                }
+            }
+            EventKind::BoardChanged { .. } => {
+                if let Some(project) = self.selected_project_root() {
+                    self.send(Cmd::Boards(project));
+                }
+            }
+            EventKind::RuleChanged { .. }
+            | EventKind::TagChanged { .. }
+            | EventKind::PlanChanged { .. }
+            | EventKind::ProjectFileChanged { .. } => {
+                if let Some(project) = self.selected_project_root() {
+                    self.send(Cmd::Workspace(project));
+                }
+                if let EventKind::PlanChanged { plan, .. } = &event.kind
+                    && self
+                        .plan_open
+                        .as_ref()
+                        .is_some_and(|(open, _)| open.id == *plan)
+                {
+                    self.send(Cmd::PlanGet(plan.clone()));
+                }
+                if let Some(open) = self.task_open.clone() {
+                    self.send(Cmd::TaskDetail(open));
+                }
+            }
+            EventKind::RuleFired { .. } => {}
             // Collection moved: the report on view is read again, only
             // while it is on view.
             EventKind::UsageRecorded { .. }
@@ -2178,6 +2369,9 @@ impl App {
                 None => 0,
             };
             let limit = on_view.clamp(agentdocker_core::protocol::TASKS_LIMIT, BOARD_KEEP);
+            if !self.boards.contains_key(&project) {
+                self.send(Cmd::Boards(project.clone()));
+            }
             let request = self.next_board_ask(&project, 0);
             self.send(Cmd::Tasks {
                 project,
@@ -2969,15 +3163,15 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             } => Some(Msg::Journal(project, head_seq, entries)),
             _ => None,
         },
-        Cmd::Rename(agent, name) => Some(Msg::Status(
-            match client.call(&Request::Rename { agent, name })? {
-                Response::Agent { agent } => format!("Renamed to {}", agent.spec.name),
-                Response::Error { message, .. } => {
-                    format!("Could not rename: {}", crate::client::explain(&message))
-                }
-                other => unexpected_reply(&other),
-            },
-        )),
+        // A rename that took says nothing: the name on the row changes.
+        Cmd::Rename(agent, name) => match client.call(&Request::Rename { agent, name })? {
+            Response::Agent { .. } => None,
+            Response::Error { message, .. } => Some(Msg::Status(format!(
+                "Could not rename: {}",
+                crate::client::explain(&message)
+            ))),
+            other => Some(Msg::Status(unexpected_reply(&other))),
+        },
         Cmd::Ping => match client.call(&Request::Ping)? {
             Response::Pong {
                 version,
@@ -3011,6 +3205,13 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 archived: false,
                 offset,
                 limit,
+                board: None,
+                lane: None,
+                assignee: None,
+                agent: None,
+                open: false,
+                query: None,
+                tag: None,
             }) {
                 Ok(Response::Tasks { tasks, more }) => Ok((tasks, more)),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -3110,6 +3311,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             title,
             acceptance,
             column,
+            lane,
+            board,
         } => {
             let result = match client.call(&Request::TaskCreate {
                 from: agentdocker_core::HUMAN.into(),
@@ -3118,6 +3321,17 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 acceptance,
                 column: Some(column),
                 links: Vec::new(),
+                board,
+                lane,
+                description: String::new(),
+                priority: None,
+                size: None,
+                due: None,
+                external_blocker: String::new(),
+                parent: None,
+                blocked_by: Vec::new(),
+                tags: Vec::new(),
+                plan: None,
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -3126,11 +3340,20 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::TaskCreated(project, request, result))
         }
-        Cmd::TaskMove { task, column } => {
+        Cmd::TaskMove {
+            task,
+            to,
+            before,
+            comment,
+        } => {
             let result = match client.call(&Request::TaskMove {
                 agent: agentdocker_core::HUMAN.into(),
                 task: task.to_string(),
-                column,
+                column: None,
+                to: Some(to),
+                after: None,
+                before: before.map(|b| b.to_string()),
+                comment,
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -3139,14 +3362,23 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::TaskChanged(result))
         }
-        Cmd::TaskAssign { task, assignee } => {
+        Cmd::TaskEdit { task, change } => {
             let result = match client.call(&Request::TaskUpdate {
                 agent: agentdocker_core::HUMAN.into(),
                 task: task.to_string(),
-                title: None,
-                acceptance: None,
-                assignee: Some(assignee.map(|a| a.to_string()).unwrap_or_default()),
+                title: change.title,
+                acceptance: change.acceptance,
+                assignee: change.assignee,
                 links: None,
+                description: change.description,
+                priority: change.priority,
+                size: change.size,
+                due: change.due,
+                external_blocker: change.external_blocker,
+                parent: None,
+                blocked_by: None,
+                tags: change.tags,
+                plan: None,
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -3161,6 +3393,297 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 task: task.to_string(),
             }) {
                 Ok(Response::Ok) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskChanged(result))
+        }
+        Cmd::TaskComment { task, body } => {
+            let result = match client.call(&Request::TaskComment {
+                from: agentdocker_core::HUMAN.into(),
+                task: task.to_string(),
+                body,
+                reply_to: None,
+            }) {
+                Ok(Response::Comment { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskChanged(result))
+        }
+        Cmd::TaskDetail(task) => {
+            let result = match client.call(&Request::TaskGet {
+                task: task.to_string(),
+            }) {
+                Ok(Response::TaskDetail {
+                    task: card,
+                    board,
+                    comments,
+                    history,
+                    blockers,
+                    children,
+                    plan,
+                    files,
+                    ..
+                }) => Ok(Box::new(CardDetail {
+                    task: card,
+                    board,
+                    comments,
+                    history,
+                    blockers,
+                    children,
+                    plan,
+                    files,
+                })),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskDetail(task, result))
+        }
+        Cmd::Workspace(project) => {
+            let read = || -> Result<Workspace, String> {
+                let call = |request: Request| match client.call(&request) {
+                    Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                    Ok(response) => Ok(response),
+                    Err(error) => Err(format!("{error:#}")),
+                };
+                let mut workspace = Workspace::default();
+                if let Response::Tags { tags } = call(Request::Tags {
+                    project: Some(project.clone()),
+                })? {
+                    workspace.tags = tags;
+                }
+                if let Response::Rules { rules } = call(Request::Rules {
+                    project: Some(project.clone()),
+                    board: None,
+                })? {
+                    workspace.rules = rules;
+                }
+                if let Response::Plans { plans } = call(Request::Plans {
+                    project: Some(project.clone()),
+                    archived: true,
+                })? {
+                    workspace.plans = plans;
+                }
+                if let Response::Files { files } = call(Request::Files {
+                    project: Some(project.clone()),
+                    task: None,
+                })? {
+                    workspace.files = files;
+                }
+                Ok(workspace)
+            };
+            let result = read().map(Box::new);
+            Some(Msg::Workspace(project, result))
+        }
+        Cmd::BoardAct { project, request } => {
+            let result = match client.call(&request) {
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(_) => Ok(()),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::BoardActed(project, result))
+        }
+        Cmd::Todo => {
+            let result = match client.call(&Request::Tasks {
+                project: None,
+                column: None,
+                archived: false,
+                offset: 0,
+                limit: agentdocker_core::protocol::TASKS_LIMIT_MAX,
+                board: None,
+                lane: None,
+                assignee: None,
+                agent: None,
+                open: true,
+                query: None,
+                tag: None,
+            }) {
+                Ok(Response::Tasks { tasks, .. }) => Ok(tasks),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::Todo(result))
+        }
+        Cmd::PlanSave { project, request } => match client.call(&request) {
+            Ok(Response::Plan { plan, tasks }) => Some(Msg::Plan(Ok(Box::new((plan, tasks))))),
+            Ok(Response::Error { message, .. }) => Some(Msg::BoardActed(
+                project,
+                Err(crate::client::explain(&message)),
+            )),
+            Ok(other) => Some(Msg::BoardActed(project, Err(unexpected_reply(&other)))),
+            Err(error) => Some(Msg::BoardActed(project, Err(format!("{error:#}")))),
+        },
+        Cmd::PlanGet(plan) => {
+            let result = match client.call(&Request::PlanGet { plan }) {
+                Ok(Response::Plan { plan, tasks }) => Ok(Box::new((plan, tasks))),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::Plan(result))
+        }
+        Cmd::FileOpen(file) => {
+            let result = (|| -> Result<(), String> {
+                use base64::Engine;
+                let (file, bytes) = match client.call(&Request::FileGet { file }) {
+                    Ok(Response::FileContent { file, text, base64 }) => {
+                        let bytes = match (text, base64) {
+                            (Some(text), _) => text.into_bytes(),
+                            (None, Some(encoded)) => base64::engine::general_purpose::STANDARD
+                                .decode(encoded)
+                                .map_err(|_| "the file's bytes do not decode".to_owned())?,
+                            (None, None) => Vec::new(),
+                        };
+                        (file, bytes)
+                    }
+                    Ok(Response::Error { message, .. }) => {
+                        return Err(crate::client::explain(&message));
+                    }
+                    Ok(other) => return Err(unexpected_reply(&other)),
+                    Err(error) => return Err(format!("{error:#}")),
+                };
+                // A private folder per file, named for the file: what the
+                // system app opens is a copy, never the project's.
+                let parent = std::env::temp_dir().join("agentdocker-files");
+                let dir = parent.join(&file.id);
+                #[cfg(unix)]
+                {
+                    agentdocker_host::dirs::ensure_private_dir(&parent)
+                        .map_err(|e| e.to_string())?;
+                    agentdocker_host::dirs::ensure_private_dir(&dir).map_err(|e| e.to_string())?;
+                }
+                #[cfg(not(unix))]
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                let path = dir.join(&file.name);
+                std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+                open_with_system(&path)
+            })();
+            Some(Msg::BoardActed(String::new(), result))
+        }
+        Cmd::FileUpload {
+            project,
+            path,
+            task,
+        } => {
+            let result = (|| -> Result<(), String> {
+                use base64::Engine;
+                let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                if bytes.len() > agentdocker_core::plan::FILE_BYTES {
+                    return Err("A project file is at most 4 MiB.".to_owned());
+                }
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .ok_or("The path names no file")?;
+                let (text, base64) = match String::from_utf8(bytes) {
+                    Ok(text) => (Some(text), None),
+                    Err(error) => (
+                        None,
+                        Some(base64::engine::general_purpose::STANDARD.encode(error.into_bytes())),
+                    ),
+                };
+                match client.call(&Request::FilePut {
+                    from: agentdocker_core::HUMAN.into(),
+                    project: Some(project.clone()),
+                    name,
+                    media_type: None,
+                    text,
+                    base64,
+                    task: task.map(|t| t.to_string()),
+                }) {
+                    Ok(Response::File { .. }) => Ok(()),
+                    Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                    Ok(other) => Err(unexpected_reply(&other)),
+                    Err(error) => Err(format!("{error:#}")),
+                }
+            })();
+            Some(Msg::BoardActed(project, result))
+        }
+        Cmd::Boards(project) => {
+            let result = match client.call(&Request::Boards {
+                project: Some(project.clone()),
+            }) {
+                Ok(Response::Boards { boards }) => Ok(boards),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::Boards(project, result))
+        }
+        Cmd::BoardSave { project, board } => {
+            let result = match client.call(&Request::BoardUpdate {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project.clone()),
+                board: board.slug.clone(),
+                name: Some(board.name.clone()),
+                lanes: Some(board.lanes.clone()),
+                pull_source: Some(board.pull_source.clone()),
+                pull_target: Some(board.pull_target.clone()),
+            }) {
+                Ok(Response::Board { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            match result {
+                Ok(()) => Some(Msg::Boards(
+                    project.clone(),
+                    match client.call(&Request::Boards {
+                        project: Some(project),
+                    })? {
+                        Response::Boards { boards } => Ok(boards),
+                        other => Err(unexpected_reply(&other)),
+                    },
+                )),
+                Err(error) => Some(Msg::TaskChanged(Err(error))),
+            }
+        }
+        Cmd::BoardCreate {
+            project,
+            name,
+            template,
+        } => {
+            let result = match client.call(&Request::BoardCreate {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project.clone()),
+                name,
+                template,
+            }) {
+                Ok(Response::Board { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            match result {
+                Ok(()) => Some(Msg::Boards(
+                    project.clone(),
+                    match client.call(&Request::Boards {
+                        project: Some(project),
+                    })? {
+                        Response::Boards { boards } => Ok(boards),
+                        other => Err(unexpected_reply(&other)),
+                    },
+                )),
+                Err(error) => Some(Msg::TaskChanged(Err(error))),
+            }
+        }
+        Cmd::TaskArchiveLane {
+            project,
+            board,
+            lane,
+        } => {
+            let result = match client.call(&Request::TaskArchiveLane {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project),
+                board: Some(board),
+                lane,
+            }) {
+                Ok(Response::Archived { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
@@ -3298,8 +3821,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             let Response::Processes { processes } = client.call(&Request::Discover)? else {
                 return Ok(None);
             };
-            let mut adopted = 0;
-            for process in processes {
+            for (adopted, process) in processes.into_iter().enumerate() {
                 client
                     .call(&Request::Adopt {
                         pid: process.pid,
@@ -3312,19 +3834,16 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                             if adopted == 1 { "" } else { "s" }
                         )
                     })?;
-                adopted += 1;
             }
-            Some(Msg::Status(format!(
-                "Connected {adopted} session{}",
-                if adopted == 1 { "" } else { "s" }
-            )))
+            // Connected sessions move into the list: nothing to say.
+            None
         }
         Cmd::Stop(agent) => {
             client.call(&Request::Stop {
                 agent,
                 force: false,
             })?;
-            Some(Msg::Status("Stopping the session…".into()))
+            None
         }
         Cmd::ResumeProvider(agent, blocked_at) => {
             let response = client.call(&Request::ResumeProvider { agent, blocked_at })?;
@@ -3333,9 +3852,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 "Delivery could not be resumed: {}",
                 refusal(&response)
             );
-            Some(Msg::Status(
-                "Delivery resumed; previously received input will not be replayed".into(),
-            ))
+            None
         }
         Cmd::RetryController(agent) => {
             let response = client.call(&Request::RetryController { agent })?;
@@ -3344,10 +3861,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 "Message delivery could not be started again: {}",
                 refusal(&response)
             );
-            Some(Msg::Status(
-                "The receiver will be started again within a second; queued input waits for it"
-                    .into(),
-            ))
+            None
         }
         Cmd::Launch(spec) => match client.call(&Request::Run { spec: *spec })? {
             Response::Agent { agent } => Some(Msg::Launched(Ok(agent.id.to_string()))),
@@ -3983,6 +4497,46 @@ impl TaskDraft {
     }
 }
 
+/// A card in full, as its open detail shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CardDetail {
+    pub task: agentdocker_core::Task,
+    pub board: agentdocker_core::Board,
+    pub comments: Vec<agentdocker_core::Comment>,
+    pub history: Vec<agentdocker_core::TaskEntry>,
+    pub blockers: Vec<agentdocker_core::Task>,
+    pub children: Vec<agentdocker_core::Task>,
+    pub plan: Option<agentdocker_core::Plan>,
+    pub files: Vec<agentdocker_core::ProjectFile>,
+}
+
+/// A project's tags, rules, plans (without bodies) and files.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Workspace {
+    pub tags: Vec<agentdocker_core::Tag>,
+    pub rules: Vec<agentdocker_core::Rule>,
+    pub plans: Vec<agentdocker_core::Plan>,
+    pub files: Vec<agentdocker_core::ProjectFile>,
+}
+
+/// What the person changes on a card: each field given is set; an
+/// empty size, due or parent clears it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CardChange {
+    pub title: Option<String>,
+    pub acceptance: Option<String>,
+    pub description: Option<String>,
+    pub assignee: Option<String>,
+    pub priority: Option<agentdocker_core::Priority>,
+    pub size: Option<String>,
+    pub due: Option<String>,
+    pub external_blocker: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
+/// How long a changed card flashes.
+pub(crate) const FLASH_FOR: Duration = Duration::from_millis(1400);
+
 const PAUSE_CONTROLS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4111,6 +4665,33 @@ pub(crate) struct Seek {
     pub pages: usize,
     pub before: Option<u64>,
     pub refresh_pending: bool,
+}
+
+/// Open a file with the system's app for it.
+fn open_with_system(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("The file could not be opened: {e}"))
+}
+
+/// Open a URL in the browser, or a path with the system's app for it.
+pub(crate) fn open_target(target: &str) -> Result<(), String> {
+    let is_web = target.starts_with("https://") || target.starts_with("http://");
+    if !is_web && !std::path::Path::new(target).exists() {
+        return Err(format!("{target} is not on this machine"));
+    }
+    open_with_system(std::path::Path::new(target))
 }
 
 #[cfg(test)]

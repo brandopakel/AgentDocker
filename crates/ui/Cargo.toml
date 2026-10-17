@@ -23,6 +23,7 @@ iced.workspace = true
 png.workspace = true
 tokio.workspace = true
 rfd.workspace = true
+base64.workspace = true
 accesskit.workspace = true
 raw-window-handle.workspace = true
 serde.workspace = true

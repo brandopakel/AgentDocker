@@ -1,4 +1,6 @@
 //! `agentdocker`: command-line client for `agentd`.
+// The MCP tool schemas are one `json!` each; the board's are deep.
+#![recursion_limit = "256"]
 
 mod agentfile;
 mod attach;
@@ -425,6 +427,10 @@ enum Command {
     Channel(ChannelArgs),
     /// The board of work: cards in columns, pulled by agents one at a time.
     Task(TaskArgs),
+    /// A project's plans: specs in Markdown that cards carry out.
+    Plan(PlanArgs),
+    /// A project's files, kept beside the work and linked to cards.
+    File(FileArgs),
     /// Ask the other members of a channel to review this agent's work.
     ReviewRequest {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -917,18 +923,119 @@ struct TaskArgs {
     action: TaskAction,
 }
 
+#[derive(clap::Args)]
+struct PlanArgs {
+    #[command(subcommand)]
+    action: PlanAction,
+}
+
+#[derive(Subcommand)]
+enum PlanAction {
+    /// The project's plans.
+    List {
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Archived plans too.
+        #[arg(long)]
+        all: bool,
+    },
+    /// A plan in full, and the cards that carry it out.
+    Show { plan: String },
+    /// Write a new plan; its Markdown from a file, or - for stdin.
+    New {
+        title: String,
+        #[arg(long, value_name = "FILE")]
+        body: Option<PathBuf>,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+    /// Change a plan's title, its Markdown, or where it stands (draft,
+    /// active, done, archived).
+    Edit {
+        plan: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long, value_name = "FILE")]
+        body: Option<PathBuf>,
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+}
+
+#[derive(clap::Args)]
+struct FileArgs {
+    #[command(subcommand)]
+    action: FileAction,
+}
+
+#[derive(Subcommand)]
+enum FileAction {
+    /// The project's files, or one card's.
+    List {
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long)]
+        task: Option<String>,
+    },
+    /// Keep a file in the project (at most 4 MiB); the same name again is
+    /// a new version. `--task` links it to a card.
+    Put {
+        path: PathBuf,
+        /// Its name in the project (default: the file's own).
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+    /// Write a file's bytes to stdout, or to `--out`.
+    Get {
+        file: String,
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+    },
+    /// Link a file to a card, or `--unlink` it.
+    Link {
+        file: String,
+        task: String,
+        #[arg(long)]
+        unlink: bool,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+    /// Delete a file.
+    Rm {
+        file: String,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+}
+
 #[derive(Subcommand)]
 enum TaskAction {
-    /// File a card: a title, what done means, and the column (Backlog
-    /// unless said).
+    /// File a card: a title, what done means, and where (Backlog unless
+    /// said). Prints its key.
     Create {
         title: String,
         /// What done means; an agent reads it before moving the card.
         #[arg(long, default_value = "")]
         acceptance: String,
-        /// backlog, ready, in-progress, review or done.
+        /// backlog, ready, in-progress, review, done, blocked or cancelled.
         #[arg(long)]
         column: Option<String>,
+        /// A lane by slug, name or category; overrides --column.
+        #[arg(long)]
+        lane: Option<String>,
+        /// Board slug or name (default: the project's main board).
+        #[arg(long)]
+        board: Option<String>,
         /// Project id, root or unique prefix (default: this directory's).
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
@@ -939,12 +1046,33 @@ enum TaskAction {
         /// path, commit, pr, url, task, message or memory.
         #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
         links: Vec<agentdocker_core::Link>,
+        #[command(flatten)]
+        fields: CardFields,
     },
-    /// Take a Ready card nobody holds: yours, in progress. Refused if it
-    /// is held or not ready.
-    Pull {
-        /// Card id or unique prefix.
+    /// File cards from a JSON file (or - for stdin): an array of cards,
+    /// each like create's fields with an optional `ref` the others name
+    /// as their parent or in blocked_by. All or none; prints each ref's
+    /// key.
+    CreateMany {
+        file: PathBuf,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long)]
+        board: Option<String>,
+        #[arg(long)]
+        lane: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+    /// One card in full: fields, comments and history.
+    Show {
         task: String,
+    },
+    /// Take a card from the pull source nobody else holds: yours, in the
+    /// pull target. With no card named, the next ready one.
+    Pull {
+        /// Card key, id or unique prefix; the next ready card when absent.
+        task: Option<String>,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: Option<String>,
         /// Take over a card whose holder's lease lapsed, naming that
@@ -952,17 +1080,30 @@ enum TaskAction {
         /// card names somebody else or the hold is live.
         #[arg(long, value_name = "AGENT")]
         take_over_from: Option<String>,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long)]
+        board: Option<String>,
     },
-    /// Move a card to a column: its holder may, the person always may.
+    /// Move a card to a lane: its holder may, the person always may.
     Move {
         task: String,
-        /// backlog, ready, in-progress, review or done.
-        column: String,
+        /// A lane by slug, name or category (review, done…).
+        to: String,
+        /// Why, said on the card in the same change.
+        #[arg(long)]
+        comment: Option<String>,
+        /// Put it just after this card in the lane.
+        #[arg(long, conflicts_with = "before")]
+        after: Option<String>,
+        /// Put it just before this card in the lane.
+        #[arg(long)]
+        before: Option<String>,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: Option<String>,
     },
-    /// Edit a card's words, or hand it to somebody (`--assignee ""` takes
-    /// it away).
+    /// Edit a card's words and fields, or hand it to somebody
+    /// (`--assignee ""` takes it away).
     Update {
         task: String,
         #[arg(long)]
@@ -979,6 +1120,154 @@ enum TaskAction {
         links: Vec<agentdocker_core::Link>,
         #[arg(long, conflicts_with = "links")]
         no_links: bool,
+        #[arg(long)]
+        description: Option<String>,
+        /// high, normal or low.
+        #[arg(long)]
+        priority: Option<String>,
+        /// s, m or l; empty clears it.
+        #[arg(long)]
+        size: Option<String>,
+        /// YYYY-MM-DD; empty clears it.
+        #[arg(long)]
+        due: Option<String>,
+        /// Something off the board it waits on; empty clears it.
+        #[arg(long)]
+        blocker: Option<String>,
+        /// The card it is part of; empty clears it.
+        #[arg(long)]
+        parent: Option<String>,
+        /// Replace the cards it waits on (repeatable); `--no-blocked-by`
+        /// clears them.
+        #[arg(long = "blocked-by")]
+        blocked_by: Vec<String>,
+        #[arg(long, conflicts_with = "blocked_by")]
+        no_blocked_by: bool,
+        /// Replace its tags (repeatable); `--no-tags` clears them.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        #[arg(long, conflicts_with = "tags")]
+        no_tags: bool,
+        /// The plan it carries out, by id or title; empty clears it.
+        #[arg(long)]
+        plan: Option<String>,
+    },
+    /// Cards that answer some words, best first: a key exactly, else every
+    /// word somewhere on the card, typing slips forgiven.
+    Search {
+        query: String,
+        /// One project's cards (default: every project's).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long)]
+        archived: bool,
+        #[arg(long, default_value_t = agentdocker_core::protocol::SEARCH_LIMIT)]
+        limit: usize,
+    },
+    /// Start an agent on a card nobody holds: it is handed the card and
+    /// told to work on it.
+    Start {
+        task: String,
+        /// The command-line agent, as `agentdocker runtimes` names it.
+        #[arg(long)]
+        runtime: String,
+        /// Its arguments, after `--`.
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    /// A board's rules (every board's when none is named).
+    Rules {
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long)]
+        board: Option<String>,
+    },
+    /// Add a rule: when a card comes into a lane (`--enter`), or has sat
+    /// in one for days (`--idle LANE --days N`), comment, move, archive or
+    /// start an agent on it.
+    RuleAdd {
+        name: String,
+        #[arg(long, value_name = "LANE", conflicts_with = "idle")]
+        enter: Option<String>,
+        #[arg(long, value_name = "LANE", requires = "days")]
+        idle: Option<String>,
+        #[arg(long)]
+        days: Option<u32>,
+        #[arg(long, value_name = "TEXT", group = "action")]
+        comment: Option<String>,
+        #[arg(long = "move", value_name = "LANE", group = "action")]
+        move_to: Option<String>,
+        #[arg(long, group = "action")]
+        archive: bool,
+        /// Start an agent of this runtime on the card.
+        #[arg(long, value_name = "RUNTIME", group = "action")]
+        start: Option<String>,
+        /// At most this many of the rule's agents at once.
+        #[arg(long, default_value_t = 1)]
+        max: u32,
+        #[arg(long)]
+        board: Option<String>,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+    },
+    /// Turn a rule off, or on again.
+    RuleOff {
+        rule: String,
+    },
+    RuleOn {
+        rule: String,
+    },
+    /// Delete a rule.
+    RuleRm {
+        rule: String,
+    },
+    /// The project's tags, with their colours.
+    Tags {
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+    },
+    /// Make a tag, recolour it, or rename it on every card.
+    Tag {
+        name: String,
+        /// gray, red, orange, yellow, green, teal, blue or purple.
+        #[arg(long)]
+        color: Option<String>,
+        #[arg(long)]
+        rename: Option<String>,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+    /// Delete a tag, and take it off every card.
+    TagRm {
+        name: String,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+    },
+    /// Say something on a card.
+    Comment {
+        task: String,
+        body: String,
+        /// The comment this answers.
+        #[arg(long)]
+        reply_to: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+    /// Rewrite a comment you wrote.
+    CommentEdit {
+        comment: String,
+        body: String,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+    /// Delete a comment: yours, or any as the person. Its place in the
+    /// thread stays.
+    CommentDelete {
+        comment: String,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
     },
     /// Take a card off the board, kept for the record.
     Archive {
@@ -986,13 +1275,72 @@ enum TaskAction {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: Option<String>,
     },
-    /// The board, Backlog to Done.
+    /// Put an archived card back where it was.
+    Unarchive {
+        task: String,
+    },
+    /// Take every card in a lane off the board.
+    ArchiveLane {
+        lane: String,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long)]
+        board: Option<String>,
+    },
+    /// A project's boards and their lanes.
+    Boards {
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+    },
+    /// A new board from a template: classic, agents or simple.
+    BoardCreate {
+        name: String,
+        #[arg(long, default_value = "classic")]
+        template: String,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+    },
+    /// Rename a board, or reshape it: its lanes from a JSON file (or -
+    /// for stdin), an array of `{slug, name, category, owner, wip?}`,
+    /// and which lanes a pull takes from and into.
+    BoardUpdate {
+        board: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, value_name = "FILE")]
+        lanes: Option<PathBuf>,
+        #[arg(long, value_name = "LANE")]
+        pull_source: Option<String>,
+        #[arg(long, value_name = "LANE")]
+        pull_target: Option<String>,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+    },
+    /// The board, lane by lane.
     List {
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
-        /// One column only.
+        /// One category only.
         #[arg(long)]
         column: Option<String>,
+        #[arg(long)]
+        board: Option<String>,
+        /// One lane only, by slug, name or category.
+        #[arg(long)]
+        lane: Option<String>,
+        /// Whose: an agent, me (with --as), or none.
+        #[arg(long)]
+        assignee: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// Only cards not done, cancelled or archived.
+        #[arg(long)]
+        open: bool,
+        /// Words in the key, title, description or acceptance.
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long)]
+        tag: Option<String>,
         /// Include archived cards.
         #[arg(long)]
         archived: bool,
@@ -1005,6 +1353,37 @@ enum TaskAction {
         #[arg(long, default_value_t = 0)]
         offset: usize,
     },
+}
+
+/// A card's fields beside its words, as `task create` takes them.
+#[derive(Args)]
+struct CardFields {
+    #[arg(long, default_value = "")]
+    description: String,
+    /// high, normal or low.
+    #[arg(long)]
+    priority: Option<String>,
+    /// s, m or l.
+    #[arg(long)]
+    size: Option<String>,
+    /// YYYY-MM-DD.
+    #[arg(long)]
+    due: Option<String>,
+    /// Something off the board it waits on.
+    #[arg(long, default_value = "")]
+    blocker: String,
+    /// The card it is part of.
+    #[arg(long)]
+    parent: Option<String>,
+    /// A card that must be done first (repeatable).
+    #[arg(long = "blocked-by")]
+    blocked_by: Vec<String>,
+    /// A tag (repeatable).
+    #[arg(long = "tag")]
+    tags: Vec<String>,
+    /// The plan it carries out, by id or title.
+    #[arg(long)]
+    plan: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -2166,12 +2545,236 @@ async fn run() -> Result<()> {
                 }
             }
         }
+        Command::Plan(args) => {
+            let here = || -> Result<String> { Ok(std::env::current_dir()?.display().to_string()) };
+            let read_body = |path: Option<PathBuf>| -> Result<Option<String>> {
+                path.map(|path| {
+                    if path.as_os_str() == "-" {
+                        let mut text = String::new();
+                        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                        Ok(text)
+                    } else {
+                        std::fs::read_to_string(&path)
+                            .with_context(|| format!("reading {}", path.display()))
+                    }
+                })
+                .transpose()
+            };
+            let show = |plan: &agentdocker_core::Plan, tasks: &[agentdocker_core::Task]| {
+                println!("{}  {}  {}", plan.id, plan.status.as_str(), plan.title);
+                for task in tasks {
+                    println!("  {}  {}", task.handle(), task.title);
+                }
+                if !plan.body.is_empty() {
+                    println!("\n{}", plan.body);
+                }
+            };
+            match args.action {
+                PlanAction::List { project, all } => {
+                    let request = Request::Plans {
+                        project: Some(project.map_or_else(here, Ok)?),
+                        archived: all,
+                    };
+                    if let Response::Plans { plans } = client.call(&request).await? {
+                        for plan in &plans {
+                            println!(
+                                "{}  {:<8}  {}  {}",
+                                plan.id,
+                                plan.status.as_str(),
+                                format::ago(plan.updated_at),
+                                plan.title
+                            );
+                        }
+                    }
+                }
+                PlanAction::Show { plan } => {
+                    if let Response::Plan { plan, tasks } =
+                        client.call(&Request::PlanGet { plan }).await?
+                    {
+                        show(&plan, &tasks);
+                    }
+                }
+                PlanAction::New {
+                    title,
+                    body,
+                    project,
+                    from,
+                } => {
+                    let request = Request::PlanSave {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        plan: None,
+                        title: Some(title),
+                        body: read_body(body)?,
+                        status: None,
+                    };
+                    if let Response::Plan { plan, .. } = client.call(&request).await? {
+                        println!("{}", plan.id);
+                    }
+                }
+                PlanAction::Edit {
+                    plan,
+                    title,
+                    body,
+                    status,
+                    from,
+                } => {
+                    let status = status
+                        .map(|s| {
+                            agentdocker_core::PlanStatus::parse(&s).with_context(|| {
+                                format!("no status called {s}; draft, active, done or archived")
+                            })
+                        })
+                        .transpose()?;
+                    let request = Request::PlanSave {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        project: None,
+                        plan: Some(plan),
+                        title,
+                        body: read_body(body)?,
+                        status,
+                    };
+                    if let Response::Plan { plan, tasks } = client.call(&request).await? {
+                        show(&plan.summary(), &tasks);
+                    }
+                }
+            }
+        }
+        Command::File(args) => {
+            use base64::Engine;
+            let here = || -> Result<String> { Ok(std::env::current_dir()?.display().to_string()) };
+            match args.action {
+                FileAction::List { project, task } => {
+                    let request = Request::Files {
+                        project: match task {
+                            Some(_) => None,
+                            None => Some(project.map_or_else(here, Ok)?),
+                        },
+                        task,
+                    };
+                    if let Response::Files { files } = client.call(&request).await? {
+                        for file in &files {
+                            println!(
+                                "{}  {:>9}  {}  {}",
+                                file.id, file.size, file.media_type, file.name
+                            );
+                        }
+                    }
+                }
+                FileAction::Put {
+                    path,
+                    name,
+                    task,
+                    project,
+                    from,
+                } => {
+                    let bytes = std::fs::read(&path)
+                        .with_context(|| format!("reading {}", path.display()))?;
+                    anyhow::ensure!(
+                        bytes.len() <= agentdocker_core::plan::FILE_BYTES,
+                        "a project file is at most 4 MiB"
+                    );
+                    let name = match name {
+                        Some(name) => name,
+                        None => path
+                            .file_name()
+                            .context("the path names no file")?
+                            .to_string_lossy()
+                            .into_owned(),
+                    };
+                    let (text, base64) = match String::from_utf8(bytes) {
+                        Ok(text) => (Some(text), None),
+                        Err(error) => (
+                            None,
+                            Some(
+                                base64::engine::general_purpose::STANDARD
+                                    .encode(error.into_bytes()),
+                            ),
+                        ),
+                    };
+                    let request = Request::FilePut {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        name,
+                        media_type: None,
+                        text,
+                        base64,
+                        task,
+                    };
+                    if let Response::File { file } = client.call(&request).await? {
+                        println!("{}  {}", file.id, file.name);
+                    }
+                }
+                FileAction::Get { file, out } => {
+                    if let Response::FileContent { text, base64, .. } =
+                        client.call(&Request::FileGet { file }).await?
+                    {
+                        let bytes = match (text, base64) {
+                            (Some(text), _) => text.into_bytes(),
+                            (None, Some(encoded)) => base64::engine::general_purpose::STANDARD
+                                .decode(encoded)
+                                .context("the daemon's base64 does not decode")?,
+                            (None, None) => Vec::new(),
+                        };
+                        match out {
+                            Some(out) => std::fs::write(&out, bytes)
+                                .with_context(|| format!("writing {}", out.display()))?,
+                            None => std::io::Write::write_all(&mut std::io::stdout(), &bytes)?,
+                        }
+                    }
+                }
+                FileAction::Link {
+                    file,
+                    task,
+                    unlink,
+                    from,
+                } => {
+                    let request = Request::FileLink {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        file,
+                        task,
+                        unlink,
+                    };
+                    if let Response::File { file } = client.call(&request).await? {
+                        println!("{}  {} card(s)", file.id, file.tasks.len());
+                    }
+                }
+                FileAction::Rm { file, from } => {
+                    let request = Request::FileDelete {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        file,
+                    };
+                    if let Response::Ok = client.call(&request).await? {
+                        println!("deleted");
+                    }
+                }
+            }
+        }
         Command::Task(args) => {
             let column_of = |text: Option<String>| -> Result<Option<agentdocker_core::Column>> {
                 text.map(|t| {
                     agentdocker_core::Column::parse(&t).with_context(|| {
-                        format!("no column called {t}; backlog, ready, in-progress, review or done")
+                        format!(
+                            "no column called {t}; backlog, ready, in-progress, review, done, blocked or cancelled"
+                        )
                     })
+                })
+                .transpose()
+            };
+            let priority_of = |text: Option<String>| -> Result<Option<agentdocker_core::Priority>> {
+                text.map(|t| {
+                    agentdocker_core::Priority::parse(&t)
+                        .with_context(|| format!("no priority called {t}; high, normal or low"))
                 })
                 .transpose()
             };
@@ -2179,8 +2782,8 @@ async fn run() -> Result<()> {
             let card_line = |task: &agentdocker_core::Task| {
                 let mut line = format!(
                     "{}  {:<12} {}{}",
-                    task.id,
-                    task.column.label(),
+                    task.handle(),
+                    task.lane.as_deref().unwrap_or(task.column.as_str()),
                     task.title,
                     task.assignee
                         .as_ref()
@@ -2192,14 +2795,86 @@ async fn run() -> Result<()> {
                 }
                 line
             };
+            let detail = |response: Response| match response {
+                Response::TaskDetail {
+                    task,
+                    board,
+                    comments,
+                    history,
+                    blockers,
+                    children,
+                    lease,
+                    plan,
+                    files,
+                } => {
+                    println!("{}", card_line(&task));
+                    if let Some(plan) = &plan {
+                        println!("  plan {}  {}", plan.id, plan.title);
+                    }
+                    for file in &files {
+                        println!("  file {}  {} ({} bytes)", file.id, file.name, file.size);
+                    }
+                    println!(
+                        "  board {} · lane {}",
+                        board.slug,
+                        board.lane_of(&task).name
+                    );
+                    if !task.acceptance.is_empty() {
+                        println!("  done when: {}", task.acceptance);
+                    }
+                    if !task.description.is_empty() {
+                        println!("\n{}\n", task.description);
+                    }
+                    for blocker in &blockers {
+                        println!("  waits on {}  {}", blocker.handle(), blocker.title);
+                    }
+                    for child in &children {
+                        println!("  part      {}  {}", child.handle(), child.title);
+                    }
+                    for comment in &comments {
+                        println!(
+                            "  {} {}: {}",
+                            comment.created_at.format("%Y-%m-%d %H:%M"),
+                            comment.author,
+                            comment.body
+                        );
+                    }
+                    for entry in &history {
+                        println!(
+                            "  {} {} {}",
+                            entry.at.format("%Y-%m-%d %H:%M"),
+                            entry.by,
+                            serde_json::to_string(&entry.action).unwrap_or_default()
+                        );
+                    }
+                    if let Some(lease) = lease {
+                        println!("  lease {} until {}", lease.id, lease.expires_at);
+                    }
+                }
+                Response::NothingReady {
+                    source,
+                    total,
+                    held,
+                    blocked,
+                    ..
+                } => {
+                    println!(
+                        "nothing ready in {source}: {total} there, {held} held by others, {blocked} waiting on something"
+                    );
+                }
+                _ => {}
+            };
             match args.action {
                 TaskAction::Create {
                     title,
                     acceptance,
                     column,
+                    lane,
+                    board,
                     project,
                     from,
                     links,
+                    fields,
                 } => {
                     let request = Request::TaskCreate {
                         from: sender::resolve(&client, from)
@@ -2210,43 +2885,118 @@ async fn run() -> Result<()> {
                         acceptance,
                         column: column_of(column)?,
                         links,
+                        board,
+                        lane,
+                        description: fields.description,
+                        priority: priority_of(fields.priority)?,
+                        size: fields
+                            .size
+                            .map(|s| {
+                                agentdocker_core::Size::parse(&s)
+                                    .with_context(|| format!("no size called {s}; s, m or l"))
+                            })
+                            .transpose()?,
+                        due: fields
+                            .due
+                            .map(|d| {
+                                chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
+                                    .with_context(|| format!("{d} is not a day: YYYY-MM-DD"))
+                            })
+                            .transpose()?,
+                        external_blocker: fields.blocker,
+                        parent: fields.parent,
+                        blocked_by: fields.blocked_by,
+                        tags: fields.tags,
+                        plan: fields.plan,
                     };
                     if let Response::Task { task } = client.call(&request).await? {
-                        println!("{}", task.id);
+                        println!("{}", task.handle());
                         eprintln!("{}", card_line(&task));
                     }
+                }
+                TaskAction::CreateMany {
+                    file,
+                    project,
+                    board,
+                    lane,
+                    from,
+                } => {
+                    let text = if file.as_os_str() == "-" {
+                        let mut text = String::new();
+                        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                        text
+                    } else {
+                        std::fs::read_to_string(&file)
+                            .with_context(|| format!("reading {}", file.display()))?
+                    };
+                    let cards: Vec<agentdocker_core::protocol::BatchCard> =
+                        serde_json::from_str(&text).context("the file is a JSON array of cards")?;
+                    let request = Request::TaskCreateMany {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        board,
+                        lane,
+                        tags: Vec::new(),
+                        cards,
+                    };
+                    if let Response::TaskBatch { tasks, refs } = client.call(&request).await? {
+                        for task in &tasks {
+                            println!("{}", card_line(task));
+                        }
+                        for (reference, key) in refs {
+                            eprintln!("{reference} = {key}");
+                        }
+                    }
+                }
+                TaskAction::Show { task } => {
+                    detail(client.call(&Request::TaskGet { task }).await?);
                 }
                 TaskAction::Pull {
                     task,
                     agent,
                     take_over_from,
+                    project,
+                    board,
                 } => {
                     let agent = sender::resolve(&client, agent)
                         .await?
                         .context("pull as an agent: give --as")?;
-                    if let Response::Task { task } = client
-                        .call(&Request::TaskPull {
-                            agent,
-                            task,
-                            take_over_from,
-                        })
-                        .await?
-                    {
-                        println!("{}", card_line(&task));
-                    }
+                    let project = match (&task, project) {
+                        (None, None) => Some(here()?),
+                        (_, project) => project,
+                    };
+                    detail(
+                        client
+                            .call(&Request::TaskPull {
+                                agent,
+                                task,
+                                take_over_from,
+                                project,
+                                board,
+                            })
+                            .await?,
+                    );
                 }
                 TaskAction::Move {
                     task,
-                    column,
+                    to,
+                    comment,
+                    after,
+                    before,
                     agent,
                 } => {
-                    let column = column_of(Some(column))?.expect("given");
                     let request = Request::TaskMove {
                         agent: sender::resolve(&client, agent)
                             .await?
                             .unwrap_or_else(|| HUMAN.into()),
                         task,
-                        column,
+                        column: None,
+                        to: Some(to),
+                        after,
+                        before,
+                        comment,
                     };
                     if let Response::Task { task } = client.call(&request).await? {
                         println!("{}", card_line(&task));
@@ -2260,7 +3010,27 @@ async fn run() -> Result<()> {
                     agent,
                     links,
                     no_links,
+                    description,
+                    priority,
+                    size,
+                    due,
+                    blocker,
+                    parent,
+                    blocked_by,
+                    no_blocked_by,
+                    tags,
+                    no_tags,
+                    plan,
                 } => {
+                    let replace = |given: Vec<String>, clear: bool| {
+                        if clear {
+                            Some(Vec::new())
+                        } else if given.is_empty() {
+                            None
+                        } else {
+                            Some(given)
+                        }
+                    };
                     let request = Request::TaskUpdate {
                         agent: sender::resolve(&client, agent)
                             .await?
@@ -2276,9 +3046,246 @@ async fn run() -> Result<()> {
                         } else {
                             Some(links)
                         },
+                        description,
+                        priority: priority_of(priority)?,
+                        size,
+                        due,
+                        external_blocker: blocker,
+                        parent,
+                        blocked_by: replace(blocked_by, no_blocked_by),
+                        tags: replace(tags, no_tags),
+                        plan,
                     };
                     if let Response::Task { task } = client.call(&request).await? {
                         println!("{}", card_line(&task));
+                    }
+                }
+                TaskAction::Search {
+                    query,
+                    project,
+                    archived,
+                    limit,
+                } => {
+                    let request = Request::TaskSearch {
+                        query,
+                        project,
+                        archived,
+                        limit,
+                    };
+                    if let Response::Tasks { tasks, .. } = client.call(&request).await? {
+                        for task in &tasks {
+                            println!("{}", card_line(task));
+                        }
+                    }
+                }
+                TaskAction::Start {
+                    task,
+                    runtime,
+                    args,
+                } => {
+                    let request = Request::TaskStart {
+                        from: HUMAN.into(),
+                        task,
+                        runtime,
+                        args,
+                        workdir: Some(std::env::current_dir()?),
+                    };
+                    if let Response::Agent { agent } = client.call(&request).await? {
+                        println!("{}  {}", agent.id, agent.spec.name);
+                    }
+                }
+                TaskAction::Rules { project, board } => {
+                    let request = Request::Rules {
+                        project: Some(project.map_or_else(here, Ok)?),
+                        board,
+                    };
+                    if let Response::Rules { rules } = client.call(&request).await? {
+                        for rule in &rules {
+                            println!(
+                                "{}  {}{}  {}  {}",
+                                rule.id,
+                                rule.board,
+                                if rule.enabled { "" } else { " (off)" },
+                                rule.name,
+                                format::rule_line(rule)
+                            );
+                        }
+                    }
+                }
+                TaskAction::RuleAdd {
+                    name,
+                    enter,
+                    idle,
+                    days,
+                    comment,
+                    move_to,
+                    archive,
+                    start,
+                    max,
+                    board,
+                    project,
+                } => {
+                    let trigger = match (enter, idle, days) {
+                        (Some(lane), None, _) => agentdocker_core::Trigger::Enter { lane },
+                        (None, Some(lane), Some(days)) => {
+                            agentdocker_core::Trigger::Idle { lane, days }
+                        }
+                        _ => anyhow::bail!("say when: --enter LANE, or --idle LANE --days N"),
+                    };
+                    let action = match (comment, move_to, archive, start) {
+                        (Some(text), None, false, None) => {
+                            agentdocker_core::RuleAction::Comment { text }
+                        }
+                        (None, Some(lane), false, None) => {
+                            agentdocker_core::RuleAction::Move { lane }
+                        }
+                        (None, None, true, None) => agentdocker_core::RuleAction::Archive,
+                        (None, None, false, Some(runtime)) => agentdocker_core::RuleAction::Start {
+                            runtime,
+                            args: Vec::new(),
+                            max,
+                        },
+                        _ => anyhow::bail!(
+                            "say what: --comment TEXT, --move LANE, --archive or --start RUNTIME"
+                        ),
+                    };
+                    let request = Request::RuleCreate {
+                        from: HUMAN.into(),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        board,
+                        name,
+                        trigger,
+                        action,
+                    };
+                    if let Response::Rule { rule } = client.call(&request).await? {
+                        println!("{}", rule.id);
+                    }
+                }
+                TaskAction::RuleOff { rule } => {
+                    let request = Request::RuleUpdate {
+                        from: HUMAN.into(),
+                        rule,
+                        name: None,
+                        trigger: None,
+                        action: None,
+                        enabled: Some(false),
+                    };
+                    if let Response::Rule { rule } = client.call(&request).await? {
+                        println!("{} off", rule.id);
+                    }
+                }
+                TaskAction::RuleOn { rule } => {
+                    let request = Request::RuleUpdate {
+                        from: HUMAN.into(),
+                        rule,
+                        name: None,
+                        trigger: None,
+                        action: None,
+                        enabled: Some(true),
+                    };
+                    if let Response::Rule { rule } = client.call(&request).await? {
+                        println!("{} on", rule.id);
+                    }
+                }
+                TaskAction::RuleRm { rule } => {
+                    let request = Request::RuleDelete {
+                        from: HUMAN.into(),
+                        rule,
+                    };
+                    if let Response::Ok = client.call(&request).await? {
+                        println!("deleted");
+                    }
+                }
+                TaskAction::Tags { project } => {
+                    let request = Request::Tags {
+                        project: Some(project.map_or_else(here, Ok)?),
+                    };
+                    if let Response::Tags { tags } = client.call(&request).await? {
+                        for tag in &tags {
+                            println!("{}  {}", tag.name, tag.color.as_str());
+                        }
+                    }
+                }
+                TaskAction::Tag {
+                    name,
+                    color,
+                    rename,
+                    project,
+                    from,
+                } => {
+                    let color = color
+                        .map(|c| {
+                            agentdocker_core::TagColor::parse(&c).with_context(|| {
+                                format!("no colour called {c}; gray, red, orange, yellow, green, teal, blue or purple")
+                            })
+                        })
+                        .transpose()?;
+                    let request = Request::TagSave {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        name,
+                        color,
+                        rename,
+                    };
+                    if let Response::Tag { tag } = client.call(&request).await? {
+                        println!("{}  {}", tag.name, tag.color.as_str());
+                    }
+                }
+                TaskAction::TagRm { name, project } => {
+                    let request = Request::TagDelete {
+                        from: HUMAN.into(),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        name,
+                    };
+                    if let Response::Ok = client.call(&request).await? {
+                        println!("deleted");
+                    }
+                }
+                TaskAction::Comment {
+                    task,
+                    body,
+                    reply_to,
+                    from,
+                } => {
+                    let request = Request::TaskComment {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        task,
+                        body,
+                        reply_to,
+                    };
+                    if let Response::Comment { comment } = client.call(&request).await? {
+                        println!("{}", comment.id);
+                    }
+                }
+                TaskAction::CommentEdit {
+                    comment,
+                    body,
+                    from,
+                } => {
+                    let request = Request::TaskCommentEdit {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        comment,
+                        body,
+                    };
+                    if let Response::Comment { comment } = client.call(&request).await? {
+                        println!("{}", comment.id);
+                    }
+                }
+                TaskAction::CommentDelete { comment, from } => {
+                    let request = Request::TaskCommentDelete {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        comment,
+                    };
+                    if let Response::Ok = client.call(&request).await? {
+                        println!("deleted");
                     }
                 }
                 TaskAction::Archive { task, agent } => {
@@ -2292,31 +3299,146 @@ async fn run() -> Result<()> {
                         println!("archived");
                     }
                 }
+                TaskAction::Unarchive { task } => {
+                    let request = Request::TaskUnarchive {
+                        agent: HUMAN.into(),
+                        task,
+                    };
+                    if let Response::Task { task } = client.call(&request).await? {
+                        println!("{}", card_line(&task));
+                    }
+                }
+                TaskAction::ArchiveLane {
+                    lane,
+                    project,
+                    board,
+                } => {
+                    let request = Request::TaskArchiveLane {
+                        from: HUMAN.into(),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        board,
+                        lane,
+                    };
+                    if let Response::Archived { count } = client.call(&request).await? {
+                        println!("archived {count}");
+                    }
+                }
+                TaskAction::Boards { project } => {
+                    let request = Request::Boards {
+                        project: Some(project.map_or_else(here, Ok)?),
+                    };
+                    if let Response::Boards { boards } = client.call(&request).await? {
+                        for board in boards {
+                            let lanes: Vec<String> = board
+                                .lanes
+                                .iter()
+                                .map(|l| {
+                                    let mut words = l.name.clone();
+                                    if l.slug == board.pull_source {
+                                        words.push_str(" (pull)");
+                                    }
+                                    words
+                                })
+                                .collect();
+                            println!("{}  {}  {}", board.slug, board.name, lanes.join(" → "));
+                        }
+                    }
+                }
+                TaskAction::BoardCreate {
+                    name,
+                    template,
+                    project,
+                } => {
+                    let request = Request::BoardCreate {
+                        from: HUMAN.into(),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        name,
+                        template,
+                    };
+                    if let Response::Board { board } = client.call(&request).await? {
+                        println!("{}", board.slug);
+                    }
+                }
+                TaskAction::BoardUpdate {
+                    board,
+                    name,
+                    lanes,
+                    pull_source,
+                    pull_target,
+                    project,
+                } => {
+                    let lanes = match lanes {
+                        None => None,
+                        Some(file) => {
+                            let text = if file.as_os_str() == "-" {
+                                let mut text = String::new();
+                                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                                text
+                            } else {
+                                std::fs::read_to_string(&file)
+                                    .with_context(|| format!("reading {}", file.display()))?
+                            };
+                            Some(
+                                serde_json::from_str::<Vec<agentdocker_core::Lane>>(&text)
+                                    .context("the file is a JSON array of lanes")?,
+                            )
+                        }
+                    };
+                    let request = Request::BoardUpdate {
+                        from: HUMAN.into(),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        board,
+                        name,
+                        lanes,
+                        pull_source,
+                        pull_target,
+                    };
+                    if let Response::Board { board } = client.call(&request).await? {
+                        println!("{}", board.slug);
+                    }
+                }
                 TaskAction::List {
                     project,
                     column,
+                    board,
+                    lane,
+                    assignee,
+                    agent,
+                    open,
+                    query,
+                    tag,
                     archived,
                     limit,
                     offset,
                 } => {
+                    let agent = sender::resolve(&client, agent).await?;
                     let request = Request::Tasks {
                         project: Some(project.map_or_else(here, Ok)?),
                         column: column_of(column)?,
                         archived,
                         offset,
                         limit,
+                        board,
+                        lane,
+                        assignee,
+                        agent,
+                        open,
+                        query,
+                        tag,
                     };
                     if let Response::Tasks { tasks, more } = client.call(&request).await? {
                         if tasks.is_empty() {
-                            println!("no cards on the board");
+                            println!("no cards");
                         } else {
                             let names = agent_names(&client).await;
                             let rows: Vec<Vec<String>> = tasks
                                 .iter()
                                 .map(|t| {
                                     vec![
-                                        t.id.to_string(),
-                                        t.column.label().to_owned(),
+                                        t.handle(),
+                                        t.lane
+                                            .clone()
+                                            .unwrap_or_else(|| t.column.as_str().to_owned()),
                                         t.title.clone(),
                                         t.assignee
                                             .as_ref()
@@ -2335,7 +3457,7 @@ async fn run() -> Result<()> {
                                     ]
                                 })
                                 .collect();
-                            format::table(&["CARD", "COLUMN", "TITLE", "HOLDER", ""], &rows);
+                            format::table(&["CARD", "LANE", "TITLE", "HOLDER", ""], &rows);
                             if more {
                                 println!(
                                     "and more: the board goes on; --offset {} shows the next page",

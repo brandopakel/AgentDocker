@@ -234,12 +234,7 @@ const BARS_FIT: f32 = 1180.0;
 impl App {
     pub(super) fn usage_view(&self, c: Colors) -> Element<'_, Message> {
         let Some(project) = self.selected_project_root() else {
-            return empty(
-                "Pick a project",
-                "Usage is a project's: choose one on the left.",
-                None,
-                c,
-            );
+            return empty(None, c);
         };
         let since = if self.shell.usage_since.is_empty() {
             DEFAULT_SINCE
@@ -333,12 +328,7 @@ impl App {
         };
         if report.rows.is_empty() {
             page = page.push(if collection_off(report) {
-                empty(
-                    "Collection is off",
-                    "Enable it in agentd.toml ([usage] enabled = true) to read the providers' local usage logs. Existing totals remain available.",
-                    None,
-                    c,
-                )
+                empty(None, c)
             } else {
                 // The range it covers is said once, with the notes below.
                 text("No usage in this window")

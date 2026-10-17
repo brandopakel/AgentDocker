@@ -5,6 +5,7 @@
 //! testable and deterministic.
 
 pub mod agent;
+pub mod board;
 pub mod change;
 pub mod config;
 pub mod conversation;
@@ -42,6 +43,13 @@ pub mod secret;
 pub use agent::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, RestartPolicy, VcsState,
 };
+pub use board::{Board, Lane};
+pub mod plan;
+pub use plan::{Plan, PlanStatus, ProjectFile};
+pub mod rule;
+pub use rule::{Rule, RuleAction, Trigger};
+pub mod search;
+pub mod tag;
 pub use change::{Attribution, Change, ChangeKind, Overlap, OverlapParty, overlaps};
 pub use event::{Event, EventCursor, EventKind, WaitOutcome};
 pub use journal::{Digest, DigestBudget, JournalEntry, JournalFilter, JournalKind, SummarySource};
@@ -61,7 +69,10 @@ pub use project::{Pause, ProjectId, ProjectRef, ProjectSource};
 pub use protocol::DigestRequest;
 pub use protocol::{ErrorCode, Request, Response};
 pub use registry::{Registry, RegistryError};
-pub use task::{Column, Task, TaskId};
+pub use tag::{Tag, TagColor};
+pub use task::{
+    Column, Comment, CommentId, NewTask, Priority, Size, Task, TaskAction, TaskEntry, TaskId,
+};
 
 pub mod policy;
 pub use policy::{Policy, Ruling};

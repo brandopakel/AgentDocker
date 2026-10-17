@@ -8,7 +8,7 @@
 use super::icons::{Icon, icon};
 use super::panes::{Grid, Slot};
 use super::style::{Colors, alpha, weight};
-use super::view::{empty, first_line, note, panel, pill, rule, split_style};
+use super::view::{empty, first_line, panel, pill, rule, split_style};
 use super::*;
 use crate::controls::{Kind, custom, custom_sized, framed_composer, input_enabled, popover};
 use agentdocker_core::conversation::line_of;
@@ -21,8 +21,7 @@ use iced::{
     widget::{Space, column, container, responsive, row, scrollable, text},
 };
 use look::{
-    count_divider, day_divider, disc, key_hint, link, section_label, status_line, tinted,
-    unread_divider, with_presence,
+    count_divider, day_divider, disc, link, status_line, tinted, unread_divider, with_presence,
 };
 
 pub(super) mod look;
@@ -97,15 +96,6 @@ impl App {
                 .map(|a| a.spec.name.clone()),
         );
         names
-    }
-
-    /// The tool an agent is: `Codex`, `Claude Code`. From the record's
-    /// runtime, so a chosen name still says what runs under it.
-    fn tool_of(&self, id: &str) -> String {
-        match self.naming().record(id) {
-            Some(agent) => super::runtime_label(&agent.spec.runtime),
-            None => self.name_of(id),
-        }
     }
 
     /// The other party of a direct conversation the person is in; none for
@@ -465,48 +455,19 @@ impl App {
         if unread > 0 && !selected {
             name = name.color(c.text);
         }
-        let mut body = column![container(name).width(Fill).clip(true)]
+        let body = column![container(name).width(Fill).clip(true)]
             .spacing(1)
             .width(Fill);
-        if let Some(line) = &summary.last_line {
-            let who = summary
-                .last_from
-                .as_deref()
-                .map(|from| {
-                    if self.is_human(from) {
-                        "You".to_owned()
-                    } else if from == "agentd" {
-                        "AgentDocker".to_owned()
-                    } else {
-                        self.name_of(from)
-                    }
-                })
-                .unwrap_or_default();
-            let budget = ((room / 6.6) as usize).max(8);
-            let preview = if summary.kind == ConversationKind::Dm {
-                first_line(line, budget)
-            } else {
-                first_line(&format!("{who}: {line}"), budget)
-            };
-            body = body.push(
-                container(
-                    text(preview)
-                        .size(12)
-                        .color(if selected { c.accent_ink } else { c.muted })
-                        .wrapping(iced::widget::text::Wrapping::None),
-                )
-                .width(Fill)
-                .clip(true),
-            );
-        }
+        // The name alone: the last line is in the conversation, and the
+        // unread count says there is something new.
         let mut content = row![mark, body].spacing(10).align_y(Center);
         // Unread, and how many of those name the person: the @ count is
         // the one that asks for an answer.
         if unread > 0 && summary.mentions > 0 {
             content = content.push(pill(
                 format!("@{}", summary.mentions),
-                c.accent,
-                iced::Color::WHITE,
+                c.accent_soft,
+                c.accent_ink,
                 c,
             ));
         }
@@ -631,7 +592,7 @@ impl App {
             row![
                 input_enabled(
                     "messages-search",
-                    "Find a conversation…",
+                    "Search",
                     &self.shell.messages_search,
                     Message::MessagesSearch,
                     true,
@@ -667,30 +628,12 @@ impl App {
         }
         let unread_total = self.unread_total();
         if unread_total > 0 {
-            let owed = self
-                .conversations
-                .iter()
-                .filter(|s| s.unread > 0 && self.counts_for_person(s))
-                .count();
-            // The count, and one way to be done with it.
+            // One way to be done with what is unread; the rows carry the
+            // counts.
             list = list.push(
                 container(
                     row![
-                        container(
-                            text(if row_width >= 300.0 {
-                                format!(
-                                    "{unread_total} unread in {owed} conversation{}",
-                                    if owed == 1 { "" } else { "s" }
-                                )
-                            } else {
-                                format!("{unread_total} unread")
-                            })
-                            .size(12)
-                            .color(c.muted)
-                            .wrapping(iced::widget::text::Wrapping::None),
-                        )
-                        .width(Fill)
-                        .clip(true),
+                        Space::new().width(Fill),
                         link(
                             "mark-all-read",
                             "Mark all read",
@@ -710,20 +653,12 @@ impl App {
                 }),
             );
         }
-        list = list.push(section_label("Projects", c));
-        if projects.is_empty() {
-            list = list.push(container(note("No project chat yet.", c).size(12)).padding([2, 8]));
-        }
+        // Two groups, a rule between them: project chats wear their
+        // monograms and direct messages their agents' marks.
         for (_, summary) in projects {
             list = list.push(self.conversation_row(summary, None, row_width, c));
         }
-        list = list.push(section_label("Direct messages", c));
-        if direct.is_empty() {
-            list = list.push(
-                container(note("No direct messages yet. + writes to an agent.", c).size(12))
-                    .padding([2, 8]),
-            );
-        }
+        list = list.push(container(rule(c)).padding([6, 8]));
         for summary in direct {
             list = list.push(self.conversation_row(summary, Some(true), row_width, c));
         }
@@ -819,11 +754,12 @@ impl App {
             body_text
         };
         let mark_size = if in_thread { 28.0 } else { 32.0 };
+        // When it was said is the name's tooltip, with the day.
         let time = message
             .envelope
             .sent_at
             .with_timezone(&chrono::Local)
-            .format("%H:%M")
+            .format("%a %-d %b, %H:%M")
             .to_string();
         let open = self.shell.thread.as_ref() == Some(&id);
         let thread_message = if open {
@@ -841,63 +777,45 @@ impl App {
         let mut words = column![].spacing(3).width(Fill);
         if system {
             // A notice: the sentence, quiet, and its time after it.
-            words = words.push(
-                row![
-                    text(shown)
-                        .size(12.5)
-                        .line_height(iced::widget::text::LineHeight::Relative(1.45))
-                        .color(c.muted)
-                        .width(Fill),
-                    text(time.clone()).size(11).color(c.faint),
-                ]
-                .spacing(10)
-                .align_y(iced::Alignment::Start),
-            );
+            words = words.push(super::view::tip(
+                text(shown)
+                    .size(12.5)
+                    .line_height(iced::widget::text::LineHeight::Relative(1.45))
+                    .color(c.muted)
+                    .width(Fill),
+                time.clone(),
+                c,
+            ));
         } else {
             if head {
-                let mut header = row![
+                // The sender, its time on the pointer; a question or a
+                // hand-off is its glyph. A mention is the row's amber tint.
+                let mut header = row![super::view::tip(
                     text(name.clone())
                         .size(13.5)
                         .font(weight(iced::font::Weight::Semibold))
-                        .color(c.text)
-                ]
+                        .color(c.text),
+                    time.clone(),
+                    c
+                )]
                 .spacing(7)
                 .align_y(Center);
                 match Self::kind_word(&message.envelope.kind) {
                     Some("question") => {
-                        header = header.push(
-                            row![
-                                super::view::dot(c.amber, 6.0, c),
-                                text("question")
-                                    .size(11.5)
-                                    .font(weight(iced::font::Weight::Medium))
-                                    .color(c.amber),
-                            ]
-                            .spacing(5)
-                            .align_y(Center),
-                        );
+                        header = header.push(super::view::said(
+                            format!("kind-{id}"),
+                            "question",
+                            icon(Icon::Question, c.amber, 13.0),
+                        ));
                     }
-                    Some(kind) => {
-                        header = header.push(
-                            text(kind.to_owned()).size(11.5).color(if kind == "answer" {
-                                c.muted
-                            } else {
-                                c.faint
-                            }),
-                        );
+                    Some("handoff") => {
+                        header = header.push(super::view::said(
+                            format!("kind-{id}"),
+                            "handoff",
+                            icon(Icon::Handoff, c.faint, 13.0),
+                        ));
                     }
-                    None => {}
-                }
-                header = header.push(text(time.clone()).size(11.5).color(c.faint));
-                // A message that names the person says so where the eye
-                // lands.
-                if mentions_me {
-                    header = header.push(
-                        text("mentions you")
-                            .size(11.5)
-                            .font(weight(iced::font::Weight::Medium))
-                            .color(c.amber),
-                    );
+                    _ => {}
                 }
                 words = words.push(header);
             }
@@ -1005,17 +923,15 @@ impl App {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+            // Its delivery is one dot in the lead state's tone: the summary
+            // is its name, every recipient its tooltip.
             let lead = groups[0].0;
-            let lines = super::view::hint(
-                row![
-                    super::view::dot(tone_of(lead), 6.0, c),
-                    text(summary)
-                        .size(12)
-                        .color(if lead.reached() { c.muted } else { c.faint })
-                        .wrapping(iced::widget::text::Wrapping::None),
-                ]
-                .spacing(6)
-                .align_y(Center),
+            let lines = super::view::tip(
+                super::view::said(
+                    format!("delivery-{id}"),
+                    summary,
+                    container(super::view::dot(tone_of(lead), 6.0, c)).padding(4),
+                ),
                 every,
                 c,
             );
@@ -1205,22 +1121,13 @@ impl App {
                 .unwrap_or_else(|| format!("compose-{conversation}")),
         };
         let recipients = self.mention_recipients(conversation);
-        // The footer: what the keys do, as far as the width allows, and
-        // the one send action. Enter sends, as it does everywhere people
-        // type to each other; the arrow is the same action for the pointer.
-        let mut hints = row![key_hint("Enter", "send", c)]
-            .spacing(14)
-            .align_y(Center);
-        if available.width >= 400.0 {
-            hints = hints.push(key_hint("Shift+Enter", "new line", c));
-        }
-        if available.width >= 540.0 && can_send && !recipients.is_empty() {
-            hints = hints.push(key_hint("@", "mention", c));
-        }
+        // The footer is the one send action. Enter sends, as it does
+        // everywhere people type to each other; the arrow is the same
+        // action for the pointer.
         let send = custom_sized(
             format!("send-{key}"),
             if sending { "Sending…" } else { "Send" },
-            container(icon(Icon::ArrowUp, iced::Color::WHITE, 14.0)).center(16),
+            container(icon(Icon::ArrowUp, c.on_primary, 14.0)).center(16),
             submit.clone(),
             false,
             Kind::Primary,
@@ -1228,7 +1135,7 @@ impl App {
             iced::Length::Shrink,
         );
         let footer = container(
-            row![container(hints).width(Fill).clip(true), send]
+            row![Space::new().width(Fill), send]
                 .spacing(8)
                 .align_y(Center),
         )
@@ -1388,13 +1295,20 @@ impl App {
                     c.accent,
                 ));
             }
-            status = status.push(status_line(
+            // The receiver's state is its dot, the words on the pointer and
+            // in its name, beside the way to put it right.
+            let mut line = row![super::view::status_dot(
+                format!("input-readiness-{key}"),
                 Self::readiness_tone(readiness, c),
                 readiness,
-                c.muted,
-                actions,
-                c,
-            ));
+                c
+            )]
+            .spacing(6)
+            .align_y(Center);
+            for item in actions {
+                line = line.push(item);
+            }
+            status = status.push(line);
         }
         // The pane supplies its actual remaining height after headers and
         // compact agent controls. Keep typing visible while feedback scrolls.
@@ -1495,15 +1409,9 @@ impl App {
             .iter()
             .find(|a| self.is_human(a.id.as_str()))
             .map(|a| a.id.as_str().to_owned());
-        let mut body = column![
-            text("New message")
-                .size(14)
-                .font(weight(iced::font::Weight::Semibold))
-        ]
-        .spacing(10);
-        if agents.is_empty() {
-            body = body.push(note("No agent is running here to message.", c).size(12));
-        } else {
+        // The agents to write to are the form: + opened it.
+        let mut body = column![].spacing(10);
+        if !agents.is_empty() {
             let rows = agents
                 .into_iter()
                 .map(|agent| {
@@ -1530,13 +1438,9 @@ impl App {
                                 Some(c.green),
                                 c.card,
                             ),
-                            column![
-                                text(shown)
-                                    .size(13)
-                                    .font(weight(iced::font::Weight::Medium)),
-                                text(self.tool_of(id)).size(12).color(c.muted),
-                            ]
-                            .spacing(1),
+                            text(shown)
+                                .size(13)
+                                .font(weight(iced::font::Weight::Medium)),
                         ]
                         .spacing(10)
                         .align_y(Center),
@@ -1559,12 +1463,7 @@ impl App {
     pub(super) fn messages_pane(&self, c: Colors) -> Element<'_, Message> {
         let mention_names = self.mention_names();
         let Some(summary) = self.open_summary() else {
-            return empty(
-                "Pick a conversation",
-                "Each project's chat and your direct messages with your agents are on the left.",
-                None,
-                c,
-            );
+            return empty(None, c);
         };
         let label = self.conversation_label(&summary);
         let key = summary.conversation.as_str().to_owned();
@@ -1619,33 +1518,27 @@ impl App {
                 c.ground,
             ));
         }
+        // The name alone; what the room is about shows when it is
+        // pointed at. In a project's Chat the header already names it.
         title_row = title_row.push(
-            column![
-                container(
-                    text(label.clone())
-                        .size(16)
-                        .font(weight(iced::font::Weight::Semibold))
-                        .wrapping(iced::widget::text::Wrapping::None)
-                )
-                .width(Fill)
-                .clip(true),
-                container(
-                    text(topic)
-                        .size(12)
-                        .color(c.muted)
-                        .wrapping(iced::widget::text::Wrapping::None)
-                )
-                .width(Fill)
-                .clip(true),
-            ]
-            .spacing(1)
-            .width(Fill),
+            container(super::view::tip(
+                text(label.clone())
+                    .size(16)
+                    .font(weight(iced::font::Weight::Semibold))
+                    .wrapping(iced::widget::text::Wrapping::None),
+                topic,
+                c,
+            ))
+            .width(Fill)
+            .clip(true),
         );
-        let header = container(title_row).padding(iced::Padding {
-            top: 2.0,
-            right: 0.0,
-            bottom: 10.0,
-            left: 0.0,
+        let header = (self.screen != Screen::Chat).then(|| {
+            container(title_row).padding(iced::Padding {
+                top: 2.0,
+                right: 0.0,
+                bottom: 10.0,
+                left: 0.0,
+            })
         });
 
         let history = self.history.get(&key);
@@ -1664,14 +1557,8 @@ impl App {
             );
         }
         match history {
-            None => list = list.push(container(note("Loading…", c)).padding([16, 8])),
-            Some(messages) if messages.is_empty() => {
-                list = list.push(
-                    container(note("Nothing said here yet.", c))
-                        .padding([24, 8])
-                        .center_x(Fill),
-                );
-            }
+            None => list = list.push(container(icon(Icon::Ring, c.faint, 14.0)).padding([16, 8])),
+            Some(messages) if messages.is_empty() => {}
             Some(messages) => {
                 // The unread divider sits before the newest `unread` messages
                 // that are not the person's own words.
@@ -1767,9 +1654,12 @@ impl App {
             self.composer(&composer_key, None, placeholder.clone(), can_send, c, size)
         })
         .height(iced::Shrink);
+        let mut top = column![];
+        if let Some(header) = header {
+            top = top.push(header).push(rule(c));
+        }
         column![
-            header,
-            rule(c),
+            top,
             container(
                 scrollable(container(list).padding(iced::Padding {
                     top: 4.0,
@@ -1809,25 +1699,14 @@ impl App {
         let Some(root_id) = self.shell.thread.as_ref() else {
             return Space::new().into();
         };
-        let mut words = column![
-            text("Thread")
-                .size(14)
-                .font(weight(iced::font::Weight::Semibold))
-        ]
-        .spacing(1)
+        // A thread is its glyph, where it is said on the pointer; the
+        // root message and the close control say the rest.
+        let words = container(super::view::tip(
+            icon(Icon::Channels, c.muted, 14.0),
+            self.thread_context().unwrap_or_default(),
+            c,
+        ))
         .width(Fill);
-        if let Some(context) = self.thread_context() {
-            words = words.push(
-                container(
-                    text(context)
-                        .size(12)
-                        .color(c.muted)
-                        .wrapping(iced::widget::text::Wrapping::None),
-                )
-                .width(Fill)
-                .clip(true),
-            );
-        }
         let mut header = row![words].spacing(8).align_y(Center);
         // Narrow, the way back above the pane closes it; one control, one id.
         if !self.messages_compact() {
@@ -1869,7 +1748,7 @@ impl App {
                     previous = (reply.envelope.from != "agentd").then_some(reply);
                 }
             }
-            _ => list = list.push(container(note("Loading…", c)).padding([16, 8])),
+            _ => list = list.push(container(icon(Icon::Ring, c.faint, 14.0)).padding([16, 8])),
         }
         let key = self.shell.conversation.clone().unwrap_or_default();
         let can_send = self.conversation_can_send(&key);
@@ -2473,7 +2352,6 @@ mod tests {
             )
         );
         let notice = summary("notices:agent-b", "notices", "", 0);
-        assert_eq!(app.tool_of("agent-c"), "Claude Code");
 
         // Two direct conversations with one identity: the newer stands.
         let old_key = summary(

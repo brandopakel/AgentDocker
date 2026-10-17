@@ -30,26 +30,39 @@ pub(super) fn note<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Tex
     text(value.into()).size(13).color(c.muted)
 }
 /// The typed references beside a card, a message or a hand-off, one per
-/// row: the kind as a quiet pill, the target as text to read, and the
-/// note after it. Nothing is opened or copied from here — a path or a
-/// pull request is the reader's to open with their own tools; what the
-/// row does is say what kind of thing it is without prose.
+/// row: the kind as a faint glyph (named on the pointer), the target as
+/// text to read, and its note on the target's tooltip. Nothing is opened or
+/// copied from here — a path or a pull request is the reader's to open
+/// with their own tools.
 pub(super) fn links<'a>(links: &[agentdocker_core::Link], c: Colors) -> Element<'a, Message> {
+    use agentdocker_core::LinkKind;
     let mut rows = column![].spacing(3).width(Fill);
     for link in links {
-        let mut line = row![
-            pill(link.kind.as_str().to_owned(), c.raised, c.muted, c),
-            text(link.target.clone())
-                .size(12)
-                .color(c.accent)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-        ]
-        .spacing(6)
-        .align_y(Center);
-        if let Some(note) = &link.note {
-            line = line.push(small(note.clone(), c));
-        }
-        rows = rows.push(line);
+        let glyph = match link.kind {
+            LinkKind::Path => Icon::File,
+            LinkKind::Commit => Icon::Commit,
+            LinkKind::Pr => Icon::Code,
+            LinkKind::Url => Icon::Connections,
+            LinkKind::Task => Icon::Board,
+            LinkKind::Message => Icon::Channels,
+            LinkKind::Memory => Icon::Note,
+        };
+        let target = text(link.target.clone())
+            .size(12)
+            .color(c.accent)
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph);
+        let target: Element<'a, Message> = match &link.note {
+            Some(note) => tip(target, note.clone(), c),
+            None => target.into(),
+        };
+        rows = rows.push(
+            row![
+                tip(icon(glyph, c.faint, 12.0), link.kind.as_str().to_owned(), c),
+                target
+            ]
+            .spacing(6)
+            .align_y(Center),
+        );
     }
     rows.into()
 }
@@ -57,12 +70,13 @@ pub(super) fn links<'a>(links: &[agentdocker_core::Link], c: Colors) -> Element<
 pub(super) fn small<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
     text(value.into()).size(12).color(c.muted)
 }
-/// A section label: short, quiet, set in capitals.
+/// A section label: short, quiet, in sentence case. Tracked capitals
+/// read as generated; the words stay the size of the text they head.
 pub(super) fn eyebrow<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
-    text(value.into().to_uppercase())
-        .size(11)
+    text(value.into())
+        .size(12)
         .color(c.faint)
-        .font(weight(iced::font::Weight::Semibold))
+        .font(weight(iced::font::Weight::Medium))
 }
 fn mono<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
     text(value.into())
@@ -210,6 +224,84 @@ pub(super) fn tip<'a>(
     .into()
 }
 
+/// Words a glyph stands for, as its accessible name: a reader (and the
+/// workflow driver) hears what the eye reads from the mark. A tooltip
+/// alone is not in the accessibility tree.
+pub(super) fn said<'a>(
+    id: impl Into<String>,
+    words: impl Into<String>,
+    content: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    crate::controls::Control {
+        content: content.into(),
+        semantic: crate::accessibility::Semantic {
+            role: accesskit::Role::Label,
+            ..crate::accessibility::Semantic::button(id.into(), words.into(), None)
+        },
+        button: false,
+    }
+    .into()
+}
+
+/// A state shown as a dot: its words are the dot's tooltip and its
+/// accessible name.
+pub(super) fn status_dot<'a>(
+    id: impl Into<String>,
+    tone: iced::Color,
+    words: impl Into<String>,
+    c: Colors,
+) -> Element<'a, Message> {
+    let words = words.into();
+    tip(
+        said(id, words.clone(), container(dot(tone, 6.0, c)).padding(4)),
+        words,
+        c,
+    )
+}
+
+/// A failure in one line: the amber mark and the first line of the
+/// words, clipped; all of them on the pointer and in its name.
+pub(super) fn error_line<'a>(
+    id: impl Into<String>,
+    words: &str,
+    c: Colors,
+) -> Element<'a, Message> {
+    let id = id.into();
+    row![
+        alert_mark(format!("{id}-mark"), words.to_owned(), c),
+        container(
+            text(first_line(words, 140))
+                .size(13)
+                .color(c.amber)
+                .wrapping(iced::widget::text::Wrapping::None)
+        )
+        .width(Fill)
+        .clip(true),
+    ]
+    .spacing(6)
+    .align_y(Center)
+    .into()
+}
+
+/// Something went wrong, as a mark: the amber triangle, its words on the
+/// pointer and in its name.
+pub(super) fn alert_mark<'a>(
+    id: impl Into<String>,
+    words: impl Into<String>,
+    c: Colors,
+) -> Element<'a, Message> {
+    let words = words.into();
+    tip(
+        said(
+            id,
+            words.clone(),
+            container(icon(Icon::Alert, c.amber, 13.0)).padding(3),
+        ),
+        words,
+        c,
+    )
+}
+
 pub(super) fn hint<'a>(
     content: impl Into<Element<'a, Message>>,
     label: impl Into<String>,
@@ -271,26 +363,6 @@ fn meter<'a>(fraction: f32, fill: iced::Color, c: Colors) -> Element<'a, Message
         .style(move |_| c.dot(alpha(c.text, 0.08)))
         .into()
 }
-/// The strip along the top of a pane: what it holds, and one quiet fact.
-fn pane_header<'a>(
-    title_text: &'a str,
-    meta: impl Into<String>,
-    c: Colors,
-) -> Element<'a, Message> {
-    column![
-        container(
-            row![
-                eyebrow(title_text, c).width(Fill),
-                small(meta, c).color(c.faint)
-            ]
-            .spacing(12)
-            .align_y(Center),
-        )
-        .padding([10, 16]),
-        rule(c)
-    ]
-    .into()
-}
 pub(super) fn rule<'a>(c: Colors) -> Element<'a, Message> {
     container(Space::new().width(Fill).height(1))
         .style(move |_| c.rule())
@@ -349,68 +421,30 @@ fn mark() -> iced::widget::image::Handle {
     })
     .clone()
 }
-/// The mark and the two-tone wordmark, on the rail. Two plain texts
-/// rather than one rich text: the rich text widget resolves heavier faces
-/// differently and lands on a monospace fallback for the system sans.
-fn brand<'a>(r: Colors) -> Element<'a, Message> {
-    row![
-        iced::widget::image(mark()).width(26).height(26),
-        row![
-            heading("Agent", 16).color(r.text),
-            heading("Docker", 16).color(super::style::mix(r.accent, iced::Color::WHITE, 0.3))
-        ]
-    ]
-    .spacing(9)
-    .align_y(Center)
-    .into()
+/// The mark alone on the rail: the window title already names the app.
+fn brand<'a>(_r: Colors) -> Element<'a, Message> {
+    iced::widget::image(mark()).width(22).height(22).into()
 }
-/// Nothing here yet, said kindly: the mark in a quiet tile, a title, one
-/// sentence and at most one action. No frame: an empty place should not
-/// look like a thing to read.
-pub(super) fn empty<'a>(
-    title_text: &'a str,
-    hint: &'a str,
-    extra: Option<Element<'a, Message>>,
-    c: Colors,
-) -> Element<'a, Message> {
-    let tile = container(
-        iced::widget::image(mark())
-            .width(26)
-            .height(26)
-            .opacity(if c.dark { 0.75_f32 } else { 0.9_f32 }),
-    )
-    .center(48)
-    .style(move |_| c.tile(super::style::RADIUS_LG));
-    let mut body = column![
-        tile,
-        Space::new().height(4),
-        heading(title_text, 16),
-        note(hint, c).align_x(Center),
-    ]
-    .spacing(6)
-    .align_x(Center);
-    if let Some(extra) = extra {
-        body = body.push(Space::new().height(8)).push(extra);
-    }
+/// Nothing here yet: the mark in a quiet tile, or the one thing to do.
+/// No words: an empty place should not look like a thing to read.
+pub(super) fn empty<'a>(extra: Option<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
+    let body: Element<'a, Message> = match extra {
+        Some(extra) => extra,
+        None => container(
+            iced::widget::image(mark())
+                .width(22)
+                .height(22)
+                .opacity(if c.dark { 0.35_f32 } else { 0.4_f32 }),
+        )
+        .center(44)
+        .style(move |_| c.tile(super::style::RADIUS_LG))
+        .into(),
+    };
     container(body)
         .padding([36, 20])
         .width(Fill)
         .center_x(Fill)
         .into()
-}
-
-/// A key as a keycap: monospace on a raised tile with a hairline.
-pub(super) fn kbd<'a>(key: impl Into<String>, c: Colors) -> Element<'a, Message> {
-    container(
-        text(key.into())
-            .size(11)
-            .line_height(iced::Pixels(14.0))
-            .font(Font::MONOSPACE)
-            .color(c.muted),
-    )
-    .padding([1, 5])
-    .style(move |_| c.tile(super::style::RADIUS_XS))
-    .into()
 }
 
 /// Status, said the one way: a dot and a word in the same tone.
@@ -534,14 +568,7 @@ impl App {
             Status::Passed => content = content.push(icon(Icon::Check, c.green, 11.0)),
             Status::Running => content = content.push(dot(c.amber, 6.0, c)),
             Status::Failed => content = content.push(icon(Icon::Close, c.red, 10.0)),
-            Status::Merged => {
-                content = content.push(
-                    text("merged")
-                        .size(12)
-                        .line_height(iced::Pixels(16.0))
-                        .color(c.muted),
-                )
-            }
+            Status::Merged => content = content.push(icon(Icon::LaneDone, c.muted, 11.0)),
         }
         Some(custom(
             format!("pull-request-{}", agent.id),
@@ -688,68 +715,17 @@ pub(super) fn quiet_scroll(
     style
 }
 
-/// How long since `then`, coarsely: "now", "3m", "1h 12m", "2d". Rows
-/// refresh on the clock sweep; seconds would only make them twitch.
-/// Ended sessions, newest first, under the day they ended: Today,
-/// Yesterday, This week, then Older. Empty days are left out; the order
-/// within a day is kept.
-pub(super) fn by_day<'a>(
-    records: &[&'a AgentRecord],
-    now: chrono::DateTime<chrono::Local>,
-) -> Vec<(&'static str, Vec<&'a AgentRecord>)> {
-    let today = now.date_naive();
-    let mut days: Vec<(&'static str, Vec<&'a AgentRecord>)> = Vec::new();
-    for record in records {
-        let ended = record
-            .finished_at
-            .unwrap_or(record.last_seen)
-            .with_timezone(&chrono::Local)
-            .date_naive();
-        let age = (today - ended).num_days();
-        let day = match age {
-            ..=0 => "Today",
-            1 => "Yesterday",
-            2..=6 => "This week",
-            _ => "Older",
-        };
-        match days.iter_mut().find(|(label, _)| *label == day) {
-            Some((_, rows)) => rows.push(record),
-            None => days.push((day, vec![record])),
-        }
-    }
-    days
-}
-
-pub(super) fn elapsed(now: chrono::DateTime<Utc>, then: chrono::DateTime<Utc>) -> String {
-    let minutes = (now - then).num_minutes().max(0);
-    match minutes {
-        0 => "now".to_owned(),
-        m if m < 60 => format!("{m}m"),
-        m if m < 60 * 24 => {
-            if m % 60 == 0 || m >= 600 {
-                format!("{}h", m / 60)
-            } else {
-                format!("{}h {}m", m / 60, m % 60)
-            }
-        }
-        m => format!("{}d", m / (60 * 24)),
-    }
-}
-
-/// A card with a header strip: what it holds and why on the left, an
-/// optional action on the right, a rule, then the body.
+/// A card with a header strip: what it holds on the left, an optional
+/// action on the right, a rule, then the body.
 pub(super) fn section<'a>(
     title_text: impl Into<String>,
-    description: Option<String>,
     action_element: Option<Element<'a, Message>>,
     body: impl Into<Element<'a, Message>>,
     c: Colors,
 ) -> Element<'a, Message> {
-    let mut words = column![heading(title_text, 15)].spacing(2).width(Fill);
-    if let Some(description) = description {
-        words = words.push(note(description, c));
-    }
-    let mut header = row![words].spacing(12).align_y(Center);
+    let mut header = row![heading(title_text, 15).width(Fill)]
+        .spacing(12)
+        .align_y(Center);
     if let Some(action_element) = action_element {
         header = header.push(action_element);
     }
@@ -906,7 +882,11 @@ impl App {
     fn in_project(&self) -> bool {
         !matches!(
             self.screen,
-            Screen::Questions | Screen::Runtimes | Screen::Settings | Screen::Desktop
+            Screen::Questions
+                | Screen::Runtimes
+                | Screen::Settings
+                | Screen::Desktop
+                | Screen::Todo
         )
     }
     /// The strip across the bottom while the person restarts a daemon older
@@ -1091,6 +1071,33 @@ impl App {
         // The window is always the first layer of one stack, dialogs or
         // none, so opening one keeps its scroll offsets and field state.
         let mut layers = vec![window];
+        // What just happened floats at the window's foot for a moment and
+        // goes, rather than standing under the title as a line to read.
+        if !self.status.is_empty() {
+            let toast = container(
+                row![
+                    dot(c.accent, 6.0, c),
+                    text(self.status.clone())
+                        .size(13)
+                        .color(c.text)
+                        .wrapping(iced::widget::text::Wrapping::Word)
+                ]
+                .spacing(8)
+                .align_y(Center),
+            )
+            .padding([8, 14])
+            .max_width(520)
+            .style(move |_| c.overlay_style());
+            layers.push(
+                container(toast)
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Center)
+                    .align_y(iced::alignment::Vertical::Bottom)
+                    .padding(20)
+                    .into(),
+            );
+        }
         if self.shell.launch {
             // The launch form is a dialog over the window: a scrim (a flat
             // wash, no blur) that closes it when pressed, and the form
@@ -1157,30 +1164,18 @@ impl App {
                 c,
             ));
         }
-        let mut header_words = column![title(title_text, 20)].spacing(2).width(Fill);
-        if in_project && let Some(entry) = self.shell.catalog.selected() {
-            header_words = header_words.push(
-                text(shorten_home(&entry.project.root))
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .color(c.faint)
-                    .wrapping(iced::widget::text::Wrapping::None),
-            );
-        } else if in_project && self.shell.catalog.unassigned {
-            header_words = header_words.push(note("Sessions without a known project", c));
-        } else if !in_project {
-            header_words = header_words.push(note(
-                match self.screen {
-                    Screen::Questions if self.has_conversations() => {
-                        "Each project's chat and your direct messages"
-                    }
-                    Screen::Questions => "Questions and messages waiting for you",
-                    Screen::Runtimes => "Connect and configure your agent tools",
-                    _ => "Appearance, terminal, installation and diagnostics",
-                },
-                c,
-            ));
-        }
+        // The title alone; a project's folder shows when it is pointed at.
+        let header_words: Element<'_, Message> =
+            match self.shell.catalog.selected().filter(|_| in_project) {
+                Some(entry) => container(tip(
+                    title(title_text, 20),
+                    shorten_home(&entry.project.root),
+                    c,
+                ))
+                .width(Fill)
+                .into(),
+                None => container(title(title_text, 20)).width(Fill).into(),
+            };
         heading_row = heading_row.push(header_words);
         let mut tools = row![].spacing(8).align_y(Center);
         if in_project && let Some(pause) = self.pause_controls(c) {
@@ -1222,29 +1217,16 @@ impl App {
         } else {
             row![heading_row, tools].spacing(16).align_y(Center).into()
         };
-        let mut content = column![header].spacing(16).width(Fill);
+        // Only a project has a header: elsewhere the selected rail row
+        // already names the screen.
+        let mut content = column![].spacing(16).width(Fill);
+        if in_project && self.shell.catalog.selected().is_some() {
+            content = content.push(header);
+        }
         if in_project && let Some(form) = self.pause_form(c) {
             content = content.push(form);
         }
-        if let Err(error) = &self.connected {
-            content = content.push(attention(
-                column![
-                    row![
-                        dot(c.amber, 8.0, c),
-                        heading("Connection unavailable", 15).color(c.amber)
-                    ]
-                    .spacing(8)
-                    .align_y(Center),
-                    note(
-                        format!("{error}\nShowing the last update. Reconnecting…"),
-                        c
-                    )
-                ]
-                .spacing(7),
-                c.amber,
-                c,
-            ));
-        }
+        // A lost connection is the rail foot's one line, not a banner here.
         if let Some(error) = &self.shell.drafts.error {
             let mut controls = row![].spacing(8);
             if self.shell.drafts.readable {
@@ -1264,34 +1246,24 @@ impl App {
                 ));
             }
             content = content.push(attention(
-                column![text(error.clone()).size(14).color(c.amber), controls].spacing(8),
+                row![error_line("drafts-error", error, c), controls]
+                    .spacing(8)
+                    .align_y(Center),
                 c.amber,
                 c,
             ));
         }
         if let Some(error) = &self.shell.error {
             content = content.push(attention(
-                column![
-                    text(error.clone()).size(14).color(c.amber),
-                    ghost("dismiss-error", "Dismiss", Some(Message::DismissError))
-                ]
-                .spacing(10),
-                c.amber,
-                c,
-            ));
-        }
-        if !self.status.is_empty() {
-            content = content.push(
                 row![
-                    dot(c.accent, 7.0, c),
-                    text(self.status.clone())
-                        .size(13)
-                        .font(weight(iced::font::Weight::Medium))
-                        .color(c.accent_ink)
+                    error_line("page-error", error, c),
+                    ghost("dismiss-error", "Dismiss", Some(Message::DismissError))
                 ]
                 .spacing(8)
                 .align_y(Center),
-            );
+                c.amber,
+                c,
+            ));
         }
         if in_project && !self.all_projects() {
             let mut tabs = row![].spacing(18);
@@ -1302,10 +1274,25 @@ impl App {
             ] {
                 let selected = self.screen == screen
                     || (screen == Screen::Agents && self.screen == Screen::Terminal);
+                // The Board tab counts the cards waiting for the person.
+                let mark = icon(glyph, if selected { c.text } else { c.muted }, 15.0);
+                let waiting = if screen == Screen::Board {
+                    self.board_waiting()
+                } else {
+                    0
+                };
+                let mark: Element<'_, Message> = if waiting > 0 {
+                    row![mark, count_chip(waiting, true, c)]
+                        .spacing(5)
+                        .align_y(Center)
+                        .into()
+                } else {
+                    mark
+                };
                 tabs = tabs.push(tab(
                     format!("project-tab-{screen:?}"),
                     label,
-                    Some(icon(glyph, if selected { c.text } else { c.muted }, 15.0)),
+                    Some(mark),
                     Some(Message::Navigate(screen)),
                     selected,
                 ));
@@ -1314,9 +1301,10 @@ impl App {
             // over Agents, two tabs read as selected at once.
             let more_selected = matches!(
                 self.screen,
-                Screen::Journal | Screen::Leases | Screen::Console | Screen::Usage
+                Screen::Journal | Screen::Leases | Screen::Console | Screen::Usage | Screen::Plans
             );
             let more_label = match self.screen {
+                Screen::Plans => "Plans",
                 Screen::Journal => "History",
                 Screen::Leases => "Files in use",
                 Screen::Console => "Commands",
@@ -1353,10 +1341,9 @@ impl App {
             content = content.push(column![tabs, rule(c)].spacing(0));
         }
         if self.shell.adding {
-            content = content.push(section(
-                "Add an existing project",
-                Some("Choose a folder. Nothing is launched or written into it.".to_owned()),
-                None,
+            // The form is its folder field and its buttons: Add project
+            // opened it and names it.
+            content = content.push(panel(
                 container(
                     column![
                         row![
@@ -1397,6 +1384,8 @@ impl App {
             Screen::Chat => self.project_chat_view(c),
             Screen::Agents => self.sessions(c),
             Screen::Board => self.board_view(c),
+            Screen::Todo => self.todo_view(c),
+            Screen::Plans => self.plans_view(c),
             Screen::Usage => self.usage_view(c),
             Screen::Questions if self.has_conversations() => self.messages_view(c),
             Screen::Questions => self.questions(c),
@@ -1451,44 +1440,43 @@ impl App {
     /// to install. A healthy service says nothing, as the status apps
     /// studied do (Docker Desktop, Tailscale); the page keeps its height.
     fn service_chip(&self, r: Colors) -> Option<Element<'_, Message>> {
-        let line = |tone: iced::Color, words: String| {
-            row![
-                container(dot(tone, 7.0, r)).padding([5, 0]),
-                text(words)
-                    .size(12)
-                    .color(r.muted)
-                    .width(Fill)
-                    .wrapping(iced::widget::text::Wrapping::Word),
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Start)
-        };
+        // A dot that says what it means when pointed at, and to a reader.
         let chip: Element<'_, Message> = if self.connected.is_err() {
-            line(r.amber, "Reconnecting to the background service…".into()).into()
+            row![
+                status_dot(
+                    "service-reconnecting",
+                    r.amber,
+                    "Reconnecting to the background service…",
+                    r
+                ),
+                text("Reconnecting…").size(12).color(r.muted),
+            ]
+            .spacing(4)
+            .align_y(Center)
+            .into()
         } else if let Some(version) = self.daemon_behind_now() {
             if self.daemon_restarting() || self.shell.confirm_daemon_restart {
                 // The strip across the bottom has it now.
                 return None;
             }
-            column![
-                line(
+            row![
+                status_dot(
+                    "service-behind",
                     r.amber,
                     format!(
                         "Background service {version} is older than this app ({}).",
                         env!("CARGO_PKG_VERSION")
                     ),
+                    r
                 ),
-                container(ghost(
+                ghost(
                     "daemon-restart",
                     "Restart…",
                     Some(Message::ConfirmDaemonRestart(true)),
-                ))
-                .padding(iced::Padding {
-                    left: 9.0,
-                    ..Default::default()
-                }),
+                ),
             ]
             .spacing(2)
+            .align_y(Center)
             .into()
         } else {
             let version = self.desktop.update_available()?;
@@ -1497,7 +1485,7 @@ impl App {
                 format!("Update {version} available"),
                 row![
                     dot(r.accent_ink, 6.0, r),
-                    text(format!("Update {version} available"))
+                    text(format!("Update {version}"))
                         .size(12)
                         .color(r.accent_ink)
                 ]
@@ -1573,15 +1561,14 @@ impl App {
         let hovered = self.shell.rail_hover.as_deref() == Some(path.as_path());
         let live = self.live_in(&path);
         let done = self.shell.unviewed_in(&self.agents, &path);
-        let mut hint_text = if live > 0 {
-            format!("{live} live agent{}", if live == 1 { "" } else { "s" })
-        } else if entry.pinned {
-            "Pinned · no live agents".to_owned()
-        } else {
-            "Discovered · no live agents".to_owned()
-        };
+        // The mark's tooltip says where the folder is, and what is live
+        // or new there; the row itself is the name.
+        let mut hint_text = shorten_home(&path);
+        if live > 0 {
+            hint_text.push_str(&format!(" · {live} live"));
+        }
         if done > 0 {
-            hint_text.push_str(&format!(" · {done} finished, not yet viewed"));
+            hint_text.push_str(&format!(" · {done} new"));
         }
         let seed = entry.project.id().to_string();
         // One line each, clipped rather than wrapped or drawn over the
@@ -1591,7 +1578,7 @@ impl App {
             .project_standing(&path)
             .0
             .is_some_and(|s| s.calls_for_attention());
-        let mut label = column![
+        let label = column![
             text(name.clone())
                 .size(13.5)
                 .font(weight(if calls {
@@ -1603,14 +1590,6 @@ impl App {
         ]
         .spacing(1)
         .width(Fill);
-        if shared.contains(&name) {
-            label = label.push(
-                text(parent_folder(&path))
-                    .size(11.5)
-                    .color(r.muted)
-                    .wrapping(iced::widget::text::Wrapping::None),
-            );
-        }
         let label = container(label).width(Fill).clip(true);
         let mut content = row![hint(monogram(&name, &seed, 20.0, r), hint_text, c), label]
             .spacing(6)
@@ -1664,7 +1643,18 @@ impl App {
         );
         let row_button = custom(
             format!("project-{}", path.display()),
-            format!("{}{}", if entry.pinned { "• " } else { "" }, name),
+            // Two folders called the same are told apart by where they
+            // are, to a reader as on the mark's tooltip.
+            if shared.contains(&name) {
+                format!(
+                    "{}{} · {}",
+                    if entry.pinned { "• " } else { "" },
+                    name,
+                    parent_folder(&path)
+                )
+            } else {
+                format!("{}{}", if entry.pinned { "• " } else { "" }, name)
+            },
             content,
             Some(Message::SelectProject(path.clone())),
             selected,
@@ -1748,6 +1738,14 @@ impl App {
             project_page,
         ));
         nav = nav.push(self.nav_item(
+            "todo",
+            "To-do",
+            Icon::Todo,
+            None,
+            Message::Navigate(Screen::Todo),
+            self.screen == Screen::Todo,
+        ));
+        nav = nav.push(self.nav_item(
             "inbox",
             if self.has_conversations() {
                 "Messages"
@@ -1793,10 +1791,7 @@ impl App {
             Message::Navigate(Screen::Runtimes),
             self.screen == Screen::Runtimes,
         ));
-        nav = nav
-            .push(Space::new().height(18))
-            .push(container(eyebrow("Projects", r)).padding([0, 10]))
-            .push(Space::new().height(4));
+        nav = nav.push(Space::new().height(22));
         let mut projects = column![].spacing(1).width(Fill);
         let shared = self.shell.catalog.shared_names();
         // Folders discovered under a scratch directory and never pinned
@@ -1822,9 +1817,17 @@ impl App {
             // made one, the fold opens by itself for a live or selected
             // scratch project — the one rule in `temporary_fold_open`.
             let open = self.temporary_fold_open();
-            let label = format!("Temporary ({})", temporary.len());
+            let label = "Temporary".to_owned();
             let mut fold = row![
-                text(if open { "▾" } else { "▸" }).size(11).color(r.muted),
+                icon(
+                    if open {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    },
+                    r.muted,
+                    10.0
+                ),
                 eyebrow(label.clone(), r).width(Fill),
             ]
             .spacing(8)
@@ -2056,6 +2059,7 @@ impl App {
             )
         };
         let mut items = column![
+            place("project-tab-Plans", "Plans".to_owned(), Screen::Plans),
             place("project-tab-Journal", "History".to_owned(), Screen::Journal),
             place(
                 "project-tab-Leases",
@@ -2108,15 +2112,17 @@ impl App {
         if let Some(pause) = self.selected_pause() {
             return Some(
                 row![
-                    row![
-                        dot(c.amber, 7.0, c),
-                        text(format!("Paused · {}", first_line(&pause.reason, 48)))
-                            .size(13)
-                            .font(weight(iced::font::Weight::Medium))
-                            .color(c.amber),
-                    ]
-                    .spacing(6)
-                    .align_y(Center),
+                    // Paused is the amber pause mark; why is its tooltip
+                    // and its name.
+                    tip(
+                        said(
+                            "project-paused",
+                            format!("Paused · {}", first_line(&pause.reason, 120)),
+                            container(icon(Icon::Pause, c.amber, 14.0)).padding(3),
+                        ),
+                        first_line(&pause.reason, 120),
+                        c,
+                    ),
                     action(
                         "resume-project",
                         if sending { "Resuming…" } else { "Resume" },
@@ -2124,7 +2130,7 @@ impl App {
                         false
                     ),
                 ]
-                .spacing(10)
+                .spacing(6)
                 .align_y(Center)
                 .into(),
             );
@@ -2142,7 +2148,7 @@ impl App {
                 Kind::Ghost,
                 [7, 8],
             ),
-            "Pause this project's agents…",
+            "Pause agents",
             c,
         ))
     }
@@ -2163,7 +2169,7 @@ impl App {
             let draft_project = root.clone();
             let field = input_submitting(
                 "pause-reason",
-                "Why: what the agents will read",
+                "Reason",
                 reason,
                 move |reason| Message::PauseDraft(draft_project.clone(), reason),
                 connected && !sending,
@@ -2187,20 +2193,14 @@ impl App {
             ]
             .spacing(8)
             .align_y(Center);
-            form = form
-                .push(heading("Pause this project's agents", 14))
-                .push(if self.narrow() {
-                    Element::from(column![field, buttons].spacing(8))
-                } else {
-                    row![container(field).width(Fill), buttons]
-                        .spacing(10)
-                        .align_y(Center)
-                        .into()
-                });
-            form = form.push(small(
-                "They finish what they are doing and claim nothing new until you resume.",
-                c,
-            ));
+            form = form.push(if self.narrow() {
+                Element::from(column![field, buttons].spacing(8))
+            } else {
+                row![container(field).width(Fill), buttons]
+                    .spacing(10)
+                    .align_y(Center)
+                    .into()
+            });
         } else if error.is_none() {
             return None;
         }
@@ -2225,7 +2225,7 @@ impl App {
         let chevron = crate::controls::split_primary_glyph(
             "launch-menu",
             "Choose a tool to launch",
-            icon(Icon::ChevronDown, iced::Color::WHITE, 12.0),
+            icon(Icon::ChevronDown, c.on_primary, 12.0),
             ready.then_some(Message::LaunchMenu),
         );
         let menu = self.shell.launch_menu.then(|| {
@@ -2247,17 +2247,14 @@ impl App {
                             24.0,
                             c
                         ),
-                        column![
+                        // The tool; where its command lives is its tooltip.
+                        container(tip(
                             text(runtime.label.clone())
                                 .size(13)
                                 .font(weight(iced::font::Weight::Medium)),
-                            text(binary)
-                                .size(11)
-                                .font(Font::MONOSPACE)
-                                .color(c.faint)
-                                .wrapping(iced::widget::text::Wrapping::None),
-                        ]
-                        .spacing(2)
+                            binary,
+                            c
+                        ))
                         .width(Fill)
                     ]
                     .spacing(10)
@@ -2267,10 +2264,6 @@ impl App {
                     Kind::Quiet,
                     [6, 8],
                 ));
-            }
-            if self.runtimes.iter().all(|r| r.cli.is_none()) {
-                items = items
-                    .push(container(small("No tool to launch is installed.", c)).padding([6, 8]));
             }
             menu(items, c)
         });
@@ -2428,7 +2421,7 @@ impl App {
         );
         let search = input(
             "session-search",
-            "Find a session…",
+            "Search",
             &self.shell.search,
             Message::Search,
         );
@@ -2445,49 +2438,22 @@ impl App {
                     .align_y(Center),
             );
         }
-        // What the sessions on view used over the last day, when collection
-        // is on: one quiet line, and the way to the Usage screen.
-        let used: Vec<_> = current
-            .iter()
-            .filter_map(|a| self.agent_tokens.get(a.id.as_str()))
-            .collect();
-        if filter == Filter::Current && !used.is_empty() {
-            let total = agentdocker_core::usage::report::Tokens {
-                sum: used.iter().map(|t| t.sum).fold(0, u64::saturating_add),
-                partial: used.iter().any(|t| t.partial),
-            };
-            let label = format!("{} tokens in the last 24h", total.label());
-            panel_col = panel_col.push(custom(
-                "sessions-tokens",
-                format!("{label}. Open Usage"),
-                row![
-                    text(label).size(12).color(c.muted),
-                    text("Usage ›").size(12).color(c.accent_ink)
-                ]
-                .spacing(8)
-                .align_y(Center),
-                Some(Message::Navigate(Screen::Usage)),
-                false,
-                Kind::Quiet,
-                [4, 6],
-            ));
-        }
         if let Some(strip) = self.needs_you(c) {
             panel_col = panel_col.push(strip);
         }
         if self.shell.project_available == Some(false) {
             panel_col = panel_col.push(attention(
-                column![
-                    heading("Project folder unavailable", 16),
-                    note("Restore the folder or choose another project.", c),
+                row![
+                    alert_mark("project-folder-missing", "Project folder unavailable", c),
                     action(
                         "retry-project-folder",
-                        "Check folder again",
+                        "Check again",
                         Some(Message::RetryProject),
                         false
                     )
                 ]
-                .spacing(10),
+                .spacing(8)
+                .align_y(Center),
                 c.amber,
                 c,
             ));
@@ -2523,19 +2489,13 @@ impl App {
                         ),
                     }),
                     label,
-                    Some(
-                        text(
-                            process
-                                .cwd
-                                .as_ref()
-                                .map(|cwd| shorten_home(cwd))
-                                .unwrap_or_else(|| "folder unknown".to_owned()),
-                        )
-                        .size(12)
-                        .font(Font::MONOSPACE)
-                        .color(c.faint)
-                        .into(),
-                    ),
+                    process.cwd.as_ref().map(|cwd| {
+                        text(shorten_home(cwd))
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .color(c.faint)
+                            .into()
+                    }),
                     Some(action(
                         format!("adopt-{}", process.pid),
                         if self.shell.adopting.contains(&process.pid) {
@@ -2549,16 +2509,7 @@ impl App {
                     )),
                 ));
             }
-            panel_col = panel_col.push(section(
-                "Running here, not connected",
-                Some(
-                    "Started outside AgentDocker. Connect one to see what it is doing and message it."
-                        .to_owned(),
-                ),
-                None,
-                rows_list(rows, c),
-                c,
-            ));
+            panel_col = panel_col.push(section("Not connected", None, rows_list(rows, c), c));
         }
         // A search can match only the Earlier group, which opens below.
         // Those results must not be paired with a "No matching sessions" card.
@@ -2570,80 +2521,29 @@ impl App {
                 // A search that found nothing says what it looked for and
                 // offers the way back.
                 panel_col = panel_col.push(empty(
-                    "No matching sessions",
-                    "Try another name, tool, or branch.",
-                    Some(
-                        column![
-                            small(
-                                format!("Nothing matches “{}”.", self.shell.search.trim()),
-                                c
-                            ),
-                            action(
-                                "session-search-clear",
-                                "Clear search",
-                                Some(Message::Search(String::new())),
-                                false,
-                            )
-                        ]
-                        .spacing(10)
-                        .align_x(Center)
-                        .into(),
-                    ),
+                    Some(action(
+                        "session-search-clear",
+                        "Clear search",
+                        Some(Message::Search(String::new())),
+                        false,
+                    )),
                     c,
                 ));
-            }
-            let (title_text, hint) = if !self.shell.search.is_empty() {
-                ("", "")
             } else {
-                match filter {
-                    Filter::Current if self.all_projects() => (
-                        "No agents running",
-                        "Start Claude Code or Codex in any folder and it appears here, \
-                         or choose a project on the left and launch one.",
-                    ),
-                    Filter::Current => (
-                        "No agents in this project",
-                        "Press Launch agent, or start Claude Code or Codex in this folder \
-                         and it appears here.",
-                    ),
-                    Filter::NeedsInput => (
-                        "Nothing needs your input",
-                        "When an agent asks you something, it appears here and in Inbox.",
-                    ),
-                    Filter::Earlier => ("No sessions", "Nothing has run here yet."),
-                }
-            };
-            if !title_text.is_empty() {
-                // An empty project offers its next step, not only a
-                // description of it, with the key that does it anywhere.
+                // An empty project offers its next step and nothing to read.
                 let next = (filter == Filter::Current
                     && !self.all_projects()
-                    && self.shell.catalog.selected().is_some()
-                    && self.shell.search.trim().is_empty())
+                    && self.shell.catalog.selected().is_some())
                 .then(|| -> Element<'_, Message> {
-                    row![
-                        primary(
-                            "empty-launch",
-                            "Launch agent…",
-                            (self.connected.is_ok() && self.shell.project_available != Some(false))
-                                .then_some(Message::OpenLaunch),
-                        ),
-                        kbd(
-                            if cfg!(target_os = "macos") {
-                                "⌘N"
-                            } else {
-                                "Ctrl+N"
-                            },
-                            c
-                        ),
-                    ]
-                    .spacing(10)
-                    .align_y(Center)
-                    .into()
+                    primary(
+                        "empty-launch",
+                        "Launch agent…",
+                        (self.connected.is_ok() && self.shell.project_available != Some(false))
+                            .then_some(Message::OpenLaunch),
+                    )
                 });
                 // An empty list shows the shape of what will fill it.
-                panel_col = panel_col
-                    .push(column![ghost_rows(c), empty(title_text, hint, next, c)].spacing(0));
+                panel_col = panel_col.push(column![ghost_rows(c), empty(next, c)].spacing(0));
             }
         }
         if filter == Filter::Current && !earlier.is_empty() {
@@ -2684,12 +2584,7 @@ impl App {
                 // from last week is a click away, not on every screen.
                 let page: Vec<&AgentRecord> = earlier.iter().copied().take(shown).collect();
                 let older = earlier.len().saturating_sub(page.len());
-                // By the day they ended, as a person remembers them.
-                for (day, rows) in by_day(&page, chrono::Local::now()) {
-                    group = group
-                        .push(container(eyebrow(day, c)).padding([4, 4]))
-                        .push(self.session_rows(&rows, c));
-                }
+                group = group.push(self.session_rows(&page, c));
                 if older > 0 {
                     group = group.push(ghost(
                         "sessions-earlier-more",
@@ -2718,8 +2613,6 @@ impl App {
     /// name over its tool and branch), how it is (a dot and a word, how
     /// long), and the one thing to do with it, only when there is one.
     fn session_rows<'a>(&'a self, records: &[&'a AgentRecord], c: Colors) -> Element<'a, Message> {
-        let now = Utc::now();
-        let narrow = self.narrow();
         let mut items: Vec<Element<'a, Message>> = Vec::new();
         let mut previous_project = None;
         for (index, agent) in records.iter().enumerate() {
@@ -2814,9 +2707,9 @@ impl App {
             ]
             .spacing(8)
             .align_y(Center);
-            // One trailing slot, the first that applies: what the person
-            // must do, the pull request, then how long ago.
-            let tone = standing_tone(standing, c);
+            // One trailing slot, the first that applies: the time left to
+            // answer, else the pull request. The glyph at the front already
+            // says the standing, and the row's name says it to a reader.
             if standing.needs_you() || standing == agentdocker_core::standing::Standing::Failed {
                 if let Some(left) = self.soonest_answer_window(&id) {
                     content = content.push(approvals::ring(
@@ -2826,38 +2719,8 @@ impl App {
                         c,
                     ));
                 }
-                content = content.push(
-                    container(
-                        text(if standing.needs_you() {
-                            activity.clone()
-                        } else {
-                            standing.word().to_owned()
-                        })
-                        .size(12)
-                        .font(weight(iced::font::Weight::Medium))
-                        .color(tone)
-                        .wrapping(iced::widget::text::Wrapping::None),
-                    )
-                    .max_width(if narrow { 120 } else { 220 })
-                    .clip(true),
-                );
             } else if let Some(chip) = self.pull_request_chip(agent, c) {
                 content = content.push(chip);
-            } else {
-                let since = agent.started_at.unwrap_or(agent.created_at);
-                content = content.push(
-                    container(
-                        text(if agent.status.is_live() {
-                            elapsed(now, since)
-                        } else {
-                            elapsed(now, agent.finished_at.unwrap_or(agent.last_seen))
-                        })
-                        .size(12)
-                        .color(c.faint),
-                    )
-                    .width(44)
-                    .align_x(iced::alignment::Horizontal::Right),
-                );
             }
             // An ended Claude Code session that can come back says so on
             // its row: the one thing to do with it is right there, not
@@ -2912,33 +2775,34 @@ impl App {
         let name = self.display_name(agent);
         let header = row![
             agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 32.0, c),
-            column![
+            // The name and the row's standing glyph, so the panel and the
+            // list never disagree; what it is doing, its tool and where it
+            // runs are the glyph's tooltip and name.
+            row![
                 heading(name.clone(), 15).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                row![
-                    // The row's tone, so the panel and the list never disagree.
-                    status_word(
+                {
+                    let mut words = vec![
                         self.activity_label(agent),
-                        standing_tone(self.standing(agent), c),
-                        c
-                    ),
-                    text(format!("· {}", super::runtime_label(&agent.spec.runtime)))
-                        .size(12)
-                        .color(c.muted),
-                    // Where it is: the identity a person can go and find.
-                    text(
-                        Self::whereabouts(agent)
-                            .filter(|_| agent.status.is_live())
-                            .map(|place| format!("· {place}"))
-                            .unwrap_or_default()
+                        super::runtime_label(&agent.spec.runtime),
+                    ];
+                    if let Some(place) = Self::whereabouts(agent).filter(|_| agent.status.is_live())
+                    {
+                        words.push(place);
+                    }
+                    let words = words.join(" · ");
+                    tip(
+                        said(
+                            "inspector-standing",
+                            words.clone(),
+                            standing_glyph(self.standing(agent), c),
+                        ),
+                        words,
+                        c,
                     )
-                    .size(12)
-                    .color(c.muted),
-                ]
-                .spacing(6)
-                .align_y(Center)
-                .wrap()
+                },
             ]
-            .spacing(4)
+            .spacing(6)
+            .align_y(Center)
             .width(Fill),
             custom_sized(
                 "close-session",
@@ -2957,101 +2821,128 @@ impl App {
         let delivery = agent.input_delivery.as_ref();
         let paused = delivery.is_some_and(|d| d.paused_for(agent.process_started_at));
         if agent.spec.runtime != "human" {
-            let queue = self.queued_inputs.get(&id).map(|count| {
-                if *count == 0 {
-                    "No queued messages".to_owned()
-                } else {
-                    format!("{count} queued")
-                }
-            });
-            let mut status = Vec::new();
+            // How messages reach it: its readiness as a dot, what waits for
+            // it as a count; the words are the marks' tooltips and names.
+            let mut words = Vec::new();
             if self.connected.is_err() {
-                status.push("Last known".to_owned());
+                words.push("Last known".to_owned());
             }
-            if paused && agent.status.is_live() {
-                status.push("Not receiving messages".to_owned());
+            let readiness = if paused && agent.status.is_live() {
+                Some("Not receiving messages")
             } else if agent.status.is_live() {
-                status.push(self.input_readiness(agent).to_owned());
-            }
-            if let Some(queue) = queue {
-                status.push(queue);
+                Some(self.input_readiness(agent))
+            } else {
+                None
+            };
+            if let Some(readiness) = readiness {
+                words.push(readiness.to_owned());
             }
             if let Some(received_at) = delivery.and_then(|d| d.received_at) {
-                status.push(format!(
+                words.push(format!(
                     "Last took a message {}",
                     ago(Utc::now(), received_at)
                 ));
             }
-            if !status.is_empty() {
-                body = body.push(small(status.join(" · "), c));
-            }
-            if let Some((source, state)) = agentdocker_core::provider_block(agent, &self.agents) {
-                let issue = state.issue.as_ref().expect("blocked");
-                if let Some(reset) = issue.reset_at {
-                    body = body.push(small(
-                        format!(
-                            "{} {}.",
-                            issue.kind.label(),
-                            reset_words(Utc::now(), reset, &chrono::Local)
-                        ),
-                        c,
-                    ));
-                }
-                body = body.push(small(
-                    "Messages are kept. Resume after the provider is available.",
+            let mut marks = row![].spacing(6).align_y(Center);
+            if !words.is_empty() {
+                marks = marks.push(status_dot(
+                    "inspector-readiness",
+                    readiness.map_or(c.faint, |r| super::tools_view::readiness_tone(r, c)),
+                    words.join(" · "),
                     c,
                 ));
-                body = body.push(action(
-                    "resume-provider",
-                    "Resume delivery",
-                    self.connected
-                        .is_ok()
-                        .then(|| Message::ResumeProvider(source.id.to_string(), state.observed_at)),
-                    false,
+            }
+            if let Some(count) = self.queued_inputs.get(&id).filter(|n| **n > 0) {
+                marks = marks.push(said(
+                    "inspector-queued",
+                    format!("{count} queued"),
+                    row![
+                        icon(Icon::Inbox, c.muted, 13.0),
+                        count_chip(*count, false, c)
+                    ]
+                    .spacing(4)
+                    .align_y(Center),
                 ));
+            }
+            body = body.push(marks);
+            if let Some((source, state)) = agentdocker_core::provider_block(agent, &self.agents) {
+                let issue = state.issue.as_ref().expect("blocked");
+                // The limit is the hourglass, when it resets its tooltip.
+                let words = match issue.reset_at {
+                    Some(reset) => format!(
+                        "{} {}",
+                        issue.kind.label(),
+                        reset_words(Utc::now(), reset, &chrono::Local)
+                    ),
+                    None => issue.kind.label().to_owned(),
+                };
+                body = body.push(
+                    row![
+                        tip(
+                            said(
+                                "provider-limit",
+                                words.clone(),
+                                container(icon(Icon::Hourglass, c.amber, 14.0)).padding(3)
+                            ),
+                            words,
+                            c
+                        ),
+                        action(
+                            "resume-provider",
+                            "Resume delivery",
+                            self.connected.is_ok().then(|| {
+                                Message::ResumeProvider(source.id.to_string(), state.observed_at)
+                            }),
+                            false,
+                        )
+                    ]
+                    .spacing(6)
+                    .align_y(Center),
+                );
             }
             // The daemon gave up starting the bound receiver: the one repair a
             // person can make from here, and the only control that makes one.
             if let Some(binding) = agent.input_binding.as_ref().filter(|b| b.restart.exhausted) {
-                body = body.push(small(
-                    format!(
-                        "Message delivery could not be restarted after {} tries. Its messages are kept.",
-                        binding.restart.attempts
-                    ),
-                    c,
-                ));
-                body = body.push(action(
-                    "retry-receiver",
-                    "Restart message delivery",
-                    self.connected
-                        .is_ok()
-                        .then(|| Message::RetryController(agent.id.to_string())),
-                    false,
-                ));
+                body = body.push(
+                    row![
+                        alert_mark(
+                            "receiver-exhausted",
+                            format!(
+                                "Delivery restart failed after {} tries; its messages are kept",
+                                binding.restart.attempts
+                            ),
+                            c
+                        ),
+                        action(
+                            "retry-receiver",
+                            "Restart delivery",
+                            self.connected
+                                .is_ok()
+                                .then(|| Message::RetryController(agent.id.to_string())),
+                            false,
+                        )
+                    ]
+                    .spacing(6)
+                    .align_y(Center),
+                );
             }
             // An ended session: its messages are kept in its queue. Say how
             // many, how to get them delivered, and let the person put the
             // notice away. Nothing waiting means nothing to review.
-            if paused && !agent.status.is_live() {
-                if self.ended_with_undelivered(agent) {
-                    body = body.push(
-                        text(format!(
-                            "This session ended {}.",
-                            undelivered_phrase(self.undelivered(agent))
-                        ))
-                        .size(13)
-                        .color(c.amber),
-                    );
-                    body = body.push(note(
-                        "They are kept. Resume the conversation from its project folder and they are delivered to it; nothing is sent anywhere else.",
-                        c,
-                    ));
-                } else {
-                    body = body.push(small(
-                        "Session ended. Nothing is waiting to be delivered.",
-                        c,
-                    ));
-                }
+            if paused && !agent.status.is_live() && self.ended_with_undelivered(agent) {
+                body = body.push(said(
+                    "ended-undelivered",
+                    format!(
+                        "This session ended {}.",
+                        undelivered_phrase(self.undelivered(agent))
+                    ),
+                    row![
+                        icon(Icon::Inbox, c.amber, 13.0),
+                        count_chip(self.undelivered(agent).unwrap_or(0), true, c)
+                    ]
+                    .spacing(4)
+                    .align_y(Center),
+                ));
             }
             // Every notice an ended session raises can be put away: it can
             // report no recovery, so a block or a count would otherwise stay.
@@ -3077,35 +2968,28 @@ impl App {
                     self.connected.is_ok().then_some(Message::ReviewDelivery),
                     false,
                 ));
-                if self.connected.is_err() {
-                    body = body.push(small("Reconnect to the daemon to read the session log.", c));
-                }
                 if self.shell.review_delivery {
                     if let Some(reason) = delivery.and_then(|d| d.pause_reason.as_deref()) {
-                        body = body.push(text(plain_pause_reason(reason)).size(13).color(c.amber));
+                        body =
+                            body.push(alert_mark("delivery-paused", plain_pause_reason(reason), c));
                     }
-                    body = body.push(note("Messages to this session are kept, not lost. Check the log below before restarting it or sending again.", c));
                     if let Some((log_agent, result)) = &self.session_log
                         && log_agent == &id
                     {
                         match result {
                             Err(error) => {
-                                body = body.push(
-                                    text(format!("Could not read the session log: {error}"))
-                                        .size(13)
-                                        .color(c.amber),
-                                );
+                                body = body.push(error_line(
+                                    "session-log-error",
+                                    &format!("Could not read the session log: {error}"),
+                                    c,
+                                ));
                             }
-                            Ok(log) if log.is_empty() => {
-                                body = body.push(small("The session log is empty.", c));
-                            }
+                            Ok(log) if log.is_empty() => {}
                             Ok(log) => {
                                 body =
                                     body.push(scrollable(text(log.as_str()).size(12)).height(120));
                             }
                         }
-                    } else {
-                        body = body.push(small("Loading session log…", c));
                     }
                 }
             }
@@ -3179,7 +3063,7 @@ impl App {
                 .push(composer(
                     "session-message-text",
                     target.clone(),
-                    "Message this agent…",
+                    "Message",
                     value,
                     move |text| Message::SessionDraft(target.clone(), text),
                     true,
@@ -3217,7 +3101,7 @@ impl App {
                 body = body.push(notice);
             }
             if let Some(error) = draft.and_then(|draft| draft.error.as_deref()) {
-                body = body.push(text(error).size(13).color(c.amber));
+                body = body.push(error_line("session-message-error", error, c));
             } else if entry.is_some_and(|entry| entry.queued.is_some()) {
                 let received = entry
                     .and_then(|entry| entry.queued.as_ref())
@@ -3226,12 +3110,23 @@ impl App {
                             .and_then(|d| d.received.as_ref())
                             .is_some_and(|input| input.messages.contains(id))
                     });
-                body = body.push(small(
-                    if received {
-                        "Received by agent"
-                    } else {
-                        "Message saved to queue"
-                    },
+                // Taken is a tick, waiting a clock; the words are their names.
+                body = body.push(tip(
+                    said(
+                        "session-message-queued",
+                        if received {
+                            "Received by agent"
+                        } else {
+                            "Message saved to queue"
+                        },
+                        container(if received {
+                            icon(Icon::Check, c.green, 14.0)
+                        } else {
+                            icon(Icon::Clock, c.muted, 14.0)
+                        })
+                        .padding(3),
+                    ),
+                    if received { "Received" } else { "Queued" },
                     c,
                 ));
             }
@@ -3246,7 +3141,7 @@ impl App {
                         column![
                             crate::controls::input_submitting(
                                 "rename-session",
-                                "A name for this session",
+                                "Name",
                                 draft,
                                 Message::RenameDraft,
                                 true,
@@ -3256,7 +3151,7 @@ impl App {
                             row![
                                 action(
                                     "rename-save",
-                                    "Save name",
+                                    "Save",
                                     (self.connected.is_ok() && valid.is_ok())
                                         .then_some(Message::SubmitRename),
                                     false,
@@ -3270,7 +3165,7 @@ impl App {
                     if let Err(reason) = valid
                         && !draft.is_empty()
                     {
-                        body = body.push(small(reason, c));
+                        body = body.push(alert_mark("rename-invalid", reason, c));
                     }
                 }
                 _ => {}
@@ -3363,14 +3258,7 @@ impl App {
                     crate::controls::custom_sized(
                         "copy-session-id",
                         "Copy session ID",
-                        row![
-                            icon(Icon::Copy, c.muted, 12.0),
-                            text("Copy")
-                                .size(12)
-                                .font(weight(iced::font::Weight::Medium))
-                        ]
-                        .spacing(5)
-                        .align_y(Center),
+                        icon(Icon::Copy, c.muted, 12.0),
                         Some(Message::CopyGuidance(agent.id.to_string())),
                         false,
                         Kind::Ghost,
@@ -3441,12 +3329,8 @@ impl App {
                     .spacing(8)
                     .align_y(Center);
                     if let Some(why) = blocker {
-                        reconnect = reconnect.push(small(why, c));
-                    } else {
-                        reconnect = reconnect.push(small(
-                            "Opens the session in a pane here, with its conversation and live messages; accept Claude's prompt there.",
-                            c,
-                        ));
+                        reconnect =
+                            reconnect.push(status_dot("reconnect-blocked", c.faint, why, c));
                     }
                     details = details.push(reconnect);
                 }
@@ -3478,7 +3362,6 @@ impl App {
                     ]
                     .spacing(6)
                     .align_y(Center),
-                    small("Confirm within five seconds to send the stop signal.", c),
                 ]
                 .spacing(6)
                 .into()
@@ -3509,14 +3392,15 @@ impl App {
     /// the chosen one marked like a selected radio.
     fn launch_view(&self, c: Colors) -> Element<'_, Message> {
         // Start from what the agent should do: the prompt first, the tool
-        // as a chip under it, everything else behind More options.
-        let header = column![heading("Launch an agent", 16)].spacing(4);
+        // as a chip under it, the switches as one row of their own labels,
+        // everything else behind More options. No title: the button names
+        // the dialog.
         let ready =
             !self.shell.launching && self.shell.launch_runtime.is_some() && self.connected.is_ok();
         let prompt = crate::controls::composer(
             "launch-prompt",
             "launch",
-            "What should it work on? Sent as its first message (optional)",
+            "What should it work on?",
             &self.shell.launch_prompt,
             Message::LaunchPrompt,
             !self.shell.launching,
@@ -3562,9 +3446,9 @@ impl App {
                     iced::Length::Shrink,
                 ))
                 .style(move |_| container::Style {
-                    background: chosen.then(|| c.accent_soft.into()),
+                    background: chosen.then(|| c.raised.into()),
                     border: iced::Border {
-                        color: if chosen { c.accent } else { c.line_strong },
+                        color: if chosen { c.text } else { c.line_strong },
                         width: 1.0,
                         radius: 999.0.into(),
                     },
@@ -3573,66 +3457,34 @@ impl App {
             );
         }
         let mut body = column![prompt, chips.wrap()].spacing(10);
+        // The switches say what they are on their own faces; what each
+        // means shows when it is pointed at.
+        let mut switches = row![].spacing(8).align_y(Center);
         if matches!(
             self.shell.launch_runtime.as_deref(),
             Some("claude-code" | "codex")
         ) {
             // The normal launch has a receiver. Turning it off is explicit;
             // provider consent remains a separate provider-owned step.
-            body = body.push(Space::new().height(4)).push(
-                row![
-                    column![
-                        text("Messages while idle")
-                            .size(14)
-                            .font(weight(iced::font::Weight::Medium)),
-                        small(
-                            if !self.shell.launch_channel {
-                                "Messages may wait until you interact with this session."
-                            } else if self.shell.launch_runtime.as_deref() == Some("codex") {
-                                "Opens a Codex conversation here. Messages wait until the current turn finishes."
-                            } else {
-                                "Connects Claude's experimental channel. Complete Claude's consent in the terminal."
-                            },
-                            c
-                        )
-                    ]
-                    .spacing(2)
-                    .width(Fill),
-                    action(
-                        "launch-idle-input",
-                        if self.shell.launch_channel {
-                            "Idle messages: On"
-                        } else {
-                            "Idle messages: Off"
-                        },
-                        (!self.shell.launching)
-                            .then_some(Message::LaunchChannel(!self.shell.launch_channel)),
-                        self.shell.launch_channel,
-                    ),
-                ]
-                .spacing(12)
-                .align_y(Center),
-            );
-        }
-        if self.shell.launch_runtime.is_some()
-            && !matches!(
-                self.shell.launch_runtime.as_deref(),
-                Some("claude-code" | "codex")
-            )
-        {
-            body = body.push(small(
-                "Automatic idle delivery is not available for this tool.",
-                c,
-            ));
-        }
-        if self.shell.launch_runtime.as_deref() == Some("codex")
-            && let Some(root) = &self.shell.launch_codex_untrusted
-        {
-            body = body.push(small(
-                format!(
-                    "Codex trust for {} is not confirmed. Open Codex in this folder to review trust and permission settings before launching.",
-                    shorten_home(root)
+            switches = switches.push(tip(
+                action(
+                    "launch-idle-input",
+                    if self.shell.launch_channel {
+                        "Idle messages: On"
+                    } else {
+                        "Idle messages: Off"
+                    },
+                    (!self.shell.launching)
+                        .then_some(Message::LaunchChannel(!self.shell.launch_channel)),
+                    self.shell.launch_channel,
                 ),
+                if !self.shell.launch_channel {
+                    "Messages wait until you interact with this session"
+                } else if self.shell.launch_runtime.as_deref() == Some("codex") {
+                    "Messages wait until the current turn finishes"
+                } else {
+                    "Connects Claude's channel; consent in the terminal"
+                },
                 c,
             ));
         }
@@ -3641,38 +3493,38 @@ impl App {
         // ignores that the project lists in `.worktreeinclude` are copied
         // in. A folder that is not a git repository has no branches.
         if self.launch_project_is_git() {
-            body = body.push(Space::new().height(4)).push(
-                row![
-                    column![
-                        text("Own worktree")
-                            .size(14)
-                            .font(weight(iced::font::Weight::Medium)),
-                        small(
-                            if self.shell.launch_worktree {
-                                "Works on its own branch in its own folder; review and merge its changes from Changes. Files listed in .worktreeinclude are copied in."
-                            } else {
-                                "Works directly in the project folder, on its current branch."
-                            },
-                            c
-                        )
-                    ]
-                    .spacing(2)
-                    .width(Fill),
-                    action(
-                        "launch-worktree",
-                        if self.shell.launch_worktree {
-                            "Own worktree: On"
-                        } else {
-                            "Own worktree: Off"
-                        },
-                        (!self.shell.launching)
-                            .then_some(Message::LaunchWorktree(!self.shell.launch_worktree)),
-                        self.shell.launch_worktree,
-                    ),
-                ]
-                .spacing(12)
-                .align_y(Center),
-            );
+            switches = switches.push(tip(
+                action(
+                    "launch-worktree",
+                    if self.shell.launch_worktree {
+                        "Own worktree: On"
+                    } else {
+                        "Own worktree: Off"
+                    },
+                    (!self.shell.launching)
+                        .then_some(Message::LaunchWorktree(!self.shell.launch_worktree)),
+                    self.shell.launch_worktree,
+                ),
+                if self.shell.launch_worktree {
+                    "Its own branch and folder; merge from Changes"
+                } else {
+                    "Works in the project folder, on its branch"
+                },
+                c,
+            ));
+        }
+        body = body.push(switches.wrap());
+        if self.shell.launch_runtime.as_deref() == Some("codex")
+            && let Some(root) = &self.shell.launch_codex_untrusted
+        {
+            body = body.push(tip(
+                status_word("Trust unconfirmed", c.amber, c),
+                format!(
+                    "Open Codex in {} to review trust before launching",
+                    shorten_home(root)
+                ),
+                c,
+            ));
         }
         // The name, the arguments and the exact command: there when wanted.
         body = body.push(custom_sized(
@@ -3710,59 +3562,18 @@ impl App {
         ));
         if self.shell.launch_more {
             body = body
-                .push(eyebrow("Name", c))
                 .push(input(
                     "launch-name",
-                    "Optional; one is made up otherwise",
+                    "Name",
                     &self.shell.launch_name,
                     Message::LaunchName,
                 ))
-                .push(eyebrow("Arguments", c))
                 .push(input(
                     "launch-arguments",
-                    "Command arguments (optional)",
+                    "Arguments",
                     &self.shell.launch_arguments,
                     Message::LaunchArguments,
                 ));
-        }
-        if self.shell.launch_more
-            && let Some(runtime) = self
-                .runtimes
-                .iter()
-                .find(|r| Some(&r.name) == self.shell.launch_runtime.as_ref())
-        {
-            body = body.push(
-                container(
-                    row![
-                        text("$").size(12).font(Font::MONOSPACE).color(c.amber),
-                        text(format!(
-                            "{} {}",
-                            runtime
-                                .cli
-                                .as_ref()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_default(),
-                            self.shell.launch_arguments
-                        ))
-                        .size(12)
-                        .font(Font::MONOSPACE)
-                        .color(c.muted)
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                    ]
-                    .spacing(8),
-                )
-                .padding([8, 10])
-                .width(Fill)
-                .style(move |_| container::Style {
-                    background: Some(if c.dark { c.ground } else { c.hover }.into()),
-                    border: iced::Border {
-                        color: c.line,
-                        width: 1.0,
-                        radius: super::style::RADIUS_SM.into(),
-                    },
-                    ..Default::default()
-                }),
-            );
         }
         let footer = row![
             Space::new().width(Fill),
@@ -3784,9 +3595,7 @@ impl App {
         .spacing(8)
         .align_y(Center);
         column![
-            container(header).padding([18, 20]),
-            rule(c),
-            scrollable(container(body).padding([16, 20])).height(iced::Shrink),
+            scrollable(container(body).padding([18, 20])).height(iced::Shrink),
             rule(c),
             container(footer).padding([12, 20]),
         ]
@@ -3834,12 +3643,7 @@ impl App {
     /// and where under it, and how long ago at the right.
     fn journal_view(&self, c: Colors) -> Element<'_, Message> {
         if self.journal.is_empty() {
-            return empty(
-                "No activity recorded yet",
-                "Commits, arrivals, finished work and notes from this project appear here.",
-                None,
-                c,
-            );
+            return empty(None, c);
         }
         let mut rows = column![].width(Fill);
         for (index, entry) in self.journal.iter().rev().enumerate() {
@@ -3848,20 +3652,10 @@ impl App {
             }
             rows = rows.push(self.history_row(entry, c));
         }
-        container(column![
-            pane_header(
-                "Activity",
-                format!(
-                    "{} of the latest {JOURNAL_WINDOW} · earlier entries stay in the journal",
-                    self.journal.len()
-                ),
-                c
-            ),
-            rows
-        ])
-        .width(Fill)
-        .style(move |_| c.card_style())
-        .into()
+        container(rows)
+            .width(Fill)
+            .style(move |_| c.card_style())
+            .into()
     }
 
     /// One journal entry as a row. The kind is said under the line, with
@@ -3945,10 +3739,6 @@ impl App {
     /// meter of the time left that turns amber under one fifth; and the
     /// time itself.
     fn coordination(&self, c: Colors) -> Element<'_, Message> {
-        let intro = note(
-            "What each agent has said it is working on. Others wait, or ask, before touching the same thing.",
-            c,
-        );
         let now = Utc::now();
         let mut rows = column![].width(Fill);
         let mut count = 0;
@@ -3975,32 +3765,32 @@ impl App {
             if let Some(why) = &lease.note {
                 about.push(first_line(why, 160));
             }
-            let mut line = row![
-                column![
-                    text(resource_label(
-                        &lease.resource.to_string(),
-                        self.selected_root()
-                    ))
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .color(c.text)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                    small(about.join(" · "), c).wrapping(iced::widget::text::Wrapping::Word),
-                ]
-                .spacing(4)
+            // Who holds it is their mark, what is held the one line of
+            // text, and the time left a meter; the words for both show
+            // when they are pointed at.
+            let name = self.name_of(lease.holder.as_str());
+            let line = row![
+                tip(
+                    agent_mark(
+                        holder.map(|a| a.spec.runtime.as_str()),
+                        &name,
+                        lease.holder.as_str(),
+                        18.0,
+                        c
+                    ),
+                    about.join(" · "),
+                    c
+                ),
+                text(resource_label(
+                    &lease.resource.to_string(),
+                    self.selected_root()
+                ))
+                .size(12)
+                .font(Font::MONOSPACE)
+                .color(c.text)
                 .width(Fill)
-            ]
-            .spacing(12)
-            .align_y(Center);
-            if low {
-                line = line.push(status_word(
-                    if left_secs > 0 { "Expiring" } else { "Expired" },
-                    c.amber,
-                    c,
-                ));
-            }
-            line = line
-                .push(
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                tip(
                     container(meter(
                         left,
                         if low {
@@ -4010,47 +3800,27 @@ impl App {
                         },
                         c,
                     ))
-                    .width(64),
-                )
-                .push(
-                    container(
-                        text(if left_secs > 0 {
-                            format!("{} left", super::span(left_secs))
-                        } else {
-                            "expired".to_owned()
-                        })
-                        .size(12)
-                        .color(if low { c.amber } else { c.faint }),
-                    )
-                    .width(56)
-                    .align_x(iced::alignment::Horizontal::Right),
-                );
+                    .width(64)
+                    .padding([6, 0]),
+                    if left_secs > 0 {
+                        format!("{} left", super::span(left_secs))
+                    } else {
+                        "Expired".to_owned()
+                    },
+                    c
+                ),
+            ]
+            .spacing(12)
+            .align_y(Center);
             rows = rows.push(container(line).padding([10, 16]));
         }
         if count == 0 {
-            return column![
-                intro,
-                empty(
-                    "Nothing in use",
-                    "When an agent claims a file or resource in this project it appears here.",
-                    None,
-                    c,
-                )
-            ]
-            .spacing(12)
-            .into();
+            return empty(None, c);
         }
-        column![
-            intro,
-            container(column![
-                pane_header("Files in use", format!("{count} held"), c),
-                rows
-            ])
+        container(rows)
             .width(Fill)
             .style(move |_| c.card_style())
-        ]
-        .spacing(12)
-        .into()
+            .into()
     }
 }
 
@@ -4181,6 +3951,30 @@ pub(super) fn split_style(c: Colors) -> iced::widget::pane_grid::Style {
 
 #[cfg(test)]
 mod tests {
+    /// A healthy service says nothing at the rail's foot; a lost connection
+    /// or an update to install is one line there, and the bottom strip is
+    /// gone unless a restart is being confirmed.
+    #[test]
+    fn the_rail_says_nothing_of_a_healthy_service_and_one_thing_otherwise() {
+        use super::*;
+        let (commands, _requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let c = Colors::new(true);
+        let r = c.rail();
+        app.connected = Ok(());
+        assert!(app.service_chip(r).is_none(), "healthy: nothing");
+        assert!(app.daemon_notice(c).is_none(), "and no bottom strip");
+        app.desktop.update = Some(serde_json::json!({
+            "update_available": true,
+            "available": {"version": "0.2.1"}
+        }));
+        assert!(app.service_chip(r).is_some(), "an update to install");
+        app.desktop.update = None;
+        app.connected = Err("gone".into());
+        assert!(app.service_chip(r).is_some(), "reconnecting");
+    }
+
     /// A limit's reset reads on the person's clock: minutes, then hours
     /// and minutes, then a day; a past one says so.
     #[test]
@@ -4210,70 +4004,6 @@ mod tests {
         assert_eq!(
             super::reset_words(now, at(-5), &zone),
             "should have reset by now"
-        );
-    }
-
-    /// A healthy service says nothing at the rail's foot; a lost connection
-    /// or an update to install is one line there, and the bottom strip is
-    /// gone unless a restart is being confirmed.
-    #[test]
-    fn the_rail_says_nothing_of_a_healthy_service_and_one_thing_otherwise() {
-        use super::*;
-        let (commands, _requests) = crate::app::queue::channel();
-        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
-        let mut app = App::bare(commands, results);
-        let c = Colors::new(true);
-        let r = c.rail();
-        app.connected = Ok(());
-        assert!(app.service_chip(r).is_none(), "healthy: nothing");
-        assert!(app.daemon_notice(c).is_none(), "and no bottom strip");
-        app.desktop.update = Some(serde_json::json!({
-            "update_available": true,
-            "available": {"version": "0.2.1"}
-        }));
-        assert!(app.service_chip(r).is_some(), "an update to install");
-        app.desktop.update = None;
-        app.connected = Err("gone".into());
-        assert!(app.service_chip(r).is_some(), "reconnecting");
-    }
-
-    #[test]
-    fn ended_sessions_group_by_the_day_they_ended() {
-        use chrono::TimeZone;
-        let now = chrono::Local
-            .with_ymd_and_hms(2026, 10, 14, 15, 0, 0)
-            .unwrap();
-        let ended = |days: i64, name: &str| {
-            let mut record = agentdocker_core::AgentRecord::new(
-                agentdocker_core::AgentSpec {
-                    name: name.into(),
-                    ..Default::default()
-                },
-                false,
-                chrono::Utc::now(),
-            );
-            record.finished_at =
-                Some((now - chrono::Duration::days(days)).with_timezone(&chrono::Utc));
-            record
-        };
-        let records = [
-            ended(0, "a"),
-            ended(0, "b"),
-            ended(1, "c"),
-            ended(3, "d"),
-            ended(40, "e"),
-        ];
-        let refs: Vec<_> = records.iter().collect();
-        let days = super::by_day(&refs, now);
-        let labels: Vec<_> = days.iter().map(|(day, rows)| (*day, rows.len())).collect();
-        assert_eq!(
-            labels,
-            [
-                ("Today", 2),
-                ("Yesterday", 1),
-                ("This week", 1),
-                ("Older", 1)
-            ]
         );
     }
 
@@ -4524,6 +4254,143 @@ mod tests {
         offered
     }
 
+    /// Dependencies outside the current page still govern both the rendered
+    /// Start action and an action queued before a newer detail arrived.
+    #[test]
+    fn board_start_uses_complete_detail_and_rechecks_stale_actions() {
+        use crate::app::shell::{BoardLayout, CardMenu};
+        use crate::app::{CardDetail, Cmd, Message, Msg, Screen};
+        use agentdocker_core::{Column, Request};
+        let (tx, commands) = crate::app::queue::channel();
+        let (messages, rx) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = crate::app::App::bare(tx, rx);
+        let dir = tempfile::tempdir().unwrap();
+        let project = agentdocker_core::ProjectRef::directory(dir.path());
+        let root = project.root.display().to_string();
+        app.shell.catalog.remember(project.clone(), true);
+        app.shell.catalog.selected = Some(project.root.clone());
+        app.connected = Ok(());
+        app.screen = Screen::Board;
+        app.shell.board_layout = BoardLayout::Table;
+        let now = chrono::Utc::now();
+        let card = |id: &str| -> agentdocker_core::Task {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "project": project.id(), "title": id,
+                "acceptance": "", "column": "ready", "assignee": null,
+                "created_by": "user", "created_at": now, "updated_at": now,
+                "archived_at": null, "links": []
+            }))
+            .unwrap()
+        };
+        let blocker = card("bbbbbbbbbbbb");
+        let mut dependent = card("aaaaaaaaaaaa");
+        dependent.blocked_by.push(blocker.id.clone());
+        app.request_tasks();
+        let request = commands
+            .try_iter()
+            .find_map(|c| match c {
+                Cmd::Tasks { request, .. } => Some(request),
+                _ => None,
+            })
+            .unwrap();
+        messages
+            .send(Msg::Tasks(
+                root,
+                request,
+                Ok((vec![dependent.clone()], true)),
+            ))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::TaskOpen(dependent.id.clone()));
+        let detail = CardDetail {
+            task: dependent.clone(),
+            board: agentdocker_core::Board::main(project.id(), "test", now),
+            comments: vec![],
+            history: vec![],
+            blockers: vec![blocker],
+            children: vec![],
+            plan: None,
+            files: vec![],
+        };
+        messages
+            .send(Msg::TaskDetail(
+                dependent.id.clone(),
+                Ok(Box::new(detail.clone())),
+            ))
+            .unwrap();
+        app.drain();
+        let start = |app: &crate::app::App| {
+            offered(app.board_view(super::Colors::new(false)))
+                .into_iter()
+                .find(|(id, _, _)| id == "card-start")
+        };
+        assert!(app.tasks.as_ref().unwrap().more);
+        assert_eq!(app.tasks.as_ref().unwrap().cards.len(), 1);
+        assert!(
+            start(&app).is_none(),
+            "an open prerequisite on a later page blocks Start"
+        );
+        let take_starts = || {
+            commands
+                .try_iter()
+                .filter_map(|c| match c {
+                    Cmd::BoardAct { request, .. } => match *request {
+                        Request::TaskStart { task, .. } => Some(task),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let _ = app.update(Message::CardMenu(CardMenu::Start));
+        assert_eq!(app.shell.card_menu, None);
+        let _ = app.update(Message::StartAgent("codex".into()));
+        assert!(take_starts().is_empty());
+
+        // A closed prerequisite permits the action even though the board page
+        // still has the old card. Use the actual rendered button's callback.
+        app.card.as_mut().unwrap().blockers[0].column = Column::Done;
+        let (_, _, action) = start(&app).expect("closed prerequisite permits Start");
+        let _ = app.update(action.unwrap());
+        assert_eq!(app.shell.card_menu, Some(CardMenu::Start));
+        let _ = app.update(Message::StartAgent("codex".into()));
+        assert_eq!(take_starts(), vec![dependent.id.to_string()]);
+
+        // A queued click must not bypass a newer blocker or a changed card.
+        let _ = app.update(Message::CardMenu(CardMenu::Start));
+        app.card.as_mut().unwrap().blockers[0].column = Column::Ready;
+        assert!(start(&app).is_none());
+        let _ = app.update(Message::StartAgent("codex".into()));
+        assert!(take_starts().is_empty());
+        assert_eq!(app.shell.card_menu, None);
+        app.card.as_mut().unwrap().blockers.clear();
+        assert!(
+            start(&app).is_none(),
+            "missing dependency details are not proof of completion"
+        );
+        app.card.as_mut().unwrap().task.id = "cccccccccccc".to_owned().into();
+        assert!(
+            start(&app).is_none(),
+            "another card's detail cannot authorize this one"
+        );
+        let _ = app.update(Message::StartAgent("codex".into()));
+        assert!(take_starts().is_empty());
+        app.card = None;
+        assert!(start(&app).is_none(), "wait for the opened card's detail");
+        let _ = app.update(Message::StartAgent("codex".into()));
+        assert!(take_starts().is_empty());
+
+        // The detail's own task fields also take precedence over the page.
+        app.card = Some(detail);
+        app.card.as_mut().unwrap().task.blocked_by.clear();
+        app.card.as_mut().unwrap().blockers.clear();
+        assert!(start(&app).is_some());
+        app.card.as_mut().unwrap().task.external_blocker = "approval".into();
+        assert!(start(&app).is_none());
+        let _ = app.update(Message::StartAgent("codex".into()));
+        assert!(take_starts().is_empty());
+    }
+
     #[test]
     fn an_operation_blocks_empty_review_cleanup_even_when_the_target_is_detached() {
         use agentdocker_core::review::{Operation, Review};
@@ -4560,14 +4427,19 @@ mod tests {
             review.target = target.map(str::to_owned);
             app.branch_review = Some((agent.id.to_string(), Ok(review.clone())));
             let shown = inspected(app.changes_section(&agent, c).unwrap());
-            assert_eq!(
-                shown
-                    .controls
-                    .iter()
-                    .map(|(id, _, _)| id.as_str())
-                    .collect::<Vec<_>>(),
-                ["review-refresh"],
-                "pending operation must not offer worktree removal: {operation:?}"
+            // The marks beside the blocker and the failure are named labels,
+            // not actions: the only action is Refresh.
+            let ids: Vec<&str> = shown
+                .controls
+                .iter()
+                .map(|(id, _, _)| id.as_str())
+                .collect();
+            assert!(
+                ids.contains(&"review-refresh")
+                    && !ids
+                        .iter()
+                        .any(|id| *id == "remove-worktree" || *id == "merge-branch"),
+                "pending operation must not offer worktree removal: {operation:?} {ids:?}"
             );
             assert!(
                 shown.text.iter().any(|line| line == reason),

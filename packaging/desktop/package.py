@@ -295,7 +295,7 @@ def zip_app(app, archive):
 
 def copy_licenses(destination):
     destination.mkdir(parents=True)
-    shutil.copyfile(ROOT / "crates/ui/src/fonts/LICENSE-Inter.txt", destination / "LICENSE-Inter.txt")
+    shutil.copyfile(ROOT / "crates/ui/src/fonts/LICENSE-IBMPlexSans.txt", destination / "LICENSE-IBMPlexSans.txt")
 
 
 def notarize(artifact, profile, report):
