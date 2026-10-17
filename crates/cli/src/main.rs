@@ -519,6 +519,14 @@ enum Command {
     },
     /// Give an agent a role, so `role:<name>` names it as a recipient.
     Role(RoleArgs),
+    /// A project's roles, each with its colour: the five every project
+    /// offers and your own. Nothing holds one until you give it.
+    Roles {
+        #[command(subcommand)]
+        action: Option<RolesAction>,
+        #[arg(long, value_name = "ID|PATH", global = true)]
+        project: Option<String>,
+    },
     /// Give a live agent a name of your choosing (its id stays the same).
     Rename {
         /// Agent id, name or unique prefix.
@@ -1016,6 +1024,32 @@ enum FileAction {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         from: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum RolesAction {
+    /// Make a role from its name; its address is made from the name.
+    Add {
+        name: String,
+        /// red, blue, green, yellow, purple, orange, pink or cyan.
+        #[arg(long)]
+        color: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Rename, recolour or describe a role; its address stays.
+    Set {
+        role: String,
+        #[arg(long)]
+        name: Option<String>,
+        /// red, blue, green, yellow, purple, orange, pink or cyan.
+        #[arg(long)]
+        color: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Take a role out of the project's palette.
+    Rm { role: String },
 }
 
 #[derive(Subcommand)]
@@ -3801,6 +3835,103 @@ async fn run() -> Result<()> {
                 match agent.role() {
                     Some(role) => println!("{} is the {role}", agent.spec.name),
                     None => println!("{} has no role", agent.spec.name),
+                }
+            }
+        }
+        Command::Roles { action, project } => {
+            let project = Some(match project {
+                Some(project) => project,
+                None => std::env::current_dir()?.display().to_string(),
+            });
+            let color = |c: Option<String>| {
+                c.map(|c| {
+                    agentdocker_core::RoleColor::parse(&c).with_context(|| {
+                        format!("no colour called {c}; red, blue, green, yellow, purple, orange, pink or cyan")
+                    })
+                })
+                .transpose()
+            };
+            let line = |role: &agentdocker_core::RoleDef| {
+                let mut line = format!(
+                    "{:<14}{:<16}{:<8}",
+                    role.role,
+                    role.name,
+                    role.color.as_str()
+                );
+                line.push_str(&role.description);
+                line.trim_end().to_owned()
+            };
+            match action {
+                None => {
+                    if let Response::RoleCatalog { roles } =
+                        client.call(&Request::RoleCatalog { project }).await?
+                    {
+                        for role in &roles {
+                            println!("{}", line(role));
+                        }
+                    }
+                }
+                Some(RolesAction::Add {
+                    name,
+                    color: wanted,
+                    description,
+                }) => {
+                    let request = Request::RoleSave {
+                        from: HUMAN.into(),
+                        project,
+                        role: None,
+                        name,
+                        color: color(wanted)?,
+                        description,
+                    };
+                    if let Response::RoleDef { role } = client.call(&request).await? {
+                        println!("{}", line(&role));
+                    }
+                }
+                Some(RolesAction::Set {
+                    role,
+                    name,
+                    color: wanted,
+                    description,
+                }) => {
+                    // Its name stays unless a new one is given.
+                    let name = match name {
+                        Some(name) => name,
+                        None => match client
+                            .call(&Request::RoleCatalog {
+                                project: project.clone(),
+                            })
+                            .await?
+                        {
+                            Response::RoleCatalog { roles } => roles
+                                .into_iter()
+                                .find(|r| r.role == role)
+                                .map(|r| r.name)
+                                .with_context(|| format!("no role is called {role}"))?,
+                            other => bail!("unexpected reply to roles: {other:?}"),
+                        },
+                    };
+                    let request = Request::RoleSave {
+                        from: HUMAN.into(),
+                        project,
+                        role: Some(role),
+                        name,
+                        color: color(wanted)?,
+                        description,
+                    };
+                    if let Response::RoleDef { role } = client.call(&request).await? {
+                        println!("{}", line(&role));
+                    }
+                }
+                Some(RolesAction::Rm { role }) => {
+                    let request = Request::RoleDelete {
+                        from: HUMAN.into(),
+                        project,
+                        role: role.clone(),
+                    };
+                    if let Response::Ok = client.call(&request).await? {
+                        println!("{role} taken out");
+                    }
                 }
             }
         }

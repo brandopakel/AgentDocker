@@ -93,7 +93,7 @@ fn task_tag(words: &str) -> String {
 }
 
 impl Daemon {
-    async fn named_project(
+    pub(super) async fn named_project(
         self: &Arc<Self>,
         project: Option<&str>,
         from: Option<&str>,

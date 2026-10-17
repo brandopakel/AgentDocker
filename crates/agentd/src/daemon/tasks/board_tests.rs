@@ -965,3 +965,109 @@ async fn card_start_input_failures_leave_the_card_and_registry_unchanged() {
         assert!(state.leases.all().is_empty());
     }
 }
+
+/// A project offers the five roles without storing anything; only the
+/// person changes the palette. A built-in role changed or taken out stays
+/// so, and comes back when made again; the person's own is deleted.
+#[tokio::test]
+async fn a_projects_roles_are_the_five_until_the_person_changes_them() {
+    use agentdocker_core::RoleColor;
+    let f = fixture().await;
+    let d = &f.daemon;
+    let catalog = |d: &Arc<Daemon>| {
+        let d = d.clone();
+        let project = f.work.clone();
+        async move {
+            match d
+                .handle(Request::RoleCatalog {
+                    project: Some(project),
+                })
+                .await
+            {
+                Response::RoleCatalog { roles } => roles,
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    let mut events = d.subscribe_events();
+    let roles = catalog(d).await;
+    assert_eq!(
+        roles.iter().map(|r| r.role.as_str()).collect::<Vec<_>>(),
+        ["lead", "implementer", "reviewer", "explorer", "tester"]
+    );
+    assert!(events.try_recv().is_err(), "a read changes nothing");
+
+    let save =
+        |from: &str, role: Option<&str>, name: &str, color: Option<RoleColor>| Request::RoleSave {
+            from: from.to_owned(),
+            project: Some(f.work.clone()),
+            role: role.map(str::to_owned),
+            name: name.to_owned(),
+            color,
+            description: None,
+        };
+    assert!(matches!(
+        d.handle(save(f.agent.id.as_str(), Some("reviewer"), "Mine", None))
+            .await,
+        Response::Error {
+            code: ErrorCode::Forbidden,
+            ..
+        }
+    ));
+    let Response::RoleDef { role } = d
+        .handle(save(
+            HUMAN,
+            Some("reviewer"),
+            "Code review",
+            Some(RoleColor::Pink),
+        ))
+        .await
+    else {
+        panic!()
+    };
+    assert_eq!(
+        (role.role.as_str(), role.color),
+        ("reviewer", RoleColor::Pink)
+    );
+    let Response::RoleDef { role: docs } = d.handle(save(HUMAN, None, "Docs writer", None)).await
+    else {
+        panic!()
+    };
+    assert_eq!(docs.role, "docs-writer");
+    assert!(matches!(
+        d.handle(save(HUMAN, None, "Reviewer", None)).await,
+        Response::Error {
+            code: ErrorCode::Conflict,
+            ..
+        }
+    ));
+
+    let delete = |role: &str| Request::RoleDelete {
+        from: HUMAN.into(),
+        project: Some(f.work.clone()),
+        role: role.to_owned(),
+    };
+    assert!(matches!(d.handle(delete("tester")).await, Response::Ok));
+    assert!(matches!(
+        d.handle(delete("docs-writer")).await,
+        Response::Ok
+    ));
+    let roles = catalog(d).await;
+    assert_eq!(
+        roles.iter().map(|r| r.role.as_str()).collect::<Vec<_>>(),
+        ["lead", "implementer", "reviewer", "explorer"]
+    );
+    assert_eq!(roles[2].name, "Code review");
+    // Made again, a built-in role comes back.
+    assert!(matches!(
+        d.handle(save(HUMAN, None, "Tester", None)).await,
+        Response::RoleDef { role } if role.role == "tester" && role.color == RoleColor::Green
+    ));
+    assert!(matches!(
+        d.handle(delete("nobody")).await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+}
