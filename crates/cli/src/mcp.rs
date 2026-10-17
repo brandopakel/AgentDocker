@@ -760,10 +760,19 @@ impl<B: Backend> McpServer<B> {
             .cloned()
             .unwrap_or_else(|| json!({}));
         if let Some(context) = &self.native_context {
-            let agent = context
-                .resolve(&self.backend, &params["_meta"])
-                .await
-                .map_err(native_identity::mcp_error)?;
+            // A conversation started in a terminal has no binding; its terminal
+            // names it, and no input controller owns its delivery.
+            let (agent, native) = match context.resolve(&self.backend, &params["_meta"]).await {
+                Ok(agent) => (agent, true),
+                Err(error) if native_identity::unbound(&error) => (
+                    context
+                        .resolve_terminal(&self.backend, &params["_meta"])
+                        .await
+                        .map_err(native_identity::mcp_error)?,
+                    false,
+                ),
+                Err(error) => return Err(native_identity::mcp_error(error)),
+            };
             let identity = Identity {
                 id: agent.id.to_string(),
                 name: agent.spec.name,
@@ -780,7 +789,7 @@ impl<B: Backend> McpServer<B> {
             )
             .await;
             let mut bound = McpServer::new(BorrowedBackend(&self.backend), identity);
-            bound.native_input = true;
+            bound.native_input = native;
             bound.project_root = agent.project.map(|project| project.root);
             return bound.tool(name, arguments).await;
         }

@@ -292,13 +292,23 @@ pub(super) async fn run(client: &Client) -> Result<()> {
         agentdocker_host::procinfo::start_time(pid).context("cannot verify Codex process birth")?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
     let mut emission_agent = None;
+    // A terminal conversation's hooks deliver through its queue directly: the
+    // native receiver proves its hooks descend from the terminal, and these
+    // run in the shared app-server.
+    let mut terminal = false;
     let delivery = tokio::time::timeout_at(deadline, async {
         let checkout = input.cwd.canonicalize()?;
         let native = crate::mcp::native_identity::Context::from_host(pid, checkout.clone(), &table)?;
         let agent = if let Some(context) = native {
-            let agent = context.resolve(client, &json!({
-                "threadId":input.session_id, "sessionId":input.session_id
-            })).await?;
+            let meta = json!({"threadId":input.session_id, "sessionId":input.session_id});
+            let agent = match context.resolve(client, &meta).await {
+                Ok(agent) => agent,
+                Err(error) if crate::mcp::native_identity::unbound(&error) => {
+                    terminal = true;
+                    context.resolve_terminal(client, &meta).await?
+                }
+                Err(error) => return Err(error),
+            };
             let owner = agent.pid.context("native hook binding lacks a terminal PID")?;
             let birth = agent.process_started_at.context("native hook binding lacks a process birth")?;
             finish_report(client, &input, agent, &checkout, owner, birth, observed_at).await?
@@ -322,6 +332,7 @@ pub(super) async fn run(client: &Client) -> Result<()> {
             });
         }
         match agent {
+            Some(agent) if terminal => prepare(client, &input, agent.id.to_string()).await,
             Some(agent) => match crate::codex_input::external::ensure_started(client, &agent).await
             {
                 Ok(true) => {
