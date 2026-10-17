@@ -142,7 +142,17 @@ agents that need you, and its name in semibold when something there is new;
 how many agents run is not shown, since it is not a reason to look. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
-Inbox. A command a live session asks to run is answered in the row itself:
+Inbox, where an approval card also has a line for words to go with **Deny** —
+why not, or what to do instead — sent to the agent as your message once the
+denial is accepted, opening with what was refused (*Denied `rm -rf build`: use
+the fixture script instead*); if that message is itself refused (a pause, a full
+work queue), its words go into the agent's message box instead and the status
+line says it was not sent; if its answer is lost (a dropped connection), they go
+there too, and the status line says it may have been sent, so check the
+conversation before sending again. Until the daemon takes it the note is saved
+with the drafts as that message-box text, so a window closed meanwhile shows it
+there on reopening, never sent again by itself (the provider's own answer is
+still exactly Deny; Allow sends no words). A command a live session asks to run is answered in the row itself:
 **Deny** and **Allow once** send the same exact answer as the Inbox card, with
 the command in the row's words; file changes, which must be looked at first,
 and every other question open with **Answer**. The first three items are shown; **Show more** expands the same list and

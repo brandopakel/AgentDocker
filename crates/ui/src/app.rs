@@ -217,6 +217,9 @@ enum Cmd {
     /// checks the launch against the record and keeps the queue.
     Resume(String, Box<agentdocker_core::AgentSpec>),
     SessionSend(String, String),
+    /// The words sent with an accepted denial, to the agent that asked:
+    /// their own send, so the composer's pending send is never theirs.
+    DenyNote(MessageId, String, String),
     /// Text from the person to every agent in a project, receipted under
     /// the agent whose conversation it was typed in.
     ProjectSend(String, String, String),
@@ -380,6 +383,7 @@ enum Msg {
     /// daemon started (its id and that process's start), or why it is not.
     Reconnected(Result<(String, Option<chrono::DateTime<chrono::Utc>>), String>),
     SessionSent(String, Result<QueuedSend, String>),
+    DenyNoteSent(MessageId, Result<(), shell::NoteFailure>),
     /// `Err` when the daemon does not know conversations at all.
     Conversations(Result<Vec<agentdocker_core::ConversationSummary>, String>),
     History(String, u64, Vec<agentdocker_core::ArchivedMessage>),
@@ -863,6 +867,18 @@ impl App {
                         entry.draft.complete(Err(reason.into()));
                     }
                 }
+                // Never queued, so certainly not sent: the note goes to the
+                // message box, which says so itself.
+                Cmd::DenyNote(question, ..) => {
+                    if let Some(note) = self.shell.deny_notes.get_mut(&question) {
+                        note.failed = Some(shell::NoteFailure {
+                            reason: reason.into(),
+                            certain: true,
+                        });
+                    }
+                    self.place_failed_notes();
+                    return;
+                }
                 // A conversation draft that could not be queued is told so,
                 // or it would stay "sending" and never be retried.
                 Cmd::ConversationSend { draft, .. } => {
@@ -1300,6 +1316,55 @@ impl App {
                     self.sending.remove(&id);
                     match result {
                         Ok(()) => {
+                            // A denial written with words: they go to the
+                            // agent now the denial is accepted.
+                            let mut note_send = None;
+                            let note = self
+                                .shell
+                                .answers
+                                .get(&id)
+                                .map(|note| note.trim().to_owned())
+                                .filter(|note| !note.is_empty());
+                            let denied = self
+                                .shell
+                                .chosen_answers
+                                .get(&id)
+                                .is_some_and(|chosen| chosen.eq_ignore_ascii_case("deny"));
+                            if denied
+                                && let Some(note) = note
+                                && let Some(question) = self
+                                    .questions
+                                    .iter()
+                                    .find(|q| q.id == id && q.presentation.is_some())
+                            {
+                                // It opens with what did not happen, so the
+                                // words read rightly however late they land.
+                                let refused = match &question.presentation {
+                                    Some(
+                                        agentdocker_core::QuestionPresentation::CodexCommand {
+                                            command,
+                                            ..
+                                        },
+                                    ) => format!("Denied `{command}`"),
+                                    Some(agentdocker_core::QuestionPresentation::CodexFiles {
+                                        ..
+                                    }) => "Denied the file changes".to_owned(),
+                                    _ => "Denied".to_owned(),
+                                };
+                                // Kept until the daemon takes it, so a
+                                // refusal after the denial loses nothing.
+                                let text = format!("{refused}: {note}");
+                                self.shell.deny_notes.insert(
+                                    id.clone(),
+                                    shell::DenyNote {
+                                        agent: question.from.clone(),
+                                        text: text.clone(),
+                                        failed: None,
+                                    },
+                                );
+                                note_send =
+                                    Some(Cmd::DenyNote(id.clone(), question.from.clone(), text));
+                            }
                             self.shell.forms.remove(&id);
                             if self.shell.answers.remove(&id).is_some() {
                                 self.shell.drafts.changed();
@@ -1313,6 +1378,11 @@ impl App {
                                 self.shell.reveal_next_question = true;
                             }
                             self.say("answered");
+                            // After the answer is told, so a note the queue
+                            // will not take says so last.
+                            if let Some(cmd) = note_send {
+                                self.send(cmd);
+                            }
                         }
                         // The draft stays exactly where it was, so nothing
                         // typed is lost to a daemon that was not listening.
@@ -1615,7 +1685,26 @@ impl App {
                         }
                     }
                     self.shell.drafts.changed();
+                    // A note that waited for this send to finish goes into
+                    // the message box now.
+                    self.place_failed_notes();
                 }
+                Msg::DenyNoteSent(question, result) => match result {
+                    Ok(()) => {
+                        if let Some(note) = self.shell.deny_notes.remove(&question) {
+                            // Its saved copy goes with it.
+                            self.shell.drafts.changed();
+                            let name = self.name_of(&note.agent);
+                            self.say(format!("Told {name} why"));
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(note) = self.shell.deny_notes.get_mut(&question) {
+                            note.failed = Some(error);
+                        }
+                        self.place_failed_notes();
+                    }
+                },
             }
         }
         // Nothing is asked of a daemon that is not there: each request
@@ -3356,6 +3445,35 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::ConversationSent(draft, result))
         }
+        Cmd::DenyNote(question, agent, text) => {
+            let result = match client.call(&Request::Send {
+                from: agentdocker_core::HUMAN.into(),
+                to: agent,
+                kind: "message".into(),
+                payload: serde_json::Value::String(text),
+                reply_to: None,
+                links: Vec::new(),
+            }) {
+                Ok(Response::Sent { .. }) => Ok(()),
+                Ok(other) => Err(shell::NoteFailure {
+                    reason: unexpected_reply(&other),
+                    certain: false,
+                }),
+                // The daemon answered no: certainly not sent. Anything
+                // else may have been committed before the answer was lost.
+                Err(error) => Err(match error.downcast_ref::<crate::client::RemoteError>() {
+                    Some(refused) => shell::NoteFailure {
+                        reason: crate::client::explain(&refused.message),
+                        certain: true,
+                    },
+                    None => shell::NoteFailure {
+                        reason: format!("{error:#}"),
+                        certain: false,
+                    },
+                }),
+            };
+            Some(Msg::DenyNoteSent(question, result))
+        }
         Cmd::SessionSend(agent, text) => {
             let response = client.call(&Request::Send {
                 from: agentdocker_core::HUMAN.into(),
@@ -4945,6 +5063,32 @@ pub(crate) mod tests {
         assert!(!app.sending.contains(&id));
         assert!(app.connected.is_ok());
         assert!(app.status.contains("question expired"));
+    }
+
+    /// A denial note the daemon refused was certainly not sent; one whose
+    /// answer never came may have been.
+    #[cfg(unix)]
+    #[test]
+    fn a_denial_note_tells_a_refusal_from_a_lost_answer() {
+        use serde_json::json;
+        let question = MessageId::from("fixture-question".to_owned());
+        for (reply, certain) in [
+            (
+                Some(json!({"type":"error", "code":"paused", "message":"the project is paused"})),
+                true,
+            ),
+            (None, false),
+        ] {
+            let replies = command_with_replies(
+                Cmd::DenyNote(question.clone(), "asker".into(), "Denied: why".into()),
+                vec![(json!({"op":"send", "to":"asker"}), reply)],
+            );
+            let failure = replies.iter().find_map(|message| match message {
+                Msg::DenyNoteSent(id, Err(failure)) if *id == question => Some(failure),
+                _ => None,
+            });
+            assert_eq!(failure.map(|f| f.certain), Some(certain));
+        }
     }
 
     #[cfg(unix)]
