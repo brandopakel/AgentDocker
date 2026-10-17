@@ -287,10 +287,22 @@ impl Context {
         backend: &B,
         meta: &Value,
     ) -> Result<AgentRecord> {
+        // Only the shared cached app-server, whose package cache proves its
+        // profile: a dedicated server earns authority only through the
+        // binding it was accepted with, which a terminal does not have.
+        if self.profile.is_none() {
+            return Err(anyhow::Error::new(Unbound));
+        }
         self.verify_host()?;
         let thread = root_thread(meta)?;
         let table = procinfo::processes()?;
-        let terminal = self.terminal(&table, thread, procinfo::cwd, procinfo::start_time)?;
+        let terminal = self.terminal(
+            &table,
+            thread,
+            procinfo::cwd,
+            procinfo::arguments,
+            procinfo::start_time,
+        )?;
         bind_terminal(backend, &terminal, thread, &self.cwd).await
     }
 
@@ -299,12 +311,16 @@ impl Context {
         table: &[procinfo::Process],
         thread: &str,
         cwd: impl Fn(u32) -> Option<PathBuf>,
+        arguments: impl Fn(u32) -> Option<Vec<String>>,
         birth: impl Fn(u32) -> Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<ProcessIdentity> {
         let launchers = procinfo::codex_launchers(table);
+        // The process table's text finds the candidates; their own whole
+        // arguments decide, so a prompt reading `resume <thread>` is none.
         let mut found = table.iter().filter(|process| {
             !launchers.contains(&process.pid)
                 && procinfo::codex_resumes(&process.argv, thread)
+                && arguments(process.pid).is_some_and(|argv| procinfo::codex_resumes(&argv, thread))
                 && cwd(process.pid)
                     .and_then(|dir| dir.canonicalize().ok())
                     .as_ref()
@@ -368,6 +384,9 @@ async fn bind_terminal<B: super::Backend>(
             None => {
                 let mut spec = agent.spec.clone();
                 spec.labels.insert("session_id".into(), thread.to_owned());
+                // Joined as the terminal's own registration, not adopted
+                // again: an adoption of a registered process is refused.
+                spec.labels.remove("adopted");
                 spec
             }
         },
@@ -554,22 +573,32 @@ mod tests {
         let elsewhere = tempfile::tempdir().unwrap();
         let (mut context, _, _) = fixture();
         context.cwd = project.path().canonicalize().unwrap();
-        let process = |pid, ppid, line: &str| procinfo::Process {
-            pid,
-            ppid,
-            argv: line.split(' ').map(str::to_owned).collect(),
-        };
-        let mut table = vec![
-            process(
+        // What `ps` shows; 105's own arguments are one prompt that reads
+        // like a resume once `ps` joins it.
+        let lines = std::collections::BTreeMap::from([
+            (
                 99,
-                1,
                 "node /lib/@openai/codex/bin/codex.js resume root-thread",
             ),
-            process(100, 99, "codex resume root-thread --yolo"),
-            process(101, 1, "codex resume root-thread"),
-            process(102, 1, "codex resume another-thread"),
-            process(103, 1, "codex"),
-        ];
+            (100, "codex resume root-thread --yolo"),
+            (101, "codex resume root-thread"),
+            (102, "codex resume another-thread"),
+            (103, "codex"),
+            (104, "codex resume root-thread"),
+            (105, "codex resume root-thread"),
+        ]);
+        let process = |pid: u32| procinfo::Process {
+            pid,
+            ppid: if pid == 100 { 99 } else { 1 },
+            argv: lines[&pid].split(' ').map(str::to_owned).collect(),
+        };
+        let whole = |pid: u32| {
+            Some(if pid == 105 {
+                vec!["codex".to_owned(), "resume root-thread".to_owned()]
+            } else {
+                lines.get(&pid)?.split(' ').map(str::to_owned).collect()
+            })
+        };
         let born = Utc::now();
         let cwd = |pid| {
             Some(if pid == 101 {
@@ -578,23 +607,42 @@ mod tests {
                 project.path().to_owned()
             })
         };
+        let mut table: Vec<_> = [99, 100, 101, 102, 103, 105].map(process).into();
         let found = context
-            .terminal(&table, "root-thread", cwd, |_| Some(born))
+            .terminal(&table, "root-thread", cwd, whole, |_| Some(born))
             .unwrap();
         assert_eq!(
             (found.pid, found.started_at),
             (100, born),
-            "not its launcher"
+            "not its launcher, another checkout's, another thread's or a prompt"
         );
         let none = context
-            .terminal(&table, "child-thread", cwd, |_| Some(born))
+            .terminal(&table, "child-thread", cwd, whole, |_| Some(born))
             .unwrap_err();
         assert!(unbound(&none), "{none:#}");
-        table.push(process(104, 1, "codex resume root-thread"));
+        // Unreadable arguments prove nothing.
+        let unreadable = context
+            .terminal(&table, "root-thread", cwd, |_| None, |_| Some(born))
+            .unwrap_err();
+        assert!(unbound(&unreadable));
+        table.push(process(104));
         let twice = context
-            .terminal(&table, "root-thread", cwd, |_| Some(born))
+            .terminal(&table, "root-thread", cwd, whole, |_| Some(born))
             .unwrap_err();
         assert!(!unbound(&twice), "two terminals are refused, not unbound");
+    }
+
+    /// A dedicated server earns authority only through an accepted binding:
+    /// a terminal is never found for it, and nothing is asked of the daemon.
+    #[tokio::test]
+    async fn a_dedicated_host_never_finds_a_terminal() {
+        use crate::client::mock::Mock;
+        let (mut context, _, meta) = fixture();
+        context.profile = None;
+        let backend = Mock::with(vec![]);
+        let refused = context.resolve_terminal(&backend, &meta).await.unwrap_err();
+        assert!(unbound(&refused));
+        assert!(backend.requests().is_empty());
     }
 
     #[tokio::test]
@@ -650,6 +698,24 @@ mod tests {
             Request::Register { spec, pid: Some(80494), session: None }
                 if spec.name == "codex-release"
                     && spec.labels.get("session_id").map(String::as_str) == Some("root-thread")
+        ));
+
+        // An adopted terminal joins as its own registration, not adopted
+        // again, which the daemon would refuse for a registered process.
+        let mut adopted = record("codex-release", None);
+        adopted.spec.labels.insert("adopted".into(), "true".into());
+        let backend = Mock::with(vec![
+            listed(vec![adopted]),
+            Response::Agent {
+                agent: folded.clone(),
+            },
+        ]);
+        bind_terminal(&backend, &terminal, "root-thread", checkout)
+            .await
+            .unwrap();
+        assert!(matches!(
+            &backend.requests()[1],
+            Request::Register { spec, .. } if !spec.labels.contains_key("adopted")
         ));
 
         // Already bound: nothing is registered.

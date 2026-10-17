@@ -176,6 +176,22 @@ pub fn cwd(pid: u32) -> Option<PathBuf> {
     imp::cwd(pid)
 }
 
+/// Another process's own arguments, each whole. `ps` prints them joined by
+/// spaces, so one argument with a space in it — a prompt — reads there as
+/// several: a command line offered as proof of anything is read from here.
+/// `None` when they cannot be read.
+pub fn arguments(pid: u32) -> Option<Vec<String>> {
+    #[cfg(windows)]
+    {
+        // The process table keeps each argument whole on Windows.
+        inspect(pid).map(|process| process.argv)
+    }
+    #[cfg(not(windows))]
+    {
+        imp::arguments(pid)
+    }
+}
+
 /// One row of the process table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Process {
@@ -463,36 +479,87 @@ pub fn resume_request(argv: &[String]) -> Option<ResumeRequest> {
 }
 
 /// Whether a Codex command line resumed exactly `thread`:
-/// `codex [options] resume <thread> [options]`. Codex 0.162 and later run a
-/// terminal session's hooks and MCP servers in one shared app-server, not
-/// under the terminal, so this is how a hook that names its thread finds
-/// the terminal it belongs to. Like [`resume_request`], a claim about what
-/// the process asked for, which the hook carrying that thread confirms.
+/// `codex [options] resume [options] <thread> [prompt] [options]`. Codex 0.162
+/// and later run a terminal session's hooks and MCP servers in one shared
+/// app-server, not under the terminal, so this is how a hook that names its
+/// thread finds the terminal it belongs to. Like [`resume_request`], a claim
+/// about what the process asked for, which the hook carrying that thread
+/// confirms; read it from [`arguments`], whose words are whole. Only Codex
+/// 0.163's options are known: any other shape (`--last`, an `--image` list,
+/// an option it does not have) is not taken for a resume.
 pub fn codex_resumes(argv: &[String], thread: &str) -> bool {
+    // Options that take a value, the next word unless it follows `=`.
+    const VALUES: [&str; 18] = [
+        "-c",
+        "--config",
+        "--enable",
+        "--disable",
+        "--remote",
+        "--remote-auth-token-env",
+        "-m",
+        "--model",
+        "--local-provider",
+        "-p",
+        "--profile",
+        "-s",
+        "--sandbox",
+        "-C",
+        "--cd",
+        "--add-dir",
+        "-a",
+        "--ask-for-approval",
+    ];
+    // `--yolo` is the bypass flag's hidden spelling.
+    const FLAGS: [&str; 13] = [
+        "--strict-config",
+        "--oss",
+        "--approve-for-me",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--yolo",
+        "--full-auto",
+        "--dangerously-bypass-hook-trust",
+        "--worktree",
+        "--search",
+        "--no-alt-screen",
+        "--no-daemon",
+        "--all",
+        "--include-non-interactive",
+    ];
     if thread.is_empty() || !is_codex_binary(argv) {
         return false;
     }
     let script = executable(argv).as_deref().is_some_and(interpreter);
     let mut words = argv.iter().skip(if script { 2 } else { 1 });
-    // A value may follow an option that does not carry its own (`-c k=v`).
-    let mut value_may_follow = false;
+    let mut resumed = false;
     while let Some(word) = words.next() {
         if word == "--" {
             return false;
         }
-        if word == "resume" {
-            return words.next().is_some_and(|next| next == thread);
+        if word.starts_with('-') && word.len() > 1 {
+            let (name, inline) = match word.split_once('=') {
+                Some((name, _)) => (name, true),
+                None => (word.as_str(), false),
+            };
+            if VALUES.contains(&name) {
+                if !inline && words.next().is_none() {
+                    return false;
+                }
+                continue;
+            }
+            if FLAGS.contains(&name) && !inline {
+                continue;
+            }
+            return false;
         }
-        if word.starts_with('-') {
-            value_may_follow = !word.contains('=');
+        if !resumed {
+            if word != "resume" {
+                return false;
+            }
+            resumed = true;
             continue;
         }
-        if value_may_follow {
-            value_may_follow = false;
-            continue;
-        }
-        // Another subcommand, or a prompt: not a resume.
-        return false;
+        // The first word after `resume` that is not an option is its session.
+        return word == thread;
     }
     false
 }
@@ -547,6 +614,57 @@ mod imp {
     use std::path::PathBuf;
 
     use chrono::{DateTime, Utc};
+
+    /// `KERN_PROCARGS2`: the argument count, the executable's path and its
+    /// padding, then each argument ending in a NUL.
+    pub fn arguments(pid: u32) -> Option<Vec<String>> {
+        let pid = libc::c_int::try_from(pid).ok()?;
+        let mut name = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+        let mut size: libc::size_t = 0;
+        // SAFETY: a null buffer asks only for the size it would take.
+        let asked = unsafe {
+            libc::sysctl(
+                name.as_mut_ptr(),
+                3,
+                std::ptr::null_mut(),
+                &raw mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if asked != 0 || size < 4 {
+            return None;
+        }
+        let mut buffer = vec![0u8; size];
+        // SAFETY: the buffer holds `size` bytes, as the kernel is told.
+        let read = unsafe {
+            libc::sysctl(
+                name.as_mut_ptr(),
+                3,
+                buffer.as_mut_ptr().cast::<libc::c_void>(),
+                &raw mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if read != 0 {
+            return None;
+        }
+        buffer.truncate(size);
+        let count = usize::try_from(i32::from_ne_bytes(buffer.get(..4)?.try_into().ok()?)).ok()?;
+        let rest = &buffer[4..];
+        let mut at = rest.iter().position(|b| *b == 0)?;
+        while rest.get(at) == Some(&0) {
+            at += 1;
+        }
+        let arguments: Vec<String> = rest
+            .get(at..)?
+            .split(|b| *b == 0)
+            .take(count)
+            .map(|argument| String::from_utf8_lossy(argument).into_owned())
+            .collect();
+        (arguments.len() == count).then_some(arguments)
+    }
 
     pub fn cwd(pid: u32) -> Option<PathBuf> {
         let pid = i32::try_from(pid).ok()?;
@@ -610,6 +728,16 @@ mod imp {
 
     use chrono::{DateTime, Duration, Utc};
 
+    pub fn arguments(pid: u32) -> Option<Vec<String>> {
+        let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        let raw = raw.strip_suffix(&[0]).unwrap_or(&raw);
+        (!raw.is_empty()).then(|| {
+            raw.split(|b| *b == 0)
+                .map(|argument| String::from_utf8_lossy(argument).into_owned())
+                .collect()
+        })
+    }
+
     pub fn cwd(pid: u32) -> Option<PathBuf> {
         std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
     }
@@ -646,6 +774,10 @@ mod imp {
     use std::path::PathBuf;
 
     use chrono::{DateTime, Utc};
+
+    pub fn arguments(_pid: u32) -> Option<Vec<String>> {
+        None
+    }
 
     pub fn cwd(_pid: u32) -> Option<PathBuf> {
         None
@@ -843,8 +975,9 @@ mod tests {
                 "/opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex resume {thread} --yolo"
             ),
             format!("codex --yolo resume {thread}"),
+            format!("codex resume --yolo {thread}"),
             format!("codex -c model=gpt-x resume {thread}"),
-            format!("codex --model=gpt-x resume {thread}"),
+            format!("codex --model=gpt-x resume -s workspace-write {thread} fix-it"),
             format!("node /usr/lib/node_modules/@openai/codex/bin/codex.js resume {thread}"),
         ] {
             assert!(codex_resumes(&argv(&resumed), thread), "{resumed}");
@@ -855,12 +988,35 @@ mod tests {
             "codex".to_owned(),
             format!("codex fix the resume {thread}"),
             format!("codex exec resume {thread}"),
+            format!("codex --search exec resume {thread}"),
+            format!("codex --profile resume {thread}"),
+            format!("codex -i a.png resume {thread}"),
+            format!("codex --unknown resume {thread}"),
             format!("codex -- resume {thread}"),
             format!("claude --resume {thread}"),
         ] {
             assert!(!codex_resumes(&argv(&other), thread), "{other}");
         }
+        // One argument with a space in it is a prompt, not a subcommand.
+        let prompt = vec!["codex".to_owned(), format!("resume {thread}")];
+        assert!(!codex_resumes(&prompt, thread));
         assert!(!codex_resumes(&argv("codex resume "), ""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_process_arguments_are_read_whole() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "read -r held", "sh", "resume one-thread"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let read = arguments(child.id());
+        drop(child.stdin.take());
+        let _ = child.wait();
+        let read = read.expect("our own child's arguments");
+        assert_eq!(read.last().map(String::as_str), Some("resume one-thread"));
+        assert_eq!(&read[1..3], ["-c", "read -r held"]);
     }
 
     #[test]
