@@ -157,7 +157,9 @@ or ended with messages no model took is not a decision for you, so it is not
 here: its row's amber dot marks it, with the reason in its spoken name, and
 opening it shows the details — a provider's limit is an amber hourglass whose
 tooltip says when it lifts on your own clock (*Usage limit resets in 42 min
-(15:00)*), beside **Resume delivery**; an ended session's kept messages are an
+(15:00)*), or for a passing provider outage, which AgentDocker tries again by itself
+(*Provider unavailable · tries again at 14:31*), beside **Resume delivery**; an
+ended session's kept messages are an
 inbox glyph with their count; **Review delivery** opens
 a live session's paused delivery and **Dismiss** puts away an ended one's notice, which
 leaves the messages as they are.
@@ -179,7 +181,8 @@ sending again. Until the daemon takes it the note is saved with the drafts as
 that message-box text, so a window closed meanwhile shows it there on
 reopening, never sent again by itself (the provider's own answer is still
 exactly Deny; Allow sends no words). A command a live session asks to run is answered in the row itself:
-**Deny** and **Allow once** send the same exact answer as the Inbox card, with
+**Deny** and **Allow once**, and **Allow for session** where Codex offers it
+and the window is wide enough, send the same exact answer as the Inbox card, with
 the command in the row's words; file changes, which must be looked at first,
 and every other question open with **Answer**. The first three items are shown; **Show N more** expands the same list and
 **Show fewer** collapses it. When nobody needs an answer or delivery review, the

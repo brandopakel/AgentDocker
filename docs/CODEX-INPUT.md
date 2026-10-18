@@ -686,7 +686,9 @@ other programs running as the same OS user.
 ## Questions and approvals
 
 In Inbox, command requests show the command, folder and reason with **Allow once**
-and **Deny** controls. Multiple-choice questions offer buttons and a text field
+and **Deny** controls, and **Allow for session** where Codex offers it: its
+`acceptForSession`, which lets the same command through without asking until that
+Codex session ends. Multiple-choice questions offer buttons and a text field
 for a different answer. These choices use the existing human answer queue, retain
 other question drafts and become unavailable when the question closes or expires.
 A Codex approval or question waits up to 24 hours for the person, as Codex's own
@@ -804,7 +806,8 @@ Natural provider parallelism, ordinary-first runtime and final-package/account
 acceptance remain open.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
-file operations and offers **Review changes**, **Allow once** and **Deny**.
+file operations and offers **Review changes**, **Allow once**, **Allow for session**
+and **Deny**.
 Allow becomes available after opening the complete diff; Deny remains available
 without that extra step. The fallback question retains the same paths, rename
 destination, complete diffs, directory and reason. No diff is silently truncated.
@@ -820,7 +823,9 @@ uncertain review; it does not invent a confirmed cancellation or discard a
 possibly transmitted approval. Restart continues to require review of that
 retained uncertainty. Turn completion discards old item snapshots. Non-null `grantRoot`
 is refused because it can describe session-wide write authority. Allow sends
-only `accept`; it never sends `acceptForSession`. Empty diffs are currently
+`accept`; **Allow for session** sends `acceptForSession`, which Codex takes for any
+file change: later changes to the same files apply without asking until that
+Codex session ends. Both wait for the complete diff to be opened. Empty diffs are currently
 refused. File presentations and their receipts require delivery-record version
 6; an older record cannot claim to contain them. The [file-review trial](verification/INDEX.md)
 passed 848 Rust tests, 65 Python checks and 19 native review/draft/restart steps.
@@ -834,9 +839,10 @@ retention of uncertain approval records.
 Schema 16 adds concrete permission requests to the same Inbox review. The card
 shows the directory, reason, each read/write/excluded path and requested network
 access. **Allow for this turn** sends exactly the reviewed permission profile with
-`scope: "turn"`; **Deny** sends an empty profile with the same scope. Only exact
-human `Allow` grants access. Neither choice requests session scope or overrides
-Codex's configured automatic review policy.
+`scope: "turn"`, and **Allow for session** the same profile with `scope: "session"`;
+**Deny** sends an empty profile for the turn. Only an exact human Allow or Allow
+for session grants access, and no choice overrides Codex's configured automatic
+review policy.
 
 The bounded parser accepts concrete absolute paths in legacy `read`/`write`
 lists or typed `entries`, including explicit deny entries. It rejects unknown

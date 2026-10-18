@@ -326,10 +326,14 @@ pub fn event_line(event: &Event) -> String {
         } => format!(
             "provider availability   {} {}",
             agent.short(),
-            availability
-                .issue
-                .as_ref()
-                .map_or("delivery resumed", |issue| issue.kind.label())
+            availability.issue.as_ref().map_or(
+                if availability.retries > 0 {
+                    "retrying the provider"
+                } else {
+                    "delivery resumed"
+                },
+                |issue| issue.kind.label()
+            )
         ),
         EventKind::ContestOpened {
             contest,

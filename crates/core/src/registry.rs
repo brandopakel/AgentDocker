@@ -512,6 +512,7 @@ mod tests {
             observed_at: blocked.created_at,
             issue: Some(crate::ProviderIssue::local(crate::ProviderIssueKind::Usage)),
             cleared_observation: None,
+            retries: 0,
         });
         let current = record("current");
         registry.insert(blocked.clone()).unwrap();

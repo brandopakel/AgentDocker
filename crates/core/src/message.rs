@@ -171,6 +171,12 @@ pub enum AnswerRoute {
     Queue,
 }
 
+/// The answer that approves a Codex request and lets Codex do the same again
+/// without asking until its session ends: Codex's own `acceptForSession`, or
+/// a permission granted for the session rather than the turn. Offered only
+/// where Codex offers it (`for_session`).
+pub const ALLOW_FOR_SESSION: &str = "Allow for session";
+
 /// Explicit controls for a human question. The fallback text must describe the
 /// same choice, so native and terminal clients review the same request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,16 +197,23 @@ pub enum QuestionPresentation {
         command: String,
         cwd: String,
         reason: String,
+        /// Codex offers to allow it for the rest of its session too.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        for_session: bool,
     },
     CodexFiles {
         cwd: String,
         reason: String,
         changes: Vec<QuestionFileChange>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        for_session: bool,
     },
     CodexPermissions {
         cwd: String,
         reason: String,
         permissions: QuestionPermissions,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        for_session: bool,
     },
     Choices {
         question: String,
@@ -270,16 +283,26 @@ impl QuestionPresentation {
                 cwd,
                 reason,
                 permissions,
+                for_session,
             } => format!(
-                "Allow Codex this access for the current turn?\n\nDirectory: {cwd}\nReason: {reason}\n\n{}\n\nReply Allow or Deny.",
-                permissions.lines().join("\n")
+                "Allow Codex this access{}?\n\nDirectory: {cwd}\nReason: {reason}\n\n{}\n\n{}",
+                if *for_session {
+                    ""
+                } else {
+                    " for the current turn"
+                },
+                permissions.lines().join("\n"),
+                reply(*for_session, "for the current turn")
             ),
             Self::CodexCommand {
                 command,
                 cwd,
                 reason,
+                for_session,
             } => format!(
-                "Allow Codex to run this command once?\n\nDirectory: {cwd}\nCommand:\n{command}\n\nReason: {reason}\n\nReply Allow or Deny."
+                "Allow Codex to run this command{}?\n\nDirectory: {cwd}\nCommand:\n{command}\n\nReason: {reason}\n\n{}",
+                if *for_session { "" } else { " once" },
+                reply(*for_session, "once")
             ),
             Self::Choices { question, options } => {
                 let mut text = question.clone();
@@ -292,14 +315,17 @@ impl QuestionPresentation {
                 cwd,
                 reason,
                 changes,
+                for_session,
             } => {
                 let mut text = format!(
-                    "Allow Codex to apply these file changes once?\n\nDirectory: {cwd}\nReason: {reason}\n"
+                    "Allow Codex to apply these file changes{}?\n\nDirectory: {cwd}\nReason: {reason}\n",
+                    if *for_session { "" } else { " once" }
                 );
                 for change in changes {
                     text.push_str(&format!("\n{}\n{}\n", change.label(), change.diff));
                 }
-                text.push_str("\nReply Allow or Deny.");
+                text.push('\n');
+                text.push_str(&reply(*for_session, "once"));
                 text
             }
         }
@@ -338,6 +364,7 @@ impl QuestionPresentation {
                 cwd,
                 reason,
                 permissions,
+                ..
             } => {
                 bounded(cwd)
                     && !cwd.chars().any(char::is_control)
@@ -348,6 +375,7 @@ impl QuestionPresentation {
                 command,
                 cwd,
                 reason,
+                ..
             } => bounded(command) && bounded(cwd) && reason.len() <= 16_000,
             Self::Choices { question, options } => {
                 let mut labels = std::collections::HashSet::new();
@@ -365,6 +393,7 @@ impl QuestionPresentation {
                 cwd,
                 reason,
                 changes,
+                ..
             } => {
                 let path = |s: &str| bounded(s) && !s.chars().any(char::is_control);
                 let mut paths = std::collections::HashSet::new();
@@ -404,9 +433,32 @@ impl QuestionPresentation {
             Self::McpUrl { .. } => matches!(value, "Accept" | "Decline" | "Cancel"),
             Self::CodexCommand { .. } | Self::CodexFiles { .. } | Self::CodexPermissions { .. } => {
                 matches!(value, "Allow" | "Deny")
+                    || (value == ALLOW_FOR_SESSION && self.for_session())
             }
             Self::Choices { options, .. } => options.iter().any(|o| o.label == value),
         }
+    }
+
+    /// Whether Codex offered to allow this for the rest of its session.
+    pub fn for_session(&self) -> bool {
+        match self {
+            Self::CodexCommand { for_session, .. }
+            | Self::CodexFiles { for_session, .. }
+            | Self::CodexPermissions { for_session, .. } => *for_session,
+            _ => false,
+        }
+    }
+}
+
+/// How a Codex approval says it is answered: Allow `once` or Deny, and
+/// Allow for session where Codex offers it.
+fn reply(for_session: bool, once: &str) -> String {
+    if for_session {
+        format!(
+            "Reply Allow ({once}), {ALLOW_FOR_SESSION} (this and the same again without asking until this Codex session ends) or Deny."
+        )
+    } else {
+        "Reply Allow or Deny.".to_owned()
     }
 }
 
@@ -632,12 +684,40 @@ mod tests {
             command: "printf hello".into(),
             cwd: "/owned".into(),
             reason: "Print the fixture token".into(),
+            for_session: false,
         };
         assert!(command.valid_for(&command.text()));
         assert!(!command.valid_for("Run a different command"));
         assert!(command.permits_choice("Allow"));
         assert!(command.permits_choice("Deny"));
         assert!(!command.permits_choice("Allow for this session"));
+        assert!(
+            !command.permits_choice(ALLOW_FOR_SESSION),
+            "only where Codex offers it"
+        );
+        assert!(command.text().contains("run this command once?"));
+        // Where Codex offers it, the session is a third answer, and the
+        // text names it as the buttons do.
+        let session = QuestionPresentation::CodexCommand {
+            command: "printf hello".into(),
+            cwd: "/owned".into(),
+            reason: "Print the fixture token".into(),
+            for_session: true,
+        };
+        assert!(session.valid_for(&session.text()));
+        assert!(!session.valid_for(&command.text()), "the text says which");
+        assert!(session.permits_choice(ALLOW_FOR_SESSION));
+        assert!(session.permits_choice("Allow") && session.permits_choice("Deny"));
+        assert!(session.text().contains(ALLOW_FOR_SESSION));
+        // Stored without the flag, as every question before it was, and
+        // read back from that.
+        let stored = serde_json::to_value(&command).unwrap();
+        assert!(stored.get("for_session").is_none());
+        assert_eq!(
+            serde_json::from_value::<QuestionPresentation>(stored).unwrap(),
+            command
+        );
+        assert_eq!(serde_json::to_value(&session).unwrap()["for_session"], true);
         let option = QuestionOption {
             label: "Blue".into(),
             description: "Use the blue theme".into(),
@@ -677,6 +757,7 @@ mod tests {
             command: "x".repeat(16_001),
             cwd: "/owned".into(),
             reason: String::new(),
+            for_session: false,
         };
         assert!(!huge.valid_for(&huge.text()));
     }

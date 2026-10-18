@@ -70,18 +70,48 @@ impl State {
                 }) {
                     return Response::Ok; // Repeated limit signals do not create a notification/event storm.
                 }
+                // A failure soon after an automatic retry is that retry
+                // failing: the next one waits longer.
+                let retries = previous
+                    .filter(|p| {
+                        p.issue.is_none()
+                            && p.retries > 0
+                            && observed_at - p.observed_at
+                                < agentdocker_core::provider::RETRY_FAILED_WITHIN
+                    })
+                    .map_or(0, |p| p.retries);
                 ProviderAvailability {
                     process_started_at: generation,
                     observed_at,
                     issue: Some(issue),
                     cleared_observation: None,
+                    retries,
                 }
             }
             ProviderReport::Recovered { blocked_at } => {
-                if previous
-                    .is_some_and(|p| p.issue.is_none() && p.cleared_observation == Some(blocked_at))
+                if let Some(p) = previous
+                    .filter(|p| p.issue.is_none() && p.cleared_observation == Some(blocked_at))
                 {
-                    return Response::Ok;
+                    // Already clear. A lift for a retry that a turn has now
+                    // proved ends the count; anything else is a repeat.
+                    if p.retries == 0 {
+                        return Response::Ok;
+                    }
+                    let state = ProviderAvailability {
+                        process_started_at: generation,
+                        observed_at,
+                        issue: None,
+                        cleared_observation: Some(blocked_at),
+                        retries: 0,
+                    };
+                    if observed_at <= p.observed_at {
+                        return Response::error(
+                            ErrorCode::Conflict,
+                            "provider reports conflict at the same observation time",
+                        );
+                    }
+                    record.provider_availability = Some(state.clone());
+                    return self.persist_provider(record, state, false, now);
                 }
                 if !previous.is_some_and(|p| p.issue.is_some() && p.observed_at == blocked_at) {
                     return Response::error(
@@ -94,6 +124,7 @@ impl State {
                     observed_at,
                     issue: None,
                     cleared_observation: Some(blocked_at),
+                    retries: 0,
                 }
             }
         };
@@ -141,9 +172,42 @@ impl State {
             observed_at: now,
             issue: None,
             cleared_observation: Some(blocked_at),
+            retries: 0,
         };
         record.provider_availability = Some(state.clone());
         self.persist_provider(record, state, true, now)
+    }
+
+    /// Lift each live agent's own transient block whose retry is due
+    /// (`ProviderAvailability::retry_at`), so its next turn tries the
+    /// provider again. A turn that goes through clears it for good; one that
+    /// fails blocks again, and the next retry waits longer. Neither the
+    /// provider nor the person said it recovered, so the lift says it is a
+    /// retry (`retries`), never a recovery.
+    pub(super) fn retry_providers(&mut self, now: DateTime<Utc>) {
+        let due: Vec<AgentRecord> = self
+            .registry
+            .live()
+            .filter(|a| {
+                a.provider_availability
+                    .as_ref()
+                    .and_then(ProviderAvailability::retry_at)
+                    .is_some_and(|at| at <= now)
+            })
+            .cloned()
+            .collect();
+        for mut record in due {
+            let previous = record.provider_availability.clone().expect("due");
+            let state = ProviderAvailability {
+                process_started_at: previous.process_started_at,
+                observed_at: now,
+                issue: None,
+                cleared_observation: Some(previous.observed_at),
+                retries: previous.retries.saturating_add(1),
+            };
+            record.provider_availability = Some(state.clone());
+            let _ = self.persist_provider(record, state, false, now);
+        }
     }
 
     fn persist_provider(
@@ -217,6 +281,190 @@ mod tests {
             ProviderReport::Blocked { issue },
             at,
         )
+    }
+
+    /// A transport failure is retried, not waited on for ever: the block is
+    /// lifted once its retry is due, queued input goes to the next turn, a
+    /// failure soon after blocks again with a longer wait, and a turn that
+    /// goes through ends the count. A limit is never lifted this way.
+    #[test]
+    fn an_agents_own_transport_failure_is_retried_with_a_longer_wait_each_time() {
+        use agentdocker_core::provider::{RETRY_FAILED_WITHIN, RETRY_FIRST};
+        let (_dir, daemon, agent, now) = fixture("codex");
+        let mut state = lock(&daemon.state);
+        assert!(matches!(
+            state.send(
+                "user".into(),
+                Destination::Agent(agent.id.clone()),
+                "chat".into(),
+                json!({"text":"review #382"}),
+                None
+            ),
+            Response::Sent { .. }
+        ));
+        let transport = ProviderIssue::local(Kind::Transport);
+        assert!(matches!(
+            block(&mut state, &agent, transport.clone(), now),
+            Response::Ok
+        ));
+        let availability = |state: &State| {
+            state
+                .registry
+                .get(&agent.id)
+                .unwrap()
+                .provider_availability
+                .clone()
+                .unwrap()
+        };
+        state.retry_providers(now + RETRY_FIRST - Duration::seconds(1));
+        assert!(availability(&state).issue.is_some(), "not before it is due");
+        assert!(matches!(
+            state.delivery_queue(agent.id.as_str()),
+            Response::InputWaiting { queued: 1, .. }
+        ));
+        let lifted_at = now + RETRY_FIRST;
+        let seq = state.next_seq;
+        state.retry_providers(lifted_at);
+        let lifted = availability(&state);
+        assert_eq!(
+            (
+                lifted.issue.as_ref(),
+                lifted.retries,
+                lifted.cleared_observation
+            ),
+            (None, 1, Some(now)),
+            "lifted as a retry, not a recovery"
+        );
+        assert!(
+            state.next_seq > seq,
+            "the lift is an availability change like any other"
+        );
+        assert!(
+            matches!(state.delivery_queue(agent.id.as_str()), Response::Messages { messages } if messages.len() == 1),
+            "the next turn takes the queued input"
+        );
+        // That turn fails too: blocked again, and the next retry waits twice
+        // as long.
+        let failed_at = lifted_at + Duration::seconds(20);
+        assert!(failed_at - lifted_at < RETRY_FAILED_WITHIN);
+        assert!(matches!(
+            block(&mut state, &agent, transport.clone(), failed_at),
+            Response::Ok
+        ));
+        assert_eq!(availability(&state).retries, 1);
+        assert_eq!(
+            availability(&state).retry_at(),
+            Some(failed_at + RETRY_FIRST * 2)
+        );
+        state.retry_providers(failed_at + RETRY_FIRST);
+        assert!(availability(&state).issue.is_some(), "waits longer now");
+        state.retry_providers(failed_at + RETRY_FIRST * 2);
+        assert_eq!(availability(&state).retries, 2);
+        // The turn after that lift goes through: its success names the
+        // lifted observation and ends the count, so a fresh failure soon
+        // after starts from the first wait again.
+        let lifted = availability(&state);
+        let succeeded_at = lifted.observed_at + Duration::seconds(30);
+        assert!(matches!(
+            state.report_provider(
+                agent.id.as_str(),
+                agent.process_started_at.unwrap(),
+                succeeded_at,
+                ProviderReport::Recovered {
+                    blocked_at: lifted.cleared_observation.unwrap(),
+                },
+                succeeded_at,
+            ),
+            Response::Ok
+        ));
+        assert_eq!(
+            (
+                availability(&state).issue.as_ref(),
+                availability(&state).retries
+            ),
+            (None, 0)
+        );
+        // A late success naming that lift again changes nothing.
+        let seq = state.next_seq;
+        assert!(matches!(
+            state.report_provider(
+                agent.id.as_str(),
+                agent.process_started_at.unwrap(),
+                succeeded_at + Duration::seconds(1),
+                ProviderReport::Recovered {
+                    blocked_at: lifted.cleared_observation.unwrap(),
+                },
+                succeeded_at + Duration::seconds(1),
+            ),
+            Response::Ok
+        ));
+        assert_eq!(state.next_seq, seq);
+        let fresh = succeeded_at + Duration::seconds(10);
+        assert!(matches!(
+            block(&mut state, &agent, transport.clone(), fresh),
+            Response::Ok
+        ));
+        assert_eq!(availability(&state).retry_at(), Some(fresh + RETRY_FIRST));
+        // A success naming an older lift cannot clear this newer block.
+        assert!(matches!(
+            state.report_provider(
+                agent.id.as_str(),
+                agent.process_started_at.unwrap(),
+                fresh + Duration::seconds(1),
+                ProviderReport::Recovered {
+                    blocked_at: lifted.cleared_observation.unwrap(),
+                },
+                fresh + Duration::seconds(1),
+            ),
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        state.retry_providers(fresh + RETRY_FIRST);
+        // A standing block's own recovery ends it, and a later failure
+        // starts from the first wait again.
+        let blocked_at = fresh + RETRY_FIRST + Duration::seconds(5);
+        assert!(matches!(
+            block(&mut state, &agent, transport.clone(), blocked_at),
+            Response::Ok
+        ));
+        let recovered_at = blocked_at + Duration::seconds(5);
+        assert!(matches!(
+            state.report_provider(
+                agent.id.as_str(),
+                agent.process_started_at.unwrap(),
+                recovered_at,
+                ProviderReport::Recovered { blocked_at },
+                recovered_at,
+            ),
+            Response::Ok
+        ));
+        assert_eq!(availability(&state).retries, 0);
+        let much_later = recovered_at + RETRY_FAILED_WITHIN + Duration::seconds(1);
+        assert!(matches!(
+            block(&mut state, &agent, transport, much_later),
+            Response::Ok
+        ));
+        assert_eq!(
+            availability(&state).retry_at(),
+            Some(much_later + RETRY_FIRST)
+        );
+        // A limit waits for the provider or the person, however long.
+        assert!(matches!(
+            block(
+                &mut state,
+                &agent,
+                ProviderIssue::local(Kind::Usage),
+                much_later + Duration::seconds(1)
+            ),
+            Response::Ok
+        ));
+        state.retry_providers(much_later + Duration::days(2));
+        assert_eq!(
+            availability(&state).issue.as_ref().map(|i| i.kind),
+            Some(Kind::Usage)
+        );
     }
 
     #[test]

@@ -381,6 +381,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             daemon.expire_leases();
             daemon.flush_notices();
             daemon.check_liveness();
+            daemon.retry_providers();
             daemon.resume_restarts();
             daemon.tend_controllers();
             // A `stat` per policy file, so editing one takes effect
