@@ -420,8 +420,8 @@ enum Msg {
     /// One card in full, or why it could not be read.
     TaskDetail(agentdocker_core::TaskId, Result<Box<CardDetail>, String>),
     Workspace(String, Result<Box<Workspace>, String>),
-    /// A project's roles, or none from a daemon that has no palette.
-    Palette(String, Option<Vec<agentdocker_core::RoleDef>>),
+    /// What reading a project's roles came back with.
+    Palette(String, PaletteRead),
     BoardActed(String, Result<(), String>),
     Todo(Result<Vec<agentdocker_core::Task>, String>),
     Plan(Result<Box<(agentdocker_core::Plan, Vec<agentdocker_core::Task>)>, String>),
@@ -1402,9 +1402,18 @@ impl App {
                     }
                     Err(error) => self.say(error),
                 },
-                Msg::Palette(project, roles) => {
-                    self.palettes.insert(project, roles);
-                }
+                Msg::Palette(project, read) => match read {
+                    PaletteRead::Roles(roles) => {
+                        self.palettes.insert(project, Some(roles));
+                    }
+                    PaletteRead::Unsupported => {
+                        self.palettes.insert(project, None);
+                    }
+                    // Kept as it was, and asked again with the next list.
+                    PaletteRead::Failed => {
+                        self.palettes_asked.remove(&project);
+                    }
+                },
                 Msg::BoardActed(project, result) => {
                     if let Err(error) = result {
                         self.say(error);
@@ -1589,6 +1598,9 @@ impl App {
                 Msg::Connected => {
                     if self.connected.is_err() {
                         self.connected = Ok(());
+                        // Another daemon, perhaps: every palette is asked
+                        // again with the next list, kept until it answers.
+                        self.palettes_asked.clear();
                         for cmd in [
                             Cmd::Ping,
                             Cmd::Me,
@@ -1988,8 +2000,16 @@ impl App {
             }
             // The event names a project by id, not root: every palette
             // read is read again, a handful of small reads.
+            // A read still on its way may hold the old roles; asked again
+            // after it, the newer read is the one that lands.
             EventKind::RoleChanged { .. } => {
-                for project in self.palettes.keys().cloned().collect::<Vec<_>>() {
+                let projects: BTreeSet<String> = self
+                    .palettes
+                    .keys()
+                    .chain(self.palettes_asked.iter())
+                    .cloned()
+                    .collect();
+                for project in projects {
                     self.send(Cmd::Palette(project));
                 }
             }
@@ -3511,13 +3531,19 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Some(Msg::Workspace(project, result))
         }
         Cmd::Palette(project) => {
-            let roles = match client.call(&Request::RoleCatalog {
+            let read = match client.call(&Request::RoleCatalog {
                 project: Some(project.clone()),
             }) {
-                Ok(Response::RoleCatalog { roles }) => Some(roles),
-                _ => None,
+                Ok(Response::RoleCatalog { roles }) => PaletteRead::Roles(roles),
+                // An older daemon cannot read the request at all.
+                Ok(Response::Error {
+                    code: agentdocker_core::protocol::ErrorCode::Invalid,
+                    message,
+                    ..
+                }) if message.starts_with("malformed request") => PaletteRead::Unsupported,
+                _ => PaletteRead::Failed,
             };
-            Some(Msg::Palette(project, roles))
+            Some(Msg::Palette(project, read))
         }
         Cmd::BoardAct { project, request } => {
             let result = match client.call(&request) {
@@ -4548,6 +4574,16 @@ pub(crate) struct CardDetail {
     pub children: Vec<agentdocker_core::Task>,
     pub plan: Option<agentdocker_core::Plan>,
     pub files: Vec<agentdocker_core::ProjectFile>,
+}
+
+/// What reading a project's roles came back with: the roles, a daemon
+/// that has no palette (it cannot read the request), or a read that
+/// failed and is to be tried again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PaletteRead {
+    Roles(Vec<agentdocker_core::RoleDef>),
+    Unsupported,
+    Failed,
 }
 
 /// A project's tags, rules, plans (without bodies) and files.

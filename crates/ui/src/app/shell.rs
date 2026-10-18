@@ -5174,11 +5174,71 @@ mod tests {
         messages.send(Msg::Agents(agents, BTreeMap::new())).unwrap();
         app.drain();
         assert!(palettes_asked(&commands).is_empty(), "asked once each");
+        // A role changes while the first reads are on their way: they are
+        // asked again, so an old answer is not the last.
+        app.on_event(Event::new(
+            EventKind::RoleChanged {
+                project: agentdocker_core::ProjectId::from("a"),
+                role: "reviewer".into(),
+                by: "user".into(),
+                deleted: false,
+            },
+            Utc::now(),
+        ));
+        assert_eq!(
+            palettes_asked(&commands),
+            BTreeSet::from(["/work/a".to_owned(), "/work/b".to_owned()])
+        );
+        // A read that failed keeps what was there and is asked again with
+        // the next list; one a daemon cannot read means no roles there.
         messages
-            .send(Msg::Palette("/work/a".into(), Some(Vec::new())))
+            .send(Msg::Palette(
+                "/work/a".into(),
+                PaletteRead::Roles(Vec::new()),
+            ))
             .unwrap();
         messages
-            .send(Msg::Palette("/work/b".into(), Some(Vec::new())))
+            .send(Msg::Palette("/work/a".into(), PaletteRead::Failed))
+            .unwrap();
+        messages
+            .send(Msg::Palette("/work/b".into(), PaletteRead::Unsupported))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.palettes.get("/work/a"), Some(&Some(Vec::new())));
+        assert_eq!(app.palettes.get("/work/b"), Some(&None));
+        messages
+            .send(Msg::Agents(
+                vec![agent("a", "/work/a"), agent("b", "/work/b")],
+                BTreeMap::new(),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            palettes_asked(&commands),
+            BTreeSet::from(["/work/a".to_owned()]),
+            "the failed one again, not the answered one"
+        );
+        // A reconnect asks every palette again with its next list.
+        app.connected = Err("gone".into());
+        messages.send(Msg::Connected).unwrap();
+        app.drain();
+        let _ = palettes_asked(&commands);
+        messages
+            .send(Msg::Agents(
+                vec![agent("a", "/work/a"), agent("b", "/work/b")],
+                BTreeMap::new(),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            palettes_asked(&commands),
+            BTreeSet::from(["/work/a".to_owned(), "/work/b".to_owned()])
+        );
+        messages
+            .send(Msg::Palette(
+                "/work/b".into(),
+                PaletteRead::Roles(Vec::new()),
+            ))
             .unwrap();
         app.drain();
         // Project A on view; a role in B changes.
