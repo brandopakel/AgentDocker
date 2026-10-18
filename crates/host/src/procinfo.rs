@@ -903,7 +903,7 @@ mod tests {
             "node /x/@anthropic-ai/claude-code/cli.js daemon run",
             "node /x/@anthropic-ai/claude-code/cli.js bg-spare",
             "claude bg-spare --bg-spare /tmp/cc-daemon-501/x/spare/y.claim.sock",
-            "claude attach ef93b626",
+            "claude attach 052344f7",
             "/Users/p/.local/bin/claude agents",
         ] {
             assert_eq!(runtime_of(&argv(command)), None, "{command}");
@@ -915,7 +915,7 @@ mod tests {
             Some("Claude Code's bridge for the browser extension")
         );
         assert!(
-            helper_of(&argv("claude attach ef93b626"))
+            helper_of(&argv("claude attach 052344f7"))
                 .map(|h| h.role)
                 .is_some_and(|role| role.contains("terminal attached"))
         );

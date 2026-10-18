@@ -8574,11 +8574,11 @@ mod tests {
         let daemon = open(&dir);
         let me = std::process::id();
 
-        let hooks = register_here(&daemon, "claude-2c79ae10", Some(me)).await;
+        let hooks = register_here(&daemon, "claude-63bc3dca", Some(me)).await;
         let mcp = register_here(&daemon, "claude-code-45856", Some(me)).await;
         assert_eq!(mcp.id, hooks.id, "the second half is the first half");
         assert_eq!(
-            mcp.spec.name, "claude-2c79ae10",
+            mcp.spec.name, "claude-63bc3dca",
             "and keeps the name the first half registered"
         );
         assert_eq!(
@@ -8810,7 +8810,7 @@ mod tests {
         // MCP registers, hooks joins the same record, and the session
         // takes a lease and is sent something.
         let mcp = register("claude-code-45856", None).await;
-        let hooks = register("claude-2c79ae10", Some("session-a")).await;
+        let hooks = register("claude-63bc3dca", Some("session-a")).await;
         assert_eq!(hooks.id, mcp.id);
         // The name that survives is the first registrar's, so the hooks
         // half is answered as `claude-code-45856` however it asked. That
@@ -9812,7 +9812,7 @@ mod tests {
         let daemon = open(&dir);
         let me = std::process::id();
 
-        let hooks = register_here(&daemon, "claude-2c79ae10", Some(me)).await;
+        let hooks = register_here(&daemon, "claude-63bc3dca", Some(me)).await;
         let stale = {
             // Built by hand, so everything registration would have
             // filled in has to be filled in here — including the
@@ -9910,8 +9910,8 @@ mod tests {
     /// then the session's Bash tool `cd`'d into a subdirectory, and Claude
     /// Code reports that as every later hook's `cwd`. Identity required the
     /// two halves to agree on the directory, so the next hook registered a
-    /// second agent for the same process and session — the `claude-83083752`
-    /// beside `claude-code-2923`, and `claude-25010eef` beside
+    /// second agent for the same process and session — the `claude-c960824c`
+    /// beside `claude-code-2923`, and `claude-1606cc8b` beside
     /// `claude-code-19625`, that made the desktop count three sessions
     /// where there were two, and five where there was one.
     #[tokio::test]
@@ -9930,15 +9930,15 @@ mod tests {
         let started = agent(
             register_session(
                 &daemon,
-                "claude-83083752",
+                "claude-c960824c",
                 checkout.path(),
-                Some("83083752"),
+                Some("c960824c"),
             )
             .await,
         );
         assert_eq!(started.id, mcp.id, "the hooks half joins at the launch");
         let moved_hook =
-            agent(register_session(&daemon, "claude-83083752", &moved, Some("83083752")).await);
+            agent(register_session(&daemon, "claude-c960824c", &moved, Some("c960824c")).await);
         assert_eq!(
             moved_hook.id, mcp.id,
             "a hook from a subdirectory is still the same session"
@@ -9982,22 +9982,22 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let drifted =
-            agent(register_session(&daemon, "claude-83083752", &moved, Some("83083752")).await);
+            agent(register_session(&daemon, "claude-c960824c", &moved, Some("c960824c")).await);
         let mcp = agent(register_session(&daemon, "claude-code-2923", checkout.path(), None).await);
         assert_ne!(mcp.id, drifted.id);
         let hook = agent(
             register_session(
                 &daemon,
-                "claude-83083752",
+                "claude-c960824c",
                 checkout.path(),
-                Some("83083752"),
+                Some("c960824c"),
             )
             .await,
         );
         assert_eq!(hook.id, mcp.id, "the transport in its checkout, as before");
         assert_eq!(
             hook.spec.labels.get("session_id").map(String::as_str),
-            Some("83083752"),
+            Some("c960824c"),
             "which learns the session"
         );
         daemon.check_liveness();
@@ -10027,7 +10027,7 @@ mod tests {
             &daemon,
             "claude-code-2923",
             checkout.path(),
-            Some("83083752"),
+            Some("c960824c"),
         )
         .await
         else {
@@ -10039,11 +10039,11 @@ mod tests {
         let drifted = {
             let mut record = AgentRecord::new(
                 AgentSpec {
-                    name: "claude-83083752".into(),
+                    name: "claude-c960824c".into(),
                     runtime: "claude-code".into(),
                     workdir: Some(moved.canonicalize().unwrap()),
                     labels: BTreeMap::from([
-                        ("session_id".into(), "83083752".into()),
+                        ("session_id".into(), "c960824c".into()),
                         ("via".into(), "hook".into()),
                     ]),
                     ..AgentSpec::default()
@@ -10089,7 +10089,7 @@ mod tests {
         assert!(daemon.is_live(&drifted.id) && daemon.is_live(&kept.id));
         // A registration meanwhile is answered by the record that stays.
         let Response::Agent { agent: answered } =
-            register_session(&daemon, "claude-83083752", &moved, Some("83083752")).await
+            register_session(&daemon, "claude-c960824c", &moved, Some("c960824c")).await
         else {
             panic!("the session's hook is answered")
         };
@@ -10124,7 +10124,7 @@ mod tests {
             daemon.recent_events(20).iter().any(|e| matches!(&e.kind,
                 EventKind::SessionDuplicatesFolded { agent, retired, session, pid }
                 if *agent == kept.id && retired == &vec![drifted.id.clone()]
-                    && session == "83083752" && Some(*pid) == kept.pid)),
+                    && session == "c960824c" && Some(*pid) == kept.pid)),
             "announced"
         );
         // Durable: reopened, the alias still resolves and the queue is whole.
@@ -10163,7 +10163,7 @@ mod tests {
             &daemon,
             "claude-code-19625",
             checkout.path(),
-            Some("25010eef"),
+            Some("1606cc8b"),
         )
         .await
         else {
@@ -10172,7 +10172,7 @@ mod tests {
         let drifted = {
             let mut record = kept.clone();
             record.id = AgentId::generate();
-            record.spec.name = "claude-25010eef".into();
+            record.spec.name = "claude-1606cc8b".into();
             record.spec.workdir = Some(moved.canonicalize().unwrap());
             record.created_at = kept.created_at + chrono::Duration::minutes(2);
             let mut state = lock(&daemon.state);
@@ -10376,7 +10376,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let me = std::process::id();
-        let mine = register_here(&daemon, "claude-2c79ae10", Some(me)).await;
+        let mine = register_here(&daemon, "claude-63bc3dca", Some(me)).await;
 
         // A different runtime in the same process is a different agent:
         // a host that runs several kinds of session in one process would

@@ -2951,7 +2951,7 @@ mod tests {
     /// the session from where the process was launched. Comparing the
     /// record's directory with the hook's `cwd` found nothing, so the hook
     /// registered a second agent for the same process from the
-    /// subdirectory (`claude-83083752` beside `claude-code-2923`), and
+    /// subdirectory (`claude-c960824c` beside `claude-code-2923`), and
     /// thereafter found whichever record matched where the shell happened
     /// to be. The process's own directory is where its records are.
     /// An opencode server serves several directories and its plugin reports
@@ -3001,7 +3001,7 @@ mod tests {
             record
         };
         let mcp = in_dir("claude-code-2923", launched.path());
-        let drifted = in_dir("claude-83083752", &moved);
+        let drifted = in_dir("claude-c960824c", &moved);
         let listed = |agents: Vec<AgentRecord>| {
             Mock::with(vec![
                 Response::error(ErrorCode::NotFound, "no such agent"),

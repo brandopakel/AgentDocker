@@ -2009,7 +2009,7 @@ mod tests {
             .handle(post(
                 "/mcp",
                 "application/json",
-                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"claude-2c8d1062","text":"the docs page says the flag was renamed"}}}"#,
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"claude-cf616fe2","text":"the docs page says the flag was renamed"}}}"#,
                 Some(&access),
             ))
             .await;
@@ -2027,7 +2027,7 @@ mod tests {
         );
         assert!(matches!(
             requests.last().unwrap(),
-            Request::Send { to, .. } if to == "claude-2c8d1062"
+            Request::Send { to, .. } if to == "claude-cf616fe2"
         ));
         let broadcast = connector
             .handle(post(

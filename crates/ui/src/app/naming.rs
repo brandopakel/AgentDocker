@@ -287,13 +287,13 @@ mod tests {
         let claude = record(
             "claude-code-1",
             "claude-code",
-            "c23201244b2b4a198029b2498d0a2590",
+            "1fc884489424f4865cbd368b31f51add",
             "/p/a",
         );
         let elsewhere = record(
             "codex-8000",
             "codex",
-            "cdadfe227a29483fa4b598a207395b6e",
+            "6ca73e29a9d8d92ea086422b7f99215f",
             "/p/b",
         );
         let agents = vec![claude.clone(), elsewhere.clone(), first.clone()];
@@ -316,18 +316,18 @@ mod tests {
         let stranger = record(
             "codex-9",
             "codex",
-            "dea064bbfcfd4617a6280bf52465f1ce",
+            "6eb0659d426b70c2a11df1f8919acaff",
             "/p/a",
         );
         assert_eq!(
             names.display(&stranger),
-            format!("Codex · {}", word_for("dea064bbfcfd4617a6280bf52465f1ce")),
+            format!("Codex · {}", word_for("6eb0659d426b70c2a11df1f8919acaff")),
             "a record the list does not hold still has its word"
         );
         let mut chosen = record(
             "reviewer",
             "codex",
-            "f083e541ef194373a41542ce03576470",
+            "4da99c61a3dcc8f9173aef1da55d01e9",
             "/p/a",
         );
         chosen
@@ -346,8 +346,8 @@ mod tests {
         let mut former = record("claude-code-9", "claude-code", "id-former", "/p/a");
         former.status = AgentStatus::Exited { code: Some(0) };
         let current = record("claude-code-9", "claude-code", "id-current", "/p/a");
-        let twin_a = record("claude-2c79ae10", "claude-code", "id-twin-a", "/p/a");
-        let twin_b = record("claude-2c79ae10", "claude-code", "id-twin-b", "/p/a");
+        let twin_a = record("claude-63bc3dca", "claude-code", "id-twin-a", "/p/a");
+        let twin_b = record("claude-63bc3dca", "claude-code", "id-twin-b", "/p/a");
         let aliases = BTreeMap::from([("id-former".to_owned(), "id-current".to_owned())]);
         let agents = vec![
             former.clone(),
@@ -385,7 +385,7 @@ mod tests {
 
     /// The daemon can hold one session twice for a while: a hook that ran
     /// from a subdirectory registered a second live record for the same
-    /// process and session (`claude-83083752` beside `claude-code-2923`),
+    /// process and session (`claude-c960824c` beside `claude-code-2923`),
     /// and the daemon folds it only once nothing would be lost. Until then
     /// the session is one row — the record that stays — and is counted
     /// once. Two sessions in one process, or records without a known
@@ -404,8 +404,8 @@ mod tests {
                 .insert("session_id".into(), session.into());
             record
         };
-        let kept = session("claude-code-2923", "id-kept", "83083752", 0);
-        let mut drifted = session("claude-83083752", "id-drifted", "83083752", 35);
+        let kept = session("claude-code-2923", "id-kept", "c960824c", 0);
+        let mut drifted = session("claude-c960824c", "id-drifted", "c960824c", 35);
         drifted.spec.workdir = Some("/p/a/artifacts/21st".into());
         let other = session("claude-0ther000", "id-other", "another-session", 40);
         let aliases = BTreeMap::new();

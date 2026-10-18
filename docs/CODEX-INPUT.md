@@ -409,7 +409,7 @@ attempts remain in the [existing evidence](verification/INDEX.md).
 The September 21 receiver-only activation replaced PID 60959 with 28370 while
 Codex PID 51242, daemon PID 92608, provider binding and token remained. After
 reading the complete original coworker audit, Codex explicitly resolved only
-`343b8636571449a0` under audit `83f6f80a3c4a49b492e3d980cd5f7ec1`.
+`343b8636571449a0` under audit `3cc654943ea63d63bee6243c8261c723`.
 That ID has no native receipt. The next original message `55360dd5dc354f89` and
 later handoffs then arrived automatically with exact native receipts. The
 receiver lives in a permanent private release directory; older version-3 CLIs
