@@ -170,6 +170,7 @@ pub(super) fn reconnect(
             issue.issue,
             agentdocker_core::SendIssue::NoReceiver | agentdocker_core::SendIssue::ReceiverSilent
         )
+        && let Some(project) = agent.project.as_ref().map(|p| p.root.clone())
     {
         return Some(
             row![
@@ -177,7 +178,7 @@ pub(super) fn reconnect(
                 action(
                     format!("reconnect-launch-{key}-{}", agent.id),
                     "Start a live Codex",
-                    Some(Message::LaunchWith("codex".into())),
+                    Some(Message::LaunchIn(project, "codex".into())),
                     false
                 ),
             ]
@@ -256,6 +257,7 @@ mod tests {
             chrono::Utc::now() - chrono::Duration::minutes(10),
         );
         agent.status = AgentStatus::Running;
+        agent.project = Some(agentdocker_core::ProjectRef::directory("/work/orchard"));
         agent
             .spec
             .labels
@@ -308,6 +310,39 @@ mod tests {
                 .iter()
                 .all(|c| !c.0.starts_with("reconnect-copy")),
             "no copy"
+        );
+    }
+
+    /// Start a live Codex opens the launch form in the session's own
+    /// project, not the one on view (Tools lists every project's sessions).
+    #[test]
+    fn a_live_codex_starts_in_the_sessions_own_project() {
+        let (tx, _commands) = super::super::queue::channel();
+        let (_messages, rx) = std::sync::mpsc::sync_channel(super::super::MESSAGE_CAPACITY);
+        let mut app = super::super::App::bare(tx, rx);
+        app.connected = Ok(());
+        for root in ["/work/a", "/work/b"] {
+            app.shell.catalog.projects.push(crate::catalog::Entry {
+                project: agentdocker_core::ProjectRef::directory(root),
+                pinned: true,
+                label: None,
+            });
+        }
+        app.shell.catalog.selected = Some("/work/a".into());
+        let _ = app.update(Message::LaunchIn("/work/b".into(), "codex".into()));
+        assert_eq!(
+            app.shell.catalog.selected.as_deref(),
+            Some(std::path::Path::new("/work/b"))
+        );
+        assert!(app.shell.launch);
+        assert_eq!(app.shell.launch_runtime.as_deref(), Some("codex"));
+        // A project not in the list is not launched into the one on view.
+        app.shell.launch = false;
+        let _ = app.update(Message::LaunchIn("/work/c".into(), "codex".into()));
+        assert!(!app.shell.launch);
+        assert_eq!(
+            app.shell.catalog.selected.as_deref(),
+            Some(std::path::Path::new("/work/b"))
         );
     }
 

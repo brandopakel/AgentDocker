@@ -257,9 +257,18 @@ pub fn claude_resume_command(agent: &AgentRecord, windows: bool) -> Option<Strin
         "claude --resume {session} --dangerously-load-development-channels server:agentdocker"
     );
     Some(if windows {
+        // PowerShell reads the curly single quotes as quotes too; each is
+        // doubled inside the literal. Claude starts only once the folder is
+        // entered: a folder that is gone runs nothing.
+        let folder: String = folder
+            .chars()
+            .flat_map(|c| {
+                let quote = matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}');
+                std::iter::once(c).chain(quote.then_some(c))
+            })
+            .collect();
         format!(
-            "Set-Location -LiteralPath '{}'; $env:AGENTDOCKER_CLAUDE_CHANNEL_INPUT='1'; {resume}",
-            folder.replace('\'', "''")
+            "if (Set-Location -LiteralPath '{folder}' -PassThru -ErrorAction SilentlyContinue) {{ $env:AGENTDOCKER_CLAUDE_CHANNEL_INPUT='1'; {resume} }}"
         )
     } else {
         format!(
@@ -317,8 +326,20 @@ mod tests {
         );
         assert_eq!(
             claude_resume_command(&agent, true).unwrap(),
-            "Set-Location -LiteralPath '/work/it''s here'; $env:AGENTDOCKER_CLAUDE_CHANNEL_INPUT='1'; claude --resume 3ebbfa91-6e52-4cea --dangerously-load-development-channels server:agentdocker"
+            "if (Set-Location -LiteralPath '/work/it''s here' -PassThru -ErrorAction SilentlyContinue) { $env:AGENTDOCKER_CLAUDE_CHANNEL_INPUT='1'; claude --resume 3ebbfa91-6e52-4cea --dangerously-load-development-channels server:agentdocker }"
         );
+        // Curly quotes are quotes to PowerShell: doubled, so a folder's
+        // name cannot end the literal and start a statement.
+        agent.spec.workdir =
+            Some("C:\\work\\Jane\u{2019}s \u{2018}x\u{2019}; Write-Output injected; #".into());
+        let command = claude_resume_command(&agent, true).unwrap();
+        assert!(
+            command.contains(
+                "Jane\u{2019}\u{2019}s \u{2018}\u{2018}x\u{2019}\u{2019}; Write-Output injected; #'"
+            ),
+            "{command}"
+        );
+        agent.spec.workdir = Some("/work/it's here".into());
         agent
             .spec
             .labels
