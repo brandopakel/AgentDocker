@@ -63,6 +63,7 @@ pub mod reload;
 mod restarts;
 mod restore;
 mod review;
+mod roles;
 mod secret_reviews;
 mod tasks;
 mod transport;
@@ -2143,6 +2144,12 @@ impl Daemon {
                 lock(&self.state).report_activity(&agent, observation, Utc::now())
             }
             Request::Role { agent, role } => lock(&self.state).set_role(&agent, role, Utc::now()),
+            Request::RoleAssign {
+                from,
+                agent,
+                add,
+                remove,
+            } => lock(&self.state).role_assign(&from, &agent, &add, &remove),
             Request::Rename { agent, name } => lock(&self.state).rename(&agent, name, Utc::now()),
             Request::ReportAdapter {
                 agent,
@@ -4955,6 +4962,19 @@ impl Daemon {
                 "pause and resume notices require a project lifecycle request",
             );
         }
+        // An agent's word to a role goes to that role's room in its project.
+        if let Some(role) = to.strip_prefix(agentdocker_core::agent::ROLE_PREFIX)
+            && let Some(response) = lock(&self.state).send_to_role(
+                &from,
+                role,
+                kind.clone(),
+                payload.clone(),
+                reply_to.clone(),
+                links.clone(),
+            )
+        {
+            return response;
+        }
         let (from, to) = match self.endpoints(from, to).await {
             Ok(pair) => pair,
             Err(response) => return *response,
@@ -4969,6 +4989,17 @@ impl Daemon {
             let ruling = state.permits(&sender, &action);
             if !ruling.is_allowed() {
                 return state.refuse(&sender, &action, ruling);
+            }
+            // A role's room by its channel id is that role: a rule on
+            // `send:role:<role>` governs both spellings.
+            if let Destination::Channel(channel) = &to
+                && let Some(role) = state.room_role(channel)
+            {
+                let action = format!("send:role:{role}");
+                let ruling = state.permits(&sender, &action);
+                if !ruling.is_allowed() {
+                    return state.refuse(&sender, &action, ruling);
+                }
             }
         }
         let mut envelope = Envelope::new(from, to, kind, payload, reply_to, Utc::now());
@@ -5912,11 +5943,12 @@ impl State {
         }
     }
 
-    /// Give `reference` a role or take it away. A role is one word
-    /// ([`agentdocker_core::agent::check_role`]), kept as the `role`
-    /// label on a live record and said as `role_set`; the same role again
-    /// is nothing. Several live agents may hold one role — it is at
-    /// resolution that a role must name exactly one.
+    /// Give `reference` one role in place of whatever it held, or take its
+    /// roles away. A role is one word
+    /// ([`agentdocker_core::agent::check_role`]), kept in the `role` label
+    /// on a live record and said as `role_set`; the same role again is
+    /// nothing. Several live agents may hold one role; `role_assign` gives
+    /// several to one agent.
     pub(super) fn set_role(
         &mut self,
         reference: &str,
@@ -5932,48 +5964,20 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        let mut record = self.registry.get(&id).expect("resolved agent").clone();
-        if !record.status.is_live() {
+        if !self
+            .registry
+            .get(&id)
+            .expect("resolved agent")
+            .status
+            .is_live()
+        {
             return Response::error(ErrorCode::Invalid, "a finished agent has no role");
         }
-        if record.role() == role.as_deref() {
-            return Response::Agent { agent: record };
+        // One role in place of whatever it held, or none.
+        match self.write_roles(&id, role, now) {
+            Ok(record) => Response::Agent { agent: record },
+            Err(response) => *response,
         }
-        match &role {
-            Some(role) => {
-                record
-                    .spec
-                    .labels
-                    .insert(agentdocker_core::agent::ROLE_LABEL.to_owned(), role.clone());
-            }
-            None => {
-                record
-                    .spec
-                    .labels
-                    .remove(agentdocker_core::agent::ROLE_LABEL);
-            }
-        }
-        let event = agentdocker_core::Event::new(
-            EventKind::RoleSet {
-                agent: id.clone(),
-                project: record
-                    .project
-                    .as_ref()
-                    .map(agentdocker_core::ProjectRef::id),
-                role,
-            },
-            now,
-        );
-        let _ = self.transition(
-            "role",
-            event,
-            |store, event| store.agent_transition(&record, event),
-            |state| {
-                *state.registry.get_mut(&id).expect("resolved agent") = record.clone();
-            },
-        );
-        self.write_failure()
-            .unwrap_or(Response::Agent { agent: record })
     }
 
     /// Give a live agent the name a person chose
@@ -7310,12 +7314,12 @@ impl State {
         &mut self,
         envelope: Envelope,
         question: Option<agentdocker_core::Question>,
-        channel: Option<(Channel, EventKind, Option<JournalEntry>)>,
+        channel: Option<(Channel, Vec<EventKind>, Option<JournalEntry>)>,
         document: Option<DocumentTransition>,
     ) -> Response {
         let (channel, transition, mut journal) = match channel {
-            Some((channel, event, journal)) => (Some(channel), Some(event), journal),
-            None => (None, None, None),
+            Some((channel, events, journal)) => (Some(channel), events, journal),
+            None => (None, Vec::new(), None),
         };
         if let Some(error) = self.write_failure() {
             return error;
@@ -9196,6 +9200,7 @@ mod tests {
             reviews: vec![],
             closed_at: None,
             resolution: None,
+            role: None,
         };
         {
             let mut state = lock(&daemon.state);

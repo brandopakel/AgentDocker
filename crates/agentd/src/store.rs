@@ -72,6 +72,10 @@ pub struct TaskTransition<'a> {
 // fields, comments and a history (`board`, `task_comment` and `task_entry`
 // documents). A card may sit in a Blocked or Cancelled lane an older daemon
 // cannot read, and an older daemon rewriting a card would drop its fields.
+// Schema 28, unreleased, also carries an agent's roles as a comma-joined set
+// in its `role` label and a role's room as a channel with `role`: an older
+// daemon would match a policy on one role by the whole set, close a room its
+// holders left, and drop `role` rewriting the channel.
 pub(crate) const SCHEMA_VERSION: i64 = 28;
 
 const SCHEMA: &str = "
@@ -350,6 +354,28 @@ impl Store {
         let tx = write_transaction(&self.conn)?;
         self.upsert_agent(record)?;
         self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// An agent's roles, the rooms that follow them and their events, as one
+    /// commit: a role and its room's members are never out of step.
+    pub fn roles_change(
+        &self,
+        record: Option<&AgentRecord>,
+        rooms: &[agentdocker_core::channel::Channel],
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = write_transaction(&self.conn)?;
+        if let Some(record) = record {
+            self.upsert_agent(record)?;
+        }
+        for room in rooms {
+            self.put_document("channel", room.id.as_str(), room)?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
         tx.commit()?;
         Ok(())
     }

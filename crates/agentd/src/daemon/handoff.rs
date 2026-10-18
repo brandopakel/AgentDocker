@@ -432,7 +432,7 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentdocker_core::LeaseMode;
+    use agentdocker_core::{HUMAN, LeaseMode};
 
     async fn fixture(tmp: &tempfile::TempDir) -> (Arc<Daemon>, PathBuf) {
         let root = tmp.path().join("checkout");
@@ -691,7 +691,7 @@ mod tests {
         let Response::Agent { agent } = role(&daemon, "recipient", Some("reviewer")).await else {
             panic!("a role answers with the record");
         };
-        assert_eq!(agent.role(), Some("reviewer"));
+        assert_eq!(agent.roles(), ["reviewer"]);
         match events.recv().await {
             Ok(Event {
                 kind:
@@ -708,6 +708,14 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+        // Its room opens with it, in the same commit.
+        assert!(matches!(
+            events.recv().await,
+            Ok(Event {
+                kind: EventKind::ChannelOpened { .. },
+                ..
+            })
+        ));
         assert!(matches!(
             role(&daemon, "recipient", Some("reviewer")).await,
             Response::Agent { .. }
@@ -735,11 +743,33 @@ mod tests {
             readiness.details[0].issue,
             agentdocker_core::SendIssue::NoReceiver
         );
+        // It is said in the role's room: the holder hears it, the sender
+        // joins to hear the answer, another project's holder hears nothing.
         let mail = inbox(&daemon, "recipient").await;
         assert_eq!(mail.len(), 1);
         assert_eq!(mail[0].id, message);
-        assert_eq!(mail[0].to, Destination::Agent(agent.id.clone()));
+        let Destination::Channel(room) = mail[0].to.clone() else {
+            panic!("a role's word goes to its room: {:?}", mail[0].to);
+        };
         assert!(inbox(&daemon, "far").await.is_empty());
+        let reply = daemon
+            .handle(Request::Send {
+                from: "recipient".into(),
+                to: format!("channel:{room}"),
+                kind: "chat".into(),
+                payload: serde_json::json!({"text": "on it"}),
+                reply_to: Some(message.clone()),
+                links: Vec::new(),
+            })
+            .await;
+        assert!(matches!(reply, Response::Sent { .. }), "{reply:?}");
+        assert!(
+            inbox(&daemon, "sender")
+                .await
+                .iter()
+                .any(|m| m.reply_to.as_ref() == Some(&message)),
+            "the sender hears the holder's answer in the room"
+        );
         // Unscoped — no sender to take a project from — two hold it.
         assert!(matches!(
             daemon
@@ -775,13 +805,39 @@ mod tests {
             Response::Handoff { bundle } => assert_eq!(bundle.to, Some(agent.id.clone())),
             other => panic!("{other:?}"),
         }
-        // Two holders here: the role names nobody until one lets go.
+        // Two holders here: a word to the role reaches both, in its one
+        // room; a hand-off, which gives to one, names nobody until one lets
+        // go.
         assert!(matches!(
             role(&daemon, "other", Some("reviewer")).await,
             Response::Agent { .. }
         ));
+        let Response::Sent { message: both, .. } =
+            send_to(&daemon, "sender", "role:reviewer").await
+        else {
+            panic!("a role two hold is said to both");
+        };
+        for holder in ["recipient", "other"] {
+            assert!(
+                inbox(&daemon, holder)
+                    .await
+                    .iter()
+                    .any(|m| m.id == both && m.to == Destination::Channel(room.clone())),
+                "{holder} hears it in the room"
+            );
+        }
         assert!(matches!(
-            send_to(&daemon, "sender", "role:reviewer").await,
+            daemon
+                .handle(Request::Handoff {
+                    agent: "sender".into(),
+                    to: Some("role:reviewer".into()),
+                    task: Some("review it".into()),
+                    note: None,
+                    transfer_leases: false,
+                    key: None,
+                    links: Vec::new(),
+                })
+                .await,
             Response::Error {
                 code: ErrorCode::Ambiguous,
                 ..
@@ -790,7 +846,7 @@ mod tests {
         let Response::Agent { agent: other } = role(&daemon, "other", None).await else {
             panic!("clearing answers with the record");
         };
-        assert_eq!(other.role(), None);
+        assert!(other.roles().is_empty());
         assert!(matches!(
             send_to(&daemon, "sender", "role:reviewer").await,
             Response::Sent { .. }
@@ -820,6 +876,189 @@ mod tests {
         {
             Response::Messages { messages } => messages,
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// Roles are the person's to give, from the project's palette, several
+    /// to an agent; each one taken up is said in its room, which follows
+    /// who holds the role, outlives its holders and closes only when the
+    /// role is taken out.
+    #[tokio::test]
+    async fn roles_are_the_persons_to_give_and_each_speaks_in_its_room() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _root) = fixture(&tmp).await;
+        let assign = |from: &str, add: &[&str], remove: &[&str]| Request::RoleAssign {
+            from: from.into(),
+            agent: "recipient".into(),
+            add: add.iter().map(|r| (*r).to_owned()).collect(),
+            remove: remove.iter().map(|r| (*r).to_owned()).collect(),
+        };
+        assert!(matches!(
+            daemon.handle(assign("sender", &["reviewer"], &[])).await,
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                ..
+            }
+        ));
+        assert!(matches!(
+            daemon.handle(assign(HUMAN, &["qa"], &[])).await,
+            Response::Error { code: ErrorCode::Invalid, message, .. } if message.contains("its roles are")
+        ));
+        let Response::Agent { agent } = daemon
+            .handle(assign(HUMAN, &["tester", "reviewer"], &[]))
+            .await
+        else {
+            panic!("given");
+        };
+        assert_eq!(agent.roles(), ["reviewer", "tester"]);
+        assert_eq!(agent.spec.labels["role"], "reviewer,tester");
+        // It hears what it now holds, once per role, each in that room.
+        let notices = inbox(&daemon, "recipient").await;
+        assert_eq!(notices.len(), 2, "{notices:?}");
+        assert!(
+            notices
+                .iter()
+                .all(|m| matches!(m.to, Destination::Channel(_)))
+        );
+        let reviewer = notices
+            .iter()
+            .find(|m| {
+                m.payload["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("now holds Reviewer: Reviews changes before they merge")
+            })
+            .expect("the reviewer notice");
+        let Destination::Channel(room) = reviewer.to.clone() else {
+            unreachable!()
+        };
+        // The room is the role's: nobody is invited into it or closes it.
+        for refused in [
+            Request::ChannelInvite {
+                agent: "recipient".into(),
+                channel: room.to_string(),
+                member: "other".into(),
+            },
+            Request::ChannelClose {
+                agent: "recipient".into(),
+                channel: room.to_string(),
+                resolution: None,
+            },
+        ] {
+            assert!(matches!(
+                daemon.handle(refused).await,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ));
+        }
+        // Its holder leaving does not close it.
+        daemon
+            .handle(Request::Deregister {
+                agent: "recipient".into(),
+            })
+            .await;
+        {
+            let state = lock(&daemon.state);
+            let kept = state.channels.get(&room).unwrap();
+            assert!(kept.is_open() && kept.is_role_room());
+        }
+        // Taken out of the palette, the role leaves its holders and its
+        // room closes.
+        let Response::Agent { .. } = daemon
+            .handle(Request::RoleAssign {
+                from: HUMAN.into(),
+                agent: "other".into(),
+                add: vec!["reviewer".into()],
+                remove: Vec::new(),
+            })
+            .await
+        else {
+            panic!("given");
+        };
+        assert!(matches!(
+            daemon
+                .handle(Request::RoleDelete {
+                    from: HUMAN.into(),
+                    project: Some(_root.display().to_string()),
+                    role: "reviewer".into(),
+                })
+                .await,
+            Response::Ok
+        ));
+        let state = lock(&daemon.state);
+        assert!(state.registry.holders("reviewer", None).is_empty());
+        assert!(!state.channels.get(&room).unwrap().is_open());
+    }
+
+    /// A role's room by its channel id is that role, for policy as for
+    /// routing; a holder that puts the role down leaves the room, saved even
+    /// with nobody left to tell, and is no guest when another takes it up.
+    #[tokio::test]
+    async fn a_rooms_role_governs_its_channel_id_and_former_holders_leave_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _root) = fixture(&tmp).await;
+        let give = |agent: &str, add: &[&str], remove: &[&str]| Request::RoleAssign {
+            from: HUMAN.into(),
+            agent: agent.into(),
+            add: add.iter().map(|r| (*r).to_owned()).collect(),
+            remove: remove.iter().map(|r| (*r).to_owned()).collect(),
+        };
+        assert!(matches!(
+            daemon.handle(give("recipient", &["reviewer"], &[])).await,
+            Response::Agent { .. }
+        ));
+        assert!(matches!(
+            send_to(&daemon, "sender", "role:reviewer").await,
+            Response::Sent { .. }
+        ));
+        let Destination::Channel(room) = inbox(&daemon, "recipient").await[0].to.clone() else {
+            panic!("the notice is said in the room");
+        };
+        let (recipient, other, sender) = {
+            let state = lock(&daemon.state);
+            let id_of = |name: &str| state.registry.resolve(name).unwrap();
+            (id_of("recipient"), id_of("other"), id_of("sender"))
+        };
+        // Put down by its only holder: out of the room, though nobody is
+        // left in it to tell.
+        assert!(matches!(
+            daemon.handle(give("recipient", &[], &["reviewer"])).await,
+            Response::Agent { .. }
+        ));
+        {
+            let state = lock(&daemon.state);
+            assert!(!state.channels[&room].members.contains(&recipient));
+        }
+        // Taken up by another: the sender stays a guest, the former holder
+        // is none.
+        assert!(matches!(
+            daemon.handle(give("other", &["reviewer"], &[])).await,
+            Response::Agent { .. }
+        ));
+        {
+            let state = lock(&daemon.state);
+            let members = state.room_members(&state.channels[&room]);
+            assert!(members.contains(&other));
+            assert!(members.contains(&sender));
+            assert!(!members.contains(&recipient), "{members:?}");
+        }
+        // A rule against the role holds for the room's channel id too.
+        std::fs::write(
+            daemon.home.join("policy.toml"),
+            "[[rule]]\nname = \"no reviewers\"\ndeny = [\"send:role:reviewer\"]\n",
+        )
+        .unwrap();
+        daemon.reload_policies();
+        for to in ["role:reviewer".to_owned(), format!("channel:{room}")] {
+            assert!(
+                matches!(
+                    send_to(&daemon, "sender", &to).await,
+                    Response::Error { .. }
+                ),
+                "{to} is refused"
+            );
         }
     }
 

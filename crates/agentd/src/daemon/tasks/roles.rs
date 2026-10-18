@@ -215,6 +215,11 @@ impl Daemon {
         let Some(def) = roles.into_iter().find(|r| r.role == address) else {
             return Response::error(ErrorCode::NotFound, format!("no role is called {address}"));
         };
+        // Its holders put it down and its room closes first, so a retry after
+        // a failure still finds the role to take out.
+        if let Err(response) = state.retire_role(&project, &def.role) {
+            return *response;
+        }
         let built_in_role = role::defaults(&project, built_in())
             .iter()
             .any(|r| r.role == def.role);

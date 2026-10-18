@@ -2155,7 +2155,7 @@ fn bare_tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string", "description": "The recipient: agent id, name, or unique prefix, or `role:<name>` for the one agent holding that role in this project." },
+                    "to": { "type": "string", "description": "The recipient: agent id, name, or unique prefix, or `role:<name>` for the one agent holding that role in this project (a hand-off goes to one agent; several holders are refused)." },
                     "task": { "type": "string", "description": "What the recipient should continue." },
                     "note": { "type": "string", "description": "Anything the daemon does not already know." },
                     "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } },
@@ -2282,7 +2282,7 @@ fn bare_tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string", "description": "Agent id/name or `role:<name>` (the one agent holding that role in this project), `project` (this project), `topic:<name>`, or `all` (for an agent, the same as `project`)." },
+                    "to": { "type": "string", "description": "Agent id/name; `role:<name>` (every agent holding that role in this project, in the role's room, where you hear the answers; reply there to `channel:<id>`); `project` (this project), `topic:<name>`, or `all` (for an agent, the same as `project`)." },
                     "text": { "type": "string" },
                     "payload": { "type": "object", "description": "Structured payload instead of text." },
                     "kind": { "type": "string", "description": "chat, task, handoff, question, answer, notice...", "default": "chat" },
