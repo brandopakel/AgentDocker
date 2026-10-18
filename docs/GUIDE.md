@@ -842,6 +842,12 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **Roles in the app.** In a session's panel, **Roles** gives an agent roles
+  from its project's palette, several to an agent and one role to several
+  agents; they show as coloured labels after its name. **Edit roles…** in the
+  same menu recolours, deletes or adds a project's roles. Nothing gets a role
+  unless you give it one.
+
 - **Allow for session.** A Codex approval that Codex offers to remember has a
   third answer beside **Allow once** and **Deny**: **Allow for session** lets the
   same command, network destination, files or access through without asking
