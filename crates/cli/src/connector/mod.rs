@@ -1982,7 +1982,7 @@ mod tests {
             reply["result"]["instructions"]
                 .as_str()
                 .unwrap()
-                .contains("reaching the project keel")
+                .contains("reaching the project orchard")
         );
         let listed = json_body(
             &connector

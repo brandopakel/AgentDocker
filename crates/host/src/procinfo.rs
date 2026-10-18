@@ -969,7 +969,7 @@ mod tests {
     #[test]
     fn a_codex_terminal_names_the_thread_it_resumed() {
         let argv = |line: &str| line.split(' ').map(str::to_owned).collect::<Vec<_>>();
-        let thread = "01a0ca0c-f9fc-7b62-8430-ddb6f67a4be3";
+        let thread = "de4e3b54-48e1-7b9b-82cc-773c517fc9c5";
         for resumed in [
             format!(
                 "/opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex resume {thread} --yolo"

@@ -10499,7 +10499,7 @@ mod tests {
             &daemon,
             "claude-code-2923",
             checkout.path(),
-            Some("83083752"),
+            Some("c960824c"),
         )
         .await
         else {
@@ -10514,11 +10514,11 @@ mod tests {
         let drifted = {
             let mut record = AgentRecord::new(
                 AgentSpec {
-                    name: "claude-83083752".into(),
+                    name: "claude-c960824c".into(),
                     runtime: "claude-code".into(),
                     workdir: Some(moved.canonicalize().unwrap()),
                     labels: BTreeMap::from([
-                        ("session_id".into(), "83083752".into()),
+                        ("session_id".into(), "c960824c".into()),
                         ("via".into(), "hook".into()),
                     ]),
                     ..AgentSpec::default()

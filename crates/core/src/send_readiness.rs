@@ -235,12 +235,12 @@ mod tests {
         agent
             .spec
             .labels
-            .insert("session_id".into(), "01a0ca0c-f9fc".into());
+            .insert("session_id".into(), "de4e3b54-48e1".into());
         let later = birth + crate::input::FIRST_CONTACT_GRACE;
         let readiness = RecipientReadiness::for_agent(&agent, later, None).unwrap();
         assert_eq!(readiness.issue, SendIssue::Unreachable);
         assert_eq!(readiness.issue.label(), "Can't receive messages");
-        assert!(readiness.guidance().contains("codex resume 01a0ca0c-f9fc"));
+        assert!(readiness.guidance().contains("codex resume de4e3b54-48e1"));
         let wire = serde_json::to_value(readiness.issue).unwrap();
         assert_eq!(wire, serde_json::json!({"kind": "unreachable"}));
         assert_eq!(
