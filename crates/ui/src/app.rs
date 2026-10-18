@@ -4755,6 +4755,13 @@ fn launches(path: &std::path::Path) -> bool {
         "scr",
         "hta",
         "cpl",
+        "reg",
+        "pif",
+        "msc",
+        "msp",
+        "appref-ms",
+        "application",
+        "gadget",
         "url",
         "webloc",
         "inetloc",
@@ -4795,7 +4802,12 @@ fn reveal(path: &std::path::Path) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let mut command = {
         let mut command = std::process::Command::new("xdg-open");
-        command.arg(path.parent().unwrap_or(path));
+        // A bare relative name's parent is empty, which xdg-open cannot open.
+        command.arg(
+            path.parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(std::path::Path::new(".")),
+        );
         command
     };
     command
