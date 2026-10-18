@@ -11,6 +11,9 @@ use crate::MessageId;
 #[serde(rename_all = "snake_case")]
 pub enum InputReadiness {
     SessionEnded,
+    /// Live, and nothing of this process has reached AgentDocker: no hook,
+    /// MCP server, channel or receiver. Its messages wait unread.
+    Unreachable,
     Unverified,
     Paused,
     Stale,
@@ -24,7 +27,11 @@ impl InputReadiness {
             return Self::SessionEnded;
         }
         let Some(delivery) = agent.input_delivery.as_ref() else {
-            return Self::Unverified;
+            return if unreachable(agent, now) {
+                Self::Unreachable
+            } else {
+                Self::Unverified
+            };
         };
         if delivery.paused_for(agent.process_started_at) {
             return Self::Paused;
@@ -42,6 +49,7 @@ impl InputReadiness {
     pub fn label(self) -> &'static str {
         match self {
             Self::SessionEnded => "Session ended",
+            Self::Unreachable => "Can't receive messages",
             Self::Unverified => "Messages may wait for its next prompt",
             Self::Paused => "Not receiving messages",
             Self::Stale => "Not heard from recently",
@@ -49,6 +57,39 @@ impl InputReadiness {
             Self::Verified => "Receiving messages",
         }
     }
+}
+
+/// How long a live session may run before nothing of it having reached
+/// AgentDocker means nothing will: its first hook or MCP call comes well
+/// inside this after a start.
+pub const FIRST_CONTACT_GRACE: chrono::Duration = chrono::Duration::minutes(2);
+
+/// A live session nothing of has ever reached AgentDocker, for this process:
+/// no hook or MCP contact, no input receiver, and no read of its own queue
+/// (`queue_read`) — past the grace after it started. Its queue waits for a read nobody makes — a terminal Codex that
+/// names no thread, a runtime with no adapter here, a session started before
+/// AgentDocker was set up. A browser agent checks in when it is used, and a
+/// process of unknown birth cannot be told from another, so neither is.
+pub fn unreachable(agent: &crate::AgentRecord, now: DateTime<Utc>) -> bool {
+    let Some(born) = agent.process_started_at else {
+        return false;
+    };
+    let registered = agent.started_at.unwrap_or(agent.created_at).max(born);
+    agent.status.is_live()
+        && agent.spec.runtime != crate::HUMAN_RUNTIME
+        && !agent.via_connector()
+        && agent.input_delivery.is_none()
+        && !agent
+            .adapter_contacts
+            .values()
+            .any(|contact| contact.process_started_at == born)
+        // A session that polls its own queue (`agentdocker inbox --as`) has
+        // no adapter; its read is its contact.
+        && agent
+            .queue_read
+            .as_ref()
+            .is_none_or(|read| read.process_started_at != born)
+        && now - registered >= FIRST_CONTACT_GRACE
 }
 
 /// Why the daemon paused an agent's input delivery. The daemon writes these
@@ -427,6 +468,97 @@ impl InputDelivery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_nothing_of_has_reached_agentdocker_cannot_receive() {
+        let birth = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let later = birth + FIRST_CONTACT_GRACE;
+        for runtime in ["codex", "claude-code", "copilot", "custom"] {
+            let mut agent = crate::AgentRecord::new(
+                crate::AgentSpec {
+                    runtime: runtime.into(),
+                    ..Default::default()
+                },
+                false,
+                birth,
+            );
+            agent.status = crate::AgentStatus::Running;
+            agent.started_at = Some(birth);
+            agent.process_started_at = Some(birth);
+            assert_eq!(
+                InputReadiness::for_agent(&agent, birth + chrono::Duration::seconds(30)),
+                InputReadiness::Unverified,
+                "{runtime}: inside the grace"
+            );
+            assert_eq!(
+                InputReadiness::for_agent(&agent, later),
+                InputReadiness::Unreachable,
+                "{runtime}"
+            );
+            // An earlier process's contact says nothing about this one.
+            agent.adapter_contacts.insert(
+                AdapterKind::Hooks,
+                AdapterContact {
+                    process_started_at: birth - chrono::Duration::days(1),
+                    observed_at: birth - chrono::Duration::days(1),
+                },
+            );
+            assert_eq!(
+                InputReadiness::for_agent(&agent, later),
+                InputReadiness::Unreachable
+            );
+            // A session reading its own queue is heard from, however soon
+            // after it started; an earlier process's read is not.
+            let mut polling = agent.clone();
+            polling.queue_read = Some(AdapterContact {
+                process_started_at: birth - chrono::Duration::days(1),
+                observed_at: birth,
+            });
+            assert_eq!(
+                InputReadiness::for_agent(&polling, later),
+                InputReadiness::Unreachable,
+                "{runtime}: another process's read"
+            );
+            polling.queue_read = Some(AdapterContact {
+                process_started_at: birth,
+                observed_at: birth + chrono::Duration::seconds(2),
+            });
+            assert_eq!(
+                InputReadiness::for_agent(&polling, later + chrono::Duration::days(1)),
+                InputReadiness::Unverified,
+                "{runtime}: polls its inbox"
+            );
+            // Any contact from this process, however old, means something of
+            // it is wired: it may wait, it is not unreachable.
+            agent.adapter_contacts.insert(
+                AdapterKind::Mcp,
+                AdapterContact {
+                    process_started_at: birth,
+                    observed_at: birth,
+                },
+            );
+            assert_eq!(
+                InputReadiness::for_agent(&agent, later + chrono::Duration::days(3)),
+                InputReadiness::Unverified
+            );
+        }
+        // Not the person, not a browser agent, not a process of unknown birth.
+        let mut human = crate::AgentRecord::new(
+            crate::AgentSpec {
+                runtime: crate::HUMAN_RUNTIME.into(),
+                ..Default::default()
+            },
+            false,
+            birth,
+        );
+        human.status = crate::AgentStatus::Running;
+        human.process_started_at = Some(birth);
+        assert!(!unreachable(&human, later));
+        let mut unknown = human.clone();
+        unknown.spec.runtime = "codex".into();
+        unknown.process_started_at = None;
+        assert!(!unreachable(&unknown, later));
+    }
 
     #[test]
     fn receiver_evidence_is_independent_of_vendor_and_rechecked_after_restart_or_silence() {

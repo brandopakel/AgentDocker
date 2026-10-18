@@ -6293,6 +6293,28 @@ impl State {
         Some(record)
     }
 
+    /// Seen, as one that read its own queue: the contact of a session with
+    /// no adapter, bound to its current process.
+    fn touch_reader(&mut self, id: &AgentId) {
+        if let Some(mut record) = self.registry.get(id).cloned() {
+            let now = Utc::now();
+            record.last_seen = now;
+            if let Some(born) = record.process_started_at {
+                record.queue_read = Some(agentdocker_core::AdapterContact {
+                    process_started_at: born,
+                    observed_at: now,
+                });
+            }
+            let committed = self.persist("agent", |store| store.upsert_agent(&record));
+            if committed == Persisted::Committed {
+                *self
+                    .registry
+                    .get_mut(id)
+                    .expect("liveness identity retained") = record;
+            }
+        }
+    }
+
     fn touch(&mut self, id: &AgentId) {
         if let Some(mut record) = self.registry.get(id).cloned() {
             record.last_seen = Utc::now();
@@ -6412,6 +6434,7 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
+        self.touch_reader(&id);
         // Repeated or fabricated IDs do not establish a new receipt. Retain
         // inbox order and record only the accepted work this call removes.
         let wanted: HashSet<&MessageId> = messages.iter().collect();
@@ -6477,7 +6500,7 @@ impl State {
             );
         }
         // A failed liveness write must stop the operation before queue removal.
-        self.touch(&id);
+        self.touch_reader(&id);
         let messages = match self.read_inbox(&id, drain) {
             Ok(messages) => messages,
             Err(error) => return *error,
@@ -8042,6 +8065,7 @@ impl State {
         canonical.vcs = fresh.vcs.clone();
         canonical.reported_activity = fresh.reported_activity.clone();
         canonical.adapter_contacts = fresh.adapter_contacts.clone();
+        canonical.queue_read = fresh.queue_read.clone();
         canonical.provider_availability = None;
         for record in &folded {
             for (key, value) in &record.spec.labels {
@@ -8374,6 +8398,16 @@ impl State {
                 {
                     canonical.adapter_contacts.insert(*kind, contact.clone());
                 }
+            }
+            // A duplicate's read of the session's queue was the session's.
+            if let Some(read) = &record.queue_read
+                && Some(read.process_started_at) == canonical.process_started_at
+                && canonical.queue_read.as_ref().is_none_or(|ours| {
+                    ours.process_started_at != read.process_started_at
+                        || read.observed_at > ours.observed_at
+                })
+            {
+                canonical.queue_read = Some(read.clone());
             }
         }
         let retired: Vec<AgentId> = retired.iter().map(|r| r.id.clone()).collect();
@@ -10411,6 +10445,102 @@ mod tests {
             Response::Agent { agent } => agent,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    /// Reading its own queue is a session's contact, bound to its process:
+    /// one with no adapter that takes its messages itself is reachable.
+    #[tokio::test]
+    async fn reading_its_own_queue_is_a_sessions_contact() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let agent = register(&daemon, "poller", Some(child.id())).await;
+        let born = agent.process_started_at.expect("a live process's birth");
+        assert!(agent.queue_read.is_none());
+        assert!(matches!(
+            daemon
+                .handle(Request::Inbox {
+                    agent: agent.id.to_string(),
+                    drain: false,
+                })
+                .await,
+            Response::Messages { .. }
+        ));
+        let read = lock(&daemon.state)
+            .registry
+            .get(&agent.id)
+            .unwrap()
+            .queue_read
+            .clone()
+            .expect("the read is recorded");
+        assert_eq!(read.process_started_at, born);
+        let later = Utc::now() + agentdocker_core::input::FIRST_CONTACT_GRACE * 2;
+        let record = lock(&daemon.state).registry.get(&agent.id).unwrap().clone();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(!agentdocker_core::input::unreachable(&record, later));
+    }
+
+    /// The session's only read of its queue went through a duplicate
+    /// record: the fold keeps it, so the session is not taken for one that
+    /// cannot receive.
+    #[tokio::test]
+    async fn a_fold_keeps_the_duplicates_read_of_the_sessions_queue() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let checkout = TempDir::new().unwrap();
+        std::fs::write(checkout.path().join("Agentfile.toml"), "").unwrap();
+        let moved = checkout.path().join("artifacts");
+        std::fs::create_dir_all(&moved).unwrap();
+        let Response::Agent { agent: kept } = register_session(
+            &daemon,
+            "claude-code-2923",
+            checkout.path(),
+            Some("83083752"),
+        )
+        .await
+        else {
+            panic!("the session registers")
+        };
+        let born = kept.process_started_at.expect("a live process's birth");
+        assert!(kept.queue_read.is_none());
+        let read = agentdocker_core::AdapterContact {
+            process_started_at: born,
+            observed_at: Utc::now(),
+        };
+        let drifted = {
+            let mut record = AgentRecord::new(
+                AgentSpec {
+                    name: "claude-83083752".into(),
+                    runtime: "claude-code".into(),
+                    workdir: Some(moved.canonicalize().unwrap()),
+                    labels: BTreeMap::from([
+                        ("session_id".into(), "83083752".into()),
+                        ("via".into(), "hook".into()),
+                    ]),
+                    ..AgentSpec::default()
+                },
+                false,
+                kept.created_at + chrono::Duration::minutes(35),
+            );
+            record.project = kept.project.clone();
+            record.pid = kept.pid;
+            record.process_started_at = Some(born);
+            record.status = AgentStatus::Running;
+            record.queue_read = Some(read.clone());
+            let mut state = lock(&daemon.state);
+            state.store.upsert_agent(&record).unwrap();
+            state.registry.insert(record.clone()).unwrap();
+            record
+        };
+        daemon.check_liveness();
+        let state = lock(&daemon.state);
+        let record = state.registry.get(&drifted.id).unwrap();
+        assert_eq!(record.id, kept.id, "folded into the record that stays");
+        assert_eq!(record.queue_read.as_ref(), Some(&read));
     }
 
     /// Register something that could be matched with another half.
