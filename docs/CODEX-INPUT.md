@@ -406,12 +406,12 @@ preserved the provider, token and six old receipts; a peer answer and two human
 messages reached one active turn in order in 14.81 seconds. Failed fixture
 attempts remain in the [existing evidence](verification/INDEX.md).
 
-The September 21 receiver-only activation replaced PID 60959 with 28370 while
-Codex PID 51242, daemon PID 92608, provider binding and token remained. After
-reading the complete original coworker audit, Codex explicitly resolved only
-`343b8636571449a0` under audit `3cc654943ea63d63bee6243c8261c723`.
-That ID has no native receipt. The next original message `55360dd5dc354f89` and
-later handoffs then arrived automatically with exact native receipts. The
+The September 21 receiver-only activation replaced the receiver process while
+the Codex process, daemon, provider binding and token remained. After reading
+the complete original audit, Codex explicitly resolved only the one message it
+had been asked to, under that audit.
+That message has no native receipt. The next original message and later
+handoffs then arrived automatically with exact native receipts. The
 receiver lives in a permanent private release directory; older version-3 CLIs
 refuse its version-4 ledger. Further receiver operations must use a compatible
 CLI; never restore an old ledger over already acknowledged input. Fresh idle,
@@ -419,7 +419,7 @@ throughput and sustained-use acceptance remain open. Provider receipt and task
 completion remain separate from manual readback.
 
 A second offer on September 21 exposed a different defect: the exact tagged
-context for `9ca24aa8e53a4912` reached a review **subagent**, not the root
+context for one message reached a review **subagent**, not the root
 conversation. Codex child hooks use their parent's `session_id`; PID ancestry and
 that field alone do not establish which conversation receives hook output.
 The root correctly refused to count the child's receipt and retained the offer.

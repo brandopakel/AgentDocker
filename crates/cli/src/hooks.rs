@@ -4044,7 +4044,7 @@ mod tests {
             process_started_at: started,
             paused: true,
             pause_reason: Some(format!(
-                "{} f76afe628d714b98; following messages remain queued.",
+                "{} ee72ad08c7df5911; following messages remain queued.",
                 agentdocker_core::input::PAUSE_RECEIPT_MISSING
             )),
             reported_at: Utc::now(),
