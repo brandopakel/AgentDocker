@@ -5738,6 +5738,7 @@ mod tests {
                 kind: QuestionFileChangeKind::Delete,
                 diff: "-old\n".into(),
             }],
+            for_session: false,
         };
         let id = MessageId::from("file-question".to_owned());
         app.questions.push(Question {
@@ -5785,6 +5786,7 @@ mod tests {
             command: "printf hello".into(),
             cwd: "/owned".into(),
             reason: "Fixture".into(),
+            for_session: false,
         };
         let id = MessageId::from("question".to_owned());
         let question = Question {
@@ -5833,6 +5835,7 @@ mod tests {
                 command: "rm -rf build".into(),
                 cwd: "/owned".into(),
                 reason: "Fixture".into(),
+                for_session: false,
             };
             let id = MessageId::from(format!("question-{choice}"));
             app.questions.push(Question {
@@ -5882,6 +5885,7 @@ mod tests {
                 command: "rm -rf build".into(),
                 cwd: "/owned".into(),
                 reason: "Fixture".into(),
+                for_session: false,
             };
             let id = MessageId::from(id.to_owned());
             app.questions.push(Question {
@@ -5999,6 +6003,7 @@ mod tests {
             command: "rm -rf build".into(),
             cwd: "/owned".into(),
             reason: "Fixture".into(),
+            for_session: false,
         };
         let id = MessageId::from("question-reopen".to_owned());
         app.questions.push(Question {
@@ -6067,6 +6072,7 @@ mod tests {
             command: "make clean".into(),
             cwd: "/owned".into(),
             reason: "Fixture".into(),
+            for_session: false,
         };
         app.questions.push(Question {
             id: id.clone(),
@@ -6540,6 +6546,7 @@ mod tests {
                 command: "printf hello".into(),
                 cwd: "/owned".into(),
                 reason: "Fixture".into(),
+                for_session: false,
             };
             app.questions.push(Question {
                 id: id.clone(),

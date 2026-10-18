@@ -1,7 +1,8 @@
 //! Typed review routes share the ordinary inbox. A response is retained before
 //! writing it to Codex and is acknowledged only after that request resolves.
 use agentdocker_core::{
-    Destination, Envelope, EventKind, MessageId, QuestionOption, QuestionPresentation,
+    ALLOW_FOR_SESSION, Destination, Envelope, EventKind, MessageId, QuestionOption,
+    QuestionPresentation,
 };
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, Duration, Utc};
@@ -156,21 +157,36 @@ fn answer_text(answer: &Envelope) -> Result<&str> {
     Ok(text)
 }
 
-fn network_options(denial: CommandDenial) -> Vec<QuestionOption> {
-    vec![
-        QuestionOption {
-            label: "Allow".into(),
-            description: "Allow the pending network request".into(),
-        },
-        QuestionOption {
-            label: "Deny".into(),
-            description: match denial {
-                CommandDenial::Decline => "Decline the pending network request",
-                CommandDenial::Cancel => "Cancel this Codex request",
-            }
-            .into(),
-        },
-    ]
+fn network_options(denial: CommandDenial, for_session: bool) -> Vec<QuestionOption> {
+    let mut options = vec![QuestionOption {
+        label: "Allow".into(),
+        description: "Allow the pending network request".into(),
+    }];
+    if for_session {
+        options.push(QuestionOption {
+            label: ALLOW_FOR_SESSION.into(),
+            description: "Allow this destination without asking until this Codex session ends"
+                .into(),
+        });
+    }
+    options.push(QuestionOption {
+        label: "Deny".into(),
+        description: match denial {
+            CommandDenial::Decline => "Decline the pending network request",
+            CommandDenial::Cancel => "Cancel this Codex request",
+        }
+        .into(),
+    });
+    options
+}
+
+/// Whether the reviewed question offered the session: a Codex approval's
+/// flag, or the network review's own option.
+fn presentation_offers_session(question: &Question) -> bool {
+    question
+        .presentation
+        .as_ref()
+        .is_some_and(|p| p.permits_choice(ALLOW_FOR_SESSION))
 }
 
 fn stdin_options(denial: CommandDenial) -> Vec<QuestionOption> {
@@ -237,7 +253,8 @@ fn stdin_presentation(
 }
 
 /// Build the complete local command review before publishing a human route.
-/// `accept` never selects either proposed policy amendment or session scope.
+/// `accept` never selects either proposed policy amendment or session scope;
+/// session scope is offered as its own answer where Codex offers it.
 fn command_presentation(params: &Value) -> Result<(QuestionPresentation, CommandDenial)> {
     ensure!(
         params["kind"].is_null() || params["kind"] == "command" || params["kind"] == "writeStdin",
@@ -251,6 +268,7 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
     // this optional field is absent. Persisted pre-v8 requests still retain
     // their original decline semantics via CommandDenial's serde default.
     let mut denial = CommandDenial::Cancel;
+    let mut for_session = false;
     if !params["availableDecisions"].is_null() {
         let decisions = params["availableDecisions"]
             .as_array()
@@ -266,6 +284,9 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
         if decisions.iter().any(|decision| decision == "decline") {
             denial = CommandDenial::Decline;
         }
+        for_session = decisions
+            .iter()
+            .any(|decision| decision == "acceptForSession");
     }
     let mut reason = match &params["reason"] {
         Value::Null => "Requested by Codex".to_owned(),
@@ -353,7 +374,7 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
         }
         QuestionPresentation::Choices {
             question: format!("{NETWORK_REVIEW}\n\n{context}Reason: {reason}"),
-            options: network_options(denial),
+            options: network_options(denial, for_session),
         }
     } else {
         if denial == CommandDenial::Cancel {
@@ -363,6 +384,7 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
             command: text(&params["command"])?.into(),
             cwd: text(&params["cwd"])?.into(),
             reason,
+            for_session,
         }
     };
     ensure!(
@@ -487,6 +509,8 @@ impl Pending {
                         .into(),
                     permissions: serde_json::from_value(params["permissions"].clone())
                         .context("unsupported permission selectors")?,
+                    // Codex grants a permission for the turn or the session.
+                    for_session: true,
                 };
                 ensure!(
                     presentation.valid_for(&presentation.text()),
@@ -835,23 +859,29 @@ impl Pending {
                         .as_ref()
                         .context("permission approval has no answer")?,
                 )?;
-                // An exact human decision grants only the reviewed subset for
-                // this turn. Do not override the provider's auto-review policy.
-                let granted = if answer == "Allow" {
+                // An exact human decision grants only the reviewed subset, for
+                // this turn or, when chosen, the session. Do not override the
+                // provider's auto-review policy.
+                let session = answer == ALLOW_FOR_SESSION && presentation_offers_session(question);
+                let granted = if answer == "Allow" || session {
                     serde_json::to_value(permissions)?
                 } else {
                     json!({})
                 };
-                json!({"permissions":granted,"scope":"turn"})
+                json!({"permissions":granted,"scope":if session { "session" } else { "turn" }})
             }
             Kind::Command | Kind::Network | Kind::Stdin | Kind::Files => {
-                let answer = answer_text(
-                    self.questions[0]
-                        .answer
-                        .as_ref()
-                        .context("approval has no answer")?,
-                )?;
-                json!({"decision":if answer == "Allow" { "accept" } else { self.command_denial.wire() }})
+                let question = &self.questions[0];
+                let answer =
+                    answer_text(question.answer.as_ref().context("approval has no answer")?)?;
+                let decision = match answer {
+                    "Allow" => "accept",
+                    ALLOW_FOR_SESSION if presentation_offers_session(question) => {
+                        "acceptForSession"
+                    }
+                    _ => self.command_denial.wire(),
+                };
+                json!({"decision":decision})
             }
             Kind::UserInput => {
                 let mut answers = serde_json::Map::new();
@@ -931,7 +961,7 @@ impl Pending {
             ensure!(
                 !self.is_network_review()
                     || matches!(&question.presentation, Some(QuestionPresentation::Choices { question, options })
-                        if question.starts_with(NETWORK_REVIEW) && options == &network_options(self.command_denial)),
+                        if question.starts_with(NETWORK_REVIEW) && [false, true].into_iter().any(|session| options == &network_options(self.command_denial, session))),
                 "network approval has no complete one-time choice presentation"
             );
             ensure!(
@@ -1445,14 +1475,27 @@ mod tests {
 
     #[test]
     fn network_only_reviews_show_exact_destination_and_require_correlated_human_receipts() {
-        for denial in ["decline", "cancel"] {
+        for (denial, offered) in [("decline", false), ("cancel", false), ("decline", true)] {
             for decision in ["Allow", "Deny", "Allow for session"] {
                 let mut event = network_event();
-                event["params"]["availableDecisions"] = json!(["accept", denial]);
+                event["params"]["availableDecisions"] = if offered {
+                    json!(["accept", "acceptForSession", denial])
+                } else {
+                    json!(["accept", denial])
+                };
                 let mut request =
                     Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
                 assert!(request.is_network_review());
                 let question = &request.questions[0];
+                assert_eq!(
+                    question
+                        .presentation
+                        .as_ref()
+                        .unwrap()
+                        .permits_choice(ALLOW_FOR_SESSION),
+                    offered,
+                    "the destination for the session only where Codex offers it"
+                );
                 assert!(question.text.contains("api.example.com:443 (https)"));
                 assert!(!question.text.contains("Directory:"));
                 assert!(!question.text.contains("Command:"));
@@ -1490,7 +1533,11 @@ mod tests {
                 assert_eq!(
                     request.response,
                     Some(
-                        json!({"id":"network-callback","result":{"decision":if decision == "Allow" {"accept"} else {denial}}})
+                        json!({"id":"network-callback","result":{"decision":match decision {
+                            "Allow" => "accept",
+                            ALLOW_FOR_SESSION if offered => "acceptForSession",
+                            _ => denial,
+                        }}})
                     )
                 );
                 let restored: Pending =
@@ -1621,7 +1668,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_grants_require_exact_human_receipts_and_are_limited_to_the_current_turn() {
+    fn permission_grants_require_exact_human_receipts_and_reach_the_session_only_when_chosen() {
         let event = permission_event();
         for decision in ["Allow", "Deny", "Allow for session", "allow"] {
             let mut request =
@@ -1649,12 +1696,14 @@ mod tests {
                 )
                 .unwrap();
             request.capture(&[response], "owner", false).unwrap();
-            let granted = if decision == "Allow" {
+            let session = decision == ALLOW_FOR_SESSION;
+            let granted = if decision == "Allow" || session {
                 event["params"]["permissions"].clone()
             } else {
                 json!({})
             };
-            let expected = json!({"id":11,"result":{"permissions":granted,"scope":"turn"}});
+            let scope = if session { "session" } else { "turn" };
+            let expected = json!({"id":11,"result":{"permissions":granted,"scope":scope}});
             assert_eq!(request.reply(Utc::now()).unwrap(), Some(expected.clone()));
             let bytes = serde_json::to_vec(&request).unwrap();
             let decoded: Pending = serde_json::from_slice(&bytes).unwrap();
@@ -1706,7 +1755,10 @@ mod tests {
         let presentation = request.questions[0].presentation.as_ref().unwrap();
         assert!(!presentation.valid_for("Allow something else?"));
         assert!(presentation.permits_choice("Allow"));
-        assert!(!presentation.permits_choice("Allow for session"));
+        assert!(
+            presentation.permits_choice(ALLOW_FOR_SESSION),
+            "Codex grants a permission for the session as well as the turn"
+        );
     }
 
     fn event() -> Value {
@@ -1750,9 +1802,18 @@ mod tests {
         for (decisions, negative) in [
             (Some(json!(["accept", "decline"])), "decline"),
             (Some(json!(["accept", "cancel"])), "cancel"),
+            (
+                Some(json!(["accept", "acceptForSession", "decline"])),
+                "decline",
+            ),
             (Some(Value::Null), "cancel"),
             (None, "cancel"),
         ] {
+            // The session is an answer only where Codex offered it.
+            let offered = decisions
+                .as_ref()
+                .and_then(Value::as_array)
+                .is_some_and(|d| d.iter().any(|d| d == "acceptForSession"));
             for decision in ["Allow", "Deny", "allow", " Allow", "Allow for session"] {
                 let mut event = access_event();
                 match &decisions {
@@ -1769,6 +1830,11 @@ mod tests {
                 let question = &request.questions[0];
                 let presentation = question.presentation.as_ref().unwrap();
                 assert!(presentation.valid_for(&question.text));
+                assert_eq!(
+                    presentation.permits_choice(ALLOW_FOR_SESSION),
+                    offered,
+                    "{decisions:?}"
+                );
                 for detail in [
                     "echo trial",
                     "Directory: /owned",
@@ -1803,7 +1869,12 @@ mod tests {
                     )
                     .unwrap();
                 request.capture(&[response], "owner", false).unwrap();
-                let expected = json!({"id":7,"result":{"decision":if decision == "Allow" { "accept" } else { negative }}});
+                let chosen = match decision {
+                    "Allow" => "accept",
+                    ALLOW_FOR_SESSION if offered => "acceptForSession",
+                    _ => negative,
+                };
+                let expected = json!({"id":7,"result":{"decision":chosen}});
                 request.response = request.reply(Utc::now()).unwrap();
                 assert_eq!(request.response, Some(expected.clone()));
                 let restored: Pending =
@@ -1936,7 +2007,8 @@ mod tests {
         )
     }
     #[test]
-    fn file_change_decisions_require_the_exact_human_closure_and_never_grant_a_session() {
+    fn file_change_decisions_require_the_exact_human_closure_and_grant_a_session_only_where_offered()
+     {
         use agentdocker_core::{QuestionFileChange, QuestionFileChangeKind};
         let presentation = QuestionPresentation::CodexFiles {
             cwd: "/owned".into(),
@@ -1946,13 +2018,26 @@ mod tests {
                 kind: QuestionFileChangeKind::Add,
                 diff: "+new\n".into(),
             }],
+            for_session: false,
         };
         let event = json!({"id":8,"method":"item/fileChange/requestApproval","params":{"threadId":"thread","turnId":"turn","itemId":"patch"}});
         assert!(Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_err());
-        for (answer_text, expected) in [
-            ("Allow", "accept"),
-            ("Deny", "decline"),
-            ("Allow for session", "decline"),
+        let session = QuestionPresentation::CodexFiles {
+            cwd: "/owned".into(),
+            reason: "Fixture".into(),
+            changes: vec![QuestionFileChange {
+                path: "/owned/a".into(),
+                kind: QuestionFileChangeKind::Add,
+                diff: "+new\n".into(),
+            }],
+            for_session: true,
+        };
+        for (presentation, answer_text, expected) in [
+            (&presentation, "Allow", "accept"),
+            (&presentation, "Deny", "decline"),
+            (&presentation, ALLOW_FOR_SESSION, "decline"),
+            (&session, ALLOW_FOR_SESSION, "acceptForSession"),
+            (&session, "Allow", "accept"),
         ] {
             let mut request = Pending::plan_with_files(
                 &event,

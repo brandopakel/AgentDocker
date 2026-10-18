@@ -179,7 +179,8 @@ sending again. Until the daemon takes it the note is saved with the drafts as
 that message-box text, so a window closed meanwhile shows it there on
 reopening, never sent again by itself (the provider's own answer is still
 exactly Deny; Allow sends no words). A command a live session asks to run is answered in the row itself:
-**Deny** and **Allow once** send the same exact answer as the Inbox card, with
+**Deny** and **Allow once**, and **Allow for session** where Codex offers it
+and the window is wide enough, send the same exact answer as the Inbox card, with
 the command in the row's words; file changes, which must be looked at first,
 and every other question open with **Answer**. The first three items are shown; **Show N more** expands the same list and
 **Show fewer** collapses it. When nobody needs an answer or delivery review, the

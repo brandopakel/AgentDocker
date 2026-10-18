@@ -57,8 +57,8 @@ pub use journal::{Digest, DigestBudget, JournalEntry, JournalFilter, JournalKind
 pub use lease::{Claimed, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, ResourceKey};
 pub use link::{Link, LinkKind};
 pub use message::{
-    AnswerRoute, Destination, Envelope, HUMAN, HUMAN_RUNTIME, MessageId, Question,
-    QuestionFileChange, QuestionFileChangeKind, QuestionOption, QuestionPresentation,
+    ALLOW_FOR_SESSION, AnswerRoute, Destination, Envelope, HUMAN, HUMAN_RUNTIME, MessageId,
+    Question, QuestionFileChange, QuestionFileChangeKind, QuestionOption, QuestionPresentation,
     mcp_url_authority, topic_matches,
 };
 pub use notification::NotificationTarget;

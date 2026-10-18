@@ -842,6 +842,12 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **Allow for session.** A Codex approval that Codex offers to remember has a
+  third answer beside **Allow once** and **Deny**: **Allow for session** lets the
+  same command, network destination, files or access through without asking
+  until that Codex session ends (`agentdocker answer <id> "Allow for session"`
+  from the command line). Offered only where Codex offers it.
+
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or
   has sat there some days (`task rule-add`, the board's settings). A

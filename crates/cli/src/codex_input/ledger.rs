@@ -373,6 +373,7 @@ mod tests {
                 kind: QuestionFileChangeKind::Add,
                 diff: "+new\n".into(),
             }],
+            for_session: false,
         };
         let event = serde_json::json!({"id":10,"method":"item/fileChange/requestApproval","params":{"threadId":"thread","turnId":"turn","itemId":"patch"}});
         let pending = Pending::plan_with_files(

@@ -595,6 +595,19 @@ presentation and exact human-answer/provider-resolution receipts. Unknown access
 selectors, remote environments and prompts without a one-time approval and a
 negative response are refused before question publication; policy amendments are not
 selected. This does not change stored presentation meaning or the schema.
+
+Where Codex offers to remember an approval for the rest of its session — a
+command or network review whose `availableDecisions` lists `acceptForSession`,
+any file change, any permission request — the `codex_command`, `codex_files` or
+`codex_permissions` presentation carries `for_session: true` (a network review,
+a choice list, carries the option itself), and a third exact answer is
+permitted: `Allow for session`. It sends `acceptForSession`, or for a permission
+the reviewed profile with `scope: "session"`; Codex then lets the same command,
+destination, files or access through without asking until that Codex session
+ends. The fallback text names the answer. Without the flag the answer is refused
+as any other unknown one, and the flag is omitted when false, so presentations
+stored before it read the same. Schema 28, unreleased, carries it: an older
+reader refuses the field.
 The private Codex ledger's version 8 binds `decline` or `cancel` to the review;
 when only cancellation is offered, the complete question text explains it.
 Command-approval callbacks with `networkApprovalContext` reuse `choices` with

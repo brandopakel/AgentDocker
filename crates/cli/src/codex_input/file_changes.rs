@@ -116,6 +116,9 @@ impl Reviews {
                 .unwrap_or("Requested by Codex")
                 .into(),
             changes,
+            // Codex takes `acceptForSession` for any file change: the same
+            // files change again without asking.
+            for_session: true,
         };
         ensure!(
             presentation.valid_for(&presentation.text()),
@@ -183,7 +186,10 @@ mod tests {
         assert!(text.contains("Move /owned/a.txt → /owned/b.txt\n@@ -1 +1 @@\n-old\n+new"));
         assert!(!presentation.valid_for(&text.replace("+new", "+different")));
         assert!(presentation.permits_choice("Allow"));
-        assert!(!presentation.permits_choice("Allow for session"));
+        assert!(
+            presentation.permits_choice(agentdocker_core::ALLOW_FOR_SESSION),
+            "Codex takes the session for any file change"
+        );
         reviews.observe(&started(), "thread", Some("turn"));
         assert!(
             reviews.check_current().is_err(),
