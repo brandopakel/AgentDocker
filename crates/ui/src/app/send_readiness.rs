@@ -1,14 +1,15 @@
 //! Compact send-time warnings belong to the draft destination they answered.
 use super::{
     Message,
+    icons::{Icon, icon},
     messages::look::{link, status_line},
     shell::{DeliveryTarget, TextDraft},
-    style::{Colors, RADIUS_MD, alpha, weight},
-    view::small,
+    style::{Colors, RADIUS_MD, alpha, mix, weight},
+    view::{small, tip},
 };
-use crate::controls::button as action;
+use crate::controls::{Kind, button as action, custom_sized};
 use iced::{
-    Element, Fill,
+    Element, Fill, Font,
     widget::{column, container, row, scrollable, text},
 };
 
@@ -75,38 +76,26 @@ fn notice_content(
     )]
     .spacing(6);
     if expanded {
-        let mut details = column![small(
-            "As it was when sent. Sent means waiting for the agent, not yet read.",
-            c
-        )]
-        .spacing(10);
+        // Who, what, and the way to the fix: the session's panel holds the
+        // command or the button that does it.
+        let mut details = column![].spacing(8);
         for recipient in &report.details {
-            let guidance = recipient.guidance();
             details = details.push(
-                column![
+                row![
                     text(format!("{} · {}", recipient.name, recipient.issue.label()))
                         .size(13)
-                        .font(weight(iced::font::Weight::Medium)),
-                    small(guidance.clone(), c),
-                    row![
-                        link(
-                            format!("delivery-session-{key}-{}", recipient.agent),
-                            "Open session",
-                            "Open session",
-                            Some(Message::OpenSession(recipient.agent.to_string())),
-                            c.accent,
-                        ),
-                        link(
-                            format!("delivery-copy-{key}-{}", recipient.agent),
-                            "Copy instructions",
-                            "Copy instructions",
-                            Some(Message::CopyGuidance(guidance)),
-                            c.accent,
-                        ),
-                    ]
-                    .spacing(2)
+                        .font(weight(iced::font::Weight::Medium))
+                        .width(Fill),
+                    link(
+                        format!("delivery-session-{key}-{}", recipient.agent),
+                        format!("Open {}", recipient.name),
+                        "Open session",
+                        Some(Message::OpenSession(recipient.agent.to_string())),
+                        c.accent,
+                    ),
                 ]
-                .spacing(4),
+                .spacing(8)
+                .align_y(iced::Center),
             );
         }
         if report.omitted() > 0 {
@@ -141,7 +130,10 @@ fn notice_content(
     Some(body.into())
 }
 
-/// Guidance is visible only inside details the person explicitly opened.
+/// How to get a session that cannot take messages taking them again, in
+/// as few words as do it: for Claude Code, the one command to paste (its
+/// folder, its conversation, the channel) with a copy button; for Codex,
+/// the way to a session that takes them live; for the rest, one line.
 pub(super) fn reconnect(
     agent: &agentdocker_core::AgentRecord,
     agents: &[agentdocker_core::AgentRecord],
@@ -153,18 +145,236 @@ pub(super) fn reconnect(
         .map(|issue| issue.kind);
     let issue =
         agentdocker_core::RecipientReadiness::for_agent(agent, chrono::Utc::now(), blocked)?;
-    let guidance = issue.guidance();
-    Some(
-        column![
-            small(guidance.clone(), c),
-            action(
-                format!("reconnect-copy-{key}-{}", agent.id),
-                "Copy instructions",
-                Some(Message::CopyGuidance(guidance)),
-                false
+    let hint = small(issue.hint(), c);
+    let restart = matches!(
+        issue.issue,
+        agentdocker_core::SendIssue::NoReceiver
+            | agentdocker_core::SendIssue::ReceiverSilent
+            | agentdocker_core::SendIssue::Unreachable
+            | agentdocker_core::SendIssue::SessionEnded
+    );
+    let command = restart
+        .then(|| agentdocker_core::send_readiness::claude_resume_command(agent, cfg!(windows)))
+        .flatten();
+    if let Some(command) = command {
+        return Some(
+            column![
+                command_well(format!("reconnect-copy-{key}-{}", agent.id), command, c),
+                hint
+            ]
+            .spacing(6)
+            .into(),
+        );
+    }
+    if agent.spec.runtime == "codex"
+        && matches!(
+            issue.issue,
+            agentdocker_core::SendIssue::NoReceiver
+                | agentdocker_core::SendIssue::ReceiverSilent
+                | agentdocker_core::SendIssue::Unreachable
+        )
+        && let Some(project) = agent.project.as_ref().map(|p| p.root.clone())
+    {
+        return Some(
+            row![
+                hint.width(Fill),
+                action(
+                    format!("reconnect-launch-{key}-{}", agent.id),
+                    "Start a live Codex",
+                    Some(Message::LaunchIn(project, "codex".into())),
+                    false
+                ),
+            ]
+            .spacing(8)
+            .align_y(iced::Center)
+            .into(),
+        );
+    }
+    Some(hint.into())
+}
+
+/// A command to paste, the way an approval shows one: a prompt mark, the
+/// command whole in the code face on a step of tone, and a copy button
+/// that copies exactly it.
+fn command_well(id: String, command: String, c: Colors) -> Element<'static, Message> {
+    container(
+        row![
+            text("$")
+                .size(13)
+                .line_height(iced::Pixels(20.0))
+                .font(Font::MONOSPACE)
+                .color(c.amber),
+            text(command.clone())
+                .size(12)
+                .line_height(iced::Pixels(20.0))
+                .font(Font::MONOSPACE)
+                .color(c.text)
+                .width(Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            tip(
+                custom_sized(
+                    id,
+                    "Copy command",
+                    container(icon(Icon::Copy, c.muted, 14.0)).center(20),
+                    Some(Message::CopyGuidance(command)),
+                    false,
+                    Kind::Ghost,
+                    [0, 0],
+                    iced::Length::Shrink,
+                ),
+                "Copy command",
+                c,
             ),
         ]
-        .spacing(6)
-        .into(),
+        .spacing(8)
+        .align_y(iced::Alignment::Start),
     )
+    .padding([8, 10])
+    .width(Fill)
+    .style(move |_| container::Style {
+        background: Some(mix(c.card, c.raised, 0.6).into()),
+        border: iced::Border {
+            radius: RADIUS_MD.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::view::testing::seen;
+    use super::*;
+    use agentdocker_core::{AgentRecord, AgentSpec, AgentStatus};
+
+    fn session(runtime: &str) -> AgentRecord {
+        let mut agent = AgentRecord::new(
+            AgentSpec {
+                name: format!("{runtime}-1"),
+                runtime: runtime.into(),
+                workdir: Some("/work/orchard".into()),
+                ..Default::default()
+            },
+            false,
+            chrono::Utc::now() - chrono::Duration::minutes(10),
+        );
+        agent.status = AgentStatus::Running;
+        agent.project = Some(agentdocker_core::ProjectRef::directory("/work/orchard"));
+        agent
+            .spec
+            .labels
+            .insert("session_id".into(), "3ebbfa91-6e52".into());
+        agent
+    }
+
+    /// A Claude session that cannot be woken shows the one command to
+    /// paste, whole, with a copy button, and one short line; no paragraph
+    /// of instructions.
+    #[test]
+    fn a_claude_session_shows_its_command_and_a_copy_button() {
+        let agent = session("claude-code");
+        let c = Colors::new(false);
+        let view = seen(reconnect(&agent, std::slice::from_ref(&agent), "inspector", c).unwrap());
+        let command =
+            agentdocker_core::send_readiness::claude_resume_command(&agent, cfg!(windows)).unwrap();
+        assert!(view.reads(&command), "the whole command, as it is copied");
+        let copy = view
+            .control(&format!("reconnect-copy-inspector-{}", agent.id))
+            .expect("copy");
+        assert_eq!((copy.1.as_str(), copy.3), ("Copy command", true));
+        assert!(view.reads("Quit it, then run this in a terminal."));
+        assert!(!view.reads("Copy instructions") && !view.reads("After saving work"));
+    }
+
+    /// A Codex session says when it takes messages and offers the session
+    /// that takes them live; nothing to copy that would not work.
+    #[test]
+    fn a_codex_session_offers_a_live_one_instead_of_instructions() {
+        let agent = session("codex");
+        let view = seen(
+            reconnect(
+                &agent,
+                std::slice::from_ref(&agent),
+                "inspector",
+                Colors::new(true),
+            )
+            .unwrap(),
+        );
+        assert!(view.reads("It takes messages at its next prompt."));
+        assert_eq!(
+            view.control(&format!("reconnect-launch-inspector-{}", agent.id))
+                .unwrap()
+                .1,
+            "Start a live Codex"
+        );
+        assert!(
+            view.controls
+                .iter()
+                .all(|c| !c.0.starts_with("reconnect-copy")),
+            "no copy"
+        );
+    }
+
+    /// Start a live Codex opens the launch form in the session's own
+    /// project, not the one on view (Tools lists every project's sessions).
+    #[test]
+    fn a_live_codex_starts_in_the_sessions_own_project() {
+        let (tx, _commands) = super::super::queue::channel();
+        let (_messages, rx) = std::sync::mpsc::sync_channel(super::super::MESSAGE_CAPACITY);
+        let mut app = super::super::App::bare(tx, rx);
+        app.connected = Ok(());
+        for root in ["/work/a", "/work/b"] {
+            app.shell.catalog.projects.push(crate::catalog::Entry {
+                project: agentdocker_core::ProjectRef::directory(root),
+                pinned: true,
+                label: None,
+            });
+        }
+        app.shell.catalog.selected = Some("/work/a".into());
+        let _ = app.update(Message::LaunchIn("/work/b".into(), "codex".into()));
+        assert_eq!(
+            app.shell.catalog.selected.as_deref(),
+            Some(std::path::Path::new("/work/b"))
+        );
+        assert!(app.shell.launch);
+        assert_eq!(app.shell.launch_runtime.as_deref(), Some("codex"));
+        // A project not in the list is not launched into the one on view.
+        app.shell.launch = false;
+        let _ = app.update(Message::LaunchIn("/work/c".into(), "codex".into()));
+        assert!(!app.shell.launch);
+        assert_eq!(
+            app.shell.catalog.selected.as_deref(),
+            Some(std::path::Path::new("/work/b"))
+        );
+    }
+
+    /// Delivery details are one line per session and the way to it.
+    #[test]
+    fn delivery_details_are_one_line_per_session() {
+        let agent = session("claude-code");
+        let mut report = agentdocker_core::SendReadiness::default();
+        report.observe(agentdocker_core::RecipientReadiness::for_agent(
+            &agent,
+            chrono::Utc::now(),
+            None,
+        ));
+        let mut draft = TextDraft::default();
+        draft.readiness = Some(report);
+        draft.readiness_expanded = true;
+        let view = seen(
+            notice(
+                &draft,
+                DeliveryTarget::Session("s".into()),
+                Colors::new(false),
+            )
+            .unwrap(),
+        );
+        assert!(view.reads("claude-code-1 · "));
+        assert!(
+            view.control(&format!("delivery-session-session-s-{}", agent.id))
+                .is_some()
+        );
+        assert!(!view.reads("Copy instructions") && !view.reads("After saving work"));
+    }
 }

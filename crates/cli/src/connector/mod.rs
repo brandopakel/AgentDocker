@@ -281,12 +281,13 @@ pub struct Connector<B> {
     /// Proposed first on the consent page; the person may choose another.
     default_project: Option<agentdocker_core::ProjectRef>,
     extra_callbacks: Vec<String>,
-    pairing: Mutex<Pairing>,
+    /// The pairing code and every guess at it, under one lock.
+    gate: Mutex<Gate>,
     store: Mutex<Store>,
     state_path: Option<PathBuf>,
     servers: Mutex<HashMap<String, Arc<McpServer<B>>>>,
-    /// Wrong codes by where they came from.
-    strikes: Mutex<HashMap<String, Strikes>>,
+    /// The header the tunnel writes the client's address into, when known.
+    client_ip_header: Option<String>,
     /// Consent pages past the code, by the hash of their ticket.
     tickets: Mutex<HashMap<String, Ticket>>,
     /// The status file and what it says, so the code it shows is current.
@@ -295,10 +296,23 @@ pub struct Connector<B> {
     fetcher: Arc<cimd::Fetcher>,
 }
 
-/// The pairing code in force and the wrong guesses made against it.
-struct Pairing {
+/// The pairing code in force, the wrong guesses made against it, and the
+/// wrong codes by where they came from. A guess is judged, counted, and
+/// spends or replaces the code in one step under its lock, so two guesses
+/// at once are two guesses in turn: one right code opens one page.
+struct Gate {
     code: String,
     guesses: u32,
+    strikes: HashMap<String, Strikes>,
+}
+
+/// What one typed code comes to.
+enum Attempt {
+    /// Its source has typed too many wrong codes to try again yet.
+    StruckOut,
+    Wrong,
+    /// Right, and spent: the connector shows another now.
+    Right,
 }
 
 struct Strikes {
@@ -347,14 +361,15 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             public_url,
             default_project,
             extra_callbacks,
-            pairing: Mutex::new(Pairing {
+            gate: Mutex::new(Gate {
                 code: pairing_code,
                 guesses: 0,
+                strikes: HashMap::new(),
             }),
             store: Mutex::new(store),
             state_path,
             servers: Mutex::new(HashMap::new()),
-            strikes: Mutex::new(HashMap::new()),
+            client_ip_header: None,
             tickets: Mutex::new(HashMap::new()),
             status: Mutex::new(None),
             allowlist: None,
@@ -365,6 +380,14 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
     /// Admit only these addresses at the vendor-facing endpoints.
     pub fn with_allowlist(mut self, allowlist: Option<net::Allowlist>) -> Self {
         self.allowlist = allowlist;
+        self
+    }
+
+    /// The header the tunnel writes the client's address into, whether or
+    /// not any address is allowlisted: wrong codes are counted against it.
+    /// Empty is none known.
+    pub fn with_client_ip_header(mut self, header: &str) -> Self {
+        self.client_ip_header = (!header.is_empty()).then(|| header.to_ascii_lowercase());
         self
     }
 
@@ -390,7 +413,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
     /// The pairing code the person types now.
     #[cfg(test)]
     fn pairing_code(&self) -> String {
-        self.pairing
+        self.gate
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .code
@@ -398,69 +421,71 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
     }
 
     /// Put a new pairing code in force and show it where the person reads
-    /// it; the log says only that it changed.
-    fn replace_code(&self, why: &str) {
+    /// it; the log says only that it changed. Called under the gate's lock,
+    /// so the status file is written in the order the codes were made and
+    /// never shows a code already replaced.
+    fn replace_code(&self, gate: &mut Gate, why: &str) {
         let code = oauth::pairing_code();
-        {
-            let mut pairing = self.pairing.lock().unwrap_or_else(|e| e.into_inner());
-            pairing.code = code.clone();
-            pairing.guesses = 0;
-        }
+        gate.code = code.clone();
+        gate.guesses = 0;
         self.publish_status(|serving| serving.pairing_code = code);
         eprintln!(
             "agentdocker connector: pairing code replaced ({why}); `agentdocker connector status` shows the new one"
         );
     }
 
-    /// Where a consent came from, as the tunnel reports it: the allowlist's
-    /// header when there is one, else the hop the nearest proxy appended to
-    /// `x-forwarded-for`. A request that reports neither shares one source.
-    fn source_of(&self, request: &HttpRequest) -> String {
-        if let Some(ip) = self
-            .allowlist
-            .as_ref()
-            .and_then(|allowlist| allowlist.client_ip(request))
-        {
-            return ip.to_string();
-        }
-        request
-            .headers
-            .iter()
-            .rev()
-            .find(|(name, _)| name == "x-forwarded-for")
-            .and_then(|(_, value)| value.rsplit(',').next())
-            .and_then(|hop| hop.trim().parse::<std::net::IpAddr>().ok())
-            .map(|ip| ip.to_string())
-            .unwrap_or_default()
+    /// Where a consent came from, as the tunnel reports it in the header it
+    /// is known to write (the last entry of its last line, as the allowlist
+    /// reads it). With no such header known, or none on the request, there
+    /// is no source: no source is ever refused, and the code's own budget
+    /// is what bounds guessing.
+    fn source_of(&self, request: &HttpRequest) -> Option<String> {
+        let header = self.client_ip_header.as_deref()?;
+        net::client_ip(request, header).map(|ip| ip.to_string())
     }
 
-    /// Whether `source` has typed too many wrong codes to try again yet.
-    fn struck_out(&self, source: &str, now: chrono::DateTime<Utc>) -> bool {
-        let mut strikes = self.strikes.lock().unwrap_or_else(|e| e.into_inner());
-        strikes.retain(|_, s| now.signed_duration_since(s.since) < STRIKE_WINDOW);
-        strikes
-            .get(source)
-            .is_some_and(|s| s.count >= SOURCE_STRIKES)
-    }
-
-    fn strike(&self, source: &str, now: chrono::DateTime<Utc>) {
-        let mut strikes = self.strikes.lock().unwrap_or_else(|e| e.into_inner());
-        if strikes.len() >= MAX_SOURCES
-            && !strikes.contains_key(source)
-            && let Some(oldest) = strikes
-                .iter()
-                .min_by_key(|(_, s)| s.since)
-                .map(|(k, _)| k.clone())
+    /// Judge one typed code, count it and spend or replace the code, in
+    /// one step.
+    fn attempt(&self, source: Option<&str>, typed: &str, now: chrono::DateTime<Utc>) -> Attempt {
+        let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
+        gate.strikes
+            .retain(|_, s| now.signed_duration_since(s.since) < STRIKE_WINDOW);
+        if let Some(source) = source
+            && gate
+                .strikes
+                .get(source)
+                .is_some_and(|s| s.count >= SOURCE_STRIKES)
         {
-            strikes.remove(&oldest);
+            return Attempt::StruckOut;
         }
-        strikes
-            .entry(source.to_owned())
-            .or_insert(Strikes {
-                count: 0,
-                since: now,
-            })
-            .count += 1;
+        if oauth::pairing_code_matches(&gate.code, typed) {
+            self.replace_code(&mut gate, "used");
+            return Attempt::Right;
+        }
+        gate.guesses += 1;
+        if let Some(source) = source {
+            if gate.strikes.len() >= MAX_SOURCES
+                && !gate.strikes.contains_key(source)
+                && let Some(oldest) = gate
+                    .strikes
+                    .iter()
+                    .min_by_key(|(_, s)| s.since)
+                    .map(|(k, _)| k.clone())
+            {
+                gate.strikes.remove(&oldest);
+            }
+            gate.strikes
+                .entry(source.to_owned())
+                .or_insert(Strikes {
+                    count: 0,
+                    since: now,
+                })
+                .count += 1;
+        }
+        if gate.guesses >= CODE_GUESSES {
+            self.replace_code(&mut gate, "too many wrong guesses");
+        }
+        Attempt::Wrong
     }
 
     /// Spend a right code on this request: a ticket for its next page.
@@ -917,40 +942,29 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             return self.choose(&form, &pending, ticket).await;
         }
         let source = self.source_of(request);
-        if self.struck_out(&source, now) {
-            return HttpResponse::html(
-                429,
-                page(
-                    "Too many wrong codes",
-                    "<p>Too many wrong pairing codes from here. Try again in a quarter of an hour.</p>",
-                ),
-            );
-        }
         let typed = field(&form, "pairing_code").unwrap_or("");
-        let (right, exhausted) = {
-            let mut pairing = self.pairing.lock().unwrap_or_else(|e| e.into_inner());
-            if oauth::pairing_code_matches(&pairing.code, typed) {
-                (true, false)
-            } else {
-                pairing.guesses += 1;
-                (false, pairing.guesses >= CODE_GUESSES)
+        match self.attempt(source.as_deref(), typed, now) {
+            Attempt::StruckOut => {
+                return HttpResponse::html(
+                    429,
+                    page(
+                        "Too many wrong codes",
+                        "<p>Too many wrong pairing codes from here. Try again in a quarter of an hour.</p>",
+                    ),
+                );
             }
-        };
-        if !right {
-            self.strike(&source, now);
-            eprintln!("agentdocker connector: consent refused, wrong pairing code");
-            if exhausted {
-                self.replace_code("too many wrong guesses");
+            Attempt::Wrong => {
+                eprintln!("agentdocker connector: consent refused, wrong pairing code");
+                return HttpResponse::html(
+                    403,
+                    self.code_html(
+                        &pending,
+                        Some("That is not the pairing code this connector shows now."),
+                    ),
+                );
             }
-            return HttpResponse::html(
-                403,
-                self.code_html(
-                    &pending,
-                    Some("That is not the pairing code this connector shows now."),
-                ),
-            );
+            Attempt::Right => {}
         }
-        self.replace_code("used");
         let ticket = self.issue_ticket(&pending, now);
         let projects = self.known_projects().await;
         HttpResponse::html(200, self.choose_html(&pending, &ticket, &projects, None))
@@ -1021,14 +1035,14 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 again("That name is already a live agent's here; pick another."),
             );
         }
-        // One consent per ticket.
-        if self
+        // One consent per ticket, and only while it holds: taken out, then
+        // judged against the time now, however long the checks above took.
+        let taken = self
             .tickets
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&oauth::hash(ticket))
-            .is_none()
-        {
+            .remove(&oauth::hash(ticket));
+        if !taken.is_some_and(|t| t.expires_at > Utc::now() && t.request == request_key(pending)) {
             return HttpResponse::html(
                 403,
                 self.code_html(
@@ -1449,6 +1463,7 @@ async fn serve(
             Some(path),
         )
         .with_allowlist(allowlist)
+        .with_client_ip_header(&args.client_ip_header())
         .with_status(home.clone(), serving),
     );
     // A service's stderr is a log file: the code is shown where only the
@@ -2179,7 +2194,9 @@ mod tests {
             tunnel: None,
             allowlist_prefixes: 0,
         };
-        let connector = connector.with_status(home.path().to_path_buf(), serving);
+        let connector = connector
+            .with_client_ip_header("x-forwarded-for")
+            .with_status(home.path().to_path_buf(), serving);
         let request = pending_request(&connector, "s1").await;
         let code_from = |code: &str, address: &str| {
             from(
@@ -2269,6 +2286,107 @@ mod tests {
                 .status,
             200,
             "nobody is locked out"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn one_right_code_typed_at_once_on_many_pages_opens_one() {
+        let (connector, _mock) = connector(vec![]);
+        let connector = Arc::new(connector.with_client_ip_header("x-forwarded-for"));
+        let code = connector.pairing_code();
+        let mut requests = Vec::new();
+        for n in 0..8 {
+            requests.push(pending_request(&connector, &format!("s{n}")).await);
+        }
+        let attempts = requests.into_iter().map(|request| {
+            let connector = connector.clone();
+            let code = code.clone();
+            tokio::spawn(async move {
+                connector
+                    .handle(post(
+                        "/authorize",
+                        "application/x-www-form-urlencoded",
+                        &format!("{request}&pairing_code={code}"),
+                        None,
+                    ))
+                    .await
+                    .status
+            })
+        });
+        let mut opened = 0;
+        for attempt in attempts {
+            match attempt.await.unwrap() {
+                200 => opened += 1,
+                status => assert_eq!(status, 403),
+            }
+        }
+        assert_eq!(opened, 1, "a code is spent by the first page it opens");
+    }
+
+    #[tokio::test]
+    async fn with_no_trusted_header_nobody_is_struck_out() {
+        let (connector, _mock) = connector(vec![]);
+        let request = pending_request(&connector, "s1").await;
+        let typed = |code: &str| {
+            from(
+                post(
+                    "/authorize",
+                    "application/x-www-form-urlencoded",
+                    &format!("{request}&pairing_code={code}"),
+                    None,
+                ),
+                "203.0.113.7",
+            )
+        };
+        for _ in 0..SOURCE_STRIKES + 2 {
+            assert_eq!(connector.handle(typed("ZZZZZ-ZZZZZ")).await.status, 403);
+        }
+        let code = connector.pairing_code();
+        assert_eq!(
+            connector.handle(typed(&code)).await.status,
+            200,
+            "a header the tunnel is not known to write is nobody's address"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ticket_that_lapses_while_its_page_is_checked_chooses_nothing() {
+        let (connector, mock) = connector(vec![]);
+        let request = pending_request(&connector, "s1").await;
+        let code = connector.pairing_code();
+        let chooser = connector
+            .handle(post(
+                "/authorize",
+                "application/x-www-form-urlencoded",
+                &format!("{request}&pairing_code={code}"),
+                None,
+            ))
+            .await;
+        assert_eq!(chooser.status, 200);
+        let ticket = ticket_in(&chooser);
+        let form = http::parse_query(&format!("{request}&consent_ticket={ticket}"));
+        let pending = connector
+            .store
+            .lock()
+            .unwrap()
+            .begin_authorization(&form)
+            .ok()
+            .unwrap();
+        // It held when the page came back; it lapses before it is spent.
+        for held in connector.tickets.lock().unwrap().values_mut() {
+            held.expires_at = Utc::now() - chrono::Duration::seconds(1);
+        }
+        mock.requests.lock().unwrap().clear();
+        let lapsed = connector.choose(&form, &pending, &ticket).await;
+        assert_eq!(
+            lapsed.status,
+            403,
+            "{}",
+            String::from_utf8_lossy(&lapsed.body)
+        );
+        assert!(
+            connector.tickets.lock().unwrap().is_empty(),
+            "a lapsed ticket is gone, not left to try again"
         );
     }
 

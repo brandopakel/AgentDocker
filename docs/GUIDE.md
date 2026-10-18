@@ -851,6 +851,12 @@ Newest first. Only what changes how the product is used.
   waits a quarter of an hour, and a code guessed at twenty times is replaced.
   A service's log no longer records the code.
 
+- **Roles in the app.** In a session's panel, **Roles** gives an agent roles
+  from its project's palette, several to an agent and one role to several
+  agents; they show as coloured labels after its name. **Edit roles…** in the
+  same menu recolours, deletes or adds a project's roles. Nothing gets a role
+  unless you give it one.
+
 - **Allow for session.** A Codex approval that Codex offers to remember has a
   third answer beside **Allow once** and **Deny**: **Allow for session** lets the
   same command, network destination, files or access through without asking
@@ -1026,7 +1032,7 @@ Newest first. Only what changes how the product is used.
   once merged and ended, **Remove its worktree** (or `agentdocker
   worktree-remove`) cleans up. Files git ignores that the project lists in
   `.worktreeinclude` (one pathspec per line, e.g. `.env`) are copied into each
-  new worktree.
+  new worktree on macOS and Linux (not yet on Windows, where the worktree says so).
 - One-click review: a session's details show **Changes** — its branch against
   the branch in the project's main folder, the commits and files, each file's
   diff, and what a merge needs — and **Merge into main** merges it with a
