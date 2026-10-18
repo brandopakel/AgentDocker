@@ -13,8 +13,18 @@ when the screen does not already show it.
 
 After a send, **Queued · N sessions need attention** appears when recipients
 have missing or stale input receivers, paused delivery, ended sessions or provider
-limits. **Details** beside it (read aloud as *Delivery details*) names them and
-offers **Open session** and **Copy instructions**. These are the facts when the message was queued, not a receipt.
+limits. **Details** beside it (read aloud as *Delivery details*) lists them, one
+line each with what stands in the way and **Open**; the fix is in the session's
+panel. These are the facts when the message was queued, not a receipt.
+
+A session's panel says how to get it taking messages in as few words as do it.
+A Claude Code session shows the one command to paste — into its own folder, its
+own conversation, with the AgentDocker channel — whole, on a step of tone with a
+copy button that copies exactly it, and one line (*Quit it, then run this in a
+terminal.*); once it has ended, **Reconnect here** does the same in a pane of the
+window. A Codex session in a terminal takes messages at its next prompt and
+nothing can wake it there, so its panel says so and offers **Start a live Codex**
+(the launch form, for Codex in this project). Any other session gets one line.
 The details stay with that conversation or thread even if you switch while
 sending. In a small pane the feedback scrolls below the input, keeping typing
 and Send visible while every delivery action remains reachable.
