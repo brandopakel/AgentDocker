@@ -274,10 +274,14 @@ impl Allowlist {
     }
 
     /// The client address the tunnel reports, when the header is there
-    /// and parses; `x-forwarded-for` lists hops, the first is the client.
+    /// and parses. A tunnel appends the address it saw to whatever the
+    /// client sent (`x-forwarded-for` lists hops), so only the last entry
+    /// of the last such line is the tunnel's word: anything before it is
+    /// the client's own and could name any address, an allowed one too.
     pub fn client_ip(&self, request: &Request) -> Option<IpAddr> {
-        let value = request.header(&self.header)?;
-        value.split(',').next()?.trim().parse().ok()
+        let name = self.header.to_ascii_lowercase();
+        let (_, value) = request.headers.iter().rev().find(|(n, _)| *n == name)?;
+        value.rsplit(',').next()?.trim().parse().ok()
     }
 
     /// Whether this request may reach a vendor-facing endpoint. No
@@ -338,6 +342,40 @@ mod tests {
             headers: vec![(header.into(), value.into())],
             body: vec![],
         }
+    }
+
+    /// A client can put any address in front of the one the tunnel
+    /// appends, or send the header twice: only the tunnel's own last entry
+    /// is read, so naming an allowed address gets nobody in.
+    #[test]
+    fn only_the_tunnels_own_hop_is_the_client() {
+        let list = Allowlist::parse(&["anthropic".into()], "x-forwarded-for")
+            .unwrap()
+            .unwrap();
+        assert!(list.allows(&request_from("x-forwarded-for", "160.79.104.1")));
+        assert!(!list.allows(&request_from(
+            "x-forwarded-for",
+            "160.79.104.1, 198.51.100.7"
+        )));
+        assert!(list.allows(&request_from(
+            "x-forwarded-for",
+            "198.51.100.7, 160.79.104.1"
+        )));
+        let twice = Request {
+            headers: vec![
+                ("x-forwarded-for".into(), "160.79.104.1".into()),
+                ("x-forwarded-for".into(), "198.51.100.7".into()),
+            ],
+            ..request_from("x-forwarded-for", "")
+        };
+        assert!(
+            !list.allows(&twice),
+            "the line the tunnel wrote is the last"
+        );
+        assert_eq!(
+            list.client_ip(&twice),
+            Some("198.51.100.7".parse().unwrap())
+        );
     }
 
     #[test]
@@ -575,7 +613,9 @@ mod tests {
         let forwarded = Allowlist::parse(&["192.0.2.0/24".into()], "x-forwarded-for")
             .unwrap()
             .unwrap();
-        assert!(forwarded.allows(&request_from("x-forwarded-for", "192.0.2.5, 10.0.0.1")));
-        assert!(!forwarded.allows(&request_from("x-forwarded-for", "10.0.0.1, 192.0.2.5")));
+        // The last hop is the one the tunnel appended; the first is
+        // whatever the client claimed.
+        assert!(!forwarded.allows(&request_from("x-forwarded-for", "192.0.2.5, 10.0.0.1")));
+        assert!(forwarded.allows(&request_from("x-forwarded-for", "10.0.0.1, 192.0.2.5")));
     }
 }
