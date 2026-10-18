@@ -303,7 +303,14 @@ impl Context {
             procinfo::arguments,
             procinfo::start_time,
         )?;
-        bind_terminal(backend, &terminal, thread, &self.cwd).await
+        bind_terminal(
+            backend,
+            &terminal,
+            thread,
+            &self.cwd,
+            self.profile.as_deref(),
+        )
+        .await
     }
 
     /// The record of a conversation that no binding names and no terminal
@@ -425,6 +432,7 @@ async fn bind_terminal<B: super::Backend>(
     terminal: &ProcessIdentity,
     thread: &str,
     checkout: &Path,
+    profile: Option<&Path>,
 ) -> Result<AgentRecord> {
     let Response::Agents { agents, .. } = backend
         .call(Request::List {
@@ -460,6 +468,12 @@ async fn bind_terminal<B: super::Backend>(
             None => {
                 let mut spec = agent.spec.clone();
                 spec.labels.insert("session_id".into(), thread.to_owned());
+                if let Some(profile) = profile {
+                    spec.labels.insert(
+                        agentdocker_core::agent::PROFILE_LABEL.into(),
+                        profile.display().to_string(),
+                    );
+                }
                 // Joined as the terminal's own registration, not adopted
                 // again: an adoption of a registered process is refused.
                 spec.labels.remove("adopted");
@@ -474,7 +488,16 @@ async fn bind_terminal<B: super::Backend>(
                 ("via".to_owned(), "hook".to_owned()),
                 ("session_id".to_owned(), thread.to_owned()),
             ]
-            .into(),
+            .into_iter()
+            // With its verified profile, the terminal names the
+            // conversation's key: a record kept by that key takes it in.
+            .chain(profile.map(|profile| {
+                (
+                    agentdocker_core::agent::PROFILE_LABEL.to_owned(),
+                    profile.display().to_string(),
+                )
+            }))
+            .collect(),
             ..AgentSpec::default()
         },
     };
@@ -811,6 +834,52 @@ mod tests {
         assert!(backend.requests().is_empty());
     }
 
+    /// A terminal registered for its conversation names the verified
+    /// profile too, so the daemon matches the conversation's key and a
+    /// record kept by that key takes the terminal in.
+    #[tokio::test]
+    async fn a_terminal_names_its_profile_so_its_keyed_record_takes_it_in() {
+        use crate::client::mock::Mock;
+        let now = Utc::now();
+        let terminal = ProcessIdentity {
+            pid: 80494,
+            started_at: now,
+        };
+        // The daemon answers with the keyed record, the terminal joined.
+        let (_, mut keyed, _) = fixture();
+        keyed.input_binding = None;
+        keyed.status = agentdocker_core::AgentStatus::Running;
+        keyed.pid = Some(terminal.pid);
+        keyed.process_started_at = Some(now);
+        keyed
+            .spec
+            .labels
+            .insert("session_id".into(), "root-thread".into());
+        let backend = Mock::with(vec![
+            Response::Agents {
+                agents: vec![],
+                aliases: Default::default(),
+            },
+            Response::Agent { agent: keyed },
+        ]);
+        bind_terminal(
+            &backend,
+            &terminal,
+            "root-thread",
+            Path::new("/project"),
+            Some(Path::new("/profile")),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            &backend.requests()[1],
+            Request::Register { spec, pid: Some(80494), .. }
+                if spec.labels.get(agentdocker_core::agent::PROFILE_LABEL).map(String::as_str)
+                    == Some("/profile")
+                    && spec.labels.get("session_id").map(String::as_str) == Some("root-thread")
+        ));
+    }
+
     #[tokio::test]
     async fn a_terminal_record_learns_its_conversation_or_is_registered() {
         use crate::client::mock::Mock;
@@ -855,7 +924,7 @@ mod tests {
                 agent: folded.clone(),
             },
         ]);
-        let bound = bind_terminal(&backend, &terminal, "root-thread", checkout)
+        let bound = bind_terminal(&backend, &terminal, "root-thread", checkout, None)
             .await
             .unwrap();
         assert_eq!(bound.id, folded.id);
@@ -876,7 +945,7 @@ mod tests {
                 agent: folded.clone(),
             },
         ]);
-        bind_terminal(&backend, &terminal, "root-thread", checkout)
+        bind_terminal(&backend, &terminal, "root-thread", checkout, None)
             .await
             .unwrap();
         assert!(matches!(
@@ -889,7 +958,7 @@ mod tests {
             "codex-release",
             Some("root-thread"),
         )])]);
-        bind_terminal(&backend, &terminal, "root-thread", checkout)
+        bind_terminal(&backend, &terminal, "root-thread", checkout, None)
             .await
             .unwrap();
         assert_eq!(backend.requests().len(), 1);
@@ -901,7 +970,7 @@ mod tests {
                 agent: record("codex-80494", Some("root-thread")),
             },
         ]);
-        bind_terminal(&backend, &terminal, "root-thread", checkout)
+        bind_terminal(&backend, &terminal, "root-thread", checkout, None)
             .await
             .unwrap();
         assert!(matches!(
@@ -913,7 +982,7 @@ mod tests {
         // not this terminal's: refused.
         let backend = Mock::with(vec![listed(vec![record("codex-release", Some("other"))])]);
         assert!(
-            bind_terminal(&backend, &terminal, "root-thread", checkout)
+            bind_terminal(&backend, &terminal, "root-thread", checkout, None)
                 .await
                 .is_err()
         );
@@ -926,7 +995,7 @@ mod tests {
             },
         ]);
         assert!(
-            bind_terminal(&backend, &terminal, "root-thread", checkout)
+            bind_terminal(&backend, &terminal, "root-thread", checkout, None)
                 .await
                 .is_err()
         );

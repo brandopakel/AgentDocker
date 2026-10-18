@@ -357,7 +357,9 @@ pub(super) async fn run(client: &Client) -> Result<()> {
                 }
                 Err(error) => return Err(error),
             };
-            if keyed {
+            // What the attach answered decides, not which resolver ran: a
+            // record of the conversation with a process is reported as one.
+            if keyed && agent.keyed_only() {
                 report_keyed(client, &input, agent, observed_at).await?
             } else {
                 let owner = agent.pid.context("native hook binding lacks a terminal PID")?;
