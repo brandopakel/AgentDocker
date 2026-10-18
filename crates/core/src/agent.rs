@@ -372,6 +372,12 @@ pub struct AgentRecord {
     /// session with no adapter that takes its messages itself is reachable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_read: Option<crate::AdapterContact>,
+    /// The last contact of a session known by its key alone (no process
+    /// here, nothing supervising it): what a verified provider host sent
+    /// for it, and when. Its presence is reckoned from this
+    /// ([`SESSION_PRESENCE`]); its lifecycle never is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_contact: Option<SessionContact>,
     /// The external controller that consumes this agent's queued input,
     /// while one is bound. See [`crate::InputBinding`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -474,6 +480,35 @@ pub const CONNECTOR_LABEL: &str = "connector";
 /// has to come back with a refresh before it can say anything at all.
 pub const CONNECTOR_PRESENCE: chrono::Duration = chrono::Duration::hours(1);
 
+/// The provider profile a session belongs to, as its verified host names it
+/// (for Codex, its canonical `CODEX_HOME`). With the runtime and the
+/// provider's session id it is the session's key: the same thread id under
+/// another profile is another session.
+pub const PROFILE_LABEL: &str = "provider_profile";
+
+/// How long a session known by its key alone counts as present after its
+/// last contact. An open conversation can sit idle for hours, so passing
+/// this only stops counting it as somebody working now: its record, queue,
+/// leases and channels stay until it ends in fact or is retired.
+pub const SESSION_PRESENCE: chrono::Duration = chrono::Duration::hours(8);
+
+/// A provider session's key: its runtime, the profile it belongs to, and
+/// the provider's own id for it (Claude's session, Codex's root thread).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SessionKey {
+    pub runtime: String,
+    pub profile: Option<String>,
+    pub session: String,
+}
+
+/// The last contact of a session known by its key alone: which adapter
+/// made it, and when.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionContact {
+    pub adapter: crate::AdapterKind,
+    pub observed_at: DateTime<Utc>,
+}
+
 impl AgentRecord {
     /// A browser agent the remote connector registered: labelled
     /// `connector=true`, external and without a process here.
@@ -498,11 +533,47 @@ impl AgentRecord {
     }
 
     /// Whether the agent counts as present now: live, and, for a connector
-    /// agent, heard from within [`CONNECTOR_PRESENCE`]. Counts of live
+    /// agent, heard from within [`CONNECTOR_PRESENCE`], and for a session
+    /// known by its key alone within [`SESSION_PRESENCE`]. Counts of live
     /// agents count these; [`AgentStatus::is_live`] still says whether the
     /// record has ended.
     pub fn is_present(&self, now: DateTime<Utc>) -> bool {
-        self.status.is_live() && !self.connector_absent(now)
+        self.status.is_live() && !self.connector_absent(now) && !self.session_absent(now)
+    }
+
+    /// This session's key, when it names its provider session.
+    pub fn session_key(&self) -> Option<SessionKey> {
+        let session = self
+            .spec
+            .labels
+            .get("session_id")
+            .filter(|id| !id.is_empty())?;
+        Some(SessionKey {
+            runtime: self.spec.runtime.clone(),
+            profile: self.spec.labels.get(PROFILE_LABEL).cloned(),
+            session: session.clone(),
+        })
+    }
+
+    /// A session known by its key alone: no process here and nothing
+    /// supervising it, kept by its contact. Not a connector agent.
+    pub fn keyed_only(&self) -> bool {
+        !self.managed
+            && self.pid.is_none()
+            && !self.via_connector()
+            && self.session_contact.is_some()
+            && self.session_key().is_some()
+    }
+
+    /// A live session known by its key alone that nothing has been heard
+    /// from for longer than [`SESSION_PRESENCE`]: still registered, its
+    /// messages waiting, but nobody is working in it now.
+    pub fn session_absent(&self, now: DateTime<Utc>) -> bool {
+        self.status.is_live()
+            && self.keyed_only()
+            && self.session_contact.as_ref().is_some_and(|contact| {
+                now.signed_duration_since(contact.observed_at) > SESSION_PRESENCE
+            })
     }
 
     /// The role this agent holds, when it has one.
@@ -584,6 +655,7 @@ impl AgentRecord {
             provider_availability: None,
             adapter_contacts: Default::default(),
             queue_read: None,
+            session_contact: None,
             input_binding: None,
             legacy_offers: Default::default(),
         }
@@ -646,6 +718,62 @@ mod tests {
         assert_eq!(AgentId::from("abc").short(), "abc");
     }
 
+    /// A session known by its key alone: its key is runtime, profile and
+    /// the provider's id; it is present while heard from within
+    /// SESSION_PRESENCE and, past it, absent but never ended.
+    #[test]
+    fn a_session_known_by_its_key_is_present_by_contact_and_never_ended_by_silence() {
+        let at = chrono::DateTime::from_timestamp(1_000_000, 0).unwrap();
+        let mut session = AgentRecord::new(
+            AgentSpec {
+                name: "codex-thread".into(),
+                runtime: "codex".into(),
+                labels: [
+                    ("session_id".to_owned(), "thread-1".to_owned()),
+                    (PROFILE_LABEL.to_owned(), "/home/p/.codex".to_owned()),
+                ]
+                .into(),
+                ..Default::default()
+            },
+            false,
+            at,
+        );
+        session.status = AgentStatus::Running;
+        assert_eq!(
+            session.session_key(),
+            Some(SessionKey {
+                runtime: "codex".into(),
+                profile: Some("/home/p/.codex".into()),
+                session: "thread-1".into(),
+            })
+        );
+        assert!(
+            !session.keyed_only(),
+            "no contact yet: not a keyed-only session"
+        );
+        session.session_contact = Some(SessionContact {
+            adapter: crate::AdapterKind::Mcp,
+            observed_at: at,
+        });
+        assert!(session.keyed_only());
+        assert!(session.is_present(at + SESSION_PRESENCE));
+        let later = at + SESSION_PRESENCE + chrono::Duration::seconds(1);
+        assert!(session.session_absent(later) && !session.is_present(later));
+        assert!(session.status.is_live(), "silence is not an end");
+        // A process here, or a supervisor, is reckoned by that instead.
+        let mut with_process = session.clone();
+        with_process.pid = Some(42);
+        assert!(!with_process.keyed_only() && with_process.is_present(later));
+        // Stored without the field until there is a contact, and read back.
+        let mut fresh = session.clone();
+        fresh.session_contact = None;
+        let stored = serde_json::to_value(&fresh).unwrap();
+        assert!(stored.get("session_contact").is_none());
+        assert_eq!(
+            serde_json::from_value::<AgentRecord>(stored).unwrap(),
+            fresh
+        );
+    }
     /// A browser agent the connector registered has no process to end it, so
     /// before this it counted as a live session for as long as its grant
     /// stood: weeks after anybody last used it. Its last tool call is the

@@ -41,7 +41,8 @@ pub mod registry;
 pub mod secret;
 
 pub use agent::{
-    AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, RestartPolicy, VcsState,
+    AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, RestartPolicy, SessionContact,
+    SessionKey, VcsState,
 };
 pub use board::{Board, Lane};
 pub mod plan;

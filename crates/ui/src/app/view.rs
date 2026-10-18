@@ -968,9 +968,10 @@ impl App {
             "not receiving messages".to_owned()
         } else if self.ended_with_undelivered(agent) {
             format!("ended {}", undelivered_phrase(self.undelivered(agent)))
-        } else if agent.connector_absent(Utc::now()) {
-            // Registered until revoked, but nothing has come from the
-            // browser lately: its next request connects it again.
+        } else if agent.connector_absent(Utc::now()) || agent.session_absent(Utc::now()) {
+            // Registered until revoked or ended, but nothing has come from
+            // the browser or the conversation lately: its next request
+            // connects it again.
             "not connected".to_owned()
         } else if agent.status.is_live() {
             match self.activity.get(&id) {

@@ -842,6 +842,13 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **A Codex started in a terminal is itself.** A plain `codex` in a terminal
+  used to be unbound: its AgentDocker tools refused, so its model could reach
+  for other tools (a ChatGPT connector) and become a second agent. Its
+  conversation is now its own record, by its thread: its tools work as it,
+  and its messages reach it at its next prompt. It cannot be woken while
+  idle; a Codex launched from AgentDocker can.
+
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or
   has sat there some days (`task rule-add`, the board's settings). A

@@ -2119,6 +2119,16 @@ impl Daemon {
             }
             Request::RestartContainer { agent } => self.restart_container(&agent).await,
             Request::Register { spec, pid, session } => self.register(spec, pid, session).await,
+            Request::SessionAttach {
+                runtime,
+                profile,
+                session,
+                workdir,
+                adapter,
+            } => {
+                self.session_attach(runtime, profile, session, workdir, adapter)
+                    .await
+            }
             Request::ResumeSession { agent, spec } => self.resume_session(&agent, spec).await,
             Request::Deregister { agent } => lock(&self.state).deregister(&agent),
             Request::Discover => self.discover().await,
@@ -3395,6 +3405,132 @@ impl Daemon {
                     );
                 }
             }
+        }
+        response
+    }
+
+    /// Find or make the one record of a provider session by its key, and
+    /// note its contact. Only a Codex conversation attaches this way, and
+    /// only with its verified profile: the key is (runtime, profile, root
+    /// thread). The record is found or made under the state lock, checked
+    /// again after the checkout is resolved, so two first calls make one
+    /// record. A record that names the conversation and has a process is
+    /// returned as it is; one known by its key alone has its contact noted,
+    /// which is its presence and never its lifecycle.
+    async fn session_attach(
+        &self,
+        runtime: String,
+        profile: String,
+        session: String,
+        workdir: PathBuf,
+        adapter: agentdocker_core::AdapterKind,
+    ) -> Response {
+        if runtime != "codex" {
+            return Response::error(
+                ErrorCode::Invalid,
+                "only a Codex conversation attaches by its key",
+            );
+        }
+        if !agentdocker_core::identity::plain_session_id(&session) {
+            return Response::error(ErrorCode::Invalid, "a session key needs a plain session id");
+        }
+        if profile.trim().is_empty() || profile.chars().any(char::is_control) {
+            return Response::error(
+                ErrorCode::Invalid,
+                "a session key needs its verified provider profile",
+            );
+        }
+        let now = Utc::now();
+        if let Some(found) =
+            lock(&self.state).keyed_session(&runtime, &profile, &session, adapter, now)
+        {
+            return found;
+        }
+        let resolved = tokio::task::spawn_blocking(move || {
+            let path = std::fs::canonicalize(&workdir)?;
+            if !path.is_dir() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "working directory is not a directory",
+                ));
+            }
+            Ok(path)
+        })
+        .await;
+        let workdir = match resolved {
+            Ok(Ok(path)) => path,
+            Ok(Err(error)) => {
+                return Response::error(
+                    ErrorCode::Invalid,
+                    format!("the session's checkout is unusable: {error}"),
+                );
+            }
+            Err(_) => {
+                return Response::error(
+                    ErrorCode::Internal,
+                    "checkout resolution did not complete",
+                );
+            }
+        };
+        let project = self.project_for(Some(workdir.clone()), true).await;
+        let vcs = Self::vcs_for(Some(workdir.clone())).await;
+        let response = {
+            let mut state = lock(&self.state);
+            // Another first call may have made it meanwhile.
+            if let Some(found) = state.keyed_session(&runtime, &profile, &session, adapter, now) {
+                return found;
+            }
+            let short: String = session
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .take(8)
+                .collect();
+            let mut record = AgentRecord::new(
+                AgentSpec {
+                    name: format!("codex-{short}"),
+                    runtime: runtime.clone(),
+                    workdir: Some(workdir),
+                    labels: [
+                        ("session_id".to_owned(), session.clone()),
+                        (
+                            agentdocker_core::agent::PROFILE_LABEL.to_owned(),
+                            profile.clone(),
+                        ),
+                        (
+                            "via".to_owned(),
+                            match adapter {
+                                agentdocker_core::AdapterKind::Mcp => "mcp",
+                                agentdocker_core::AdapterKind::Hooks => "hook",
+                            }
+                            .to_owned(),
+                        ),
+                        (
+                            agentdocker_core::agent::NAME_LABEL.to_owned(),
+                            agentdocker_core::agent::GENERATED_NAME.to_owned(),
+                        ),
+                    ]
+                    .into(),
+                    ..AgentSpec::default()
+                },
+                false,
+                now,
+            );
+            record.project = project;
+            record.vcs = vcs;
+            record.status = AgentStatus::Running;
+            record.started_at = Some(now);
+            record.session_contact = Some(agentdocker_core::SessionContact {
+                adapter,
+                observed_at: now,
+            });
+            state.insert_record(record)
+        };
+        if let Response::Agent { agent } = &response
+            && watchable(agent)
+            && let Err(reason) = self.ensure_watched(agent, WATCHER_ATTACH_TIMEOUT).await
+        {
+            // The conversation is known either way; coverage is not claimed.
+            warn!(agent = %agent.id, %reason, "a keyed session's checkout is not watched");
         }
         response
     }
@@ -6313,6 +6449,74 @@ impl State {
                     .expect("liveness identity retained") = record;
             }
         }
+    }
+
+    /// The live record a session key names, its contact noted, or `None`
+    /// when there is none. A record under another profile refuses, as does
+    /// more than one record for the key.
+    fn keyed_session(
+        &mut self,
+        runtime: &str,
+        profile: &str,
+        session: &str,
+        adapter: agentdocker_core::AdapterKind,
+        now: DateTime<Utc>,
+    ) -> Option<Response> {
+        let named: Vec<AgentRecord> = self
+            .registry
+            .live()
+            .filter(|a| {
+                a.spec.runtime == runtime
+                    && a.spec.labels.get("session_id").map(String::as_str) == Some(session)
+            })
+            .cloned()
+            .collect();
+        if named.iter().any(|a| {
+            a.spec
+                .labels
+                .get(agentdocker_core::agent::PROFILE_LABEL)
+                .is_some_and(|other| other != profile)
+        }) {
+            return Some(Response::error(
+                ErrorCode::Conflict,
+                "this conversation is known under another provider profile",
+            ));
+        }
+        let mut record = match named.as_slice() {
+            [] => return None,
+            [only] => only.clone(),
+            _ => {
+                return Some(Response::error(
+                    ErrorCode::Conflict,
+                    "more than one record names this conversation",
+                ));
+            }
+        };
+        if !record.keyed_only() {
+            return Some(Response::Agent { agent: record });
+        }
+        // A contact a moment ago is the same presence; the store is not
+        // written for every tool call.
+        let fresh = record.session_contact.as_ref().is_some_and(|c| {
+            now.signed_duration_since(c.observed_at) < chrono::Duration::seconds(30)
+        });
+        if !fresh {
+            record.last_seen = now;
+            record.session_contact = Some(agentdocker_core::SessionContact {
+                adapter,
+                observed_at: now,
+            });
+            if let Some(error) = self.write_failure() {
+                return Some(error);
+            }
+            if self.persist("agent", |store| store.upsert_agent(&record)) == Persisted::Committed {
+                *self
+                    .registry
+                    .get_mut(&record.id)
+                    .expect("keyed session retained") = record.clone();
+            }
+        }
+        Some(Response::Agent { agent: record })
     }
 
     fn touch(&mut self, id: &AgentId) {
@@ -10562,6 +10766,109 @@ mod tests {
             Response::Agent { agent } => agent,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    /// A Codex conversation nothing has bound attaches by its key: the
+    /// first attach makes its one record (no process, kept by contact), and
+    /// every later or racing one finds it. Another profile for the same
+    /// thread is refused; a record of the conversation with a process is
+    /// answered as it is; only a Codex conversation attaches this way.
+    #[tokio::test]
+    async fn a_conversation_attaches_by_its_key_to_one_record() {
+        use agentdocker_core::AdapterKind;
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let checkout = TempDir::new().unwrap();
+        let thread = "de4e3b54-48e1-7b9b-82cc-773c517fc9c5";
+        let attach = |profile: &str, session: &str, runtime: &str| Request::SessionAttach {
+            runtime: runtime.into(),
+            profile: profile.into(),
+            session: session.into(),
+            workdir: checkout.path().to_path_buf(),
+            adapter: AdapterKind::Mcp,
+        };
+        let Response::Agent { agent: first } =
+            daemon.handle(attach("/p/.codex", thread, "codex")).await
+        else {
+            panic!("the first attach makes the record")
+        };
+        assert!(first.keyed_only() && first.pid.is_none() && first.status.is_live());
+        assert_eq!(first.session_key().unwrap().session, thread);
+        assert_eq!(
+            first
+                .spec
+                .labels
+                .get(agentdocker_core::agent::PROFILE_LABEL)
+                .map(String::as_str),
+            Some("/p/.codex")
+        );
+        let (a, b) = tokio::join!(
+            daemon.handle(attach("/p/.codex", thread, "codex")),
+            daemon.handle(attach("/p/.codex", thread, "codex"))
+        );
+        for response in [a, b] {
+            let Response::Agent { agent } = response else {
+                panic!("found, not made again")
+            };
+            assert_eq!(agent.id, first.id);
+        }
+        assert_eq!(
+            lock(&daemon.state)
+                .registry
+                .live()
+                .filter(|r| r.spec.labels.get("session_id").map(String::as_str) == Some(thread))
+                .count(),
+            1,
+            "one conversation, one record"
+        );
+        assert!(matches!(
+            daemon.handle(attach("/q/.codex", thread, "codex")).await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(attach("/p/.codex", thread, "claude-code"))
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(attach("/p/.codex", "not plain; rm", "codex"))
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        // A conversation whose terminal was proven has a record with that
+        // process: it is the conversation's record, answered as it is.
+        let other = "a1b2c3d4-0000-7000-8000-000000000001";
+        let mut spec = spec("codex-terminal");
+        spec.runtime = "codex".into();
+        spec.labels.insert("session_id".into(), other.into());
+        let Response::Agent { agent: terminal } = daemon
+            .handle(Request::Register {
+                spec,
+                pid: Some(std::process::id()),
+                session: None,
+            })
+            .await
+        else {
+            panic!("registered")
+        };
+        let Response::Agent { agent: answered } =
+            daemon.handle(attach("/p/.codex", other, "codex")).await
+        else {
+            panic!("answered")
+        };
+        assert_eq!(answered.id, terminal.id);
+        assert!(!answered.keyed_only());
     }
 
     #[tokio::test]

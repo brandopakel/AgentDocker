@@ -226,6 +226,42 @@ async fn finish_report<B: Backend>(
     }
 }
 
+/// The activity of a conversation known by its key alone: no process to
+/// verify, so only what the hook says, for the record its key named. The
+/// attach that found it was its contact.
+async fn report_keyed<B: Backend>(
+    backend: &B,
+    input: &Input,
+    agent: AgentRecord,
+    observed_at: chrono::DateTime<Utc>,
+) -> Result<Option<AgentRecord>> {
+    ensure!(
+        input.is_root()
+            && agent.status.is_live()
+            && agent.keyed_only()
+            && agent.spec.labels.get("session_id") == Some(&input.session_id),
+        "Codex activity requires the conversation's own keyed record"
+    );
+    let Some(activity) = activity(&input.hook_event_name) else {
+        return Ok(Some(agent));
+    };
+    match backend
+        .call(Request::ReportActivity {
+            agent: agent.id.to_string(),
+            observation: ActivityObservation {
+                activity,
+                observed_at,
+                reason: None,
+            },
+        })
+        .await?
+    {
+        Response::Ok => Ok(Some(agent)),
+        Response::Error { message, .. } => bail!("activity report refused: {message}"),
+        _ => bail!("unexpected activity response"),
+    }
+}
+
 fn nearest_codex_host(table: &[agentdocker_host::procinfo::Process], mut pid: u32) -> Option<u32> {
     for _ in 0..12 {
         let process = table.iter().find(|p| p.pid == pid)?;
@@ -301,17 +337,33 @@ pub(super) async fn run(client: &Client) -> Result<()> {
         let native = crate::mcp::native_identity::Context::from_host(pid, checkout.clone(), &table)?;
         let agent = if let Some(context) = native {
             let meta = json!({"threadId":input.session_id, "sessionId":input.session_id});
+            let mut keyed = false;
             let agent = match context.resolve(client, &meta).await {
                 Ok(agent) => agent,
                 Err(error) if crate::mcp::native_identity::unbound(&error) => {
                     terminal = true;
-                    context.resolve_terminal(client, &meta).await?
+                    // Its terminal, when one proves it; else the
+                    // conversation itself, by its key.
+                    match context.resolve_terminal(client, &meta).await {
+                        Ok(agent) => agent,
+                        Err(error) if crate::mcp::native_identity::unbound(&error) => {
+                            keyed = true;
+                            context
+                                .attach(client, &meta, agentdocker_core::AdapterKind::Hooks)
+                                .await?
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
                 Err(error) => return Err(error),
             };
-            let owner = agent.pid.context("native hook binding lacks a terminal PID")?;
-            let birth = agent.process_started_at.context("native hook binding lacks a process birth")?;
-            finish_report(client, &input, agent, &checkout, owner, birth, observed_at).await?
+            if keyed {
+                report_keyed(client, &input, agent, observed_at).await?
+            } else {
+                let owner = agent.pid.context("native hook binding lacks a terminal PID")?;
+                let birth = agent.process_started_at.context("native hook binding lacks a process birth")?;
+                finish_report(client, &input, agent, &checkout, owner, birth, observed_at).await?
+            }
         } else {
             ensure!(
                 table.iter().find(|p| p.pid == pid).is_some_and(|p|

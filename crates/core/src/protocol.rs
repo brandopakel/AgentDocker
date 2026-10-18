@@ -289,6 +289,19 @@ pub enum Request {
         #[serde(default)]
         session: Option<crate::multiplexer::Session>,
     },
+    /// Find or make the one record of a provider session by its key
+    /// (runtime, verified profile, the provider's session id), and note its
+    /// contact. What a verified Codex host sends for a conversation that no
+    /// binding names and no terminal proves: the conversation is the
+    /// identity, its process (if one is ever proven) attaches to the same
+    /// record. Answers `agent`.
+    SessionAttach {
+        runtime: String,
+        profile: String,
+        session: String,
+        workdir: std::path::PathBuf,
+        adapter: crate::AdapterKind,
+    },
     /// Mark an externally managed agent as finished.
     Deregister {
         agent: String,

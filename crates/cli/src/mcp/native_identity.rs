@@ -306,6 +306,71 @@ impl Context {
         bind_terminal(backend, &terminal, thread, &self.cwd).await
     }
 
+    /// The record of a conversation that no binding names and no terminal
+    /// proves, found or made by its key: this profile, its root thread.
+    /// The conversation is the identity; it has no process here, and a
+    /// process proven later joins the same record. Only the shared cached
+    /// host, whose package cache proves its profile, may name one. A
+    /// binding that names the conversation but cannot be used here is not
+    /// "nothing names it": that is its controller's to recover, never a
+    /// second way into its queue.
+    pub(crate) async fn attach<B: super::Backend>(
+        &self,
+        backend: &B,
+        meta: &Value,
+        adapter: agentdocker_core::AdapterKind,
+    ) -> Result<AgentRecord> {
+        if self.profile.is_none() {
+            return Err(anyhow::Error::new(Unbound));
+        }
+        self.verify_host()?;
+        self.attach_verified(backend, meta, adapter).await
+    }
+
+    /// [`Self::attach`] once the host is verified.
+    async fn attach_verified<B: super::Backend>(
+        &self,
+        backend: &B,
+        meta: &Value,
+        adapter: agentdocker_core::AdapterKind,
+    ) -> Result<AgentRecord> {
+        let profile = self
+            .profile
+            .as_ref()
+            .ok_or_else(|| anyhow::Error::new(Unbound))?;
+        let thread = root_thread(meta)?;
+        let Response::Agents { agents, .. } = backend
+            .call(Request::List {
+                all: true,
+                project: None,
+                labels: Default::default(),
+            })
+            .await
+            .map_err(TransportError)?
+        else {
+            bail!("cannot inspect native Codex bindings");
+        };
+        ensure!(
+            !bound_elsewhere(&agents, thread),
+            "this Codex conversation has an input binding that cannot be used here; recover it from its session"
+        );
+        match backend
+            .call(Request::SessionAttach {
+                runtime: "codex".into(),
+                profile: profile.display().to_string(),
+                session: thread.to_owned(),
+                workdir: self.cwd.clone(),
+                adapter,
+            })
+            .await
+            .map_err(TransportError)?
+        {
+            Response::Agent { agent } => Ok(agent),
+            Response::Error { message, .. } => bail!("the conversation cannot attach: {message}"),
+            _ => bail!("unexpected response attaching the conversation"),
+        }
+    }
+
     fn terminal(
         &self,
         table: &[procinfo::Process],
@@ -344,6 +409,17 @@ impl Context {
 /// existing record learns its conversation (and the daemon may fold it into
 /// the record that held it before), or one is registered. A record bound to
 /// another conversation is refused.
+/// Whether some record's input binding names this conversation, live or
+/// not: its controller owns the conversation's delivery.
+fn bound_elsewhere(agents: &[AgentRecord], thread: &str) -> bool {
+    agents.iter().any(|agent| {
+        agent
+            .input_binding
+            .as_ref()
+            .is_some_and(|binding| binding.provider.session == thread)
+    })
+}
+
 async fn bind_terminal<B: super::Backend>(
     backend: &B,
     terminal: &ProcessIdentity,
@@ -654,6 +730,72 @@ mod tests {
         for tool in ["read_inbox", "wait_for_messages", "acknowledge_messages"] {
             assert!(names.contains(&tool), "{tool} is listed");
         }
+    }
+
+    /// A conversation no binding names and no terminal proves attaches by
+    /// its key (this profile, its root thread) through the shared cached
+    /// host only. A binding that names it, live or not, refuses instead of
+    /// opening a second way into its queue; a child thread asks nothing.
+    #[tokio::test]
+    async fn an_unbound_conversation_attaches_by_its_key_or_is_refused() {
+        use crate::client::mock::Mock;
+        let (context, bound, meta) = fixture();
+        let listed = |agents: Vec<AgentRecord>| Response::Agents {
+            agents,
+            aliases: Default::default(),
+        };
+        let mut keyed = bound.clone();
+        keyed.input_binding = None;
+        keyed.pid = None;
+        let backend = Mock::with(vec![
+            listed(Vec::new()),
+            Response::Agent {
+                agent: keyed.clone(),
+            },
+        ]);
+        let attached = context
+            .attach_verified(&backend, &meta, agentdocker_core::AdapterKind::Mcp)
+            .await
+            .unwrap();
+        assert_eq!(attached.id, keyed.id);
+        assert!(matches!(
+            &backend.requests()[1],
+            Request::SessionAttach { runtime, profile, session, workdir, adapter }
+                if runtime == "codex" && profile == "/profile" && session == "root-thread"
+                    && workdir == Path::new("/project")
+                    && *adapter == agentdocker_core::AdapterKind::Mcp
+        ));
+
+        // Its binding exists but cannot be used here: refused, never attached.
+        let backend = Mock::with(vec![listed(vec![bound])]);
+        let refused = context
+            .attach_verified(&backend, &meta, agentdocker_core::AdapterKind::Hooks)
+            .await
+            .unwrap_err();
+        assert!(!unbound(&refused) && refused.to_string().contains("recover it"));
+        assert_eq!(backend.requests().len(), 1, "nothing attached");
+
+        // A child thread is not its root conversation.
+        let backend = Mock::with(vec![]);
+        let child = json!({"threadId":"child-thread","sessionId":"root-thread"});
+        assert!(
+            context
+                .attach_verified(&backend, &child, agentdocker_core::AdapterKind::Mcp)
+                .await
+                .is_err()
+        );
+        assert!(backend.requests().is_empty());
+
+        // A dedicated server never names one.
+        let (mut dedicated, _, meta) = fixture();
+        dedicated.profile = None;
+        let backend = Mock::with(vec![]);
+        let refused = dedicated
+            .attach(&backend, &meta, agentdocker_core::AdapterKind::Mcp)
+            .await
+            .unwrap_err();
+        assert!(unbound(&refused));
+        assert!(backend.requests().is_empty());
     }
 
     /// A dedicated server earns authority only through an accepted binding:
@@ -1016,8 +1158,16 @@ mod tests {
         }
         impl Backend for Inventory {
             async fn call(&self, request: Request) -> Result<Response> {
-                assert!(matches!(request, Request::List { .. }));
                 self.calls.fetch_add(1, Ordering::SeqCst);
+                // A conversation no binding names is attached by its key;
+                // this daemon refuses that, so the failure stays its own.
+                if matches!(request, Request::SessionAttach { .. }) {
+                    return Ok(Response::error(
+                        agentdocker_core::ErrorCode::Invalid,
+                        "fixture refuses keyed sessions",
+                    ));
+                }
+                assert!(matches!(request, Request::List { .. }));
                 if self.unavailable {
                     Err(anyhow::anyhow!("fixture connection refused")
                         .context("cannot read fixture inventory"))
@@ -1058,10 +1208,14 @@ mod tests {
                 .unwrap_err();
             assert_eq!(code, super::super::INTERNAL_ERROR);
             assert!(attribution.is_none(), "unverified requests stay unmeasured");
-            assert_eq!(
-                server.backend.calls.load(Ordering::SeqCst),
-                usize::from(!stale)
-            );
+            // Stale: nothing asked. Unavailable: the first inventory read
+            // fails. Missing binding: the inventory twice, then the attach.
+            let expected = match (unavailable, stale) {
+                (_, true) => 0,
+                (true, false) => 1,
+                (false, false) => 3,
+            };
+            assert_eq!(server.backend.calls.load(Ordering::SeqCst), expected);
             if unavailable && !stale {
                 assert_eq!(
                     message,
