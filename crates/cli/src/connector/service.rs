@@ -657,7 +657,7 @@ mod tests {
                 "--tunnel".into(),
                 "cloudflared".into(),
                 "--project".into(),
-                "/Users/p/keel".into(),
+                "/Users/p/orchard".into(),
                 "--allow-from".into(),
                 "anthropic".into(),
             ],
@@ -793,7 +793,7 @@ mod tests {
         assert!(plist.contains("<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>"));
         assert!(plist.contains("<string>/Users/p/.agentdocker/connector/serve.log</string>"));
         let unit = systemd_unit(&layout);
-        assert!(unit.contains("ExecStart=:/opt/agentdocker connector serve --tunnel cloudflared --project /Users/p/keel --allow-from anthropic\n"));
+        assert!(unit.contains("ExecStart=:/opt/agentdocker connector serve --tunnel cloudflared --project /Users/p/orchard --allow-from anthropic\n"));
         assert!(unit.contains("Environment=AGENTDOCKER_HOME=/Users/p/.agentdocker\n"));
         assert!(unit.contains("Restart=on-failure"));
         let install = install_plan(&layout, true);
@@ -817,7 +817,7 @@ mod tests {
             pid: 4242,
             public_url: "https://x.trycloudflare.com".into(),
             bind: "127.0.0.1:62800".into(),
-            default_project: Some("/Users/p/keel".into()),
+            default_project: Some("/Users/p/orchard".into()),
             pairing_code: "ABCD-EFGH".into(),
             started_at: chrono::Utc::now(),
             tunnel: Some(TunnelStatus {

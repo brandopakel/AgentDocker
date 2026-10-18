@@ -696,7 +696,7 @@ installs do not pull the GUI dependencies.
 Use one cache for a build campaign:
 
 ```sh
-export CARGO_TARGET_DIR=/private/tmp/agentdocker-iced-production
+export CARGO_TARGET_DIR="$PWD/target/iced"
 python3 scripts/build_storage.py
 bash scripts/verify.sh check
 python3 scripts/build_native.py

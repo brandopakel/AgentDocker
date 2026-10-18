@@ -350,9 +350,9 @@ mod tests {
             anthropic.contains("::ffff:160.79.105.9".parse().unwrap()),
             "mapped v4"
         );
-        let single = Cidr::parse("100.31.168.162").unwrap();
-        assert!(single.contains("100.31.168.162".parse().unwrap()));
-        assert!(!single.contains("100.31.168.163".parse().unwrap()));
+        let single = Cidr::parse("203.0.113.162").unwrap();
+        assert!(single.contains("203.0.113.162".parse().unwrap()));
+        assert!(!single.contains("203.0.113.163".parse().unwrap()));
         let six = Cidr::parse("2001:db8::/32").unwrap();
         assert!(six.contains("2001:db8:1::1".parse().unwrap()));
         assert!(!six.contains("2001:db9::1".parse().unwrap()));

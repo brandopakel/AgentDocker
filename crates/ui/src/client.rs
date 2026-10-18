@@ -355,6 +355,7 @@ fn spawn_agentd(socket: &Path, home: &Path) -> Result<Child> {
     let log = agentdocker_host::dirs::private_file(&paths::daemon_log(home), true, true)?;
     let mut command = Command::new(&exe);
     agentdocker_host::command::detach(&mut command);
+    agentdocker_host::command::without_session(&mut command);
     command
         .arg("--socket")
         .arg(socket)

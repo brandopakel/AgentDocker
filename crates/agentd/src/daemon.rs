@@ -999,6 +999,11 @@ impl Daemon {
         state.reported_duplicates = current;
     }
 
+    /// Lift the transient provider blocks whose retry is due.
+    pub fn retry_providers(&self) {
+        lock(&self.state).retry_providers(Utc::now());
+    }
+
     pub fn check_liveness(&self) {
         lock(&self.state).settle_duplicates(Instant::now());
         self.report_duplicates();
@@ -6293,6 +6298,28 @@ impl State {
         Some(record)
     }
 
+    /// Seen, as one that read its own queue: the contact of a session with
+    /// no adapter, bound to its current process.
+    fn touch_reader(&mut self, id: &AgentId) {
+        if let Some(mut record) = self.registry.get(id).cloned() {
+            let now = Utc::now();
+            record.last_seen = now;
+            if let Some(born) = record.process_started_at {
+                record.queue_read = Some(agentdocker_core::AdapterContact {
+                    process_started_at: born,
+                    observed_at: now,
+                });
+            }
+            let committed = self.persist("agent", |store| store.upsert_agent(&record));
+            if committed == Persisted::Committed {
+                *self
+                    .registry
+                    .get_mut(id)
+                    .expect("liveness identity retained") = record;
+            }
+        }
+    }
+
     fn touch(&mut self, id: &AgentId) {
         if let Some(mut record) = self.registry.get(id).cloned() {
             record.last_seen = Utc::now();
@@ -6412,6 +6439,7 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
+        self.touch_reader(&id);
         // Repeated or fabricated IDs do not establish a new receipt. Retain
         // inbox order and record only the accepted work this call removes.
         let wanted: HashSet<&MessageId> = messages.iter().collect();
@@ -6477,7 +6505,7 @@ impl State {
             );
         }
         // A failed liveness write must stop the operation before queue removal.
-        self.touch(&id);
+        self.touch_reader(&id);
         let messages = match self.read_inbox(&id, drain) {
             Ok(messages) => messages,
             Err(error) => return *error,
@@ -8042,6 +8070,7 @@ impl State {
         canonical.vcs = fresh.vcs.clone();
         canonical.reported_activity = fresh.reported_activity.clone();
         canonical.adapter_contacts = fresh.adapter_contacts.clone();
+        canonical.queue_read = fresh.queue_read.clone();
         canonical.provider_availability = None;
         for record in &folded {
             for (key, value) in &record.spec.labels {
@@ -8375,6 +8404,16 @@ impl State {
                     canonical.adapter_contacts.insert(*kind, contact.clone());
                 }
             }
+            // A duplicate's read of the session's queue was the session's.
+            if let Some(read) = &record.queue_read
+                && Some(read.process_started_at) == canonical.process_started_at
+                && canonical.queue_read.as_ref().is_none_or(|ours| {
+                    ours.process_started_at != read.process_started_at
+                        || read.observed_at > ours.observed_at
+                })
+            {
+                canonical.queue_read = Some(read.clone());
+            }
         }
         let retired: Vec<AgentId> = retired.iter().map(|r| r.id.clone()).collect();
         let kind = EventKind::SessionDuplicatesFolded {
@@ -8540,11 +8579,11 @@ mod tests {
         let daemon = open(&dir);
         let me = std::process::id();
 
-        let hooks = register_here(&daemon, "claude-2c79ae10", Some(me)).await;
+        let hooks = register_here(&daemon, "claude-63bc3dca", Some(me)).await;
         let mcp = register_here(&daemon, "claude-code-45856", Some(me)).await;
         assert_eq!(mcp.id, hooks.id, "the second half is the first half");
         assert_eq!(
-            mcp.spec.name, "claude-2c79ae10",
+            mcp.spec.name, "claude-63bc3dca",
             "and keeps the name the first half registered"
         );
         assert_eq!(
@@ -8776,7 +8815,7 @@ mod tests {
         // MCP registers, hooks joins the same record, and the session
         // takes a lease and is sent something.
         let mcp = register("claude-code-45856", None).await;
-        let hooks = register("claude-2c79ae10", Some("session-a")).await;
+        let hooks = register("claude-63bc3dca", Some("session-a")).await;
         assert_eq!(hooks.id, mcp.id);
         // The name that survives is the first registrar's, so the hooks
         // half is answered as `claude-code-45856` however it asked. That
@@ -9778,7 +9817,7 @@ mod tests {
         let daemon = open(&dir);
         let me = std::process::id();
 
-        let hooks = register_here(&daemon, "claude-2c79ae10", Some(me)).await;
+        let hooks = register_here(&daemon, "claude-63bc3dca", Some(me)).await;
         let stale = {
             // Built by hand, so everything registration would have
             // filled in has to be filled in here — including the
@@ -9876,8 +9915,8 @@ mod tests {
     /// then the session's Bash tool `cd`'d into a subdirectory, and Claude
     /// Code reports that as every later hook's `cwd`. Identity required the
     /// two halves to agree on the directory, so the next hook registered a
-    /// second agent for the same process and session — the `claude-83083752`
-    /// beside `claude-code-2923`, and `claude-25010eef` beside
+    /// second agent for the same process and session — the `claude-c960824c`
+    /// beside `claude-code-2923`, and `claude-1606cc8b` beside
     /// `claude-code-19625`, that made the desktop count three sessions
     /// where there were two, and five where there was one.
     #[tokio::test]
@@ -9896,15 +9935,15 @@ mod tests {
         let started = agent(
             register_session(
                 &daemon,
-                "claude-83083752",
+                "claude-c960824c",
                 checkout.path(),
-                Some("83083752"),
+                Some("c960824c"),
             )
             .await,
         );
         assert_eq!(started.id, mcp.id, "the hooks half joins at the launch");
         let moved_hook =
-            agent(register_session(&daemon, "claude-83083752", &moved, Some("83083752")).await);
+            agent(register_session(&daemon, "claude-c960824c", &moved, Some("c960824c")).await);
         assert_eq!(
             moved_hook.id, mcp.id,
             "a hook from a subdirectory is still the same session"
@@ -9948,22 +9987,22 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let drifted =
-            agent(register_session(&daemon, "claude-83083752", &moved, Some("83083752")).await);
+            agent(register_session(&daemon, "claude-c960824c", &moved, Some("c960824c")).await);
         let mcp = agent(register_session(&daemon, "claude-code-2923", checkout.path(), None).await);
         assert_ne!(mcp.id, drifted.id);
         let hook = agent(
             register_session(
                 &daemon,
-                "claude-83083752",
+                "claude-c960824c",
                 checkout.path(),
-                Some("83083752"),
+                Some("c960824c"),
             )
             .await,
         );
         assert_eq!(hook.id, mcp.id, "the transport in its checkout, as before");
         assert_eq!(
             hook.spec.labels.get("session_id").map(String::as_str),
-            Some("83083752"),
+            Some("c960824c"),
             "which learns the session"
         );
         daemon.check_liveness();
@@ -9993,7 +10032,7 @@ mod tests {
             &daemon,
             "claude-code-2923",
             checkout.path(),
-            Some("83083752"),
+            Some("c960824c"),
         )
         .await
         else {
@@ -10005,11 +10044,11 @@ mod tests {
         let drifted = {
             let mut record = AgentRecord::new(
                 AgentSpec {
-                    name: "claude-83083752".into(),
+                    name: "claude-c960824c".into(),
                     runtime: "claude-code".into(),
                     workdir: Some(moved.canonicalize().unwrap()),
                     labels: BTreeMap::from([
-                        ("session_id".into(), "83083752".into()),
+                        ("session_id".into(), "c960824c".into()),
                         ("via".into(), "hook".into()),
                     ]),
                     ..AgentSpec::default()
@@ -10055,7 +10094,7 @@ mod tests {
         assert!(daemon.is_live(&drifted.id) && daemon.is_live(&kept.id));
         // A registration meanwhile is answered by the record that stays.
         let Response::Agent { agent: answered } =
-            register_session(&daemon, "claude-83083752", &moved, Some("83083752")).await
+            register_session(&daemon, "claude-c960824c", &moved, Some("c960824c")).await
         else {
             panic!("the session's hook is answered")
         };
@@ -10090,7 +10129,7 @@ mod tests {
             daemon.recent_events(20).iter().any(|e| matches!(&e.kind,
                 EventKind::SessionDuplicatesFolded { agent, retired, session, pid }
                 if *agent == kept.id && retired == &vec![drifted.id.clone()]
-                    && session == "83083752" && Some(*pid) == kept.pid)),
+                    && session == "c960824c" && Some(*pid) == kept.pid)),
             "announced"
         );
         // Durable: reopened, the alias still resolves and the queue is whole.
@@ -10129,7 +10168,7 @@ mod tests {
             &daemon,
             "claude-code-19625",
             checkout.path(),
-            Some("25010eef"),
+            Some("1606cc8b"),
         )
         .await
         else {
@@ -10138,7 +10177,7 @@ mod tests {
         let drifted = {
             let mut record = kept.clone();
             record.id = AgentId::generate();
-            record.spec.name = "claude-25010eef".into();
+            record.spec.name = "claude-1606cc8b".into();
             record.spec.workdir = Some(moved.canonicalize().unwrap());
             record.created_at = kept.created_at + chrono::Duration::minutes(2);
             let mut state = lock(&daemon.state);
@@ -10342,7 +10381,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let me = std::process::id();
-        let mine = register_here(&daemon, "claude-2c79ae10", Some(me)).await;
+        let mine = register_here(&daemon, "claude-63bc3dca", Some(me)).await;
 
         // A different runtime in the same process is a different agent:
         // a host that runs several kinds of session in one process would
@@ -10411,6 +10450,102 @@ mod tests {
             Response::Agent { agent } => agent,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    /// Reading its own queue is a session's contact, bound to its process:
+    /// one with no adapter that takes its messages itself is reachable.
+    #[tokio::test]
+    async fn reading_its_own_queue_is_a_sessions_contact() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let agent = register(&daemon, "poller", Some(child.id())).await;
+        let born = agent.process_started_at.expect("a live process's birth");
+        assert!(agent.queue_read.is_none());
+        assert!(matches!(
+            daemon
+                .handle(Request::Inbox {
+                    agent: agent.id.to_string(),
+                    drain: false,
+                })
+                .await,
+            Response::Messages { .. }
+        ));
+        let read = lock(&daemon.state)
+            .registry
+            .get(&agent.id)
+            .unwrap()
+            .queue_read
+            .clone()
+            .expect("the read is recorded");
+        assert_eq!(read.process_started_at, born);
+        let later = Utc::now() + agentdocker_core::input::FIRST_CONTACT_GRACE * 2;
+        let record = lock(&daemon.state).registry.get(&agent.id).unwrap().clone();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(!agentdocker_core::input::unreachable(&record, later));
+    }
+
+    /// The session's only read of its queue went through a duplicate
+    /// record: the fold keeps it, so the session is not taken for one that
+    /// cannot receive.
+    #[tokio::test]
+    async fn a_fold_keeps_the_duplicates_read_of_the_sessions_queue() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let checkout = TempDir::new().unwrap();
+        std::fs::write(checkout.path().join("Agentfile.toml"), "").unwrap();
+        let moved = checkout.path().join("artifacts");
+        std::fs::create_dir_all(&moved).unwrap();
+        let Response::Agent { agent: kept } = register_session(
+            &daemon,
+            "claude-code-2923",
+            checkout.path(),
+            Some("c960824c"),
+        )
+        .await
+        else {
+            panic!("the session registers")
+        };
+        let born = kept.process_started_at.expect("a live process's birth");
+        assert!(kept.queue_read.is_none());
+        let read = agentdocker_core::AdapterContact {
+            process_started_at: born,
+            observed_at: Utc::now(),
+        };
+        let drifted = {
+            let mut record = AgentRecord::new(
+                AgentSpec {
+                    name: "claude-c960824c".into(),
+                    runtime: "claude-code".into(),
+                    workdir: Some(moved.canonicalize().unwrap()),
+                    labels: BTreeMap::from([
+                        ("session_id".into(), "c960824c".into()),
+                        ("via".into(), "hook".into()),
+                    ]),
+                    ..AgentSpec::default()
+                },
+                false,
+                kept.created_at + chrono::Duration::minutes(35),
+            );
+            record.project = kept.project.clone();
+            record.pid = kept.pid;
+            record.process_started_at = Some(born);
+            record.status = AgentStatus::Running;
+            record.queue_read = Some(read.clone());
+            let mut state = lock(&daemon.state);
+            state.store.upsert_agent(&record).unwrap();
+            state.registry.insert(record.clone()).unwrap();
+            record
+        };
+        daemon.check_liveness();
+        let state = lock(&daemon.state);
+        let record = state.registry.get(&drifted.id).unwrap();
+        assert_eq!(record.id, kept.id, "folded into the record that stays");
+        assert_eq!(record.queue_read.as_ref(), Some(&read));
     }
 
     /// Register something that could be matched with another half.
@@ -10915,7 +11050,7 @@ mod tests {
         let daemon = open(&dir);
         let checkout = dir.path().join("checkout");
         std::fs::create_dir(&checkout).unwrap();
-        let session = "218845eb-ba1e-4457-bb5a-e1829f5652dd";
+        let session = "5e55a0d1-7c3b-4f2e-9a61-0b4d2c8e7f13";
         // A session registered the way a terminal session is: by its
         // hooks, with its conversation id, in its checkout.
         let mut ended_spec = spec("claude-code-4242");
@@ -16417,6 +16552,7 @@ deny = ["send:all"]
                         agentdocker_core::ProviderIssueKind::Usage,
                     )
                 }),
+                retries: 0,
             });
         }
         let Response::Sent {

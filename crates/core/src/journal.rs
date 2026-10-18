@@ -737,7 +737,7 @@ mod tests {
         let dumped = |code: &str, signal: &str, flushed: bool| {
             format!(
                 "left (failed: command could not be launched: command exited before it was activated: \
-                 ExitReport {{ agent: AgentId(\"0180d7615186449087095d7aa15ec0bb\"), owner: SessionOwner {{ pid: 23152, \
+                 ExitReport {{ agent: AgentId(\"6f1c2a9b3d7e4c5f8a0b1c2d3e4f5a6b\"), owner: SessionOwner {{ pid: 23152, \
                  started_at: 2026-09-18T21:59:30.123Z }}, child: ChildIdentity {{ pid: 23153, started_at: \
                  2026-09-18T21:59:30.223Z, tty: true }}, code: {code}, signal: {signal}, log_flushed: {flushed}, \
                  at: 2026-09-18T21:59:31.000Z }})"

@@ -848,6 +848,7 @@ mod tests {
             command: "printf hello".into(),
             cwd: "/owned".into(),
             reason: "Print fixture text".into(),
+            for_session: false,
         };
         assert!(matches!(
             daemon

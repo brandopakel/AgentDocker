@@ -42,6 +42,8 @@ pub enum State {
     Delivered,
     Received,
     Shown,
+    /// Queued for a session nothing of which has reached AgentDocker.
+    Unreachable,
     /// Queued for a session nothing wakes: it takes it at its next prompt.
     WaitingForPrompt,
     /// Queued for a browser agent, which reads only when it checks in.
@@ -97,6 +99,7 @@ impl State {
         }
         match InputReadiness::for_agent(agent, now) {
             InputReadiness::SessionEnded => Self::Ended,
+            InputReadiness::Unreachable => Self::Unreachable,
             InputReadiness::Unverified => Self::WaitingForPrompt,
             InputReadiness::Paused => Self::Paused,
             InputReadiness::Stale => Self::Silent,
@@ -111,6 +114,7 @@ impl State {
             Self::Delivered => "delivered",
             Self::Received => "received by the model",
             Self::Shown => "shown to its session, not confirmed",
+            Self::Unreachable => "nothing connects its session to AgentDocker",
             Self::WaitingForPrompt => "waiting for its next prompt",
             Self::WaitsForCheckIn => "waits until it checks in",
             Self::WaitingToTake => "waiting for it to take it",

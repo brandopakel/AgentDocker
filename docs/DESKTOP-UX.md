@@ -63,8 +63,8 @@ delivered, blue once answered). Its spoken name groups the agents by
 state, problems first, named while there are one or two in a state and counted
 beyond that; pointing at it lists each one's own line. The states are *answered*, *delivered*,
 *received by the model*, *shown to its session, not confirmed*, or why it still
-waits — *waiting for its next prompt*, *waits until it checks in* (a browser
-agent), *delivery paused*, *session ended before taking it*. Nothing says
+waits — *nothing connects its session to AgentDocker*, *waiting for its next
+prompt*, *waits until it checks in* (a browser agent), *delivery paused*, *session ended before taking it*. Nothing says
 *read*: the daemon cannot know it. **Agents** opens the
 session list and **Board** the project's cards. **More** opens a menu of History,
 Files in use, Usage, AgentDocker commands and the project's Pin and Forget; the tab takes the name of the screen on view and is underlined only
@@ -163,13 +163,15 @@ a question mark for a question, an hourglass when its hooks did not say which
 — read aloud as *Claude Code wants permission in its terminal*, *has a
 question in its terminal* or *is waiting for you in its terminal*; **Go to
 Terminal** takes you there. Seen across
-projects, each row starts with its project's name (*keel · Claude Code · Badger*).
+projects, each row starts with its project's name (*orchard · Claude Code · Badger*).
 A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not
 here: its row's amber dot marks it, with the reason in its spoken name, and
 opening it shows the details — a provider's limit is an amber hourglass whose
 tooltip says when it lifts on your own clock (*Usage limit resets in 42 min
-(15:00)*), beside **Resume delivery**; an ended session's kept messages are an
+(15:00)*), or for a passing provider outage, which AgentDocker tries again by itself
+(*Provider unavailable · tries again at 14:31*), beside **Resume delivery**; an
+ended session's kept messages are an
 inbox glyph with their count; **Review delivery** opens
 a live session's paused delivery and **Dismiss** puts away an ended one's notice, which
 leaves the messages as they are.
@@ -191,7 +193,8 @@ sending again. Until the daemon takes it the note is saved with the drafts as
 that message-box text, so a window closed meanwhile shows it there on
 reopening, never sent again by itself (the provider's own answer is still
 exactly Deny; Allow sends no words). A command a live session asks to run is answered in the row itself:
-**Deny** and **Allow once** send the same exact answer as the Inbox card, with
+**Deny** and **Allow once**, and **Allow for session** where Codex offers it
+and the window is wide enough, send the same exact answer as the Inbox card, with
 the command in the row's words; file changes, which must be looked at first,
 and every other question open with **Answer**. The first three items are shown; **Show N more** expands the same list and
 **Show fewer** collapses it. When nobody needs an answer or delivery review, the
@@ -640,11 +643,11 @@ agent whose session or terminal is open, or the project whose chat is open;
 the window keeps a short-lived `viewing.json` in the AgentDocker home for the
 poster), and an agent's newer notification replaces its last one in
 Notification Center rather than stacking. When an agent finishes while the window is
-not in front, the app posts a quiet notice itself (*Badger finished · In keel.
+not in front, the app posts a quiet notice itself (*Badger finished · In orchard.
 Click to see what it did.*), one per agent, replacing its last — but not when
 your next message to it is already queued, since it goes straight on to that.
 An agent that stops for you in its own terminal is told the same way (*Badger
-wants permission*, *has a question* or *is waiting for you · In keel. It is
+wants permission*, *has a question* or *is waiting for you · In orchard. It is
 waiting in its terminal.*) once the stop has lasted two seconds, so a prompt you
 answer at once, at the terminal, never notifies. Returning to the app or turning
 these notifications off during that delay cancels the pending notice. If an agent

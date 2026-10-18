@@ -848,6 +848,18 @@ Newest first. Only what changes how the product is used.
   same menu recolours, deletes or adds a project's roles. Nothing gets a role
   unless you give it one.
 
+- **Allow for session.** A Codex approval that Codex offers to remember has a
+  third answer beside **Allow once** and **Deny**: **Allow for session** lets the
+  same command, network destination, files or access through without asking
+  until that Codex session ends (`agentdocker answer <id> "Allow for session"`
+  from the command line). Offered only where Codex offers it.
+
+- **A provider outage no longer stops an agent for good.** When a provider's
+  servers fail (overloaded, unreachable), the agent's queued messages wait a
+  minute and then go to it again, twice as long after each failed try and at
+  most half an hour; the first turn that goes through ends it. Limits and
+  sign-in problems still wait for the provider or for **Resume delivery**.
+
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or
   has sat there some days (`task rule-add`, the board's settings). A

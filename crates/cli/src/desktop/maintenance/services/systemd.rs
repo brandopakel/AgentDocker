@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn cached_optional_working_directory_retains_its_version() {
         // systemd's D-Bus getter prefixes a missing-ok directory with '!'.
-        // The real Oracle user manager supplies this for its default home.
+        // A real systemd user manager supplies this for its default home.
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap().join("store");
         let id = "a".repeat(64);

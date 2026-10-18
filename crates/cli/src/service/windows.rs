@@ -575,15 +575,7 @@ pub(super) fn supervise(home: &Path, agentd: &Path, endpoint: &Path) -> Result<(
             "--socket",
             &endpoint.to_string_lossy(),
         ]);
-        for key in [
-            "AGENTDOCKER_AGENT_ID",
-            "AGENTDOCKER_AGENT_NAME",
-            "AGENTDOCKER_HOME",
-            "AGENTDOCKER_SOCKET",
-            "AGENTDOCKER_CLAUDE_CHANNEL_INPUT",
-        ] {
-            command.env_remove(key);
-        }
+        agentdocker_host::command::without_session(&mut command);
         command
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)

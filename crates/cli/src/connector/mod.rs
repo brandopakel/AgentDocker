@@ -541,7 +541,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             page(
                 "AgentDocker connector",
                 &format!(
-                    "<p>This is an AgentDocker connector. It lets an agent working inside a browser join the messaging of a project on this machine.</p>\
+                    "<p>This is an AgentDocker connector. It lets a chat in your Claude or ChatGPT account join the messaging and board of one project on this machine. A connector belongs to the whole account, so every surface of it offers the connector, Claude Code sessions about other work included; it acts only in the project chosen at consent.</p>\
                      <p>Add <code>{}</code> as a custom connector: in Claude under <i>Settings › Connectors › Add custom connector</i>, in ChatGPT under <i>Settings › Connectors › Advanced › Developer mode</i>. Consent asks for the pairing code shown by <code>agentdocker connector status</code> or the desktop's Tools screen, and which project the agent joins.</p>\
                      <p>A browser agent has no checkout here: it can find agents, message them, read its inbox and the journal, and nothing else.</p>",
                     escape_html(&self.mcp_url())
@@ -667,7 +667,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         page(
             "Connect a browser agent",
             &format!(
-                "<p><b>{who}</b> asks to join a project on this machine as a browser agent. It will be able to find that project's agents, message them, read its own inbox and the journal. It gets no files, leases or worktrees.</p>\
+                "<p><b>{who}</b> asks to join a project on this machine. It will be able to find that project's agents, message them, read its own inbox, the journal and the board. It gets no files, leases or worktrees, and nothing of any other project. Your whole account will offer it, Claude Code sessions about other work too, so choose the project you'd want any of them to reach.</p>\
                  {problem}\
                  <form method=\"post\" action=\"/authorize\">{hidden}\
                  <label>Pairing code, from <code>agentdocker connector status</code> or the desktop's Tools screen<br><input name=\"pairing_code\" autocomplete=\"off\" autofocus required placeholder=\"ABCD-EFGH\"></label>\
@@ -1568,7 +1568,7 @@ mod tests {
             Shared(mock.clone(), down.clone()),
             "https://x.trycloudflare.com".into(),
             Some(agentdocker_core::ProjectRef {
-                root: "/p/keel".into(),
+                root: "/p/orchard".into(),
                 worktree: None,
                 fingerprint: None,
                 source: agentdocker_core::ProjectSource::Directory,
@@ -1874,7 +1874,7 @@ mod tests {
         let html = String::from_utf8_lossy(&form.body);
         assert!(html.contains("<b>Claude (Claude)</b>"), "{html}");
         assert!(
-            html.contains("<option value=\"/p/keel\" selected>keel — /p/keel</option>")
+            html.contains("<option value=\"/p/orchard\" selected>orchard — /p/orchard</option>")
                 && html.contains("name=\"project_path\""),
             "the default project is proposed and any folder may be typed: {html}"
         );
@@ -1962,7 +1962,7 @@ mod tests {
                 Request::Register { spec, pid: None, .. }
                     if spec.name == "claude-browser-test"
                         && spec.runtime == "claude-browser"
-                        && spec.workdir.as_deref() == Some(Path::new("/p/keel"))
+                        && spec.workdir.as_deref() == Some(Path::new("/p/orchard"))
                         && spec.labels.get("connector").map(String::as_str) == Some("true")
             ),
             "the agent is registered when the code is redeemed"
@@ -1982,7 +1982,7 @@ mod tests {
             reply["result"]["instructions"]
                 .as_str()
                 .unwrap()
-                .contains("working inside a browser")
+                .contains("reaching the project orchard")
         );
         let listed = json_body(
             &connector
@@ -2009,7 +2009,7 @@ mod tests {
             .handle(post(
                 "/mcp",
                 "application/json",
-                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"claude-2c8d1062","text":"the docs page says the flag was renamed"}}}"#,
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"claude-cf616fe2","text":"the docs page says the flag was renamed"}}}"#,
                 Some(&access),
             ))
             .await;
@@ -2027,13 +2027,13 @@ mod tests {
         );
         assert!(matches!(
             requests.last().unwrap(),
-            Request::Send { to, .. } if to == "claude-2c8d1062"
+            Request::Send { to, .. } if to == "claude-cf616fe2"
         ));
         let broadcast = connector
             .handle(post(
                 "/mcp",
                 "application/json",
-                r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"project","text":"to everyone in keel"}}}"#,
+                r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"project","text":"to everyone in orchard"}}}"#,
                 Some(&access),
             ))
             .await;
@@ -2041,7 +2041,7 @@ mod tests {
         assert!(
             matches!(
                 mock.requests().last().unwrap(),
-                Request::Send { to, .. } if to == "project:/p/keel"
+                Request::Send { to, .. } if to == "project:/p/orchard"
             ),
             "a project broadcast names the served project, not this process's directory"
         );
@@ -2059,7 +2059,7 @@ mod tests {
                 .handle(post(
                     "/mcp",
                     "application/json",
-                    r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"claim","arguments":{"resource":"path:/p/keel"}}}"#,
+                    r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"claim","arguments":{"resource":"path:/p/orchard"}}}"#,
                     Some(&access),
                 ))
                 .await,
@@ -2291,7 +2291,7 @@ mod tests {
             .handle(post(
                 "/authorize",
                 "application/x-www-form-urlencoded",
-                &format!("{query}&pairing_code=ABCD-EFGH&agent_name=chatgpt-browser-test&project=%2Fp%2Fkeel"),
+                &format!("{query}&pairing_code=ABCD-EFGH&agent_name=chatgpt-browser-test&project=%2Fp%2Forchard"),
                 None,
             ))
             .await;
@@ -2343,7 +2343,7 @@ mod tests {
                 mock.requests().last(),
                 Some(Request::Register { spec, .. })
                     if spec.runtime == "chatgpt-browser"
-                        && spec.workdir.as_deref() == Some(Path::new("/p/keel"))
+                        && spec.workdir.as_deref() == Some(Path::new("/p/orchard"))
             ),
             "{:?}",
             mock.requests().last()
@@ -2385,7 +2385,7 @@ mod tests {
                 "/authorize",
                 "application/x-www-form-urlencoded",
                 &format!(
-                    "response_type=code&client_id={client_id}&code_challenge={}&code_challenge_method=S256&pairing_code=ABCD-EFGH&project=%2Fp%2Fkeel&project_path={}",
+                    "response_type=code&client_id={client_id}&code_challenge={}&code_challenge_method=S256&pairing_code=ABCD-EFGH&project=%2Fp%2Forchard&project_path={}",
                     oauth::s256(&verifier),
                     http::percent_encode(project)
                 ),
@@ -2400,10 +2400,10 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains("<option value=\"/p/keel\" selected>"),
+            html.contains("<option value=\"/p/orchard\" selected>"),
             "the page comes back with its choices: {html}"
         );
-        let relative = connector.handle(consent("keel")).await;
+        let relative = connector.handle(consent("orchard")).await;
         assert_eq!(relative.status, 400);
         assert!(
             mock.requests().is_empty(),

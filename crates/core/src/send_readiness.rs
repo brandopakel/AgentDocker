@@ -29,6 +29,8 @@ pub struct RecipientReadiness {
 pub enum SendIssue {
     UnknownSession,
     SessionEnded,
+    /// Nothing of the session has reached AgentDocker: it cannot take this.
+    Unreachable,
     NoReceiver,
     ReceiverSilent,
     DeliveryPaused,
@@ -46,6 +48,7 @@ impl<'de> Deserialize<'de> for SendIssue {
         enum Wire {
             UnknownSession,
             SessionEnded,
+            Unreachable,
             NoReceiver,
             ReceiverSilent,
             DeliveryPaused,
@@ -58,6 +61,7 @@ impl<'de> Deserialize<'de> for SendIssue {
         Ok(match Wire::deserialize(deserializer)? {
             Wire::UnknownSession => Self::UnknownSession,
             Wire::SessionEnded => Self::SessionEnded,
+            Wire::Unreachable => Self::Unreachable,
             Wire::NoReceiver => Self::NoReceiver,
             Wire::ReceiverSilent => Self::ReceiverSilent,
             Wire::DeliveryPaused => Self::DeliveryPaused,
@@ -72,6 +76,7 @@ impl SendIssue {
         match self {
             Self::UnknownSession => "Session not found",
             Self::SessionEnded => "Session ended",
+            Self::Unreachable => "Can't receive messages",
             Self::NoReceiver => "Messages may wait for its next prompt",
             Self::ReceiverSilent => "Not heard from recently",
             Self::DeliveryPaused => "Not receiving messages",
@@ -119,6 +124,7 @@ impl RecipientReadiness {
         } else {
             match InputReadiness::for_agent(agent, now) {
                 InputReadiness::SessionEnded => SendIssue::SessionEnded,
+                InputReadiness::Unreachable => SendIssue::Unreachable,
                 InputReadiness::Unverified => SendIssue::NoReceiver,
                 InputReadiness::Paused => SendIssue::DeliveryPaused,
                 InputReadiness::Stale => SendIssue::ReceiverSilent,
@@ -155,6 +161,17 @@ impl RecipientReadiness {
             SendIssue::ProviderBlocked(_) => "Check the provider limit or sign-in, then explicitly resume input after recovery.".into(),
             SendIssue::DeliveryPaused => "Review this session's delivery in AgentDocker before reconnecting it; its messages are kept.".into(),
             SendIssue::SessionEnded => "Resume this conversation from its project folder; its messages are kept until it takes them.".into(),
+            // Kept, but nothing of the session will read them: say what
+            // connects it, never "may wait".
+            SendIssue::Unreachable if self.runtime == "codex" => match &self.resume_session {
+                Some(session) => format!("Nothing of this Codex session has reached AgentDocker, so it can't take messages; they are kept. Resume it from its project folder with: codex resume {session}, or start it from Launch agent."),
+                None => "Nothing of this Codex session has reached AgentDocker, so it can't take messages; they are kept. A Codex started as plain `codex` names no conversation AgentDocker can find: resume it by id from its project folder (codex resume <id>), or start it from Launch agent.".into(),
+            },
+            SendIssue::Unreachable if self.runtime == "claude-code" => "Nothing of this Claude session has reached AgentDocker: its hooks and MCP server aren't running for it, so it can't take messages; they are kept. Run agentdocker setup claude-code, then restart it from its project folder.".into(),
+            SendIssue::Unreachable => format!(
+                "Nothing of this {} session has reached AgentDocker, so it can't take messages; they are kept. It reads them only through agentdocker inbox --as {}.",
+                self.runtime, self.agent.short()
+            ),
             SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "claude-code" => {
                 match &self.resume_session {
                     Some(session) => format!("After saving work and exiting the current Claude session, resume from the same project folder with: AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 claude --resume {session} --dangerously-load-development-channels server:agentdocker. Complete Claude's channel consent; AgentDocker's MCP entry must include --claude-channel."),
@@ -199,6 +216,38 @@ impl SendReadiness {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_nothing_reaches_is_said_to_be_unreachable_with_what_connects_it() {
+        let birth = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let mut agent = AgentRecord::new(
+            crate::AgentSpec {
+                name: "codex-release".into(),
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            birth,
+        );
+        agent.status = crate::AgentStatus::Running;
+        agent.started_at = Some(birth);
+        agent.process_started_at = Some(birth);
+        agent
+            .spec
+            .labels
+            .insert("session_id".into(), "de4e3b54-48e1".into());
+        let later = birth + crate::input::FIRST_CONTACT_GRACE;
+        let readiness = RecipientReadiness::for_agent(&agent, later, None).unwrap();
+        assert_eq!(readiness.issue, SendIssue::Unreachable);
+        assert_eq!(readiness.issue.label(), "Can't receive messages");
+        assert!(readiness.guidance().contains("codex resume de4e3b54-48e1"));
+        let wire = serde_json::to_value(readiness.issue).unwrap();
+        assert_eq!(wire, serde_json::json!({"kind": "unreachable"}));
+        assert_eq!(
+            serde_json::from_value::<SendIssue>(wire).unwrap(),
+            SendIssue::Unreachable
+        );
+    }
     use crate::{AgentSpec, AgentStatus, InputDelivery};
 
     #[test]

@@ -420,9 +420,9 @@ pub fn slug_of(name: &str) -> String {
 }
 
 /// A display-key prefix from a project's name: its words' initials, or
-/// the humps of a camel-cased name (`AgentDocker` is `AD`, `minio-lab`
-/// is `ML`); a single word gives its first two letters (`keel` is
-/// `KE`). Letters only, two to four of them.
+/// the humps of a camel-cased name (`AgentDocker` is `AD`, `river-lab`
+/// is `RL`); a single word gives its first two letters (`orchard` is
+/// `OR`). Letters only, two to four of them.
 pub fn key_prefix(name: &str) -> String {
     let mut initials = String::new();
     let mut previous: Option<char> = None;
@@ -683,8 +683,8 @@ mod tests {
     #[test]
     fn keys_slugs_and_due_days_read_as_people_name_them() {
         assert_eq!(key_prefix("AgentDocker"), "AD");
-        assert_eq!(key_prefix("minio-lab"), "ML");
-        assert_eq!(key_prefix("keel"), "KE");
+        assert_eq!(key_prefix("river-lab"), "RL");
+        assert_eq!(key_prefix("orchard"), "OR");
         assert_eq!(key_prefix("my big web app"), "MBWA");
         assert_eq!(key_prefix("42"), "T");
         assert_eq!(slug_of("Release train!"), "release-train");

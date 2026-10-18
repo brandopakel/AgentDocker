@@ -68,6 +68,60 @@ pub fn detach(command: &mut Command) {
     }
 }
 
+/// What a coding session sets in its own environment to say who it is and
+/// how it is confined: AgentDocker's identity for the agent, Claude Code's
+/// session, transport and process markers (as a Claude Code 2.1.302 tool
+/// shell carries them), Codex's sandbox markers. A process that outlives
+/// the session, such as an `agentd` started from one of its commands,
+/// leaves them out; otherwise every agent it launched would take itself
+/// for that session, or think itself confined the same way. Configuration
+/// a session was given (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_OAUTH_TOKEN`,
+/// `CODEX_HOME`, …) is not on the list: a launched agent needs it too.
+/// Windows spells a variable in any case; Unix does not.
+pub fn session_variable(name: &str) -> bool {
+    const NAMES: [&str; 18] = [
+        "AGENTDOCKER_AGENT_ID",
+        "AGENTDOCKER_AGENT_NAME",
+        "AGENTDOCKER_HOME",
+        "AGENTDOCKER_SOCKET",
+        "AGENTDOCKER_NO_AUTOSTART",
+        "AGENTDOCKER_CLAUDE_CHANNEL_INPUT",
+        "AGENTDOCKER_CODEX_INPUT",
+        "CLAUDECODE",
+        "CLAUDE_PID",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_CODE_EXECPATH",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+        "CODEX_SANDBOX",
+        "CODEX_SANDBOX_NETWORK_DISABLED",
+    ];
+    NAMES.iter().any(|known| {
+        if cfg!(windows) {
+            known.eq_ignore_ascii_case(name)
+        } else {
+            *known == name
+        }
+    })
+}
+
+/// Leave this process's session variables out of `command`'s environment.
+/// Anything set on `command` afterwards still applies.
+pub fn without_session(command: &mut Command) {
+    remove_session(command, std::env::vars_os().map(|(name, _)| name));
+}
+
+fn remove_session(command: &mut Command, names: impl Iterator<Item = std::ffi::OsString>) {
+    for name in names {
+        if name.to_str().is_some_and(session_variable) {
+            command.env_remove(name);
+        }
+    }
+}
+
 /// The launchers this host runs, in the order a Windows shell tries them
 /// unless `PATHEXT` says otherwise: an npm-installed provider is a `.cmd`
 /// shim beside `node.exe`, which is how `claude` and `codex` appear.
@@ -404,5 +458,57 @@ mod windows_tests {
                 .to_string()
                 .contains("output exceeded")
         );
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    fn removed(names: &[&str]) -> Vec<String> {
+        let mut command = Command::new("agentd");
+        remove_session(&mut command, names.iter().map(std::ffi::OsString::from));
+        command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_sessions_own_variables_are_left_out_and_its_configuration_kept() {
+        let gone = [
+            "CLAUDECODE",
+            "CLAUDE_PID",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+            "AGENTDOCKER_AGENT_ID",
+            "AGENTDOCKER_CLAUDE_CHANNEL_INPUT",
+            "CODEX_SANDBOX_NETWORK_DISABLED",
+        ];
+        let kept = [
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CONFIG_DIR",
+            "CODEX_HOME",
+            "HOME",
+            "PATH",
+        ];
+        let names: Vec<&str> = gone.iter().chain(kept.iter()).copied().collect();
+        let removed = removed(&names);
+        for name in gone {
+            assert!(removed.iter().any(|n| n == name), "{name} is left out");
+        }
+        for name in kept {
+            assert!(!removed.iter().any(|n| n == name), "{name} is kept");
+        }
+    }
+
+    #[test]
+    fn windows_matches_a_variable_in_any_case_and_unix_does_not() {
+        let removed = removed(&["ClaudeCode", "agentdocker_claude_channel_input"]);
+        assert_eq!(removed.len(), if cfg!(windows) { 2 } else { 0 });
     }
 }

@@ -474,7 +474,7 @@ mod tests {
     fn every_project_identity_carries_its_ink() {
         let seeds = [
             "AgentDocker",
-            "aistor",
+            "lumen",
             "7d0e1c2b3a4f5e6d7c8b9a0f1e2d3c4b5a697887",
             "/Users/me/src/tools",
             "",
@@ -499,10 +499,7 @@ mod tests {
             }
             assert_eq!(hues.len(), 12, "twelve distinct stops, dark={dark}");
         }
-        assert_ne!(
-            identity("AgentDocker", false).0,
-            identity("aistor", false).0
-        );
+        assert_ne!(identity("AgentDocker", false).0, identity("lumen", false).0);
     }
 
     #[test]
