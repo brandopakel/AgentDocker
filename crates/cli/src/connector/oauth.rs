@@ -383,21 +383,25 @@ pub fn random_token() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// Eight characters the person types from the terminal into the consent
-/// page, from an alphabet without look-alikes.
+/// Ten characters the person types from the terminal into the consent
+/// page, from an alphabet without look-alikes: fifty random bits. A v4
+/// UUID's version and variant bytes are not random, so they are skipped.
 pub fn pairing_code() -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    let bytes = uuid::Uuid::new_v4();
-    let code: String = bytes
+    let uuid = uuid::Uuid::new_v4();
+    let code: String = uuid
         .as_bytes()
         .iter()
-        .take(8)
-        .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
+        .enumerate()
+        .filter(|(i, _)| !matches!(i, 6 | 8))
+        .take(10)
+        .map(|(_, b)| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
         .collect();
-    format!("{}-{}", &code[..4], &code[4..])
+    format!("{}-{}", &code[..5], &code[5..])
 }
 
-/// Codes compare without case, spaces or the dash, so typing is forgiving.
+/// Codes compare without case, spaces or the dash, so typing is forgiving,
+/// and in time that does not depend on how much of the code is right.
 pub fn pairing_code_matches(expected: &str, typed: &str) -> bool {
     let normal = |s: &str| {
         s.chars()
@@ -405,7 +409,13 @@ pub fn pairing_code_matches(expected: &str, typed: &str) -> bool {
             .map(|c| c.to_ascii_uppercase())
             .collect::<String>()
     };
-    normal(expected) == normal(typed)
+    let (expected, typed) = (normal(expected), normal(typed));
+    expected.len() == typed.len()
+        && expected
+            .bytes()
+            .zip(typed.bytes())
+            .fold(0u8, |differ, (a, b)| differ | (a ^ b))
+            == 0
 }
 
 pub fn hash(token: &str) -> String {
@@ -418,7 +428,38 @@ pub fn s256(verifier: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
+/// A registered client nobody consented for in this long is abandoned:
+/// at the cap it gives its place to a new one.
+const ABANDONED_AFTER: chrono::Duration = chrono::Duration::minutes(10);
+
 impl Store {
+    /// Whether a new client fits under `cap`, giving it the place of the
+    /// oldest client abandoned before any consent when it would not.
+    /// Registration is unauthenticated, so a flood of them must not keep
+    /// the person's own vendor out for good.
+    pub fn make_room(&mut self, cap: usize, now: DateTime<Utc>) -> bool {
+        if self.clients.len() < cap {
+            return true;
+        }
+        let abandoned = self
+            .clients
+            .iter()
+            .filter(|(id, client)| {
+                now.signed_duration_since(client.created_at) >= ABANDONED_AFTER
+                    && !self.grants.values().any(|g| &g.client_id == *id)
+                    && !self.codes.values().any(|c| &c.client_id == *id)
+            })
+            .min_by_key(|(_, client)| client.created_at)
+            .map(|(id, _)| id.clone());
+        match abandoned {
+            Some(id) => {
+                self.clients.remove(&id);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// RFC 7591 registration. The callbacks decide: a client whose
     /// redirect URIs are not all the vendors' (or the person's explicit
     /// extras) is refused, and so is any request for a confidential
@@ -1347,15 +1388,63 @@ mod tests {
     }
 
     #[test]
+    fn a_full_store_gives_an_abandoned_client_place_and_keeps_the_rest() {
+        let now = Utc::now();
+        let client = |minutes_ago: i64| Client {
+            redirect_uris: vec!["https://claude.ai/api/mcp/auth_callback".into()],
+            name: None,
+            vendor: Vendor::Claude,
+            created_at: now - chrono::Duration::minutes(minutes_ago),
+            metadata_fetched_at: None,
+        };
+        let mut store = Store::default();
+        store.clients.insert("granted".into(), client(60));
+        store.clients.insert("abandoned".into(), client(30));
+        store.clients.insert("recent".into(), client(1));
+        store.grants.insert(
+            "g".into(),
+            Grant {
+                agent_id: "a".into(),
+                agent_name: "claude-browser-test".into(),
+                runtime: "claude".into(),
+                project: "/p/orchard".into(),
+                client_id: "granted".into(),
+                vendor: Vendor::Claude,
+                created_at: now,
+                refresh_hash: None,
+                last_used_at: None,
+                revoked_at: None,
+            },
+        );
+        assert!(store.make_room(4, now), "under the cap, nothing goes");
+        assert_eq!(store.clients.len(), 3);
+        assert!(store.make_room(3, now));
+        assert!(
+            !store.clients.contains_key("abandoned"),
+            "the oldest client nobody consented for makes room"
+        );
+        assert!(store.clients.contains_key("granted") && store.clients.contains_key("recent"));
+        assert!(
+            !store.make_room(2, now),
+            "a client with a grant, or one still within its consent, keeps its place"
+        );
+        assert_eq!(store.clients.len(), 2);
+    }
+
+    #[test]
     fn pairing_codes_are_readable_and_forgiving() {
         let code = pairing_code();
-        assert_eq!(code.len(), 9);
+        assert_eq!(code.len(), 11);
+        assert_eq!(code.as_bytes()[5], b'-');
         assert!(
             code.chars()
                 .all(|c| c == '-' || "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".contains(c))
         );
+        assert_ne!(pairing_code(), pairing_code());
         assert!(pairing_code_matches("ABCD-EFGH", " abcd efgh "));
         assert!(!pairing_code_matches("ABCD-EFGH", "ABCD-EFGJ"));
+        assert!(!pairing_code_matches("ABCD-EFGH", "ABCD-EFG"));
+        assert!(!pairing_code_matches("ABCD-EFGH", ""));
         assert_eq!(random_token().len(), 43);
         assert_ne!(random_token(), random_token());
         assert_eq!(
