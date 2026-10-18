@@ -1009,10 +1009,11 @@ impl<B: Backend> McpServer<B> {
                 }
                 self.forward(tagged_request(arguments, op, &me)?).await
             }
-            "search_tasks" | "list_tags" | "list_plans" | "list_files" => {
+            "search_tasks" | "list_tags" | "list_roles" | "list_plans" | "list_files" => {
                 let op = match name {
                     "search_tasks" => "task_search",
                     "list_tags" => "tags",
+                    "list_roles" => "role_catalog",
                     "list_plans" => "plans",
                     _ => "files",
                 };
@@ -1905,9 +1906,8 @@ fn annotations(name: &str) -> Value {
         | "open_questions" | "read_journal" | "wait_for_messages" | "check_stale" | "read_set"
         | "list_checkpoints" | "list_handoffs" | "list_channels" | "contests" | "list_tasks"
         | "get_task" | "my_tasks" | "worktree_diff" | "validation_results" | "usage"
-        | "search_tasks" | "list_tags" | "list_plans" | "get_plan" | "list_files" | "get_file" => {
-            (true, false, true, false)
-        }
+        | "search_tasks" | "list_tags" | "list_roles" | "list_plans" | "get_plan"
+        | "list_files" | "get_file" => (true, false, true, false),
         // Saying and recording: additive, repeatable.
         "report_activity" | "report_provider_status" | "observe_paths" | "renew" => {
             (false, false, true, false)
@@ -2522,6 +2522,17 @@ fn bare_tool_definitions() -> Vec<Value> {
         json!({
             "name": "list_tags",
             "description": "The project's tags and their colours. A card is tagged only with these.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Project id or path; your own when absent." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "list_roles",
+            "description": "The project's roles and their colours: what the person can give an agent to do. A message to role:<role> reaches the agent holding it. Only the person gives roles and changes this list.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3186,6 +3197,7 @@ mod tests {
                 "create_task",
                 "search_tasks",
                 "list_tags",
+                "list_roles",
                 "create_tag",
                 "list_plans",
                 "get_plan",

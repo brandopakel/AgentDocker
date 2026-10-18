@@ -961,6 +961,35 @@ pub enum Request {
         project: Option<String>,
         name: String,
     },
+    /// A project's roles: the five every project offers, as the person left
+    /// them, then the person's own. Answers `role_catalog`.
+    RoleCatalog {
+        #[serde(default)]
+        project: Option<String>,
+    },
+    /// Make a role, or rename, recolour or describe one; its address never
+    /// changes. The person's to do. Answers `role_def`.
+    RoleSave {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        /// The role to change; absent, a new one is made from `name`.
+        #[serde(default)]
+        role: Option<String>,
+        name: String,
+        #[serde(default)]
+        color: Option<crate::RoleColor>,
+        #[serde(default)]
+        description: Option<String>,
+    },
+    /// Take a role out of the project's palette. The person's to do.
+    /// Answers `ok`.
+    RoleDelete {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        role: String,
+    },
     /// Cards that answer some words, best first: a key exactly, else
     /// every word somewhere on the card, slips forgiven. Every project's
     /// when none is named; archived ones only when asked. Answers `tasks`.
@@ -1880,6 +1909,12 @@ pub enum Response {
     },
     Tag {
         tag: crate::Tag,
+    },
+    RoleCatalog {
+        roles: Vec<crate::RoleDef>,
+    },
+    RoleDef {
+        role: crate::RoleDef,
     },
     Plans {
         plans: Vec<crate::Plan>,

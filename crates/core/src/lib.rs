@@ -48,6 +48,7 @@ pub mod plan;
 pub use plan::{Plan, PlanStatus, ProjectFile};
 pub mod rule;
 pub use rule::{Rule, RuleAction, Trigger};
+pub mod role;
 pub mod search;
 pub mod tag;
 pub use change::{Attribution, Change, ChangeKind, Overlap, OverlapParty, overlaps};
@@ -69,6 +70,7 @@ pub use project::{Pause, ProjectId, ProjectRef, ProjectSource};
 pub use protocol::DigestRequest;
 pub use protocol::{ErrorCode, Request, Response};
 pub use registry::{Registry, RegistryError};
+pub use role::{RoleColor, RoleDef};
 pub use tag::{Tag, TagColor};
 pub use task::{
     Column, Comment, CommentId, NewTask, Priority, Size, Task, TaskAction, TaskEntry, TaskId,

@@ -61,6 +61,15 @@ fn provider_ancestor(mut pid: u32, table: &[Process]) -> Result<Option<(&Process
         if let Some(runtime) = procinfo::session_runtime_of(&process.argv) {
             return Ok(Some((process, runtime)));
         }
+        // Codex 0.162+ runs a terminal conversation's commands in an
+        // app-server several conversations share: it is none of them, so a
+        // command under it cannot be told from its conversation, and must
+        // never fall through to speaking as the person.
+        if procinfo::is_codex_binary(&process.argv) {
+            bail!(
+                "this command runs inside a Codex server that several conversations share, so who sent it cannot be told; pass your agent's id with --as"
+            );
+        }
         pid = process.ppid;
     }
     bail!("CLI process ancestry exceeds its bound; specify the sender explicitly")
@@ -133,6 +142,26 @@ mod tests {
         );
         assert!(provider_ancestor(10, &[process(10, 20, "zsh")]).is_err());
         assert!(provider_ancestor(10, &[process(10, 10, "zsh")]).is_err());
+    }
+
+    #[test]
+    fn a_command_inside_a_shared_codex_server_never_speaks_as_the_person() {
+        let server = Process {
+            pid: 20,
+            ppid: 1,
+            argv: [
+                "codex",
+                "app-server",
+                "--listen",
+                "unix://",
+                "--managed-daemon",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+        };
+        let table = [process(10, 20, "zsh"), server];
+        let refused = provider_ancestor(10, &table).unwrap_err();
+        assert!(refused.to_string().contains("--as"), "{refused:#}");
     }
 
     #[test]

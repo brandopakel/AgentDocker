@@ -16,6 +16,7 @@ use chrono::DateTime;
 mod board_tests;
 mod catalog;
 mod plans;
+mod roles;
 mod rules;
 
 const DOCUMENT: &str = "task";

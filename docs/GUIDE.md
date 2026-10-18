@@ -479,6 +479,7 @@ each one by pid.
 | `restart <agent>` | Replace a managed container after confirming it exited |
 | `deregister` / `rm` | Mark an external agent finished / forget a finished one |
 | `role <name>` | Give an agent (`--as`) a role — `reviewer`, `implementer` — so `send --to role:reviewer` and `handoff role:reviewer` reach it; `--clear` takes it away |
+| `roles` | A project's roles, each with its colour: the five every project offers (lead, implementer, reviewer, explorer, tester) and your own. `roles add "Security reviewer" --color red --description "…"` makes one, `roles set reviewer --name "Code review" --color pink` changes one (its address stays), `roles rm tester` takes one out. Only you change them, and nothing holds a role until you give it; run from an agent's shell, including a Codex conversation's shared server, they are refused. `--project` names another project |
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not. A finished record that holds nothing is forgotten by itself thirty days on, or after `[agents] retention` in `~/.agentdocker/agentd.toml` (`"off"` keeps every record) |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml` |
@@ -673,7 +674,7 @@ about us:
 
 `list_tasks` · `my_tasks` · `get_task` · `search_tasks` · `create_task` ·
 `create_tasks` · `pull_task` · `move_task` · `update_task` · `comment_task` ·
-`archive_task` · `list_tags` · `create_tag`
+`archive_task` · `list_tags` · `create_tag` · `list_roles`
 
 `list_plans` · `get_plan` · `save_plan` · `list_files` · `get_file` ·
 `put_file` · `link_file`

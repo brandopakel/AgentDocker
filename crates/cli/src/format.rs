@@ -447,6 +447,15 @@ pub fn event_line(event: &Event) -> String {
             (Some(to), _) => format!("tag renamed      {name} → {to} by {by}"),
             _ => format!("tag set          {name} by {by}"),
         },
+        EventKind::RoleChanged {
+            role, by, deleted, ..
+        } => {
+            if *deleted {
+                format!("role taken out   {role} by {by}")
+            } else {
+                format!("role set         {role} by {by}")
+            }
+        }
         EventKind::PlanChanged { plan, by, .. } => format!("plan written     {plan} by {by}"),
         EventKind::ProjectFileChanged {
             file, by, deleted, ..

@@ -555,6 +555,14 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         deleted: bool,
     },
+    /// A role in a project's palette was made, changed or taken out.
+    RoleChanged {
+        project: ProjectId,
+        role: String,
+        by: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deleted: bool,
+    },
     /// A plan was written or changed.
     PlanChanged {
         project: ProjectId,
