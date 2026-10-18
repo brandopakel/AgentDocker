@@ -2148,8 +2148,11 @@ impl App {
             line = line.push(chips);
         }
         line = line.push(
+            // Opens leftward from the tag, inside the panel, as the project
+            // menu does from its row's edge.
             crate::controls::popover(trigger, menu)
                 .width(240.0)
+                .align_end()
                 .on_dismiss(Message::RolesMenu(id)),
         );
         Some(line.wrap().into())
