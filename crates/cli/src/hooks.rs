@@ -2409,6 +2409,7 @@ mod tests {
                 agentdocker_core::ProviderIssueKind::Usage,
             )),
             cleared_observation: None,
+            retries: 0,
         });
         let backend = Mock::with(vec![
             Response::Agent { agent: me },
@@ -2452,6 +2453,7 @@ mod tests {
                 agentdocker_core::ProviderIssueKind::Usage,
             )),
             cleared_observation: None,
+            retries: 0,
         });
         let backend = Mock::with(vec![
             Response::Agent { agent: me },

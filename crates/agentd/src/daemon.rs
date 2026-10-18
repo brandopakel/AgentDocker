@@ -999,6 +999,11 @@ impl Daemon {
         state.reported_duplicates = current;
     }
 
+    /// Lift the transient provider blocks whose retry is due.
+    pub fn retry_providers(&self) {
+        lock(&self.state).retry_providers(Utc::now());
+    }
+
     pub fn check_liveness(&self) {
         lock(&self.state).settle_duplicates(Instant::now());
         self.report_duplicates();
@@ -16547,6 +16552,7 @@ deny = ["send:all"]
                         agentdocker_core::ProviderIssueKind::Usage,
                     )
                 }),
+                retries: 0,
             });
         }
         let Response::Sent {

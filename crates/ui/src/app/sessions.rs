@@ -261,6 +261,7 @@ mod tests {
             observed_at: now,
             issue: Some(ProviderIssue::local(ProviderIssueKind::Usage)),
             cleared_observation: None,
+            retries: 0,
         });
         app.agents.push(limited.clone());
         app.shell.unfocused = true;
@@ -418,6 +419,7 @@ mod tests {
             observed_at: now,
             issue: Some(ProviderIssue::local(ProviderIssueKind::Usage)),
             cleared_observation: None,
+            retries: 0,
         });
         app.agents.push(limited.clone());
         assert!(app.delivery_needs_you(&app.agents[0]));

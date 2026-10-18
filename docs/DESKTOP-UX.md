@@ -157,7 +157,9 @@ or ended with messages no model took is not a decision for you, so it is not
 here: its row's amber dot marks it, with the reason in its spoken name, and
 opening it shows the details — a provider's limit is an amber hourglass whose
 tooltip says when it lifts on your own clock (*Usage limit resets in 42 min
-(15:00)*), beside **Resume delivery**; an ended session's kept messages are an
+(15:00)*), or for a passing provider outage, which AgentDocker tries again by itself
+(*Provider unavailable · tries again at 14:31*), beside **Resume delivery**; an
+ended session's kept messages are an
 inbox glyph with their count; **Review delivery** opens
 a live session's paused delivery and **Dismiss** puts away an ended one's notice, which
 leaves the messages as they are.

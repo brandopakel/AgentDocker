@@ -397,6 +397,7 @@ mod tests {
             observed_at: b.created_at,
             issue: Some(crate::ProviderIssue::local(crate::ProviderIssueKind::Usage)),
             cleared_observation: None,
+            retries: 0,
         });
         assert_eq!(
             repair_pair([&a, &b], &a.id, &b.id),
@@ -556,6 +557,7 @@ mod tests {
             observed_at: limited.created_at,
             issue: Some(crate::ProviderIssue::local(crate::ProviderIssueKind::Usage)),
             cleared_observation: None,
+            retries: 0,
         });
         assert!(retirable_duplicate(&limited).is_err());
         first.managed = true;
