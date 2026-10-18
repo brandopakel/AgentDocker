@@ -6524,6 +6524,10 @@ impl State {
                 "this conversation's record does not say it belongs to this provider profile",
             ));
         }
+        if named.is_empty() {
+            // Nobody owns it: the caller makes its record.
+            return None;
+        }
         let live: Vec<&AgentRecord> = named.iter().filter(|a| a.status.is_live()).collect();
         let mut record = match live.as_slice() {
             [only] => (*only).clone(),
@@ -6533,7 +6537,16 @@ impl State {
                 // once ran it. Ended never means nobody owns it.
                 let mut ended: Vec<&AgentRecord> = named.iter().filter(|a| !a.managed).collect();
                 ended.sort_by_key(|a| a.last_seen);
-                let mut record = (*ended.last()?).clone();
+                // Records name the conversation but none can come back by
+                // contact (AgentDocker supervised it): it has an owner all
+                // the same, to relaunch, never a second record beside it.
+                let Some(latest) = ended.last() else {
+                    return Some(Response::error(
+                        ErrorCode::Conflict,
+                        "this conversation's record ended under AgentDocker's supervision; relaunch it from the app",
+                    ));
+                };
+                let mut record = (*latest).clone();
                 if record.pid.is_some_and(|pid| {
                     process_exists(pid) && same_process(pid, record.process_started_at)
                 }) {
@@ -6550,6 +6563,7 @@ impl State {
                 record.terminal = None;
                 self.free_name(&mut record);
                 record.status = AgentStatus::Running;
+                record.finished_at = None;
                 record.started_at = Some(now);
                 record.last_seen = now;
                 record.session_contact = Some(agentdocker_core::SessionContact {
@@ -6674,6 +6688,7 @@ impl State {
         record.pid = Some(pid);
         record.process_started_at = Some(born);
         record.status = AgentStatus::Running;
+        record.finished_at = None;
         record.started_at = Some(now);
         record.last_seen = now;
         // Its process says whether it lives from now on.
@@ -11370,14 +11385,12 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         daemon.check_liveness();
-        assert!(
-            !lock(&daemon.state)
-                .registry
-                .get(&owner.id)
-                .unwrap()
-                .status
-                .is_live()
-        );
+        let first_end = {
+            let state = lock(&daemon.state);
+            let ended = state.registry.get(&owner.id).unwrap();
+            assert!(!ended.status.is_live());
+            ended.finished_at.expect("its exit recorded")
+        };
         // Its name was taken meanwhile.
         let taken = owner.spec.name.clone();
         let mut other = spec(&taken);
@@ -11397,7 +11410,73 @@ mod tests {
         };
         assert_eq!(back.id, owner.id, "its owner, not a second record");
         assert!(back.keyed_only() && back.status.is_live() && back.pid.is_none());
+        assert_eq!(back.finished_at, None, "live again, so not finished");
         assert_ne!(back.spec.name, taken, "a name free among live agents");
+
+        // Proven again and exited again: the second exit has its own time.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let Response::Agent { agent: again } = daemon
+            .handle(Request::Register {
+                spec: keyed_spec(Some(exited_thread), true),
+                pid: Some(child.id()),
+                session: None,
+            })
+            .await
+        else {
+            panic!("proven again")
+        };
+        assert_eq!(again.id, owner.id);
+        assert_eq!(again.finished_at, None);
+        let _ = child.kill();
+        let _ = child.wait();
+        daemon.check_liveness();
+        let second_end = lock(&daemon.state)
+            .registry
+            .get(&owner.id)
+            .unwrap()
+            .finished_at
+            .expect("its second exit recorded");
+        assert!(second_end > first_end, "the second exit, not the first");
+
+        // A conversation whose only record ended under AgentDocker's
+        // supervision, with no binding left, still has that owner: attach
+        // refuses rather than making a second record.
+        let supervised_thread = "aa000000-0000-7000-8000-000000000004";
+        let mut supervised = register(&daemon, "codex-supervised", None).await;
+        supervised.managed = true;
+        supervised.spec.runtime = "codex".into();
+        supervised.spec.workdir = Some(workdir.clone());
+        supervised
+            .spec
+            .labels
+            .insert("session_id".into(), supervised_thread.into());
+        supervised.spec.labels.insert(
+            agentdocker_core::agent::PROFILE_LABEL.into(),
+            profile.into(),
+        );
+        supervised.status = AgentStatus::Exited { code: Some(0) };
+        supervised.finished_at = Some(Utc::now());
+        {
+            let mut state = lock(&daemon.state);
+            state.store.upsert_agent(&supervised).unwrap();
+            *state.registry.get_mut(&supervised.id).unwrap() = supervised.clone();
+        }
+        let before = lock(&daemon.state).registry.all().count();
+        assert!(matches!(
+            daemon.handle(attach(supervised_thread)).await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        assert_eq!(
+            lock(&daemon.state).registry.all().count(),
+            before,
+            "no second record"
+        );
     }
 
     fn spec_for_binding() -> AgentSpec {
