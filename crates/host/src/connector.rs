@@ -35,6 +35,11 @@ pub struct TunnelStatus {
     pub pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The public port of a Tailscale Funnel: a configuration in tailscaled
+    /// that outlives a connector killed before it could clear it, so the
+    /// next one clears it from here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub https_port: Option<u16>,
 }
 
 impl Serving {

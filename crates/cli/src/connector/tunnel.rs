@@ -28,9 +28,52 @@ pub struct Tunnel {
     pub provider: &'static str,
     pub public_url: String,
     pub name: Option<String>,
+    /// The public port of a Funnel, recorded so a successor can clear it.
+    pub https_port: Option<u16>,
     child: Option<Child>,
     /// The command that undoes the configuration, when there is one.
     teardown: Option<(PathBuf, Vec<String>)>,
+}
+
+/// A tunnel the connector did not stop — an error on the way up, a panic —
+/// is taken down as it is dropped: a Funnel left behind keeps publishing a
+/// loopback port that any later process could bind.
+impl Drop for Tunnel {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.start_kill();
+        }
+        if let Some((binary, args)) = self.teardown.take() {
+            let _ = std::process::Command::new(binary)
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
+/// Clear the Funnel a connector that was killed left on `https_port`.
+pub async fn clear_funnel(binary: &Path, https_port: u16) {
+    let _ = tokio::time::timeout(
+        Duration::from_secs(15),
+        Command::new(binary)
+            .args(funnel_off(https_port))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status(),
+    )
+    .await;
+}
+
+fn funnel_off(https_port: u16) -> Vec<String> {
+    vec![
+        "funnel".into(),
+        format!("--https={https_port}"),
+        "off".into(),
+    ]
 }
 
 impl Tunnel {
@@ -177,11 +220,9 @@ pub async fn funnel_tailscale(binary: &Path, port: u16, https_port: u16) -> Resu
         provider: "tailscale",
         public_url,
         name: Some(host),
+        https_port: Some(https_port),
         child: None,
-        teardown: Some((
-            binary.to_owned(),
-            vec!["funnel".into(), https, "off".into()],
-        )),
+        teardown: Some((binary.to_owned(), funnel_off(https_port))),
     })
 }
 
@@ -317,6 +358,7 @@ pub async fn spawn_cloudflared(
         provider: "cloudflared",
         public_url,
         name: name.map(str::to_owned),
+        https_port: None,
         child: Some(child),
         teardown: None,
     })
@@ -369,9 +411,27 @@ mod tests {
             "{calls}"
         );
         assert!(calls.contains("funnel --https=443 off"), "{calls}");
+        drop(tunnel);
         let other = funnel_tailscale(&fake, 62800, 8443).await.unwrap();
         assert_eq!(other.public_url, "https://mac.tail1.ts.net:8443");
+        assert_eq!(other.https_port, Some(8443));
         assert!(funnel_tailscale(&fake, 62800, 8080).await.is_err());
+        // Never stopped (an error on the way up, a panic): dropped, it is
+        // cleared all the same; a stopped one is not cleared twice.
+        drop(other);
+        clear_funnel(&fake, 10000).await;
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls.matches("funnel --https=443 off").count(),
+            1,
+            "{calls}"
+        );
+        assert_eq!(
+            calls.matches("funnel --https=8443 off").count(),
+            1,
+            "{calls}"
+        );
+        assert!(calls.contains("funnel --https=10000 off"), "{calls}");
 
         let unable = dir.path().join("unable");
         std::fs::write(

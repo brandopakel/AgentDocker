@@ -1388,7 +1388,21 @@ async fn serve(
             "the connector listens on loopback only; the tunnel in front of it is what is public"
         );
     }
-    // The tunnel first, so the public name is known before anything is
+    // Whatever can fail without the network fails before a tunnel opens.
+    let home = agentdocker_host::dirs::home();
+    let path = state_path();
+    let store = load_store(&path)?;
+    // A connector killed before it could clear its Funnel left it
+    // publishing a loopback port nothing serves; clear it first.
+    if let Some(port) = stale_funnel(&home)
+        && let Ok(binary) = tunnel::find_tailscale(args.tailscale.as_deref())
+    {
+        eprintln!(
+            "agentdocker connector: clearing the Funnel on port {port} a stopped connector left"
+        );
+        tunnel::clear_funnel(&binary, port).await;
+    }
+    // The tunnel next, so the public name is known before anything is
     // said or written; it dies with this process and this process with it.
     let mut tunnel = match args.tunnel.as_deref() {
         Some("tailscale") => {
@@ -1419,9 +1433,6 @@ async fn serve(
         ),
     };
     let prefixes = allowlist.as_ref().map(net::Allowlist::len).unwrap_or(0);
-    let home = agentdocker_host::dirs::home();
-    let path = state_path();
-    let store = load_store(&path)?;
     let pairing = oauth::pairing_code();
     let pid = std::process::id();
     let serving = service::Serving {
@@ -1435,6 +1446,7 @@ async fn serve(
             provider: t.provider.to_owned(),
             pid: t.pid(),
             name: t.name.clone(),
+            https_port: t.https_port,
         }),
         allowlist_prefixes: prefixes,
     };
@@ -1505,8 +1517,11 @@ async fn serve(
                         continue;
                     }
                 };
-                let Ok(permit) = limit.clone().acquire_owned().await else {
-                    break Ok(());
+                // Full, the connection is closed now rather than waited
+                // on: waiting here would stall shutdown and the tunnel check.
+                let Ok(permit) = limit.clone().try_acquire_owned() else {
+                    drop(stream);
+                    continue;
                 };
                 let connector = connector.clone();
                 tokio::spawn(async move {
@@ -1519,8 +1534,13 @@ async fn serve(
                         Err(http::HttpError::Bad(status, why)) => HttpResponse::text(status, why),
                         Err(http::HttpError::Io(_)) => return,
                     };
-                    let _ = connector.write_response(&mut write, &response).await;
-                    let _ = write.shutdown().await;
+                    // A reader that never drains the reply does not keep the
+                    // connection's place.
+                    let _ = tokio::time::timeout(http::READ_DEADLINE, async {
+                        let _ = connector.write_response(&mut write, &response).await;
+                        let _ = write.shutdown().await;
+                    })
+                    .await;
                 });
             }
             _ = tunnel_check.tick() => {
@@ -1548,6 +1568,16 @@ async fn serve(
         t.stop().await;
     }
     outcome
+}
+
+/// The Funnel port a connector that is gone left set, by its status file.
+/// A live connector's is its own business.
+fn stale_funnel(home: &Path) -> Option<u16> {
+    service::read_status(home)
+        .filter(|status| !status.alive())?
+        .tunnel
+        .filter(|t| t.provider == "tailscale")?
+        .https_port
 }
 
 /// Polled beside HTTP acceptance, rather than detached: shutdown drops the
@@ -2321,6 +2351,59 @@ mod tests {
             302,
             "its own request it still chooses for"
         );
+    }
+
+    #[test]
+    fn only_a_gone_connectors_funnel_is_cleared() {
+        let home = tempfile::TempDir::new().unwrap();
+        let status = |pid: u32, provider: &str, https_port: Option<u16>| service::Serving {
+            pid,
+            public_url: "https://mac.tail1.ts.net".into(),
+            bind: "127.0.0.1:62800".into(),
+            default_project: None,
+            pairing_code: "ABCDE-FGHJK".into(),
+            started_at: Utc::now(),
+            tunnel: Some(service::TunnelStatus {
+                provider: provider.into(),
+                pid: None,
+                name: None,
+                https_port,
+            }),
+            allowlist_prefixes: 0,
+        };
+        assert_eq!(
+            stale_funnel(home.path()),
+            None,
+            "no status, nothing to clear"
+        );
+        // Well above any live pid on a test machine.
+        let gone = u32::MAX - 7;
+        service::write_status(home.path(), &status(gone, "tailscale", Some(8443))).unwrap();
+        assert_eq!(stale_funnel(home.path()), Some(8443));
+        service::write_status(home.path(), &status(gone, "cloudflared", None)).unwrap();
+        assert_eq!(
+            stale_funnel(home.path()),
+            None,
+            "a child tunnel died with it"
+        );
+        service::write_status(home.path(), &status(gone, "tailscale", None)).unwrap();
+        assert_eq!(
+            stale_funnel(home.path()),
+            None,
+            "a status from before the port was kept"
+        );
+        if cfg!(unix) {
+            service::write_status(
+                home.path(),
+                &status(std::process::id(), "tailscale", Some(443)),
+            )
+            .unwrap();
+            assert_eq!(
+                stale_funnel(home.path()),
+                None,
+                "a live connector's is its own"
+            );
+        }
     }
 
     #[tokio::test]

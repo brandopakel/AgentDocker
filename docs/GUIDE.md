@@ -849,7 +849,8 @@ Newest first. Only what changes how the product is used.
   the new code from `agentdocker connector status` or the Tools screen. Wrong
   codes no longer close consent until a restart: a source that types five
   waits a quarter of an hour, and a code guessed at twenty times is replaced.
-  A service's log no longer records the code.
+  A service's log no longer records the code. A connector that crashes no
+  longer leaves its Tailscale Funnel open: the next start clears it.
 
 - **Allow for session.** A Codex approval that Codex offers to remember has a
   third answer beside **Allow once** and **Deny**: **Allow for session** lets the

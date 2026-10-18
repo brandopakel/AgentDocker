@@ -41,7 +41,9 @@ its project when it consents.
   reach for: Tailscale Funnel on this machine's own `*.ts.net` name, which is
   the same after every restart and needs no domain — the connector reads the
   name from `tailscale status`, sets `tailscale funnel --bg --https=<443|8443|10000>
-  http://127.0.0.1:<port>` on the way in and clears it on the way out; Funnel
+  http://127.0.0.1:<port>` on the way in and clears it on the way out, on an
+  error or a panic too; a Funnel a killed connector left (its port is in
+  `serve.json`) is cleared by the next start before anything else. Funnel
   must be enabled for the tailnet (the error says how). `--tunnel cloudflared`
   starts cloudflared as a child: a quick tunnel, whose random
   `*.trycloudflare.com` hostname it reads from cloudflared's output and which
@@ -192,8 +194,9 @@ trigger network refreshes or change their existing configuration.
   choosing. The optional `openai` admission preset makes a separate periodic
   request only to the fixed vendor feed above.
 - Every request is bounded: 8 KiB request line, 32 KiB of headers, 1 MiB body,
-  15 s to arrive, 64 connections, one request per connection, chunked bodies
-  refused. TLS, keep-alive and any client-IP allowlisting are the tunnel's.
+  15 s to arrive and 15 s for its reply to be taken, 64 connections (one
+  more is closed at once, never waited on), one request per connection,
+  chunked bodies refused. TLS, keep-alive and any client-IP allowlisting are the tunnel's.
 - The tool surface cannot touch files, leases, worktrees or commits, whatever
   the hosted model is told by a page it read.
 - `project` as a recipient is the project the consent chose, wherever the
