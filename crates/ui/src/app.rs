@@ -3535,12 +3535,18 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 project: Some(project.clone()),
             }) {
                 Ok(Response::RoleCatalog { roles }) => PaletteRead::Roles(roles),
-                // An older daemon cannot read the request at all.
-                Ok(Response::Error {
-                    code: agentdocker_core::protocol::ErrorCode::Invalid,
-                    message,
-                    ..
-                }) if message.starts_with("malformed request") => PaletteRead::Unsupported,
+                // An older daemon cannot read the request at all; the client
+                // hands its error reply back as a RemoteError.
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::client::RemoteError>()
+                        .is_some_and(|remote| {
+                            remote.code == agentdocker_core::protocol::ErrorCode::Invalid
+                                && remote.message.starts_with("malformed request")
+                        }) =>
+                {
+                    PaletteRead::Unsupported
+                }
                 _ => PaletteRead::Failed,
             };
             Some(Msg::Palette(project, read))
@@ -5709,6 +5715,45 @@ pub(crate) mod tests {
             "worker sent an unexpected extra request after the planned replies"
         );
         results.try_iter().collect()
+    }
+
+    /// A palette read through the real client: roles, an older daemon
+    /// that cannot read the request (no roles there), and any other error
+    /// (asked again later).
+    #[cfg(unix)]
+    #[test]
+    fn a_palette_read_tells_an_older_daemon_from_a_failed_read() {
+        use serde_json::json;
+        let read = |reply: serde_json::Value| {
+            command_with_replies(
+                Cmd::Palette("/work/a".into()),
+                vec![(
+                    json!({"op":"role_catalog", "project":"/work/a"}),
+                    Some(reply),
+                )],
+            )
+            .into_iter()
+            .find_map(|message| match message {
+                Msg::Palette(project, read) => Some((project, read)),
+                _ => None,
+            })
+            .expect("a palette answer")
+        };
+        assert_eq!(
+            read(json!({"type":"role_catalog", "roles":[]})),
+            ("/work/a".to_owned(), PaletteRead::Roles(Vec::new()))
+        );
+        assert_eq!(
+            read(json!({"type":"error", "code":"invalid",
+                "message":"malformed request: unknown variant `role_catalog`"})),
+            ("/work/a".to_owned(), PaletteRead::Unsupported)
+        );
+        assert_eq!(
+            read(
+                json!({"type":"error", "code":"storage_unavailable", "message":"roles could not be read"})
+            ),
+            ("/work/a".to_owned(), PaletteRead::Failed)
+        );
     }
 
     #[cfg(unix)]
