@@ -118,6 +118,17 @@ pub(super) async fn copy_includes(root: PathBuf, path: PathBuf) -> (usize, Optio
     let Ok(text) = std::fs::read_to_string(root.join(INCLUDE_FILE)) else {
         return (0, None);
     };
+    // Only a copy that opens each folder without following a symlink is
+    // safe in a checkout someone else's commit made; there is none here
+    // yet on Windows, so nothing is copied there rather than copied unsafely.
+    if cfg!(not(unix)) {
+        return (
+            0,
+            Some(format!(
+                "{INCLUDE_FILE} is not copied on this platform yet; copy what it names by hand"
+            )),
+        );
+    }
     let specs: Vec<String> = text
         .lines()
         .map(str::trim)
@@ -222,26 +233,16 @@ fn copy_new(
 
 #[cfg(not(unix))]
 fn copy_new(
-    from: &Path,
+    _from: &Path,
     _base: &Path,
     _relative: &str,
-    to: &Path,
-    meta: &std::fs::Metadata,
+    _to: &Path,
+    _meta: &std::fs::Metadata,
 ) -> std::io::Result<()> {
-    if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut source = std::fs::File::open(from)?;
-    let mut target = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(to)?;
-    if let Err(error) = std::io::copy(&mut source, &mut target) {
-        drop(target);
-        let _ = std::fs::remove_file(to);
-        return Err(error);
-    }
-    target.set_permissions(meta.permissions())
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "includes are not copied on this platform",
+    ))
 }
 
 /// Remove a session's linked worktree once it is done with it: the session
@@ -1452,10 +1453,17 @@ mod lifecycle_tests {
             .await
             .unwrap();
         let (copied, trouble) = copy_includes(root.clone(), wt.clone()).await;
-        assert_eq!((copied, trouble), (2, None));
-        assert_eq!(std::fs::read_to_string(wt.join(".env")).unwrap(), "KEY=1\n");
-        assert!(wt.join("local/settings.json").exists());
-        assert!(!wt.join("scratch.txt").exists(), "only what is listed");
+        if cfg!(unix) {
+            assert_eq!((copied, trouble), (2, None));
+            assert_eq!(std::fs::read_to_string(wt.join(".env")).unwrap(), "KEY=1\n");
+            assert!(wt.join("local/settings.json").exists());
+            assert!(!wt.join("scratch.txt").exists(), "only what is listed");
+        } else {
+            // Nothing copied unsafely, and the worktree says why.
+            assert_eq!(copied, 0);
+            assert!(trouble.unwrap().contains("not copied on this platform"));
+            assert!(!wt.join(".env").exists());
+        }
 
         // Dirty: refused. Committed and merged: removed with its branch.
         std::fs::write(wt.join("new.rs"), "fn x() {}\n").unwrap();
