@@ -1060,6 +1060,9 @@ pub enum Message {
     LaunchMenu,
     /// Open the launch form with this tool chosen.
     LaunchWith(String),
+    /// The launch form for a runtime in a given project, which is selected
+    /// first: a session's own, whichever project is on view.
+    LaunchIn(PathBuf, String),
     /// The pointer entered or left a project row of the rail.
     RailHover(PathBuf),
     RailLeave(PathBuf),
@@ -3233,6 +3236,21 @@ impl App {
                     let first = format!("launch-with-{}", first.name);
                     tasks.push(self.menu_focus("launch-menu", first));
                 }
+            }
+            Message::LaunchIn(project, runtime) => {
+                if !self
+                    .shell
+                    .catalog
+                    .projects
+                    .iter()
+                    .any(|e| e.project.root == project)
+                {
+                    self.say("Add its project to the list first");
+                    return Task::none();
+                }
+                let select = self.update(Message::SelectProject(project));
+                let launch = self.update(Message::LaunchWith(runtime));
+                return Task::batch([select, launch]);
             }
             Message::LaunchWith(runtime) => {
                 self.shell.launch_menu = false;

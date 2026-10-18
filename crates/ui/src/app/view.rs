@@ -3884,7 +3884,7 @@ mod approvals;
 mod changes;
 mod secret_reviews;
 #[cfg(test)]
-mod testing;
+pub(super) mod testing;
 
 /// Keep full question bodies in the review screen, with a bounded first line here.
 fn compact_question(value: &str) -> String {

@@ -131,20 +131,7 @@ impl RecipientReadiness {
                 InputReadiness::AwaitingFirstReceipt | InputReadiness::Verified => return None,
             }
         };
-        // A copied command must never interpret a label as shell syntax or a flag.
-        let resume_session = agent
-            .spec
-            .labels
-            .get("session_id")
-            .filter(|id| {
-                !id.is_empty()
-                    && id.len() <= 128
-                    && id.as_bytes()[0].is_ascii_alphanumeric()
-                    && id
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-            })
-            .cloned();
+        let resume_session = session_word(agent).map(str::to_owned);
         Some(Self {
             agent: agent.id.clone(),
             name: plain(&agent.spec.name, 80),
@@ -152,6 +139,42 @@ impl RecipientReadiness {
             issue,
             resume_session,
         })
+    }
+
+    /// The fix in a few words, beside the command or the button that does
+    /// it. The long form, for an agent reading a send result, is
+    /// [`Self::guidance`].
+    pub fn hint(&self) -> &'static str {
+        let claude = self.runtime == "claude-code";
+        match self.issue {
+            SendIssue::Unknown | SendIssue::UnknownSession => "Check it before sending again.",
+            SendIssue::ProviderBlocked(_) => "Resume delivery once the provider is back.",
+            SendIssue::DeliveryPaused => "Review its delivery before reconnecting it.",
+            SendIssue::SessionEnded if claude && self.resume_session.is_some() => {
+                "Run this in a terminal to bring it back."
+            }
+            SendIssue::SessionEnded => "Its messages wait until it is resumed.",
+            SendIssue::Unreachable if claude && self.resume_session.is_some() => {
+                "It never reached AgentDocker; run this to restart it."
+            }
+            SendIssue::Unreachable => "It never reached AgentDocker; its messages are kept.",
+            SendIssue::NoReceiver | SendIssue::ReceiverSilent if claude => {
+                if self.resume_session.is_some() {
+                    "Quit it, then run this in a terminal."
+                } else {
+                    "Restart it with the AgentDocker channel."
+                }
+            }
+            SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "codex" => {
+                "It takes messages at its next prompt."
+            }
+            SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "opencode" => {
+                "Its plugin wakes it; without it, at its next turn."
+            }
+            SendIssue::NoReceiver | SendIssue::ReceiverSilent => {
+                "It takes messages when it reads its inbox."
+            }
+        }
     }
 
     pub fn guidance(&self) -> String {
@@ -184,7 +207,7 @@ impl RecipientReadiness {
                 "An OpenCode session with AgentDocker's plugin takes this at its next turn, and is woken for it when idle. Without the plugin (agentdocker setup opencode, then restart OpenCode) it waits until the agent reads its inbox (agentdocker inbox --as {}).",
                 self.agent.short()
             ),
-            SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "codex" => "Open this session's details in Tools and reconnect its message delivery. Until then, check its terminal: a waiting message cannot wake it on its own.".into(),
+            SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "codex" => "This Codex session takes messages at its next prompt; nothing can wake it in its terminal. A Codex started from AgentDocker's Launch agent takes them live.".into(),
             // No adapter exists for this runtime: nothing here can wake
             // it, and saying "reconnect a receiver" would send the person
             // looking for one. The message waits in its queue for the
@@ -195,6 +218,68 @@ impl RecipientReadiness {
             ),
         }
     }
+}
+
+/// An agent's provider session id, when it is one a copied command can
+/// carry as one plain word: never shell syntax, never a flag.
+fn session_word(agent: &AgentRecord) -> Option<&str> {
+    agent
+        .spec
+        .labels
+        .get("session_id")
+        .map(String::as_str)
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id.as_bytes()[0].is_ascii_alphanumeric()
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+}
+
+/// The one command that brings a Claude Code session back with the
+/// AgentDocker channel, exactly as it is pasted into a terminal: into its
+/// own folder, its own conversation, with the channel. None for another
+/// runtime, without a conversation id, or for a folder that cannot be
+/// written as one plain quoted word. `windows` writes it for PowerShell.
+pub fn claude_resume_command(agent: &AgentRecord, windows: bool) -> Option<String> {
+    if agent.spec.runtime != "claude-code" {
+        return None;
+    }
+    let session = session_word(agent)?;
+    let folder = agent
+        .spec
+        .workdir
+        .as_deref()
+        .or_else(|| agent.project.as_ref().map(|p| p.root.as_path()))?
+        .to_str()?;
+    if folder.is_empty() || folder.chars().any(char::is_control) {
+        return None;
+    }
+    let resume = format!(
+        "claude --resume {session} --dangerously-load-development-channels server:agentdocker"
+    );
+    Some(if windows {
+        // PowerShell reads the curly single quotes as quotes too; each is
+        // doubled inside the literal. Claude starts only once the folder is
+        // entered: a folder that is gone runs nothing.
+        let folder: String = folder
+            .chars()
+            .flat_map(|c| {
+                let quote = matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}');
+                std::iter::once(c).chain(quote.then_some(c))
+            })
+            .collect();
+        format!(
+            "if (Set-Location -LiteralPath '{folder}' -PassThru -ErrorAction SilentlyContinue) {{ $env:AGENTDOCKER_CLAUDE_CHANNEL_INPUT='1'; {resume} }}"
+        )
+    } else {
+        format!(
+            "cd '{}' && AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 {resume}",
+            folder.replace('\'', "'\\''")
+        )
+    })
 }
 
 impl SendReadiness {
@@ -215,6 +300,95 @@ impl SendReadiness {
 
 #[cfg(test)]
 mod tests {
+    /// The copied command is the whole thing to paste, for that session
+    /// and no other: its folder, its conversation, the channel; quoted so a
+    /// folder's name is never shell syntax.
+    #[test]
+    fn a_claude_session_gets_one_command_to_paste() {
+        let mut agent = AgentRecord::new(
+            crate::AgentSpec {
+                name: "claude-code-1".into(),
+                runtime: "claude-code".into(),
+                workdir: Some("/work/it's here".into()),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        assert_eq!(
+            claude_resume_command(&agent, false),
+            None,
+            "no conversation id"
+        );
+        agent
+            .spec
+            .labels
+            .insert("session_id".into(), "3ebbfa91-6e52-4cea".into());
+        assert_eq!(
+            claude_resume_command(&agent, false).unwrap(),
+            "cd '/work/it'\\''s here' && AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 claude --resume 3ebbfa91-6e52-4cea --dangerously-load-development-channels server:agentdocker"
+        );
+        assert_eq!(
+            claude_resume_command(&agent, true).unwrap(),
+            "if (Set-Location -LiteralPath '/work/it''s here' -PassThru -ErrorAction SilentlyContinue) { $env:AGENTDOCKER_CLAUDE_CHANNEL_INPUT='1'; claude --resume 3ebbfa91-6e52-4cea --dangerously-load-development-channels server:agentdocker }"
+        );
+        // Curly quotes are quotes to PowerShell: doubled, so a folder's
+        // name cannot end the literal and start a statement.
+        agent.spec.workdir =
+            Some("C:\\work\\Jane\u{2019}s \u{2018}x\u{2019}; Write-Output injected; #".into());
+        let command = claude_resume_command(&agent, true).unwrap();
+        assert!(
+            command.contains(
+                "Jane\u{2019}\u{2019}s \u{2018}\u{2018}x\u{2019}\u{2019}; Write-Output injected; #'"
+            ),
+            "{command}"
+        );
+        agent.spec.workdir = Some("/work/it's here".into());
+        agent
+            .spec
+            .labels
+            .insert("session_id".into(), "--resume; rm".into());
+        assert_eq!(
+            claude_resume_command(&agent, false),
+            None,
+            "never a flag or syntax"
+        );
+        agent.spec.labels.insert("session_id".into(), "abc".into());
+        agent.spec.workdir = Some("/work/two\nlines".into());
+        assert_eq!(claude_resume_command(&agent, false), None);
+        agent.spec.runtime = "codex".into();
+        assert_eq!(claude_resume_command(&agent, false), None, "Claude's only");
+    }
+
+    /// Every issue says its fix in one short line.
+    #[test]
+    fn every_hint_is_one_short_line() {
+        for runtime in ["claude-code", "codex", "opencode", "custom"] {
+            for issue in [
+                SendIssue::Unknown,
+                SendIssue::UnknownSession,
+                SendIssue::SessionEnded,
+                SendIssue::NoReceiver,
+                SendIssue::ReceiverSilent,
+                SendIssue::Unreachable,
+                SendIssue::DeliveryPaused,
+                SendIssue::ProviderBlocked(ProviderIssueKind::Rate),
+            ] {
+                for resume_session in [None, Some("abc".to_owned())] {
+                    let hint = RecipientReadiness {
+                        agent: AgentId::from("a".to_owned()),
+                        name: "a".into(),
+                        runtime: runtime.into(),
+                        issue,
+                        resume_session,
+                    }
+                    .hint();
+                    assert!(hint.len() <= 60 && !hint.contains('\n'), "{hint}");
+                }
+            }
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -373,7 +547,7 @@ mod tests {
             RecipientReadiness::for_agent(&codex, codex.created_at, None)
                 .unwrap()
                 .guidance()
-                .contains("reconnect its message delivery")
+                .contains("takes them live")
         );
     }
 

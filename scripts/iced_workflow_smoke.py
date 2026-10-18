@@ -730,14 +730,21 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("wait_text_absent", text="claude --resume readiness-fixture-session"),
                         step("click", id=f"delivery-details-conversation-{conversation}"),
                         step("wait_text", text="readiness-fixture · Messages may wait for its next prompt"),
-                        step("wait_text", text="claude --resume readiness-fixture-session"),
+                        # Details say who and what; the command is in the
+                        # session's own panel, not repeated here.
+                        step("wait_text_absent", text="claude --resume readiness-fixture-session"),
                         step("capture", name="send-readiness-details"),
                         step("click", id=f"delivery-details-conversation-{conversation}"),
                     ]
+                # A session that cannot be woken shows the one command to
+                # paste for it, whole: its folder, its conversation, the channel.
+                command_probe = [
+                    step("wait_text", text="claude --resume readiness-fixture-session --dangerously-load-development-channels server:agentdocker"),
+                ] if name == "readiness-activity" else []
                 return launch(name, [step("click", id="connections"),
                                      step("click", id="connection-details-claude-code"),
                                      step("wait_text", text="readiness-fixture"),
-                                     step("wait_text", text=expected), step("capture", name=name),
+                                     step("wait_text", text=expected), *command_probe, step("capture", name=name),
                                      step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                                      # Selecting a project opens its shared chat. On a
                                      # compact display, Messages keeps that conversation
