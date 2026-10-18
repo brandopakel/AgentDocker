@@ -842,6 +842,12 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **Roles in the app.** In a session's panel, **Roles** gives an agent roles
+  from its project's palette, several to an agent and one role to several
+  agents; they show as coloured labels after its name. **Edit roles…** in the
+  same menu recolours, deletes or adds a project's roles. Nothing gets a role
+  unless you give it one.
+
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or
   has sat there some days (`task rule-add`, the board's settings). A

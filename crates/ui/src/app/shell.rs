@@ -187,6 +187,13 @@ pub(super) struct State {
     pub link_target: String,
     pub card_menu: Option<CardMenu>,
     pub tag_draft: String,
+    /// The agent whose roles menu is open, and whether it is editing the
+    /// project's palette there: a new role's name, and the role whose
+    /// delete was pressed once, when.
+    pub roles_menu: Option<String>,
+    pub roles_editing: bool,
+    pub role_draft: String,
+    pub role_delete: Option<(String, std::time::Instant)>,
     pub rule_draft: RuleDraft,
     pub plan_draft: PlanDraft,
     /// The open card's fields as the person edits them.
@@ -1000,6 +1007,17 @@ pub enum Message {
     TagCreate,
     TagRecolor(String),
     TagDelete(String),
+    /// An agent's roles: its menu opened or closed, a role given or taken
+    /// away (agent, role); the palette edited there: editing on or off, a
+    /// new role's name, making it, a role's next colour, deleting one
+    /// (pressed twice, as it takes the role from every agent holding it).
+    RolesMenu(String),
+    RoleToggle(String, String),
+    RolesEdit,
+    RoleDraft(String),
+    RoleCreate,
+    RoleRecolor(String),
+    RoleDelete(String),
     /// The board's rules, in its settings.
     RuleField(RuleFieldKind, String),
     RuleIdle(bool),
@@ -2240,6 +2258,116 @@ impl App {
                         color: Some(color),
                         rename: None,
                     });
+                }
+            }
+            Message::RolesMenu(agent) => {
+                if self.shell.roles_menu.as_deref() == Some(agent.as_str()) {
+                    self.shell.roles_menu = None;
+                } else {
+                    // Its project's palette, read if it has not been yet.
+                    if let Some(root) = self.project_of(&agent)
+                        && !self.workspaces.contains_key(&root)
+                    {
+                        self.send(Cmd::Workspace(root));
+                    }
+                    self.shell.roles_menu = Some(agent);
+                }
+                self.shell.roles_editing = false;
+                self.shell.role_delete = None;
+            }
+            Message::RoleToggle(agent, role) => {
+                let held = self
+                    .agents
+                    .iter()
+                    .find(|a| a.id.as_str() == agent)
+                    .is_some_and(|a| a.holds_role(&role));
+                let (add, remove) = if held {
+                    (Vec::new(), vec![role])
+                } else {
+                    (vec![role], Vec::new())
+                };
+                if let Some(root) = self.project_of(&agent) {
+                    self.roles_act(
+                        root,
+                        Request::RoleAssign {
+                            from: agentdocker_core::HUMAN.into(),
+                            agent,
+                            add,
+                            remove,
+                        },
+                    );
+                }
+            }
+            Message::RolesEdit => {
+                self.shell.roles_editing = !self.shell.roles_editing;
+                self.shell.role_delete = None;
+            }
+            Message::RoleDraft(name) => {
+                self.shell.role_draft = name
+                    .chars()
+                    .take(agentdocker_core::role::NAME_CHARS)
+                    .collect();
+            }
+            Message::RoleCreate => {
+                let name = self.shell.role_draft.trim().to_owned();
+                if let Some(root) = self.roles_project()
+                    && !name.is_empty()
+                {
+                    self.shell.role_draft.clear();
+                    self.roles_act(
+                        root.clone(),
+                        Request::RoleSave {
+                            from: agentdocker_core::HUMAN.into(),
+                            project: Some(root),
+                            role: None,
+                            name,
+                            color: None,
+                            description: None,
+                        },
+                    );
+                }
+            }
+            Message::RoleRecolor(role) => {
+                if let Some(root) = self.roles_project()
+                    && let Some(def) = self
+                        .workspaces
+                        .get(&root)
+                        .and_then(|w| w.roles.iter().find(|r| r.role == role))
+                        .cloned()
+                {
+                    let all = agentdocker_core::RoleColor::ALL;
+                    let at = all.iter().position(|c| *c == def.color).unwrap_or(0);
+                    self.roles_act(
+                        root.clone(),
+                        Request::RoleSave {
+                            from: agentdocker_core::HUMAN.into(),
+                            project: Some(root),
+                            role: Some(role),
+                            name: def.name,
+                            color: Some(all[(at + 1) % all.len()]),
+                            description: None,
+                        },
+                    );
+                }
+            }
+            Message::RoleDelete(role) => {
+                let armed = self
+                    .shell
+                    .role_delete
+                    .as_ref()
+                    .is_some_and(|(armed, at)| *armed == role && at.elapsed() < CONFIRM_WITHIN);
+                if !armed {
+                    self.shell.role_delete = Some((role, std::time::Instant::now()));
+                } else if let Some(root) = self.roles_project() {
+                    self.shell.role_delete = None;
+                    self.roles_act(
+                        root.clone(),
+                        Request::RoleDelete {
+                            from: agentdocker_core::HUMAN.into(),
+                            project: Some(root),
+                            role,
+                        },
+                    );
                 }
             }
             Message::TagDelete(name) => self.board_act(Request::TagDelete {
@@ -4204,6 +4332,32 @@ impl App {
 
     /// A change to the board's model for the project on view; what it
     /// touched is read again after.
+    /// A role given or taken away, or the palette changed, for the
+    /// project it belongs to; its palette and cards are read again after.
+    fn roles_act(&mut self, project: String, request: Request) {
+        self.send(Cmd::BoardAct {
+            project,
+            request: Box::new(request),
+        });
+    }
+
+    /// The root of the project an agent works in.
+    pub(super) fn project_of(&self, agent: &str) -> Option<String> {
+        self.agents
+            .iter()
+            .find(|a| a.id.as_str() == agent)
+            .and_then(|a| a.project.as_ref())
+            .map(|p| p.root.display().to_string())
+    }
+
+    /// The project whose palette the open roles menu edits.
+    fn roles_project(&self) -> Option<String> {
+        self.shell
+            .roles_menu
+            .as_deref()
+            .and_then(|agent| self.project_of(agent))
+    }
+
     pub(super) fn board_act(&mut self, request: Request) {
         if let Some(project) = self.selected_project_root() {
             self.send(Cmd::BoardAct {

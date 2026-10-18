@@ -793,6 +793,34 @@ pub(super) fn notice_line<'a>(
     line.into()
 }
 
+/// A role as a coloured label: its name in its ink on its tint. A role
+/// the palette no longer has is its address, in the quiet ink.
+pub(super) fn role_chip<'a>(
+    name: String,
+    color: Option<agentdocker_core::RoleColor>,
+    c: Colors,
+) -> Element<'a, Message> {
+    let (tint, ink) = color.map_or((c.raised, c.muted), |color| {
+        super::style::role_tone(color, c.dark)
+    });
+    container(
+        text(name)
+            .size(11.5)
+            .color(ink)
+            .wrapping(iced::widget::text::Wrapping::None),
+    )
+    .padding([1, 7])
+    .style(move |_| container::Style {
+        background: Some(tint.into()),
+        border: iced::Border {
+            radius: 999.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
 /// A menu's frame: the overlay surface with a little room inside.
 pub(super) fn menu<'a>(items: impl Into<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
     container(items)
@@ -2011,6 +2039,250 @@ impl App {
         menu(items, c)
     }
 
+    /// The roles of an agent's project there are to give, in the palette's
+    /// order: none before its palette is read, or from a daemon without one.
+    pub(super) fn palette_for(&self, agent: &AgentRecord) -> &[agentdocker_core::RoleDef] {
+        agent
+            .project
+            .as_ref()
+            .and_then(|p| self.workspaces.get(&p.root.display().to_string()))
+            .map_or(&[], |w| w.roles.as_slice())
+    }
+
+    /// An agent's roles, in its palette's order, each with its definition
+    /// when the palette has it.
+    fn held_roles<'a>(
+        &'a self,
+        agent: &'a AgentRecord,
+    ) -> Vec<(&'a str, Option<&'a agentdocker_core::RoleDef>)> {
+        let palette = self.palette_for(agent);
+        let mut held: Vec<_> = agent
+            .roles()
+            .into_iter()
+            .map(|role| (role, palette.iter().find(|d| d.role == role)))
+            .collect();
+        held.sort_by_key(|(role, def)| {
+            (
+                def.and_then(|d| palette.iter().position(|p| p.role == d.role))
+                    .unwrap_or(usize::MAX),
+                *role,
+            )
+        });
+        held
+    }
+
+    /// An agent's roles by name, as people read them.
+    pub(super) fn role_names(&self, agent: &AgentRecord) -> Vec<String> {
+        self.held_roles(agent)
+            .into_iter()
+            .map(|(role, def)| def.map_or_else(|| role.to_owned(), |d| d.name.clone()))
+            .collect()
+    }
+
+    /// An agent's roles as coloured labels: at most `limit` of them, then
+    /// how many more. Nothing for an agent without one.
+    pub(super) fn role_chips<'a>(
+        &'a self,
+        agent: &AgentRecord,
+        limit: Option<usize>,
+        c: Colors,
+    ) -> Option<Element<'a, Message>> {
+        let held = self.held_roles(agent);
+        if held.is_empty() {
+            return None;
+        }
+        let shown = limit.unwrap_or(held.len()).min(held.len());
+        let mut chips = row![].spacing(4).align_y(Center);
+        for (role, def) in &held[..shown] {
+            chips = chips.push(role_chip(
+                def.map_or_else(|| (*role).to_owned(), |d| d.name.clone()),
+                def.map(|d| d.color),
+                c,
+            ));
+        }
+        if held.len() > shown {
+            chips = chips.push(role_chip(format!("+{}", held.len() - shown), None, c));
+        }
+        Some(chips.into())
+    }
+
+    /// An agent's roles and the control that gives them: its labels, then
+    /// the tag that opens the menu. Nothing for the person, or where the
+    /// project has no palette to give from.
+    fn roles_control<'a>(&'a self, agent: &AgentRecord, c: Colors) -> Option<Element<'a, Message>> {
+        if agent.spec.runtime == agentdocker_core::HUMAN_RUNTIME
+            || self.palette_for(agent).is_empty()
+        {
+            return None;
+        }
+        let id = agent.id.to_string();
+        let open = self.shell.roles_menu.as_deref() == Some(id.as_str());
+        let names = self.role_names(agent);
+        let trigger = tip(
+            custom_sized(
+                "session-roles",
+                if names.is_empty() {
+                    "Roles".to_owned()
+                } else {
+                    format!("Roles: {}", names.join(", "))
+                },
+                icon(Icon::Tag, if open { c.text } else { c.muted }, 12.0),
+                Some(Message::RolesMenu(id.clone())),
+                open,
+                Kind::Ghost,
+                [5, 5],
+                iced::Length::Shrink,
+            ),
+            "Roles",
+            c,
+        );
+        let menu = open.then(|| self.roles_menu(agent, c));
+        let mut line = row![].spacing(6).align_y(Center);
+        if let Some(chips) = self.role_chips(agent, None, c) {
+            line = line.push(chips);
+        }
+        line = line.push(
+            crate::controls::popover(trigger, menu)
+                .width(240.0)
+                .on_dismiss(Message::RolesMenu(id)),
+        );
+        Some(line.wrap().into())
+    }
+
+    /// The roles menu: each role of the project, ticked where the agent
+    /// holds it, pressed to give or take it; below, the palette itself:
+    /// each role's next colour and its delete, and a new role by name.
+    fn roles_menu<'a>(&'a self, agent: &AgentRecord, c: Colors) -> Element<'a, Message> {
+        let id = agent.id.to_string();
+        let connected = self.connected.is_ok();
+        let palette = self.palette_for(agent);
+        let mut items = column![].spacing(1).width(Fill);
+        if !self.shell.roles_editing {
+            for def in palette {
+                let held = agent.holds_role(&def.role);
+                let (_, ink) = super::style::role_tone(def.color, c.dark);
+                items = items.push(custom(
+                    format!("role-pick-{id}-{}", def.role),
+                    format!("{}, {}", def.name, if held { "given" } else { "not given" }),
+                    row![
+                        container(if held {
+                            Element::from(icon(Icon::Check, c.text, 11.0))
+                        } else {
+                            Space::new().into()
+                        })
+                        .width(14),
+                        dot(ink, 8.0, c),
+                        text(def.name.clone()).size(13).width(Fill),
+                    ]
+                    .spacing(8)
+                    .align_y(Center),
+                    connected.then(|| Message::RoleToggle(id.clone(), def.role.clone())),
+                    held,
+                    Kind::Quiet,
+                    [5, 8],
+                ));
+            }
+            items = items.push(menu_separator(c)).push(menu_item(
+                "roles-edit",
+                "Edit roles…",
+                Some(Message::RolesEdit),
+                false,
+            ));
+        } else {
+            for def in palette {
+                let (_, ink) = super::style::role_tone(def.color, c.dark);
+                let armed =
+                    self.shell.role_delete.as_ref().is_some_and(|(role, at)| {
+                        *role == def.role && at.elapsed() < CONFIRM_WITHIN
+                    });
+                let losing = self
+                    .agents
+                    .iter()
+                    .filter(|a| {
+                        a.project.as_ref().map(agentdocker_core::ProjectRef::id)
+                            == agent.project.as_ref().map(agentdocker_core::ProjectRef::id)
+                            && a.holds_role(&def.role)
+                    })
+                    .count();
+                let delete: Element<'a, Message> = if armed {
+                    custom(
+                        format!("role-delete-{}", def.role),
+                        format!(
+                            "Delete {}: {losing} agent{} lose{} it",
+                            def.name,
+                            if losing == 1 { "" } else { "s" },
+                            if losing == 1 { "s" } else { "" }
+                        ),
+                        text("Delete?").size(12),
+                        connected.then(|| Message::RoleDelete(def.role.clone())),
+                        false,
+                        Kind::Destructive,
+                        [2, 6],
+                    )
+                } else {
+                    tip(
+                        custom_sized(
+                            format!("role-delete-{}", def.role),
+                            format!("Delete {}", def.name),
+                            container(icon(Icon::Close, c.faint, 10.0)).center(14),
+                            connected.then(|| Message::RoleDelete(def.role.clone())),
+                            false,
+                            Kind::Ghost,
+                            [2, 2],
+                            iced::Length::Shrink,
+                        ),
+                        "Delete",
+                        c,
+                    )
+                };
+                items = items.push(
+                    row![
+                        tip(
+                            custom_sized(
+                                format!("role-color-{}", def.role),
+                                format!("{}, {}", def.name, def.color.as_str()),
+                                container(dot(ink, 9.0, c)).center(14),
+                                connected.then(|| Message::RoleRecolor(def.role.clone())),
+                                false,
+                                Kind::Ghost,
+                                [3, 3],
+                                iced::Length::Shrink,
+                            ),
+                            "Next colour",
+                            c,
+                        ),
+                        text(def.name.clone()).size(13).width(Fill),
+                        delete,
+                    ]
+                    .spacing(6)
+                    .align_y(Center)
+                    .padding([2, 4]),
+                );
+            }
+            let can_add = connected && !self.shell.role_draft.trim().is_empty();
+            items = items
+                .push(
+                    container(input_submitting(
+                        "role-new",
+                        "New role",
+                        &self.shell.role_draft,
+                        Message::RoleDraft,
+                        connected,
+                        can_add.then_some(Message::RoleCreate),
+                    ))
+                    .padding([4, 4]),
+                )
+                .push(menu_separator(c))
+                .push(menu_item(
+                    "roles-done",
+                    "Done",
+                    Some(Message::RolesEdit),
+                    false,
+                ));
+        }
+        menu(items, c)
+    }
+
     /// Whether an agent id belongs to the projects on view.
     fn agent_on_view(&self, id: &str) -> bool {
         self.agents
@@ -2670,6 +2942,11 @@ impl App {
             if let Some(tokens) = tokens {
                 facts.push(tokens);
             }
+            // Its roles, in the palette's words, said with the rest.
+            let roles = self.role_names(agent);
+            if !roles.is_empty() {
+                facts.push(roles.join(", "));
+            }
             let spoken = format!(
                 "{name}\n{}{}",
                 facts.join(" · "),
@@ -2698,12 +2975,16 @@ impl App {
                     c.muted
                 })
                 .wrapping(iced::widget::text::Wrapping::None);
+            let mut named = row![hint(name_text, facts[1..].join(" · "), c)]
+                .spacing(6)
+                .align_y(Center);
+            if let Some(chips) = self.role_chips(agent, Some(2), c) {
+                named = named.push(chips);
+            }
             let mut content = row![
                 standing_glyph(standing, c),
                 agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 20.0, c),
-                container(hint(name_text, facts[1..].join(" · "), c))
-                    .width(Fill)
-                    .clip(true)
+                container(named).width(Fill).clip(true)
             ]
             .spacing(8)
             .align_y(Center);
@@ -2820,6 +3101,9 @@ impl App {
         let mut body = column![].spacing(12);
         let delivery = agent.input_delivery.as_ref();
         let paused = delivery.is_some_and(|d| d.paused_for(agent.process_started_at));
+        if let Some(roles) = self.roles_control(agent, c) {
+            body = body.push(roles);
+        }
         if agent.spec.runtime != "human" {
             // How messages reach it: its readiness as a dot, what waits for
             // it as a count; the words are the marks' tooltips and names.
@@ -3951,6 +4235,143 @@ pub(super) fn split_style(c: Colors) -> iced::widget::pane_grid::Style {
 
 #[cfg(test)]
 mod tests {
+    /// A role is the person's to give, from the inspector: an agent with
+    /// none shows no label, the tag opens its project's roles, a pick gives
+    /// or takes one, the row and the inspector show what it holds in the
+    /// palette's colours and order, and the palette is edited in the same
+    /// menu — a colour, a delete pressed twice, a new role by name.
+    #[test]
+    fn roles_are_given_from_the_inspector_and_shown_as_labels() {
+        use super::super::view::testing::seen;
+        use super::*;
+        use agentdocker_core::{AgentSpec, AgentStatus, ProjectRef, protocol::Request};
+        let (commands, requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        let c = Colors::new(false);
+        let mut agent = AgentRecord::new(
+            AgentSpec {
+                name: "reviewer-one".into(),
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        agent.status = AgentStatus::Running;
+        agent.project = Some(ProjectRef::directory("/work/orchard"));
+        let id = agent.id.to_string();
+        app.agents.push(agent.clone());
+        assert!(
+            app.roles_control(&agent, c).is_none(),
+            "no palette read yet, no role controls"
+        );
+        app.workspaces.insert(
+            "/work/orchard".into(),
+            crate::app::Workspace {
+                roles: agentdocker_core::role::defaults(
+                    &agentdocker_core::ProjectId::from("orchard"),
+                    Utc::now(),
+                ),
+                ..Default::default()
+            },
+        );
+        assert!(
+            app.role_chips(&agent, None, c).is_none(),
+            "no role, no label"
+        );
+        let view = seen(app.roles_control(&agent, c).expect("the tag"));
+        assert_eq!(view.control("session-roles").unwrap().1, "Roles");
+        assert!(view.control(&format!("role-pick-{id}-reviewer")).is_none());
+
+        let _ = app.update(Message::RolesMenu(id.clone()));
+        assert_eq!(app.shell.roles_menu.as_deref(), Some(id.as_str()));
+        // The menu is an overlay over the inspector: read on its own.
+        let view = seen(app.roles_menu(&agent, c));
+        let pick = view
+            .control(&format!("role-pick-{id}-reviewer"))
+            .expect("the project's reviewer");
+        assert_eq!((pick.1.as_str(), pick.3), ("Reviewer, not given", true));
+        let _ = app.update(Message::RoleToggle(id.clone(), "reviewer".into()));
+        let sent = requests.try_iter().collect::<Vec<_>>();
+        let [crate::app::Cmd::BoardAct { project, request }] = sent.as_slice() else {
+            panic!("one role change, got {sent:?}");
+        };
+        assert_eq!(project, "/work/orchard");
+        assert!(matches!(request.as_ref(),
+            Request::RoleAssign { from, agent: to, add, remove }
+                if from == agentdocker_core::HUMAN && to == &id
+                    && add == &["reviewer".to_owned()] && remove.is_empty()));
+
+        // Holding two, in the palette's order whatever the label says.
+        agent.spec.labels.insert(
+            agentdocker_core::agent::ROLE_LABEL.into(),
+            "tester,reviewer".into(),
+        );
+        app.agents[0] = agent.clone();
+        assert_eq!(app.role_names(&agent), ["Reviewer", "Tester"]);
+        let row = seen(app.role_chips(&agent, Some(1), c).unwrap());
+        assert!(row.reads("Reviewer") && row.reads("+1") && !row.reads("Tester"));
+        let view = seen(app.roles_control(&agent, c).unwrap());
+        assert_eq!(
+            view.control("session-roles").unwrap().1,
+            "Roles: Reviewer, Tester"
+        );
+        assert!(view.reads("Reviewer") && view.reads("Tester"), "its labels");
+        let view = seen(app.roles_menu(&agent, c));
+        assert_eq!(
+            view.control(&format!("role-pick-{id}-tester")).unwrap().1,
+            "Tester, given"
+        );
+        let _ = app.update(Message::RoleToggle(id.clone(), "tester".into()));
+        assert!(matches!(requests.try_iter().collect::<Vec<_>>().as_slice(),
+            [crate::app::Cmd::BoardAct { request, .. }]
+                if matches!(request.as_ref(), Request::RoleAssign { add, remove, .. }
+                    if add.is_empty() && remove == &["tester".to_owned()])));
+
+        // The palette, edited in the same menu.
+        let _ = app.update(Message::RolesEdit);
+        let view = seen(app.roles_menu(&agent, c));
+        assert_eq!(
+            view.control("role-color-reviewer").unwrap().1,
+            "Reviewer, orange"
+        );
+        assert!(view.control("role-delete-reviewer").is_some());
+        assert!(view.control("role-new").is_some());
+        let _ = app.update(Message::RoleRecolor("reviewer".into()));
+        assert!(matches!(requests.try_iter().collect::<Vec<_>>().as_slice(),
+            [crate::app::Cmd::BoardAct { request, .. }]
+                if matches!(request.as_ref(), Request::RoleSave { role: Some(role), name, color, project, .. }
+                    if role == "reviewer" && name == "Reviewer"
+                        && *color == Some(agentdocker_core::RoleColor::Pink)
+                        && project.as_deref() == Some("/work/orchard"))));
+        // A delete takes the role from every agent holding it: pressed once
+        // it asks, saying how many; twice, it goes.
+        let _ = app.update(Message::RoleDelete("reviewer".into()));
+        assert_eq!(requests.try_iter().count(), 0);
+        let view = seen(app.roles_menu(&agent, c));
+        assert_eq!(
+            view.control("role-delete-reviewer").unwrap().1,
+            "Delete Reviewer: 1 agent loses it"
+        );
+        let _ = app.update(Message::RoleDelete("reviewer".into()));
+        assert!(matches!(requests.try_iter().collect::<Vec<_>>().as_slice(),
+            [crate::app::Cmd::BoardAct { request, .. }]
+                if matches!(request.as_ref(), Request::RoleDelete { role, .. } if role == "reviewer")));
+        let _ = app.update(Message::RoleDraft("Docs".into()));
+        let _ = app.update(Message::RoleCreate);
+        assert!(matches!(requests.try_iter().collect::<Vec<_>>().as_slice(),
+            [crate::app::Cmd::BoardAct { request, .. }]
+                if matches!(request.as_ref(), Request::RoleSave { role: None, name, .. } if name == "Docs")));
+        assert!(app.shell.role_draft.is_empty());
+
+        // The person is given no roles.
+        let mut person = agent.clone();
+        person.spec.runtime = agentdocker_core::HUMAN_RUNTIME.into();
+        assert!(app.roles_control(&person, c).is_none());
+    }
+
     /// A healthy service says nothing at the rail's foot; a lost connection
     /// or an update to install is one line there, and the bottom strip is
     /// gone unless a restart is being confirmed.

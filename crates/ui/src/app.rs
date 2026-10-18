@@ -3475,6 +3475,12 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 })? {
                     workspace.files = files;
                 }
+                // A daemon without roles leaves the rest as it was.
+                if let Ok(Response::RoleCatalog { roles }) = call(Request::RoleCatalog {
+                    project: Some(project.clone()),
+                }) {
+                    workspace.roles = roles;
+                }
                 Ok(workspace)
             };
             let result = read().map(Box::new);
@@ -4511,10 +4517,13 @@ pub(crate) struct CardDetail {
     pub files: Vec<agentdocker_core::ProjectFile>,
 }
 
-/// A project's tags, rules, plans (without bodies) and files.
+/// A project's tags, rules, plans (without bodies), files and roles.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Workspace {
     pub tags: Vec<agentdocker_core::Tag>,
+    /// The roles to give, in the palette's order; none from a daemon
+    /// that has no palette, and then no role controls.
+    pub roles: Vec<agentdocker_core::RoleDef>,
     pub rules: Vec<agentdocker_core::Rule>,
     pub plans: Vec<agentdocker_core::Plan>,
     pub files: Vec<agentdocker_core::ProjectFile>,
