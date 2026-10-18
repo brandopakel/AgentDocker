@@ -2153,7 +2153,7 @@ impl App {
 
     /// The name a person reads for an agent: the tool, with the session's
     /// own id once the project holds another session of that tool
-    /// (*Claude Code · 0180d761*), or the name somebody chose. See `naming`.
+    /// (*Claude Code · 6f1c2a9b*), or the name somebody chose. See `naming`.
     fn display_name(&self, agent: &AgentRecord) -> String {
         self.naming().display(agent)
     }
@@ -7548,10 +7548,10 @@ pub(crate) mod tests {
         );
         // An older record: only the exact adapter form from its own pid.
         let by_pid = record("codex-51242", "codex", Some(51242));
-        let mut by_session = record("claude-218845eb", "claude-code", None);
+        let mut by_session = record("claude-5e55a0d1", "claude-code", None);
         by_session.spec.labels.insert(
             "session_id".into(),
-            "218845eb-ba1e-4457-bb5a-e1829f5652dd".into(),
+            "5e55a0d1-7c3b-4f2e-9a61-0b4d2c8e7f13".into(),
         );
         // Chosen names that merely look like identifiers stay as chosen.
         let chosen_hex = record("codex-cafe", "codex", Some(51242));
@@ -7915,7 +7915,7 @@ pub(crate) mod tests {
         let mut app = App::bare(commands, results);
         let now = Utc::now();
         let mut first = record("codex-5124", "codex", Some(5124));
-        first.id = agentdocker_core::AgentId::from("0180d7615186449087095d7aa15ec0bb");
+        first.id = agentdocker_core::AgentId::from("6f1c2a9b3d7e4c5f8a0b1c2d3e4f5a6b");
         first.created_at = now;
         first.vcs = Some(agentdocker_core::VcsState {
             branch: Some("main".into()),
@@ -7924,7 +7924,7 @@ pub(crate) mod tests {
             updated_at: now,
         });
         let mut second = record("codex-6250", "codex", Some(6250));
-        second.id = agentdocker_core::AgentId::from("ac5c138c2b3f4d8f90c5924988419055");
+        second.id = agentdocker_core::AgentId::from("9b8a7c6d5e4f40312a1b2c3d4e5f6a7b");
         second.created_at = now + chrono::Duration::seconds(1);
         app.agents = vec![second.clone(), first.clone()];
         let first_name = format!("Codex · {}", naming::word_for(first.id.as_str()));

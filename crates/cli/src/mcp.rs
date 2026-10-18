@@ -3003,8 +3003,8 @@ mod tests {
             agent.project = Some(agentdocker_core::ProjectRef::directory(root));
             agent
         };
-        let me = in_project("abc123", "/p/keel");
-        let s = server(vec![]).remote("/p/keel".into());
+        let me = in_project("abc123", "/p/orchard");
+        let s = server(vec![]).remote("/p/orchard".into());
         let reply = s
             .handle(rpc(
                 1,
@@ -3017,7 +3017,7 @@ mod tests {
             reply["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("only the project keel")
+                .contains("only the project orchard")
         );
         assert!(s.backend.requests().is_empty());
 
@@ -3027,7 +3027,7 @@ mod tests {
             },
             Response::Agent { agent: me.clone() },
         ])
-        .remote("/p/keel".into());
+        .remote("/p/orchard".into());
         let reply = s
             .handle(rpc(
                 2,
@@ -3050,7 +3050,7 @@ mod tests {
         };
         // The person, registered in this project too: their question to
         // another project is not this one's.
-        let mut person = in_project("person1", "/p/keel");
+        let mut person = in_project("person1", "/p/orchard");
         person.spec.runtime = agentdocker_core::HUMAN_RUNTIME.into();
         let s = server(vec![
             Response::Questions {
@@ -3066,7 +3066,7 @@ mod tests {
                 aliases: Default::default(),
             },
         ])
-        .remote("/p/keel".into());
+        .remote("/p/orchard".into());
         let reply = s
             .handle(rpc(
                 3,
@@ -3085,7 +3085,7 @@ mod tests {
         );
 
         // A null project is no way out: every listing reads the grant's.
-        let keel = me.project.as_ref().unwrap().id();
+        let orchard = me.project.as_ref().unwrap().id();
         let s = server(vec![
             Response::Agent { agent: me.clone() },
             Response::Tasks {
@@ -3093,7 +3093,7 @@ mod tests {
                 more: false,
             },
         ])
-        .remote("/p/keel".into());
+        .remote("/p/orchard".into());
         s.handle(rpc(
             4,
             "tools/call",
@@ -3103,7 +3103,7 @@ mod tests {
         .unwrap();
         assert!(
             s.backend.requests().iter().any(
-                |r| matches!(r, Request::Tasks { project: Some(p), .. } if p == keel.as_str())
+                |r| matches!(r, Request::Tasks { project: Some(p), .. } if p == orchard.as_str())
             ),
             "{:?}",
             s.backend.requests()
@@ -3114,11 +3114,11 @@ mod tests {
     /// messaging tools only, is told why, and is refused the rest by name.
     #[tokio::test]
     async fn a_remote_agent_gets_the_messaging_tools_and_nothing_with_a_checkout() {
-        let s = server(vec![]).remote("/p/keel".into());
+        let s = server(vec![]).remote("/p/orchard".into());
         let init = s.handle(rpc(1, "initialize", json!({}))).await.unwrap();
         let instructions = init["result"]["instructions"].as_str().unwrap();
-        assert!(instructions.contains("reaching the project keel"));
-        assert!(instructions.contains("use them only when the person asks about keel"));
+        assert!(instructions.contains("reaching the project orchard"));
+        assert!(instructions.contains("use them only when the person asks about orchard"));
         assert!(instructions.contains("no checkout through them"));
         let listed = s.handle(rpc(2, "tools/list", json!({}))).await.unwrap();
         let names: Vec<&str> = listed["result"]["tools"]
@@ -3163,13 +3163,13 @@ mod tests {
         s.handle(rpc(
             4,
             "tools/call",
-            json!({"name": "send_message", "arguments": {"to": "project", "text": "hello keel"}}),
+            json!({"name": "send_message", "arguments": {"to": "project", "text": "hello orchard"}}),
         ))
         .await
         .unwrap();
         assert!(matches!(
             s.backend.requests().last().unwrap(),
-            Request::Send { to, .. } if to == "project:/p/keel"
+            Request::Send { to, .. } if to == "project:/p/orchard"
         ));
     }
 

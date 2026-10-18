@@ -240,6 +240,7 @@ fn ps_does_not_hide_a_quota_block_from_an_ended_session_outside_its_rows() {
             quota_group: Some("shared".into()),
             ..ProviderIssue::local(ProviderIssueKind::Usage)
         }),
+        retries: 0,
     });
     let (tmp, socket) = private_socket("quota");
     let daemon = FakeDaemon::serve_many(

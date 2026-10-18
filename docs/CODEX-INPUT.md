@@ -308,7 +308,7 @@ starts or interrupted journal writes leave it retained without an automatic
 retry or hook handoff. The ordinary exact provider receipt is still required
 before acknowledgement. A reply naming a turn is not a delivery receipt.
 Actual Codex 0.160 with a private model passed normal and discarded-local-client
-reply recovery on Mac ARM64 and Oracle Linux. Each positive trial held input for
+reply recovery on Mac ARM64 and hosted Linux. Each positive trial held input for
 30 seconds, refused four invalid confirmation/action/order cases, then preserved
 two exact receipts and one new model request; the repeated confirmation reported
 the same intent. Corrected runtime `3cd4fd47` on Mac and final `a80697fd` Linux CI
@@ -328,7 +328,7 @@ when a committed journal response was discarded or a project pause arrived befor
 that response. Retry after clearing the fault remained read-only. A provider-rate
 hold injected at that boundary exposed a missing admission recheck; the receiver
 now checks admission again after journaling. Corrected release `a810409e` passed
-all six private-model Mac and Oracle Linux cases: normal recovery, lost local
+all six private-model Mac and hosted Linux cases: normal recovery, lost local
 response, existing holds, lost committed journal response, and post-journal
 pause/provider-limit refusal. All 58 Mac and 66 Linux recorded PIDs were
 independently absent; refused cases kept their original receipt and queue without
@@ -406,12 +406,12 @@ preserved the provider, token and six old receipts; a peer answer and two human
 messages reached one active turn in order in 14.81 seconds. Failed fixture
 attempts remain in the [existing evidence](verification/INDEX.md).
 
-The September 21 receiver-only activation replaced PID 60959 with 28370 while
-Codex PID 51242, daemon PID 92608, provider binding and token remained. After
-reading the complete original coworker audit, Codex explicitly resolved only
-`343b8636571449a0` under audit `83f6f80a3c4a49b492e3d980cd5f7ec1`.
-That ID has no native receipt. The next original message `55360dd5dc354f89` and
-later handoffs then arrived automatically with exact native receipts. The
+The September 21 receiver-only activation replaced the receiver process while
+the Codex process, daemon, provider binding and token remained. After reading
+the complete original audit, Codex explicitly resolved only the one message it
+had been asked to, under that audit.
+That message has no native receipt. The next original message and later
+handoffs then arrived automatically with exact native receipts. The
 receiver lives in a permanent private release directory; older version-3 CLIs
 refuse its version-4 ledger. Further receiver operations must use a compatible
 CLI; never restore an old ledger over already acknowledged input. Fresh idle,
@@ -419,7 +419,7 @@ throughput and sustained-use acceptance remain open. Provider receipt and task
 completion remain separate from manual readback.
 
 A second offer on September 21 exposed a different defect: the exact tagged
-context for `9ca24aa8e53a4912` reached a review **subagent**, not the root
+context for one message reached a review **subagent**, not the root
 conversation. Codex child hooks use their parent's `session_id`; PID ancestry and
 that field alone do not establish which conversation receives hook output.
 The root correctly refused to count the child's receipt and retained the offer.
@@ -613,12 +613,12 @@ including edits, so its tail cannot become a separate prompt. Clean `d8db262f` n
 private empty profile rejected the oversized paste visibly, accepted the next
 Unicode-edited line intact, and accepted exactly 16,000 UTF-8 bytes. Both kept
 the same thread and cleaned up gracefully without changing production processes.
-The source-identical `6394a081` CI archive also passed on independent Oracle
+The source-identical `6394a081` CI archive also passed on independent hosted Linux
 Ubuntu x86_64: a normal managed PTY visibly rejected the 20,028-byte paste, then
 queued the exact Unicode-edited 16,000-byte line in the same thread, with graceful
 cleanup and the unrelated runner/endurance trial unchanged. These empty-profile
 trials establish the terminal/bridge boundary. Hosted beta.12 separately passed
-an existing-account Oracle Codex 0.160.0 trial through a normal managed PTY: the
+an existing-account hosted Linux Codex 0.160.0 trial through a normal managed PTY: the
 20,028-byte line and its edited tail were refused without a receipt, then an
 exactly 16,000-byte Unicode-edited line and a following short input each produced
 one real model reply. Independent provider history matched both message IDs and
@@ -647,7 +647,7 @@ launch's existing explicit restart policy (`--restart on-failure:2`, for example
 Clean `b334cc70` passed actual Codex 0.155.1 local MCP startup on macOS ARM64
 and independent Ubuntu x86_64 with empty private profiles and no model prompts.
 A private Mac MCP timeout caused `thread/start` to refuse and delivery to pause.
-The same runtime then passed a 49-second Oracle actual-model project pause/resume
+The same runtime then passed a 49-second hosted Linux actual-model project pause/resume
 trial: two recipients (one in a real sleep command, one idle), exact lifecycle
 receipts, replies in the original project conversation and preserved threads.
 Local MCP contact was verified before model prompts; cloud apps were disabled
@@ -686,7 +686,9 @@ other programs running as the same OS user.
 ## Questions and approvals
 
 In Inbox, command requests show the command, folder and reason with **Allow once**
-and **Deny** controls. Multiple-choice questions offer buttons and a text field
+and **Deny** controls, and **Allow for session** where Codex offers it: its
+`acceptForSession`, which lets the same command through without asking until that
+Codex session ends. Multiple-choice questions offer buttons and a text field
 for a different answer. These choices use the existing human answer queue, retain
 other question drafts and become unavailable when the question closes or expires.
 A Codex approval or question waits up to 24 hours for the person, as Codex's own
@@ -804,7 +806,8 @@ Natural provider parallelism, ordinary-first runtime and final-package/account
 acceptance remain open.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
-file operations and offers **Review changes**, **Allow once** and **Deny**.
+file operations and offers **Review changes**, **Allow once**, **Allow for session**
+and **Deny**.
 Allow becomes available after opening the complete diff; Deny remains available
 without that extra step. The fallback question retains the same paths, rename
 destination, complete diffs, directory and reason. No diff is silently truncated.
@@ -820,7 +823,9 @@ uncertain review; it does not invent a confirmed cancellation or discard a
 possibly transmitted approval. Restart continues to require review of that
 retained uncertainty. Turn completion discards old item snapshots. Non-null `grantRoot`
 is refused because it can describe session-wide write authority. Allow sends
-only `accept`; it never sends `acceptForSession`. Empty diffs are currently
+`accept`; **Allow for session** sends `acceptForSession`, which Codex takes for any
+file change: later changes to the same files apply without asking until that
+Codex session ends. Both wait for the complete diff to be opened. Empty diffs are currently
 refused. File presentations and their receipts require delivery-record version
 6; an older record cannot claim to contain them. The [file-review trial](verification/INDEX.md)
 passed 848 Rust tests, 65 Python checks and 19 native review/draft/restart steps.
@@ -834,9 +839,10 @@ retention of uncertain approval records.
 Schema 16 adds concrete permission requests to the same Inbox review. The card
 shows the directory, reason, each read/write/excluded path and requested network
 access. **Allow for this turn** sends exactly the reviewed permission profile with
-`scope: "turn"`; **Deny** sends an empty profile with the same scope. Only exact
-human `Allow` grants access. Neither choice requests session scope or overrides
-Codex's configured automatic review policy.
+`scope: "turn"`, and **Allow for session** the same profile with `scope: "session"`;
+**Deny** sends an empty profile for the turn. Only an exact human Allow or Allow
+for session grants access, and no choice overrides Codex's configured automatic
+review policy.
 
 The bounded parser accepts concrete absolute paths in legacy `read`/`write`
 lists or typed `entries`, including explicit deny entries. It rejects unknown
@@ -895,7 +901,7 @@ allowance. Unknown event kinds, history found missing at the resume and buffer
 overflow pause immediately; no fresh subscription replaces a lost cursor. The existing five-second connection/replay/frame bounds
 apply to each attempt, and shutdown cancels the worker and its socket.
 
-Actual Mac and Oracle Linux Codex 0.160 with private model/MCP fixtures and source
+Actual Mac and hosted Linux Codex 0.160 with private model/MCP fixtures and source
 `8778a67f` each preserved four pending forms through eight experimental same-binary
 daemon handovers, with 32 stable seconds between replacements. Each form retained its
 original question and provider request; its explicit decision reached MCP once,
@@ -948,7 +954,7 @@ unmatched human answers stay queued and pause input instead of becoming new turn
 Up to 128 detailed MCP receipts rotate only after acknowledgement and a later
 turn; their older question routes share the 10,000-ID bound above.
 
-Hosted beta.12 (`d48c0ab6`) on Oracle with authenticated Codex 0.160.0 and its
+Hosted beta.12 (`d48c0ab6`) on hosted Linux with authenticated Codex 0.160.0 and its
 complete upstream package passed a 600-second MCP question through Code Mode.
 The exact tool answer was acknowledged once without another user input; two
 busy messages retained their order and the original terminal draft submitted
@@ -999,7 +1005,7 @@ human decisions, not account/browser consent. A separate actual-provider-binary
 trial held the request until its five-minute expiry with no human answer: the
 MCP server received one cancellation and the queued peer input received its own
 ordinary-turn receipt. Private processes and scratch were independently confirmed
-gone. Oracle Linux x86-64 repeated all four decision/cancellation paths from the
+gone. Hosted Linux x86-64 repeated all four decision/cancellation paths from the
 CI CLI archive with the same source tree, eight exact input receipts and clean
 process retirement. That short private fixture overlapped the separate 48-hour
 provider trial. Browser interaction, final packages, Windows/other versions,
@@ -1253,7 +1259,7 @@ Stalled local handshakes are read concurrently within fixed connection/time
 bounds so they do not serialize the owner’s startup. The TUI still inherits the terminal directly. Mac ARM64 `8dc1e614` passed front-end
 SIGKILL after a receipt and during pre-binding provider startup, SIGTERM and
 failed-spawn cleanup. Receiver replacement, preserved draft and the original
-UUID reopen also passed. The same five scopes passed on Oracle Linux x86-64 from the extracted CI
+UUID reopen also passed. The same five scopes passed on hosted Linux x86-64 from the extracted CI
 package for `39bf8ae2` (compiled merge `569662e9`, identical source tree). Windows
 x64 passed 62 package, 42 installer and 16 native checks from that same source,
 including a third prompt-free reopen followed by front-end termination. Its
@@ -1276,7 +1282,7 @@ persisted history, and publishes a version-1 record with no birth allowance. A
 unique dead predecessor hands off the canonical identity, original queued IDs
 and retained receipts through the daemon; a live or ambiguous predecessor
 refuses. The daemon alone starts the replacement receiver. The integrated candidate `d139c06c` passed actual Codex 0.160 reopen trials on
-Mac ARM64, Oracle Linux x86-64 and Windows x64: after native exit, an original
+Mac ARM64, hosted Linux x86-64 and Windows x64: after native exit, an original
 message queued while offline arrived once under the same canonical agent,
 thread and profile with a new provider/server generation. Both original receipts
 and the earlier draft survived; only three user items existed, and the resumed
@@ -1284,7 +1290,7 @@ record used ordinary history with no birth allowance. Windows also verified
 actual MCP identity in both terminal generations. The Unix trials configured
 MCP but did not invoke it. These private loopback-model and synthetic-terminal
 trials do not establish real-account or physical-input acceptance. Published beta.14 (`10b57894`) also passed explicit UUID reopen with actual
-Codex 0.163 and existing accounts on this Mac and independent Oracle Linux. Each
+Codex 0.163 and existing accounts on a development Mac and independent hosted Linux. Each
 trial completed two real turns: after native exit, one offline message arrived
 once under the same canonical agent and thread without a bootstrap prompt. The
 original receipt and both exact model replies were retained. All 16 Mac and 49
@@ -1335,10 +1341,10 @@ also verified the replacement receiver retired before fixture cleanup; only the
 private test daemon was terminated by the fixture. Windows `a3091852` passed
 seven automatic product-launch checks, including actual MCP identity and native
 terminal exit; the launcher terminates its owned server through the native
-process API. Oracle Linux first binding/receipt passed, but replacement failed
+process API. Hosted Linux first binding/receipt passed, but replacement failed
 because the original receiver remained a zombie child. The launcher now reaps
 its receiver while the terminal continues, allowing daemon-owned replacement.
-Source `4e3c447f` passed the native Linux zombie regression and fresh Oracle
+Source `4e3c447f` passed the native Linux zombie regression and fresh hosted Linux
 first-receipt/replacement/draft/exit acceptance with complete unforced cleanup. The first Mac attempt
 stopped after binding on a fixture process-group assumption, before model input;
 that failure is retained. Broader adoption and desktop/default launch remain open;
@@ -1429,7 +1435,7 @@ the retained managed wire and pinned upstream source show the older nested
 session/thread identity shape. Source now accepts that complete shape while
 refusing conflicting fields and preserving host/generation/child checks.
 Source `0d4f0ca5` passed separate 11-check established-session native MCP
-trials on Mac Codex 0.160 and Oracle Linux Codex 0.155.1: original-TUI identity,
+trials on Mac Codex 0.160 and hosted Linux Codex 0.155.1: original-TUI identity,
 two exact input receipts, preserved draft and receiver replacement. The Linux
 archive has the identical CI source tree; all six recorded processes were
 independently absent. The Mac check independently confirmed five recorded PIDs
@@ -1508,7 +1514,7 @@ preexisting draft; buffered text cannot become an ordinary queued message. A pos
 paused for inspection and is never resubmitted by restart.
 
 Installed hosted beta.11 (`47d06d3b`) separately passed all eleven masked UI/PTY
-steps on this Mac with Codex0.160.1 and a private model. Three exact receipts,
+steps on a development Mac with Codex0.160.1 and a private model. Three exact receipts,
 retention acknowledgement, preserved draft and no suspended-input delivery were
 verified; all sixteen recorded process generations and private paths retired.
 AgentDocker state/logs contained no invented value; Codex retained it. The

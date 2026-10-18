@@ -2875,7 +2875,15 @@ impl App {
                         issue.kind.label(),
                         reset_words(Utc::now(), reset, &chrono::Local)
                     ),
-                    None => issue.kind.label().to_owned(),
+                    // A transient failure the daemon retries by itself.
+                    None => match state.retry_at() {
+                        Some(at) => format!(
+                            "{} · tries again at {}",
+                            issue.kind.label(),
+                            at.with_timezone(&chrono::Local).format("%H:%M")
+                        ),
+                        None => issue.kind.label().to_owned(),
+                    },
                 };
                 body = body.push(
                     row![

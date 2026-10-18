@@ -103,6 +103,40 @@ pub struct ProviderAvailability {
     pub issue: Option<ProviderIssue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleared_observation: Option<DateTime<Utc>>,
+    /// How many times in a row the daemon has lifted a transient block to
+    /// try the provider again (`retry_at`); none once a turn goes through.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub retries: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// A transient provider failure is retried, not waited on for ever: this
+/// long after an agent's own transport failure the daemon lifts the block
+/// so its next turn tries the provider again, twice as long after each
+/// retry that failed in turn, and never longer than [`RETRY_LONGEST`].
+pub const RETRY_FIRST: chrono::Duration = chrono::Duration::minutes(1);
+pub const RETRY_LONGEST: chrono::Duration = chrono::Duration::minutes(30);
+/// A transport failure this soon after a retry is that retry failing.
+pub const RETRY_FAILED_WITHIN: chrono::Duration = chrono::Duration::minutes(10);
+
+impl ProviderAvailability {
+    /// When the daemon lifts this block to try the provider again: only an
+    /// agent's own transport failure, with no reset time from the provider
+    /// and no account it shares. A limit, a sign-in or an unknown failure
+    /// waits for the provider or the person, as before.
+    pub fn retry_at(&self) -> Option<DateTime<Utc>> {
+        let issue = self.issue.as_ref()?;
+        (issue.kind == ProviderIssueKind::Transport
+            && issue.reset_at.is_none()
+            && issue.quota_group.is_none())
+        .then(|| {
+            let wait = RETRY_FIRST * 2i32.saturating_pow(self.retries.min(16));
+            self.observed_at + wait.min(RETRY_LONGEST)
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +174,62 @@ pub fn provider_block<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_agents_own_transport_failure_is_retried_and_each_retry_waits_longer() {
+        let at = DateTime::from_timestamp(1000, 0).unwrap();
+        let block = |kind, retries| ProviderAvailability {
+            process_started_at: at,
+            observed_at: at,
+            issue: Some(ProviderIssue::local(kind)),
+            cleared_observation: None,
+            retries,
+        };
+        assert_eq!(
+            block(ProviderIssueKind::Transport, 0).retry_at(),
+            Some(at + RETRY_FIRST)
+        );
+        assert_eq!(
+            block(ProviderIssueKind::Transport, 2).retry_at(),
+            Some(at + RETRY_FIRST * 4)
+        );
+        assert_eq!(
+            block(ProviderIssueKind::Transport, 40).retry_at(),
+            Some(at + RETRY_LONGEST),
+            "never longer than the longest wait"
+        );
+        for kind in [
+            ProviderIssueKind::Usage,
+            ProviderIssueKind::Rate,
+            ProviderIssueKind::Authentication,
+            ProviderIssueKind::Context,
+            ProviderIssueKind::Unknown,
+        ] {
+            assert_eq!(block(kind, 0).retry_at(), None, "{kind:?} waits");
+        }
+        let mut provider_said = block(ProviderIssueKind::Transport, 0);
+        provider_said.issue.as_mut().unwrap().reset_at = Some(at);
+        assert_eq!(provider_said.retry_at(), None, "the provider's time stands");
+        let mut shared = block(ProviderIssueKind::Transport, 0);
+        shared.issue.as_mut().unwrap().quota_group = Some("account".into());
+        assert_eq!(
+            shared.retry_at(),
+            None,
+            "an account's block is not one agent's"
+        );
+        let mut lifted = block(ProviderIssueKind::Transport, 1);
+        lifted.issue = None;
+        assert_eq!(lifted.retry_at(), None, "nothing to lift");
+        // Stored without the count until there is one, and read back so.
+        let stored = serde_json::to_value(block(ProviderIssueKind::Transport, 0)).unwrap();
+        assert!(stored.get("retries").is_none());
+        assert_eq!(
+            serde_json::from_value::<ProviderAvailability>(stored)
+                .unwrap()
+                .retries,
+            0
+        );
+    }
 
     #[test]
     fn quotas_require_explicit_membership_and_preserve_model_boundaries() {
@@ -181,6 +271,7 @@ mod tests {
             observed_at: now,
             issue: Some(issue),
             cleared_observation: None,
+            retries: 0,
         });
         a.process_started_at = Some(now + chrono::Duration::days(1));
         assert!(provider_block(&a, [&a]).is_some());
@@ -215,6 +306,7 @@ mod tests {
                 observed_at: now,
                 issue: Some(issue.clone()),
                 cleared_observation: None,
+                retries: 0,
             });
             assert!(provider_block(&source, [&source, &peer]).is_some());
             assert!(provider_block(&peer, [&source, &peer]).is_none());

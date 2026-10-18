@@ -1,6 +1,6 @@
 # Testing and benchmarking delivery plan
 
-Standardized September 5, 2026 at the user's request. Apply throughout the correctness, working-state, recovery and Docker/Podman workstreams. Tool installation and configuration do not constitute test coverage: each addition must exercise a concrete product invariant.
+Apply throughout the correctness, working-state, recovery and Docker/Podman workstreams. Tool installation and configuration do not constitute test coverage: each addition must exercise a concrete product invariant.
 
 ## Selected stack
 
@@ -61,7 +61,7 @@ fresh profile, so both plugin loaders are disabled for this invocation with
 `--disable plugins --disable remote_plugin`; cached files and saved preferences
 are left unchanged. One-invocation hook trust is for the fixture's reviewed inline
 hooks. A rejected profile records a failure before any child launches. Codex 0.155.1 with `--ignore-user-config` suppressed these
-inline hooks in the recorded Oracle trial; the corrected fixture keeps that layer
+inline hooks in the recorded hosted Linux trial; the corrected fixture keeps that layer
 active only in the checked profile. This follows the [official hook-source and
 trust contract](https://learn.chatgpt.com/docs/hooks). Managed policy remains in
 force; the preflight checks the dedicated profile and fresh trial project, not
@@ -226,7 +226,7 @@ regression covers this setup boundary; production executable checks remain
 strict, and failed coordination assertions are never retried.
 
 
-Failed benchmark campaigns retain a final source manifest and `benchmark-status.tsv` with the exit status of each attempted socket scenario. Each 1/10/100-client shared/disjoint scenario runs once even if an earlier socket scenario fails; the campaign remains failed. Previous outcome files are removed before a campaign. A timeout is never converted into a successful latency sample or retried by the campaign. On this Mac, the first schema-2 campaign at `1410d1b` failed during the shared 100-client claim response (errno 35 with the existing five-second request deadline); disjoint 100 was not attempted by that older script. Other-worktree fuzz/build activity overlapped that campaign. Root cause and a quiet-host acceptance campaign remain outstanding; passing Linux CI does not explain this failure.
+Failed benchmark campaigns retain a final source manifest and `benchmark-status.tsv` with the exit status of each attempted socket scenario. Each 1/10/100-client shared/disjoint scenario runs once even if an earlier socket scenario fails; the campaign remains failed. Previous outcome files are removed before a campaign. A timeout is never converted into a successful latency sample or retried by the campaign. On a development Mac, the first schema-2 campaign at `1410d1b` failed during the shared 100-client claim response (errno 35 with the existing five-second request deadline); disjoint 100 was not attempted by that older script. Other-worktree fuzz/build activity overlapped that campaign. Root cause and a quiet-host acceptance campaign remain outstanding; passing Linux CI does not explain this failure.
 
 
 ## Diagnosing slow state operations

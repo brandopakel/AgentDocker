@@ -918,6 +918,7 @@ mod tests {
                         agentdocker_core::ProviderIssueKind::Usage,
                     )),
                     cleared_observation: None,
+                    retries: 0,
                 },
             },
             old.identity,

@@ -450,7 +450,7 @@ def windows(args, stage, info):
         "Windows may show an unrecognized-app warning: this preview is not signed.\n"
         "Only run a download from the AgentDocker repository whose checksum you verified.\n\n"
         "Platform limitations and trial reporting:\n"
-        "https://github.com/brandopakel/AgentDocker/blob/main/docs/REMAINING-WORK.md\n",
+        "https://github.com/brandopakel/AgentDocker#known-limitations-for-early-testers\n",
         encoding="utf-8")
     archive = stage / f"agentdocker-desktop-{args.target}.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:

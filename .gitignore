@@ -16,3 +16,7 @@ __pycache__/
 env.txt
 *.env
 .env
+
+# An agent's local notes for one machine stay on that machine.
+CLAUDE.local.md
+AGENTS.local.md

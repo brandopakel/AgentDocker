@@ -903,7 +903,7 @@ mod tests {
             "node /x/@anthropic-ai/claude-code/cli.js daemon run",
             "node /x/@anthropic-ai/claude-code/cli.js bg-spare",
             "claude bg-spare --bg-spare /tmp/cc-daemon-501/x/spare/y.claim.sock",
-            "claude attach ef93b626",
+            "claude attach 052344f7",
             "/Users/p/.local/bin/claude agents",
         ] {
             assert_eq!(runtime_of(&argv(command)), None, "{command}");
@@ -915,7 +915,7 @@ mod tests {
             Some("Claude Code's bridge for the browser extension")
         );
         assert!(
-            helper_of(&argv("claude attach ef93b626"))
+            helper_of(&argv("claude attach 052344f7"))
                 .map(|h| h.role)
                 .is_some_and(|role| role.contains("terminal attached"))
         );
@@ -969,7 +969,7 @@ mod tests {
     #[test]
     fn a_codex_terminal_names_the_thread_it_resumed() {
         let argv = |line: &str| line.split(' ').map(str::to_owned).collect::<Vec<_>>();
-        let thread = "01a0ca0c-f9fc-7b62-8430-ddb6f67a4be3";
+        let thread = "de4e3b54-48e1-7b9b-82cc-773c517fc9c5";
         for resumed in [
             format!(
                 "/opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex resume {thread} --yolo"
@@ -1011,7 +1011,20 @@ mod tests {
             .stdin(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        let read = arguments(child.id());
+        // Until the child has exec'd, Linux shows it with no command line
+        // at all (a vfork'd child): wait for the one it was given.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let read = loop {
+            let read = arguments(child.id());
+            if read
+                .as_ref()
+                .is_some_and(|r| r.last().map(String::as_str) == Some("resume one-thread"))
+                || std::time::Instant::now() > deadline
+            {
+                break read;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
         drop(child.stdin.take());
         let _ = child.wait();
         let read = read.expect("our own child's arguments");

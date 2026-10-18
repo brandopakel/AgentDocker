@@ -435,7 +435,7 @@ fn classify(
 }
 
 /// A file written only to be renamed over another at once: Claude Code's
-/// atomic writes (`main.go.tmp.16971.f1db92465db8`). Its appearing and going
+/// atomic writes (`main.go.tmp.16971.2de8c79e6a86`). Its appearing and going
 /// is nobody's edit; recorded, it named the writer's own Write as an
 /// external change and sent the writer a stale notice about itself.
 fn transient(relative: &Path) -> bool {
@@ -780,17 +780,17 @@ mod tests {
     #[test]
     fn atomic_write_temporaries_are_not_changes() {
         for name in [
-            "main.go.tmp.16971.f1db92465db8",
-            "scripts/lab-server.sh.tmp.16971.83c615f07b0e",
+            "main.go.tmp.16971.2de8c79e6a86",
+            "scripts/lab-server.sh.tmp.16971.fa69eef57da2",
         ] {
             assert!(transient(Path::new(name)), "{name}");
         }
         for name in [
             "notes.tmp",
             "main.go.tmp.16971",
-            "main.go.tmp.x16971.f1db92465db8",
-            "main.go.tmp.16971.f1db9246",
-            "tmp.16971.f1db92465db8",
+            "main.go.tmp.x16971.2de8c79e6a86",
+            "main.go.tmp.16971.2de8c79e",
+            "tmp.16971.2de8c79e6a86",
             "src/main.go",
         ] {
             assert!(!transient(Path::new(name)), "{name}");

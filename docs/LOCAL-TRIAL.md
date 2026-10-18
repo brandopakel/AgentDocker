@@ -1,6 +1,6 @@
-# Local native trial
+# Trying a candidate
 
-Yes: use this development Mac for a controlled alpha trial now. Begin with the audited code in private state and a disposable repository; use a candidate containing the restore/privacy fixes (the September 6 audit, AUDIT-2026-09-06.md in git history) and verify their regression scenarios before enabling automatic restore or integrating existing sessions. The test tools and local preview already allow useful native testing without a global service install.
+How to try a candidate build on a real machine without putting your own sessions at risk: an isolated candidate first, then the native scenarios, then one real integration at a time, then sustained use, then each other platform. Begin in private state with a disposable repository, and verify the candidate's restore regression scenarios before enabling automatic restore or integrating existing sessions. None of it needs a global service install.
 
 ## Stage 1 — Isolated candidate
 
@@ -59,11 +59,11 @@ For candidates containing the guided setup stack, use `setup --preview`, inspect
 
 Apply only the chosen adapter when the trial is ready. Ensure the launched hook/MCP server targets the trial endpoint; setting the environment only in a testing terminal does not prove a desktop vendor host inherits it. Verify registry identity, inbox delivery, read observation/stale detection, lease conflict behavior and journal continuity end to end. A `wired` inventory flag alone is not acceptance. Preserve existing unrelated MCP servers/hooks, validate the vendor's actual tool/version, and inspect the diff before restoring a backup so later user changes are not overwritten.
 
-Agent API calls can incur the user's normal provider usage. Keep test prompts short and bounded; recording source/runtime versions and outcomes is more useful than a long uncontrolled session. Do not copy provider credentials or complete private transcripts into GitHub evidence.
+Agent API calls count against your normal provider usage. Keep test prompts short and bounded; recording source/runtime versions and outcomes is more useful than a long uncontrolled session. Do not copy provider credentials or complete private transcripts into GitHub evidence.
 
 ## Stage 4 — Install and sustained use
 
-After the blockers and Stage 2 pass, install the verified **agentdocker** bundle in the user's Applications folder and verify its CLI/daemon companions and stable setup paths. Prefer on-demand startup for the first trial. A launchd service install stops an existing managed daemon and can terminate its managed agents, so review the concrete service dry-run and arrange a controlled transition after the current trial is quiescent.
+After the blockers and Stage 2 pass, install the verified **agentdocker** bundle in your Applications folder and verify its CLI/daemon companions and stable setup paths. Prefer on-demand startup for the first trial. A launchd service install stops an existing managed daemon and can terminate its managed agents, so review the concrete service dry-run and arrange a controlled transition after the current trial is quiescent.
 
 Run a few hours of supervised work, then an overnight soak with 1/10/100 synthetic agents. Record CPU/RSS/descriptor counts, disk/log growth, GUI responsiveness, p50/p95/p99 request/hook latency, stale-warning delay, reconnect and restart outcomes, and watcher gaps. Correctness is blocking; performance thresholds follow repeated baselines. The current socket benchmark measures contention/release, not all these latency scenarios.
 
@@ -71,22 +71,21 @@ Test sleep/wake, logout/login, app closure, daemon crash and planned upgrade sep
 
 ## Stage 5 — Other machines and systems
 
-The first coworker rollout explicitly covers **macOS, Linux and native Windows**
-(user confirmation, September 19 UTC). This stage is required for that rollout.
-Record each tested OS version, architecture, candidate checksum and provider
+AgentDocker targets **macOS, Linux and native Windows**, and each needs its own
+pass. Record each tested OS version, architecture, candidate checksum and provider
 version; a pass on one platform does not complete another platform's row.
 
-| Coworker platform | Required candidate and trial |
+| Platform | Required candidate and trial |
 | --- | --- |
 | macOS | Downloaded desktop on an independent Mac/account; signing/Gatekeeper status, first provider setup/consent, native terminals and Stage 2–4 acceptance. |
 | Linux | Downloaded desktop on the declared target distributions/architectures; graphical session, user service, provider setup, terminals and Stage 2–4 acceptance. |
 | Windows | Complete the [native port](WINDOWS-PORT.md), then test the actual Windows installer, named-pipe daemon/client, ConPTY, provider setup, startup/update and Stage 2–4 acceptance. Foundations CI and WSL do not qualify. |
 
-Transfer the same verified candidate to the second Mac and repeat startup/inventory, one Claude hooks or Codex MCP trial and shutdown. Record architecture and OS version. It has its own registry; do not expect automatic federation. Execute on Intel hardware before claiming Intel runtime validation.
+Transfer the same verified candidate to a second Mac and repeat startup/inventory, one Claude hooks or Codex MCP trial and shutdown. Record architecture and OS version. It has its own registry; do not expect automatic federation. Execute on Intel hardware before claiming Intel runtime validation.
 
 For Linux, record the image's installed graphical prerequisites before adding
 anything: run `ldd` on the extracted desktop executable and retain missing-library
-failures. The minimal Oracle Ubuntu trial required private extracted libraries,
+failures. The minimal hosted Ubuntu trial required private extracted libraries,
 Xvfb and its keyboard helper; it is VM acceptance, not evidence of a stock desktop
 install or physical Linux input. Repeat on a normal target desktop and physical
 Linux hardware, and record any packages required there.

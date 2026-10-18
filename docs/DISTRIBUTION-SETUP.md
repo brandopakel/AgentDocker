@@ -30,7 +30,7 @@ A protected `v*` tag triggers `.github/workflows/release.yml`; editing the
 workflow does not publish anything. The tag version must match `Cargo.toml`
 and the recorded build must have clean source. The current published preview is
 `0.2.0-beta.13`, reviewed source `c9e03f64`; all 31 hosted assets and both preview
-feeds passed verification. Mac ARM64, Oracle Ubuntu and a Windows runner passed
+feeds passed verification. Mac ARM64, hosted Ubuntu and a Windows runner passed
 bounded beta.12/schema27 → beta.13/schema27 update, rollback and reapply. Unix
 terminal, graphical, daemon-service and selective pruning checks passed; Windows
 hosted lifecycle and daemon/connector service checks passed. Stable signing,
@@ -358,7 +358,7 @@ The public upload selects only release assets, excluding diagnostic artifacts.
 
 Windows promotion refusal and exact-byte retention have fixture coverage. The
 beta.2 protected-tag Windows job passed, and its hosted ZIP passed 61 native
-checks on AWBP. An actual Claude trial exposed a transcript ownership problem;
+checks on a physical Windows PC. An actual Claude trial exposed a transcript ownership problem;
 the corrected CI package passed delivery and automatic receipt checks. Beta.5
 passed hosted installation and both installed service lifecycles. Beta.6 passed
 the actual beta.5 → beta.6 hosted update/rollback/reapplication and both installed
@@ -372,10 +372,10 @@ release. The current published preview is **0.2.0-beta.13**, immutable source
 `c9e03f64`; protected-tag run 38510224265 passed all 15 jobs. All 31 hosted assets, nine
 archives, five manifests and both preview feeds were verified. Explicit-version
 CLI installation and beta.12 → beta.13 desktop installation/default-feed update,
-same-schema rollback and reapply passed on Mac ARM64 and Oracle Ubuntu x86_64.
+same-schema rollback and reapply passed on Mac ARM64 and hosted Ubuntu x86_64.
 Both platforms passed eight terminal/32 graphical checks with synthetic providers
 and five selective pruning/startup checks. Mac passed 21 daemon checks, including
-twelve consecutive restarts; Oracle passed 17 systemd checks. Windows passed
+twelve consecutive restarts; hosted Linux passed 17 systemd checks. Windows passed
 15 hosted lifecycle checks plus 13 daemon and 24 connector service checks.
 Owned services/process generations retired and pre-existing state was preserved.
 Both fixed preview channels advertise beta.13; stable v0.1.0 and Homebrew remain
@@ -384,7 +384,7 @@ unchanged. Trial scopes and original failures remain in the verification index.
 Beta.11, beta.12 and beta.13 use state schema 27 and delivery ledger 15.
 Beta.9/schema26 and earlier releases cannot replace schema27. Never restore an
 older delivery ledger over acknowledged input; use isolated state for an
-older-version trial. Hosted Mac/Oracle trials independently verified beta.13's
+older-version trial. Hosted Mac/Linux trials independently verified beta.13's
 additive accounting metadata through stopped-daemon rollback/reapply. Matching
 schema versions alone do not establish compatibility for a future release.
 

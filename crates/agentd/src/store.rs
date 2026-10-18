@@ -76,6 +76,8 @@ pub struct TaskTransition<'a> {
 // in its `role` label and a role's room as a channel with `role`: an older
 // daemon would match a policy on one role by the whole set, close a room its
 // holders left, and drop `role` rewriting the channel.
+// Schema 28, unreleased, also lets a pending Codex review offer the session
+// (`for_session` on its presentation), a field an older reader refuses.
 pub(crate) const SCHEMA_VERSION: i64 = 28;
 
 const SCHEMA: &str = "

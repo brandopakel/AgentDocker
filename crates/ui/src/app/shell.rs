@@ -1226,6 +1226,14 @@ async fn notifications(mut output: iced::futures::channel::mpsc::Sender<Message>
     }
 }
 
+/// Whether an answer lets a Codex request through: Allow, or Allow for
+/// the session. File changes take either only once they were looked at.
+fn grants(answer: &str) -> bool {
+    let answer = answer.trim();
+    answer.eq_ignore_ascii_case("allow")
+        || answer.eq_ignore_ascii_case(agentdocker_core::ALLOW_FOR_SESSION)
+}
+
 impl App {
     /// Open the conversation with one agent: the inbox thread, and with a
     /// daemon that has conversations, the direct conversation between the
@@ -3054,7 +3062,7 @@ impl App {
                             && (!matches!(
                                 q.presentation,
                                 Some(agentdocker_core::QuestionPresentation::CodexFiles { .. })
-                            ) || !value.trim().eq_ignore_ascii_case("allow")
+                            ) || !grants(&value)
                                 || self.shell.file_review.as_ref() == Some(&id))
                             && q.presentation
                                 .as_ref()
@@ -3119,7 +3127,7 @@ impl App {
                                 .shell
                                 .answers
                                 .get(&id)
-                                .is_none_or(|answer| !answer.trim().eq_ignore_ascii_case("allow"))
+                                .is_none_or(|answer| !grants(answer))
                                 || self.shell.file_review.as_ref() == Some(&id))
                     })
                     && let Some(answer) = self
@@ -5728,53 +5736,61 @@ mod tests {
     #[test]
     fn file_approval_requires_open_review_and_preserves_drafts_on_stale_clicks() {
         use agentdocker_core::{QuestionFileChange, QuestionFileChangeKind, QuestionPresentation};
-        let (mut app, commands, messages) = app();
-        app.connected = Ok(());
-        let presentation = QuestionPresentation::CodexFiles {
-            cwd: "/owned".into(),
-            reason: "Fixture".into(),
-            changes: vec![QuestionFileChange {
-                path: "/owned/a".into(),
-                kind: QuestionFileChangeKind::Delete,
-                diff: "-old\n".into(),
-            }],
-        };
-        let id = MessageId::from("file-question".to_owned());
-        app.questions.push(Question {
-            id: id.clone(),
-            from: "asker".into(),
-            to: agentdocker_core::Destination::Agent("human".into()),
-            text: presentation.text(),
-            presentation: Some(presentation),
-            asked_at: Utc::now(),
-            expires_at: Utc::now() + chrono::Duration::minutes(5),
-        });
-        app.shell
-            .answers
-            .insert(id.clone(), "original draft".into());
-        let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
-        assert_eq!(app.shell.answers[&id], "original draft");
-        assert_eq!(commands.try_iter().count(), 0);
-        app.shell.answers.insert(id.clone(), " Allow ".into());
-        let _ = app.update(Message::Answer(id.clone()));
-        assert_eq!(
-            commands.try_iter().count(),
-            0,
-            "keyboard submit also requires reviewing the diff"
-        );
-        let _ = app.update(Message::ReviewFiles(id.clone()));
-        assert_eq!(app.shell.file_review, Some(id.clone()));
-        let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
-        assert!(
-            matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),[Cmd::Answer(answer,text)] if answer == &id && text == "Allow")
-        );
-        messages.send(Msg::Questions(Vec::new())).unwrap();
-        let _ = app.update(Message::Tick);
-        assert!(app.shell.file_review.is_none());
-        assert_eq!(
-            app.shell.answers[&id], " Allow ",
-            "the typed draft stays retained while the explicit choice is in flight"
-        );
+        // Both answers that let the change through wait for the diff.
+        for (for_session, grant) in [
+            (false, "Allow"),
+            (true, agentdocker_core::ALLOW_FOR_SESSION),
+        ] {
+            let (mut app, commands, messages) = app();
+            app.connected = Ok(());
+            let presentation = QuestionPresentation::CodexFiles {
+                cwd: "/owned".into(),
+                reason: "Fixture".into(),
+                changes: vec![QuestionFileChange {
+                    path: "/owned/a".into(),
+                    kind: QuestionFileChangeKind::Delete,
+                    diff: "-old\n".into(),
+                }],
+                for_session,
+            };
+            let id = MessageId::from("file-question".to_owned());
+            app.questions.push(Question {
+                id: id.clone(),
+                from: "asker".into(),
+                to: agentdocker_core::Destination::Agent("human".into()),
+                text: presentation.text(),
+                presentation: Some(presentation),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+            });
+            app.shell
+                .answers
+                .insert(id.clone(), "original draft".into());
+            let _ = app.update(Message::AnswerChoice(id.clone(), grant.into()));
+            assert_eq!(app.shell.answers[&id], "original draft");
+            assert_eq!(commands.try_iter().count(), 0, "{grant}");
+            let typed = format!(" {grant} ");
+            app.shell.answers.insert(id.clone(), typed.clone());
+            let _ = app.update(Message::Answer(id.clone()));
+            assert_eq!(
+                commands.try_iter().count(),
+                0,
+                "keyboard submit also requires reviewing the diff: {grant}"
+            );
+            let _ = app.update(Message::ReviewFiles(id.clone()));
+            assert_eq!(app.shell.file_review, Some(id.clone()));
+            let _ = app.update(Message::AnswerChoice(id.clone(), grant.into()));
+            assert!(
+                matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),[Cmd::Answer(answer,text)] if answer == &id && text == grant)
+            );
+            messages.send(Msg::Questions(Vec::new())).unwrap();
+            let _ = app.update(Message::Tick);
+            assert!(app.shell.file_review.is_none());
+            assert_eq!(
+                app.shell.answers[&id], typed,
+                "the typed draft stays retained while the explicit choice is in flight"
+            );
+        }
     }
 
     #[test]
@@ -5785,6 +5801,7 @@ mod tests {
             command: "printf hello".into(),
             cwd: "/owned".into(),
             reason: "Fixture".into(),
+            for_session: false,
         };
         let id = MessageId::from("question".to_owned());
         let question = Question {
@@ -5833,6 +5850,7 @@ mod tests {
                 command: "rm -rf build".into(),
                 cwd: "/owned".into(),
                 reason: "Fixture".into(),
+                for_session: false,
             };
             let id = MessageId::from(format!("question-{choice}"));
             app.questions.push(Question {
@@ -5882,6 +5900,7 @@ mod tests {
                 command: "rm -rf build".into(),
                 cwd: "/owned".into(),
                 reason: "Fixture".into(),
+                for_session: false,
             };
             let id = MessageId::from(id.to_owned());
             app.questions.push(Question {
@@ -5999,6 +6018,7 @@ mod tests {
             command: "rm -rf build".into(),
             cwd: "/owned".into(),
             reason: "Fixture".into(),
+            for_session: false,
         };
         let id = MessageId::from("question-reopen".to_owned());
         app.questions.push(Question {
@@ -6067,6 +6087,7 @@ mod tests {
             command: "make clean".into(),
             cwd: "/owned".into(),
             reason: "Fixture".into(),
+            for_session: false,
         };
         app.questions.push(Question {
             id: id.clone(),
@@ -6540,6 +6561,7 @@ mod tests {
                 command: "printf hello".into(),
                 cwd: "/owned".into(),
                 reason: "Fixture".into(),
+                for_session: false,
             };
             app.questions.push(Question {
                 id: id.clone(),
@@ -8045,7 +8067,7 @@ mod tests {
                 workdir: Some("/work/repo".into()),
                 labels: BTreeMap::from([(
                     "session_id".to_owned(),
-                    "218845eb-ba1e-4457-bb5a-e1829f5652dd".to_owned(),
+                    "5e55a0d1-7c3b-4f2e-9a61-0b4d2c8e7f13".to_owned(),
                 )]),
                 ..Default::default()
             },
@@ -8069,7 +8091,7 @@ mod tests {
         assert!(
             spec.command
                 .windows(2)
-                .any(|w| w[0] == "--resume" && w[1] == "218845eb-ba1e-4457-bb5a-e1829f5652dd"),
+                .any(|w| w[0] == "--resume" && w[1] == "5e55a0d1-7c3b-4f2e-9a61-0b4d2c8e7f13"),
             "{:?}",
             spec.command
         );

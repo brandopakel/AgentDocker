@@ -592,27 +592,37 @@ impl App {
             // opens the question.
             let id = question.id.clone();
             let actions: Element<'_, Message> = match &question.presentation {
-                Some(QuestionPresentation::CodexCommand { .. }) if live => row![
-                    compact(
+                Some(presentation @ QuestionPresentation::CodexCommand { .. }) if live => {
+                    let answer = |label: &str| {
+                        self.connected
+                            .is_ok()
+                            .then(|| Message::AnswerChoice(id.clone(), label.into()))
+                    };
+                    let mut buttons = row![compact(
                         format!("needs-you-deny-{id}"),
                         "Deny",
-                        self.connected
-                            .is_ok()
-                            .then(|| Message::AnswerChoice(id.clone(), "Deny".into())),
+                        answer("Deny"),
                         Kind::Ghost,
-                    ),
-                    compact(
-                        format!("needs-you-allow-{id}"),
-                        "Allow once",
-                        self.connected
-                            .is_ok()
-                            .then(|| Message::AnswerChoice(id.clone(), "Allow".into())),
-                        Kind::Secondary,
-                    ),
-                ]
-                .spacing(6)
-                .align_y(iced::Center)
-                .into(),
+                    )]
+                    .spacing(6)
+                    .align_y(iced::Center);
+                    if presentation.for_session() && !narrow {
+                        buttons = buttons.push(compact(
+                            format!("needs-you-session-{id}"),
+                            agentdocker_core::ALLOW_FOR_SESSION,
+                            answer(agentdocker_core::ALLOW_FOR_SESSION),
+                            Kind::Ghost,
+                        ));
+                    }
+                    buttons
+                        .push(compact(
+                            format!("needs-you-allow-{id}"),
+                            "Allow once",
+                            answer("Allow"),
+                            Kind::Secondary,
+                        ))
+                        .into()
+                }
                 _ => compact(
                     format!("needs-you-answer-{id}"),
                     "Answer",
@@ -922,6 +932,7 @@ impl App {
                 command,
                 cwd,
                 reason,
+                ..
             }) => self.approval_card(
                 question,
                 Request::Command(command),
@@ -936,6 +947,7 @@ impl App {
                 cwd,
                 reason,
                 changes,
+                ..
             }) => self.approval_card(
                 question,
                 Request::Files(changes),
@@ -951,6 +963,7 @@ impl App {
                 cwd,
                 reason,
                 permissions,
+                ..
             }) => self.approval_card(
                 question,
                 Request::Access(permissions),
@@ -1431,6 +1444,26 @@ impl App {
             }
             // Files are allowed only once their changes have been looked at.
             let allow = enabled && (review || !matches!(request, Request::Files(_)));
+            // Where Codex offers it, the same again goes through without
+            // asking until its session ends.
+            if !busy
+                && question
+                    .presentation
+                    .as_ref()
+                    .is_some_and(QuestionPresentation::for_session)
+            {
+                actions = actions.push(compact(
+                    format!("answer-session-{id}"),
+                    agentdocker_core::ALLOW_FOR_SESSION,
+                    allow.then(|| {
+                        Message::AnswerChoice(
+                            id.clone(),
+                            agentdocker_core::ALLOW_FOR_SESSION.into(),
+                        )
+                    }),
+                    Kind::Secondary,
+                ));
+            }
             actions = actions.push(compact(
                 format!("answer-allow-{id}"),
                 match (busy, &request) {
@@ -2115,6 +2148,7 @@ mod tests {
                 reason:
                     "Requested connection: example.com (https)\n\nDeny cancels this Codex request."
                         .into(),
+                for_session: false,
             },
         );
         for dark in [false, true] {
@@ -2123,6 +2157,10 @@ mod tests {
             assert_eq!((allow.1.as_str(), allow.3), ("Allow once", true));
             let deny = view.control("answer-deny-command").expect("deny");
             assert_eq!((deny.1.as_str(), deny.3), ("Deny", true));
+            assert!(
+                view.control("answer-session-command").is_none(),
+                "no session where Codex offers none"
+            );
             assert!(
                 view.control("answer-command").is_none(),
                 "no written answer"
@@ -2142,6 +2180,45 @@ mod tests {
         assert!(during.control("answer-deny-command").is_none());
         assert!(during.control("deny-note-command").is_none());
         assert!(during.reads("Allow"), "the footer says what was chosen");
+    }
+
+    /// Where Codex offers the session, the card has it beside Allow once,
+    /// and it sends that exact answer.
+    #[test]
+    fn a_command_codex_offers_for_the_session_can_be_allowed_for_it() {
+        let (mut app, commands) = app();
+        let question = asked(
+            &mut app,
+            "session",
+            QuestionPresentation::CodexCommand {
+                command: "cargo test".into(),
+                cwd: "/owned".into(),
+                reason: String::new(),
+                for_session: true,
+            },
+        );
+        for dark in [false, true] {
+            let view = seen(app.question_card(&question, Colors::new(dark)));
+            let session = view.control("answer-session-session").expect("session");
+            assert_eq!(
+                (session.1.as_str(), session.3),
+                (agentdocker_core::ALLOW_FOR_SESSION, true)
+            );
+            assert!(view.control("answer-allow-session").is_some());
+            assert!(view.control("answer-deny-session").is_some());
+        }
+        let _ = app.update(Message::AnswerChoice(
+            question.id.clone(),
+            agentdocker_core::ALLOW_FOR_SESSION.into(),
+        ));
+        let sent = commands.try_iter().collect::<Vec<_>>();
+        let [super::super::super::Cmd::Answer(message, answer)] = sent.as_slice() else {
+            panic!("expected one answer, got {sent:?}");
+        };
+        assert_eq!(message, &question.id);
+        assert_eq!(answer, agentdocker_core::ALLOW_FOR_SESSION);
+        let during = seen(app.question_card(&question, Colors::new(true)));
+        assert!(during.control("answer-session-session").is_none());
     }
 
     /// A written answer is not a choice: a choice made earlier for the same
@@ -2198,7 +2275,7 @@ mod tests {
                 false,
                 Utc::now(),
             );
-            record.project = Some(agentdocker_core::ProjectRef::directory("/work/keel"));
+            record.project = Some(agentdocker_core::ProjectRef::directory("/work/orchard"));
             record
         };
         let mut asker = agent("asker", "claude-code");
@@ -2234,7 +2311,7 @@ mod tests {
                 .expect("a waiting question"),
         );
         let line = view.control("needs-you-line-ask").expect("the question");
-        assert_eq!(line.1, "keel · asker asks: Merge it?");
+        assert_eq!(line.1, "orchard · asker asks: Merge it?");
         assert!(
             view.control(&format!("needs-you-line-{ended_id}"))
                 .is_none()
@@ -2243,6 +2320,59 @@ mod tests {
             view.control(&format!("needs-you-review-{ended_id}"))
                 .is_none()
         );
+    }
+
+    /// A command is allowed where it is seen: once, or for the session
+    /// where Codex offers that, beside Deny.
+    #[test]
+    fn needs_you_allows_a_command_once_or_for_the_session_codex_offers() {
+        let (mut app, _commands) = app();
+        let mut asker = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "asker".into(),
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        asker.status = agentdocker_core::AgentStatus::Running;
+        let from = asker.id.to_string();
+        app.agents.push(asker);
+        app.activity_seen = true;
+        for (id, for_session) in [("once", false), ("session", true)] {
+            let presentation = QuestionPresentation::CodexCommand {
+                command: "cargo test".into(),
+                cwd: "/owned".into(),
+                reason: String::new(),
+                for_session,
+            };
+            app.questions.push(Question {
+                id: agentdocker_core::MessageId::from(id.to_owned()),
+                from: from.clone(),
+                to: agentdocker_core::Destination::Agent("human".into()),
+                text: presentation.text(),
+                presentation: Some(presentation),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(10),
+            });
+        }
+        // A narrow window keeps the strip to Deny and Allow once; the card
+        // still has the session.
+        app.shell.width = 600.0;
+        let view = seen(app.needs_you(Colors::new(true)).expect("two questions"));
+        assert!(view.control("needs-you-session-session").is_none());
+        app.shell.width = 1200.0;
+        let view = seen(app.needs_you(Colors::new(true)).expect("two questions"));
+        for id in ["once", "session"] {
+            assert!(view.control(&format!("needs-you-allow-{id}")).is_some());
+            assert!(view.control(&format!("needs-you-deny-{id}")).is_some());
+        }
+        assert!(view.control("needs-you-session-once").is_none());
+        let session = view
+            .control("needs-you-session-session")
+            .expect("the session Codex offers");
+        assert_eq!(session.1, agentdocker_core::ALLOW_FOR_SESSION);
     }
 
     /// A session stopped at a prompt in its own terminal is in Needs you,

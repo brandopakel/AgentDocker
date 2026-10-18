@@ -596,6 +596,19 @@ presentation and exact human-answer/provider-resolution receipts. Unknown access
 selectors, remote environments and prompts without a one-time approval and a
 negative response are refused before question publication; policy amendments are not
 selected. This does not change stored presentation meaning or the schema.
+
+Where Codex offers to remember an approval for the rest of its session — a
+command or network review whose `availableDecisions` lists `acceptForSession`,
+any file change, any permission request — the `codex_command`, `codex_files` or
+`codex_permissions` presentation carries `for_session: true` (a network review,
+a choice list, carries the option itself), and a third exact answer is
+permitted: `Allow for session`. It sends `acceptForSession`, or for a permission
+the reviewed profile with `scope: "session"`; Codex then lets the same command,
+destination, files or access through without asking until that Codex session
+ends. The fallback text names the answer. Without the flag the answer is refused
+as any other unknown one, and the flag is omitted when false, so presentations
+stored before it read the same. Schema 28, unreleased, carries it: an older
+reader refuses the field.
 The private Codex ledger's version 8 binds `decline` or `cancel` to the review;
 when only cancellation is offered, the complete question text explains it.
 Command-approval callbacks with `networkApprovalContext` reuse `choices` with
@@ -961,7 +974,7 @@ program, tunnel, project/feed, state/log, working-directory and environment
 paths with both literal and physical alias dependencies. Unknown definitions,
 missing fragments, overrides, unknown environment settings and unavailable or
 conflicting cached data preserve whole stores. Source-specific Mac `53696dab` and
-Oracle `05582d3a` stopped-service retention/restart trials are indexed; hosted-current
+Hosted Linux `05582d3a` stopped-service retention/restart trials are indexed; hosted-current
 acceptance and legacy portable registrars selecting a separate daemon remain open.
 
 Windows maintenance recognizes only exact rendered actions around a content-verified same-store controller and daemon or receipt-checked stable bootstrap. It retains every explicitly referenced immutable version, including connector tunnel/project/feed paths, state/log paths and Task Scheduler working directories. Literal and resolved aliases both count. Unknown programs/options, relative or parent-traversing paths and unreadable inventory conservatively retain the store; no arbitrary script is executed to discover paths. Source-specific native selective-deletion acceptance is recorded in the verification index; final-package and physical acceptance remain open.
@@ -1396,7 +1409,7 @@ Named channel creation publishes the room, opening event, journal entry and firs
 
 The external Codex receiver's read-only history sidecar does not own the live TUI. Codex 0.154.0 can reconstruct an active turn as `interrupted` while its thread status is `notLoaded`; these historical states cannot establish live idleness, so a verified pending native queue entry stays under the original TUI's scheduler without an inferred idle deadline. The receiver keeps one outstanding offer and acknowledges only an exact provider receipt. Loss of both the entry and receipt pauses for reconciliation without resubmission.
 
-Schema 18 persists `AgentRecord.provider_availability` separately from input readiness, activity and process liveness. Usage, rate, budget, billing, concurrency, context, authentication, transport and unknown interruptions all pause adapter delivery. A heartbeat, a receipt, process exit/restart or an expired reset time cannot clear a block. Raw provider prose is not stored. Scope defaults to the reporting session; a shared quota requires an explicit non-secret `provider-quota` label on both records and the same provider value, optionally narrowed by model, and unknown account scope is never inferred from runtime/model names. Unresolved blocks prevent record removal and offline identity repair. Recovery names the exact blocked observation, so a delayed success cannot erase a newer block, and does not replay an uncertain Codex attempt or mark a task complete.
+Schema 18 persists `AgentRecord.provider_availability` separately from input readiness, activity and process liveness. Usage, rate, budget, billing, concurrency, context, authentication, transport and unknown interruptions all pause adapter delivery. A heartbeat, a receipt, process exit/restart or an expired reset time cannot clear a block. The daemon lifts one kind itself: an agent's own transport failure, with no reset time from the provider and no shared account, is retried a minute after it was reported, twice as long after each retry that failed again (a failure within ten minutes of a lift), and never more than thirty minutes after (`ProviderAvailability::retry_at`, checked every second). The lift is a `provider_availability_reported` with no issue and `retries` counting the lifts in a row; it is neither the provider's recovery nor the person's resume. The next turn takes the queued input, and its success or failure decides: success ends the count (its recovery names the lifted observation, so a late one cannot clear a newer block), failure blocks again. A limit, a sign-in, a full context or an unknown failure is never lifted this way. Raw provider prose is not stored. Scope defaults to the reporting session; a shared quota requires an explicit non-secret `provider-quota` label on both records and the same provider value, optionally narrowed by model, and unknown account scope is never inferred from runtime/model names. Unresolved blocks prevent record removal and offline identity repair. Recovery names the exact blocked observation, so a delayed success cannot erase a newer block, and does not replay an uncertain Codex attempt or mark a task complete.
 
 Claude's asynchronous `StopFailure` records typed errors without releasing leases or waking the model; normal `Stop` can report recovery. Managed Codex normalizes structured app-server errors, keeps the owned provider alive when `turn/start` returns an error, and reconciles retained attempts before new input. Within one active turn a generic error retains the most recent structured failure kind and a newer recognized kind replaces it; unbound or other-turn errors cannot affect that turn, and the retained detail is discarded when the turn finishes, so a generic terminal error cannot replace an observed authentication rejection with unknown availability. This retains normalized status only: it does not clear a block, replay received input, parse error prose or infer successful recovery. MCP-only and custom adapters can report the same state explicitly; missing signals remain unverified, and discovery alone is not provider-limit detection. The desktop shows the reason and queue count, suppresses Done for known blocked turns and preserves drafts. Adapter coverage is in [CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md) and [CODEX-INPUT.md](CODEX-INPUT.md).
 
