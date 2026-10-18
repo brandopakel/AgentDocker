@@ -390,10 +390,10 @@ mod tests {
 
     #[test]
     fn the_quick_tunnel_url_is_read_out_of_cloudflareds_box() {
-        let line = "2026-09-18T00:05:46Z INF |  https://safe-psp-generating-finding.trycloudflare.com                                     |";
+        let line = "2026-01-02T03:04:05Z INF |  https://calm-river-sample-words.trycloudflare.com                                     |";
         assert_eq!(
             quick_tunnel_url(line).as_deref(),
-            Some("https://safe-psp-generating-finding.trycloudflare.com")
+            Some("https://calm-river-sample-words.trycloudflare.com")
         );
         assert_eq!(
             quick_tunnel_url("INF Registered tunnel connection connIndex=0"),
