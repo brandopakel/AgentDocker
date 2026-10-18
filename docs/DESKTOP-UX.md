@@ -385,7 +385,8 @@ reason) in a Review lane that is the person's, **Hand to** an agent running
 here or nobody, **Archive**, then its tools — **Plan** (the project's plans
 to choose from, or none), **Attach a file** (the project's files), **Add a
 file from disk**, **Add a link** (URL, PR, path, commit or card, and the
-target) and, on a card nobody holds that waits on nothing, **Start an agent
+target; a path to something that would run when opened — an app, a script, an
+installer, a shortcut or an executable file — is shown in its folder instead) and, on a card nobody holds that waits on nothing, **Start an agent
 on it** (installed Codex and Claude Code, after full dependency details
 load) — the plan it carries out
 (opened on Plans), its files (opened with the system's app from a private

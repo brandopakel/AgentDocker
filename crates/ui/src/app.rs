@@ -4686,17 +4686,182 @@ fn open_with_system(path: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("The file could not be opened: {e}"))
 }
 
-/// Open a URL in the browser, or a path with the system's app for it.
+/// Open a URL in the browser, or a path with the system's app for it. An
+/// agent writes a card's links, so a path that would run something when
+/// opened (`runs_when_opened`) is shown in its folder instead.
 pub(crate) fn open_target(target: &str) -> Result<(), String> {
     let is_web = target.starts_with("https://") || target.starts_with("http://");
-    if !is_web && !std::path::Path::new(target).exists() {
+    let path = std::path::Path::new(target);
+    if !is_web && !path.exists() {
         return Err(format!("{target} is not on this machine"));
     }
-    open_with_system(std::path::Path::new(target))
+    if !is_web && runs_when_opened(path) {
+        return reveal(path);
+    }
+    open_with_system(path)
+}
+
+/// Whether opening a path would run something rather than show it: an app
+/// bundle, a script, an installer or a shortcut by its kind, or a file
+/// marked executable.
+fn runs_when_opened(path: &std::path::Path) -> bool {
+    // A link is judged by what it leads to, and a link whose end cannot be
+    // read is not opened at all: `notes` could lead to an app.
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return match std::fs::canonicalize(path) {
+            Ok(target) => target == path || runs_when_opened(&target),
+            Err(_) => true,
+        };
+    }
+    launches(path)
+}
+
+/// Whether a path that is not a link runs something when opened.
+fn launches(path: &std::path::Path) -> bool {
+    const LAUNCHERS: &[&str] = &[
+        "app",
+        "command",
+        "tool",
+        "terminal",
+        "workflow",
+        "action",
+        "scpt",
+        "applescript",
+        "pkg",
+        "mpkg",
+        "dmg",
+        "jar",
+        "desktop",
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "py",
+        "rb",
+        "pl",
+        "exe",
+        "bat",
+        "cmd",
+        "com",
+        "ps1",
+        "msi",
+        "lnk",
+        "vbs",
+        "vbe",
+        "js",
+        "jse",
+        "wsf",
+        "wsh",
+        "scr",
+        "hta",
+        "cpl",
+        "url",
+        "webloc",
+        "inetloc",
+        "fileloc",
+    ];
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|kind| LAUNCHERS.contains(&kind.to_ascii_lowercase().as_str()))
+    {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Show a path selected in its folder, without opening it.
+fn reveal(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg("-R").arg(path);
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("explorer");
+        command.arg(format!("/select,{}", path.display()));
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(path.parent().unwrap_or(path));
+        command
+    };
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("The folder could not be opened: {e}"))
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// A link an agent wrote never runs what it points at: a launcher by
+    /// its kind, or an executable file, is shown in its folder.
+    #[test]
+    fn a_link_to_something_that_runs_is_shown_not_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "Tool.app",
+            "fix.command",
+            "setup.PKG",
+            "run.sh",
+            "x.exe",
+            "go.webloc",
+        ] {
+            assert!(super::runs_when_opened(&dir.path().join(name)), "{name}");
+        }
+        let notes = dir.path().join("notes.md");
+        std::fs::write(&notes, "# notes").unwrap();
+        assert!(!super::runs_when_opened(&notes));
+        assert!(!super::runs_when_opened(dir.path()), "a plain folder opens");
+        #[cfg(unix)]
+        {
+            // A harmless name leading to an app is the app.
+            let app = dir.path().join("Tool.app");
+            std::fs::create_dir(&app).unwrap();
+            let link = dir.path().join("notes");
+            std::os::unix::fs::symlink(&app, &link).unwrap();
+            assert!(super::runs_when_opened(&link), "a link to an app bundle");
+            let to_notes = dir.path().join("readme");
+            std::os::unix::fs::symlink(&notes, &to_notes).unwrap();
+            assert!(
+                !super::runs_when_opened(&to_notes),
+                "a link to a note opens"
+            );
+            let dangling = dir.path().join("gone");
+            std::os::unix::fs::symlink(dir.path().join("nowhere"), &dangling).unwrap();
+            assert!(
+                super::runs_when_opened(&dangling),
+                "an unreadable end is not opened"
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let program = dir.path().join("build");
+            std::fs::write(&program, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(
+                super::runs_when_opened(&program),
+                "executable without a kind"
+            );
+        }
+    }
+
     #[test]
     fn a_daemon_behind_the_window_is_named_by_version_or_by_release() {
         use std::path::Path;

@@ -1017,7 +1017,7 @@ Newest first. Only what changes how the product is used.
   once merged and ended, **Remove its worktree** (or `agentdocker
   worktree-remove`) cleans up. Files git ignores that the project lists in
   `.worktreeinclude` (one pathspec per line, e.g. `.env`) are copied into each
-  new worktree.
+  new worktree on macOS and Linux (not yet on Windows, where the worktree says so).
 - One-click review: a session's details show **Changes** — its branch against
   the branch in the project's main folder, the commits and files, each file's
   diff, and what a merge needs — and **Merge into main** merges it with a
