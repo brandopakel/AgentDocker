@@ -1937,8 +1937,18 @@ fn whole_agent(agent: &agentdocker_core::AgentRecord) -> Value {
         agent,
         chrono::Utc::now()
     ));
+    // What `run -e` set is the person's to see, not every model's that
+    // asks (a browser agent's among them): the names stay, the values go.
+    if let Some(env) = record["spec"]["env"].as_object_mut() {
+        for value in env.values_mut() {
+            *value = json!(REDACTED);
+        }
+    }
     record
 }
+
+/// What a redacted value reads as.
+const REDACTED: &str = "<redacted>";
 
 /// A lease as a claimant reads it: who holds what, in which mode, until
 /// when, and why.
@@ -2859,6 +2869,41 @@ fn tagged_request(arguments: Value, op: &str, agent: &str) -> Result<Request, (i
 
 #[cfg(test)]
 mod tests {
+    /// A whole record names what `run -e` set and never says its value.
+    #[test]
+    fn a_whole_record_keeps_environment_names_and_drops_their_values() {
+        let mut agent = agentdocker_core::AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "worker".into(),
+                env: [("API_TOKEN".to_owned(), "s3cret-value".to_owned())].into(),
+                ..Default::default()
+            },
+            false,
+            chrono::Utc::now(),
+        );
+        agent.status = agentdocker_core::AgentStatus::Running;
+        let whole = whole_agent(&agent);
+        assert_eq!(whole["spec"]["env"]["API_TOKEN"], REDACTED);
+        for rendered in [
+            render(
+                Response::Agent {
+                    agent: agent.clone(),
+                },
+                true,
+            ),
+            render(
+                Response::Agents {
+                    agents: vec![agent.clone()],
+                    aliases: Default::default(),
+                },
+                true,
+            ),
+            render(Response::Agent { agent }, false),
+        ] {
+            assert!(!rendered.to_string().contains("s3cret-value"), "{rendered}");
+        }
+    }
+
     use agentdocker_core::AgentId;
     use chrono::Utc;
 
