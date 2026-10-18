@@ -93,7 +93,9 @@ its project when it consents.
    leaves no agent behind.
 5. From then on the hosted agent calls `POST <public-url>/mcp` with its bearer
    token. Every accepted request is a heartbeat for the agent. `initialize`
-   tells the model it works inside a browser and has no checkout.
+   names the project the connector reaches, says the account offers it in
+   sessions about other work too and that it acts only in that project, and
+   that it has no checkout.
 
 ## Endpoints
 
@@ -227,9 +229,15 @@ turn. Terminal agents, by contrast, can be woken through their own adapters
 (MESSAGE-DELIVERY-AUDIT.md in git history).
 
 One more thing to know: a connector added to a Claude account appears in every
-Claude surface of that account, Claude Code sessions included, as that
-account's browser-agent identity. A terminal session with its own AgentDocker
-tools should use those; the connector's instructions say so.
+Claude surface of that account, Claude Code sessions on any machine and about
+any other work included, as the one agent the consent made in the chosen
+project. So it reaches that project and the person, never another project:
+an explicit `project` argument is refused, a card, plan or agent named by id
+must be that project's, and `open_questions` lists only its agents'
+questions. Its instructions name the project and say to use it only when the
+person asks about it; a terminal session with its own AgentDocker tools uses
+those. To keep it out of a session, turn it off in that session's `/mcp`, or
+remove it under the account's Settings › Connectors.
 
 The Windows login-service candidate requires an owned daemon login task for the
 same state home: install that prerequisite explicitly with `agentdocker daemon

@@ -541,7 +541,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             page(
                 "AgentDocker connector",
                 &format!(
-                    "<p>This is an AgentDocker connector. It lets an agent working inside a browser join the messaging of a project on this machine.</p>\
+                    "<p>This is an AgentDocker connector. It lets a chat in your Claude or ChatGPT account join the messaging and board of one project on this machine. A connector belongs to the whole account, so every surface of it offers the connector, Claude Code sessions about other work included; it acts only in the project chosen at consent.</p>\
                      <p>Add <code>{}</code> as a custom connector: in Claude under <i>Settings › Connectors › Add custom connector</i>, in ChatGPT under <i>Settings › Connectors › Advanced › Developer mode</i>. Consent asks for the pairing code shown by <code>agentdocker connector status</code> or the desktop's Tools screen, and which project the agent joins.</p>\
                      <p>A browser agent has no checkout here: it can find agents, message them, read its inbox and the journal, and nothing else.</p>",
                     escape_html(&self.mcp_url())
@@ -667,7 +667,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         page(
             "Connect a browser agent",
             &format!(
-                "<p><b>{who}</b> asks to join a project on this machine as a browser agent. It will be able to find that project's agents, message them, read its own inbox and the journal. It gets no files, leases or worktrees.</p>\
+                "<p><b>{who}</b> asks to join a project on this machine. It will be able to find that project's agents, message them, read its own inbox, the journal and the board. It gets no files, leases or worktrees, and nothing of any other project. Your whole account will offer it, Claude Code sessions about other work too, so choose the project you'd want any of them to reach.</p>\
                  {problem}\
                  <form method=\"post\" action=\"/authorize\">{hidden}\
                  <label>Pairing code, from <code>agentdocker connector status</code> or the desktop's Tools screen<br><input name=\"pairing_code\" autocomplete=\"off\" autofocus required placeholder=\"ABCD-EFGH\"></label>\
@@ -1982,7 +1982,7 @@ mod tests {
             reply["result"]["instructions"]
                 .as_str()
                 .unwrap()
-                .contains("working inside a browser")
+                .contains("reaching the project keel")
         );
         let listed = json_body(
             &connector
