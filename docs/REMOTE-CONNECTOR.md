@@ -42,8 +42,14 @@ its project when it consents.
   the same after every restart and needs no domain — the connector reads the
   name from `tailscale status`, sets `tailscale funnel --bg --https=<443|8443|10000>
   http://127.0.0.1:<port>` on the way in and clears it on the way out, on an
-  error or a panic too; a Funnel a killed connector left (its port is in
-  `serve.json`) is cleared by the next start before anything else. Funnel
+  error or a panic too (waiting at most three seconds for `tailscale`, then
+  killing it). A Funnel a killed connector left (its port and loopback
+  address are in `serve.json`) is cleared by the next start before anything
+  else, but only while `tailscale serve status` still points it at that
+  address: one pointed elsewhere since is somebody else's and is left alone,
+  and one that cannot be read or cleared stops the start, keeping
+  `serve.json`, with the commands to check and clear it. Every `tailscale`
+  helper has 15 s, after which it is killed. Funnel
   must be enabled for the tailnet (the error says how). `--tunnel cloudflared`
   starts cloudflared as a child: a quick tunnel, whose random
   `*.trycloudflare.com` hostname it reads from cloudflared's output and which

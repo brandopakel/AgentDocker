@@ -12,6 +12,12 @@ use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
+/// How long a `tailscale` helper may take before it is killed and reaped.
+const HELPER_DEADLINE: Duration = Duration::from_secs(15);
+/// How long a dropped tunnel waits for its teardown, on whatever thread
+/// drops it, before it kills the helper and goes on.
+const DROP_DEADLINE: Duration = Duration::from_secs(3);
+
 /// How long cloudflared may take to register its connection.
 const READY_DEADLINE: Duration = Duration::from_secs(60);
 /// After the tunnel registers, its hostname is published in DNS a moment
@@ -43,29 +49,65 @@ impl Drop for Tunnel {
         if let Some(child) = self.child.as_mut() {
             let _ = child.start_kill();
         }
-        if let Some((binary, args)) = self.teardown.take() {
-            let _ = std::process::Command::new(binary)
-                .args(args)
+        // Dropping may happen on a runtime thread, so the wait is short and
+        // bounded: a helper that hangs is killed and reaped.
+        if let Some((binary, args)) = self.teardown.take()
+            && let Ok(mut child) = std::process::Command::new(&binary)
+                .args(&args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status();
+                .spawn()
+        {
+            let deadline = std::time::Instant::now() + DROP_DEADLINE;
+            while matches!(child.try_wait(), Ok(None)) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
+                let _ = child.wait();
+                eprintln!(
+                    "agentdocker connector: `{}` did not finish; the Funnel may still be set",
+                    args.join(" ")
+                );
+            }
         }
     }
 }
 
-/// Clear the Funnel a connector that was killed left on `https_port`.
-pub async fn clear_funnel(binary: &Path, https_port: u16) {
-    let _ = tokio::time::timeout(
-        Duration::from_secs(15),
-        Command::new(binary)
-            .args(funnel_off(https_port))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status(),
-    )
-    .await;
+/// Whether tailscaled's serve configuration still points the Funnel on
+/// `https_port` at `target` (`127.0.0.1:<port>`): only a Funnel that still
+/// serves a stopped connector's own address is that connector's to clear.
+pub fn funnel_serves(config: &serde_json::Value, https_port: u16, target: &str) -> bool {
+    let suffix = format!(":{https_port}");
+    let wanted = format!("http://{target}");
+    config["Web"].as_object().is_some_and(|web| {
+        web.iter().any(|(host, site)| {
+            host.ends_with(&suffix)
+                && site["Handlers"]["/"]["Proxy"]
+                    .as_str()
+                    .is_some_and(|proxy| proxy.trim_end_matches('/') == wanted)
+        })
+    })
+}
+
+/// Read whether the Funnel on `https_port` serves `target` now.
+pub async fn funnel_serves_now(
+    binary: &Path,
+    https_port: u16,
+    target: &str,
+) -> Result<bool, String> {
+    let output = run_helper(binary, &["serve".into(), "status".into(), "--json".into()]).await?;
+    let config: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("tailscale serve status is not JSON: {error}"))?;
+    Ok(funnel_serves(&config, https_port, target))
+}
+
+/// Clear the Funnel on `https_port`, and say whether it was cleared.
+pub async fn clear_funnel(binary: &Path, https_port: u16) -> Result<(), String> {
+    run_helper(binary, &funnel_off(https_port))
+        .await
+        .map(|_| ())
 }
 
 fn funnel_off(https_port: u16) -> Vec<String> {
@@ -94,18 +136,40 @@ impl Tunnel {
             let _ = child.start_kill();
             let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
         }
-        if let Some((binary, args)) = self.teardown.take() {
-            let _ = tokio::time::timeout(
-                Duration::from_secs(15),
-                Command::new(binary)
-                    .args(args)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status(),
-            )
-            .await;
+        if let Some((binary, args)) = self.teardown.take()
+            && let Err(error) = run_helper(&binary, &args).await
+        {
+            eprintln!("agentdocker connector: could not clear the tunnel: {error}");
         }
+    }
+}
+
+/// Run a `tailscale` helper to the end, within `HELPER_DEADLINE`: one that
+/// does not finish is killed and reaped, never left to act later.
+async fn run_helper(binary: &Path, args: &[String]) -> Result<std::process::Output, String> {
+    let child = Command::new(binary)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("cannot run {}: {error}", binary.display()))?;
+    match tokio::time::timeout(HELPER_DEADLINE, child.wait_with_output()).await {
+        Ok(Ok(output)) if output.status.success() => Ok(output),
+        Ok(Ok(output)) => Err(format!(
+            "`{} {}` failed: {}",
+            binary.display(),
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+        Ok(Err(error)) => Err(format!("`{}` did not finish: {error}", args.join(" "))),
+        // The future, and with it the child, is dropped: killed and reaped.
+        Err(_) => Err(format!(
+            "`{}` did not finish in {} s",
+            args.join(" "),
+            HELPER_DEADLINE.as_secs()
+        )),
     }
 }
 
@@ -419,7 +483,7 @@ mod tests {
         // Never stopped (an error on the way up, a panic): dropped, it is
         // cleared all the same; a stopped one is not cleared twice.
         drop(other);
-        clear_funnel(&fake, 10000).await;
+        clear_funnel(&fake, 10000).await.unwrap();
         let calls = std::fs::read_to_string(&log).unwrap();
         assert_eq!(
             calls.matches("funnel --https=443 off").count(),
@@ -446,6 +510,55 @@ mod tests {
             .to_string();
         assert!(error.contains("Funnel is not enabled"), "{error}");
         assert!(find_tailscale(Some(&fake)).is_ok());
+    }
+
+    #[test]
+    fn a_funnel_is_a_connectors_only_while_it_serves_its_address() {
+        let config: serde_json::Value = serde_json::from_str(
+            r#"{"TCP":{"443":{"HTTPS":true}},"Web":{"mac.tail1.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:62800"}}}},"AllowFunnel":{"mac.tail1.ts.net:443":true}}"#,
+        )
+        .unwrap();
+        assert!(funnel_serves(&config, 443, "127.0.0.1:62800"));
+        assert!(
+            !funnel_serves(&config, 443, "127.0.0.1:62801"),
+            "another address"
+        );
+        assert!(
+            !funnel_serves(&config, 8443, "127.0.0.1:62800"),
+            "another port"
+        );
+        assert!(!funnel_serves(
+            &serde_json::json!({}),
+            443,
+            "127.0.0.1:62800"
+        ));
+    }
+
+    /// A teardown that never finishes does not hold up whoever drops the
+    /// tunnel: it is killed after a short wait.
+    #[cfg(unix)]
+    #[test]
+    fn a_dropped_tunnel_never_waits_long_on_its_teardown() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let hang = dir.path().join("tailscale");
+        std::fs::write(&hang, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&hang, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tunnel = Tunnel {
+            provider: "tailscale",
+            public_url: "https://mac.tail1.ts.net".into(),
+            name: None,
+            https_port: Some(443),
+            child: None,
+            teardown: Some((hang, funnel_off(443))),
+        };
+        let started = std::time::Instant::now();
+        drop(tunnel);
+        assert!(
+            started.elapsed() < DROP_DEADLINE + Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

@@ -1408,14 +1408,7 @@ async fn serve(
     let store = load_store(&path)?;
     // A connector killed before it could clear its Funnel left it
     // publishing a loopback port nothing serves; clear it first.
-    if let Some(port) = stale_funnel(&home)
-        && let Ok(binary) = tunnel::find_tailscale(args.tailscale.as_deref())
-    {
-        eprintln!(
-            "agentdocker connector: clearing the Funnel on port {port} a stopped connector left"
-        );
-        tunnel::clear_funnel(&binary, port).await;
-    }
+    clear_stale_funnel(&home, args.tailscale.as_deref()).await?;
     // The tunnel next, so the public name is known before anything is
     // said or written; it dies with this process and this process with it.
     let mut tunnel = match args.tunnel.as_deref() {
@@ -1585,14 +1578,53 @@ async fn serve(
     outcome
 }
 
-/// The Funnel port a connector that is gone left set, by its status file.
-/// A live connector's is its own business.
-fn stale_funnel(home: &Path) -> Option<u16> {
-    service::read_status(home)
-        .filter(|status| !status.alive())?
+/// The Funnel a connector that is gone left set, by its status file: its
+/// public port and the loopback address it served. A live connector's is
+/// its own business.
+fn stale_funnel(home: &Path) -> Option<(u16, String)> {
+    let status = service::read_status(home).filter(|status| !status.alive())?;
+    let port = status
         .tunnel
         .filter(|t| t.provider == "tailscale")?
-        .https_port
+        .https_port?;
+    Some((port, status.bind))
+}
+
+/// Clear the Funnel a stopped connector left, when tailscaled still points
+/// it at that connector's own address. One pointed elsewhere now is
+/// somebody else's and is left alone. One that cannot be checked or
+/// cleared stops this start, and the status file that records it is kept,
+/// so it is never forgotten while it may still be open.
+async fn clear_stale_funnel(home: &Path, explicit: Option<&Path>) -> Result<()> {
+    let Some((port, bind)) = stale_funnel(home) else {
+        return Ok(());
+    };
+    let unconfirmed = |why: String| {
+        anyhow::anyhow!(
+            "a stopped connector left a Tailscale Funnel on port {port} for {bind}, and {why}; check `tailscale serve status`, clear it with `tailscale funnel --https={port} off` if it still serves {bind}, then remove {} and start again",
+            agentdocker_host::connector::status_path(home).display()
+        )
+    };
+    let binary = tunnel::find_tailscale(explicit).map_err(|error| {
+        unconfirmed(format!("tailscale cannot be found to check it ({error:#})"))
+    })?;
+    match tunnel::funnel_serves_now(&binary, port, &bind).await {
+        Ok(true) => {
+            eprintln!(
+                "agentdocker connector: clearing the Funnel on port {port} a stopped connector left"
+            );
+            tunnel::clear_funnel(&binary, port)
+                .await
+                .map_err(|error| unconfirmed(format!("clearing it failed ({error})")))
+        }
+        Ok(false) => {
+            eprintln!(
+                "agentdocker connector: the Funnel on port {port} no longer serves the stopped connector's {bind}; left as it is"
+            );
+            Ok(())
+        }
+        Err(error) => Err(unconfirmed(format!("it cannot be read ({error})"))),
+    }
 }
 
 /// Polled beside HTTP acceptance, rather than detached: shutdown drops the
@@ -2471,6 +2503,92 @@ mod tests {
         );
     }
 
+    /// A fake tailscale whose serve configuration points the Funnel on
+    /// `port` at `proxy`, recording every command it is given; with
+    /// `status_fails`, reading the configuration fails.
+    #[cfg(unix)]
+    fn fake_tailscale(dir: &Path, port: u16, proxy: &str, status_fails: bool) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let fake = dir.join("tailscale");
+        let log = dir.join("calls.log");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {log}\nif [ \"$1\" = serve ]; then {}; fi\nexit 0\n",
+                if status_fails {
+                    "echo broken >&2; exit 1".to_owned()
+                } else {
+                    format!(
+                        "echo '{{\"Web\":{{\"mac.tail1.ts.net:{port}\":{{\"Handlers\":{{\"/\":{{\"Proxy\":\"{proxy}\"}}}}}}}}}}'"
+                    )
+                },
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fake
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stale_funnel_is_cleared_only_while_it_still_serves_the_stopped_connector() {
+        let gone = |home: &Path| {
+            service::write_status(
+                home,
+                &service::Serving {
+                    pid: u32::MAX - 7,
+                    public_url: "https://mac.tail1.ts.net".into(),
+                    bind: "127.0.0.1:62800".into(),
+                    default_project: None,
+                    pairing_code: "ABCDE-FGHJK".into(),
+                    started_at: Utc::now(),
+                    tunnel: Some(service::TunnelStatus {
+                        provider: "tailscale".into(),
+                        pid: None,
+                        name: Some("mac.tail1.ts.net".into()),
+                        https_port: Some(443),
+                    }),
+                    allowlist_prefixes: 0,
+                },
+            )
+            .unwrap();
+        };
+        let calls = |dir: &Path| std::fs::read_to_string(dir.join("calls.log")).unwrap_or_default();
+
+        // Still its own: cleared.
+        let home = tempfile::TempDir::new().unwrap();
+        let tools = tempfile::TempDir::new().unwrap();
+        gone(home.path());
+        let fake = fake_tailscale(tools.path(), 443, "http://127.0.0.1:62800", false);
+        clear_stale_funnel(home.path(), Some(&fake)).await.unwrap();
+        assert!(calls(tools.path()).contains("funnel --https=443 off"));
+
+        // Pointed at something else since: somebody else's, left alone.
+        let tools = tempfile::TempDir::new().unwrap();
+        let fake = fake_tailscale(tools.path(), 443, "http://127.0.0.1:3000", false);
+        clear_stale_funnel(home.path(), Some(&fake)).await.unwrap();
+        assert!(
+            !calls(tools.path()).contains("off"),
+            "{}",
+            calls(tools.path())
+        );
+
+        // Cannot be read: this start stops, and the record is kept.
+        let tools = tempfile::TempDir::new().unwrap();
+        let fake = fake_tailscale(tools.path(), 443, "", true);
+        let error = clear_stale_funnel(home.path(), Some(&fake))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("cannot be read"), "{error}");
+        assert!(!calls(tools.path()).contains("off"));
+        assert!(
+            service::read_status(home.path()).is_some(),
+            "the evidence stays"
+        );
+    }
+
     #[test]
     fn only_a_gone_connectors_funnel_is_cleared() {
         let home = tempfile::TempDir::new().unwrap();
@@ -2497,7 +2615,10 @@ mod tests {
         // Well above any live pid on a test machine.
         let gone = u32::MAX - 7;
         service::write_status(home.path(), &status(gone, "tailscale", Some(8443))).unwrap();
-        assert_eq!(stale_funnel(home.path()), Some(8443));
+        assert_eq!(
+            stale_funnel(home.path()),
+            Some((8443, "127.0.0.1:62800".to_owned()))
+        );
         service::write_status(home.path(), &status(gone, "cloudflared", None)).unwrap();
         assert_eq!(
             stale_funnel(home.path()),
