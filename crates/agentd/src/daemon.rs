@@ -3370,25 +3370,6 @@ impl Daemon {
                 }
             }
         }
-        // A Codex process proven to run a conversation known by its key
-        // alone joins that record rather than becoming a second one.
-        if let Some(pid) = pid
-            && spec.runtime == "codex"
-            && spec
-                .labels
-                .contains_key(agentdocker_core::agent::PROFILE_LABEL)
-        {
-            let place = (
-                Self::session_of(pid, reported.clone()),
-                agentdocker_host::terminal::of_process(pid),
-            );
-            let born = procinfo::start_time(pid);
-            if let Some(response) =
-                lock(&self.state).prove_keyed(&spec, pid, born, place, Utc::now())
-            {
-                return response;
-            }
-        }
         let project = self.project_for(spec.workdir.clone(), true).await;
         let vcs = Self::vcs_for(spec.workdir.clone()).await;
         let mut record = AgentRecord::new(spec, false, Utc::now());
@@ -3407,7 +3388,35 @@ impl Daemon {
         // And the application around that terminal, which is what a
         // person brings to the front to reach it.
         record.terminal = pid.and_then(agentdocker_host::terminal::of_process);
-        let response = lock(&self.state).insert_record(record);
+        // A Codex process proven to run a conversation known by its key
+        // alone joins that record rather than becoming a second one. The
+        // check and the insert share this one lock, so an attach racing
+        // this registration cannot slip a second record between them.
+        let response = {
+            let mut state = lock(&self.state);
+            let proven = match record.pid {
+                Some(pid)
+                    if record.spec.runtime == "codex"
+                        && record
+                            .spec
+                            .labels
+                            .contains_key(agentdocker_core::agent::PROFILE_LABEL) =>
+                {
+                    state.prove_keyed(
+                        &record.spec,
+                        pid,
+                        record.process_started_at,
+                        (record.session.clone(), record.terminal.clone()),
+                        Utc::now(),
+                    )
+                }
+                _ => None,
+            };
+            match proven {
+                Some(response) => response,
+                None => state.insert_record(record),
+            }
+        };
         // The reply is what a session waits for before its first edit, so
         // the checkout is watched by the time it goes out.
         if let Response::Agent { agent } = &response {
@@ -6519,14 +6528,27 @@ impl State {
         let mut record = match live.as_slice() {
             [only] => (*only).clone(),
             [] => {
-                // Ended: the latest record known by its key alone is the
-                // conversation's, back under its own id.
-                let mut ended: Vec<&AgentRecord> = named
-                    .iter()
-                    .filter(|a| a.pid.is_none() && !a.managed)
-                    .collect();
+                // Ended: the latest record of the conversation is its owner
+                // still, back under its own id, whether or not a process
+                // once ran it. Ended never means nobody owns it.
+                let mut ended: Vec<&AgentRecord> = named.iter().filter(|a| !a.managed).collect();
                 ended.sort_by_key(|a| a.last_seen);
                 let mut record = (*ended.last()?).clone();
+                if record.pid.is_some_and(|pid| {
+                    process_exists(pid) && same_process(pid, record.process_started_at)
+                }) {
+                    return Some(Response::error(
+                        ErrorCode::Conflict,
+                        "the conversation's ended record still has its process; let it finish first",
+                    ));
+                }
+                // Its process is gone: kept by contact from here on.
+                record.pid = None;
+                record.process_started_at = None;
+                record.process_group = None;
+                record.session = None;
+                record.terminal = None;
+                self.free_name(&mut record);
                 record.status = AgentStatus::Running;
                 record.started_at = Some(now);
                 record.last_seen = now;
@@ -6631,8 +6653,23 @@ impl State {
                 "the process's birth cannot be read to prove it",
             ));
         };
+        // One process, one record: a terminal that already has its own
+        // (adopted before this proof, say) is not given a second one.
+        if self
+            .registry
+            .live()
+            .any(|a| a.id != record.id && a.pid == Some(pid) && a.process_started_at == Some(born))
+        {
+            return Some(Response::error(
+                ErrorCode::Conflict,
+                "this terminal already has a record of its own; forget one of the two to join it to its conversation",
+            ));
+        }
         if let Some(error) = self.write_failure() {
             return Some(error);
+        }
+        if !record.status.is_live() {
+            self.free_name(&mut record);
         }
         record.pid = Some(pid);
         record.process_started_at = Some(born);
@@ -6663,6 +6700,32 @@ impl State {
             pid: Some(pid),
         });
         Some(Response::Agent { agent: record })
+    }
+
+    /// Give `record` a name no other live agent holds: its own, or one made
+    /// from its id when another took it while it was ended.
+    fn free_name(&self, record: &mut AgentRecord) {
+        let id = record.id.clone();
+        let taken = |name: &str| {
+            self.registry
+                .live()
+                .any(|a| a.id != id && a.spec.name == name)
+        };
+        if !taken(&record.spec.name) {
+            return;
+        }
+        let base = default_name(&id);
+        let mut name = base.clone();
+        let mut n = 2;
+        while taken(&name) {
+            name = format!("{base}-{n}");
+            n += 1;
+        }
+        record.spec.name = name;
+        record.spec.labels.insert(
+            agentdocker_core::agent::NAME_LABEL.to_owned(),
+            agentdocker_core::agent::GENERATED_NAME.to_owned(),
+        );
     }
 
     fn touch(&mut self, id: &AgentId) {
@@ -8142,6 +8205,19 @@ impl State {
                     .spec
                     .labels
                     .insert("session_id".to_owned(), session.clone());
+                // With the verified profile its registration carries, so
+                // the conversation's key is whole on the record.
+                if let Some(profile) = record
+                    .spec
+                    .labels
+                    .get(agentdocker_core::agent::PROFILE_LABEL)
+                {
+                    updated
+                        .spec
+                        .labels
+                        .entry(agentdocker_core::agent::PROFILE_LABEL.to_owned())
+                        .or_insert_with(|| profile.clone());
+                }
                 let event = Event::new(
                     EventKind::AgentSessionBound {
                         agent: id.clone(),
@@ -11167,6 +11243,161 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// The transitions the second review found: a terminal that already
+    /// has its own (adopted) record refuses to be a second process record;
+    /// a record that learns its session learns the verified profile with
+    /// it; an ended record of the thread whose process exited is the
+    /// conversation's owner still; and a name another agent took meanwhile
+    /// is replaced, the id kept.
+    #[tokio::test]
+    async fn a_keyed_conversation_survives_adoption_process_exit_and_a_taken_name() {
+        use agentdocker_core::AdapterKind;
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let checkout = TempDir::new().unwrap();
+        let workdir = checkout.path().canonicalize().unwrap();
+        let profile = "/p/.codex";
+        let attach = |thread: &str| Request::SessionAttach {
+            runtime: "codex".into(),
+            profile: profile.into(),
+            session: thread.into(),
+            workdir: workdir.clone(),
+            adapter: AdapterKind::Mcp,
+        };
+        let keyed_spec = |thread: Option<&str>, with_profile: bool| {
+            let mut spec = spec("codex-terminal");
+            spec.runtime = "codex".into();
+            spec.workdir = Some(workdir.clone());
+            if let Some(thread) = thread {
+                spec.labels.insert("session_id".into(), thread.into());
+            }
+            if with_profile {
+                spec.labels.insert(
+                    agentdocker_core::agent::PROFILE_LABEL.into(),
+                    profile.into(),
+                );
+            }
+            spec
+        };
+
+        // Adopted before the proof: the terminal keeps its one record.
+        let adopted_thread = "aa000000-0000-7000-8000-000000000001";
+        let Response::Agent { agent: keyed } = daemon.handle(attach(adopted_thread)).await else {
+            panic!("attached")
+        };
+        let mut adopted_spec = keyed_spec(None, false);
+        adopted_spec.name = "codex-adopted".into();
+        adopted_spec.labels.insert("adopted".into(), "true".into());
+        let Response::Agent { agent: adopted } = daemon
+            .handle(Request::Register {
+                spec: adopted_spec,
+                pid: Some(std::process::id()),
+                session: None,
+            })
+            .await
+        else {
+            panic!("adopted")
+        };
+        let mut joining = keyed_spec(Some(adopted_thread), true);
+        joining.name = "codex-adopted".into();
+        assert!(matches!(
+            daemon
+                .handle(Request::Register {
+                    spec: joining,
+                    pid: Some(std::process::id()),
+                    session: None,
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        {
+            let state = lock(&daemon.state);
+            assert!(state.registry.get(&keyed.id).unwrap().keyed_only());
+            assert!(state.registry.get(&adopted.id).unwrap().pid.is_some());
+        }
+        // A process record (no keyed record yet) learns session and profile
+        // together, so a later attach under that profile finds it.
+        let learned_thread = "aa000000-0000-7000-8000-000000000002";
+        let Response::Agent { agent: learned } = daemon
+            .handle(Request::Register {
+                spec: keyed_spec(Some(learned_thread), true),
+                pid: Some(std::process::id()),
+                session: None,
+            })
+            .await
+        else {
+            panic!("joined")
+        };
+        assert_eq!(learned.id, adopted.id, "the adopted record learns it");
+        assert_eq!(
+            learned
+                .spec
+                .labels
+                .get(agentdocker_core::agent::PROFILE_LABEL)
+                .map(String::as_str),
+            Some(profile)
+        );
+        let Response::Agent { agent: found } = daemon.handle(attach(learned_thread)).await else {
+            panic!("found by its key")
+        };
+        assert_eq!(found.id, adopted.id);
+
+        // Proven, then its process exits: the ended record is the owner.
+        let exited_thread = "aa000000-0000-7000-8000-000000000003";
+        let Response::Agent { agent: owner } = daemon.handle(attach(exited_thread)).await else {
+            panic!("attached")
+        };
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let Response::Agent { agent: proven } = daemon
+            .handle(Request::Register {
+                spec: keyed_spec(Some(exited_thread), true),
+                pid: Some(child.id()),
+                session: None,
+            })
+            .await
+        else {
+            panic!("proven")
+        };
+        assert_eq!(proven.id, owner.id);
+        let _ = child.kill();
+        let _ = child.wait();
+        daemon.check_liveness();
+        assert!(
+            !lock(&daemon.state)
+                .registry
+                .get(&owner.id)
+                .unwrap()
+                .status
+                .is_live()
+        );
+        // Its name was taken meanwhile.
+        let taken = owner.spec.name.clone();
+        let mut other = spec(&taken);
+        other.runtime = "custom".into();
+        assert!(matches!(
+            daemon
+                .handle(Request::Register {
+                    spec: other,
+                    pid: None,
+                    session: None,
+                })
+                .await,
+            Response::Agent { .. }
+        ));
+        let Response::Agent { agent: back } = daemon.handle(attach(exited_thread)).await else {
+            panic!("the same conversation, back")
+        };
+        assert_eq!(back.id, owner.id, "its owner, not a second record");
+        assert!(back.keyed_only() && back.status.is_live() && back.pid.is_none());
+        assert_ne!(back.spec.name, taken, "a name free among live agents");
     }
 
     fn spec_for_binding() -> AgentSpec {
