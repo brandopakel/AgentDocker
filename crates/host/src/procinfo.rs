@@ -1011,7 +1011,20 @@ mod tests {
             .stdin(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        let read = arguments(child.id());
+        // Until the child has exec'd, Linux shows it with no command line
+        // at all (a vfork'd child): wait for the one it was given.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let read = loop {
+            let read = arguments(child.id());
+            if read
+                .as_ref()
+                .is_some_and(|r| r.last().map(String::as_str) == Some("resume one-thread"))
+                || std::time::Instant::now() > deadline
+            {
+                break read;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
         drop(child.stdin.take());
         let _ = child.wait();
         let read = read.expect("our own child's arguments");
