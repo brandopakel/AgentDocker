@@ -159,20 +159,18 @@ pub async fn report_bound<B: Backend>(
 }
 
 pub async fn recovered<B: Backend>(backend: &B, agent: &AgentRecord) -> Result<()> {
-    if let Some(blocked) = agent
-        .provider_availability
-        .as_ref()
-        .filter(|s| s.issue.is_some())
-    {
-        report(
-            backend,
-            agent,
-            ProviderReport::Recovered {
-                blocked_at: blocked.observed_at,
-            },
-        )
-        .await?;
-    }
+    let Some(state) = agent.provider_availability.as_ref() else {
+        return Ok(());
+    };
+    // A standing block, or the daemon's lift of one for a retry that this
+    // turn just proved went through: either way it is over, and the count
+    // of retries with it. The report names that exact observation.
+    let blocked_at = match (&state.issue, state.cleared_observation) {
+        (Some(_), _) => state.observed_at,
+        (None, Some(lifted)) if state.retries > 0 => lifted,
+        _ => return Ok(()),
+    };
+    report(backend, agent, ProviderReport::Recovered { blocked_at }).await?;
     Ok(())
 }
 

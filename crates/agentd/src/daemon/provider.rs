@@ -89,10 +89,29 @@ impl State {
                 }
             }
             ProviderReport::Recovered { blocked_at } => {
-                if previous
-                    .is_some_and(|p| p.issue.is_none() && p.cleared_observation == Some(blocked_at))
+                if let Some(p) = previous
+                    .filter(|p| p.issue.is_none() && p.cleared_observation == Some(blocked_at))
                 {
-                    return Response::Ok;
+                    // Already clear. A lift for a retry that a turn has now
+                    // proved ends the count; anything else is a repeat.
+                    if p.retries == 0 {
+                        return Response::Ok;
+                    }
+                    let state = ProviderAvailability {
+                        process_started_at: generation,
+                        observed_at,
+                        issue: None,
+                        cleared_observation: Some(blocked_at),
+                        retries: 0,
+                    };
+                    if observed_at <= p.observed_at {
+                        return Response::error(
+                            ErrorCode::Conflict,
+                            "provider reports conflict at the same observation time",
+                        );
+                    }
+                    record.provider_availability = Some(state.clone());
+                    return self.persist_provider(record, state, false, now);
                 }
                 if !previous.is_some_and(|p| p.issue.is_some() && p.observed_at == blocked_at) {
                     return Response::error(
@@ -341,9 +360,71 @@ mod tests {
         assert!(availability(&state).issue.is_some(), "waits longer now");
         state.retry_providers(failed_at + RETRY_FIRST * 2);
         assert_eq!(availability(&state).retries, 2);
-        // A turn that goes through: the provider's own recovery ends it, and
-        // a later failure starts from the first wait again.
-        let blocked_at = failed_at + RETRY_FIRST * 3;
+        // The turn after that lift goes through: its success names the
+        // lifted observation and ends the count, so a fresh failure soon
+        // after starts from the first wait again.
+        let lifted = availability(&state);
+        let succeeded_at = lifted.observed_at + Duration::seconds(30);
+        assert!(matches!(
+            state.report_provider(
+                agent.id.as_str(),
+                agent.process_started_at.unwrap(),
+                succeeded_at,
+                ProviderReport::Recovered {
+                    blocked_at: lifted.cleared_observation.unwrap(),
+                },
+                succeeded_at,
+            ),
+            Response::Ok
+        ));
+        assert_eq!(
+            (
+                availability(&state).issue.as_ref(),
+                availability(&state).retries
+            ),
+            (None, 0)
+        );
+        // A late success naming that lift again changes nothing.
+        let seq = state.next_seq;
+        assert!(matches!(
+            state.report_provider(
+                agent.id.as_str(),
+                agent.process_started_at.unwrap(),
+                succeeded_at + Duration::seconds(1),
+                ProviderReport::Recovered {
+                    blocked_at: lifted.cleared_observation.unwrap(),
+                },
+                succeeded_at + Duration::seconds(1),
+            ),
+            Response::Ok
+        ));
+        assert_eq!(state.next_seq, seq);
+        let fresh = succeeded_at + Duration::seconds(10);
+        assert!(matches!(
+            block(&mut state, &agent, transport.clone(), fresh),
+            Response::Ok
+        ));
+        assert_eq!(availability(&state).retry_at(), Some(fresh + RETRY_FIRST));
+        // A success naming an older lift cannot clear this newer block.
+        assert!(matches!(
+            state.report_provider(
+                agent.id.as_str(),
+                agent.process_started_at.unwrap(),
+                fresh + Duration::seconds(1),
+                ProviderReport::Recovered {
+                    blocked_at: lifted.cleared_observation.unwrap(),
+                },
+                fresh + Duration::seconds(1),
+            ),
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        state.retry_providers(fresh + RETRY_FIRST);
+        // A standing block's own recovery ends it, and a later failure
+        // starts from the first wait again.
+        let blocked_at = fresh + RETRY_FIRST + Duration::seconds(5);
         assert!(matches!(
             block(&mut state, &agent, transport.clone(), blocked_at),
             Response::Ok
