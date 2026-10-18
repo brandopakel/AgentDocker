@@ -224,8 +224,8 @@ mod tests {
                 .insert("session_id".into(), session.into());
             record
         };
-        let first = named(&agent, "83083752");
-        let mut second = named(&duplicate, "83083752");
+        let first = named(&agent, "c960824c");
+        let mut second = named(&duplicate, "c960824c");
         second.created_at = born + chrono::Duration::minutes(35);
         for order in [
             [first.clone(), second.clone()],

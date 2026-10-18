@@ -190,7 +190,7 @@ mod tests {
             "url:https://paprika.ai/",
             "task:5fd54785dd77",
             "task:5fd5",
-            "message:26beba01be15456f",
+            "message:446acd890d51301f",
             "memory:the parser keeps a tail; read reader.rs before touching quarantine",
             "MEMORY:case does not matter for the kind",
         ] {

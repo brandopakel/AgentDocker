@@ -390,10 +390,10 @@ mod tests {
 
     #[test]
     fn the_quick_tunnel_url_is_read_out_of_cloudflareds_box() {
-        let line = "2026-09-18T00:05:46Z INF |  https://safe-psp-generating-finding.trycloudflare.com                                     |";
+        let line = "2026-01-02T03:04:05Z INF |  https://calm-river-sample-words.trycloudflare.com                                     |";
         assert_eq!(
             quick_tunnel_url(line).as_deref(),
-            Some("https://safe-psp-generating-finding.trycloudflare.com")
+            Some("https://calm-river-sample-words.trycloudflare.com")
         );
         assert_eq!(
             quick_tunnel_url("INF Registered tunnel connection connIndex=0"),
@@ -456,14 +456,18 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut tunnel =
-            spawn_cloudflared(&named, 6111, Some("keel"), Some("https://ad.example.com"))
-                .await
-                .unwrap();
+        let mut tunnel = spawn_cloudflared(
+            &named,
+            6111,
+            Some("orchard"),
+            Some("https://ad.example.com"),
+        )
+        .await
+        .unwrap();
         assert_eq!(tunnel.public_url, "https://ad.example.com");
-        assert_eq!(tunnel.name.as_deref(), Some("keel"));
+        assert_eq!(tunnel.name.as_deref(), Some("orchard"));
         tunnel.stop().await;
-        let error = spawn_cloudflared(&named, 6111, Some("keel"), None)
+        let error = spawn_cloudflared(&named, 6111, Some("orchard"), None)
             .await
             .unwrap_err()
             .to_string();

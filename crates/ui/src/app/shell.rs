@@ -8045,7 +8045,7 @@ mod tests {
                 workdir: Some("/work/repo".into()),
                 labels: BTreeMap::from([(
                     "session_id".to_owned(),
-                    "218845eb-ba1e-4457-bb5a-e1829f5652dd".to_owned(),
+                    "5e55a0d1-7c3b-4f2e-9a61-0b4d2c8e7f13".to_owned(),
                 )]),
                 ..Default::default()
             },
@@ -8069,7 +8069,7 @@ mod tests {
         assert!(
             spec.command
                 .windows(2)
-                .any(|w| w[0] == "--resume" && w[1] == "218845eb-ba1e-4457-bb5a-e1829f5652dd"),
+                .any(|w| w[0] == "--resume" && w[1] == "5e55a0d1-7c3b-4f2e-9a61-0b4d2c8e7f13"),
             "{:?}",
             spec.command
         );

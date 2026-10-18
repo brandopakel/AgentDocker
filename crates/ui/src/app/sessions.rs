@@ -496,9 +496,9 @@ mod tests {
                 .insert("session_id".into(), session.into());
             record
         };
-        let first = claude("claude-code-2923", "83083752", 51890, 0);
-        let drifted = claude("claude-83083752", "83083752", 51890, 35);
-        let second = claude("claude-code-9529", "b3a71bac", 9529, 10);
+        let first = claude("claude-code-2923", "c960824c", 51890, 0);
+        let drifted = claude("claude-c960824c", "c960824c", 51890, 35);
+        let second = claude("claude-code-9529", "58ca8caa", 9529, 10);
         let mut unused = record("chatgpt-browser-nsq1");
         unused.spec.runtime = "chatgpt-browser".into();
         unused.project = Some(project.clone());

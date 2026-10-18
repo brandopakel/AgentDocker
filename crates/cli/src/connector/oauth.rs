@@ -976,7 +976,7 @@ mod tests {
             id: "a1".into(),
             name: "claude-browser-ab12".into(),
             runtime: "claude-browser".into(),
-            project: "/p/keel".into(),
+            project: "/p/orchard".into(),
         }
     }
 
@@ -1084,7 +1084,7 @@ mod tests {
             &pending,
             "claude-browser-ab12".into(),
             false,
-            "/p/keel".into(),
+            "/p/orchard".into(),
             now(),
         );
         assert!(redirect.starts_with("https://claude.ai/api/mcp/auth_callback?code="));
@@ -1114,7 +1114,7 @@ mod tests {
             &pending,
             "claude-browser-ab12".into(),
             false,
-            "/p/keel".into(),
+            "/p/orchard".into(),
             now(),
         );
         let code = code_of(&redirect);
@@ -1133,7 +1133,7 @@ mod tests {
                 client_id: client.clone(),
                 agent_name: "claude-browser-ab12".into(),
                 generated: false,
-                project: "/p/keel".into(),
+                project: "/p/orchard".into(),
             }
         );
         let issued = store.issue(&consent, agent(), now());
@@ -1153,7 +1153,7 @@ mod tests {
             &pending,
             "claude-browser-ab12".into(),
             false,
-            "/p/keel".into(),
+            "/p/orchard".into(),
             now(),
         );
         let code = code_of(&redirect);
@@ -1181,7 +1181,7 @@ mod tests {
             &pending,
             "claude-browser-ab12".into(),
             true,
-            "/p/keel".into(),
+            "/p/orchard".into(),
             now(),
         );
         let code = code_of(&redirect);
@@ -1310,7 +1310,7 @@ mod tests {
             &pending,
             "claude-browser-ab12".into(),
             true,
-            "/p/keel".into(),
+            "/p/orchard".into(),
             now(),
         );
         let code = code_of(&redirect);
@@ -1515,7 +1515,7 @@ mod tests {
             &pending,
             "chatgpt-browser-ab12".into(),
             true,
-            "/p/keel".into(),
+            "/p/orchard".into(),
             now(),
         );
         assert!(
@@ -1536,7 +1536,7 @@ mod tests {
             ),
         );
         assert_eq!(consent.client_id, url);
-        assert_eq!(consent.project, PathBuf::from("/p/keel"));
+        assert_eq!(consent.project, PathBuf::from("/p/orchard"));
     }
 
     #[test]

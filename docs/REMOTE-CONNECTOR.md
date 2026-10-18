@@ -3,13 +3,13 @@
 Status: September 18, 2026. Delivered in source as `agentdocker connector`
 (`crates/cli/src/connector/`), with unit tests, a real-binary trial on loopback,
 and acceptances against real Claude and ChatGPT accounts: through a cloudflared
-tunnel to the production daemon, each vendor registered its client by DCR, the
+tunnel to an installed daemon, each vendor registered its client by DCR, the
 person consented with the pairing code, and each browser agent delivered a
-message to keel's terminal sessions — first from a terminal-run connector, then
+message to the project's terminal sessions — first from a terminal-run connector, then
 from the connector installed as a login service with a vendor-egress allowlist
 ([record](verification/INDEX.md), `remote_connector_2026_09_17`, `vendor_acceptance`
-and `service_acceptance`). The production connector now runs on `--tunnel
-tailscale`, this machine's own `*.ts.net` name, with both vendors connected
+and `service_acceptance`). A connector on `--tunnel
+tailscale`, the machine's own `*.ts.net` name, has been accepted with both vendors
 (`stable_host_acceptance`); a quick cloudflared tunnel's hostname is ephemeral
 and both vendors' saved connectors must be re-added when it changes. Since
 then one connector serves every project on the machine (the consent page

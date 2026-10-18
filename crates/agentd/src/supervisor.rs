@@ -1160,7 +1160,7 @@ mod tests {
     fn an_exit_before_activation_is_described_in_words() {
         let now = chrono::Utc::now();
         let report = |code, signal, log_flushed| ExitReport {
-            agent: AgentId::from("0180d7615186449087095d7aa15ec0bb".to_owned()),
+            agent: AgentId::from("6f1c2a9b3d7e4c5f8a0b1c2d3e4f5a6b".to_owned()),
             owner: SessionOwner {
                 pid: 23152,
                 started_at: now,

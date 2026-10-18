@@ -456,7 +456,7 @@ mod tests {
     /// where the process was launched, and a hook ran after the session's
     /// Bash tool had `cd`'d into a subdirectory, reporting that as its `cwd`.
     /// Comparing the directory made the second registration a second agent
-    /// for the same session (`claude-code-2923` and `claude-83083752`, one
+    /// for the same session (`claude-code-2923` and `claude-c960824c`, one
     /// pid). Both name the session, so the directory is not who they are.
     #[test]
     fn one_named_session_is_one_registration_wherever_its_shell_has_moved() {
@@ -794,7 +794,7 @@ mod tests {
                 .unwrap_err()
                 .contains("plain process")
         );
-        assert!(plain_session_id("218845eb-ba1e-4457-bb5a-e1829f5652dd"));
+        assert!(plain_session_id("5e55a0d1-7c3b-4f2e-9a61-0b4d2c8e7f13"));
         for bad in ["", "-x", "a b", "a;b", &"x".repeat(129)] {
             assert!(!plain_session_id(bad), "{bad:?}");
         }

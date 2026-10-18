@@ -151,7 +151,7 @@ a question mark for a question, an hourglass when its hooks did not say which
 — read aloud as *Claude Code wants permission in its terminal*, *has a
 question in its terminal* or *is waiting for you in its terminal*; **Go to
 Terminal** takes you there. Seen across
-projects, each row starts with its project's name (*keel · Claude Code · Badger*).
+projects, each row starts with its project's name (*orchard · Claude Code · Badger*).
 A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not
 here: its row's amber dot marks it, with the reason in its spoken name, and
@@ -628,11 +628,11 @@ agent whose session or terminal is open, or the project whose chat is open;
 the window keeps a short-lived `viewing.json` in the AgentDocker home for the
 poster), and an agent's newer notification replaces its last one in
 Notification Center rather than stacking. When an agent finishes while the window is
-not in front, the app posts a quiet notice itself (*Badger finished · In keel.
+not in front, the app posts a quiet notice itself (*Badger finished · In orchard.
 Click to see what it did.*), one per agent, replacing its last — but not when
 your next message to it is already queued, since it goes straight on to that.
 An agent that stops for you in its own terminal is told the same way (*Badger
-wants permission*, *has a question* or *is waiting for you · In keel. It is
+wants permission*, *has a question* or *is waiting for you · In orchard. It is
 waiting in its terminal.*) once the stop has lasted two seconds, so a prompt you
 answer at once, at the terminal, never notifies. Returning to the app or turning
 these notifications off during that delay cancels the pending notice. If an agent
