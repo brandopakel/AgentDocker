@@ -4705,6 +4705,19 @@ pub(crate) fn open_target(target: &str) -> Result<(), String> {
 /// bundle, a script, an installer or a shortcut by its kind, or a file
 /// marked executable.
 fn runs_when_opened(path: &std::path::Path) -> bool {
+    // A link is judged by what it leads to, and a link whose end cannot be
+    // read is not opened at all: `notes` could lead to an app.
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return match std::fs::canonicalize(path) {
+            Ok(target) => target == path || runs_when_opened(&target),
+            Err(_) => true,
+        };
+    }
+    launches(path)
+}
+
+/// Whether a path that is not a link runs something when opened.
+fn launches(path: &std::path::Path) -> bool {
     const LAUNCHERS: &[&str] = &[
         "app",
         "command",
@@ -4815,6 +4828,27 @@ pub(crate) mod tests {
         std::fs::write(&notes, "# notes").unwrap();
         assert!(!super::runs_when_opened(&notes));
         assert!(!super::runs_when_opened(dir.path()), "a plain folder opens");
+        #[cfg(unix)]
+        {
+            // A harmless name leading to an app is the app.
+            let app = dir.path().join("Tool.app");
+            std::fs::create_dir(&app).unwrap();
+            let link = dir.path().join("notes");
+            std::os::unix::fs::symlink(&app, &link).unwrap();
+            assert!(super::runs_when_opened(&link), "a link to an app bundle");
+            let to_notes = dir.path().join("readme");
+            std::os::unix::fs::symlink(&notes, &to_notes).unwrap();
+            assert!(
+                !super::runs_when_opened(&to_notes),
+                "a link to a note opens"
+            );
+            let dangling = dir.path().join("gone");
+            std::os::unix::fs::symlink(dir.path().join("nowhere"), &dangling).unwrap();
+            assert!(
+                super::runs_when_opened(&dangling),
+                "an unreadable end is not opened"
+            );
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

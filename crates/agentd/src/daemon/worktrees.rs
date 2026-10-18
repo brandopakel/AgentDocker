@@ -169,13 +169,7 @@ pub(super) async fn copy_includes(root: PathBuf, path: PathBuf) -> (usize, Optio
             });
             continue;
         }
-        if let Some(parent) = to.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            trouble.get_or_insert_with(|| format!("{}: {e}", parent.display()));
-            continue;
-        }
-        match copy_new(&from, &to, meta.permissions()) {
+        match copy_new(&from, &path, relative, &to, &meta) {
             Ok(()) => copied += 1,
             Err(e) => {
                 trouble.get_or_insert_with(|| format!("{relative}: {e}"));
@@ -202,17 +196,52 @@ fn stays_inside(base: &Path, relative: &str) -> bool {
     true
 }
 
-/// Copy `from` to a file made new at `to`: making it fails if anything is
-/// there already, a symlink included, so nothing is written through one
-/// or over what the checkout has.
-fn copy_new(from: &Path, to: &Path, permissions: std::fs::Permissions) -> std::io::Result<()> {
+/// Copy `from` to a file made new at `relative` beneath `base`. On Unix
+/// every folder on the way is opened without following a symlink, so one
+/// swapped in after `stays_inside` looked is refused, and the file is
+/// owner-only until its bytes are in. Elsewhere the file is still made new,
+/// never over anything there.
+#[cfg(unix)]
+fn copy_new(
+    from: &Path,
+    base: &Path,
+    relative: &str,
+    _to: &Path,
+    meta: &std::fs::Metadata,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut source = std::fs::File::open(from)?;
+    agentdocker_host::files::copy_new_beneath(
+        base,
+        Path::new(relative),
+        &mut source,
+        meta.permissions().mode(),
+    )
+    .map(|_| ())
+}
+
+#[cfg(not(unix))]
+fn copy_new(
+    from: &Path,
+    _base: &Path,
+    _relative: &str,
+    to: &Path,
+    meta: &std::fs::Metadata,
+) -> std::io::Result<()> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut source = std::fs::File::open(from)?;
     let mut target = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(to)?;
-    std::io::copy(&mut source, &mut target)?;
-    target.set_permissions(permissions)
+    if let Err(error) = std::io::copy(&mut source, &mut target) {
+        drop(target);
+        let _ = std::fs::remove_file(to);
+        return Err(error);
+    }
+    target.set_permissions(meta.permissions())
 }
 
 /// Remove a session's linked worktree once it is done with it: the session
