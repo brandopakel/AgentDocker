@@ -166,6 +166,9 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          "command": [sys.executable, "-u", str(fixture)], "workdir": str(project),
                          "tty": True, "restore": False}})["agent"]
             human = rpc(endpoint, {"op": "me", "workdir": str(project)})["agent"]
+            # Roles are the person's to give: two, so the row shows both.
+            rpc(endpoint, {"op": "role_assign", "from": human["id"], "agent": agent["id"],
+                           "add": ["reviewer", "tester"], "remove": []})
             dismissible = [rpc(endpoint, {"op": "send", "from": agent["id"], "to": human["id"],
                             "kind": "chat", "payload": {"text": text}})["message"]
                            for text in [f"Received message {index}" for index in range(35)]]
@@ -232,6 +235,22 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("wait_control", id="palette-search", present=False), step("wait_text", text="#everyone"),
                          step("click", id="project-tab-Agents"), step("wait_text", text="terminal-fixture"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("wait_control", id=f"session-{previous['id']}", present=False), step("capture", name="projects-live"),
+                         # Its roles are coloured labels on the row; the panel's
+                         # Roles tag opens the project's roles to give or take,
+                         # and Edit roles… the palette itself.
+                         step("wait_text", text="Reviewer"), step("wait_text", text="Tester"),
+                         step("click", id=f"session-{agent['id']}"),
+                         step("wait_control", id="session-roles", present=True),
+                         step("click", id="session-roles"),
+                         step("wait_control", id=f"role-pick-{agent['id']}-reviewer", present=True),
+                         step("capture", name="roles-menu"),
+                         step("click", id="roles-edit"),
+                         step("wait_control", id="role-color-reviewer", present=True),
+                         step("wait_control", id="role-new", present=True),
+                         step("capture", name="roles-palette"),
+                         step("click", id="session-roles"),
+                         step("wait_control", id="role-new", present=False),
+                         step("click", id="close-session"),
                          step("click", id="pause-project"),
                          step("fill", id="pause-reason", text="Fixture pause · preserve this reason 日本語"),
                          step("capture", name="pause-draft"),
@@ -730,14 +749,21 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("wait_text_absent", text="claude --resume readiness-fixture-session"),
                         step("click", id=f"delivery-details-conversation-{conversation}"),
                         step("wait_text", text="readiness-fixture · Messages may wait for its next prompt"),
-                        step("wait_text", text="claude --resume readiness-fixture-session"),
+                        # Details say who and what; the command is in the
+                        # session's own panel, not repeated here.
+                        step("wait_text_absent", text="claude --resume readiness-fixture-session"),
                         step("capture", name="send-readiness-details"),
                         step("click", id=f"delivery-details-conversation-{conversation}"),
                     ]
+                # A session that cannot be woken shows the one command to
+                # paste for it, whole: its folder, its conversation, the channel.
+                command_probe = [
+                    step("wait_text", text="claude --resume readiness-fixture-session --dangerously-load-development-channels server:agentdocker"),
+                ] if name == "readiness-activity" else []
                 return launch(name, [step("click", id="connections"),
                                      step("click", id="connection-details-claude-code"),
                                      step("wait_text", text="readiness-fixture"),
-                                     step("wait_text", text=expected), step("capture", name=name),
+                                     step("wait_text", text=expected), *command_probe, step("capture", name=name),
                                      step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                                      # Selecting a project opens its shared chat. On a
                                      # compact display, Messages keeps that conversation

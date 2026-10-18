@@ -4,6 +4,89 @@ use std::fs::{File, Metadata, OpenOptions};
 use std::io;
 use std::path::Path;
 
+/// Copy `source` into a file made new at `relative` beneath the folder
+/// `root`, making the folders on the way, and never through a symlink: each
+/// folder is opened relative to the one before it with `O_NOFOLLOW`, so a
+/// folder swapped for a symlink at any moment is refused rather than
+/// followed, and the file is created exclusively (never over anything
+/// there) readable by its owner only. `mode` is applied once the bytes are
+/// all in; a copy that fails removes what it made.
+#[cfg(unix)]
+pub fn copy_new_beneath(
+    root: &Path,
+    relative: &Path,
+    source: &mut File,
+    mode: u32,
+) -> io::Result<u64> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+    let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "not a plain relative path");
+    let parts = relative
+        .components()
+        .map(|part| match part {
+            std::path::Component::Normal(name) => {
+                CString::new(name.as_bytes()).map_err(|_| invalid())
+            }
+            _ => Err(invalid()),
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let (name, folders) = parts.split_last().ok_or_else(invalid)?;
+    let open_folder = |at: libc::c_int, name: &CString| -> io::Result<OwnedFd> {
+        // SAFETY: `name` is a valid C string and `at` an open directory or
+        // AT_FDCWD; the descriptor returned is owned here alone.
+        let fd = unsafe {
+            libc::openat(
+                at,
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    };
+    let root = CString::new(root.as_os_str().as_bytes()).map_err(|_| invalid())?;
+    let mut folder = open_folder(libc::AT_FDCWD, &root)?;
+    for part in folders {
+        // SAFETY: as above; an existing entry is left as it is and opened
+        // next without following it.
+        if unsafe { libc::mkdirat(folder.as_raw_fd(), part.as_ptr(), 0o777) } < 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::EEXIST) {
+                return Err(error);
+            }
+        }
+        folder = open_folder(folder.as_raw_fd(), part)?;
+    }
+    // SAFETY: as above.
+    let fd = unsafe {
+        libc::openat(
+            folder.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600 as libc::c_uint,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    let mut target = unsafe { File::from_raw_fd(fd) };
+    let copied = io::copy(source, &mut target).and_then(|bytes| {
+        target.set_permissions(std::fs::Permissions::from_mode(mode & 0o777))?;
+        Ok(bytes)
+    });
+    if copied.is_err() {
+        // SAFETY: as above; the name is unlinked in the folder it was made in.
+        unsafe { libc::unlinkat(folder.as_raw_fd(), name.as_ptr(), 0) };
+    }
+    copied
+}
+
 /// Publish an already-flushed staged file in the same directory. Unix
 /// syncs the containing directory after rename; Windows requests a
 /// write-through move rather than trying to open a directory as a file.
@@ -409,5 +492,66 @@ pub fn set_context_mode(path: &Path, mode: u32) -> io::Result<()> {
         let mut permissions = std::fs::metadata(path)?.permissions();
         permissions.set_readonly(mode & 0o222 == 0);
         std::fs::set_permissions(path, permissions)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod beneath_tests {
+    use super::*;
+
+    /// A folder on the way that is a symlink is refused, whenever it became
+    /// one; the file is made new, owner-only until copied, then given the
+    /// mode asked for; nothing is made outside.
+    #[test]
+    fn a_copy_beneath_a_folder_never_goes_through_a_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("wt");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let source_path = tmp.path().join("source");
+        std::fs::write(&source_path, "KEY=1\n").unwrap();
+        let source = || File::open(&source_path).unwrap();
+
+        let copied = copy_new_beneath(
+            &root,
+            Path::new("local/deep/settings.json"),
+            &mut source(),
+            0o640,
+        )
+        .unwrap();
+        assert_eq!(copied, 6);
+        let made = root.join("local/deep/settings.json");
+        assert_eq!(std::fs::read_to_string(&made).unwrap(), "KEY=1\n");
+        assert_eq!(
+            std::fs::metadata(&made).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert!(
+            copy_new_beneath(
+                &root,
+                Path::new("local/deep/settings.json"),
+                &mut source(),
+                0o600
+            )
+            .is_err(),
+            "never over what is there"
+        );
+
+        std::os::unix::fs::symlink(&outside, root.join("swapped")).unwrap();
+        assert!(copy_new_beneath(&root, Path::new("swapped/x"), &mut source(), 0o600).is_err());
+        std::os::unix::fs::symlink(outside.join("victim"), root.join("leaf")).unwrap();
+        assert!(copy_new_beneath(&root, Path::new("leaf"), &mut source(), 0o600).is_err());
+        assert!(
+            std::fs::read_dir(&outside).unwrap().next().is_none(),
+            "nothing outside"
+        );
+        for bad in ["../escape", "/abs", ""] {
+            assert!(
+                copy_new_beneath(&root, Path::new(bad), &mut source(), 0o600).is_err(),
+                "{bad}"
+            );
+        }
     }
 }

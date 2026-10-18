@@ -214,6 +214,8 @@ enum Cmd {
     },
     /// A project's tags, rules, plans and files.
     Workspace(String),
+    /// A project's roles to give.
+    Palette(String),
     /// A change to the board's model (a tag, a rule, a plan, a file, an
     /// agent started on a card); what it touched is read again after.
     BoardAct {
@@ -418,6 +420,8 @@ enum Msg {
     /// One card in full, or why it could not be read.
     TaskDetail(agentdocker_core::TaskId, Result<Box<CardDetail>, String>),
     Workspace(String, Result<Box<Workspace>, String>),
+    /// What reading a project's roles came back with.
+    Palette(String, PaletteRead),
     BoardActed(String, Result<(), String>),
     Todo(Result<Vec<agentdocker_core::Task>, String>),
     Plan(Result<Box<(agentdocker_core::Plan, Vec<agentdocker_core::Task>)>, String>),
@@ -627,6 +631,12 @@ pub struct App {
     boards: BTreeMap<String, Vec<agentdocker_core::Board>>,
     /// Each project's tags, rules, plans and files, by project root.
     workspaces: BTreeMap<String, Workspace>,
+    /// Each project's roles to give, by project root, read for every project
+    /// an agent on view works in: `None` from a daemon without a palette
+    /// (no role controls then), `Some` once read, empty included. The
+    /// roots asked for, answered or not, so a list refresh asks only anew.
+    palettes: BTreeMap<String, Option<Vec<agentdocker_core::RoleDef>>>,
+    palettes_asked: BTreeSet<String>,
     /// Every project's open cards, for To-do; `None` until read.
     todo: Option<Vec<agentdocker_core::Task>>,
     /// The plan open on Plans, with the cards that carry it out.
@@ -789,6 +799,8 @@ impl App {
             card: None,
             boards: BTreeMap::new(),
             workspaces: BTreeMap::new(),
+            palettes: BTreeMap::new(),
+            palettes_asked: BTreeSet::new(),
             todo: None,
             plan_open: None,
             flashes: BTreeMap::new(),
@@ -880,6 +892,8 @@ impl App {
             card: None,
             boards: BTreeMap::new(),
             workspaces: BTreeMap::new(),
+            palettes: BTreeMap::new(),
+            palettes_asked: BTreeSet::new(),
             todo: None,
             plan_open: None,
             flashes: BTreeMap::new(),
@@ -1021,6 +1035,9 @@ impl App {
                 Cmd::Adopt(pid) => {
                     self.shell.adopting.remove(&pid);
                 }
+                Cmd::Palette(project) => {
+                    self.palettes_asked.remove(&project);
+                }
                 Cmd::TaskMove { .. }
                 | Cmd::TaskEdit { .. }
                 | Cmd::TaskArchive(_)
@@ -1129,6 +1146,7 @@ impl App {
                     }
                     self.agents = agents;
                     self.request_agent_tokens();
+                    self.ask_palettes();
                     // A reconnected session's pane opens when the list shows
                     // the process the daemon started; an older list, from
                     // before the reconnect, says nothing about it and the
@@ -1384,9 +1402,24 @@ impl App {
                     }
                     Err(error) => self.say(error),
                 },
+                Msg::Palette(project, read) => match read {
+                    PaletteRead::Roles(roles) => {
+                        self.palettes.insert(project, Some(roles));
+                    }
+                    PaletteRead::Unsupported => {
+                        self.palettes.insert(project, None);
+                    }
+                    // Kept as it was, and asked again with the next list.
+                    PaletteRead::Failed => {
+                        self.palettes_asked.remove(&project);
+                    }
+                },
                 Msg::BoardActed(project, result) => {
                     if let Err(error) = result {
                         self.say(error);
+                    }
+                    if self.palettes.contains_key(&project) {
+                        self.send(Cmd::Palette(project.clone()));
                     }
                     self.send(Cmd::Workspace(project));
                     self.request_tasks();
@@ -1565,6 +1598,9 @@ impl App {
                 Msg::Connected => {
                     if self.connected.is_err() {
                         self.connected = Ok(());
+                        // Another daemon, perhaps: every palette is asked
+                        // again with the next list, kept until it answers.
+                        self.palettes_asked.clear();
                         for cmd in [
                             Cmd::Ping,
                             Cmd::Me,
@@ -1962,9 +1998,23 @@ impl App {
                     self.send(Cmd::Boards(project));
                 }
             }
+            // The event names a project by id, not root: every palette
+            // read is read again, a handful of small reads.
+            // A read still on its way may hold the old roles; asked again
+            // after it, the newer read is the one that lands.
+            EventKind::RoleChanged { .. } => {
+                let projects: BTreeSet<String> = self
+                    .palettes
+                    .keys()
+                    .chain(self.palettes_asked.iter())
+                    .cloned()
+                    .collect();
+                for project in projects {
+                    self.send(Cmd::Palette(project));
+                }
+            }
             EventKind::RuleChanged { .. }
             | EventKind::TagChanged { .. }
-            | EventKind::RoleChanged { .. }
             | EventKind::PlanChanged { .. }
             | EventKind::ProjectFileChanged { .. } => {
                 if let Some(project) = self.selected_project_root() {
@@ -3480,6 +3530,27 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             let result = read().map(Box::new);
             Some(Msg::Workspace(project, result))
         }
+        Cmd::Palette(project) => {
+            let read = match client.call(&Request::RoleCatalog {
+                project: Some(project.clone()),
+            }) {
+                Ok(Response::RoleCatalog { roles }) => PaletteRead::Roles(roles),
+                // An older daemon cannot read the request at all; the client
+                // hands its error reply back as a RemoteError.
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::client::RemoteError>()
+                        .is_some_and(|remote| {
+                            remote.code == agentdocker_core::protocol::ErrorCode::Invalid
+                                && remote.message.starts_with("malformed request")
+                        }) =>
+                {
+                    PaletteRead::Unsupported
+                }
+                _ => PaletteRead::Failed,
+            };
+            Some(Msg::Palette(project, read))
+        }
         Cmd::BoardAct { project, request } => {
             let result = match client.call(&request) {
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -4511,6 +4582,16 @@ pub(crate) struct CardDetail {
     pub files: Vec<agentdocker_core::ProjectFile>,
 }
 
+/// What reading a project's roles came back with: the roles, a daemon
+/// that has no palette (it cannot read the request), or a read that
+/// failed and is to be tried again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PaletteRead {
+    Roles(Vec<agentdocker_core::RoleDef>),
+    Unsupported,
+    Failed,
+}
+
 /// A project's tags, rules, plans (without bodies) and files.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Workspace {
@@ -4686,17 +4767,182 @@ fn open_with_system(path: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("The file could not be opened: {e}"))
 }
 
-/// Open a URL in the browser, or a path with the system's app for it.
+/// Open a URL in the browser, or a path with the system's app for it. An
+/// agent writes a card's links, so a path that would run something when
+/// opened (`runs_when_opened`) is shown in its folder instead.
 pub(crate) fn open_target(target: &str) -> Result<(), String> {
     let is_web = target.starts_with("https://") || target.starts_with("http://");
-    if !is_web && !std::path::Path::new(target).exists() {
+    let path = std::path::Path::new(target);
+    if !is_web && !path.exists() {
         return Err(format!("{target} is not on this machine"));
     }
-    open_with_system(std::path::Path::new(target))
+    if !is_web && runs_when_opened(path) {
+        return reveal(path);
+    }
+    open_with_system(path)
+}
+
+/// Whether opening a path would run something rather than show it: an app
+/// bundle, a script, an installer or a shortcut by its kind, or a file
+/// marked executable.
+fn runs_when_opened(path: &std::path::Path) -> bool {
+    // A link is judged by what it leads to, and a link whose end cannot be
+    // read is not opened at all: `notes` could lead to an app.
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return match std::fs::canonicalize(path) {
+            Ok(target) => target == path || runs_when_opened(&target),
+            Err(_) => true,
+        };
+    }
+    launches(path)
+}
+
+/// Whether a path that is not a link runs something when opened.
+fn launches(path: &std::path::Path) -> bool {
+    const LAUNCHERS: &[&str] = &[
+        "app",
+        "command",
+        "tool",
+        "terminal",
+        "workflow",
+        "action",
+        "scpt",
+        "applescript",
+        "pkg",
+        "mpkg",
+        "dmg",
+        "jar",
+        "desktop",
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "py",
+        "rb",
+        "pl",
+        "exe",
+        "bat",
+        "cmd",
+        "com",
+        "ps1",
+        "msi",
+        "lnk",
+        "vbs",
+        "vbe",
+        "js",
+        "jse",
+        "wsf",
+        "wsh",
+        "scr",
+        "hta",
+        "cpl",
+        "url",
+        "webloc",
+        "inetloc",
+        "fileloc",
+    ];
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|kind| LAUNCHERS.contains(&kind.to_ascii_lowercase().as_str()))
+    {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Show a path selected in its folder, without opening it.
+fn reveal(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg("-R").arg(path);
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("explorer");
+        command.arg(format!("/select,{}", path.display()));
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(path.parent().unwrap_or(path));
+        command
+    };
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("The folder could not be opened: {e}"))
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// A link an agent wrote never runs what it points at: a launcher by
+    /// its kind, or an executable file, is shown in its folder.
+    #[test]
+    fn a_link_to_something_that_runs_is_shown_not_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "Tool.app",
+            "fix.command",
+            "setup.PKG",
+            "run.sh",
+            "x.exe",
+            "go.webloc",
+        ] {
+            assert!(super::runs_when_opened(&dir.path().join(name)), "{name}");
+        }
+        let notes = dir.path().join("notes.md");
+        std::fs::write(&notes, "# notes").unwrap();
+        assert!(!super::runs_when_opened(&notes));
+        assert!(!super::runs_when_opened(dir.path()), "a plain folder opens");
+        #[cfg(unix)]
+        {
+            // A harmless name leading to an app is the app.
+            let app = dir.path().join("Tool.app");
+            std::fs::create_dir(&app).unwrap();
+            let link = dir.path().join("notes");
+            std::os::unix::fs::symlink(&app, &link).unwrap();
+            assert!(super::runs_when_opened(&link), "a link to an app bundle");
+            let to_notes = dir.path().join("readme");
+            std::os::unix::fs::symlink(&notes, &to_notes).unwrap();
+            assert!(
+                !super::runs_when_opened(&to_notes),
+                "a link to a note opens"
+            );
+            let dangling = dir.path().join("gone");
+            std::os::unix::fs::symlink(dir.path().join("nowhere"), &dangling).unwrap();
+            assert!(
+                super::runs_when_opened(&dangling),
+                "an unreadable end is not opened"
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let program = dir.path().join("build");
+            std::fs::write(&program, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(
+                super::runs_when_opened(&program),
+                "executable without a kind"
+            );
+        }
+    }
+
     #[test]
     fn a_daemon_behind_the_window_is_named_by_version_or_by_release() {
         use std::path::Path;
@@ -5634,6 +5880,45 @@ pub(crate) mod tests {
             "worker sent an unexpected extra request after the planned replies"
         );
         results.try_iter().collect()
+    }
+
+    /// A palette read through the real client: roles, an older daemon
+    /// that cannot read the request (no roles there), and any other error
+    /// (asked again later).
+    #[cfg(unix)]
+    #[test]
+    fn a_palette_read_tells_an_older_daemon_from_a_failed_read() {
+        use serde_json::json;
+        let read = |reply: serde_json::Value| {
+            command_with_replies(
+                Cmd::Palette("/work/a".into()),
+                vec![(
+                    json!({"op":"role_catalog", "project":"/work/a"}),
+                    Some(reply),
+                )],
+            )
+            .into_iter()
+            .find_map(|message| match message {
+                Msg::Palette(project, read) => Some((project, read)),
+                _ => None,
+            })
+            .expect("a palette answer")
+        };
+        assert_eq!(
+            read(json!({"type":"role_catalog", "roles":[]})),
+            ("/work/a".to_owned(), PaletteRead::Roles(Vec::new()))
+        );
+        assert_eq!(
+            read(json!({"type":"error", "code":"invalid",
+                "message":"malformed request: unknown variant `role_catalog`"})),
+            ("/work/a".to_owned(), PaletteRead::Unsupported)
+        );
+        assert_eq!(
+            read(
+                json!({"type":"error", "code":"storage_unavailable", "message":"roles could not be read"})
+            ),
+            ("/work/a".to_owned(), PaletteRead::Failed)
+        );
     }
 
     #[cfg(unix)]
