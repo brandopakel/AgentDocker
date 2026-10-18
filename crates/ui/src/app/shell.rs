@@ -2264,11 +2264,11 @@ impl App {
                 if self.shell.roles_menu.as_deref() == Some(agent.as_str()) {
                     self.shell.roles_menu = None;
                 } else {
-                    // Its project's palette, read if it has not been yet.
+                    // Its project's palette, read if it has not been asked for.
                     if let Some(root) = self.project_of(&agent)
-                        && !self.workspaces.contains_key(&root)
+                        && self.palettes_asked.insert(root.clone())
                     {
-                        self.send(Cmd::Workspace(root));
+                        self.send(Cmd::Palette(root));
                     }
                     self.shell.roles_menu = Some(agent);
                 }
@@ -2330,9 +2330,10 @@ impl App {
             Message::RoleRecolor(role) => {
                 if let Some(root) = self.roles_project()
                     && let Some(def) = self
-                        .workspaces
+                        .palettes
                         .get(&root)
-                        .and_then(|w| w.roles.iter().find(|r| r.role == role))
+                        .and_then(Option::as_ref)
+                        .and_then(|roles| roles.iter().find(|r| r.role == role))
                         .cloned()
                 {
                     let all = agentdocker_core::RoleColor::ALL;
@@ -4350,6 +4351,23 @@ impl App {
             .map(|p| p.root.display().to_string())
     }
 
+    /// Ask once for the roles of each project an agent on the list works
+    /// in, so its labels and its Roles menu are there when it is opened.
+    pub(super) fn ask_palettes(&mut self) {
+        let roots: BTreeSet<String> = self
+            .agents
+            .iter()
+            .filter(|a| a.spec.runtime != agentdocker_core::HUMAN_RUNTIME)
+            .filter_map(|a| a.project.as_ref())
+            .map(|p| p.root.display().to_string())
+            .collect();
+        for root in roots {
+            if self.palettes_asked.insert(root.clone()) {
+                self.send(Cmd::Palette(root));
+            }
+        }
+    }
+
     /// The project whose palette the open roles menu edits.
     fn roles_project(&self) -> Option<String> {
         self.shell
@@ -5113,6 +5131,71 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    /// A project's roles are read for every project an agent on the list
+    /// works in, once, without opening its board; a role changed anywhere
+    /// reads every palette read again, whichever project is on view.
+    #[test]
+    fn palettes_are_read_for_the_agents_on_view_and_again_on_a_change() {
+        let (mut app, commands, messages) = app();
+        app.connected = Ok(());
+        let agent = |name: &str, root: &str| {
+            let mut record = agentdocker_core::AgentRecord::new(
+                agentdocker_core::AgentSpec {
+                    name: name.into(),
+                    runtime: "codex".into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            record.project = Some(agentdocker_core::ProjectRef::directory(root));
+            record
+        };
+        let palettes_asked = |commands: &CommandReceiver| {
+            commands
+                .try_iter()
+                .filter_map(|c| match c {
+                    Cmd::Palette(root) => Some(root),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        let agents = vec![agent("a", "/work/a"), agent("b", "/work/b")];
+        messages
+            .send(Msg::Agents(agents.clone(), BTreeMap::new()))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            palettes_asked(&commands),
+            BTreeSet::from(["/work/a".to_owned(), "/work/b".to_owned()])
+        );
+        messages.send(Msg::Agents(agents, BTreeMap::new())).unwrap();
+        app.drain();
+        assert!(palettes_asked(&commands).is_empty(), "asked once each");
+        messages
+            .send(Msg::Palette("/work/a".into(), Some(Vec::new())))
+            .unwrap();
+        messages
+            .send(Msg::Palette("/work/b".into(), Some(Vec::new())))
+            .unwrap();
+        app.drain();
+        // Project A on view; a role in B changes.
+        app.shell.catalog.selected = Some("/work/a".into());
+        app.on_event(Event::new(
+            EventKind::RoleChanged {
+                project: agentdocker_core::ProjectId::from("b"),
+                role: "reviewer".into(),
+                by: "user".into(),
+                deleted: false,
+            },
+            Utc::now(),
+        ));
+        assert!(
+            palettes_asked(&commands).contains("/work/b"),
+            "B's palette is read again though A is on view"
+        );
     }
 
     /// A link opens where it can: a web URL or pull request in the

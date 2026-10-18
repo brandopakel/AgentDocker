@@ -214,6 +214,8 @@ enum Cmd {
     },
     /// A project's tags, rules, plans and files.
     Workspace(String),
+    /// A project's roles to give.
+    Palette(String),
     /// A change to the board's model (a tag, a rule, a plan, a file, an
     /// agent started on a card); what it touched is read again after.
     BoardAct {
@@ -418,6 +420,8 @@ enum Msg {
     /// One card in full, or why it could not be read.
     TaskDetail(agentdocker_core::TaskId, Result<Box<CardDetail>, String>),
     Workspace(String, Result<Box<Workspace>, String>),
+    /// A project's roles, or none from a daemon that has no palette.
+    Palette(String, Option<Vec<agentdocker_core::RoleDef>>),
     BoardActed(String, Result<(), String>),
     Todo(Result<Vec<agentdocker_core::Task>, String>),
     Plan(Result<Box<(agentdocker_core::Plan, Vec<agentdocker_core::Task>)>, String>),
@@ -627,6 +631,12 @@ pub struct App {
     boards: BTreeMap<String, Vec<agentdocker_core::Board>>,
     /// Each project's tags, rules, plans and files, by project root.
     workspaces: BTreeMap<String, Workspace>,
+    /// Each project's roles to give, by project root, read for every project
+    /// an agent on view works in: `None` from a daemon without a palette
+    /// (no role controls then), `Some` once read, empty included. The
+    /// roots asked for, answered or not, so a list refresh asks only anew.
+    palettes: BTreeMap<String, Option<Vec<agentdocker_core::RoleDef>>>,
+    palettes_asked: BTreeSet<String>,
     /// Every project's open cards, for To-do; `None` until read.
     todo: Option<Vec<agentdocker_core::Task>>,
     /// The plan open on Plans, with the cards that carry it out.
@@ -789,6 +799,8 @@ impl App {
             card: None,
             boards: BTreeMap::new(),
             workspaces: BTreeMap::new(),
+            palettes: BTreeMap::new(),
+            palettes_asked: BTreeSet::new(),
             todo: None,
             plan_open: None,
             flashes: BTreeMap::new(),
@@ -880,6 +892,8 @@ impl App {
             card: None,
             boards: BTreeMap::new(),
             workspaces: BTreeMap::new(),
+            palettes: BTreeMap::new(),
+            palettes_asked: BTreeSet::new(),
             todo: None,
             plan_open: None,
             flashes: BTreeMap::new(),
@@ -1021,6 +1035,9 @@ impl App {
                 Cmd::Adopt(pid) => {
                     self.shell.adopting.remove(&pid);
                 }
+                Cmd::Palette(project) => {
+                    self.palettes_asked.remove(&project);
+                }
                 Cmd::TaskMove { .. }
                 | Cmd::TaskEdit { .. }
                 | Cmd::TaskArchive(_)
@@ -1129,6 +1146,7 @@ impl App {
                     }
                     self.agents = agents;
                     self.request_agent_tokens();
+                    self.ask_palettes();
                     // A reconnected session's pane opens when the list shows
                     // the process the daemon started; an older list, from
                     // before the reconnect, says nothing about it and the
@@ -1384,9 +1402,15 @@ impl App {
                     }
                     Err(error) => self.say(error),
                 },
+                Msg::Palette(project, roles) => {
+                    self.palettes.insert(project, roles);
+                }
                 Msg::BoardActed(project, result) => {
                     if let Err(error) = result {
                         self.say(error);
+                    }
+                    if self.palettes.contains_key(&project) {
+                        self.send(Cmd::Palette(project.clone()));
                     }
                     self.send(Cmd::Workspace(project));
                     self.request_tasks();
@@ -1962,9 +1986,15 @@ impl App {
                     self.send(Cmd::Boards(project));
                 }
             }
+            // The event names a project by id, not root: every palette
+            // read is read again, a handful of small reads.
+            EventKind::RoleChanged { .. } => {
+                for project in self.palettes.keys().cloned().collect::<Vec<_>>() {
+                    self.send(Cmd::Palette(project));
+                }
+            }
             EventKind::RuleChanged { .. }
             | EventKind::TagChanged { .. }
-            | EventKind::RoleChanged { .. }
             | EventKind::PlanChanged { .. }
             | EventKind::ProjectFileChanged { .. } => {
                 if let Some(project) = self.selected_project_root() {
@@ -3475,16 +3505,19 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 })? {
                     workspace.files = files;
                 }
-                // A daemon without roles leaves the rest as it was.
-                if let Ok(Response::RoleCatalog { roles }) = call(Request::RoleCatalog {
-                    project: Some(project.clone()),
-                }) {
-                    workspace.roles = roles;
-                }
                 Ok(workspace)
             };
             let result = read().map(Box::new);
             Some(Msg::Workspace(project, result))
+        }
+        Cmd::Palette(project) => {
+            let roles = match client.call(&Request::RoleCatalog {
+                project: Some(project.clone()),
+            }) {
+                Ok(Response::RoleCatalog { roles }) => Some(roles),
+                _ => None,
+            };
+            Some(Msg::Palette(project, roles))
         }
         Cmd::BoardAct { project, request } => {
             let result = match client.call(&request) {
@@ -4517,13 +4550,10 @@ pub(crate) struct CardDetail {
     pub files: Vec<agentdocker_core::ProjectFile>,
 }
 
-/// A project's tags, rules, plans (without bodies), files and roles.
+/// A project's tags, rules, plans (without bodies) and files.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Workspace {
     pub tags: Vec<agentdocker_core::Tag>,
-    /// The roles to give, in the palette's order; none from a daemon
-    /// that has no palette, and then no role controls.
-    pub roles: Vec<agentdocker_core::RoleDef>,
     pub rules: Vec<agentdocker_core::Rule>,
     pub plans: Vec<agentdocker_core::Plan>,
     pub files: Vec<agentdocker_core::ProjectFile>,

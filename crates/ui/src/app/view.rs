@@ -2040,13 +2040,14 @@ impl App {
     }
 
     /// The roles of an agent's project there are to give, in the palette's
-    /// order: none before its palette is read, or from a daemon without one.
-    pub(super) fn palette_for(&self, agent: &AgentRecord) -> &[agentdocker_core::RoleDef] {
+    /// order, once read; `None` before then or from a daemon without a
+    /// palette, and then nothing about roles is shown.
+    pub(super) fn palette_for(&self, agent: &AgentRecord) -> Option<&[agentdocker_core::RoleDef]> {
         agent
             .project
             .as_ref()
-            .and_then(|p| self.workspaces.get(&p.root.display().to_string()))
-            .map_or(&[], |w| w.roles.as_slice())
+            .and_then(|p| self.palettes.get(&p.root.display().to_string()))
+            .and_then(Option::as_deref)
     }
 
     /// An agent's roles, in its palette's order, each with its definition
@@ -2055,7 +2056,10 @@ impl App {
         &'a self,
         agent: &'a AgentRecord,
     ) -> Vec<(&'a str, Option<&'a agentdocker_core::RoleDef>)> {
-        let palette = self.palette_for(agent);
+        // Without a palette there is nothing to read a label against.
+        let Some(palette) = self.palette_for(agent) else {
+            return Vec::new();
+        };
         let mut held: Vec<_> = agent
             .roles()
             .into_iter()
@@ -2110,8 +2114,10 @@ impl App {
     /// the tag that opens the menu. Nothing for the person, or where the
     /// project has no palette to give from.
     fn roles_control<'a>(&'a self, agent: &AgentRecord, c: Colors) -> Option<Element<'a, Message>> {
+        // A palette read and emptied keeps the menu, so roles can be made
+        // again; one never read, or a daemon without one, shows nothing.
         if agent.spec.runtime == agentdocker_core::HUMAN_RUNTIME
-            || self.palette_for(agent).is_empty()
+            || self.palette_for(agent).is_none()
         {
             return None;
         }
@@ -2155,7 +2161,7 @@ impl App {
     fn roles_menu<'a>(&'a self, agent: &AgentRecord, c: Colors) -> Element<'a, Message> {
         let id = agent.id.to_string();
         let connected = self.connected.is_ok();
-        let palette = self.palette_for(agent);
+        let palette = self.palette_for(agent).unwrap_or_default();
         let mut items = column![].spacing(1).width(Fill);
         if !self.shell.roles_editing {
             for def in palette {
@@ -4267,15 +4273,13 @@ mod tests {
             app.roles_control(&agent, c).is_none(),
             "no palette read yet, no role controls"
         );
-        app.workspaces.insert(
+        app.palettes_asked.insert("/work/orchard".into());
+        app.palettes.insert(
             "/work/orchard".into(),
-            crate::app::Workspace {
-                roles: agentdocker_core::role::defaults(
-                    &agentdocker_core::ProjectId::from("orchard"),
-                    Utc::now(),
-                ),
-                ..Default::default()
-            },
+            Some(agentdocker_core::role::defaults(
+                &agentdocker_core::ProjectId::from("orchard"),
+                Utc::now(),
+            )),
         );
         assert!(
             app.role_chips(&agent, None, c).is_none(),
@@ -4365,6 +4369,18 @@ mod tests {
             [crate::app::Cmd::BoardAct { request, .. }]
                 if matches!(request.as_ref(), Request::RoleSave { role: None, name, .. } if name == "Docs")));
         assert!(app.shell.role_draft.is_empty());
+
+        // A palette emptied of every role keeps the menu, so one can be
+        // made again; a palette never read shows nothing, labels included.
+        app.palettes
+            .insert("/work/orchard".into(), Some(Vec::new()));
+        assert!(app.roles_control(&agent, c).is_some(), "the menu stays");
+        app.palettes.insert("/work/orchard".into(), None);
+        assert!(app.roles_control(&agent, c).is_none());
+        assert!(
+            app.role_chips(&agent, None, c).is_none() && app.role_names(&agent).is_empty(),
+            "a role label with no palette to read it against is not shown"
+        );
 
         // The person is given no roles.
         let mut person = agent.clone();
