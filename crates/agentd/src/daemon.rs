@@ -1835,6 +1835,14 @@ impl Daemon {
         lock(&self.state).events.subscribe()
     }
 
+    /// Whether the periodic process scan has anyone to tell: the app, an
+    /// `events` stream, a webhook sink. Its findings are events and a
+    /// cache; with nobody subscribed, `discover` scans when it is asked,
+    /// and the daemon forks no `ps` every five seconds for nobody.
+    pub fn discovery_watched(&self) -> bool {
+        lock(&self.state).events.receiver_count() > 0
+    }
+
     /// A daemon-configuration problem, said once per distinct notice
     /// and cleared when the file reads again.
     pub(crate) fn config_notice(&self, notice: String) {
@@ -17067,6 +17075,30 @@ deny = ["send:all"]
         assert!(matches!(events.try_recv().unwrap().kind,
             EventKind::AgentDiscovered { started_at, .. } if started_at == replacement.started_at));
         assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn the_background_scan_waits_for_a_listener_and_discover_never_does() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        assert!(
+            !daemon.discovery_watched(),
+            "nobody listens to a fresh daemon"
+        );
+        assert!(
+            matches!(
+                daemon.handle(Request::Discover).await,
+                Response::Processes { .. }
+            ),
+            "asked, it scans whether or not anyone listens"
+        );
+        let events = daemon.subscribe_events();
+        assert!(daemon.discovery_watched());
+        drop(events);
+        assert!(
+            !daemon.discovery_watched(),
+            "the last listener gone, it rests"
+        );
     }
 
     #[tokio::test]

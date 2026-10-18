@@ -842,6 +842,11 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **An idle daemon rests.** With nothing watching — no app open, no
+  `agentdocker events`, no webhook — the daemon no longer scans the process
+  table every five seconds; `agentdocker ps` and the app still scan when they
+  look.
+
 - **Allow for session.** A Codex approval that Codex offers to remember has a
   third answer beside **Allow once** and **Deny**: **Allow for session** lets the
   same command, network destination, files or access through without asking
