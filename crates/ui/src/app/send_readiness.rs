@@ -150,6 +150,7 @@ pub(super) fn reconnect(
         issue.issue,
         agentdocker_core::SendIssue::NoReceiver
             | agentdocker_core::SendIssue::ReceiverSilent
+            | agentdocker_core::SendIssue::Unreachable
             | agentdocker_core::SendIssue::SessionEnded
     );
     let command = restart
@@ -168,7 +169,9 @@ pub(super) fn reconnect(
     if agent.spec.runtime == "codex"
         && matches!(
             issue.issue,
-            agentdocker_core::SendIssue::NoReceiver | agentdocker_core::SendIssue::ReceiverSilent
+            agentdocker_core::SendIssue::NoReceiver
+                | agentdocker_core::SendIssue::ReceiverSilent
+                | agentdocker_core::SendIssue::Unreachable
         )
         && let Some(project) = agent.project.as_ref().map(|p| p.root.clone())
     {

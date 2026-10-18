@@ -154,6 +154,10 @@ impl RecipientReadiness {
                 "Run this in a terminal to bring it back."
             }
             SendIssue::SessionEnded => "Its messages wait until it is resumed.",
+            SendIssue::Unreachable if claude && self.resume_session.is_some() => {
+                "It never reached AgentDocker; run this to restart it."
+            }
+            SendIssue::Unreachable => "It never reached AgentDocker; its messages are kept.",
             SendIssue::NoReceiver | SendIssue::ReceiverSilent if claude => {
                 if self.resume_session.is_some() {
                     "Quit it, then run this in a terminal."
@@ -366,6 +370,7 @@ mod tests {
                 SendIssue::SessionEnded,
                 SendIssue::NoReceiver,
                 SendIssue::ReceiverSilent,
+                SendIssue::Unreachable,
                 SendIssue::DeliveryPaused,
                 SendIssue::ProviderBlocked(ProviderIssueKind::Rate),
             ] {
