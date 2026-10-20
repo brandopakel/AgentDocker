@@ -5197,9 +5197,10 @@ fn print_agents(
                     .to_owned(),
                 a.spec.runtime.clone(),
                 a.spec.model.clone().unwrap_or_else(|| "-".to_owned()),
-                // A browser agent no process ends: registered until its
-                // grant is revoked, but not connected once unheard from.
-                if a.connector_absent(chrono::Utc::now()) {
+                // A browser agent, or a conversation known by its key
+                // alone, no process ends: registered until revoked or
+                // ended, but not connected once unheard from.
+                if a.connector_absent(chrono::Utc::now()) || a.session_absent(chrono::Utc::now()) {
                     "not connected".to_owned()
                 } else {
                     a.status.to_string()
