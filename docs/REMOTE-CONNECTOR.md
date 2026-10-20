@@ -48,8 +48,11 @@ its project when it consents.
   else, but only while `tailscale serve status` still points it at that
   address: one pointed elsewhere since is somebody else's and is left alone,
   and one that cannot be read or cleared stops the start, keeping
-  `serve.json`, with the commands to check and clear it. Every `tailscale`
-  helper has 15 s, after which it is killed. Funnel
+  `serve.json`, with the commands to check and clear it. A Funnel that cannot
+  be cleared on the way out keeps `serve.json` too, so the next start finds
+  it. Every `tailscale` command the connector runs, at start, on the way out
+  and in cleanup, has 15 s, after which it is killed; a set that runs over is
+  undone before the start fails. Funnel
   must be enabled for the tailnet (the error says how). `--tunnel cloudflared`
   starts cloudflared as a child: a quick tunnel, whose random
   `*.trycloudflare.com` hostname it reads from cloudflared's output and which

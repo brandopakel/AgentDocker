@@ -131,15 +131,16 @@ impl Tunnel {
             .and_then(|child| child.try_wait().ok().flatten())
     }
 
-    pub async fn stop(&mut self) {
+    /// End the child and undo the configuration. An error says the
+    /// configuration may still be set, so whatever records it is kept.
+    pub async fn stop(&mut self) -> Result<(), String> {
         if let Some(child) = self.child.as_mut() {
             let _ = child.start_kill();
             let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
         }
-        if let Some((binary, args)) = self.teardown.take()
-            && let Err(error) = run_helper(&binary, &args).await
-        {
-            eprintln!("agentdocker connector: could not clear the tunnel: {error}");
+        match self.teardown.take() {
+            Some((binary, args)) => run_helper(&binary, &args).await.map(|_| ()),
+            None => Ok(()),
         }
     }
 }
@@ -227,18 +228,9 @@ pub async fn funnel_tailscale(binary: &Path, port: u16, https_port: u16) -> Resu
                 .join(", ")
         );
     }
-    let status = Command::new(binary)
-        .args(["status", "--json"])
-        .stdin(Stdio::null())
-        .output()
+    let status = run_helper(binary, &["status".into(), "--json".into()])
         .await
-        .with_context(|| format!("cannot run {} status", binary.display()))?;
-    if !status.status.success() {
-        bail!(
-            "tailscale status failed: {}",
-            String::from_utf8_lossy(&status.stderr).trim()
-        );
-    }
+        .map_err(|error| anyhow::anyhow!("tailscale status failed: {error}"))?;
     let status: serde_json::Value =
         serde_json::from_slice(&status.stdout).context("tailscale status is not JSON")?;
     let this = &status["Self"];
@@ -262,18 +254,21 @@ pub async fn funnel_tailscale(binary: &Path, port: u16, https_port: u16) -> Resu
     }
     let target = format!("http://127.0.0.1:{port}");
     let https = format!("--https={https_port}");
-    let set = Command::new(binary)
-        .args(["funnel", "--bg", &https, &target])
-        .stdin(Stdio::null())
-        .output()
-        .await
-        .with_context(|| format!("cannot run {} funnel", binary.display()))?;
-    if !set.status.success() {
-        bail!(
-            "tailscale funnel refused: {}{}",
-            String::from_utf8_lossy(&set.stderr).trim(),
-            String::from_utf8_lossy(&set.stdout).trim()
-        );
+    if let Err(error) = run_helper(
+        binary,
+        &[
+            "funnel".into(),
+            "--bg".into(),
+            https.clone(),
+            target.clone(),
+        ],
+    )
+    .await
+    {
+        // A set that timed out may have taken effect: undo it before saying
+        // it failed, since nothing records it yet.
+        let _ = run_helper(binary, &funnel_off(https_port)).await;
+        bail!("tailscale funnel refused: {error}");
     }
     let public_url = if https_port == 443 {
         format!("https://{host}")
@@ -468,7 +463,7 @@ mod tests {
         assert_eq!(tunnel.public_url, "https://mac.tail1.ts.net");
         assert_eq!(tunnel.name.as_deref(), Some("mac.tail1.ts.net"));
         assert!(tunnel.pid().is_none() && tunnel.exited().is_none());
-        tunnel.stop().await;
+        tunnel.stop().await.unwrap();
         let calls = std::fs::read_to_string(&log).unwrap();
         assert!(
             calls.contains("funnel --bg --https=443 http://127.0.0.1:62800"),
@@ -510,6 +505,25 @@ mod tests {
             .to_string();
         assert!(error.contains("Funnel is not enabled"), "{error}");
         assert!(find_tailscale(Some(&fake)).is_ok());
+    }
+
+    /// A Funnel that cannot be cleared on the way out says so, so the
+    /// connector keeps the record the next start clears it from.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_teardown_is_reported_not_forgotten() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("tailscale");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nif [ \"$1\" = status ]; then echo '{\"Self\":{\"DNSName\":\"mac.tail1.ts.net.\",\"Online\":true,\"CapMap\":{\"funnel\":[]}}}'; exit 0; fi\nif [ \"$3\" = off ]; then echo 'tailscaled is not answering' >&2; exit 1; fi\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut tunnel = funnel_tailscale(&fake, 62800, 443).await.unwrap();
+        let error = tunnel.stop().await.unwrap_err();
+        assert!(error.contains("tailscaled is not answering"), "{error}");
     }
 
     #[test]
@@ -605,7 +619,7 @@ mod tests {
             "the URL is held back until DNS can have it"
         );
         assert!(tunnel.exited().is_none());
-        tunnel.stop().await;
+        tunnel.stop().await.unwrap();
         assert!(find_cloudflared(Some(&fake)).is_ok());
         assert!(find_cloudflared(Some(&dir.path().join("missing"))).is_err());
 
@@ -639,7 +653,7 @@ mod tests {
         .unwrap();
         assert_eq!(tunnel.public_url, "https://ad.example.com");
         assert_eq!(tunnel.name.as_deref(), Some("orchard"));
-        tunnel.stop().await;
+        tunnel.stop().await.unwrap();
         let error = spawn_cloudflared(&named, 6111, Some("orchard"), None)
             .await
             .unwrap_err()

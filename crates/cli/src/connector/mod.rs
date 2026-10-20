@@ -1571,9 +1571,18 @@ async fn serve(
             }
         }
     };
-    service::clear_status(&home, pid);
-    if let Some(t) = tunnel.as_mut() {
-        t.stop().await;
+    // The record goes only once the tunnel is down: a Funnel that could not
+    // be cleared stays in serve.json for the next start to check and clear.
+    let stopped = match tunnel.as_mut() {
+        Some(t) => t.stop().await,
+        None => Ok(()),
+    };
+    match stopped {
+        Ok(()) => service::clear_status(&home, pid),
+        Err(error) => eprintln!(
+            "agentdocker connector: could not clear the tunnel ({error}); {} keeps its record for the next start",
+            agentdocker_host::connector::status_path(&home).display()
+        ),
     }
     outcome
 }
