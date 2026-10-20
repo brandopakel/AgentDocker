@@ -2298,21 +2298,29 @@ mod tests {
         for n in 0..8 {
             requests.push(pending_request(&connector, &format!("s{n}")).await);
         }
-        let attempts = requests.into_iter().map(|request| {
-            let connector = connector.clone();
-            let code = code.clone();
-            tokio::spawn(async move {
-                connector
-                    .handle(post(
-                        "/authorize",
-                        "application/x-www-form-urlencoded",
-                        &format!("{request}&pairing_code={code}"),
-                        None,
-                    ))
-                    .await
-                    .status
+        // Every attempt is spawned first and held at the barrier, then all
+        // are let go at once.
+        let start = Arc::new(tokio::sync::Barrier::new(requests.len()));
+        let attempts: Vec<_> = requests
+            .into_iter()
+            .map(|request| {
+                let connector = connector.clone();
+                let code = code.clone();
+                let start = start.clone();
+                tokio::spawn(async move {
+                    start.wait().await;
+                    connector
+                        .handle(post(
+                            "/authorize",
+                            "application/x-www-form-urlencoded",
+                            &format!("{request}&pairing_code={code}"),
+                            None,
+                        ))
+                        .await
+                        .status
+                })
             })
-        });
+            .collect();
         let mut opened = 0;
         for attempt in attempts {
             match attempt.await.unwrap() {
