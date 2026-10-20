@@ -2613,7 +2613,16 @@ mod tests {
         let error = claim_home(home.path()).unwrap_err().to_string();
         assert!(error.contains("already serves"), "{error}");
         drop(first);
-        assert!(claim_home(home.path()).is_ok(), "free again once it stops");
+        // A test forking in parallel can hold the descriptor for a moment
+        // before its exec, as the host lock's own test allows for.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while claim_home(home.path()).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "free again once it stops"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]
