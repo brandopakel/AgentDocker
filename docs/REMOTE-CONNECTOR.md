@@ -43,16 +43,18 @@ its project when it consents.
   name from `tailscale status`, sets `tailscale funnel --bg --https=<443|8443|10000>
   http://127.0.0.1:<port>` on the way in and clears it on the way out, on an
   error or a panic too (waiting at most three seconds for `tailscale`, then
-  killing it). A Funnel a killed connector left (its port and loopback
-  address are in `serve.json`) is cleared by the next start before anything
-  else, but only while `tailscale serve status` still points it at that
-  address: one pointed elsewhere since is somebody else's and is left alone,
-  and one that cannot be read or cleared stops the start, keeping
-  `serve.json`, with the commands to check and clear it. A Funnel that cannot
-  be cleared on the way out keeps `serve.json` too, so the next start finds
-  it. Every `tailscale` command the connector runs, at start, on the way out
-  and in cleanup, has 15 s, after which it is killed; a set that runs over is
-  undone before the start fails. Funnel
+  killing it). A port that already serves something else is refused, never
+  taken over. The Funnel is recorded in `connector/funnel.json` (its pid,
+  port and loopback address) before it is set, and the record goes only once
+  the Funnel is confirmed undone, so it is never open unrecorded. A set that
+  fails is undone only if the port then points at this connector's own
+  address; one it cannot confirm stays recorded. A Funnel a killed connector
+  left is cleared by the next start before anything else, but only while
+  `tailscale serve status` still points it at the recorded address: one
+  pointed elsewhere since is somebody else's and is left alone, and one that
+  cannot be read or cleared stops the start, keeping its record, with the
+  commands to check and clear it. Every `tailscale` command the connector
+  runs has 15 s, after which it is killed. Funnel
   must be enabled for the tailnet (the error says how). `--tunnel cloudflared`
   starts cloudflared as a child: a quick tunnel, whose random
   `*.trycloudflare.com` hostname it reads from cloudflared's output and which

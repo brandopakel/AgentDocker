@@ -824,7 +824,6 @@ mod tests {
                 provider: "cloudflared".into(),
                 pid: Some(4243),
                 name: None,
-                https_port: None,
             }),
             allowlist_prefixes: 1,
         };
