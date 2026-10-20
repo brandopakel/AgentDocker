@@ -118,6 +118,17 @@ pub(super) async fn copy_includes(root: PathBuf, path: PathBuf) -> (usize, Optio
     let Ok(text) = std::fs::read_to_string(root.join(INCLUDE_FILE)) else {
         return (0, None);
     };
+    // Only a copy that opens each folder without following a symlink is
+    // safe in a checkout someone else's commit made; there is none here
+    // yet on Windows, so nothing is copied there rather than copied unsafely.
+    if cfg!(not(unix)) {
+        return (
+            0,
+            Some(format!(
+                "{INCLUDE_FILE} is not copied on this platform yet; copy what it names by hand"
+            )),
+        );
+    }
     let specs: Vec<String> = text
         .lines()
         .map(str::trim)
@@ -159,20 +170,79 @@ pub(super) async fn copy_includes(root: PathBuf, path: PathBuf) -> (usize, Optio
             });
             break;
         }
-        if let Some(parent) = to.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            trouble.get_or_insert_with(|| format!("{}: {e}", parent.display()));
+        // The worktree is a checkout, and a checkout can carry a symlink
+        // where this file or a folder on its way goes: written through, the
+        // copy would land wherever it points. Nothing is written through
+        // one, and nothing already there is replaced.
+        if !stays_inside(&path, relative) {
+            trouble.get_or_insert_with(|| {
+                format!("{relative}: the worktree has a symlink on its way; not copied")
+            });
             continue;
         }
-        match std::fs::copy(&from, &to) {
-            Ok(_) => copied += 1,
+        match copy_new(&from, &path, relative, &to, &meta) {
+            Ok(()) => copied += 1,
             Err(e) => {
                 trouble.get_or_insert_with(|| format!("{relative}: {e}"));
             }
         }
     }
     (copied, trouble)
+}
+
+/// Whether writing `relative` under `base` stays under it: an ordinary
+/// path, and no part of the way there, the file itself included, a
+/// symlink.
+fn stays_inside(base: &Path, relative: &str) -> bool {
+    let mut at = base.to_path_buf();
+    for part in Path::new(relative).components() {
+        let std::path::Component::Normal(name) = part else {
+            return false;
+        };
+        at.push(name);
+        if std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Copy `from` to a file made new at `relative` beneath `base`. On Unix
+/// every folder on the way is opened without following a symlink, so one
+/// swapped in after `stays_inside` looked is refused, and the file is
+/// owner-only until its bytes are in. Elsewhere the file is still made new,
+/// never over anything there.
+#[cfg(unix)]
+fn copy_new(
+    from: &Path,
+    base: &Path,
+    relative: &str,
+    _to: &Path,
+    meta: &std::fs::Metadata,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut source = std::fs::File::open(from)?;
+    agentdocker_host::files::copy_new_beneath(
+        base,
+        Path::new(relative),
+        &mut source,
+        meta.permissions().mode(),
+    )
+    .map(|_| ())
+}
+
+#[cfg(not(unix))]
+fn copy_new(
+    _from: &Path,
+    _base: &Path,
+    _relative: &str,
+    _to: &Path,
+    _meta: &std::fs::Metadata,
+) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "includes are not copied on this platform",
+    ))
 }
 
 /// Remove a session's linked worktree once it is done with it: the session
@@ -1316,6 +1386,46 @@ mod lifecycle_tests {
     /// A new worktree gets the ignored files `.worktreeinclude` names and
     /// nothing else; once its branch is merged and it is clean it can be
     /// removed with its branch, and a dirty one is refused.
+    /// A checkout can carry a symlink where an include goes, or on its
+    /// way: nothing is written through it, and what it points at is left
+    /// as it was.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_include_is_never_written_through_a_symlink_in_the_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        run(&root, &["init", "-q", "-b", "main"]).await;
+        run(&root, &["config", "user.email", "t@example.com"]).await;
+        run(&root, &["config", "user.name", "T"]).await;
+        std::fs::write(root.join(".gitignore"), ".env\nlocal/\n").unwrap();
+        std::fs::write(root.join(INCLUDE_FILE), ".env\nlocal/\n").unwrap();
+        run(&root, &["add", "."]).await;
+        run(&root, &["commit", "-qm", "initial"]).await;
+        std::fs::write(root.join(".env"), "KEY=secret\n").unwrap();
+        std::fs::create_dir(root.join("local")).unwrap();
+        std::fs::write(root.join("local/settings.json"), "{}").unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("victim"), "untouched").unwrap();
+
+        let wt = tmp.path().join("wt");
+        add_worktree(root.clone(), &wt, "agent/two", None)
+            .await
+            .unwrap();
+        // What a checkout could have put there.
+        std::os::unix::fs::symlink(outside.join("victim"), wt.join(".env")).unwrap();
+        std::os::unix::fs::symlink(&outside, wt.join("local")).unwrap();
+        let (copied, trouble) = copy_includes(root.clone(), wt.clone()).await;
+        assert_eq!(copied, 0);
+        assert!(trouble.unwrap().contains("symlink"));
+        assert_eq!(
+            std::fs::read_to_string(outside.join("victim")).unwrap(),
+            "untouched"
+        );
+        assert!(!outside.join("settings.json").exists());
+    }
+
     #[tokio::test]
     async fn includes_are_copied_in_and_a_finished_worktree_is_removed() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1343,10 +1453,17 @@ mod lifecycle_tests {
             .await
             .unwrap();
         let (copied, trouble) = copy_includes(root.clone(), wt.clone()).await;
-        assert_eq!((copied, trouble), (2, None));
-        assert_eq!(std::fs::read_to_string(wt.join(".env")).unwrap(), "KEY=1\n");
-        assert!(wt.join("local/settings.json").exists());
-        assert!(!wt.join("scratch.txt").exists(), "only what is listed");
+        if cfg!(unix) {
+            assert_eq!((copied, trouble), (2, None));
+            assert_eq!(std::fs::read_to_string(wt.join(".env")).unwrap(), "KEY=1\n");
+            assert!(wt.join("local/settings.json").exists());
+            assert!(!wt.join("scratch.txt").exists(), "only what is listed");
+        } else {
+            // Nothing copied unsafely, and the worktree says why.
+            assert_eq!(copied, 0);
+            assert!(trouble.unwrap().contains("not copied on this platform"));
+            assert!(!wt.join(".env").exists());
+        }
 
         // Dirty: refused. Committed and merged: removed with its branch.
         std::fs::write(wt.join("new.rs"), "fn x() {}\n").unwrap();

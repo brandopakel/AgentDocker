@@ -13,8 +13,18 @@ when the screen does not already show it.
 
 After a send, **Queued · N sessions need attention** appears when recipients
 have missing or stale input receivers, paused delivery, ended sessions or provider
-limits. **Details** beside it (read aloud as *Delivery details*) names them and
-offers **Open session** and **Copy instructions**. These are the facts when the message was queued, not a receipt.
+limits. **Details** beside it (read aloud as *Delivery details*) lists them, one
+line each with what stands in the way and **Open**; the fix is in the session's
+panel. These are the facts when the message was queued, not a receipt.
+
+A session's panel says how to get it taking messages in as few words as do it.
+A Claude Code session shows the one command to paste — into its own folder, its
+own conversation, with the AgentDocker channel — whole, on a step of tone with a
+copy button that copies exactly it, and one line (*Quit it, then run this in a
+terminal.*); once it has ended, **Reconnect here** does the same in a pane of the
+window. A Codex session in a terminal takes messages at its next prompt and
+nothing can wake it there, so its panel says so and offers **Start a live Codex**
+(the launch form, for Codex in this project). Any other session gets one line.
 The details stay with that conversation or thread even if you switch while
 sending. In a small pane the feedback scrolls below the input, keeping typing
 and Send visible while every delivery action remains reachable.
@@ -123,6 +133,18 @@ most every two minutes and again when the window regains focus, for live
 agents and those that ended within a day. A default branch (main, master,
 develop), a project whose remote is not on GitHub, a closed pull request, or a
 missing or signed-out `gh` shows no chip.
+
+An agent you gave **roles** shows them after its name in the session list as
+coloured labels, in its project's palette order — two, then **+N** — and its
+spoken name reads them. Roles are yours to give and nothing has one until you
+do, so a project that never uses them shows nothing. In a session's panel the
+tag beside its labels (**Roles**) opens its project's roles, each ticked where
+the agent holds it; pressing one gives or takes it, and several agents can hold
+the same role. **Edit roles…** in that menu edits the palette: a role's dot is
+its next colour (Claude Code's eight), its cross deletes it — pressed twice, as
+the second press takes it from every agent holding it and says how many — and
+**New role** adds one by name. The person is given no roles. With a daemon that
+has no palette, none of this is shown.
 **Open in…** (the code icon beside the terminal icon in the header) opens the project's folder in an editor
 installed on this computer: a small menu lists the ones found (the one chosen
 last first, remembered with the workspace preferences), and with only one
@@ -385,7 +407,8 @@ reason) in a Review lane that is the person's, **Hand to** an agent running
 here or nobody, **Archive**, then its tools — **Plan** (the project's plans
 to choose from, or none), **Attach a file** (the project's files), **Add a
 file from disk**, **Add a link** (URL, PR, path, commit or card, and the
-target) and, on a card nobody holds that waits on nothing, **Start an agent
+target; a path to something that would run when opened — an app, a script, an
+installer, a shortcut or an executable file — is shown in its folder instead) and, on a card nobody holds that waits on nothing, **Start an agent
 on it** (installed Codex and Claude Code, after full dependency details
 load) — the plan it carries out
 (opened on Plans), its files (opened with the system's app from a private
