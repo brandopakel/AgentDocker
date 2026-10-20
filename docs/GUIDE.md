@@ -842,6 +842,19 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **A Codex started in a terminal is itself.** A plain `codex` in a terminal
+  used to be unbound: its AgentDocker tools refused, so its model could reach
+  for other tools (a ChatGPT connector) and become a second agent. Its
+  conversation is now its own record, by its thread: its tools work as it,
+  and its messages reach it at its next prompt. It cannot be woken while
+  idle; a Codex launched from AgentDocker can.
+
+- **Roles in the app.** In a session's panel, **Roles** gives an agent roles
+  from its project's palette, several to an agent and one role to several
+  agents; they show as coloured labels after its name. **Edit roles…** in the
+  same menu recolours, deletes or adds a project's roles. Nothing gets a role
+  unless you give it one.
+
 - **Allow for session.** A Codex approval that Codex offers to remember has a
   third answer beside **Allow once** and **Deny**: **Allow for session** lets the
   same command, network destination, files or access through without asking

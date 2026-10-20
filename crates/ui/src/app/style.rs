@@ -317,6 +317,28 @@ pub fn identity(seed: &str, dark: bool) -> (Color, Color) {
     }
 }
 
+/// A role's colour: a tint for its chip and an ink for its name, at the
+/// project marks' saturation and lightness, so each of the eight carries
+/// its ink at 4.5:1 in both themes.
+pub fn role_tone(color: agentdocker_core::RoleColor, dark: bool) -> (Color, Color) {
+    use agentdocker_core::RoleColor as R;
+    let hue = match color {
+        R::Red => 2.0,
+        R::Orange => 28.0,
+        R::Yellow => 50.0,
+        R::Green => 140.0,
+        R::Cyan => 188.0,
+        R::Blue => 218.0,
+        R::Purple => 268.0,
+        R::Pink => 328.0,
+    };
+    if dark {
+        (hsl(hue, 0.42, 0.26), hsl(hue, 0.70, 0.84))
+    } else {
+        (hsl(hue, 0.60, 0.90), hsl(hue, 0.65, 0.28))
+    }
+}
+
 /// HSL to sRGB, hue in degrees.
 fn hsl(hue: f32, saturation: f32, lightness: f32) -> Color {
     let c = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
@@ -367,6 +389,23 @@ mod tests {
     fn contrast(a: Color, b: Color) -> f32 {
         let (l1, l2) = (luma(a) + 0.05, luma(b) + 0.05);
         l1.max(l2) / l1.min(l2)
+    }
+
+    #[test]
+    fn every_role_colour_carries_its_name_and_stays_its_own() {
+        for dark in [false, true] {
+            let mut tints = std::collections::BTreeSet::new();
+            for color in agentdocker_core::RoleColor::ALL {
+                let (tint, ink) = role_tone(color, dark);
+                assert!(
+                    contrast(ink, tint) >= 4.5,
+                    "{color:?}, dark={dark}: {}",
+                    contrast(ink, tint)
+                );
+                tints.insert(format!("{:.3},{:.3},{:.3}", tint.r, tint.g, tint.b));
+            }
+            assert_eq!(tints.len(), 8, "eight distinct tints, dark={dark}");
+        }
     }
 
     #[test]

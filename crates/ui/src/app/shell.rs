@@ -187,6 +187,13 @@ pub(super) struct State {
     pub link_target: String,
     pub card_menu: Option<CardMenu>,
     pub tag_draft: String,
+    /// The agent whose roles menu is open, and whether it is editing the
+    /// project's palette there: a new role's name, and the role whose
+    /// delete was pressed once, when.
+    pub roles_menu: Option<String>,
+    pub roles_editing: bool,
+    pub role_draft: String,
+    pub role_delete: Option<(String, std::time::Instant)>,
     pub rule_draft: RuleDraft,
     pub plan_draft: PlanDraft,
     /// The open card's fields as the person edits them.
@@ -1000,6 +1007,17 @@ pub enum Message {
     TagCreate,
     TagRecolor(String),
     TagDelete(String),
+    /// An agent's roles: its menu opened or closed, a role given or taken
+    /// away (agent, role); the palette edited there: editing on or off, a
+    /// new role's name, making it, a role's next colour, deleting one
+    /// (pressed twice, as it takes the role from every agent holding it).
+    RolesMenu(String),
+    RoleToggle(String, String),
+    RolesEdit,
+    RoleDraft(String),
+    RoleCreate,
+    RoleRecolor(String),
+    RoleDelete(String),
     /// The board's rules, in its settings.
     RuleField(RuleFieldKind, String),
     RuleIdle(bool),
@@ -2251,6 +2269,117 @@ impl App {
                         color: Some(color),
                         rename: None,
                     });
+                }
+            }
+            Message::RolesMenu(agent) => {
+                if self.shell.roles_menu.as_deref() == Some(agent.as_str()) {
+                    self.shell.roles_menu = None;
+                } else {
+                    // Its project's palette, read if it has not been asked for.
+                    if let Some(root) = self.project_of(&agent)
+                        && self.palettes_asked.insert(root.clone())
+                    {
+                        self.send(Cmd::Palette(root));
+                    }
+                    self.shell.roles_menu = Some(agent);
+                }
+                self.shell.roles_editing = false;
+                self.shell.role_delete = None;
+            }
+            Message::RoleToggle(agent, role) => {
+                let held = self
+                    .agents
+                    .iter()
+                    .find(|a| a.id.as_str() == agent)
+                    .is_some_and(|a| a.holds_role(&role));
+                let (add, remove) = if held {
+                    (Vec::new(), vec![role])
+                } else {
+                    (vec![role], Vec::new())
+                };
+                if let Some(root) = self.project_of(&agent) {
+                    self.roles_act(
+                        root,
+                        Request::RoleAssign {
+                            from: agentdocker_core::HUMAN.into(),
+                            agent,
+                            add,
+                            remove,
+                        },
+                    );
+                }
+            }
+            Message::RolesEdit => {
+                self.shell.roles_editing = !self.shell.roles_editing;
+                self.shell.role_delete = None;
+            }
+            Message::RoleDraft(name) => {
+                self.shell.role_draft = name
+                    .chars()
+                    .take(agentdocker_core::role::NAME_CHARS)
+                    .collect();
+            }
+            Message::RoleCreate => {
+                let name = self.shell.role_draft.trim().to_owned();
+                if let Some(root) = self.roles_project()
+                    && !name.is_empty()
+                {
+                    self.shell.role_draft.clear();
+                    self.roles_act(
+                        root.clone(),
+                        Request::RoleSave {
+                            from: agentdocker_core::HUMAN.into(),
+                            project: Some(root),
+                            role: None,
+                            name,
+                            color: None,
+                            description: None,
+                        },
+                    );
+                }
+            }
+            Message::RoleRecolor(role) => {
+                if let Some(root) = self.roles_project()
+                    && let Some(def) = self
+                        .palettes
+                        .get(&root)
+                        .and_then(Option::as_ref)
+                        .and_then(|roles| roles.iter().find(|r| r.role == role))
+                        .cloned()
+                {
+                    let all = agentdocker_core::RoleColor::ALL;
+                    let at = all.iter().position(|c| *c == def.color).unwrap_or(0);
+                    self.roles_act(
+                        root.clone(),
+                        Request::RoleSave {
+                            from: agentdocker_core::HUMAN.into(),
+                            project: Some(root),
+                            role: Some(role),
+                            name: def.name,
+                            color: Some(all[(at + 1) % all.len()]),
+                            description: None,
+                        },
+                    );
+                }
+            }
+            Message::RoleDelete(role) => {
+                let armed = self
+                    .shell
+                    .role_delete
+                    .as_ref()
+                    .is_some_and(|(armed, at)| *armed == role && at.elapsed() < CONFIRM_WITHIN);
+                if !armed {
+                    self.shell.role_delete = Some((role, std::time::Instant::now()));
+                } else if let Some(root) = self.roles_project() {
+                    self.shell.role_delete = None;
+                    self.roles_act(
+                        root.clone(),
+                        Request::RoleDelete {
+                            from: agentdocker_core::HUMAN.into(),
+                            project: Some(root),
+                            role,
+                        },
+                    );
                 }
             }
             Message::TagDelete(name) => self.board_act(Request::TagDelete {
@@ -4230,6 +4359,49 @@ impl App {
 
     /// A change to the board's model for the project on view; what it
     /// touched is read again after.
+    /// A role given or taken away, or the palette changed, for the
+    /// project it belongs to; its palette and cards are read again after.
+    fn roles_act(&mut self, project: String, request: Request) {
+        self.send(Cmd::BoardAct {
+            project,
+            request: Box::new(request),
+        });
+    }
+
+    /// The root of the project an agent works in.
+    pub(super) fn project_of(&self, agent: &str) -> Option<String> {
+        self.agents
+            .iter()
+            .find(|a| a.id.as_str() == agent)
+            .and_then(|a| a.project.as_ref())
+            .map(|p| p.root.display().to_string())
+    }
+
+    /// Ask once for the roles of each project an agent on the list works
+    /// in, so its labels and its Roles menu are there when it is opened.
+    pub(super) fn ask_palettes(&mut self) {
+        let roots: BTreeSet<String> = self
+            .agents
+            .iter()
+            .filter(|a| a.spec.runtime != agentdocker_core::HUMAN_RUNTIME)
+            .filter_map(|a| a.project.as_ref())
+            .map(|p| p.root.display().to_string())
+            .collect();
+        for root in roots {
+            if self.palettes_asked.insert(root.clone()) {
+                self.send(Cmd::Palette(root));
+            }
+        }
+    }
+
+    /// The project whose palette the open roles menu edits.
+    fn roles_project(&self) -> Option<String> {
+        self.shell
+            .roles_menu
+            .as_deref()
+            .and_then(|agent| self.project_of(agent))
+    }
+
     pub(super) fn board_act(&mut self, request: Request) {
         if let Some(project) = self.selected_project_root() {
             self.send(Cmd::BoardAct {
@@ -4985,6 +5157,131 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    /// A project's roles are read for every project an agent on the list
+    /// works in, once, without opening its board; a role changed anywhere
+    /// reads every palette read again, whichever project is on view.
+    #[test]
+    fn palettes_are_read_for_the_agents_on_view_and_again_on_a_change() {
+        let (mut app, commands, messages) = app();
+        app.connected = Ok(());
+        let agent = |name: &str, root: &str| {
+            let mut record = agentdocker_core::AgentRecord::new(
+                agentdocker_core::AgentSpec {
+                    name: name.into(),
+                    runtime: "codex".into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            record.project = Some(agentdocker_core::ProjectRef::directory(root));
+            record
+        };
+        let palettes_asked = |commands: &CommandReceiver| {
+            commands
+                .try_iter()
+                .filter_map(|c| match c {
+                    Cmd::Palette(root) => Some(root),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        let agents = vec![agent("a", "/work/a"), agent("b", "/work/b")];
+        messages
+            .send(Msg::Agents(agents.clone(), BTreeMap::new()))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            palettes_asked(&commands),
+            BTreeSet::from(["/work/a".to_owned(), "/work/b".to_owned()])
+        );
+        messages.send(Msg::Agents(agents, BTreeMap::new())).unwrap();
+        app.drain();
+        assert!(palettes_asked(&commands).is_empty(), "asked once each");
+        // A role changes while the first reads are on their way: they are
+        // asked again, so an old answer is not the last.
+        app.on_event(Event::new(
+            EventKind::RoleChanged {
+                project: agentdocker_core::ProjectId::from("a"),
+                role: "reviewer".into(),
+                by: "user".into(),
+                deleted: false,
+            },
+            Utc::now(),
+        ));
+        assert_eq!(
+            palettes_asked(&commands),
+            BTreeSet::from(["/work/a".to_owned(), "/work/b".to_owned()])
+        );
+        // A read that failed keeps what was there and is asked again with
+        // the next list; one a daemon cannot read means no roles there.
+        messages
+            .send(Msg::Palette(
+                "/work/a".into(),
+                PaletteRead::Roles(Vec::new()),
+            ))
+            .unwrap();
+        messages
+            .send(Msg::Palette("/work/a".into(), PaletteRead::Failed))
+            .unwrap();
+        messages
+            .send(Msg::Palette("/work/b".into(), PaletteRead::Unsupported))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.palettes.get("/work/a"), Some(&Some(Vec::new())));
+        assert_eq!(app.palettes.get("/work/b"), Some(&None));
+        messages
+            .send(Msg::Agents(
+                vec![agent("a", "/work/a"), agent("b", "/work/b")],
+                BTreeMap::new(),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            palettes_asked(&commands),
+            BTreeSet::from(["/work/a".to_owned()]),
+            "the failed one again, not the answered one"
+        );
+        // A reconnect asks every palette again with its next list.
+        app.connected = Err("gone".into());
+        messages.send(Msg::Connected).unwrap();
+        app.drain();
+        let _ = palettes_asked(&commands);
+        messages
+            .send(Msg::Agents(
+                vec![agent("a", "/work/a"), agent("b", "/work/b")],
+                BTreeMap::new(),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            palettes_asked(&commands),
+            BTreeSet::from(["/work/a".to_owned(), "/work/b".to_owned()])
+        );
+        messages
+            .send(Msg::Palette(
+                "/work/b".into(),
+                PaletteRead::Roles(Vec::new()),
+            ))
+            .unwrap();
+        app.drain();
+        // Project A on view; a role in B changes.
+        app.shell.catalog.selected = Some("/work/a".into());
+        app.on_event(Event::new(
+            EventKind::RoleChanged {
+                project: agentdocker_core::ProjectId::from("b"),
+                role: "reviewer".into(),
+                by: "user".into(),
+                deleted: false,
+            },
+            Utc::now(),
+        ));
+        assert!(
+            palettes_asked(&commands).contains("/work/b"),
+            "B's palette is read again though A is on view"
+        );
     }
 
     /// A link opens where it can: a web URL or pull request in the

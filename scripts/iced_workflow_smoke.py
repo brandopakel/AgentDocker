@@ -166,6 +166,9 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          "command": [sys.executable, "-u", str(fixture)], "workdir": str(project),
                          "tty": True, "restore": False}})["agent"]
             human = rpc(endpoint, {"op": "me", "workdir": str(project)})["agent"]
+            # Roles are the person's to give: two, so the row shows both.
+            rpc(endpoint, {"op": "role_assign", "from": human["id"], "agent": agent["id"],
+                           "add": ["reviewer", "tester"], "remove": []})
             dismissible = [rpc(endpoint, {"op": "send", "from": agent["id"], "to": human["id"],
                             "kind": "chat", "payload": {"text": text}})["message"]
                            for text in [f"Received message {index}" for index in range(35)]]
@@ -232,6 +235,22 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("wait_control", id="palette-search", present=False), step("wait_text", text="#everyone"),
                          step("click", id="project-tab-Agents"), step("wait_text", text="terminal-fixture"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("wait_control", id=f"session-{previous['id']}", present=False), step("capture", name="projects-live"),
+                         # Its roles are coloured labels on the row; the panel's
+                         # Roles tag opens the project's roles to give or take,
+                         # and Edit roles… the palette itself.
+                         step("wait_text", text="Reviewer"), step("wait_text", text="Tester"),
+                         step("click", id=f"session-{agent['id']}"),
+                         step("wait_control", id="session-roles", present=True),
+                         step("click", id="session-roles"),
+                         step("wait_control", id=f"role-pick-{agent['id']}-reviewer", present=True),
+                         step("capture", name="roles-menu"),
+                         step("click", id="roles-edit"),
+                         step("wait_control", id="role-color-reviewer", present=True),
+                         step("wait_control", id="role-new", present=True),
+                         step("capture", name="roles-palette"),
+                         step("click", id="session-roles"),
+                         step("wait_control", id="role-new", present=False),
+                         step("click", id="close-session"),
                          step("click", id="pause-project"),
                          step("fill", id="pause-reason", text="Fixture pause · preserve this reason 日本語"),
                          step("capture", name="pause-draft"),
