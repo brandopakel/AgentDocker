@@ -53,7 +53,9 @@ its project when it consents.
   `tailscale serve status` still points it at the recorded address: one
   pointed elsewhere since is somebody else's and is left alone, and one that
   cannot be read or cleared stops the start, keeping its record, with the
-  commands to check and clear it. Every `tailscale` command the connector
+  commands to check and clear it. One connector serves from a home at a
+  time (`connector/serve.lock`, held while it runs), so no second one writes
+  over its state, status or record. Every `tailscale` command the connector
   runs has 15 s, after which it is killed. Funnel
   must be enabled for the tailnet (the error says how). `--tunnel cloudflared`
   starts cloudflared as a child: a quick tunnel, whose random

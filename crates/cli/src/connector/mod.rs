@@ -1404,6 +1404,7 @@ async fn serve(
     }
     // Whatever can fail without the network fails before a tunnel opens.
     let home = agentdocker_host::dirs::home();
+    let _owner = claim_home(&home)?;
     let path = state_path();
     let store = load_store(&path)?;
     // A connector killed before it could clear its Funnel left it
@@ -1584,6 +1585,22 @@ async fn serve(
         ),
     }
     outcome
+}
+
+/// One connector serves from a home at a time, for as long as it runs: its
+/// OAuth state, its status file and its Funnel record are single files, and
+/// a second connector would write over the first's.
+fn claim_home(home: &Path) -> Result<agentdocker_host::lock::Lock> {
+    let dir = home.join("connector");
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    agentdocker_host::lock::try_exclusive(&dir.join("serve.lock"))
+        .with_context(|| format!("cannot lock {}", dir.display()))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "a connector already serves from {}; `agentdocker connector status` says which, and it stops before another starts",
+                home.display()
+            )
+        })
 }
 
 /// The Funnel a connector that is gone left recorded. A live connector's
@@ -2587,6 +2604,16 @@ mod tests {
             Some(record),
             "the evidence stays"
         );
+    }
+
+    #[test]
+    fn one_connector_serves_from_a_home_at_a_time() {
+        let home = tempfile::TempDir::new().unwrap();
+        let first = claim_home(home.path()).unwrap();
+        let error = claim_home(home.path()).unwrap_err().to_string();
+        assert!(error.contains("already serves"), "{error}");
+        drop(first);
+        assert!(claim_home(home.path()).is_ok(), "free again once it stops");
     }
 
     #[test]
