@@ -31,6 +31,10 @@ import traceback
 
 from windows_native_codex_smoke import current_user_objects, remove_fixture, response_events
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+
 
 class ProviderRefusal(Exception):
     def __init__(self, method, error):

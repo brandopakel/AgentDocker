@@ -10,6 +10,10 @@ import tempfile
 import time
 from pathlib import Path
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault("AGENTDOCKER_PERSON_CHECK", "off")
+
 
 def run(binary, manifest, output):
     os.umask(0o077)
@@ -28,6 +32,7 @@ def run(binary, manifest, output):
         with tempfile.TemporaryDirectory(prefix="ad-hook-input-", dir="/tmp") as directory:
             scratch = Path(directory).resolve()
             env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_")}
+            env["AGENTDOCKER_PERSON_CHECK"] = "off"  # its own daemon: act as the person from anywhere
             env.update(AGENTDOCKER_HOME=str(scratch / "state"),
                        AGENTDOCKER_SOCKET=str(scratch / "absent.sock"),
                        AGENTDOCKER_NO_AUTOSTART="1")

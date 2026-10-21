@@ -27,6 +27,10 @@ from types import SimpleNamespace
 from windows_native_codex_smoke import current_user_objects, read_shared_file, remove_fixture, response_events, wait
 from windows_remote_receiver_fixture import Receiver, fixture_controller, process_birth
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+
 
 class RecoveryComplete(Exception):
     """A separate bounded recovery scenario completed its own native cleanup."""
