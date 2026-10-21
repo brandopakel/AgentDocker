@@ -155,7 +155,7 @@ what it reads on web pages.
 Behind a tunnel every TCP peer is the tunnel, so the address worth checking is
 the one it writes into a header: `cf-connecting-ip` for cloudflared,
 `x-forwarded-for` for Tailscale Funnel and most others; the connector picks the
-right one for a tunnel it runs (`--client-ip-header` otherwise). A tunnel appends the address it saw to whatever the client sent, so only the last entry of the header's last line is read: an address the client puts before it, an allowed one included, is never the client's. `--allow-from` takes a CIDR, `anthropic` (its published
+right one for a tunnel it runs (`--client-ip-header` otherwise). Only the last entry of the header's last line is read. Tailscale Serve and Funnel replace `x-forwarded-for` with the address they saw; a tunnel of your own must do the same, or append a trustworthy final address after whatever the client sent, so an address the client puts before it, an allowed one included, is never taken for the client's. `--allow-from` takes a CIDR, `anthropic` (its published
 connector range, `160.79.104.0/21`), `openai` (its automatically refreshed feed),
 or `@<file>` (a local feed JSON or one CIDR per line, re-read when changed).
 It gates `/register`, `/token` and `/mcp`; the consent page is
