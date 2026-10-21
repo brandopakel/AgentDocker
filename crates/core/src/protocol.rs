@@ -1154,7 +1154,7 @@ pub enum Request {
     /// The filters narrow it: a board, a lane (slug, name or category),
     /// whose it is (`assignee`: an agent, `me` with `agent` naming the
     /// caller, `mine` — the person's and those of the agents they
-    /// launched, or a calling agent's own — or `none`), only open cards,
+    /// launched or started, or a calling agent's own — or `none`), only open cards,
     /// words in its key, title or description, a tag. Without a project,
     /// every project's cards.
     Tasks {

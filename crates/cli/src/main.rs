@@ -1430,7 +1430,7 @@ enum TaskAction {
         #[arg(long)]
         lane: Option<String>,
         /// Whose: an agent, me (with --as), mine (yours and the agents you
-        /// launched; an agent's own with --as), or none.
+        /// launched or started; an agent's own with --as), or none.
         #[arg(long)]
         assignee: Option<String>,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]

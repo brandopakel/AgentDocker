@@ -2055,7 +2055,10 @@ impl Daemon {
                 }
             }
             Request::RestartContainer { agent } => self.restart_container(&agent).await,
-            Request::Register { spec, pid, session } => self.register(spec, pid, session).await,
+            Request::Register { spec, pid, session } => {
+                let registered = self.register(spec, pid, session).await;
+                self.mark_starter(registered).await
+            }
             Request::SessionAttach {
                 runtime,
                 profile,
@@ -2063,14 +2066,19 @@ impl Daemon {
                 workdir,
                 adapter,
             } => {
-                self.session_attach(runtime, profile, session, workdir, adapter)
-                    .await
+                let attached = self
+                    .session_attach(runtime, profile, session, workdir, adapter)
+                    .await;
+                self.mark_starter(attached).await
             }
             Request::ResumeSession { agent, spec } => self.resume_session(&agent, spec).await,
             Request::Deregister { agent } => lock(&self.state).deregister(&agent),
             Request::Discover => self.discover().await,
             Request::Runtimes => self.runtimes().await,
-            Request::Adopt { pid, name, runtime } => self.adopt(pid, name, runtime).await,
+            Request::Adopt { pid, name, runtime } => {
+                let adopted = self.adopt(pid, name, runtime).await;
+                self.mark_starter(adopted).await
+            }
             Request::Stop { agent, force } => self.stop_agent(&agent, force).await,
             Request::Remove { agent } => self.remove(&agent),
             Request::List {

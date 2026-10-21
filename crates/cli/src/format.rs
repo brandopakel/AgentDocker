@@ -214,6 +214,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::AgentRenamed { agent, name, .. } => {
             format!("renamed   {} {name}", agent.short())
         }
+        EventKind::AgentLaunchedBy { agent, by, .. } => {
+            format!("launched by   {} {by}", agent.short())
+        }
         EventKind::RoleSet {
             agent,
             role: Some(role),

@@ -113,6 +113,15 @@ pub enum EventKind {
         project: Option<ProjectId>,
         name: String,
     },
+    /// A session that registered itself was found started by the person:
+    /// no agent's session stands among its process's parents. Its record
+    /// now carries `launched_by` = `by` (`user`), and keeps it.
+    AgentLaunchedBy {
+        agent: AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<ProjectId>,
+        by: String,
+    },
     /// An agent was given a role, or `None` when it was taken away.
     RoleSet {
         agent: AgentId,

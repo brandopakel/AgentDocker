@@ -2646,7 +2646,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "board": { "type": "string", "description": "Board slug or name; the project's main board when absent." },
                     "lane": { "type": "string", "description": "A lane by slug, name or category." },
                     "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done", "blocked", "cancelled"] },
-                    "assignee": { "type": "string", "description": "Whose: an agent name or id, me, mine, or none. mine is the person's cards and those held by agents the person launched when the person asks; asked by you, it is your own, as me." },
+                    "assignee": { "type": "string", "description": "Whose: an agent name or id, me, mine, or none. mine is the person's cards and those held by agents the person launched or started when the person asks; asked by you, it is your own, as me." },
                     "open": { "type": "boolean", "description": "Only cards not done, cancelled or archived." },
                     "query": { "type": "string", "description": "Words in the key, title, description or acceptance." },
                     "tag": { "type": "string" },
