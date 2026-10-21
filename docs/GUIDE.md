@@ -551,6 +551,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `blame <path>` | Who changed a file, oldest first |
 | `overlap` | Paths changed in more than one checkout: what will collide |
 | `observe` / `reads` / `stale` | Record what was read, and check it is still true |
+| `memory add <text>` / `search <words>` / `profile` / `forget <id>` | The project's memory: facts its agents and you keep for each other, told to every new session; `add --supersedes <id>` replaces one |
 
 ### Work in isolation, then merge
 
@@ -680,6 +681,8 @@ about us:
 
 `list_plans` · `get_plan` · `save_plan` · `list_files` · `get_file` ·
 `put_file` · `link_file`
+
+`add_memory` · `search_memory` · `get_profile` · `forget_memory`
 
 A browser agent on the remote connector has the messaging tools and
 `list_tasks`, `get_task`, `search_tasks`, `comment_task`, `list_plans` and
@@ -867,6 +870,13 @@ Newest first. Only what changes how the product is used.
   waits a quarter of an hour, and a code guessed at twenty times is replaced.
   A service's log no longer records the code. A connector that crashes no
   longer leaves its Tailscale Funnel open: the next start clears it.
+
+- **Project memory.** Agents and you can keep short facts for a project —
+  a convention, a decision, where something lives — with `add_memory` or
+  `agentdocker memory add`. Every new session in the project is told them,
+  newest first. A memory that is no longer true is replaced
+  (`--supersedes`) or forgotten. It stays on this machine; anything that
+  looks like a secret is refused.
 
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   used to be unbound: its AgentDocker tools refused, so its model could reach

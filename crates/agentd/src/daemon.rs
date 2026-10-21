@@ -260,6 +260,8 @@ fn mutates(request: &Request) -> bool {
             | Request::TaskSearch { .. }
             | Request::Plans { .. }
             | Request::PlanGet { .. }
+            | Request::MemorySearch { .. }
+            | Request::MemoryProfile { .. }
             | Request::Files { .. }
             | Request::FileGet { .. }
             | Request::Usage { .. }
@@ -2649,6 +2651,28 @@ impl Daemon {
                 self.plan_save(&from, project, plan, title, body, status)
                     .await
             }
+            Request::MemoryAdd {
+                from,
+                project,
+                text,
+                links,
+                supersedes,
+            } => {
+                self.memory_add(&from, project, &text, links, supersedes)
+                    .await
+            }
+            Request::MemorySearch {
+                from,
+                project,
+                query,
+                limit,
+            } => self.memory_search(from, project, &query, limit).await,
+            Request::MemoryProfile {
+                from,
+                project,
+                max_chars,
+            } => self.memory_profile(from, project, max_chars).await,
+            Request::MemoryForget { from, memory } => self.memory_forget(&from, &memory),
             Request::Files { project, task } => self.files(project, task).await,
             Request::FilePut {
                 from,

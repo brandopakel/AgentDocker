@@ -563,6 +563,18 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         deleted: bool,
     },
+    /// A memory was kept in a project.
+    MemoryAdded {
+        project: ProjectId,
+        memory: String,
+        by: String,
+    },
+    /// A memory was forgotten for good.
+    MemoryForgotten {
+        project: ProjectId,
+        memory: String,
+        by: String,
+    },
     /// A plan was written or changed.
     PlanChanged {
         project: ProjectId,

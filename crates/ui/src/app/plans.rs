@@ -2,7 +2,8 @@
 //! files. The list is names with a dot for where each stands; the one
 //! open is its title, its status, its words to edit, and the cards that
 //! carry it out. The project's files sit under it, each opened with the
-//! system's app.
+//! system's app, and its memory under them: the facts its agents and the
+//! person keep for each other, each with who kept it.
 use super::icons::{Icon, icon};
 use super::style::Colors;
 use super::view::{first_line, status_dot, tip};
@@ -24,6 +25,157 @@ fn status_tone(status: PlanStatus, c: Colors) -> iced::Color {
 }
 
 impl App {
+    /// Who kept a memory, as the person knows them.
+    fn memory_author(&self, author: &str) -> String {
+        if author == agentdocker_core::HUMAN {
+            return "you".to_owned();
+        }
+        self.agents
+            .iter()
+            .find(|a| a.id.as_str() == author)
+            .map_or_else(
+                || author.chars().take(12).collect(),
+                |agent| self.display_name(agent),
+            )
+    }
+
+    /// The project's memory: a line to keep a fact, a line to search, then
+    /// each fact kept, newest first (or the best answers to the search),
+    /// with who kept it and when, and its forget. A daemon from before
+    /// memory says so; a read that failed says so over what was there.
+    fn memory_card<'a>(
+        &'a self,
+        workspace: Option<&'a super::Workspace>,
+        connected: bool,
+        c: Colors,
+    ) -> Element<'a, Message> {
+        let header = row![tip(icon(Icon::Note, c.faint, 14.0), "Memory", c)].align_y(Center);
+        let card = |content: iced::widget::Column<'a, Message>| -> Element<'a, Message> {
+            container(content)
+                .padding(8)
+                .width(Fill)
+                .style(move |_| c.card_style())
+                .into()
+        };
+        let read = workspace.map(|w| &w.memory);
+        if read == Some(&super::MemoryRead::Unsupported) {
+            return card(
+                column![
+                    header,
+                    super::view::small(
+                        "This AgentDocker keeps no project memory; update it to keep one.",
+                        c
+                    ),
+                ]
+                .spacing(6),
+            );
+        }
+        let empty = super::shell::MemoryForm::default();
+        let form = self
+            .selected_project_root()
+            .and_then(|root| self.shell.memory.get(&root))
+            .unwrap_or(&empty);
+        let draft = form.draft.trim();
+        let mut memory = column![
+            header,
+            row![
+                container(input_enabled(
+                    "memory-draft",
+                    "A fact for this project's agents",
+                    &form.draft,
+                    Message::MemoryDraft,
+                    connected && form.adding.is_none(),
+                ))
+                .width(Fill),
+                primary(
+                    "memory-add",
+                    if form.adding.is_some() {
+                        "Keeping…"
+                    } else {
+                        "Keep"
+                    },
+                    (connected && !draft.is_empty() && form.adding.is_none())
+                        .then_some(Message::MemoryAdd),
+                ),
+            ]
+            .spacing(8)
+            .align_y(Center),
+            input_enabled(
+                "memory-search",
+                "Search memory",
+                &form.query,
+                Message::MemoryQuery,
+                connected,
+            ),
+        ]
+        .spacing(6)
+        .width(Fill);
+        if let Some(super::MemoryRead::Failed(error)) = read {
+            memory = memory.push(
+                super::view::small(format!("Memory could not be read: {error}"), c).color(c.amber),
+            );
+        }
+        let query = form.query.trim();
+        let (shown, limit_note): (&[agentdocker_core::memory::Memory], Option<&str>) =
+            if query.is_empty() {
+                let kept = workspace.map(|w| w.memories.as_slice()).unwrap_or_default();
+                (
+                    kept,
+                    (kept.len() >= super::MEMORY_PAGE)
+                        .then_some("The newest 100; search to find older ones."),
+                )
+            } else {
+                match &form.results {
+                    Some((words, found)) if words == query => (
+                        found.as_slice(),
+                        (found.len() >= super::MEMORY_PAGE)
+                            .then_some("The best 100 answers; more words narrow them."),
+                    ),
+                    _ => (&[], None),
+                }
+            };
+        let now = chrono::Utc::now();
+        for kept in shown {
+            memory = memory.push(
+                row![
+                    column![
+                        text(kept.text.clone()).size(13),
+                        super::view::small(
+                            format!(
+                                "{} · {}",
+                                self.memory_author(&kept.author),
+                                agentdocker_core::journal::ago(now, kept.created_at)
+                            ),
+                            c
+                        ),
+                    ]
+                    .spacing(2)
+                    .width(Fill),
+                    tip(
+                        custom_sized(
+                            format!("memory-forget-{}", kept.id),
+                            "Forget",
+                            container(icon(Icon::Close, c.faint, 11.0)).center(14),
+                            connected.then(|| Message::MemoryForget(kept.id.clone())),
+                            false,
+                            Kind::Ghost,
+                            [3, 3],
+                            iced::Length::Shrink,
+                        ),
+                        "Forget",
+                        c,
+                    ),
+                ]
+                .spacing(6)
+                .align_y(Center),
+            );
+        }
+        if let Some(note) = limit_note {
+            memory = memory.push(super::view::small(note, c));
+        }
+        card(memory)
+    }
+
     pub(super) fn plans_view(&self, c: Colors) -> Element<'_, Message> {
         let Some(root) = self.selected_project_root() else {
             return super::view::empty(None, c);
@@ -214,8 +366,9 @@ impl App {
             .padding(8)
             .width(Fill)
             .style(move |_| c.card_style());
+        let memory = self.memory_card(workspace, connected, c);
         let side = column![list].spacing(12);
-        let main = column![editor, files].spacing(14).width(Fill);
+        let main = column![editor, files, memory].spacing(14).width(Fill);
         if self.narrow() {
             column![side, main].spacing(14).into()
         } else {

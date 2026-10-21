@@ -1111,6 +1111,29 @@ impl<B: Backend> McpServer<B> {
                     .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
                 self.forward(request).await
             }
+            "add_memory" | "search_memory" | "get_profile" | "forget_memory" => {
+                let op = match name {
+                    "add_memory" => "memory_add",
+                    "search_memory" => "memory_search",
+                    "get_profile" => "memory_profile",
+                    _ => "memory_forget",
+                };
+                let mut object = arguments
+                    .as_object()
+                    .cloned()
+                    .ok_or((INVALID_PARAMS, "arguments must be an object".to_owned()))?;
+                // Supermemory's word for a memory's text.
+                if let Some(content) = object.remove("content") {
+                    object.insert("text".into(), content);
+                }
+                // An agent reaches its own project's memory only.
+                object.remove("project");
+                object.insert("op".into(), json!(op));
+                object.insert("from".into(), json!(me));
+                let request = serde_json::from_value(Value::Object(object))
+                    .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
+                self.forward(request).await
+            }
             "get_task" => {
                 let request = serde_json::from_value(json!({
                     "op": "task_get",
@@ -2112,7 +2135,7 @@ fn annotations(name: &str) -> Value {
         | "list_checkpoints" | "list_handoffs" | "list_channels" | "contests" | "list_tasks"
         | "get_task" | "my_tasks" | "worktree_diff" | "validation_results" | "usage"
         | "search_tasks" | "list_tags" | "list_roles" | "list_plans" | "get_plan"
-        | "list_files" | "get_file" => (true, false, true, false),
+        | "list_files" | "get_file" | "search_memory" | "get_profile" => (true, false, true, false),
         // Saying and recording: additive, repeatable.
         "report_activity" | "report_provider_status" | "observe_paths" | "renew" => {
             (false, false, true, false)
@@ -2127,7 +2150,9 @@ fn annotations(name: &str) -> Value {
         | "open_channel" | "close_channel" | "request_review" | "review" | "enter_contest"
         | "submit_entry" | "create_task" | "create_tasks" | "move_task" | "pull_task"
         | "update_task" | "comment_task" | "archive_task" | "create_tag" | "save_plan"
-        | "put_file" | "link_file" => (false, false, false, false),
+        | "put_file" | "link_file" | "add_memory" => (false, false, false, false),
+        // Gone for good.
+        "forget_memory" => (false, true, true, false),
         // Changes files in a checkout: an uncommitted merge.
         "integrate_worktree" => (false, true, false, false),
         // Runs whatever command it is given.
@@ -2854,6 +2879,56 @@ fn bare_tool_definitions() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
+        json!({
+            "name": "add_memory",
+            "description": "Keep a fact for this project's agents and the person: a convention, a decision, where something lives. Kept on this machine, said to every new session in the project. One sentence or a few, at most 2048 characters; never a secret, which is refused. Replace a memory that is no longer true by naming it in `supersedes`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "content": { "type": "string", "maxLength": 2048 },
+                    "supersedes": { "type": "string", "description": "The id of the memory this one replaces." },
+                    "links": { "type": "array", "maxItems": 8, "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
+                },
+                "required": ["content"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "search_memory",
+            "description": "This project's memories that answer the words, the best first; superseded ones are left out.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "get_profile",
+            "description": "What this project's agents should know first: its current memories, newest first.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "max_chars": { "type": "integer", "minimum": 1, "maximum": 64000 }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "forget_memory",
+            "description": "Forget a memory for good: one you kept. The person can forget any.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "memory": { "type": "string", "description": "The memory's id." }
+                },
+                "required": ["memory"],
+                "additionalProperties": false
+            }
+        }),
     ]
 }
 
@@ -3574,7 +3649,11 @@ mod tests {
                 "list_files",
                 "get_file",
                 "put_file",
-                "link_file"
+                "link_file",
+                "add_memory",
+                "search_memory",
+                "get_profile",
+                "forget_memory"
             ]
         );
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object"));

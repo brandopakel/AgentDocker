@@ -1033,6 +1033,48 @@ pub enum Request {
         #[serde(default)]
         archived: bool,
     },
+    /// Keep a fact for a project's agents: a memory, by an agent or the
+    /// person, in `project` or the author's own. `supersedes` names the
+    /// memory it replaces. Answers `memory`.
+    MemoryAdd {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        text: String,
+        #[serde(default)]
+        links: Vec<crate::Link>,
+        #[serde(default)]
+        supersedes: Option<String>,
+    },
+    /// A project's current memories that answer `query`, the best first;
+    /// `from` names the project when `project` does not. Answers
+    /// `memories`.
+    MemorySearch {
+        #[serde(default)]
+        from: Option<String>,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        query: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    /// What a project's agents should know first: its current memories,
+    /// newest first, within `max_chars`. Answers `memories`.
+    MemoryProfile {
+        #[serde(default)]
+        from: Option<String>,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        max_chars: Option<usize>,
+    },
+    /// Forget a memory for good: its author's or the person's to do.
+    /// Answers `ok`.
+    MemoryForget {
+        from: String,
+        memory: String,
+    },
     /// One plan in full, with the cards that carry it out. Answers
     /// `plan`.
     PlanGet {
@@ -1941,6 +1983,12 @@ pub enum Response {
     },
     Plans {
         plans: Vec<crate::Plan>,
+    },
+    Memory {
+        memory: crate::memory::Memory,
+    },
+    Memories {
+        memories: Vec<crate::memory::Memory>,
     },
     /// A plan in full, and the cards that carry it out.
     Plan {
