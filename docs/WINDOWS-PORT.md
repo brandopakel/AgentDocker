@@ -296,15 +296,78 @@ channel receipts; child hooks cannot bind or acknowledge the root session.
 
 The product Codex launcher (`codex-native`) starts the provider in ConPTY with a
 private shared-server receiver. It records birth and binding before input, owns
-its exact child, delivers queued input with exact receipts, replaces a receiver
-without replay, preserves an unsent draft, revokes its capability token on
-native exit and leaves provider configuration unchanged. It reopens an explicit
-persisted UUID after native exit with the canonical identity, prior receipts and
-draft intact; input queued while the provider is
-down is delivered after reopen. A deliberately invalid executable is refused
-before the first launch and its capability file is removed without a model
-request. The launcher ends its owned server by native process termination, not
-graceful server-protocol shutdown.
+its exact child, delivers queued input with exact receipts, and replaces a
+receiver without replay. While the TUI stays alive, an unsent draft is preserved
+across delivery and receiver replacement. On native exit it revokes its
+capability token and leaves provider configuration unchanged. It reopens an
+explicit persisted UUID with the canonical identity and prior receipts; the
+submitted history survives reopen, and input queued while the provider is down is
+delivered after reopen. Launch and resume preserve the queue and receipts, not
+unsent editor text. A deliberately invalid executable is refused before the first
+launch and its capability file is removed without a model request. The launcher
+ends its owned server by native process termination, not graceful
+server-protocol shutdown.
+
+## Diagnostic recipes
+
+The Windows workflow (`.github/workflows/windows.yml`) is dispatched manually
+with these inputs; each one narrows or extends what the native run exercises:
+
+- `startup_samples` (`0`, `5`, `10` or `20`; default `0`) adds that many fresh
+  homes per ancestry type (ordinary and OWNER RIGHTS) on the same extracted
+  package. A series stops at the first failed assertion and keeps each home's
+  bounded startup log. The startup deadline is unchanged, and ordinary runs take
+  no additional samples. A run with samples has a longer job budget than an
+  ordinary one.
+- `service_acceptance` exercises the extracted daemon and connector Task Scheduler
+  lifecycles (install, stop, start, restart, crash recovery, uninstall) on one
+  random private home and its owned task, with client autostart disabled and
+  cleanup required. It installs `psutil` and passes `--service` to the package
+  smoke.
+- `hosted_tag` and `hosted_source`, with optional `baseline_tag` and
+  `baseline_source`, test a published preview (see
+  [distribution setup](DISTRIBUTION-SETUP.md#windows-portable-preview)).
+- `console_input_probe` diagnoses only raw Ctrl-] and advertised Win32 console
+  input.
+- `capability_only` runs a provider-only authenticated remote ConPTY probe with
+  a restricted fresh profile and loopback model; it creates no AgentDocker
+  binding. `capability_approval` adds one private command approval through the
+  native UI. `receiver_acceptance` additionally builds the candidate CLI and
+  daemon and exercises the shared-server receiver after one explicit fixture
+  turn. `witnessed_birth` initializes the observer before the sole native TUI,
+  requires an empty server and that thread-start notification, and tests first
+  queued input without the warmup turn. `automatic_launcher` runs the
+  product-owned `codex-native` launcher instead of fixture binding; it needs
+  `capability_only` and `receiver_acceptance`.
+- `codex_version` selects among the workflow's pinned provider downloads, each
+  verified against a recorded SHA-256.
+
+`scripts/windows_package_smoke.py` runs against the extracted archive. It takes
+`--native-manifest` and `--output` (both required) and:
+
+- `--codex <exe>` enables private ConPTY/loopback acceptance with the actual
+  native Codex executable. `--codex-scenario` selects one of three:
+  `automatic` tests the product-owned launcher; `startup` (the default) is the
+  strict direct-Codex diagnostic that begins with no prompt; `established` begins
+  with one fixture prompt before testing delivery, draft preservation, busy
+  FIFO input, exact receipts and receiver replacement. A narrower scenario never
+  changes the strict `startup` outcome.
+- `--queue-recovery` (requires `--codex` with `--codex-scenario automatic`) runs
+  two private ConPTY scenarios: explicit queued-entry recovery after a
+  deliberate interruption, and refusal during provider-rate and project holds.
+  Each retains the next entry for 30 seconds; recovery requires distinct
+  confirmation, action and order, starts one existing entry and treats a
+  same-intent retry as the same entry, and the hold scenario requires refusal
+  before intent with a still-readable preview.
+- `--startup-samples N` (0 to 20) and `--service` are the script's forms of the
+  inputs above.
+- `--mcp-forms`, `--mcp-urls`, `--mcp-idle` and `--managed-secret` (each
+  requires `--codex`) exercise managed Codex form decisions, website decisions
+  without opening a browser, those decisions after the model turn ends, and the
+  experimental masked input with synthetic ConPTY boundaries.
+
+Failed CI packages are kept separately from the accepted preview artifact.
+
 ## Desktop installation
 
 `desktop install`, `status` and `rollback` work on a per-user store at

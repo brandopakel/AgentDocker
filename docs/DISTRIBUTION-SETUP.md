@@ -77,7 +77,7 @@ If the versioned release is published but channel promotion fails, repair only
 the channel from reviewed `main`:
 
 ```sh
-gh workflow run preview-channel.yml --ref main -f release_tag=v<version>
+gh workflow run preview-channel.yml --ref main -f release_tag="v<version>"
 ```
 
 Use the tag of the already-published prerelease. This does not rebuild artifacts
