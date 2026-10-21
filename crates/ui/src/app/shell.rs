@@ -120,14 +120,24 @@ pub enum RuleFieldKind {
     Value,
 }
 
+/// A card's words as the editor took them, or as it last saved them: a
+/// save sends only what differs from these, so it never puts back what
+/// somebody else changed on a field the person left alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct CardWords {
+    pub title: String,
+    pub description: String,
+    pub acceptance: String,
+    pub due: String,
+    pub blocker: String,
+    pub tags: String,
+}
+
 /// The open card's fields as the person edits them; saved on CardSave.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct CardDraft {
     pub task: Option<agentdocker_core::TaskId>,
-    /// When the card it was taken from was last updated: a save is
-    /// refused if the card has changed since, so it never puts back
-    /// what somebody else changed meanwhile.
-    pub seen: Option<chrono::DateTime<chrono::Utc>>,
+    pub base: CardWords,
     pub title: String,
     pub description: String,
     pub acceptance: String,
@@ -6203,6 +6213,82 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The card editor sends only what the person changed, so a field
+    /// somebody else changed meanwhile is left alone; after a save goes
+    /// through, the next sends only what changed since; one that failed
+    /// leaves its fields to send again.
+    #[test]
+    fn a_card_save_sends_only_what_the_person_changed() {
+        let (mut app, requests, messages) = app();
+        app.connected = Ok(());
+        let id = agentdocker_core::TaskId::from("aaaaaaaaaaaa".to_owned());
+        let words = CardWords {
+            title: "Port the parser".into(),
+            description: "old words".into(),
+            acceptance: String::new(),
+            due: String::new(),
+            blocker: String::new(),
+            tags: "parser".into(),
+        };
+        app.shell.card_draft = CardDraft {
+            task: Some(id.clone()),
+            title: words.title.clone(),
+            description: words.description.clone(),
+            acceptance: words.acceptance.clone(),
+            due: words.due.clone(),
+            blocker: words.blocker.clone(),
+            tags: words.tags.clone(),
+            base: words,
+            comment: String::new(),
+        };
+        app.task_open = Some(id.clone());
+        let saved = |requests: &CommandReceiver| {
+            requests
+                .try_iter()
+                .find_map(|c| match c {
+                    Cmd::TaskEdit { change, .. } => Some(change),
+                    _ => None,
+                })
+                .expect("a save")
+        };
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Description,
+            "new words".into(),
+        ));
+        let _ = app.update(Message::CardSave);
+        let change = saved(&requests);
+        assert_eq!(change.description.as_deref(), Some("new words"));
+        assert!(
+            change.title.is_none() && change.tags.is_none() && change.acceptance.is_none(),
+            "nothing the person left alone: {change:?}"
+        );
+        messages
+            .send(Msg::CardEdited(id.clone(), change, Ok(())))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Acceptance,
+            "tests pass".into(),
+        ));
+        let _ = app.update(Message::CardSave);
+        let change = saved(&requests);
+        assert_eq!(change.acceptance.as_deref(), Some("tests pass"));
+        assert!(
+            change.description.is_none(),
+            "the first save is not sent again"
+        );
+        messages
+            .send(Msg::CardEdited(id.clone(), change, Err("refused".into())))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::CardSave);
+        assert_eq!(
+            saved(&requests).acceptance.as_deref(),
+            Some("tests pass"),
+            "a save that failed is sent again"
+        );
     }
 
     /// A card's draft is the project's: text typed for one board waits

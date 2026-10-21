@@ -427,6 +427,8 @@ enum Msg {
     WorktreeRemoved(String, Result<(bool, Option<String>), String>),
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
+    /// A card edit went through or not, with what it sent.
+    CardEdited(agentdocker_core::TaskId, CardChange, Result<(), String>),
     /// One card in full, or why it could not be read.
     TaskDetail(agentdocker_core::TaskId, Result<Box<CardDetail>, String>),
     Workspace(String, Result<Box<Workspace>, String>),
@@ -1404,6 +1406,16 @@ impl App {
                 }
                 Msg::TaskChanged(result) => match result {
                     Ok(()) => {
+                        self.request_tasks();
+                        if let Some(open) = self.task_open.clone() {
+                            self.send(Cmd::TaskDetail(open));
+                        }
+                    }
+                    Err(error) => self.say(error),
+                },
+                Msg::CardEdited(task, change, result) => match result {
+                    Ok(()) => {
+                        self.card_saved(&task, &change);
                         self.request_tasks();
                         if let Some(open) = self.task_open.clone() {
                             self.send(Cmd::TaskDetail(open));
@@ -3500,6 +3512,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Some(Msg::TaskChanged(result))
         }
         Cmd::TaskEdit { task, change } => {
+            let sent = change.clone();
             let result = match client.call(&Request::TaskUpdate {
                 agent: agentdocker_core::HUMAN.into(),
                 task: task.to_string(),
@@ -3516,14 +3529,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 blocked_by: None,
                 tags: change.tags,
                 plan: None,
-                expected_updated_at: change.seen,
+                expected_updated_at: None,
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
-            Some(Msg::TaskChanged(result))
+            Some(Msg::CardEdited(task, sent, result))
         }
         Cmd::TaskArchive(task) => {
             let result = match client.call(&Request::TaskArchive {
@@ -4781,9 +4794,6 @@ pub(crate) struct CardChange {
     pub due: Option<String>,
     pub external_blocker: Option<String>,
     pub tags: Option<Vec<String>>,
-    /// When the card was last updated as the person read it; a save
-    /// against a card that changed since is refused.
-    pub seen: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// How long a changed card flashes.
