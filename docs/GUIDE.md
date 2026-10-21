@@ -488,7 +488,7 @@ each one by pid.
 | `stop <agent>` | Signal an agent to stop |
 | `restart <agent>` | Replace a managed container after confirming it exited |
 | `deregister` / `rm` | Mark an external agent finished / forget a finished one |
-| `role <name>…` | Give an agent (`--as`) roles from its project's palette (`roles`) — `role --as codex-1 reviewer tester` — in place of what it held; `--add reviewer` and `--remove tester` change one at a time, `--clear` takes them all away. Roles are yours to give: run from an agent's own shell it is refused. An agent's `send --to role:reviewer` reaches every reviewer in the project, in the role's room (one thread, where the sender hears the answers); `handoff role:reviewer` needs the role's one holder |
+| `role <name>…` | Give an agent (`--as`) roles from its project's palette (`roles`) — `role --as codex-1 reviewer tester` — in place of what it held; `--add reviewer` and `--remove tester` change one at a time, `--clear` takes them all away. Roles are yours to give: run from an agent's own shell it is refused. A command that names no sender speaks as you only from a terminal outside every agent: where a provider's own variables are set (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`) it asks for `--as` instead, even when the provider's process cannot be found. An agent's `send --to role:reviewer` reaches every reviewer in the project, in the role's room (one thread, where the sender hears the answers); `handoff role:reviewer` needs the role's one holder |
 | `roles` | A project's roles, each with its colour: the five every project offers (lead, implementer, reviewer, explorer, tester) and your own. `roles add "Security reviewer" --color red --description "…"` makes one, `roles set reviewer --name "Code review" --color pink` changes one (its address stays), `roles rm tester` takes one out. Only you change them, and nothing holds a role until you give it; run from an agent's shell, including a Codex conversation's shared server, they are refused. `--project` names another project |
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not. A finished record that holds nothing is forgotten by itself thirty days on, or after `[agents] retention` in `~/.agentdocker/agentd.toml` (`"off"` keeps every record) |
@@ -884,7 +884,10 @@ Newest first. Only what changes how the product is used.
   `agentdocker memory add`. Every new session in the project is told them,
   newest first. A memory that is no longer true is replaced
   (`--supersedes`) or forgotten. It stays on this machine; anything that
-  looks like a secret is refused.
+  looks like a secret is refused. To keep a copy in Supermemory as well,
+  name the projects and a key file under `[memory.supermemory]` in
+  `agentd.toml` (off unless you turn it on; the hosted service is
+  Supermemory's, on its terms).
 
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   used to be unbound: its AgentDocker tools refused, so its model could reach
@@ -962,6 +965,14 @@ Newest first. Only what changes how the product is used.
   rings and meters, named for screen readers and in tooltips; sentences
   under headings, empty-state captions, key footers and section intros are
   gone. It is set in IBM Plex Sans, with an ink primary action.
+
+- **Only you act as you.** A command or tool that acts as you — gives a
+  role, answers a question or an approval, pauses a project, merges —
+  is refused when it comes from inside an agent's session, whatever it
+  says about who sent it: the daemon checks which process is asking. Run
+  those from your own terminal or the app. A launch no longer carries a
+  role in: `agentdocker run --label role=…` and an Agentfile's
+  `labels = { role = … }` give the roles after the launch, as you.
 
 - **A quieter, neutral desktop.** The navy rail is retired for a neutral
   sidebar one step off the page, in both appearances; colour is kept for

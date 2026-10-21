@@ -103,6 +103,22 @@ fn snapshot(pid: Option<u32>) -> io::Result<(System, Vec<Pid>)> {
     Ok((system, owned))
 }
 
+pub(super) fn unseen(pid: u32) -> super::Unseen {
+    let Ok(owner) = crate::dirs::current_sid() else {
+        return super::Unseen::Unreadable;
+    };
+    match crate::dirs::process_sid(pid) {
+        Ok(sid) if sid != owner => super::Unseen::OtherUser,
+        // This user's, and missing from the table: its command line could
+        // not be read.
+        Ok(_) => super::Unseen::Unreadable,
+        Err(_) if !super::alive(pid) => super::Unseen::Ended,
+        // Running with a token this user may not read: no proof whose it is,
+        // so it is not passed.
+        Err(_) => super::Unseen::Unreadable,
+    }
+}
+
 fn row(process: &sysinfo::Process) -> Option<super::Process> {
     if process.cmd().is_empty() {
         return None;

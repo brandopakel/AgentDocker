@@ -358,14 +358,9 @@ async fn session(
         session_bound = true;
         recovery::recover(provider, client, ledger, agent).await?;
     }
-    let human = match call(
-        client,
-        Request::Me {
-            workdir: Some(ledger.record().binding.cwd.clone()),
-        },
-    )
-    .await?
-    {
+    // Who the person is, looked up: an agent's controller never moves the
+    // person's record to where the agent works.
+    let human = match call(client, Request::Me { workdir: None }).await? {
         Response::Agent { agent } => agent.id.to_string(),
         _ => bail!("human question routing is unavailable"),
     };

@@ -32,10 +32,15 @@ pub async fn up(client: &Client, file: Option<&Path>, only: &[String]) -> Result
                 continue;
             }
         }
+        let mut spec = spec;
+        let roles = spec.labels.remove(agentdocker_core::agent::ROLE_LABEL);
         match client.call(&Request::Run { spec }).await {
             Ok(Response::Agent { agent }) => {
                 eprintln!("{name:<24} started           {}", agent.id.short());
                 println!("{}", agent.id);
+                if let Some(roles) = roles {
+                    give_roles(client, agent.id.as_str(), &roles).await;
+                }
             }
             Ok(other) => {
                 eprintln!("{name:<24} unexpected reply: {other:?}");
@@ -51,6 +56,33 @@ pub async fn up(client: &Client, file: Option<&Path>, only: &[String]) -> Result
         bail!("{failed} agent(s) failed to start");
     }
     Ok(())
+}
+
+/// Give a launched agent the roles its spec named. A launch never carries
+/// a role in (the daemon drops it): roles are the person's to give, so this
+/// asks as the person, and the daemon refuses it when this runs inside an
+/// agent's session. A role it cannot give is said, and the agent runs on.
+pub(crate) async fn give_roles(client: &Client, agent: &str, roles: &str) {
+    let add: Vec<String> = roles
+        .split(',')
+        .map(str::trim)
+        .filter(|role| !role.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if add.is_empty() {
+        return;
+    }
+    let request = Request::RoleAssign {
+        from: agentdocker_core::HUMAN.to_owned(),
+        agent: agent.to_owned(),
+        add,
+        remove: Vec::new(),
+    };
+    if let Err(error) = client.call(&request).await {
+        eprintln!(
+            "{agent}: started, but its roles ({roles}) were not given: {error:#}; give them with `agentdocker role`"
+        );
+    }
 }
 
 /// Dependencies first.

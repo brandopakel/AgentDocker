@@ -24,6 +24,10 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault("AGENTDOCKER_PERSON_CHECK", "off")
+
 
 def terminal_record(record):
     return record is None or record["status"]["state"] in ("exited", "failed")
@@ -219,6 +223,7 @@ def main():
     project.mkdir()
     daemon_log = root / "smoke-daemon.log"
     env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_")}
+    env["AGENTDOCKER_PERSON_CHECK"] = "off"  # its own daemon: act as the person from anywhere
     env["AGENTDOCKER_HOME"] = str(home)
     env["AGENTDOCKER_NO_AUTOSTART"] = "1"
     # Preserve pre-logger startup stages for intermittent fresh-home failures.

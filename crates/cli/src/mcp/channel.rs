@@ -463,10 +463,49 @@ fn offer(message: &agentdocker_core::Envelope, repeat: bool) -> Result<Value> {
     if let Some(question) = &message.reply_to {
         notification["params"]["meta"]["reply_to"] = json!(question.as_str());
     }
+    // Claude Code takes `meta` as a map of strings, keys an identifier, and
+    // drops a notification whose meta is anything else: a boolean here
+    // lost every repeat.
     if repeat {
-        notification["params"]["meta"]["repeat"] = json!(true);
+        notification["params"]["meta"]["repeat"] = json!("true");
     }
     Ok(notification)
+}
+
+#[cfg(test)]
+mod meta_tests {
+    use super::*;
+
+    /// Claude Code's channel schema: `meta` is a map of strings, and each
+    /// key matches `^[a-zA-Z_][a-zA-Z0-9_]*$`. A notification outside it is
+    /// dropped without a word, so every offer is held to it.
+    #[test]
+    fn every_offer_s_meta_is_strings_under_identifier_keys() {
+        let message = agentdocker_core::Envelope::new(
+            "sender",
+            agentdocker_core::Destination::Agent("receiver".into()),
+            "chat",
+            json!({"text": "hello"}),
+            Some(agentdocker_core::MessageId::from("q1".to_owned())),
+            chrono::Utc::now(),
+        );
+        for repeat in [false, true] {
+            let offer = offer(&message, repeat).unwrap();
+            let meta = offer["params"]["meta"].as_object().unwrap();
+            for (key, value) in meta {
+                let mut chars = key.chars();
+                assert!(
+                    chars
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                    "{key}"
+                );
+                assert!(value.is_string(), "{key} = {value}");
+            }
+            assert_eq!(meta.contains_key("repeat"), repeat);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -802,7 +841,7 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(repeated["params"]["meta"]["message_id"], ids[0].as_str());
-                assert_eq!(repeated["params"]["meta"]["repeat"], true);
+                assert_eq!(repeated["params"]["meta"]["repeat"], "true");
                 assert!(
                     tokio::time::timeout(
                         Duration::from_secs(65),
@@ -1303,7 +1342,7 @@ mod tests {
                     // else is written.
                     let repeat = receive(&mut reader).await;
                     assert_eq!(repeat["params"]["meta"]["message_id"], head.as_str());
-                    assert_eq!(repeat["params"]["meta"]["repeat"], true);
+                    assert_eq!(repeat["params"]["meta"]["repeat"], "true");
                 }
                 write_line(
                     &mut writer,

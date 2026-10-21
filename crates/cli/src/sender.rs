@@ -20,6 +20,13 @@ pub async fn resolve(client: &Client, explicit: Option<String>) -> Result<Option
         .context("CLI caller is missing from the process snapshot; specify the sender explicitly")?
         .ppid;
     let Some((process, runtime)) = provider_ancestor(parent, &table)? else {
+        // No provider among the parents, but the environment says one is
+        // there: never speak as the person on that.
+        if let Some(variable) = provider_environment(|name| std::env::var_os(name)) {
+            bail!(
+                "this command runs inside a provider session ({variable} is set) whose process could not be found; pass your agent's id with --as"
+            );
+        }
         return Ok(None);
     };
     let born = procinfo::start_time(process.pid)
@@ -42,6 +49,15 @@ pub async fn resolve(client: &Client, explicit: Option<String>) -> Result<Option
         "provider caller changed while resolving the sender"
     );
     Ok(Some(sender))
+}
+
+/// The variable a provider sets in every command it runs, if one is set:
+/// Claude Code's `CLAUDECODE` and `CLAUDE_CODE_SESSION_ID`, Codex's
+/// `CODEX_THREAD_ID`.
+fn provider_environment(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<&'static str> {
+    ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]
+        .into_iter()
+        .find(|name| get(name).is_some_and(|value| !value.is_empty()))
 }
 
 fn provider_ancestor(mut pid: u32, table: &[Process]) -> Result<Option<(&Process, &'static str)>> {
@@ -116,6 +132,31 @@ fn select(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_provider_s_environment_is_a_session_even_without_its_process() {
+        let set = |names: &'static [&'static str]| {
+            move |name: &str| names.contains(&name).then(|| std::ffi::OsString::from("x"))
+        };
+        assert_eq!(provider_environment(set(&[])), None);
+        assert_eq!(
+            provider_environment(set(&["CODEX_THREAD_ID"])),
+            Some("CODEX_THREAD_ID")
+        );
+        assert_eq!(
+            provider_environment(set(&["CLAUDECODE"])),
+            Some("CLAUDECODE")
+        );
+        assert_eq!(
+            provider_environment(set(&["CLAUDE_CODE_SESSION_ID"])),
+            Some("CLAUDE_CODE_SESSION_ID")
+        );
+        assert_eq!(
+            provider_environment(|_| Some(std::ffi::OsString::new())),
+            None,
+            "empty is unset"
+        );
+    }
     use agentdocker_core::{AgentSpec, AgentStatus};
 
     fn process(pid: u32, ppid: u32, program: &str) -> Process {

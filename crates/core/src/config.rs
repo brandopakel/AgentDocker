@@ -29,6 +29,10 @@ pub struct DaemonConfig {
     /// posted anywhere unless the person writes a sink here.
     #[serde(default)]
     pub webhooks: Vec<WebhookConfig>,
+    /// What becomes of a project's memory beyond this machine: nothing,
+    /// unless the person turns a mirror on here.
+    #[serde(default)]
+    pub memory: MemoryConfig,
     /// What is in source and complete but still under acceptance on real
     /// binaries, switched here; `daemon status` says how each stands.
     #[serde(default)]
@@ -300,6 +304,101 @@ impl WebhookConfig {
     }
 }
 
+/// `[memory]`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryConfig {
+    /// `[memory.supermemory]`: a copy of chosen projects' memories kept in
+    /// Supermemory, its hosted API or a server of the person's own. Off
+    /// unless `enabled = true` and at least one project is named.
+    #[serde(default)]
+    pub supermemory: Option<SupermemoryConfig>,
+}
+
+/// Supermemory's own service, unless the person names another.
+pub const SUPERMEMORY_URL: &str = "https://api.supermemory.ai";
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupermemoryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Projects whose memories are copied: ids, unique id prefixes or
+    /// roots. No other project's are.
+    #[serde(default)]
+    pub projects: Vec<String>,
+    /// A regular file of this user, mode 0600, holding the API key.
+    pub key_file: std::path::PathBuf,
+    /// The server: Supermemory's (`https://api.supermemory.ai`) unless
+    /// named. Anything else must be `https://`, or `http://` on loopback.
+    #[serde(default)]
+    pub base_url: Option<String>,
+}
+
+impl SupermemoryConfig {
+    pub fn check(&self) -> Result<(), String> {
+        if !self.key_file.is_absolute() {
+            return Err("memory.supermemory.key_file must be an absolute path".into());
+        }
+        if self.enabled && self.projects.is_empty() {
+            return Err("memory.supermemory names no projects; name the ones to copy".into());
+        }
+        let url = self.base_url();
+        let bad = |why: &str| Err(format!("memory.supermemory.base_url {why}"));
+        let Some((scheme, rest)) = url.split_once("://") else {
+            return bad("needs a scheme");
+        };
+        if rest.contains(['?', '#']) {
+            return bad("takes no query or fragment");
+        }
+        let authority = rest.split('/').next().unwrap_or("");
+        if authority.contains('@') {
+            return bad("carries no credentials; the key goes in key_file");
+        }
+        let host = authority
+            .rsplit_once(':')
+            .filter(|(_, port)| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+            .map_or(authority, |(host, _)| host);
+        if host.is_empty() {
+            return bad("has no host");
+        }
+        let local = matches!(host, "127.0.0.1" | "[::1]" | "localhost");
+        match scheme {
+            "https" => {}
+            "http" if local => {}
+            _ => {
+                return bad(
+                    "must be https://, or http:// on this machine (127.0.0.1, [::1], localhost)",
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub fn base_url(&self) -> &str {
+        self.base_url
+            .as_deref()
+            .unwrap_or(SUPERMEMORY_URL)
+            .trim_end_matches('/')
+    }
+
+    /// The namespace a project's memories are kept under there: letters,
+    /// digits, `_`, `:` and `-` only, at most 100 characters.
+    pub fn namespace(project: &crate::ProjectId) -> String {
+        format!("agentdocker_{}", project.as_str())
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '-') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .take(100)
+            .collect()
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessagesConfig {
@@ -320,6 +419,14 @@ pub struct JournalConfig {
 }
 
 impl DaemonConfig {
+    /// The memory mirror, when it is on and its settings hold.
+    pub fn supermemory(&self) -> Result<Option<&SupermemoryConfig>, String> {
+        match &self.memory.supermemory {
+            Some(mirror) if mirror.enabled => mirror.check().map(|()| Some(mirror)),
+            _ => Ok(None),
+        }
+    }
+
     /// The journal retention window, when one is configured. A window that
     /// cannot be read is a broken file, not a file that keeps everything:
     /// callers treat the error as "ignore the file and say so".
@@ -404,6 +511,70 @@ pub fn parse_duration(text: &str) -> Result<Duration, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The mirror is off unless turned on, names its projects, keeps its
+    /// key in an absolute file and talks https (or http to this machine).
+    #[test]
+    fn the_memory_mirror_is_off_unless_turned_on_and_checked_when_it_is() {
+        let key = std::env::temp_dir().join("supermemory.key");
+        let parsed = |text: &str| toml::from_str::<DaemonConfig>(text).unwrap();
+        assert_eq!(parsed("").supermemory(), Ok(None));
+        let off = format!(
+            "[memory.supermemory]\nkey_file = {:?}\nprojects = [\"p\"]\n",
+            key.display().to_string()
+        );
+        assert_eq!(parsed(&off).supermemory(), Ok(None), "not enabled");
+        let on = |extra: &str| {
+            format!(
+                "[memory.supermemory]\nenabled = true\nkey_file = {:?}\n{extra}",
+                key.display().to_string()
+            )
+        };
+        let config = parsed(&on("projects = [\"p\"]\n"));
+        let mirror = config.supermemory().unwrap().unwrap();
+        assert_eq!(mirror.base_url(), SUPERMEMORY_URL);
+        assert_eq!(
+            SupermemoryConfig::namespace(&crate::ProjectId::from("abc")),
+            "agentdocker_abc"
+        );
+        let odd = SupermemoryConfig::namespace(&crate::ProjectId::from(&*"a/b c".repeat(40)));
+        assert!(
+            odd.len() <= 100
+                && odd
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_:-".contains(c))
+        );
+        assert!(parsed(&on("")).supermemory().is_err(), "no projects");
+        for url in [
+            "http://example.com",
+            "ftp://x",
+            "http://localhost.evil.com",
+            "http://localhost:80@collector.example",
+            "https://user:pw@api.supermemory.ai",
+            "https://api.supermemory.ai?x=1",
+            "https://api.supermemory.ai#x",
+            "http://127.0.0.1.example",
+        ] {
+            let config = parsed(&on(&format!("projects = [\"p\"]\nbase_url = {url:?}\n")));
+            assert!(config.supermemory().is_err(), "{url}");
+        }
+        for url in [
+            "https://memory.example.com/",
+            "http://127.0.0.1:8787",
+            "http://localhost",
+        ] {
+            let config = parsed(&on(&format!("projects = [\"p\"]\nbase_url = {url:?}\n")));
+            assert!(config.supermemory().is_ok(), "{url}");
+        }
+        assert!(
+            parsed(
+                "[memory.supermemory]\nenabled = true\nkey_file = \"key\"\nprojects = [\"p\"]\n"
+            )
+            .supermemory()
+            .is_err(),
+            "a relative key file"
+        );
+    }
 
     /// A sink is checked for the shape that keeps it safe: a sayable
     /// name, https (or http only to this machine), no credentials or

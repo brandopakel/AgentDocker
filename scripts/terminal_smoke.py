@@ -26,6 +26,10 @@ import termios
 import time
 import uuid
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault("AGENTDOCKER_PERSON_CHECK", "off")
+
 
 FIXTURE = r'''
 import os, signal, sys, termios

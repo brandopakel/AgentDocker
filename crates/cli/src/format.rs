@@ -465,6 +465,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::MemoryForgotten { memory, by, .. } => {
             format!("memory forgot   {memory} by {by}")
         }
+        EventKind::MemoryMirrored { added, removed, .. } => {
+            format!("memory mirrored +{added} -{removed}")
+        }
         EventKind::ProjectFileChanged {
             file, by, deleted, ..
         } => format!(

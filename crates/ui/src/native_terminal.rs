@@ -19,6 +19,9 @@ pub enum Request {
         started_at: chrono::DateTime<chrono::Utc>,
         /// The multiplexer pane it registered from, if any.
         session: Option<Session>,
+        /// The provider's own session id, which herdr also knows the
+        /// agent by: a pane moved since it registered is found by it.
+        provider_session: Option<String>,
     },
 }
 
@@ -30,11 +33,17 @@ pub fn open(request: Request) -> Result<String, String> {
             pid,
             started_at,
             session,
+            provider_session,
         } => {
             if agentdocker_host::procinfo::start_time(pid) != Some(started_at) {
                 return Err(ENDED.into());
             }
-            open_agent(pid, started_at, session.as_ref())
+            open_agent(
+                pid,
+                started_at,
+                session.as_ref(),
+                provider_session.as_deref(),
+            )
         }
     }
 }
@@ -133,6 +142,7 @@ fn open_agent(
     pid: u32,
     started_at: chrono::DateTime<chrono::Utc>,
     session: Option<&Session>,
+    provider_session: Option<&str>,
 ) -> Result<String, String> {
     // Inside a multiplexer the agent's own ancestry ends at its server;
     // the window to bring forward is the one the multiplexer's client is
@@ -143,11 +153,10 @@ fn open_agent(
             (tmux::select(pane)?, Some(format!("tmux {pane}")))
         }
         Some(session) if session.kind == "herdr" && session.pane.is_some() => {
-            let pane = session.pane.as_deref().unwrap_or_default();
-            (
-                herdr::select(session.session.as_deref(), pane)?,
-                Some(format!("herdr {pane}")),
-            )
+            let recorded = session.pane.as_deref().unwrap_or_default();
+            let (reach, pane) =
+                herdr::select(session.session.as_deref(), recorded, provider_session)?;
+            (reach, Some(format!("herdr {pane}")))
         }
         _ => (pid, None),
     };
@@ -320,14 +329,76 @@ mod tmux {
 mod herdr {
     use super::*;
 
-    /// Focus `pane` in herdr over its socket, and return a herdr client
-    /// process (the terminal window herdr is drawn in).
-    pub(super) fn select(session: Option<&str>, pane: &str) -> Result<u32, String> {
+    /// Focus the agent's pane in herdr over its socket, and return a
+    /// herdr client process (the terminal window herdr is drawn in) with
+    /// the pane shown. A pane moved to another workspace gets a new id, so
+    /// the one herdr says holds the agent's own session is taken first;
+    /// the id recorded when it registered is the fallback.
+    pub(super) fn select(
+        session: Option<&str>,
+        recorded: &str,
+        provider_session: Option<&str>,
+    ) -> Result<(u32, String), String> {
         let socket = socket(session).ok_or("This agent's herdr session cannot be addressed.")?;
-        focus(&socket, pane)?;
-        client().ok_or_else(|| {
+        let pane = provider_session
+            .and_then(|id| holding(&socket, id))
+            .unwrap_or_else(|| recorded.to_owned());
+        focus(&socket, &pane)?;
+        let client = client().ok_or_else(|| {
             "herdr has no window open. Run `herdr` to attach and see the agent.".to_owned()
-        })
+        })?;
+        Ok((client, pane))
+    }
+
+    /// The pane herdr says holds the provider session `id`, if exactly one
+    /// does: `pane.list`, each pane's `agent_session.value`.
+    #[cfg(unix)]
+    fn holding(socket: &Path, id: &str) -> Option<String> {
+        let request = serde_json::json!({
+            "id": "agentdocker-find",
+            "method": "pane.list",
+            "params": {},
+        });
+        pane_holding(&ask(socket, &request).ok()?, id)
+    }
+
+    #[cfg(not(unix))]
+    fn holding(_socket: &Path, _id: &str) -> Option<String> {
+        None
+    }
+
+    #[cfg(any(unix, test))]
+    pub(super) fn pane_holding(reply: &str, id: &str) -> Option<String> {
+        let value: serde_json::Value = serde_json::from_str(reply.trim()).ok()?;
+        let mut holding = value["result"]["panes"]
+            .as_array()?
+            .iter()
+            .filter(|pane| pane["agent_session"]["value"].as_str() == Some(id))
+            .filter_map(|pane| pane["pane_id"].as_str());
+        match (holding.next(), holding.next()) {
+            (Some(pane), None) => Some(pane.to_owned()),
+            _ => None,
+        }
+    }
+
+    /// One request and its one-line answer, over herdr's Unix socket.
+    #[cfg(unix)]
+    fn ask(socket: &Path, request: &serde_json::Value) -> Result<String, String> {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let unreachable = |_| "herdr is not running for this agent's session.".to_owned();
+        let mut stream = std::os::unix::net::UnixStream::connect(socket).map_err(unreachable)?;
+        let limit = Some(Duration::from_secs(3));
+        let _ = stream.set_read_timeout(limit);
+        let _ = stream.set_write_timeout(limit);
+        stream
+            .write_all(format!("{request}\n").as_bytes())
+            .map_err(|e| format!("Could not ask herdr: {e}"))?;
+        let mut reply = String::new();
+        BufReader::new(stream)
+            .take(4 * 1024 * 1024)
+            .read_line(&mut reply)
+            .map_err(|e| format!("herdr did not answer: {e}"))?;
+        Ok(reply)
     }
 
     /// herdr's API socket: the default session's, or a named session's.
@@ -352,25 +423,12 @@ mod herdr {
     /// Unix socket. It moves herdr's focus; it types nothing.
     #[cfg(unix)]
     fn focus(socket: &Path, pane: &str) -> Result<(), String> {
-        use std::io::{BufRead, BufReader, Read, Write};
-        let unreachable = |_| "herdr is not running for this agent's session.".to_owned();
-        let mut stream = std::os::unix::net::UnixStream::connect(socket).map_err(unreachable)?;
-        let limit = Some(Duration::from_secs(3));
-        let _ = stream.set_read_timeout(limit);
-        let _ = stream.set_write_timeout(limit);
         let request = serde_json::json!({
             "id": "agentdocker-focus",
             "method": "pane.focus",
             "params": {"pane_id": pane},
         });
-        stream
-            .write_all(format!("{request}\n").as_bytes())
-            .map_err(|e| format!("Could not ask herdr to show the pane: {e}"))?;
-        let mut reply = String::new();
-        BufReader::new(stream)
-            .take(64 * 1024)
-            .read_line(&mut reply)
-            .map_err(|e| format!("herdr did not answer: {e}"))?;
+        let reply = ask(socket, &request)?;
         refused(&reply).map_or(Ok(()), Err)
     }
 
@@ -443,6 +501,29 @@ const FOCUS_ITERM: &str = r#"function run(argv) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pane herdr says holds the agent's session, by `pane.list`'s own
+    /// shape; none when no pane, or more than one, holds it.
+    #[test]
+    fn a_moved_herdr_pane_is_found_by_its_agent_session() {
+        let reply = serde_json::json!({"id": "agentdocker-find", "result": {"type": "pane_list", "panes": [
+            {"pane_id": "w1:p1", "agent_session": {"agent": "claude", "kind": "id", "source": "hook", "value": "s-other"}},
+            {"pane_id": "w2:p4", "agent_session": {"agent": "claude", "kind": "id", "source": "hook", "value": "s-mine"}},
+            {"pane_id": "w1:p2", "agent_session": null},
+        ]}}).to_string();
+        assert_eq!(
+            herdr::pane_holding(&reply, "s-mine").as_deref(),
+            Some("w2:p4")
+        );
+        assert_eq!(herdr::pane_holding(&reply, "s-gone"), None);
+        let twice = reply.replace("s-other", "s-mine");
+        assert_eq!(
+            herdr::pane_holding(&twice, "s-mine"),
+            None,
+            "two panes: not one to choose"
+        );
+        assert_eq!(herdr::pane_holding("not json", "s-mine"), None);
+    }
     #[test]
     fn project_paths_are_checked_as_directories_without_interpreting_shell_text() {
         let root = tempfile::tempdir().unwrap();
@@ -525,6 +606,7 @@ mod tests {
             pid: std::process::id(),
             started_at: chrono::DateTime::UNIX_EPOCH,
             session: None,
+            provider_session: None,
         });
         assert!(result.unwrap_err().contains("ended"));
     }

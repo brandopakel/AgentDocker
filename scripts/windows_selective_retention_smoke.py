@@ -12,6 +12,10 @@ import shutil
 import time
 import uuid
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+
 
 def cleanup_owned_processes(stop, discover, identities, detail, save):
     """Attempt every owned retirement, report failures, then re-raise task errors."""

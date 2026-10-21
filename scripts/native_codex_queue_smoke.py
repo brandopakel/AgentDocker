@@ -53,6 +53,10 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault("AGENTDOCKER_PERSON_CHECK", "off")
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
     "--cli",
@@ -546,6 +550,7 @@ try:
             for k, v in os.environ.items()
             if k in ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "LC_ALL"]
         }
+        env["AGENTDOCKER_PERSON_CHECK"] = "off"  # its own daemon: act as the person from anywhere
         env.update(
             CODEX_HOME=str(profile),
             AGENTDOCKER_FIXTURE_KEY="fixture-only",

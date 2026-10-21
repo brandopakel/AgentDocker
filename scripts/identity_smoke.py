@@ -87,6 +87,7 @@ def trial(binary_dir, output, manifest_path):
             project = root / 'project'
             project.mkdir()
             env = {k: v for k, v in os.environ.items() if not k.startswith('AGENTDOCKER_')}
+            env['AGENTDOCKER_PERSON_CHECK'] = 'off'  # its own daemon: act as the person from anywhere
             env.update(AGENTDOCKER_HOME=str(root / 'state'), AGENTDOCKER_SOCKET=str(root / 'sock'), AGENTDOCKER_NO_AUTOSTART='1', RUST_LOG='warn')
 
             def rpc(value):

@@ -21,6 +21,10 @@ import time
 
 from mcp_receipt_smoke import call as mcp_call
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault("AGENTDOCKER_PERSON_CHECK", "off")
+
 MAC = sys.platform == "darwin"
 PAYLOAD = "AgentDocker.app" if MAC else "agentdocker-desktop"
 BIN = Path("Contents/MacOS") if MAC else Path("bin")
