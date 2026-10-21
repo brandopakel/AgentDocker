@@ -28,6 +28,7 @@ class Specifics(unittest.TestCase):
                          ["a pull request or issue number"] * 3)
         self.assertEqual(kinds("See #7 and #123456."), ["a pull request or issue number"] * 2)
         self.assertEqual(kinds("Use #000000 for black and #11223344 for translucent colour."), [])
+        self.assertEqual(kinds("Use colours #000000 and #111111."), [])
         self.assertEqual(kinds("The colour is fixed, see #123456 and #12345."),
                          ["a pull request or issue number"] * 2)
         self.assertEqual(kinds("The background scan was fixed in #403."), ["a pull request or issue number"])

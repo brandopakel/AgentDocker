@@ -75,12 +75,14 @@ REFERENCE_CUES = {"see", "in", "fixed", "merged", "closes", "closed", "resolves"
 def is_colour(line, start, end):
     if not re.fullmatch(r"#(?:\d{3}|\d{4}|\d{6}|\d{8})", line[start:end]):
         return False
+    # The next of a list (`#403 and #404`, `#000000 and #111111`) is what
+    # the one before it is.
+    listed = re.search(r"(#\d+)\s*,?\s*(?:and|or)\s*$", line[:start], re.IGNORECASE)
+    if listed:
+        return is_colour(line, listed.start(1), listed.end(1))
     before = re.findall(r"[A-Za-z]+", line[:start])[-4:]
     after = re.findall(r"[A-Za-z]+", line[end:])[:4]
     if before and before[-1].lower() in REFERENCE_CUES:
-        return False
-    # The next of a list of references is one too: `#403 and #404`.
-    if re.search(r"#\d+\s*,?\s*(?:and|or)\s*$", line[:start], re.IGNORECASE):
         return False
     return any(COLOUR_WORDS.fullmatch(word) for word in before + after)
 
