@@ -402,6 +402,9 @@ impl Daemon {
             .cloned()
             .collect();
         for id in checking {
+            // Past this one next time, whatever its answer: an error stops
+            // this run but never holds the turn for ever on one document.
+            held.checked = Some(id.clone());
             let (server, asked) = (server.clone(), id.clone());
             match tokio::task::spawn_blocking(move || server.check(&asked)).await {
                 Ok(Ok(Some(Status::Done))) => {
@@ -420,7 +423,6 @@ impl Daemon {
                 }
                 Ok(Err(_)) | Err(_) => break,
             }
-            held.checked = Some(id);
         }
         let mut added = 0;
         for memory in sending {
@@ -468,6 +470,8 @@ mod tests {
         get: &'static str,
         /// A status for one document's check, over `get`.
         get_one: std::collections::HashMap<String, &'static str>,
+        /// A document whose check the server refuses.
+        get_refused: Option<String>,
         seen: Vec<(String, String, String)>,
     }
 
@@ -532,8 +536,12 @@ mod tests {
                     }
                     _ => {
                         let id = path.rsplit('/').next().unwrap_or("").to_owned();
-                        let status = fake.get_one.get(&id).copied().unwrap_or(fake.get);
-                        (200, json!({"system": {"status": status}}).to_string())
+                        if fake.get_refused.as_deref() == Some(id.as_str()) {
+                            (500, json!({"error": "x", "details": "y"}).to_string())
+                        } else {
+                            let status = fake.get_one.get(&id).copied().unwrap_or(fake.get);
+                            (200, json!({"system": {"status": status}}).to_string())
+                        }
                     }
                 };
                 fake.seen.push((format!("{method} {path}"), auth, body));
@@ -853,6 +861,36 @@ mod tests {
         let now = held(&daemon, &project, &url, "sm-test-key-0123456789");
         assert!(now.pending.contains(&last), "the late one was looked at");
         assert!(!now.processing.contains(&last));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_check_the_server_refuses_does_not_hold_the_others_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, agent, project) = project(&tmp).await;
+        let (url, fake) = server((200, "queued"));
+        configure(&tmp, &url, project.as_str(), true, "sm-test-key-0123456789");
+        keep(&daemon, &agent, "fact a").await;
+        keep(&daemon, &agent, "fact b").await;
+        daemon.mirror_once().await;
+        let processing: Vec<String> = held(&daemon, &project, &url, "sm-test-key-0123456789")
+            .processing
+            .into_iter()
+            .collect();
+        let (first, second) = (processing[0].clone(), processing[1].clone());
+        {
+            let mut fake = fake.lock().unwrap();
+            fake.get_refused = Some(first.clone());
+            fake.get_one.insert(second.clone(), "done");
+        }
+        daemon.mirror_once().await;
+        daemon.mirror_once().await;
+        let now = held(&daemon, &project, &url, "sm-test-key-0123456789");
+        assert!(now.ids.contains(&second), "the second was reached");
+        assert!(
+            now.processing.contains(&first),
+            "the first stays to try again"
+        );
     }
 
     #[cfg(unix)]
