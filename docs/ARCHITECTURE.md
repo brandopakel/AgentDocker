@@ -426,7 +426,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `channel_invite {agent, channel, member}` | `channel`, `error(forbidden\|invalid\|storage_unavailable)` | an existing member adds one live agent to an open task channel; membership, the `channel_invited {channel, by, agent}` event and invitation notice commit together. A repeated member is a no-op. Closed and collision channels refuse invitations. The new member receives subsequent channel messages through the ordinary queue. |
 | `conversations {project?, reader?}` | `conversations {conversations}` | what a reader (the person unless `reader` names an agent) sees: one summary per conversation, `{conversation, kind: everyone\|all\|channel\|collision\|dm\|notices, name?, title, members, unread, mentions?, last_seq?, last_at?, last_from?, last_line?}`, newest activity first. `mentions` (absent when zero) is how many of the unread rows name the reader with `@`: the reader's current name and names saved at retirement in optional alias metadata (`retired_name`), and `@user` or `@you` for the person. Legacy aliases without that metadata cannot reconstruct the former name; `@name` is a name where it stands on its own (`@agent-1,` counts, `a@b.c` does not), compared without case. Every archived message belongs to one conversation by its destination: `everyone:<project>`, `all`, `channel:<id>`, `dm:<a>:<b>` (the sorted pair of ids, whoever the parties are) or `notices:<agent>` (what `agentd` itself told one agent); topics are streams and are not archived. A project lists its broadcast, its channels, the reader's direct conversations with its agents and anything archived; without a project, every project's plus `all`. A reader sees rooms and broadcasts by membership and direct conversations and notices as a party; the person, in no room, sees every room, direct conversation and notice of the project (to read: a direct conversation between two agents has no destination for anyone else); a reader is every identity it has had, so a record retired into it by an identity repair or a resumed provider session keeps its conversations under their old ids, the furthest cursor any of those identities left counts, and `unread` counts archived messages past that cursor that none of those identities sent. At the archive's backfill (schema 21) the person's cursors start at every conversation's head, so what was queued before there were conversations is not the first unread count. |
 | `history {conversation, before_seq?, limit?}` | `history {messages}` | the newest `limit` (default 100, at most 500) archived messages before `before_seq`, oldest first, each as `{seq, conversation, ...envelope, replies?}` where `replies` counts the thread under a root. The archive is written in the same transaction as the inbox rows, beside them, never instead of them; a topic message has no archive row; a broadcast nobody was live to receive is archived (it was said), a send a policy refused is not. Retained per conversation to 5,000 rows and to `[messages] retention` in `agentd.toml` when set, pruned on the minute tick within one budget of 1,000 rows for the whole tick across the age cutoff and every crowded conversation (`messages_pruned`), never a conversation's newest message, so its head and last line survive. Search uses FTS5 while the index answers and falls back to LIKE from the first index error until the next start rebuilds it. At the schema 21 upgrade the archive is backfilled once, by message id, from the rows still queued: nothing acknowledged before the upgrade exists anywhere, so history starts there. |
-| `delivery {message}` | `delivery {message, recipients: Recipient[]}` | where one of the person's messages stands with each agent it was queued for, in queue order: `answered` (a reply from it, in any conversation), `delivered` (taken from its queue), `received` (a provider receipt names it), `shown` (its session read it without taking it), else why it waits: `unreachable` (nothing connects its session to AgentDocker), `waiting_for_prompt`, `waits_for_check_in` (a browser agent), `waiting_to_take`, `paused`, `blocked`, `silent`, `ended` or `gone`. Recipients are recorded only for the person's own messages, beside the queue rows in the same transaction (the `deliveries` table, pruned with the archive); anyone else's message answers an empty list. Nothing here says a model read a message. Read-only; refused on the restricted endpoint |
+| `delivery {message}` | `delivery {message, recipients: Recipient[]}` | where one of the person's messages stands with each agent it was queued for, in queue order: `answered` (a reply from it, in any conversation), `delivered` (taken from its queue), `received` (a provider receipt names it), `shown` (its session read it without taking it), else why it waits: `unreachable` (nothing connects its session to AgentDocker), `waiting_for_prompt`, `waits_for_check_in` (a browser agent, or a session known by its key alone and away for hours), `waiting_to_take`, `paused`, `blocked`, `silent`, `ended` or `gone`. Recipients are recorded only for the person's own messages, beside the queue rows in the same transaction (the `deliveries` table, pruned with the archive); anyone else's message answers an empty list. Nothing here says a model read a message. Read-only; refused on the restricted endpoint |
 | `thread {message, after_seq?, limit?}` | `thread {root, replies}`, `error(not_found)` | one archived message and the replies threaded under it: same conversation, oldest first, after `after_seq`, at most `limit` (default 100, at most 500); page by the last reply's seq. A reply whose `reply_to` names a message in another conversation is a plain message that keeps the id as data. |
 | `mark_read {conversation, through, reader?}` | `ok`, `error(invalid)` | the reader read the conversation through an archived `seq` of it (`invalid` otherwise): the cursor moves forward, never back (a lower `through` is a no-op), later arrivals stay unread, and only the reader's own queued rows that the cursor covers are acknowledged, in the same transaction as the cursor and its `conversation_read {reader, conversation, through}` event. A reader whose queue has an owner (a bound controller, the daemon's own bridge) moves its cursor and drains nothing: the owner's receipts do that. Reading never closes a question: a question closes through an accepted answer, its asker's cancellation or its expiry; other agents' queues are untouched. |
 | `search_messages {query, project?, reader?, before_seq?, limit?}` | `history {messages}` | archived messages whose text matches (FTS5, or LIKE without it), newest first, paginated by `before_seq`, among the conversations the reader (the person unless `reader` names an agent) could list with `conversations` for that project or everywhere: an agent searches only what it is in. |
@@ -439,7 +439,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
 | `reload` | `ok`, `unavailable`, `backpressure`, `conflict`, `storage_unavailable` | with `[experimental] reload = true` in the daemon's `agentd.toml` (or `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` on the daemon): reads the candidate executable's `--build-info` (`AGENTDOCKER_RELOAD_CANDIDATE`, else the release its managed installation has activated since it started, else its own executable), refuses another host or an older state schema before offering anything, offers the coordinator transfer, hands the listening socket, the daemon lock and the container endpoint to the successor, and answers `ok` once the successor says it is serving, then exits without touching agents; a refusal, a death, or no readiness within 30 s answers `unavailable` with the reason and leaves this daemon serving; without the gate, refuses without changing the daemon or agents |
 | `vacuum {force?}` | `vacuumed {before_bytes, after_bytes}` | SQLite `VACUUM` on the state database; nothing else is answered while it runs, so it is a `conflict` while sessions are live unless `force` |
-| `send {from, to, kind, payload, reply_to?, links?}` | `sent {message, subscribers, recipient_readiness?}` or `error(backpressure\|forbidden)` | `pause` and `resume` are reserved for committed project lifecycle requests and are refused here, including on the restricted endpoint; `to` is an agent ref or `role:<name>`, `project:<id prefix or absolute path>`, `topic:<name>`, or `all`; an agent is refused `forbidden` for another project's agent, project or channel, and its `all` is its own project (see [Messaging](#messaging)); a full addressed inbox rejects the entire send without publishing or evicting previously accepted messages |
+| `send {from, to, kind, payload, reply_to?, links?}` | `sent {message, subscribers, recipient_readiness?}` or `error(backpressure\|forbidden)` | `pause` and `resume` are reserved for committed project lifecycle requests and are refused here, including on the restricted endpoint; `to` is an agent ref or `role:<name>`, `project:<id prefix or absolute path>`, `topic:<name>`, or `all`; an agent is refused `forbidden` for another project's agent, project or channel, and its `all` is its own project (see [Messaging](#messaging)); a full addressed inbox rejects the entire send without publishing or evicting previously accepted messages; each `recipient_readiness` detail names where the recipient stands as its `issue` and the one `fix?` the readiness decision gives (see [Derived activity](#derived-activity)) |
 | `subscribe {agent?, topics?}` | stream of `message` or `lagged {skipped: u64}` | replays unacknowledged inbox messages, then streams live; neither step consumes the inbox |
 | `inbox {agent, drain?}` | `messages`, `error(conflict)` | snapshot; only explicit `drain: true` acknowledges its message IDs. A provider-blocked destructive read returns the legacy-compatible conflict shape without consuming input. |
 | `ack_inbox {agent, messages: MessageId[]}` | `ok` | idempotently acknowledge specific delivered messages; emits `inbox_acknowledged` |
@@ -1081,6 +1081,36 @@ never "may wait"; a browser agent, the person and a process of unknown birth
 are never called unreachable. Verified requires a fresh receiver report and a prior receipt from
 the same process generation. It does not confirm a particular message or
 override provider limits. Hook/MCP contact alone cannot establish idle wake.
+
+**One readiness decision.** `readiness::decide(agent, now, provider_block)`
+is the one place the provider block, the receiver evidence and the kind of
+session are put together; the send snapshot, `delivery`'s waiting states,
+`ps` (its INPUT column and `--input-details`), the MCP projections and every
+desktop surface render its result rather than assembling their own. Its
+states, first match wins: *ended*; *provider blocked* (a block takes
+precedence over current receiver evidence); *paused*; *silent* (a receiver
+that reported for this process and went quiet); *unreachable*; *awaits
+check-in* (a browser agent from the connector, or a session known by its key
+alone that nothing has been heard from for `SESSION_PRESENCE`: it reads when
+it is next used); *waits for prompt*; *ready*. Each has exactly one fix per
+runtime:
+
+| State | Claude Code | Codex | OpenCode | Other runtimes |
+|---|---|---|---|---|
+| ended | `reconnect` when its resume command can be written (a conversation id and a folder), else `none` | `codex_resume` when its thread is known, else `none` | `none` | `none` |
+| provider blocked | `wait_for_provider` | `wait_for_provider` | `wait_for_provider` | `wait_for_provider` |
+| paused | `review_delivery` | `review_delivery` | `review_delivery` | `review_delivery` |
+| silent, waits for prompt | `reconnect`, else `setup_then_reconnect` | `launch_live` | `none` (its plugin wakes it) | `read_inbox` |
+| unreachable | `setup_then_reconnect` | `codex_resume`, else `launch_live` | `setup_then_reconnect` | `read_inbox` |
+| awaits check-in | `wait_for_check_in` | `wait_for_check_in` | `wait_for_check_in` | `wait_for_check_in` |
+| ready | `none` | `none` | `none` | `none` |
+
+An unreachable Claude Code session is set up first: without
+`agentdocker setup claude-code` it has no AgentDocker MCP entry, and the
+resume command alone fails. A state's label, the short hint beside a command
+or button, and the long guidance all say the one fix; a desktop readiness dot
+takes its tone from the state, never from its words.
+
 MCP sends report `accepted_by_agentdocker` with provider receipt and idle wake
 unconfirmed. The daemon-wide bus subscriber count is omitted because it says
 nothing about the recipient. CLI send prints only the message ID on stdout;
@@ -1099,22 +1129,33 @@ reply route through a different account connector.
 Successful sends also return optional `recipient_readiness`: the number of exact
 durable recipients, the number needing attention, and at most 32 named details.
 The snapshot is computed after the same message transaction commits, excluding
-the sender and agents outside the actual destination. An ended/unknown record,
-missing/stale receiver, paused delivery or provider block is surfaced separately;
-provider blocks take precedence over current receiver evidence. Human inboxes do
-not need a provider receiver. The snapshot neither acknowledges input nor retries
+the sender and agents outside the actual destination, from the one readiness
+decision: every state but *ready* needs attention. Human inboxes do not need a
+provider receiver. The snapshot neither acknowledges input nor retries
 it, and missing data from an older daemon means unknown. Names are bounded and
-control characters removed; a Claude resume command includes a session label only
-when it is a bounded ASCII identifier, never shell syntax. Guidance is by
-runtime: a Claude Code session gets its resume command, a Codex session its
-receiver reconnect, and a runtime with no input adapter (`custom`, `gemini-cli`,
-`cursor`, …) is told that it has no input receiver and the message waits in its
-queue for the agent's own read (`inbox`/`watch --as <id>`, `read_inbox`) —
-never an instruction to reconnect a receiver that cannot exist. MCP includes
-guidance with each detail. CLI stderr shows the named issues; `ps` has an INPUT column and
-`ps --input-details` gives guidance for every listed session, without the send
-snapshot's 32-detail cap. UI advice belongs to the original composer and expands
-on demand; it is not persisted as fresh state after reopening.
+control characters removed. Each detail carries the state as its `issue`
+(`session_ended`, `provider_blocked`, `delivery_paused`, `receiver_silent`,
+`unreachable`, or `no_receiver` for both *waits for prompt* and *awaits
+check-in*, which the fix tells apart; `unknown_session` for a record that is
+gone) and an optional `fix`: `{"kind": …}` with `reconnect` (and the whole
+`command` to paste, which includes a session label only when it is a bounded
+ASCII identifier, never shell syntax), `setup_then_reconnect`, `codex_resume`
+(and its `session`), `launch_live`, `wait_for_provider`, `review_delivery`,
+`read_inbox`, `wait_for_check_in` or `none`. A kind a client does not know, or
+a command or session with control characters in it, reads as unknown and the
+client points at `ps --input-details`; a detail without `fix`, from an older
+daemon, is said without one. A runtime with no input adapter (`custom`,
+`gemini-cli`, `cursor`, …) is told the message waits in its queue for the
+agent's own read (`inbox`/`watch --as <id>`, `read_inbox`) — never an
+instruction to reconnect a receiver that cannot exist. MCP includes the
+guidance for that fix with each detail, and `list_agents`, `inspect_agent`
+and `whoami` add `fix` to an agent's projection whenever it is not `none`,
+the provider block looked up among every listed record (for a single record,
+its own). CLI stderr shows each named issue and its guidance; `ps` has an
+INPUT column and `ps --input-details` gives the guidance for every listed
+session, without the send snapshot's 32-detail cap. UI advice belongs to the
+original composer and expands on demand; it is not persisted as fresh state
+after reopening.
 
 Herdr marks every pane working, blocked, or idle. That is the right question and we answer it better, because we know *why*: an agent waiting on a claim is blocked **on a named resource, held by a named agent**; fresh provider observations distinguish working from idle, and an agent with neither fresh provider evidence nor recent coordination is unknown. Silence is not proof of idle; blocked resource evidence takes precedence. AgentDocker derives that from the working set instead of guessing at terminal output, and it is what `ps`, `activity` and the desktop app show beside each agent.
 

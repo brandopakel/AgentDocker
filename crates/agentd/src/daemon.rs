@@ -6627,10 +6627,10 @@ impl State {
             let issue = self.registry.get(id).map_or_else(
                 || Some(agentdocker_core::RecipientReadiness::unknown(id.clone())),
                 |agent| {
-                    let blocked =
-                        agentdocker_core::provider_block(agent, blocked_sources.iter().copied())
-                            .and_then(|(_, state)| state.issue.as_ref())
-                            .map(|issue| issue.kind);
+                    let blocked = agentdocker_core::readiness::provider_issue(
+                        agent,
+                        blocked_sources.iter().copied(),
+                    );
                     agentdocker_core::RecipientReadiness::for_agent(agent, now, blocked)
                 },
             );

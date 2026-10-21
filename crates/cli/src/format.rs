@@ -1261,13 +1261,24 @@ pub fn send_readiness(readiness: &agentdocker_core::SendReadiness) {
 }
 
 pub fn recipient_readiness(recipient: &agentdocker_core::RecipientReadiness) {
-    eprintln!(
-        "  {} ({}): {}",
-        recipient.name,
-        recipient.agent.short(),
-        recipient.issue.label()
-    );
-    eprintln!("    {}", recipient.guidance());
+    for line in recipient_lines(recipient) {
+        eprintln!("{line}");
+    }
+}
+
+/// A recipient that needs attention, as `send` and `ps --input-details`
+/// print it: who and where it stands, then the one fix in full — the
+/// decision's own words (`agentdocker_core::readiness`).
+pub fn recipient_lines(recipient: &agentdocker_core::RecipientReadiness) -> [String; 2] {
+    [
+        format!(
+            "  {} ({}): {}",
+            recipient.name,
+            recipient.agent.short(),
+            recipient.label()
+        ),
+        format!("    {}", recipient.guidance()),
+    ]
 }
 
 /// A browser extension as an app of the browser's: "Claude in Chrome

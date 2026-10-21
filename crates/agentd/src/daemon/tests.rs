@@ -8482,6 +8482,13 @@ async fn send_readiness_reports_only_queued_recipients_and_never_receipts() {
                 .guidance()
                 .contains("claude --resume resume-session")
         );
+        // The fix itself rides with it, the command whole, for a client
+        // to show as it is.
+        assert!(matches!(
+            &report.details[0].fix,
+            Some(agentdocker_core::readiness::Fix::Reconnect { command })
+                if command.contains("claude --resume resume-session")
+        ));
         assert!(
             inbox(&daemon, unbound.id.as_str(), false)
                 .await

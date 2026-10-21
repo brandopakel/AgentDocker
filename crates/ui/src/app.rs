@@ -2237,7 +2237,7 @@ impl App {
             if self
                 .agents
                 .iter()
-                .any(|a| a.id.as_str() == id && self.delivery_paused(a))
+                .any(|a| a.id.as_str() == id && self.delivery_needs_you(a))
             {
                 continue;
             }
