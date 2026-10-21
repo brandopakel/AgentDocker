@@ -510,6 +510,9 @@ enum Command {
         /// Make every `claude` typed in a terminal carry the channel flag that lets AgentDocker wake it: a marked block in your shell's startup file, previewed like every other change.
         #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "health", "list", "show"])]
         shell: bool,
+        /// Take AgentDocker's wiring out of the tools (all, or those named): MCP entries, hooks, skills, the OpenCode plugin and the shell block. Only entries that run AgentDocker go; `--preview` saves the plan first, `--undo` puts it back.
+        #[arg(long, conflicts_with_all = ["dry_run", "apply", "undo", "health", "list", "show", "shell"])]
+        remove: bool,
     },
     /// Launch a command as a supervised agent and print its id.
     Run(RunArgs),
@@ -3779,8 +3782,10 @@ async fn run() -> Result<()> {
             show,
             json,
             shell,
+            remove,
         } => {
-            if preview
+            if remove
+                || preview
                 || !dry_run
                 || shell
                 || apply.is_some()
@@ -3800,6 +3805,10 @@ async fn run() -> Result<()> {
                     Action::Health
                 } else if list {
                     Action::List
+                } else if remove && preview {
+                    Action::RemovePreview
+                } else if remove {
+                    Action::Remove
                 } else if preview || shell {
                     Action::Preview
                 } else {

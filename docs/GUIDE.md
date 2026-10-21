@@ -66,7 +66,10 @@ and Mac/Linux feeds. It remains unsigned and requires explicit preview consent.
 
 `desktop prune --preview` reports removable old builds; omit `--preview` to remove
 them. `desktop uninstall --preview` reports launcher removal; omit `--preview` to
-apply. Both preserve settings, running versions and unrecognized files. Loaded
+apply. Both preserve settings, running versions and unrecognized files.
+Uninstall leaves the tools' configuration alone: run `agentdocker setup --remove`
+first, or Claude Code, Codex and the rest keep MCP entries and hooks that point
+at the removed binary. Loaded
 launchers move into a private retirement directory until they close; a later
 activation, prune or uninstall removes their verified files. Retirement is capped
 at eight directories and 256 MiB. Uninstall
@@ -267,7 +270,12 @@ versions and MCP/hooks configuration. **Other supported tools** expands the rest
 of the inventory. **Review setup**, **Apply reviewed changes**, and **Undo this
 setup** use saved plans. Ordinary `agentdocker setup <runtime>` also saves an
 undo receipt and prints its ID; `setup --show ID` reviews it and `setup --undo ID`
-reverses only unchanged configuration. **Check connections** provides bounded diagnostics;
+reverses only unchanged configuration. `setup --remove [runtime…]` takes
+AgentDocker's wiring out of every tool (or the ones named) without a receipt:
+MCP entries and hooks that run AgentDocker, its skills and OpenCode plugin while
+still as installed, and the shell block; everything else in those files stays,
+and it saves a receipt `setup --undo` puts back. `--remove --preview` saves the
+plan to review and `--apply` first. **Check connections** provides bounded diagnostics;
 actual provider delivery requires a real round trip.
 
 ### Usage
@@ -907,6 +915,12 @@ Newest first. Only what changes how the product is used.
   same command, network destination, files or access through without asking
   until that Codex session ends (`agentdocker answer <id> "Allow for session"`
   from the command line). Offered only where Codex offers it.
+
+- **Take AgentDocker out of your tools.** `agentdocker setup --remove` removes
+  its MCP entries, hooks, skills, OpenCode plugin and shell block from every
+  tool, only the entries that run AgentDocker, with nothing else in those files
+  touched; `setup --undo <id>` puts them back. Run it before
+  `desktop uninstall`.
 
 - **A provider outage no longer stops an agent for good.** When a provider's
   servers fail (overloaded, unreachable), the agent's queued messages wait a
