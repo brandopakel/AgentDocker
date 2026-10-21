@@ -353,15 +353,16 @@ fn shown(argv: &[String]) -> String {
 }
 
 /// What a provider printed, as it may be shown: without any `--env` value
-/// of `argv`, which it may repeat. Every place any value occurs is found in
-/// the output as printed and hidden together, so a short value can never
-/// break up a longer one before it is found.
+/// of `argv`, which it may repeat. Every place any value occurs, as given
+/// or without the space around it, is found in the output as printed and
+/// hidden together, so neither a short value nor trimming can break up a
+/// longer one before it is found; the result is trimmed after.
 fn masked(output: &str, argv: &[String]) -> String {
-    let output = output.trim();
     let values: Vec<&str> = argv
         .windows(2)
         .filter(|pair| pair[0] == "--env")
         .filter_map(|pair| pair[1].split_once('=').map(|(_, value)| value))
+        .flat_map(|value| [value, value.trim()])
         .filter(|value| !value.is_empty())
         .collect();
     let mut hidden = vec![false; output.len()];
@@ -382,7 +383,7 @@ fn masked(output: &str, argv: &[String]) -> String {
         }
         hiding = hidden[at];
     }
-    shown
+    shown.trim().to_owned()
 }
 
 fn run_step(step: &Delegated, argv: &[String]) -> Result<agentdocker_host::command::Output> {
@@ -1762,6 +1763,21 @@ mod tests {
             ),
             "A_FLAG=… API_TOKEN=… ok"
         );
+        // A value with space around it, at either end of what was printed,
+        // printed with that space or without it.
+        let spaced = [
+            "--env".to_owned(),
+            "API_TOKEN= synthetic-secret\n".to_owned(),
+        ];
+        for output in [
+            "API_TOKEN= synthetic-secret\n",
+            "API_TOKEN=synthetic-secret",
+            " synthetic-secret\n failed",
+            "synthetic-secret failed",
+        ] {
+            let shown = masked(output, &spaced);
+            assert!(!shown.contains("synthetic"), "{output:?} → {shown:?}");
+        }
         assert!(!plan.view().to_string().contains(secret));
     }
 
