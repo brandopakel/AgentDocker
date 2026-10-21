@@ -419,9 +419,9 @@ control does, its id or its accessible label:
   `task-approve-<id>`/`task-bounce-<id>` in a Review lane that is the
   person's, `task-hand-<id>-<agent>`, `task-release-<id>`,
   `task-archive-<id>`, `task-close-<id>`; `board-<slug>` switches boards;
-  `board-more` for the next page; `board-filter-agent`, `board-tags` and
-  `board-tag-<tag>`, `board-layout`, `board-density`; a table row
-  `task-row-<id>`; on an open card `card-plan`, `card-attach`,
+  `board-more` for the next page; `board-filter-agent`, `board-filter-mine`,
+  `board-tags` and `board-tag-<tag>`, `board-layout`, `board-density`; a
+  table row `task-row-<id>`; on an open card `card-plan`, `card-attach`,
   `card-upload`, `card-link`, `card-start`, their choices `card-plan-<id>`,
   `card-attach-<id>`, `card-start-<runtime>`, `card-link-kind-<kind>`,
   `card-link-target`, `card-link-add`, and per file or link

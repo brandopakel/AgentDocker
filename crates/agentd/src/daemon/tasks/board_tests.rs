@@ -892,6 +892,10 @@ async fn card_starts_launch_the_input_adapter_and_queue_the_assignment() {
         let captured = captured.expect("fixture command did not write its arguments");
         let lines: Vec<_> = captured.lines().collect();
         assert_eq!(assigned.assignee.as_ref(), Some(&agent.id));
+        assert!(
+            agent.launched_by_person(),
+            "started by the person, by hand or by their rule"
+        );
         assert_eq!(queued, 1, "the card is durably queued once");
         if runtime == "codex" {
             assert_eq!(lines[..4], ["1", "", "codex-input", "--"]);
@@ -1206,4 +1210,123 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
             "{reference}"
         );
     }
+}
+
+/// `mine` is the person's cards and those held by the agents they launched:
+/// for the person, or a reader who names nobody. An agent asking means its
+/// own, as `me` does; a holder nobody says the person launched is not
+/// guessed into it.
+#[tokio::test]
+async fn mine_is_the_persons_cards_and_their_agents() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let Response::Agent { agent: carol } = d
+        .handle(Request::Register {
+            spec: AgentSpec {
+                name: "carol".into(),
+                workdir: Some(f.work.clone().into()),
+                labels: [(
+                    agentdocker_core::agent::LAUNCHED_BY_LABEL.to_owned(),
+                    HUMAN.to_owned(),
+                )]
+                .into(),
+                ..AgentSpec::default()
+            },
+            pid: None,
+            session: None,
+        })
+        .await
+    else {
+        panic!("carol registers")
+    };
+    assert!(carol.launched_by_person());
+    let mut held = Vec::new();
+    for (title, holder) in [
+        ("The person's", Some("user")),
+        ("Carol's", Some("carol")),
+        ("Alice's", Some("alice")),
+        ("Nobody's", None),
+    ] {
+        let filed = card(
+            d.handle(create(HUMAN, &f.work, title, Some("ready"), &[]))
+                .await,
+        );
+        if let Some(holder) = holder {
+            card(
+                d.handle(Request::TaskUpdate {
+                    agent: HUMAN.to_owned(),
+                    task: filed.id.to_string(),
+                    title: None,
+                    acceptance: None,
+                    assignee: Some(holder.to_owned()),
+                    links: None,
+                    description: None,
+                    priority: None,
+                    size: None,
+                    due: None,
+                    external_blocker: None,
+                    parent: None,
+                    blocked_by: None,
+                    tags: None,
+                    plan: None,
+                    expected_updated_at: None,
+                })
+                .await,
+            );
+        }
+        held.push(filed);
+    }
+    let list = |assignee: &str, agent: Option<&str>| Request::Tasks {
+        project: Some(f.work.clone()),
+        column: None,
+        archived: false,
+        offset: 0,
+        limit: 0,
+        board: None,
+        lane: None,
+        assignee: Some(assignee.to_owned()),
+        agent: agent.map(str::to_owned),
+        open: false,
+        query: None,
+        tag: None,
+    };
+    let titles = |response: Response| match response {
+        Response::Tasks { tasks, .. } => {
+            let mut titles: Vec<String> = tasks.into_iter().map(|t| t.title).collect();
+            titles.sort();
+            titles
+        }
+        other => panic!("{other:?}"),
+    };
+    for reader in [None, Some(HUMAN)] {
+        assert_eq!(
+            titles(d.handle(list("mine", reader)).await),
+            ["Carol's", "The person's"],
+            "{reader:?}"
+        );
+    }
+    assert_eq!(
+        titles(d.handle(list("mine", Some("alice"))).await),
+        ["Alice's"],
+        "an agent's own, as `me`"
+    );
+    assert_eq!(
+        titles(d.handle(list("mine", Some(carol.id.as_str()))).await),
+        ["Carol's"]
+    );
+    assert!(matches!(
+        d.handle(list("mine", Some("nobody-such"))).await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+    // `me` still wants the reader named.
+    assert!(matches!(
+        d.handle(list("me", None)).await,
+        Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }
+    ));
 }

@@ -99,6 +99,17 @@ enum Walk {
     Outside(Vec<u32>),
 }
 
+/// Where the process on a connection was found to run.
+enum Traced {
+    /// The person's: outside every agent's session, or the daemon's own.
+    Person,
+    /// Inside an agent's session, as found.
+    Inside(String),
+    /// Somewhere that cannot be told, for this reason; it authorises
+    /// nothing.
+    Unknown(String),
+}
+
 /// Walk up from `peer`, itself included. Inside an agent's session when a
 /// process on the way is a provider's session process, a Codex server, or
 /// a live agent's own process — by its pid *and* its birth, so a reused
@@ -332,11 +343,7 @@ impl Daemon {
         if names.is_empty() {
             return None;
         }
-        // The daemon's own callers, in this process.
-        if peer.is_some_and(|(pid, _)| pid == std::process::id()) {
-            return None;
-        }
-        let agents: HashMap<u32, DateTime<Utc>> = {
+        {
             let state = lock(&self.state);
             let person = names.iter().any(|name| {
                 name == HUMAN
@@ -350,25 +357,74 @@ impl Daemon {
             if !person {
                 return None;
             }
-            state
-                .registry
-                .live()
-                .filter(|a| !humans::is_human(a))
-                .filter_map(|a| Some((a.pid?, a.process_started_at?)))
-                .collect()
-        };
+        }
+        match self.trace(peer, request).await {
+            Traced::Person => None,
+            Traced::Inside(reason) => {
+                let pid = peer.map_or(0, |(pid, _)| pid);
+                warn!(peer = pid, %reason, "refused a request acting as the person");
+                Some(refusal(&reason))
+            }
+            Traced::Unknown(reason) => Some(refusal(&reason)),
+        }
+    }
+
+    /// A client's launch is the person's when the process that sent it is
+    /// theirs ([`Traced::Person`]: the app, their own terminal), and then
+    /// it carries `launched_by=user`. Whatever a client wrote there was
+    /// dropped at admission, so a launch from inside an agent's session, or
+    /// from a process that cannot be traced, carries none. With the person
+    /// check off every client is taken for the person, as every claim then
+    /// is.
+    pub(crate) async fn mark_launcher(self: &Arc<Self>, peer: Option<Peer>, request: &mut Request) {
+        if !matches!(
+            request,
+            Request::Run { .. } | Request::RunContainer { .. } | Request::ResumeSession { .. }
+        ) {
+            return;
+        }
+        let persons =
+            !self.person_check || matches!(self.trace(peer, request).await, Traced::Person);
+        if let Request::Run { spec }
+        | Request::RunContainer { spec, .. }
+        | Request::ResumeSession { spec, .. } = request
+            && persons
+        {
+            spec.labels.insert(
+                agentdocker_core::agent::LAUNCHED_BY_LABEL.to_owned(),
+                HUMAN.to_owned(),
+            );
+        }
+    }
+
+    /// Where the process on a connection runs: the person's, inside an
+    /// agent's session, or somewhere that cannot be told. The process must
+    /// still be the one that connected; what was found is remembered by
+    /// its pid and birth ([`Peers`]).
+    async fn trace(self: &Arc<Self>, peer: Option<Peer>, request: &Request) -> Traced {
+        // The daemon's own callers, in this process.
+        if peer.is_some_and(|(pid, _)| pid == std::process::id()) {
+            return Traced::Person;
+        }
+        let agents: HashMap<u32, DateTime<Utc>> = lock(&self.state)
+            .registry
+            .live()
+            .filter(|a| !humans::is_human(a))
+            .filter_map(|a| Some((a.pid?, a.process_started_at?)))
+            .collect();
+        let unknown = |reason: &str| Traced::Unknown(reason.to_owned());
         // The process that opened the connection, still: not another that
         // was given its pid. Checked before anything is let through.
         let Some((pid, Some(born))) = peer else {
-            return Some(refusal("a process the daemon cannot identify"));
+            return unknown("a process the daemon cannot identify");
         };
         if procinfo::start_time(pid) != Some(born) {
-            return Some(refusal("a connection whose process has ended"));
+            return unknown("a connection whose process has ended");
         }
         if matches!(request, Request::Send { from, .. } if from == HUMAN) {
             let running = Running::of(pid);
             if lock(&self.state).controller_typing((pid, Some(born)), request, &running) {
-                return None;
+                return Traced::Person;
             }
         }
         let key = (pid, born.timestamp_micros());
@@ -384,18 +440,16 @@ impl Daemon {
             _ => {
                 let table = match tokio::task::spawn_blocking(procinfo::processes).await {
                     Ok(Ok(table)) => table,
-                    _ => return Some(refusal("a process whose ancestry could not be read")),
+                    _ => return unknown("a process whose ancestry could not be read"),
                 };
                 let found = match walk(pid, &table, &agents, procinfo::start_time, procinfo::unseen)
                 {
                     Ok(Walk::Inside(reason)) => Found::Inside(reason),
                     Ok(Walk::Outside(chain)) => Found::Outside(Instant::now(), chain),
-                    Err(reason) => return Some(refusal(&reason)),
+                    Err(reason) => return Traced::Unknown(reason),
                 };
                 if procinfo::start_time(pid) != Some(born) {
-                    return Some(refusal(
-                        "a connection whose process ended while it was traced",
-                    ));
+                    return unknown("a connection whose process ended while it was traced");
                 }
                 let mut peers = lock(&self.peers);
                 if peers.found.len() >= REMEMBERED {
@@ -406,11 +460,8 @@ impl Daemon {
             }
         };
         match found {
-            Found::Inside(reason) => {
-                warn!(peer = pid, %reason, "refused a request acting as the person");
-                Some(refusal(&reason))
-            }
-            Found::Outside(..) => None,
+            Found::Inside(reason) => Traced::Inside(reason),
+            Found::Outside(..) => Traced::Person,
         }
     }
 }
@@ -800,13 +851,16 @@ mod tests {
     /// the person is refused before anything is done; the same request from
     /// the daemon's own process is not; and a supervised Codex terminal's
     /// controller — the agent's own process, exactly — may queue what the
-    /// person typed to that agent.
+    /// person typed to that agent; nor is its launch the person's.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_process_under_an_agent_cannot_act_as_the_person() {
         use std::io::Write as _;
         let tmp = tempfile::tempdir().unwrap();
-        let daemon = Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("s")).unwrap());
+        // Not `s`: that is where session owners live, and this test
+        // launches one.
+        let daemon =
+            Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("host.sock")).unwrap());
         let listener = crate::server::bind(&daemon).await.unwrap();
         let serving = tokio::spawn(crate::server::serve(daemon.clone(), listener));
         // A shell that, once told, becomes a client sending `request`.
@@ -911,6 +965,38 @@ mod tests {
             matches!(&reply, Response::Error { code: ErrorCode::Invalid, message, .. }
                 if message.contains("codex-input")),
             "{reply:?}"
+        );
+
+        // A launch from under an agent is not the person's, whatever its
+        // spec says; the same launch from the daemon's own process is.
+        let inside = spawn(
+            r#"{"op":"run","spec":{"name":"launched-inside","command":["/bin/sh","-c","exit 0"],"labels":{"launched_by":"user"}}}"#
+                .into(),
+        );
+        register("another-agent", inside.id()).await;
+        let reply = finish(inside).await;
+        let Response::Agent { agent: launched } = &reply else {
+            panic!("{reply:?}")
+        };
+        assert!(!launched.launched_by_person(), "{launched:?}");
+        let mut launch: Request = serde_json::from_str(
+            r#"{"op":"run","spec":{"name":"launched-here","command":["/bin/sh","-c","exit 0"]}}"#,
+        )
+        .unwrap();
+        daemon
+            .mark_launcher(
+                Some((std::process::id(), procinfo::start_time(std::process::id()))),
+                &mut launch,
+            )
+            .await;
+        let Request::Run { spec } = &launch else {
+            unreachable!()
+        };
+        assert_eq!(
+            spec.labels
+                .get(agentdocker_core::agent::LAUNCHED_BY_LABEL)
+                .map(String::as_str),
+            Some(HUMAN)
         );
 
         // The daemon's own process is trusted, whatever its ancestry.

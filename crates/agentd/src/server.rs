@@ -138,14 +138,17 @@ fn transient_accept_failure(error: &io::Error) -> bool {
 
 /// A client's launch or registration never brings a role with it: roles
 /// are the person's to give (`role_assign`), and a spec is whatever the
-/// client wrote. A record keeps the roles it already holds.
-fn without_roles(request: &mut Request) {
+/// client wrote. A record keeps the roles it already holds. Nor does it
+/// bring who launched it: the daemon says that ([`Daemon::mark_launcher`]).
+fn without_daemon_labels(request: &mut Request) {
     if let Request::Run { spec }
     | Request::RunContainer { spec, .. }
     | Request::Register { spec, .. }
     | Request::ResumeSession { spec, .. } = request
     {
         spec.labels.remove(agentdocker_core::agent::ROLE_LABEL);
+        spec.labels
+            .remove(agentdocker_core::agent::LAUNCHED_BY_LABEL);
     }
 }
 
@@ -185,7 +188,7 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
             }
         };
         let mut request = frame.request;
-        without_roles(&mut request);
+        without_daemon_labels(&mut request);
         if let Some(refusal) = daemon.admit_launch(&mut request) {
             write(&mut writer, &refusal).await?;
             continue;
@@ -194,6 +197,7 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
             write(&mut writer, &refusal).await?;
             continue;
         }
+        daemon.mark_launcher(peer, &mut request).await;
         if let Some(refusal) = daemon.authenticate_verdict(peer, &mut request).await {
             write(&mut writer, &refusal).await?;
             continue;
@@ -1215,10 +1219,11 @@ mod tests {
     }
 
     #[test]
-    fn a_client_launch_or_registration_brings_no_role() {
+    fn a_client_launch_or_registration_brings_no_role_and_no_launcher() {
         let spec = AgentSpec {
             labels: [
                 ("role".to_owned(), "reviewer".to_owned()),
+                ("launched_by".to_owned(), "user".to_owned()),
                 ("team".to_owned(), "a".to_owned()),
             ]
             .into(),
@@ -1236,7 +1241,7 @@ mod tests {
                 spec: spec.clone(),
             },
         ] {
-            without_roles(&mut request);
+            without_daemon_labels(&mut request);
             let (Request::Run { spec }
             | Request::Register { spec, .. }
             | Request::ResumeSession { spec, .. }) = &request
@@ -1244,8 +1249,59 @@ mod tests {
                 unreachable!()
             };
             assert!(!spec.labels.contains_key("role"));
+            assert!(!spec.labels.contains_key("launched_by"));
             assert_eq!(spec.labels["team"], "a", "other labels stay");
         }
+    }
+
+    /// Over the socket, a launch from the person's process (here the
+    /// daemon's own, which is trusted) says the person launched it; a
+    /// registration says nothing of it, whatever its spec wrote.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_launch_by_the_person_says_so_and_a_registration_does_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("sock")).unwrap());
+        let (client, server) = agentdocker_host::ipc::pair().await.unwrap();
+        let task = tokio::spawn(handle(daemon.clone(), server));
+        let mut client = BufReader::new(client);
+        let claimed: std::collections::BTreeMap<String, String> =
+            [("launched_by".to_owned(), "user".to_owned())].into();
+        for (request, launched) in [
+            (
+                Request::Run {
+                    spec: AgentSpec {
+                        name: "launched".into(),
+                        command: vec!["/bin/sh".into(), "-c".into(), "exit 0".into()],
+                        ..Default::default()
+                    },
+                },
+                true,
+            ),
+            (
+                Request::Register {
+                    spec: AgentSpec {
+                        name: "registered".into(),
+                        labels: claimed,
+                        ..Default::default()
+                    },
+                    pid: None,
+                    session: None,
+                },
+                false,
+            ),
+        ] {
+            let line = serde_json::to_string(&request).unwrap() + "\n";
+            client.get_mut().write_all(line.as_bytes()).await.unwrap();
+            let mut reply = String::new();
+            client.read_line(&mut reply).await.unwrap();
+            let Ok(Response::Agent { agent }) = serde_json::from_str::<Response>(&reply) else {
+                panic!("{reply}")
+            };
+            assert_eq!(agent.launched_by_person(), launched, "{agent:?}");
+        }
+        drop(client);
+        let _ = task.await;
     }
 
     #[tokio::test]

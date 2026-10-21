@@ -2638,7 +2638,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "list_tasks",
-            "description": "The project's board of work: cards in lanes, each with a key (APP-12), a title and what done means; each lane stands for a category (backlog, ready, in_progress, review, done, blocked, cancelled). Cards in the board's pull source are there to be pulled. Narrow it by lane, by whose it is (assignee: an agent, me or none), to open cards, by words or by tag.",
+            "description": "The project's board of work: cards in lanes, each with a key (APP-12), a title and what done means; each lane stands for a category (backlog, ready, in_progress, review, done, blocked, cancelled). Cards in the board's pull source are there to be pulled. Narrow it by lane, by whose it is (assignee: an agent, me, mine or none), to open cards, by words or by tag.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2646,7 +2646,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "board": { "type": "string", "description": "Board slug or name; the project's main board when absent." },
                     "lane": { "type": "string", "description": "A lane by slug, name or category." },
                     "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done", "blocked", "cancelled"] },
-                    "assignee": { "type": "string", "description": "Whose: an agent name or id, me, or none." },
+                    "assignee": { "type": "string", "description": "Whose: an agent name or id, me, mine, or none. mine is the person's cards and those held by agents the person launched when the person asks; asked by you, it is your own, as me." },
                     "open": { "type": "boolean", "description": "Only cards not done, cancelled or archived." },
                     "query": { "type": "string", "description": "Words in the key, title, description or acceptance." },
                     "tag": { "type": "string" },
@@ -3140,6 +3140,34 @@ mod tests {
     fn tool_text(result: &Value) -> Value {
         let text = result["result"]["content"][0]["text"].as_str().unwrap();
         serde_json::from_str(text).unwrap()
+    }
+
+    /// `list_tasks` passes `mine` through with the caller named, so the
+    /// daemon answers it for this agent: its own cards, as `me`.
+    #[tokio::test]
+    async fn list_tasks_asks_for_mine_as_the_caller() {
+        let s = server(vec![Response::Tasks {
+            tasks: Vec::new(),
+            more: false,
+        }]);
+        let reply = s
+            .handle(rpc(
+                1,
+                "tools/call",
+                json!({"name": "list_tasks", "arguments": {"project": "/p/orchard", "assignee": "mine", "open": true}}),
+            ))
+            .await
+            .unwrap();
+        assert!(reply["error"].is_null(), "{reply}");
+        assert!(
+            s.backend.requests().iter().any(|r| matches!(
+                r,
+                Request::Tasks { project: Some(p), assignee: Some(a), agent: Some(me), open: true, .. }
+                    if p == "/p/orchard" && a == "mine" && me == "abc123"
+            )),
+            "{:?}",
+            s.backend.requests()
+        );
     }
 
     #[tokio::test]

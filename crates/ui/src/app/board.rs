@@ -245,7 +245,7 @@ impl App {
     }
 
     /// Whether a card passes the board's search words and toggles.
-    fn shown(&self, task: &Task, board: &agentdocker_core::Board) -> bool {
+    pub(super) fn shown(&self, task: &Task, board: &agentdocker_core::Board) -> bool {
         let filters = self.shell.board_filters;
         let words = self.shell.board_query.trim().to_lowercase();
         let lane = board.lane_of(task);
@@ -253,6 +253,10 @@ impl App {
             .assignee
             .as_ref()
             .is_some_and(|a| !self.is_human(a.as_str()));
+        let mine = task
+            .assignee
+            .as_ref()
+            .is_some_and(|a| self.persons(a.as_str()));
         (words.is_empty()
             || task.key.to_lowercase() == words
             || task.title.to_lowercase().contains(&words)
@@ -268,6 +272,20 @@ impl App {
                 || !task.blocked_by.is_empty())
             && (!filters.waiting || (lane.owner == Owner::Human && lane.category == Column::Review))
             && (!filters.unassigned || task.assignee.is_none())
+            && (!filters.mine || mine)
+    }
+
+    /// Whether a holder is the person's: the person, or an agent whose
+    /// record says the person launched it (`launched_by`), as `list_tasks`
+    /// counts `mine`. A holder this app has no record of is nobody's in
+    /// particular.
+    pub(super) fn persons(&self, id: &str) -> bool {
+        let id = self.canonical_agent(id);
+        self.is_human(id)
+            || self
+                .agents
+                .iter()
+                .any(|a| a.id.as_str() == id && a.persons())
     }
 
     /// A tag's colour: the catalog's, else one from its name.
@@ -482,6 +500,13 @@ impl App {
                 "Held by an agent",
                 filters.agent,
                 F::Agent,
+            ))
+            .push(toggle(
+                "board-filter-mine",
+                Icon::Todo,
+                "Yours and your agents'",
+                filters.mine,
+                F::Mine,
             ))
             .push(tip(
                 custom_sized(

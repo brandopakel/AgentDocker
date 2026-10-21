@@ -1153,8 +1153,10 @@ pub enum Request {
     ///
     /// The filters narrow it: a board, a lane (slug, name or category),
     /// whose it is (`assignee`: an agent, `me` with `agent` naming the
-    /// caller, or `none`), only open cards, words in its key, title or
-    /// description, a tag. Without a project, every project's cards.
+    /// caller, `mine` — the person's and those of the agents they
+    /// launched, or a calling agent's own — or `none`), only open cards,
+    /// words in its key, title or description, a tag. Without a project,
+    /// every project's cards.
     Tasks {
         #[serde(default)]
         project: Option<String>,
@@ -1172,7 +1174,7 @@ pub enum Request {
         lane: Option<String>,
         #[serde(default)]
         assignee: Option<String>,
-        /// Who is asking, for `assignee: me`.
+        /// Who is asking, for `assignee: me` or `mine`.
         #[serde(default)]
         agent: Option<String>,
         #[serde(default)]
