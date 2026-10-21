@@ -16,6 +16,7 @@ use chrono::DateTime;
 mod board_tests;
 mod catalog;
 mod memory;
+mod memory_mirror;
 mod plans;
 mod roles;
 mod rules;

@@ -301,6 +301,8 @@ pub struct Daemon {
     /// interleave scans. A flag and notification allow callers to join a
     /// pending scan without holding any lock across async work.
     scanning: std::sync::atomic::AtomicBool,
+    /// A memory mirror run is under way; the next waits for the next tick.
+    mirroring: std::sync::atomic::AtomicBool,
     scan_finished: Notify,
     /// How session owners are run: as processes of the daemon binary, or
     /// in-process where no daemon binary is on hand (tests).
@@ -1715,6 +1717,7 @@ impl Daemon {
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
             scanning: std::sync::atomic::AtomicBool::new(false),
+            mirroring: std::sync::atomic::AtomicBool::new(false),
             owner_mode: supervisor::OwnerMode::detect(),
             webhooks: Mutex::new(webhooks::Sinks::default()),
             held: Mutex::new(None),

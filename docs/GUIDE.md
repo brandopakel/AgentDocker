@@ -864,7 +864,10 @@ Newest first. Only what changes how the product is used.
   `agentdocker memory add`. Every new session in the project is told them,
   newest first. A memory that is no longer true is replaced
   (`--supersedes`) or forgotten. It stays on this machine; anything that
-  looks like a secret is refused.
+  looks like a secret is refused. To keep a copy in Supermemory as well,
+  name the projects and a key file under `[memory.supermemory]` in
+  `agentd.toml` (off unless you turn it on; the hosted service is
+  Supermemory's, on its terms).
 
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   used to be unbound: its AgentDocker tools refused, so its model could reach

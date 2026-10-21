@@ -404,6 +404,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                 daemon.evict_journal_rings();
                 daemon.prune_logs();
                 daemon.trim_diagnostic_logs();
+                daemon.mirror_memories();
             }
         }
     };

@@ -12,7 +12,10 @@ fn memory_doc(memory: &Memory) -> Doc {
 
 impl State {
     /// Every memory of a project, superseded ones included.
-    fn project_memories(&mut self, project: &ProjectId) -> Result<Vec<Memory>, Box<Response>> {
+    pub(in crate::daemon) fn project_memories(
+        &mut self,
+        project: &ProjectId,
+    ) -> Result<Vec<Memory>, Box<Response>> {
         self.store_read("memories", |store| {
             store.documents_where::<Memory>(
                 MEMORY,
