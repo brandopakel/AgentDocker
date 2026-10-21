@@ -38,6 +38,10 @@ pub struct Findings {
 pub struct CodeVerdict {
     /// Sortable by when it was given.
     pub id: String,
+    /// Its place in the project's verdicts, one more than the last: which
+    /// word is a reviewer's latest is decided by this, never by a clock.
+    #[serde(default)]
+    pub seq: u64,
     pub project: ProjectId,
     pub branch: String,
     /// The full id of the commit the reviewer read.
@@ -119,6 +123,54 @@ pub fn verdict_id(at: DateTime<Utc>) -> String {
     format!("{nanos:016x}{tail}")
 }
 
+impl CodeVerdict {
+    /// The order verdicts were given in.
+    fn order(&self) -> (u64, DateTime<Utc>, &str) {
+        (self.seq, self.at, self.id.as_str())
+    }
+}
+
+/// Each reviewer's standing word on each branch: its latest approval or
+/// request for changes. A comment is never one.
+pub fn standing(verdicts: &[CodeVerdict]) -> std::collections::BTreeSet<&str> {
+    let mut latest: std::collections::BTreeMap<(&str, &AgentId), &CodeVerdict> = Default::default();
+    for verdict in verdicts.iter().filter(|v| v.verdict != Verdict::Comment) {
+        let kept = latest
+            .entry((verdict.branch.as_str(), &verdict.by))
+            .or_insert(verdict);
+        if verdict.order() > kept.order() {
+            *kept = verdict;
+        }
+    }
+    latest.values().map(|v| v.id.as_str()).collect()
+}
+
+/// Which of a project's verdicts to forget so that `given` fits under
+/// `cap`: the oldest that stand for nobody — comments, and words a
+/// reviewer has since replaced — and never a standing one. `None` when
+/// only standing words would be left to forget: the new one is refused
+/// rather than a reviewer's word lost.
+pub fn to_forget(existing: &[CodeVerdict], given: &CodeVerdict, cap: usize) -> Option<Vec<String>> {
+    let excess = (existing.len() + 1).saturating_sub(cap);
+    if excess == 0 {
+        return Some(Vec::new());
+    }
+    let mut all: Vec<CodeVerdict> = existing.to_vec();
+    all.push(given.clone());
+    let standing = standing(&all);
+    let mut idle: Vec<&CodeVerdict> = existing
+        .iter()
+        .filter(|v| !standing.contains(v.id.as_str()))
+        .collect();
+    idle.sort_by(|a, b| a.order().cmp(&b.order()));
+    (idle.len() >= excess).then(|| {
+        idle.into_iter()
+            .take(excess)
+            .map(|v| v.id.clone())
+            .collect()
+    })
+}
+
 /// What the gate says about a branch at a commit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -153,7 +205,7 @@ pub fn gate(verdicts: &[CodeVerdict], branch: &str, head: &str, role: &str) -> G
         .filter(|v| v.branch == branch && v.verdict != Verdict::Comment && v.counts_for(role))
     {
         let kept = latest.entry(&verdict.by).or_insert(verdict);
-        if (verdict.at, &verdict.id) > (kept.at, &kept.id) {
+        if verdict.order() > kept.order() {
             *kept = verdict;
         }
     }
@@ -161,7 +213,7 @@ pub fn gate(verdicts: &[CodeVerdict], branch: &str, head: &str, role: &str) -> G
         latest
             .values()
             .filter(|v| v.verdict == verdict)
-            .max_by_key(|v| (v.at, &v.id))
+            .max_by_key(|v| v.order())
             .map(|v| Box::new((*v).clone()))
     };
     if let Some(verdict) = newest(Verdict::Changes) {
@@ -170,7 +222,7 @@ pub fn gate(verdicts: &[CodeVerdict], branch: &str, head: &str, role: &str) -> G
     if let Some(verdict) = latest
         .values()
         .filter(|v| v.verdict == Verdict::Approve && v.head == head)
-        .max_by_key(|v| (v.at, &v.id))
+        .max_by_key(|v| v.order())
     {
         return Gate::Approved {
             verdict: Box::new((*verdict).clone()),
@@ -194,6 +246,7 @@ mod tests {
         let at = DateTime::from_timestamp(1_700_000_000, 0).unwrap() + Duration::minutes(minutes);
         CodeVerdict {
             id: verdict_id(at),
+            seq: u64::try_from(minutes).unwrap_or(0) + 1,
             project: ProjectId::from("p"),
             branch: "feature/x".into(),
             head: head.into(),
@@ -274,6 +327,60 @@ mod tests {
             assert!(v.check().is_err(), "{bad:?}");
         }
         assert!(branch_name("claude/review-gate"));
+    }
+
+    #[test]
+    fn the_order_given_decides_not_the_clock() {
+        // Changes asked last, on a clock that ran back: it still blocks.
+        let mut approve = verdict("r", &["reviewer"], A, Verdict::Approve, 5);
+        let mut changes = verdict("r", &["reviewer"], A, Verdict::Changes, 0);
+        approve.seq = 1;
+        changes.seq = 2;
+        assert!(matches!(
+            gate(
+                &[approve.clone(), changes.clone()],
+                "feature/x",
+                A,
+                GATE_ROLE
+            ),
+            Gate::Changes { .. }
+        ));
+        // The same instant: the later given wins.
+        changes.at = approve.at;
+        changes.seq = 0;
+        approve.seq = 3;
+        assert!(gate(&[changes, approve], "feature/x", A, GATE_ROLE).approved());
+    }
+
+    #[test]
+    fn forgetting_keeps_every_standing_word() {
+        // R asked for changes; S approved; then comments fill the project.
+        let mut all = vec![
+            verdict("r", &["reviewer"], A, Verdict::Changes, 0),
+            verdict("s", &["reviewer"], A, Verdict::Approve, 1),
+        ];
+        for minute in 2..6 {
+            all.push(verdict("s", &["reviewer"], A, Verdict::Comment, minute));
+        }
+        let next = verdict("s", &["reviewer"], A, Verdict::Comment, 9);
+        let forget = to_forget(&all, &next, all.len()).unwrap();
+        assert_eq!(forget.len(), 1);
+        assert_eq!(
+            forget[0], all[2].id,
+            "the oldest comment, never R's changes"
+        );
+        let only_standing = &all[..2];
+        assert_eq!(
+            to_forget(only_standing, &next, 2),
+            None,
+            "refused, not a word lost"
+        );
+        // A reviewer's replaced word is forgettable once replaced.
+        let replaced = verdict("r", &["reviewer"], A, Verdict::Approve, 9);
+        assert_eq!(
+            to_forget(only_standing, &replaced, 2).unwrap(),
+            [all[0].id.clone()]
+        );
     }
 
     #[test]

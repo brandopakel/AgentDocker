@@ -341,6 +341,7 @@ mod tests {
     fn verdict(head: &str) -> Box<CodeVerdict> {
         Box::new(CodeVerdict {
             id: "1".into(),
+            seq: 1,
             project: ProjectId::from("p"),
             branch: "b".into(),
             head: head.into(),

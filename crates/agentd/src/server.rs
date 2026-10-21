@@ -190,6 +190,10 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
             write(&mut writer, &refusal).await?;
             continue;
         }
+        if let Some(refusal) = daemon.verdict_author_refusal(peer, &request).await {
+            write(&mut writer, &refusal).await?;
+            continue;
+        }
         // Streaming requests own the connection until it closes.
         match request {
             Request::Subscribe { agent, topics } => {
