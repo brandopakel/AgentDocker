@@ -20,18 +20,69 @@ fn platform() -> Option<(&'static str, &'static str)> {
     })
 }
 
-/// Whether `path` starts as a script does (`#!`), rather than as a binary.
-fn is_script(path: &Path) -> bool {
+/// Whether `path` is a native executable by its first bytes: ELF, Mach-O
+/// (either word size or byte order, or universal) or a Windows PE image.
+fn is_native(path: &Path) -> bool {
     use std::io::Read;
-    let mut head = [0u8; 2];
-    std::fs::File::open(path)
+    let mut head = [0u8; 4];
+    if std::fs::File::open(path)
         .and_then(|mut file| file.read_exact(&mut head))
-        .is_ok_and(|()| head == *b"#!")
+        .is_err()
+    {
+        return false;
+    }
+    head == *b"\x7fELF"
+        || matches!(
+            u32::from_be_bytes(head),
+            0xfeed_face | 0xfeed_facf | 0xcefa_edfe | 0xcffa_edfe | 0xcafe_babe
+        )
+        || head[..2] == *b"MZ"
+}
+
+/// The npm package an entry point belongs to, when it is Codex's own:
+/// `<package>/bin/codex.js` in a package whose manifest names
+/// `@openai/codex`. Any other script is not unwrapped.
+fn codex_package_of(entry: &Path) -> Option<PathBuf> {
+    if entry.file_name()? != "codex.js" {
+        return None;
+    }
+    let package = entry.parent()?.parent()?;
+    let manifest: serde_json::Value =
+        serde_json::from_str(&read_small(&package.join("package.json"))?).ok()?;
+    (manifest["name"] == "@openai/codex").then(|| package.to_path_buf())
+}
+
+/// The entry point an npm shim runs: Windows' `codex.cmd`, `codex.ps1` or
+/// the `sh` shim npm writes beside them, each a small file in the npm
+/// prefix naming `node_modules/@openai/codex/bin/codex.js` under it.
+fn shim_entry(shim: &Path) -> Option<PathBuf> {
+    let text = read_small(shim)?;
+    let names = |needle: &str| text.contains(needle);
+    if !(names("@openai") && names("codex.js")) {
+        return None;
+    }
+    let entry = shim
+        .parent()?
+        .join("node_modules")
+        .join("@openai")
+        .join("codex")
+        .join("bin")
+        .join("codex.js");
+    entry.is_file().then_some(entry)
+}
+
+/// A text file small enough to be a shim or a manifest.
+fn read_small(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    (meta.is_file() && meta.len() <= 64 * 1024)
+        .then(|| std::fs::read_to_string(path).ok())
+        .flatten()
 }
 
 /// The native binary for `found`, a `codex` from the person's `PATH`: itself
-/// when it is a binary already; the one its npm package runs when it is the
-/// package's script. `None` when neither can be found.
+/// when it is a native executable; the one Codex's npm package runs when it
+/// is that package's entry point or an npm shim for it. Any other wrapper is
+/// refused, whatever lies beside it, and what is found must be native.
 pub fn native_codex(found: &Path) -> Option<PathBuf> {
     native_codex_for(found, platform()?)
 }
@@ -41,15 +92,15 @@ fn native_codex_for(found: &Path, (triple, package): (&str, &str)) -> Option<Pat
     if !found.is_file() {
         return None;
     }
-    let script = found
-        .extension()
-        .is_some_and(|ext| ext == "js" || ext == "cmd" || ext == "ps1")
-        || is_script(&found);
-    if !script {
+    if is_native(&found) {
         return Some(found);
     }
-    // `<package>/bin/codex.js`: the package is the script's grandparent.
-    let root = found.parent()?.parent()?;
+    let entry = if codex_package_of(&found).is_some() {
+        found
+    } else {
+        shim_entry(&found)?.canonicalize().ok()?
+    };
+    let root = codex_package_of(&entry)?;
     let binary = if triple.contains("windows") {
         "codex.exe"
     } else {
@@ -59,11 +110,11 @@ fn native_codex_for(found: &Path, (triple, package): (&str, &str)) -> Option<Pat
     [
         vendor(&root.join("node_modules").join("@openai").join(package)),
         vendor(&root.parent()?.join(package)),
-        vendor(root),
+        vendor(&root),
     ]
     .into_iter()
-    .find(|candidate| candidate.is_file())
-    .and_then(|candidate| candidate.canonicalize().ok())
+    .filter_map(|candidate| candidate.canonicalize().ok())
+    .find(|candidate| candidate.is_file() && is_native(candidate))
 }
 
 /// The native binary behind the first `codex` on `PATH`.
@@ -71,10 +122,8 @@ pub fn native_codex_on_path() -> Option<PathBuf> {
     let dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();
-    let name = if cfg!(windows) { "codex.cmd" } else { "codex" };
-    let found = crate::command::find_program(&dirs, name)
-        .or_else(|| crate::command::find_program(&dirs, "codex"))?;
-    native_codex(&found)
+    // The bare name, so `PATH` and `PATHEXT` order it as the shell would.
+    native_codex(&crate::command::find_program(&dirs, "codex")?)
 }
 
 #[cfg(all(test, unix))]
@@ -82,74 +131,132 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    fn file(path: &Path, text: &str) {
+    fn file(path: &Path, bytes: &[u8]) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, text).unwrap();
+        std::fs::write(path, bytes).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     const MAC: (&str, &str) = ("aarch64-apple-darwin", "codex-darwin-arm64");
+    const WINDOWS: (&str, &str) = ("x86_64-pc-windows-msvc", "codex-win32-x64");
+    const MACH_O: &[u8] = b"\xcf\xfa\xed\xfe native";
+
+    /// `<prefix>/lib/node_modules/@openai/codex`, its manifest and entry point.
+    fn package(prefix: &Path) -> PathBuf {
+        let package = prefix.join("lib/node_modules/@openai/codex");
+        file(
+            &package.join("package.json"),
+            br#"{"name":"@openai/codex"}"#,
+        );
+        file(&package.join("bin/codex.js"), b"#!/usr/bin/env node\n");
+        package
+    }
 
     #[test]
-    fn the_npm_script_leads_to_the_binary_its_package_runs() {
+    fn codex_npm_entry_point_leads_to_the_binary_its_package_runs() {
         let root = tempfile::tempdir().unwrap();
-        let package = root.path().join("lib/node_modules/@openai/codex");
-        file(&package.join("bin/codex.js"), "#!/usr/bin/env node\n");
-        // Nested, as npm installs it.
+        let package = package(root.path());
+        let entry = package.join("bin/codex.js");
         let nested = package
             .join("node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex");
-        file(&nested, "\u{7f}ELF");
+        file(&nested, MACH_O);
         assert_eq!(
-            native_codex_for(&package.join("bin/codex.js"), MAC),
+            native_codex_for(&entry, MAC),
             Some(nested.canonicalize().unwrap())
         );
-        // Beside it, as a hoisting installer leaves it.
         std::fs::remove_file(&nested).unwrap();
         let beside = root.path().join(
             "lib/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
         );
-        file(&beside, "\u{7f}ELF");
+        file(&beside, MACH_O);
         assert_eq!(
-            native_codex_for(&package.join("bin/codex.js"), MAC),
+            native_codex_for(&entry, MAC),
             Some(beside.canonicalize().unwrap())
         );
-        // None at all: no binary, never the script.
-        std::fs::remove_file(&beside).unwrap();
-        assert_eq!(native_codex_for(&package.join("bin/codex.js"), MAC), None);
+        // A script where the binary should be is not one.
+        file(&beside, b"#!/bin/sh\n");
+        assert_eq!(native_codex_for(&entry, MAC), None);
     }
 
     #[test]
-    fn a_binary_on_path_is_its_own_native_codex() {
+    fn a_wrapper_that_is_not_codexs_own_is_refused_whatever_lies_beside_it() {
+        let root = tempfile::tempdir().unwrap();
+        let wrapper = root.path().join("prefix/bin/codex");
+        file(&wrapper, b"#!/bin/sh\nexec /somewhere/else/codex \"$@\"\n");
+        file(
+            &root
+                .path()
+                .join("prefix/vendor/aarch64-apple-darwin/bin/codex"),
+            MACH_O,
+        );
+        file(
+            &root
+                .path()
+                .join("prefix/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"),
+            MACH_O,
+        );
+        assert_eq!(native_codex_for(&wrapper, MAC), None);
+        // A `codex.js` of some other package is not unwrapped either.
+        let other = root.path().join("other/bin/codex.js");
+        file(&other, b"#!/usr/bin/env node\n");
+        file(
+            &root.path().join("other/package.json"),
+            br#"{"name":"not-codex"}"#,
+        );
+        assert_eq!(native_codex_for(&other, MAC), None);
+    }
+
+    #[test]
+    fn a_windows_npm_shim_leads_to_its_package() {
+        let root = tempfile::tempdir().unwrap();
+        let prefix = root.path().join("npm");
+        let package = prefix.join("node_modules/@openai/codex");
+        file(
+            &package.join("package.json"),
+            br#"{"name":"@openai/codex"}"#,
+        );
+        file(&package.join("bin/codex.js"), b"#!/usr/bin/env node\n");
+        let exe = package.join(
+            "node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+        );
+        file(&exe, b"MZ\x90\x00 pe image");
+        let shim = prefix.join("codex.cmd");
+        file(
+            &shim,
+            b"@ECHO off\r\n\"%_prog%\"  \"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js\" %*\r\n",
+        );
+        assert_eq!(
+            native_codex_for(&shim, WINDOWS),
+            Some(exe.canonicalize().unwrap())
+        );
+    }
+
+    #[test]
+    fn a_native_binary_on_path_is_its_own_codex() {
         let root = tempfile::tempdir().unwrap();
         let binary = root.path().join("bin/codex");
-        file(&binary, "\u{7f}ELF native");
+        file(&binary, MACH_O);
         assert_eq!(
             native_codex_for(&binary, MAC),
             Some(binary.canonicalize().unwrap())
-        );
-        let script = root.path().join("other/codex");
-        file(&script, "#!/bin/sh\nexec node x\n");
-        assert_eq!(
-            native_codex_for(&script, MAC),
-            None,
-            "a shell wrapper is not the binary"
         );
         assert_eq!(native_codex_for(&root.path().join("missing"), MAC), None);
     }
 }
 
-/// Where Codex is installed, the `codex` on `PATH` leads to a binary, never
-/// to a script. Nothing to check where Codex is not installed.
+/// With `AGENTDOCKER_TEST_INSTALLED_CODEX=1`, the installed Codex's `codex`
+/// on `PATH` leads to a native binary. Opt-in: a machine whose `codex` is a
+/// wrapper of its own is refused by design, not a failure of the suite.
 #[cfg(all(test, unix))]
 #[test]
 fn the_installed_codex_leads_to_its_binary() {
-    let dirs: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect())
-        .unwrap_or_default();
-    if crate::command::find_program(&dirs, "codex").is_none() {
+    if std::env::var_os("AGENTDOCKER_TEST_INSTALLED_CODEX").is_none() {
         return;
     }
-    let native = native_codex_on_path().expect("an installed codex has its binary");
-    assert!(native.is_file());
-    assert!(!is_script(&native), "{}", native.display());
+    let native = native_codex_on_path().expect("the installed codex has its binary");
+    assert!(
+        native.is_file() && is_native(&native),
+        "{}",
+        native.display()
+    );
 }
