@@ -43,18 +43,24 @@ LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 POINTER = re.compile(r"docs/((?:verification/)?[A-Z][A-Z0-9-]*\.md)")
 # Instruction files that are not Markdown but are read the same way.
 INSTRUCTION_FILES = (".coderabbit.yaml",)
-MONTH = r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+MONTH = r"(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)"
+# A placeholder user owns the whole path component: `/Users/you/x` is one,
+# `/Users/you-team/x` is somebody.
+PLACEHOLDER_USER = r"(?:you|me|runner|USER)(?=[/\\\s`'\")\],;:]|\.(?:\s|$)|$)"
 # What a document must not carry, each named for the report. A home
 # directory is allowed for the placeholder users (`/Users/you`, `/Users/me`,
 # `<user>`, `$USER`) and for CI's `runner`. A date in a code span is a
-# literal value, such as a protocol revision, not a moment.
+# literal value, such as a protocol revision, not a moment. A `#` before hex
+# digits with a letter among them is a colour, not a commit.
 SPECIFICS = (
     ("a date", re.compile(r"\b20\d\d-[01]\d-[0-3]\d\b")),
-    ("a date", re.compile(rf"\b{MONTH} [0-3]?\d\b")),
-    ("a pull request or issue number", re.compile(r"(?<![\w#&/])#\d{2,5}\b|\b(?:PR|pull request|issue) ?#?\d+\b|/(?:pull|issues)/\d+")),
-    ("a commit", re.compile(r"(?<![\w-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}(?![\w-])")),
+    ("a date", re.compile(rf"\b{MONTH}\.? [0-3]?\d(?:st|nd|rd|th)?\b")),
+    ("a date", re.compile(rf"\b[0-3]?\d(?:st|nd|rd|th)? (?:of )?{MONTH}\b")),
+    ("a date", re.compile(rf"\b{MONTH},? 20\d\d\b")),
+    ("a pull request or issue number", re.compile(r"(?<![\w#&/])#\d+\b|\b(?:PR|pull request|issue) ?#?\d+\b|/(?:pull|issues)/\d+")),
+    ("a commit", re.compile(r"(?<![\w#-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}(?![\w-])")),
     ("a CI run", re.compile(r"/actions/runs/\d+|\brun \d{8,}\b")),
-    ("a home directory", re.compile(r"(?:/Users/|/home/|\b[A-Za-z]:\\{1,2}Users\\{1,2})(?!(?:you|me|runner|USER)\b|[<$%])[\w.-]+")),
+    ("a home directory", re.compile(rf"(?:/Users/|/home/|\b[A-Za-z]:\\{{1,2}}Users\\{{1,2}})(?!{PLACEHOLDER_USER}|[<$%])[\w.-]+")),
     ("a real agent's name", re.compile(r"\b(?:claude-code|codex|opencode)-\d{3,}\b")),
 )
 
@@ -154,9 +160,25 @@ def denied_terms():
     return tuple(line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#"))
 
 
+def code_spans(line):
+    """The (start, end) of each code span in a line: a run of backticks
+    opens one that the next run of the same length closes."""
+    spans, runs = [], [(m.start(), m.end()) for m in re.finditer(r"`+", line)]
+    i = 0
+    while i < len(runs):
+        start, end = runs[i]
+        closing = next((j for j in range(i + 1, len(runs)) if runs[j][1] - runs[j][0] == end - start), None)
+        if closing is None:
+            i += 1
+            continue
+        spans.append((start, runs[closing][1]))
+        i = closing + 1
+    return spans
+
+
 def specifics(line, denied=()):
     """(what, text) for every specific in one line of a document."""
-    code = [m.span() for m in re.finditer(r"`[^`]*`", line)]
+    code = code_spans(line)
     found = [
         (what, m.group(0))
         for what, pattern in SPECIFICS
@@ -177,24 +199,36 @@ def is_document(name):
     return name.endswith(".md") or name in INSTRUCTION_FILES
 
 
+def git_names(*args):
+    """Paths from a NUL-delimited git listing, exactly as stored."""
+    out = subprocess.check_output(["git", *args, "-z"], cwd=ROOT)
+    return [name.decode("utf-8", "surrogateescape") for name in out.split(b"\0") if name]
+
+
+def added_lines(diff):
+    """(line number, text) for each line a one-file `--unified=0` patch
+    adds: inside a hunk every `+` line is content, however it begins."""
+    added, number, in_hunk = [], 0, False
+    for line in diff.splitlines():
+        if line.startswith("@@"):
+            number, in_hunk = int(re.match(r"@@ -\S+ \+(\d+)", line).group(1)), True
+        elif in_hunk and line.startswith("+"):
+            added.append((number, line[1:]))
+            number += 1
+    return added
+
+
 def added_document_lines(merge_base):
-    """(path, line number, text) for every line added to a document since
-    `merge_base`, committed or not, untracked documents whole."""
+    """(path, line number, text) for every line the working tree adds to a
+    document since `merge_base`, committed or not, untracked documents
+    whole: the check describes the content as it stands."""
     added = []
-    for diff in (["git", "diff", "--unified=0", "--no-color", f"{merge_base}...HEAD"],
-                 ["git", "diff", "--unified=0", "--no-color", "HEAD"]):
-        path, number = None, 0
-        for line in subprocess.check_output(diff, cwd=ROOT, text=True, errors="replace").splitlines():
-            if line.startswith("+++ "):
-                name = line[4:].removeprefix("b/")
-                path = name if name != "/dev/null" and is_document(name) else None
-            elif line.startswith("@@"):
-                number = int(re.match(r"@@ -\S+ \+(\d+)", line).group(1))
-            elif line.startswith("+") and path:
-                added.append((path, number, line[1:]))
-                number += 1
-    untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard"], cwd=ROOT, text=True).split()
-    for name in filter(is_document, untracked):
+    for name in filter(is_document, git_names("diff", "--name-only", "--diff-filter=AMR", merge_base)):
+        diff = subprocess.check_output(
+            ["git", "diff", "--unified=0", "--no-color", "--no-ext-diff", merge_base, "--", name],
+            cwd=ROOT, text=True, errors="replace")
+        added += [(name, number, text) for number, text in added_lines(diff)]
+    for name in filter(is_document, git_names("ls-files", "--others", "--exclude-standard")):
         for number, line in enumerate((ROOT / name).read_text(errors="replace").splitlines(), 1):
             added.append((name, number, line))
     return added
