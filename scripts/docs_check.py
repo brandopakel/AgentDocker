@@ -14,6 +14,12 @@ Checks, each of which fails the gate when it does not hold:
    line starting `Docs:` (for example `Docs: unchanged, a refactor with no
    behaviour change`). The check asks that documentation was considered on
    every change; it does not demand an edit where none is due.
+5. With --base <ref>: no line added to a document carries a specific (a
+   date, a pull request, issue or CI run number, a commit, a home directory,
+   a real agent's name, or a term from the file AGENTDOCKER_SPECIFICS_DENYLIST
+   names). The documents describe the code, not a moment, a machine or a
+   person. `--specifics` reports every specific already in the tree and
+   exits 0.
 
 Evidence from a trial on real binaries goes in its pull request, not in the
 repository.
@@ -35,6 +41,22 @@ DOC_FILES = ("README.md", "CLAUDE.md")
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 # The documents are named in capitals; a lower-case `docs/x.md` in a test is an example, not a pointer.
 POINTER = re.compile(r"docs/((?:verification/)?[A-Z][A-Z0-9-]*\.md)")
+# Instruction files that are not Markdown but are read the same way.
+INSTRUCTION_FILES = (".coderabbit.yaml",)
+MONTH = r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+# What a document must not carry, each named for the report. A home
+# directory is allowed for the placeholder users (`/Users/you`, `/Users/me`,
+# `<user>`, `$USER`) and for CI's `runner`. A date in a code span is a
+# literal value, such as a protocol revision, not a moment.
+SPECIFICS = (
+    ("a date", re.compile(r"\b20\d\d-[01]\d-[0-3]\d\b")),
+    ("a date", re.compile(rf"\b{MONTH} [0-3]?\d\b")),
+    ("a pull request or issue number", re.compile(r"(?<![\w#&/])#\d{2,5}\b|\b(?:PR|pull request|issue) ?#?\d+\b|/(?:pull|issues)/\d+")),
+    ("a commit", re.compile(r"(?<![\w-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}(?![\w-])")),
+    ("a CI run", re.compile(r"/actions/runs/\d+|\brun \d{8,}\b")),
+    ("a home directory", re.compile(r"(?:/Users/|/home/|\b[A-Za-z]:\\{1,2}Users\\{1,2})(?!(?:you|me|runner|USER)\b|[<$%])[\w.-]+")),
+    ("a real agent's name", re.compile(r"\b(?:claude-code|codex|opencode)-\d{3,}\b")),
+)
 
 
 def markdown_files():
@@ -122,13 +144,102 @@ def docs_considered(base):
     ]
 
 
+def denied_terms():
+    """The private names one setup keeps out of the tree, one per line in
+    the file AGENTDOCKER_SPECIFICS_DENYLIST names; none when it is unset."""
+    path = os.environ.get("AGENTDOCKER_SPECIFICS_DENYLIST")
+    if not path:
+        return ()
+    lines = Path(path).expanduser().read_text().splitlines()
+    return tuple(line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#"))
+
+
+def specifics(line, denied=()):
+    """(what, text) for every specific in one line of a document."""
+    code = [m.span() for m in re.finditer(r"`[^`]*`", line)]
+    found = [
+        (what, m.group(0))
+        for what, pattern in SPECIFICS
+        for m in pattern.finditer(line)
+        if what != "a date" or not any(start < m.start() < end for start, end in code)
+    ]
+    for term in denied:
+        pattern = re.escape(term)
+        if term[:1].isalnum():
+            pattern = r"\b" + pattern
+        if term[-1:].isalnum():
+            pattern += r"\b"
+        found += [("a private name", m.group(0)) for m in re.finditer(pattern, line, re.IGNORECASE)]
+    return found
+
+
+def is_document(name):
+    return name.endswith(".md") or name in INSTRUCTION_FILES
+
+
+def added_document_lines(merge_base):
+    """(path, line number, text) for every line added to a document since
+    `merge_base`, committed or not, untracked documents whole."""
+    added = []
+    for diff in (["git", "diff", "--unified=0", "--no-color", f"{merge_base}...HEAD"],
+                 ["git", "diff", "--unified=0", "--no-color", "HEAD"]):
+        path, number = None, 0
+        for line in subprocess.check_output(diff, cwd=ROOT, text=True, errors="replace").splitlines():
+            if line.startswith("+++ "):
+                name = line[4:].removeprefix("b/")
+                path = name if name != "/dev/null" and is_document(name) else None
+            elif line.startswith("@@"):
+                number = int(re.match(r"@@ -\S+ \+(\d+)", line).group(1))
+            elif line.startswith("+") and path:
+                added.append((path, number, line[1:]))
+                number += 1
+    untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard"], cwd=ROOT, text=True).split()
+    for name in filter(is_document, untracked):
+        for number, line in enumerate((ROOT / name).read_text(errors="replace").splitlines(), 1):
+            added.append((name, number, line))
+    return added
+
+
+def no_new_specifics(base):
+    try:
+        merge_base = subprocess.check_output(["git", "merge-base", base, "HEAD"], cwd=ROOT, text=True).strip()
+    except subprocess.CalledProcessError:
+        return [f"cannot find a merge base with {base}; fetch it or pass --base"]
+    denied = denied_terms()
+    return [
+        f"{path}:{number} adds {what} ({text}); the documents describe the code, not a moment, a machine or a "
+        "person: use a placeholder, or leave it to the pull request"
+        for path, number, line in added_document_lines(merge_base)
+        for what, text in specifics(line, denied)
+    ]
+
+
+def report_specifics():
+    """Every specific already in the tracked documents, for the cleanup; not a gate."""
+    denied = denied_terms()
+    counts = {}
+    names = [path for path in tracked_files("*.md", *INSTRUCTION_FILES)]
+    for path in names:
+        for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            for what, text in specifics(line, denied):
+                print(f"{path.relative_to(ROOT)}:{number}: {what}: {text}")
+                counts[path.relative_to(ROOT)] = counts.get(path.relative_to(ROOT), 0) + 1
+    for name, count in sorted(counts.items(), key=lambda item: -item[1]):
+        print(f"docs_check: {count} specifics in {name}", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--base", help="git ref to diff against for the docs-considered check")
+    parser.add_argument("--base", help="git ref to diff against for the docs-considered and specifics checks")
+    parser.add_argument("--specifics", action="store_true", help="report every specific in the tracked documents and exit 0")
     args = parser.parse_args()
+    if args.specifics:
+        report_specifics()
+        return
     problems = index_completeness() + links_resolve() + pointers_resolve()
     if args.base:
         problems += docs_considered(args.base)
+        problems += no_new_specifics(args.base)
     for problem in problems:
         print(f"docs_check: {problem}", file=sys.stderr)
     if problems:
