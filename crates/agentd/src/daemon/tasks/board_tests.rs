@@ -1071,3 +1071,104 @@ async fn a_projects_roles_are_the_five_until_the_person_changes_them() {
         }
     ));
 }
+
+/// An agent keeps a memory in its own project; another finds it by its
+/// words and in the profile; a newer one replaces it; only its author or
+/// the person forgets it; a secret is never kept.
+#[tokio::test]
+async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let add = |from: String, text: &str, supersedes: Option<String>| Request::MemoryAdd {
+        from,
+        project: None,
+        text: text.into(),
+        links: vec![],
+        supersedes,
+    };
+    let Response::Memory { memory: first } = d
+        .handle(add(
+            f.agent.id.to_string(),
+            "Deploys go out on Fridays",
+            None,
+        ))
+        .await
+    else {
+        panic!("kept")
+    };
+    let search = |query: &str| Request::MemorySearch {
+        from: Some(f.peer.id.to_string()),
+        project: None,
+        query: query.into(),
+        limit: None,
+    };
+    let Response::Memories { memories } = d.handle(search("deploys friday")).await else {
+        panic!()
+    };
+    assert_eq!(memories.len(), 1, "a peer of the project finds it");
+    assert_eq!(memories[0].id, first.id);
+
+    let Response::Memory { memory: second } = d
+        .handle(add(
+            f.peer.id.to_string(),
+            "Deploys go out on Mondays now",
+            Some(first.id[..6].to_owned()),
+        ))
+        .await
+    else {
+        panic!("replaced")
+    };
+    assert_eq!(second.supersedes.as_deref(), Some(first.id.as_str()));
+    let Response::Memories { memories } = d
+        .handle(Request::MemoryProfile {
+            from: Some(f.agent.id.to_string()),
+            project: None,
+            max_chars: None,
+        })
+        .await
+    else {
+        panic!()
+    };
+    let ids: Vec<&str> = memories.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [second.id.as_str()],
+        "the replaced one is no longer said"
+    );
+
+    assert!(matches!(
+        d.handle(add(
+            f.agent.id.to_string(),
+            "the key is sk-abcdefghijklmnopqrstuvwx",
+            None
+        ))
+        .await,
+        Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }
+    ));
+    assert!(matches!(
+        d.handle(Request::MemoryForget {
+            from: f.agent.id.to_string(),
+            memory: second.id.clone(),
+        })
+        .await,
+        Response::Error {
+            code: ErrorCode::Forbidden,
+            ..
+        }
+    ));
+    assert!(matches!(
+        d.handle(Request::MemoryForget {
+            from: HUMAN.into(),
+            memory: second.id.clone(),
+        })
+        .await,
+        Response::Ok
+    ));
+    let Response::Memories { memories } = d.handle(search("mondays")).await else {
+        panic!()
+    };
+    assert!(memories.is_empty(), "forgotten for good");
+}

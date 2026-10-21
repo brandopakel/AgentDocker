@@ -26,6 +26,7 @@ pub use input::{
 pub mod journal;
 pub mod lease;
 pub mod link;
+pub mod memory;
 pub mod message;
 pub mod notification;
 pub mod paths;

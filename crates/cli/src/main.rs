@@ -429,6 +429,9 @@ enum Command {
     Task(TaskArgs),
     /// A project's plans: specs in Markdown that cards carry out.
     Plan(PlanArgs),
+    /// A project's memory: facts its agents and the person keep for each
+    /// other, said to every new session in the project.
+    Memory(MemoryArgs),
     /// A project's files, kept beside the work and linked to cards.
     File(FileArgs),
     /// Ask the other members of a channel to review this agent's work.
@@ -969,6 +972,47 @@ enum PlanAction {
         body: Option<PathBuf>,
         #[arg(long)]
         status: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+}
+
+#[derive(clap::Args)]
+struct MemoryArgs {
+    #[command(subcommand)]
+    action: MemoryAction,
+}
+
+#[derive(Subcommand)]
+enum MemoryAction {
+    /// Keep a fact for the project's agents: at most 2048 characters, never
+    /// a secret.
+    Add {
+        text: String,
+        /// The memory this one replaces.
+        #[arg(long)]
+        supersedes: Option<String>,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+    /// The project's memories that answer the words, the best first.
+    Search {
+        query: Vec<String>,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+    },
+    /// What the project's agents are told first.
+    Profile {
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+    },
+    /// Forget a memory for good: your own, or any as the person.
+    Forget {
+        memory: String,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         from: Option<String>,
     },
@@ -2583,6 +2627,74 @@ async fn run() -> Result<()> {
             if let Response::History { messages } = client.call(&request).await? {
                 for m in &messages {
                     println!("{}", format::archived_line(m));
+                }
+            }
+        }
+        Command::Memory(args) => {
+            let here = || -> Result<String> { Ok(std::env::current_dir()?.display().to_string()) };
+            let list = |memories: &[agentdocker_core::memory::Memory]| {
+                for memory in memories {
+                    println!(
+                        "{}  {}  {}",
+                        memory.id,
+                        format::ago(memory.created_at),
+                        memory.text.replace('\n', " ")
+                    );
+                }
+            };
+            match args.action {
+                MemoryAction::Add {
+                    text,
+                    supersedes,
+                    project,
+                    from,
+                } => {
+                    let request = Request::MemoryAdd {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        text,
+                        links: Vec::new(),
+                        supersedes,
+                    };
+                    if let Response::Memory { memory } = client.call(&request).await? {
+                        println!("{}", memory.id);
+                    }
+                }
+                MemoryAction::Search {
+                    query,
+                    limit,
+                    project,
+                } => {
+                    let request = Request::MemorySearch {
+                        from: None,
+                        project: Some(project.map_or_else(here, Ok)?),
+                        query: query.join(" "),
+                        limit,
+                    };
+                    if let Response::Memories { memories } = client.call(&request).await? {
+                        list(&memories);
+                    }
+                }
+                MemoryAction::Profile { project } => {
+                    let request = Request::MemoryProfile {
+                        from: None,
+                        project: Some(project.map_or_else(here, Ok)?),
+                        max_chars: None,
+                    };
+                    if let Response::Memories { memories } = client.call(&request).await? {
+                        list(&memories);
+                    }
+                }
+                MemoryAction::Forget { memory, from } => {
+                    let request = Request::MemoryForget {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        memory,
+                    };
+                    client.call(&request).await?;
                 }
             }
         }

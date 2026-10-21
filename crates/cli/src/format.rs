@@ -461,6 +461,10 @@ pub fn event_line(event: &Event) -> String {
             }
         }
         EventKind::PlanChanged { plan, by, .. } => format!("plan written     {plan} by {by}"),
+        EventKind::MemoryAdded { memory, by, .. } => format!("memory kept     {memory} by {by}"),
+        EventKind::MemoryForgotten { memory, by, .. } => {
+            format!("memory forgot   {memory} by {by}")
+        }
         EventKind::ProjectFileChanged {
             file, by, deleted, ..
         } => format!(
