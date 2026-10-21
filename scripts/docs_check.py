@@ -63,6 +63,8 @@ SPECIFICS = (
     ("a home directory", re.compile(rf"(?:/Users/|/home/|\b[A-Za-z]:\\{{1,2}}Users\\{{1,2}})(?!{PLACEHOLDER_USER}|[<$%])[\w.-]+")),
     ("a real agent's name", re.compile(r"\b(?:claude-code|codex|opencode)-\d{3,}\b")),
 )
+# A line about colour reads `#000000` as one, not as an issue.
+COLOUR_CONTEXT = re.compile(r"\b(?:colou?rs?|rgba?|hex|css|fill|stroke|background|foreground)\b", re.IGNORECASE)
 
 
 def markdown_files():
@@ -156,17 +158,25 @@ def denied_terms():
     path = os.environ.get("AGENTDOCKER_SPECIFICS_DENYLIST")
     if not path:
         return ()
-    lines = Path(path).expanduser().read_text().splitlines()
+    lines = text_lines(Path(path).expanduser().read_bytes())
     return tuple(line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#"))
 
 
 def code_spans(line):
-    """The (start, end) of each code span in a line: a run of backticks
-    opens one that the next run of the same length closes."""
+    """The (start, end) of each code span in a line, as Markdown reads it:
+    a run of backticks opens one that the next run of the same length
+    closes. A backslash before a run outside a span escapes its first
+    backtick; inside a span a backslash is only itself."""
     spans, runs = [], [(m.start(), m.end()) for m in re.finditer(r"`+", line)]
     i = 0
     while i < len(runs):
         start, end = runs[i]
+        slashes = len(line[:start]) - len(line[:start].rstrip("\\"))
+        if slashes % 2:
+            start += 1
+        if start == end:
+            i += 1
+            continue
         closing = next((j for j in range(i + 1, len(runs)) if runs[j][1] - runs[j][0] == end - start), None)
         if closing is None:
             i += 1
@@ -176,15 +186,27 @@ def code_spans(line):
     return spans
 
 
+def text_lines(data):
+    """A document's lines as git counts them: split at LF only, every other
+    character (a CR, a Unicode line separator) kept as content."""
+    text = data.decode("utf-8", "surrogateescape") if isinstance(data, bytes) else data
+    lines = text.split("\n")
+    return lines[:-1] if lines and lines[-1] == "" else lines
+
+
 def specifics(line, denied=()):
     """(what, text) for every specific in one line of a document."""
     code = code_spans(line)
-    found = [
-        (what, m.group(0))
-        for what, pattern in SPECIFICS
-        for m in pattern.finditer(line)
-        if what != "a date" or not any(start < m.start() < end for start, end in code)
-    ]
+    colours = COLOUR_CONTEXT.search(line)
+
+    def counts(what, m):
+        if what == "a date":
+            return not any(start < m.start() < end for start, end in code)
+        if what == "a pull request or issue number" and colours:
+            return not re.fullmatch(r"#(?:\d{3}|\d{4}|\d{6}|\d{8})", m.group(0))
+        return True
+
+    found = [(what, m.group(0)) for what, pattern in SPECIFICS for m in pattern.finditer(line) if counts(what, m)]
     for term in denied:
         pattern = re.escape(term)
         if term[:1].isalnum():
@@ -209,7 +231,7 @@ def added_lines(diff):
     """(line number, text) for each line a one-file `--unified=0` patch
     adds: inside a hunk every `+` line is content, however it begins."""
     added, number, in_hunk = [], 0, False
-    for line in diff.splitlines():
+    for line in text_lines(diff):
         if line.startswith("@@"):
             number, in_hunk = int(re.match(r"@@ -\S+ \+(\d+)", line).group(1)), True
         elif in_hunk and line.startswith("+"):
@@ -218,18 +240,38 @@ def added_lines(diff):
     return added
 
 
+def changed_documents(merge_base):
+    """(paths to diff, document) for each document the working tree adds,
+    changes or renames since `merge_base`; a rename is diffed with its
+    source, so lines it carried over unchanged are not new."""
+    fields = git_names("diff", "--name-status", "-M", "--diff-filter=AMRT", merge_base)
+    changed, i = [], 0
+    while i < len(fields):
+        status = fields[i]
+        if status.startswith("R"):
+            source, name = fields[i + 1], fields[i + 2]
+            i += 3
+            if is_document(name):
+                changed.append(([source, name], name))
+        else:
+            name = fields[i + 1]
+            i += 2
+            if is_document(name):
+                changed.append(([name], name))
+    return changed
+
+
 def added_document_lines(merge_base):
     """(path, line number, text) for every line the working tree adds to a
     document since `merge_base`, committed or not, untracked documents
     whole: the check describes the content as it stands."""
     added = []
-    for name in filter(is_document, git_names("diff", "--name-only", "--diff-filter=AMR", merge_base)):
+    for paths, name in changed_documents(merge_base):
         diff = subprocess.check_output(
-            ["git", "diff", "--unified=0", "--no-color", "--no-ext-diff", merge_base, "--", name],
-            cwd=ROOT, text=True, errors="replace")
+            ["git", "diff", "-M", "--unified=0", "--no-color", "--no-ext-diff", merge_base, "--", *paths], cwd=ROOT)
         added += [(name, number, text) for number, text in added_lines(diff)]
     for name in filter(is_document, git_names("ls-files", "--others", "--exclude-standard")):
-        for number, line in enumerate((ROOT / name).read_text(errors="replace").splitlines(), 1):
+        for number, line in enumerate(text_lines((ROOT / name).read_bytes()), 1):
             added.append((name, number, line))
     return added
 
@@ -254,7 +296,7 @@ def report_specifics():
     counts = {}
     names = [path for path in tracked_files("*.md", *INSTRUCTION_FILES)]
     for path in names:
-        for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+        for number, line in enumerate(text_lines(path.read_bytes()), 1):
             for what, text in specifics(line, denied):
                 print(f"{path.relative_to(ROOT)}:{number}: {what}: {text}")
                 counts[path.relative_to(ROOT)] = counts.get(path.relative_to(ROOT), 0) + 1

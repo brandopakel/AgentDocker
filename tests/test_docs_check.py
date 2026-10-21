@@ -27,6 +27,10 @@ class Specifics(unittest.TestCase):
         self.assertEqual(kinds("Fixed in #412, see PR 336 and /pull/241."),
                          ["a pull request or issue number"] * 3)
         self.assertEqual(kinds("See #7 and #123456."), ["a pull request or issue number"] * 2)
+        self.assertEqual(kinds("Use #000000 for black and #11223344 for translucent colour."), [])
+        self.assertEqual(kinds("The colour is fixed, see #123456 and #12345."),
+                         ["a pull request or issue number"])
+        self.assertEqual(set(kinds(r"An escaped \` is printed, then 21 October 2026, then another \`.")), {"a date"})
         self.assertEqual(kinds("Source `10b57894` passed."), ["a commit"])
         self.assertEqual(kinds("See /actions/runs/39558567833 for the log."), ["a CI run"])
         self.assertEqual(kinds("Logs live in /Users/someone/Library/Logs."), ["a home directory"])
@@ -55,6 +59,8 @@ class Specifics(unittest.TestCase):
         spans = CHECK.code_spans(line)
         self.assertEqual([line[s:e] for s, e in spans], ["``x ` y``", "`z`"])
         self.assertEqual(CHECK.code_spans("an ` unclosed tick"), [])
+        line = r"escaped \` then `real \` span`"
+        self.assertEqual([line[s:e] for s, e in CHECK.code_spans(line)], [r"`real \`"])
 
     def test_private_names_come_from_the_deny_list(self):
         self.assertEqual(kinds("Deployed on the keel host.", ("keel",)), ["a private name"])
@@ -111,6 +117,20 @@ class AddedLines(unittest.TestCase):
             ("docs/GUIDE.md", 2, "++ literal"),
             ("docs/GUIDE.md", 3, "Trialled on 2026-10-21."),
         ])
+
+    def test_lines_split_where_git_splits_them(self):
+        (self.root / "docs/GUIDE.md").write_text("# Guide\nSeen here\u2028on 21 October 2026.\r\n", newline="")
+        self.git("commit", "-qam", "separator")
+        self.assertEqual(self.added(), [("docs/GUIDE.md", 2, "Seen here\u2028on 21 October 2026.\r")])
+
+    def test_a_rename_adds_nothing_it_carried_over(self):
+        self.git("mv", "docs/GUIDE.md", "docs/renamed.md")
+        self.git("commit", "-qm", "rename")
+        self.assertEqual(self.added(), [])
+        (self.root / "docs/renamed.md").write_text("# Guide\nTrialled on 2026-10-21.\n")
+        # A small file changed this much is no longer a rename to git; either
+        # way the new line is read.
+        self.assertIn(("docs/renamed.md", 2, "Trialled on 2026-10-21."), self.added())
 
     def test_an_uncommitted_fix_is_what_counts(self):
         (self.root / "docs/GUIDE.md").write_text("# Guide\nTrialled on 2026-10-21.\n")
