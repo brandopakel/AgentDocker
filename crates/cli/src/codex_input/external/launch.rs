@@ -44,6 +44,54 @@ pub struct Args {
     /// Provider configuration flags; --resume preserves saved permissions. No initial prompt.
     #[arg(last = true, allow_hyphen_values = true)]
     arguments: Vec<String>,
+    /// The program was resolved by the front end (`agentdocker codex`):
+    /// its lifetime owner is started on exactly that program, never by
+    /// resolving `PATH` again.
+    #[arg(skip)]
+    resolved: bool,
+}
+
+impl Args {
+    /// A launch of `program` in the current directory under the person's
+    /// own profile: what `agentdocker codex` starts.
+    pub fn new(program: PathBuf, name: Option<String>, arguments: Vec<String>) -> Self {
+        Self {
+            program,
+            profile: None,
+            cwd: None,
+            name,
+            resume: None,
+            arguments,
+            resolved: true,
+        }
+    }
+
+    /// The lifetime owner's command line for this launch: `codex-native`
+    /// on the program already found, with the launch's own options.
+    fn owner_arguments(&self) -> Vec<std::ffi::OsString> {
+        let mut argv: Vec<std::ffi::OsString> = vec![
+            "codex-native".into(),
+            "--program".into(),
+            self.program.clone().into(),
+        ];
+        if let Some(profile) = &self.profile {
+            argv.extend(["--profile".into(), profile.clone().into()]);
+        }
+        if let Some(cwd) = &self.cwd {
+            argv.extend(["--cwd".into(), cwd.clone().into()]);
+        }
+        if let Some(name) = &self.name {
+            argv.extend(["--name".into(), name.into()]);
+        }
+        if let Some(resume) = &self.resume {
+            argv.extend(["--resume".into(), resume.to_string().into()]);
+        }
+        if !self.arguments.is_empty() {
+            argv.push("--".into());
+            argv.extend(self.arguments.iter().map(Into::into));
+        }
+        argv
+    }
 }
 
 /// Remote resume restores the destination thread's permissions. Codex rejects
@@ -484,7 +532,7 @@ impl Startup<'_> {
 pub async fn run(client: Client, args: Args) -> Result<()> {
     let options = native_arguments(&args.arguments, args.resume.is_some())?;
     let Some(invitation) = std::env::var_os(lifetime::ENV) else {
-        return lifetime::supervise(&client).await;
+        return lifetime::supervise(&client, args.resolved.then(|| args.owner_arguments())).await;
     };
     let mut owner = lifetime::connect(&invitation).await?;
     let program = args
@@ -634,6 +682,37 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// What `agentdocker codex` found is what its lifetime owner runs: the
+    /// owner's command line names the program itself, so `PATH` is never
+    /// read a second time and cannot have changed in between.
+    #[test]
+    fn a_resolved_launch_hands_its_owner_the_program_itself() {
+        let args = Args::new(
+            "/opt/codex/bin/codex".into(),
+            Some("reviewer".into()),
+            vec!["--model".into(), "gpt-6-astra".into()],
+        );
+        let owner: Vec<String> = args
+            .owner_arguments()
+            .into_iter()
+            .map(|a| a.into_string().unwrap())
+            .collect();
+        assert_eq!(
+            owner,
+            [
+                "codex-native",
+                "--program",
+                "/opt/codex/bin/codex",
+                "--name",
+                "reviewer",
+                "--",
+                "--model",
+                "gpt-6-astra"
+            ]
+        );
+        assert!(args.resolved);
+    }
+
     #[tokio::test]
     async fn native_remote_resume_rejects_permissions_before_supervision() {
         let temporary = tempfile::tempdir().unwrap();
@@ -666,6 +745,7 @@ mod tests {
                             uuid::Uuid::parse_str("12345678-1234-1234-1234-123456789abc").unwrap(),
                         ),
                         arguments,
+                        resolved: false,
                     },
                 )
                 .await

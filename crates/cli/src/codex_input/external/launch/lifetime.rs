@@ -147,7 +147,11 @@ pub(super) async fn disconnected(stream: &mut TcpStream) -> Result<()> {
 
 /// Spawn the same loaded binary with the exact original arguments. The child
 /// inherits the terminal directly; only this private control socket is new.
-pub(super) async fn supervise(client: &crate::client::Client) -> Result<()> {
+/// `arguments` is the owner's command line; `None` repeats this process's.
+pub(super) async fn supervise(
+    client: &crate::client::Client,
+    arguments: Option<Vec<std::ffi::OsString>>,
+) -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let parent = dirs::home().join("codex-native");
     dirs::ensure_private_dir(&parent)?;
@@ -170,7 +174,7 @@ pub(super) async fn supervise(client: &crate::client::Client) -> Result<()> {
     };
     let mut command = Command::new(procinfo::executable_path()?);
     command
-        .args(std::env::args_os().skip(1))
+        .args(arguments.unwrap_or_else(|| std::env::args_os().skip(1).collect()))
         .env(ENV, serde_json::to_string(&invitation)?)
         .env("AGENTDOCKER_HOME", dirs::home())
         .env("AGENTDOCKER_SOCKET", client.socket_path())
