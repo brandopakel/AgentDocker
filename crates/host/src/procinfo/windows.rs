@@ -113,9 +113,25 @@ pub(super) fn unseen(pid: u32) -> super::Unseen {
         // not be read.
         Ok(_) => super::Unseen::Unreadable,
         Err(_) if !super::alive(pid) => super::Unseen::Ended,
-        // Running, with a token this user may not read: a service's.
-        Err(_) => super::Unseen::OtherUser,
+        // Running with a token this user may not read: another user's only
+        // when it is proven to be, by running in the services session while
+        // this process does not. Anything else is not proof.
+        Err(_) => match (session_of(pid), session_of(std::process::id())) {
+            (Some(0), Some(mine)) if mine != 0 => super::Unseen::OtherUser,
+            _ => super::Unseen::Unreadable,
+        },
     }
+}
+
+/// The Remote Desktop session a process runs in; session 0 holds services.
+fn session_of(pid: u32) -> Option<u32> {
+    let mut session = 0_u32;
+    // SAFETY: writes one u32 through a valid, exclusive pointer and retains
+    // neither argument.
+    let found = unsafe {
+        windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(pid, &mut session)
+    };
+    (found != 0).then_some(session)
 }
 
 fn row(process: &sysinfo::Process) -> Option<super::Process> {

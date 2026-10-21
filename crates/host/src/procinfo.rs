@@ -216,8 +216,9 @@ pub enum Unseen {
 /// Why `pid` is missing from [`processes`]. On Unix every user's processes
 /// are listed, so a missing one has ended, or is a race with its start.
 /// On Windows the table holds only this user's readable processes: a
-/// parent whose token this user cannot read is taken as another user's (an
-/// elevated session of this user's is not seen through).
+/// parent is another user's only on a proven different owner, or when its
+/// token cannot be read and it runs in the services session while this
+/// process does not; a token that cannot be read is otherwise not proof.
 pub fn unseen(pid: u32) -> Unseen {
     #[cfg(windows)]
     {
