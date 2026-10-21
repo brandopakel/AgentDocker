@@ -80,69 +80,22 @@ class Specifics(unittest.TestCase):
             self.assertEqual(CHECK.denied_terms(), ())
 
 
-class AddedLines(unittest.TestCase):
-    """What the gate reads is what the working tree adds since the base,
-    whatever the documents are called and however their lines begin."""
+class Documents(unittest.TestCase):
+    """The gate reads every tracked document, as git splits its lines."""
 
-    def git(self, *args):
-        subprocess.run(["git", *args], cwd=self.root, check=True, capture_output=True)
-
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
-        self.git("init", "-q")
-        self.git("config", "user.email", "test@example.invalid")
-        self.git("config", "user.name", "Test")
-        (self.root / "docs").mkdir()
-        (self.root / "docs/GUIDE.md").write_text("# Guide\n")
-        self.git("add", ".")
-        self.git("commit", "-qm", "base")
-        self.base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
-
-    def tearDown(self):
-        self.temporary.cleanup()
-
-    def added(self):
-        with patch.object(CHECK, "ROOT", self.root):
-            return CHECK.added_document_lines(self.base)
-
-    def test_names_that_git_would_quote_or_split(self):
-        (self.root / "docs/café.md").write_text("Trialled on 2026-10-21.\n")
-        (self.root / "docs/My Notes.md").write_text("Seen on 2026-10-22.\n")
-        self.git("add", "docs/café.md")
-        self.git("commit", "-qm", "quoted")
-        self.assertEqual(sorted(self.added()), [
-            ("docs/My Notes.md", 1, "Seen on 2026-10-22."),
-            ("docs/café.md", 1, "Trialled on 2026-10-21."),
-        ])
-
-    def test_an_added_line_that_looks_like_a_header(self):
-        (self.root / "docs/GUIDE.md").write_text("# Guide\n++ literal\nTrialled on 2026-10-21.\n")
-        self.git("commit", "-qam", "plus")
-        self.assertEqual(self.added(), [
-            ("docs/GUIDE.md", 2, "++ literal"),
-            ("docs/GUIDE.md", 3, "Trialled on 2026-10-21."),
-        ])
-
-    def test_lines_split_where_git_splits_them(self):
-        (self.root / "docs/GUIDE.md").write_text("# Guide\nSeen here\u2028on 21 October 2026.\r\n", newline="")
-        self.git("commit", "-qam", "separator")
-        self.assertEqual(self.added(), [("docs/GUIDE.md", 2, "Seen here\u2028on 21 October 2026.\r")])
-
-    def test_a_rename_adds_nothing_it_carried_over(self):
-        self.git("mv", "docs/GUIDE.md", "docs/renamed.md")
-        self.git("commit", "-qm", "rename")
-        self.assertEqual(self.added(), [])
-        (self.root / "docs/renamed.md").write_text("# Guide\nTrialled on 2026-10-21.\n")
-        # A small file changed this much is no longer a rename to git; either
-        # way the new line is read.
-        self.assertIn(("docs/renamed.md", 2, "Trialled on 2026-10-21."), self.added())
-
-    def test_an_uncommitted_fix_is_what_counts(self):
-        (self.root / "docs/GUIDE.md").write_text("# Guide\nTrialled on 2026-10-21.\n")
-        self.git("commit", "-qam", "dated")
-        (self.root / "docs/GUIDE.md").write_text("# Guide\nTrialled before a release.\n")
-        self.assertEqual(self.added(), [("docs/GUIDE.md", 2, "Trialled before a release.")])
+    def test_a_tracked_document_with_a_specific_fails_the_gate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run = lambda *args: subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+            run("init", "-q")
+            (root / "docs").mkdir()
+            (root / "docs/GUIDE.md").write_text("# Guide\nSeen here\u2028on 21 October 2026.\n")
+            (root / "docs/clean.md").write_text("Runs on every platform.\n")
+            (root / "docs/untracked.md").write_text("Trialled on 2026-10-21.\n")
+            run("add", "docs/GUIDE.md", "docs/clean.md")
+            with patch.object(CHECK, "ROOT", root):
+                problems = CHECK.specifics_in_documents()
+        self.assertTrue(problems and all(p.startswith("docs/GUIDE.md:2 carries a date") for p in problems), problems)
 
 
 if __name__ == "__main__":

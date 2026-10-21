@@ -14,12 +14,10 @@ Checks, each of which fails the gate when it does not hold:
    line starting `Docs:` (for example `Docs: unchanged, a refactor with no
    behaviour change`). The check asks that documentation was considered on
    every change; it does not demand an edit where none is due.
-5. With --base <ref>: no line added to a document carries a specific (a
-   date, a pull request, issue or CI run number, a commit, a home directory,
-   a real agent's name, or a term from the file AGENTDOCKER_SPECIFICS_DENYLIST
-   names). The documents describe the code, not a moment, a machine or a
-   person. `--specifics` reports every specific already in the tree and
-   exits 0.
+5. No document carries a specific: a date, a pull request, issue or CI
+   run number, a commit, a home directory, a real agent's name, or a term
+   from the file AGENTDOCKER_SPECIFICS_DENYLIST names. The documents
+   describe the code, not a moment, a machine or a person.
 
 Evidence from a trial on real binaries goes in its pull request, not in the
 repository.
@@ -40,7 +38,7 @@ DOC_PATHS = ("docs/",)
 DOC_FILES = ("README.md", "CLAUDE.md")
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 # The documents are named in capitals; a lower-case `docs/x.md` in a test is an example, not a pointer.
-POINTER = re.compile(r"docs/((?:verification/)?[A-Z][A-Z0-9-]*\.md)")
+POINTER = re.compile(r"docs/([A-Z][A-Z0-9-]*\.md)")
 # Instruction files that are not Markdown but are read the same way.
 INSTRUCTION_FILES = (".coderabbit.yaml",)
 MONTH = r"(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)"
@@ -100,7 +98,7 @@ def index_completeness():
     text = INDEX.read_text()
     linked = set(re.findall(r"\]\(([^)#]+\.md)", text))
     problems = []
-    for path in sorted(DOCS.glob("*.md")) + sorted((DOCS / "verification").glob("*.md")):
+    for path in sorted(DOCS.glob("*.md")):
         relative = path.relative_to(DOCS).as_posix()
         if path.name != "README.md" and relative not in linked:
             problems.append(f"docs/{relative} is not linked from docs/README.md")
@@ -167,8 +165,8 @@ def docs_considered(base):
         "code changed with no documentation change and no commit saying why: "
         + ", ".join(code[:8])
         + (" ..." if len(code) > 8 else "")
-        + "; update the affected doc (ARCHITECTURE.md for protocol or semantics, REMAINING-WORK.md for status, "
-        "GUIDE.md or README.md for usage) or add a `Docs: ...` line to a commit message explaining why none is due"
+        + "; update the affected doc (ARCHITECTURE.md for protocol or semantics, GUIDE.md or README.md for usage) "
+        "or add a `Docs: ...` line to a commit message explaining why none is due"
     ]
 
 
@@ -236,105 +234,25 @@ def specifics(line, denied=()):
     return found
 
 
-def is_document(name):
-    return name.endswith(".md") or name in INSTRUCTION_FILES
-
-
-def git_names(*args):
-    """Paths from a NUL-delimited git listing, exactly as stored."""
-    out = subprocess.check_output(["git", *args, "-z"], cwd=ROOT)
-    return [name.decode("utf-8", "surrogateescape") for name in out.split(b"\0") if name]
-
-
-def added_lines(diff):
-    """(line number, text) for each line a one-file `--unified=0` patch
-    adds: inside a hunk every `+` line is content, however it begins."""
-    added, number, in_hunk = [], 0, False
-    for line in text_lines(diff):
-        if line.startswith("@@"):
-            number, in_hunk = int(re.match(r"@@ -\S+ \+(\d+)", line).group(1)), True
-        elif in_hunk and line.startswith("+"):
-            added.append((number, line[1:]))
-            number += 1
-    return added
-
-
-def changed_documents(merge_base):
-    """(paths to diff, document) for each document the working tree adds,
-    changes or renames since `merge_base`; a rename is diffed with its
-    source, so lines it carried over unchanged are not new."""
-    fields = git_names("diff", "--name-status", "-M", "--diff-filter=AMRT", merge_base)
-    changed, i = [], 0
-    while i < len(fields):
-        status = fields[i]
-        if status.startswith("R"):
-            source, name = fields[i + 1], fields[i + 2]
-            i += 3
-            if is_document(name):
-                changed.append(([source, name], name))
-        else:
-            name = fields[i + 1]
-            i += 2
-            if is_document(name):
-                changed.append(([name], name))
-    return changed
-
-
-def added_document_lines(merge_base):
-    """(path, line number, text) for every line the working tree adds to a
-    document since `merge_base`, committed or not, untracked documents
-    whole: the check describes the content as it stands."""
-    added = []
-    for paths, name in changed_documents(merge_base):
-        diff = subprocess.check_output(
-            ["git", "diff", "-M", "--unified=0", "--no-color", "--no-ext-diff", merge_base, "--", *paths], cwd=ROOT)
-        added += [(name, number, text) for number, text in added_lines(diff)]
-    for name in filter(is_document, git_names("ls-files", "--others", "--exclude-standard")):
-        for number, line in enumerate(text_lines((ROOT / name).read_bytes()), 1):
-            added.append((name, number, line))
-    return added
-
-
-def no_new_specifics(base):
-    try:
-        merge_base = subprocess.check_output(["git", "merge-base", base, "HEAD"], cwd=ROOT, text=True).strip()
-    except subprocess.CalledProcessError:
-        return [f"cannot find a merge base with {base}; fetch it or pass --base"]
+def specifics_in_documents():
+    """Every specific in the tracked documents."""
     denied = denied_terms()
     return [
-        f"{path}:{number} adds {what} ({text}); the documents describe the code, not a moment, a machine or a "
-        "person: use a placeholder, or leave it to the pull request"
-        for path, number, line in added_document_lines(merge_base)
+        f"{path.relative_to(ROOT)}:{number} carries {what} ({text}); the documents describe the code, not a "
+        "moment, a machine or a person: use a placeholder, or leave it to the pull request"
+        for path in tracked_files("*.md", *INSTRUCTION_FILES)
+        for number, line in enumerate(text_lines(path.read_bytes()), 1)
         for what, text in specifics(line, denied)
     ]
 
 
-def report_specifics():
-    """Every specific already in the tracked documents, for the cleanup; not a gate."""
-    denied = denied_terms()
-    counts = {}
-    names = [path for path in tracked_files("*.md", *INSTRUCTION_FILES)]
-    for path in names:
-        for number, line in enumerate(text_lines(path.read_bytes()), 1):
-            for what, text in specifics(line, denied):
-                print(f"{path.relative_to(ROOT)}:{number}: {what}: {text}")
-                counts[path.relative_to(ROOT)] = counts.get(path.relative_to(ROOT), 0) + 1
-    for name, count in sorted(counts.items(), key=lambda item: -item[1]):
-        print(f"docs_check: {count} specifics in {name}", file=sys.stderr)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--base", help="git ref to diff against for the docs-considered and specifics checks")
-    parser.add_argument("--specifics", action="store_true", help="report every specific in the tracked documents and exit 0")
+    parser.add_argument("--base", help="git ref to diff against for the docs-considered check")
     args = parser.parse_args()
-    if args.specifics:
-        report_specifics()
-        return
-    problems = index_completeness() + links_resolve() + pointers_resolve()
+    problems = index_completeness() + links_resolve() + pointers_resolve() + specifics_in_documents()
     if args.base:
         problems += docs_considered(args.base)
-        problems += no_new_specifics(args.base)
     for problem in problems:
         print(f"docs_check: {problem}", file=sys.stderr)
     if problems:
