@@ -263,53 +263,142 @@ impl Daemon {
     }
 }
 
+/// How a walk up from a verdict's sender ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Author {
+    Reviewer,
+    Other(&'static str),
+}
+
+/// The dedicated Codex server `agentdocker codex` starts beside a
+/// conversation's terminal: a Codex app-server listening on loopback, a
+/// child of the same launcher as the reviewer's terminal, born after it,
+/// where the launcher is the companion CLI's `codex` or `codex-native`.
+fn dedicated_server(
+    reviewer: &AgentRecord,
+    server: &agentdocker_host::procinfo::Process,
+    table: &[agentdocker_host::procinfo::Process],
+    born: &impl Fn(u32) -> Option<DateTime<Utc>>,
+    program: &impl Fn(u32) -> Option<std::path::PathBuf>,
+) -> bool {
+    let Some(terminal) = reviewer
+        .pid
+        .and_then(|pid| table.iter().find(|p| p.pid == pid))
+    else {
+        return false;
+    };
+    let Some(launcher) = table.iter().find(|p| p.pid == server.ppid) else {
+        return false;
+    };
+    let serving = agentdocker_host::procinfo::is_codex_binary(&server.argv)
+        && server.argv.iter().any(|a| a == "app-server")
+        && server
+            .argv
+            .windows(2)
+            .any(|w| w[0] == "--listen" && w[1].starts_with("ws://127.0.0.1:"));
+    let ours = matches!(
+        launcher.argv.get(1).map(String::as_str),
+        Some("codex" | "codex-native")
+    ) && program(launcher.pid).is_some_and(|exe| {
+        exe.file_stem()
+            .is_some_and(|stem| stem.eq_ignore_ascii_case("agentdocker"))
+    });
+    let in_order = match (
+        born(launcher.pid),
+        born(server.pid),
+        born(terminal.pid),
+        reviewer.process_started_at,
+    ) {
+        (Some(l), Some(s), Some(t), Some(recorded)) => s >= l && t >= l && t == recorded,
+        _ => false,
+    };
+    reviewer.spec.runtime == "codex" && terminal.ppid == server.ppid && serving && ours && in_order
+}
+
+/// Walk up from `sender`, itself included, to the nearest session: a live
+/// agent's own process (by pid and birth), or a provider's session process.
+/// The reviewer's word is given only when that session is the reviewer's —
+/// its own process, the server its supervised bridge started, or the
+/// dedicated server `agentdocker codex` started beside it. Anything else,
+/// an agent it started included, registered or not, is another session.
+fn author(
+    sender: u32,
+    reviewer: &AgentRecord,
+    agents: &HashMap<u32, (DateTime<Utc>, AgentId)>,
+    table: &[agentdocker_host::procinfo::Process],
+    born: impl Fn(u32) -> Option<DateTime<Utc>>,
+    program: impl Fn(u32) -> Option<std::path::PathBuf>,
+) -> Author {
+    let mut current = sender;
+    for _ in 0..64 {
+        let Some(process) = table.iter().find(|p| p.pid == current) else {
+            break;
+        };
+        let birth = born(current);
+        if let Some((recorded, owner)) = agents.get(&current)
+            && birth == Some(*recorded)
+        {
+            return if *owner == reviewer.id {
+                Author::Reviewer
+            } else {
+                Author::Other("it was sent from inside another agent's session")
+            };
+        }
+        if agentdocker_host::procinfo::session_runtime_of(&process.argv).is_some()
+            || agentdocker_host::procinfo::is_codex_binary(&process.argv)
+        {
+            let own = (reviewer.pid == Some(current)
+                && birth.is_some()
+                && birth == reviewer.process_started_at)
+                || agentdocker_host::provider_input::owns_codex_process(reviewer, current, table)
+                || dedicated_server(reviewer, process, table, &born, &program);
+            return if own {
+                Author::Reviewer
+            } else {
+                Author::Other("it was sent from inside a session that is not the reviewer's")
+            };
+        }
+        if process.ppid <= 1 || process.ppid == current {
+            break;
+        }
+        current = process.ppid;
+    }
+    Author::Other("this was sent from outside it")
+}
+
 impl Daemon {
-    /// A refusal when a verdict names an agent other than the process on
-    /// the socket: the agent's own process, by pid and birth, must be that
-    /// process or one of its parents, so no agent gives a reviewer's word.
-    /// The person's word is the person check's.
-    pub(crate) async fn verdict_author_refusal(
+    /// Authenticate a verdict's reviewer as the process on the socket's own
+    /// session, and name it by its id from here on, so a rename while this
+    /// runs cannot hand the word to another record. A refusal when it is
+    /// not. The person's word is the person check's.
+    pub(crate) async fn authenticate_verdict(
         self: &Arc<Self>,
         peer: Option<crate::daemon::person::Peer>,
-        request: &Request,
+        request: &mut Request,
     ) -> Option<Response> {
         let Request::CodeVerdict { agent, .. } = request else {
             return None;
         };
-        if !self.person_check || peer.is_some_and(|(pid, _)| pid == std::process::id()) {
-            return None;
-        }
-        // Every live agent's own process and bound input controller, by pid
-        // and birth: the processes a session is known by.
-        let (target, sessions) = {
+        let (reviewer, agents) = {
             let state = lock(&self.state);
             // A name nobody has is the handler's to answer.
             let id = state.registry.resolve(agent).ok()?;
-            if state
-                .registry
-                .get(&id)
-                .is_some_and(super::super::humans::is_human)
-            {
-                return None;
-            }
-            let mut sessions: HashMap<u32, (DateTime<Utc>, AgentId)> = HashMap::new();
-            for record in state
+            let record = state.registry.get(&id)?.clone();
+            let agents: HashMap<u32, (DateTime<Utc>, AgentId)> = state
                 .registry
                 .live()
                 .filter(|r| !super::super::humans::is_human(r))
-            {
-                if let (Some(pid), Some(born)) = (record.pid, record.process_started_at) {
-                    sessions.insert(pid, (born, record.id.clone()));
-                }
-                if let Some(binding) = &record.input_binding {
-                    sessions.insert(
-                        binding.controller.pid,
-                        (binding.controller.started_at, record.id.clone()),
-                    );
-                }
-            }
-            (id, sessions)
+                .filter_map(|r| Some((r.pid?, (r.process_started_at?, r.id.clone()))))
+                .collect();
+            (record, agents)
         };
+        *agent = reviewer.id.to_string();
+        if super::super::humans::is_human(&reviewer)
+            || !self.person_check
+            || peer.is_some_and(|(pid, _)| pid == std::process::id())
+        {
+            return None;
+        }
         let refuse = |why: &str| {
             Some(Response::error(
                 ErrorCode::Forbidden,
@@ -327,27 +416,17 @@ impl Daemon {
         else {
             return refuse("its sender's parents could not be read");
         };
-        // The nearest session above the sender, itself included, must be the
-        // reviewer's: an agent the reviewer started is a session of its own.
-        let mut current = sender;
-        for _ in 0..64 {
-            if let Some((born, owner)) = sessions.get(&current)
-                && agentdocker_host::procinfo::start_time(current) == Some(*born)
-            {
-                if *owner == target {
-                    return None;
-                }
-                return refuse("it was sent from inside another agent's session");
-            }
-            let Some(process) = table.iter().find(|p| p.pid == current) else {
-                break;
-            };
-            if process.ppid <= 1 || process.ppid == current {
-                break;
-            }
-            current = process.ppid;
+        match author(
+            sender,
+            &reviewer,
+            &agents,
+            &table,
+            agentdocker_host::procinfo::start_time,
+            |pid| agentdocker_host::procinfo::executable_path_of(pid).ok(),
+        ) {
+            Author::Reviewer => None,
+            Author::Other(why) => refuse(why),
         }
-        refuse("this was sent from outside it")
     }
 }
 
@@ -654,6 +733,144 @@ mod tests {
         assert!(matches!(said, Response::CodeVerdict { .. }), "{said:?}");
     }
 
+    fn row(pid: u32, ppid: u32, argv: &[&str]) -> agentdocker_host::procinfo::Process {
+        agentdocker_host::procinfo::Process {
+            pid,
+            ppid,
+            argv: argv.iter().map(|a| (*a).to_owned()).collect(),
+        }
+    }
+
+    fn reviewer_record(pid: u32, runtime: &str) -> AgentRecord {
+        let mut record = AgentRecord::new(
+            AgentSpec {
+                name: "reviewer".into(),
+                runtime: runtime.into(),
+                ..AgentSpec::default()
+            },
+            false,
+            Utc::now(),
+        );
+        record.pid = Some(pid);
+        record.process_started_at = DateTime::from_timestamp(1_700_000_000 + i64::from(pid), 0);
+        record
+    }
+
+    /// Every topology a verdict comes from, on a table: the reviewer's own
+    /// Claude session; an agent it started, registered or not; the dedicated
+    /// server `agentdocker codex` starts beside its terminal; a look-alike
+    /// whose launcher is not ours; and nothing at all.
+    #[test]
+    fn a_verdict_is_the_reviewer_s_only_from_the_nearest_session_being_its_own() {
+        let born = |pid: u32| DateTime::from_timestamp(1_700_000_000 + i64::from(pid), 0);
+        let ours = |pid: u32| {
+            (pid == 300 || pid == 400).then(|| std::path::PathBuf::from("/opt/agentdocker"))
+        };
+        let table = [
+            // A Claude reviewer (10) and what runs under it.
+            row(10, 1, &["/usr/local/bin/claude", "--resume", "x"]),
+            row(
+                11,
+                10,
+                &["/opt/agentdocker", "mcp", "--runtime", "claude-code"],
+            ),
+            // A Claude it started, registered (20) and not (30).
+            row(20, 10, &["/usr/local/bin/claude", "-p", "go"]),
+            row(21, 20, &["python3", "client.py"]),
+            row(30, 10, &["/usr/local/bin/claude", "-p", "go"]),
+            row(31, 30, &["python3", "client.py"]),
+            // `agentdocker codex`: launcher 300, terminal 301, server 302.
+            row(
+                300,
+                5,
+                &["/opt/agentdocker", "codex-native", "--program", "/x/codex"],
+            ),
+            row(301, 300, &["/x/codex", "--remote", "ws://127.0.0.1:4100"]),
+            row(
+                302,
+                300,
+                &["/x/codex", "app-server", "--listen", "ws://127.0.0.1:4100"],
+            ),
+            row(303, 302, &["/opt/agentdocker", "mcp", "--runtime", "codex"]),
+            // The same shape under a launcher that is not ours (500).
+            row(500, 5, &["/tmp/fake", "codex-native"]),
+            row(501, 500, &["/x/codex", "--remote", "ws://127.0.0.1:4200"]),
+            row(
+                502,
+                500,
+                &["/x/codex", "app-server", "--listen", "ws://127.0.0.1:4200"],
+            ),
+            row(503, 502, &["/opt/agentdocker", "mcp"]),
+            row(5, 1, &["-zsh"]),
+            row(6, 5, &["python3", "client.py"]),
+        ];
+        let claude = reviewer_record(10, "claude-code");
+        let nested = reviewer_record(20, "claude-code");
+        let agents: HashMap<u32, (DateTime<Utc>, AgentId)> = [
+            (10, (born(10).unwrap(), claude.id.clone())),
+            (20, (born(20).unwrap(), nested.id.clone())),
+        ]
+        .into();
+        let go =
+            |sender, reviewer: &AgentRecord, agents: &HashMap<u32, (DateTime<Utc>, AgentId)>| {
+                author(sender, reviewer, agents, &table, born, ours)
+            };
+        assert_eq!(go(11, &claude, &agents), Author::Reviewer);
+        assert!(
+            matches!(go(21, &claude, &agents), Author::Other(why) if why.contains("another agent's"))
+        );
+        assert!(
+            matches!(go(31, &claude, &agents), Author::Other(why) if why.contains("not the reviewer's")),
+            "an unregistered nested session"
+        );
+        let native = reviewer_record(301, "codex");
+        let native_agents: HashMap<u32, (DateTime<Utc>, AgentId)> =
+            [(301, (born(301).unwrap(), native.id.clone()))].into();
+        assert_eq!(
+            go(303, &native, &native_agents),
+            Author::Reviewer,
+            "its dedicated server"
+        );
+        let fake = reviewer_record(501, "codex");
+        let fake_agents: HashMap<u32, (DateTime<Utc>, AgentId)> =
+            [(501, (born(501).unwrap(), fake.id.clone()))].into();
+        assert!(
+            matches!(go(503, &fake, &fake_agents), Author::Other(_)),
+            "a launcher that is not ours"
+        );
+        assert!(
+            matches!(go(303, &claude, &agents), Author::Other(_)),
+            "another reviewer's server"
+        );
+        assert!(matches!(go(6, &claude, &agents), Author::Other(why) if why.contains("outside")));
+    }
+
+    /// The reviewer is named by its id once it is authenticated, so a name
+    /// handed to another record while the check ran changes nothing.
+    #[tokio::test]
+    async fn an_authenticated_verdict_names_its_reviewer_by_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = open(&tmp);
+        let repo = tmp.path().join("repo");
+        repository(&repo, "main");
+        let reviewer = register(&daemon, "reviewer", &repo).await;
+        let mut request = verdict("reviewer", None, "feature/x", A, "approve");
+        let own = Some((
+            std::process::id(),
+            agentdocker_host::procinfo::start_time(std::process::id()),
+        ));
+        assert!(
+            daemon
+                .authenticate_verdict(own, &mut request)
+                .await
+                .is_none()
+        );
+        let Request::CodeVerdict { agent, .. } = &request else {
+            unreachable!()
+        };
+        assert_eq!(agent, &reviewer.id.to_string());
+    }
+
     #[tokio::test]
     async fn the_person_names_the_project_and_an_unreadable_checkout_says_nothing() {
         let tmp = tempfile::tempdir().unwrap();
@@ -746,11 +963,17 @@ mod tests {
             "approve",
         ))
         .unwrap();
-        // Another process saying it is the reviewer.
+        // Another process saying it is the reviewer: refused, whichever
+        // session (if any) it runs under where the tests do.
         let reply = send(spawn(), request.clone()).await;
         assert!(
-            matches!(&reply, Response::Error { code: ErrorCode::Forbidden, message, .. }
-                if message.contains("outside it")),
+            matches!(
+                &reply,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
             "{reply:?}"
         );
         // An agent the reviewer started, registered as itself, saying it is
