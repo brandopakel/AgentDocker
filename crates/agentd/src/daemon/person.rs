@@ -11,23 +11,27 @@
 //! Unverifiable ancestry authorises nothing: a peer the daemon cannot
 //! trace is refused the person's word, never granted it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::{Duration as StdDuration, Instant};
 
 use super::*;
 use agentdocker_core::{HUMAN, HUMAN_RUNTIME};
-use agentdocker_host::procinfo;
+use agentdocker_host::procinfo::{self, Unseen};
 
 /// Peers remembered at most; past it the memory starts again.
 const REMEMBERED: usize = 256;
-/// How long a peer found outside every agent's session is believed: an
-/// agent that registers later can make a running process its own.
+/// How long a peer found outside every agent's session is believed, and
+/// then only while no agent has come to stand among its parents.
 const OUTSIDE_FOR: StdDuration = StdDuration::from_secs(10);
 /// How far up a peer's ancestry is walked.
 const ANCESTRY: usize = 64;
 
-/// What was found of each peer, by pid and birth: inside an agent's
-/// session for good (the process cannot leave it), outside only for a while.
+/// The process on a connection, as the kernel named it when it connected:
+/// its pid and its birth, so a pid that ends and is reused is not taken
+/// for it.
+pub(crate) type Peer = (u32, Option<DateTime<Utc>>);
+
+/// What was found of each peer, by pid and birth.
 #[derive(Default)]
 pub(crate) struct Peers {
     found: HashMap<(u32, i64), Found>,
@@ -35,18 +39,25 @@ pub(crate) struct Peers {
 
 #[derive(Clone)]
 enum Found {
+    /// Inside an agent's session for good: a process does not leave the
+    /// session it was started in.
     Inside(String),
-    Outside(Instant),
+    /// Outside, as of then, through these parents.
+    Outside(Instant, Vec<u32>),
 }
 
 /// Who a request names as acting: its sender, the reader it acts for, the
-/// agent it acts as; `user` for an answer that names nobody, which is the
-/// person's; and `user` for a record registered as a person.
+/// agent it acts as. The person stands for every request whose sender is
+/// theirs when it names nobody (an answer, a read mark, a merge), the old
+/// `role` request (which only the person makes), a record registered or
+/// adopted as a person, and a `me` that moves the person somewhere.
 pub(crate) fn acting(request: &Request) -> Vec<String> {
     let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(request) else {
         return Vec::new();
     };
     let op = fields.get("op").and_then(|op| op.as_str()).unwrap_or("");
+    let text =
+        |value: Option<&serde_json::Value>| value.and_then(|v| v.as_str()).map(str::to_owned);
     let mut names = Vec::new();
     for key in ["from", "agent", "reader"] {
         // A worktree's `from` is where it starts, not who asks.
@@ -55,53 +66,85 @@ pub(crate) fn acting(request: &Request) -> Vec<String> {
         }
         match fields.get(key) {
             Some(serde_json::Value::String(name)) => names.push(name.clone()),
-            None | Some(serde_json::Value::Null) if key == "from" && op == "answer" => {
+            None | Some(serde_json::Value::Null)
+                if (key == "from" && op == "answer") || (key == "reader" && op == "mark_read") =>
+            {
                 names.push(HUMAN.to_owned());
             }
             _ => {}
         }
     }
-    if fields
-        .get("spec")
-        .and_then(|spec| spec.get("runtime"))
-        .and_then(|runtime| runtime.as_str())
-        == Some(HUMAN_RUNTIME)
-    {
+    // A journal digest that moves a reader's cursor acts for that reader.
+    if let Some(reader) = text(fields.get("digest").and_then(|d| d.get("reader"))) {
+        names.push(reader);
+    }
+    let person = op == "role"
+        || (op == "me" && fields.get("workdir").is_some_and(|w| !w.is_null()))
+        || text(fields.get("runtime")).as_deref() == Some(HUMAN_RUNTIME)
+        || text(fields.get("spec").and_then(|spec| spec.get("runtime"))).as_deref()
+            == Some(HUMAN_RUNTIME);
+    if person {
         names.push(HUMAN.to_owned());
     }
     names
 }
 
-/// Why `peer` is inside an agent's session, if it is: the first of its
-/// ancestors (itself included) that is a provider's session process or a
-/// live agent's.
-fn inside(
+/// Where a walk up a peer's parents ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Walk {
+    Inside(String),
+    Outside(Vec<u32>),
+}
+
+/// Walk up from `peer`, itself included. Inside an agent's session when a
+/// process on the way is a provider's session process, a Codex server, or
+/// a live agent's own process — by its pid *and* its birth, so a reused
+/// pid is not taken for the agent. Outside when the chain reaches the
+/// first process, a process that has ended, another user's, or a "parent"
+/// born after its child (its pid was reused). This user's process that
+/// still runs and cannot be read authorises nothing.
+fn walk(
     peer: u32,
     table: &[procinfo::Process],
-    agents: &HashSet<u32>,
-) -> Result<Option<String>, String> {
+    agents: &HashMap<u32, DateTime<Utc>>,
+    born: impl Fn(u32) -> Option<DateTime<Utc>>,
+    unseen: impl Fn(u32) -> Unseen,
+) -> Result<Walk, String> {
+    let mut chain = Vec::new();
     let mut pid = peer;
+    let mut child: Option<DateTime<Utc>> = None;
     for _ in 0..ANCESTRY {
         if pid <= 1 {
-            return Ok(None);
+            return Ok(Walk::Outside(chain));
         }
         let Some(process) = table.iter().find(|p| p.pid == pid) else {
-            return Err(format!(
-                "process {pid}, which sent it or is among its parents, could not be traced"
-            ));
+            return match unseen(pid) {
+                Unseen::Ended | Unseen::OtherUser => Ok(Walk::Outside(chain)),
+                Unseen::Unreadable => Err(format!(
+                    "process {pid}, which sent it or is among its parents, could not be read"
+                )),
+            };
         };
-        if agents.contains(&pid) {
-            return Ok(Some(format!("an agent's process ({pid})")));
+        let birth = born(pid);
+        if let (Some(birth), Some(child)) = (birth, child)
+            && birth > child
+        {
+            return Ok(Walk::Outside(chain));
+        }
+        if birth.is_some() && agents.get(&pid) == birth.as_ref() {
+            return Ok(Walk::Inside(format!("an agent's process ({pid})")));
         }
         if let Some(runtime) = procinfo::session_runtime_of(&process.argv) {
-            return Ok(Some(format!("a {runtime} session ({pid})")));
+            return Ok(Walk::Inside(format!("a {runtime} session ({pid})")));
         }
         if procinfo::is_codex_binary(&process.argv) {
-            return Ok(Some(format!("a Codex server ({pid})")));
+            return Ok(Walk::Inside(format!("a Codex server ({pid})")));
         }
+        chain.push(pid);
         if process.ppid == pid {
-            return Ok(None);
+            return Ok(Walk::Outside(chain));
         }
+        child = birth.or(child);
         pid = process.ppid;
     }
     Err("its process ancestry is deeper than can be traced".to_owned())
@@ -116,13 +159,37 @@ fn refusal(reason: &str) -> Response {
     )
 }
 
+impl State {
+    /// A terminal's own input path: the person typing into the terminal a
+    /// supervised Codex runs in, sent by its controller — the agent's own
+    /// registered process, exactly, never anything under it — to that agent.
+    fn controller_typing(&self, peer: Peer, request: &Request) -> bool {
+        let Request::Send { from, to, .. } = request else {
+            return false;
+        };
+        if from != HUMAN {
+            return false;
+        }
+        let Ok(id) = self.registry.resolve(to) else {
+            return false;
+        };
+        self.registry.get(&id).is_some_and(|record| {
+            record.status.is_live()
+                && record.pid == Some(peer.0)
+                && record.process_started_at.is_some()
+                && record.process_started_at == peer.1
+                && agentdocker_host::provider_input::is_codex_input(record)
+        })
+    }
+}
+
 impl Daemon {
     /// A refusal when `request` acts as the person and `peer`, the
     /// process on the socket, runs inside an agent's session. `None` lets
     /// it through.
     pub(crate) async fn person_refusal(
         self: &Arc<Self>,
-        peer: Option<u32>,
+        peer: Option<Peer>,
         request: &Request,
     ) -> Option<Response> {
         if !self.person_check || !(mutates(request) || matches!(request, Request::Subscribe { .. }))
@@ -133,7 +200,11 @@ impl Daemon {
         if names.is_empty() {
             return None;
         }
-        let agents: HashSet<u32> = {
+        // The daemon's own callers, in this process.
+        if peer.is_some_and(|(pid, _)| pid == std::process::id()) {
+            return None;
+        }
+        let agents: HashMap<u32, DateTime<Utc>> = {
             let state = lock(&self.state);
             let person = names.iter().any(|name| {
                 name == HUMAN
@@ -147,41 +218,49 @@ impl Daemon {
             if !person {
                 return None;
             }
+            if peer.is_some_and(|peer| state.controller_typing(peer, request)) {
+                return None;
+            }
             state
                 .registry
                 .live()
                 .filter(|a| !humans::is_human(a))
-                .filter_map(|a| a.pid)
+                .filter_map(|a| Some((a.pid?, a.process_started_at?)))
                 .collect()
         };
-        let Some(peer) = peer else {
+        let Some((pid, Some(born))) = peer else {
             return Some(refusal("a process the daemon cannot identify"));
         };
-        // The daemon's own callers, in this process.
-        if peer == std::process::id() {
-            return None;
+        // The process that opened the connection, still: not another that
+        // was given its pid.
+        if procinfo::start_time(pid) != Some(born) {
+            return Some(refusal("a connection whose process has ended"));
         }
-        let Some(born) = procinfo::start_time(peer) else {
-            return Some(refusal("a process that could not be traced"));
-        };
-        let key = (peer, born.timestamp_micros());
+        let key = (pid, born.timestamp_micros());
         let known = lock(&self.peers).found.get(&key).cloned();
         let found = match known {
             Some(Found::Inside(reason)) => Found::Inside(reason),
-            Some(Found::Outside(at)) if at.elapsed() < OUTSIDE_FOR => Found::Outside(at),
+            // Believed a while, unless an agent now stands among its parents.
+            Some(Found::Outside(at, chain))
+                if at.elapsed() < OUTSIDE_FOR && !chain.iter().any(|p| agents.contains_key(p)) =>
+            {
+                Found::Outside(at, chain)
+            }
             _ => {
                 let table = match tokio::task::spawn_blocking(procinfo::processes).await {
                     Ok(Ok(table)) => table,
                     _ => return Some(refusal("a process whose ancestry could not be read")),
                 };
-                let found = match inside(peer, &table, &agents) {
-                    Ok(Some(reason)) => Found::Inside(reason),
-                    Ok(None) => Found::Outside(Instant::now()),
+                let found = match walk(pid, &table, &agents, procinfo::start_time, procinfo::unseen)
+                {
+                    Ok(Walk::Inside(reason)) => Found::Inside(reason),
+                    Ok(Walk::Outside(chain)) => Found::Outside(Instant::now(), chain),
                     Err(reason) => return Some(refusal(&reason)),
                 };
-                // The peer must still be the process that was traced.
-                if procinfo::start_time(peer) != Some(born) {
-                    return Some(refusal("a process that ended while it was traced"));
+                if procinfo::start_time(pid) != Some(born) {
+                    return Some(refusal(
+                        "a connection whose process ended while it was traced",
+                    ));
                 }
                 let mut peers = lock(&self.peers);
                 if peers.found.len() >= REMEMBERED {
@@ -193,10 +272,10 @@ impl Daemon {
         };
         match found {
             Found::Inside(reason) => {
-                warn!(peer, %reason, "refused a request acting as the person");
+                warn!(peer = pid, %reason, "refused a request acting as the person");
                 Some(refusal(&reason))
             }
-            Found::Outside(_) => None,
+            Found::Outside(..) => None,
         }
     }
 }
@@ -214,24 +293,59 @@ mod tests {
         }
     }
 
+    fn at(seconds: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_700_000_000 + seconds, 0).unwrap()
+    }
+
     #[test]
     fn a_request_names_who_acts() {
         let named = |json: serde_json::Value| acting(&serde_json::from_value(json).unwrap());
+        let person = |json: serde_json::Value| named(json).contains(&HUMAN.to_owned());
         assert_eq!(
             named(
                 serde_json::json!({"op": "role_assign", "from": "user", "agent": "a1", "add": ["reviewer"]})
             ),
             ["user", "a1"]
         );
-        assert_eq!(
-            named(serde_json::json!({"op": "answer", "message": "m1", "text": "Allow"})),
-            ["user"],
-            "an answer naming nobody is the person's"
+        assert!(
+            person(serde_json::json!({"op": "answer", "message": "m1", "text": "Allow"})),
+            "an unsigned answer"
         );
-        assert_eq!(
-            named(serde_json::json!({"op": "merge_branch", "agent": "a1", "head": "abc"})),
-            ["user", "a1"],
-            "a merge naming nobody is the person's"
+        assert!(
+            person(serde_json::json!({"op": "merge_branch", "agent": "a1", "head": "abc"})),
+            "a defaulted merge"
+        );
+        assert!(
+            person(serde_json::json!({"op": "role", "agent": "a1", "role": "reviewer"})),
+            "the old role request"
+        );
+        assert!(
+            person(serde_json::json!({"op": "mark_read", "conversation": "c1", "through": 4})),
+            "an unsigned read mark"
+        );
+        assert!(
+            !person(
+                serde_json::json!({"op": "mark_read", "conversation": "c1", "through": 4, "reader": "a1"})
+            ),
+            "an agent's own read mark"
+        );
+        assert!(
+            person(
+                serde_json::json!({"op": "journal", "project": "p", "digest": {"reader": "user", "max_entries": 5, "max_chars": 500, "advance": true}})
+            ),
+            "the person's digest cursor"
+        );
+        assert!(
+            person(serde_json::json!({"op": "me", "workdir": "/repo"})),
+            "moving the person"
+        );
+        assert!(
+            !person(serde_json::json!({"op": "me"})),
+            "looking the person up"
+        );
+        assert!(
+            person(serde_json::json!({"op": "adopt", "pid": 7, "runtime": "human"})),
+            "adopting a person"
         );
         assert!(
             !named(serde_json::json!({"op": "worktree_create", "agent": "a1", "path": "/x", "branch": "b", "from": "user"}))
@@ -250,74 +364,9 @@ mod tests {
         assert_eq!(acting(&human), ["user"], "registering a person");
     }
 
-    /// Over the real socket: a process under a live agent that says it is
-    /// the person is refused before anything is done, and the same request
-    /// from the daemon's own process is not.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_process_under_an_agent_cannot_act_as_the_person() {
-        use std::io::Write as _;
-        let tmp = tempfile::tempdir().unwrap();
-        let daemon = Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("s")).unwrap());
-        let listener = crate::server::bind(&daemon).await.unwrap();
-        let serving = tokio::spawn(crate::server::serve(daemon.clone(), listener));
-        // The agent: a shell that, once told, runs a client asking as `user`.
-        let client = "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.connect(sys.argv[1])\ns.sendall(b'{\"op\":\"pause\",\"from\":\"user\",\"reason\":\"from an agent\"}\\n')\nprint(s.makefile().readline(),end='')\n";
-        let mut agent = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("read go; exec python3 -c \"$0\" \"$1\"")
-            .arg(client)
-            .arg(&daemon.socket)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let registered = daemon
-            .handle(Request::Register {
-                spec: AgentSpec {
-                    name: "an-agent".into(),
-                    workdir: Some(tmp.path().to_owned()),
-                    ..AgentSpec::default()
-                },
-                pid: Some(agent.id()),
-                session: None,
-            })
-            .await;
-        assert!(
-            matches!(registered, Response::Agent { .. }),
-            "{registered:?}"
-        );
-        writeln!(agent.stdin.take().unwrap(), "go").unwrap();
-        let output = tokio::task::spawn_blocking(move || agent.wait_with_output())
-            .await
-            .unwrap()
-            .unwrap();
-        let reply: Response = serde_json::from_slice(&output.stdout).unwrap();
-        assert!(
-            matches!(&reply, Response::Error { code: ErrorCode::Forbidden, message, .. }
-                if message.contains("an agent's process")),
-            "{reply:?}"
-        );
-        assert!(lock(&daemon.state).pauses.is_empty(), "nothing was paused");
-        // The daemon's own process is trusted, whatever its ancestry.
-        let mine = daemon
-            .person_refusal(
-                Some(std::process::id()),
-                &Request::Answer {
-                    from: None,
-                    message: agentdocker_core::MessageId::from("m".to_owned()),
-                    text: "Allow".into(),
-                },
-            )
-            .await;
-        assert!(mine.is_none(), "{mine:?}");
-        serving.abort();
-    }
-
     #[test]
-    fn a_peer_under_a_provider_or_a_live_agent_is_inside_and_a_terminal_is_not() {
+    fn a_walk_finds_a_session_or_a_proven_agent_and_stops_at_a_boundary() {
         let table = [
-            process(1, 0, &["/sbin/launchd"]),
             process(10, 1, &["/usr/bin/login"]),
             process(11, 10, &["-zsh"]),
             process(12, 11, &["agentdocker", "role", "--as", "user"]),
@@ -333,27 +382,202 @@ mod tests {
             process(22, 21, &["agentdocker", "answer", "m1", "Allow"]),
             process(30, 11, &["/opt/tools/some-agent"]),
             process(31, 30, &["agentdocker", "pause", "x"]),
+            // Its "parent" 40 was born after it: that pid was reused.
+            process(40, 11, &["/opt/tools/some-agent"]),
+            process(41, 40, &["agentdocker", "pause", "x"]),
+            // A Windows terminal under a service, and one whose parent ended.
+            process(50, 900, &["WindowsTerminal.exe"]),
+            process(51, 50, &["agentdocker.exe", "pause", "x"]),
+            process(60, 901, &["explorer.exe"]),
+            process(61, 60, &["agentdocker.exe", "pause", "x"]),
+            process(70, 902, &["agentdocker", "pause", "x"]),
         ];
-        let none = HashSet::new();
+        let born = |pid: u32| {
+            Some(at(match pid {
+                40 => 100,
+                41 => 50,
+                _ => i64::from(pid),
+            }))
+        };
+        let unseen = |pid: u32| match pid {
+            900 => Unseen::OtherUser,
+            901 => Unseen::Ended,
+            _ => Unseen::Unreadable,
+        };
+        let none = HashMap::new();
+        let go =
+            |pid, agents: &HashMap<u32, DateTime<Utc>>| walk(pid, &table, agents, born, unseen);
         assert_eq!(
-            inside(12, &table, &none),
-            Ok(None),
+            go(12, &none),
+            Ok(Walk::Outside(vec![12, 11, 10])),
             "the person's own terminal"
         );
         assert!(
-            matches!(inside(22, &table, &none), Ok(Some(reason)) if reason.contains("claude-code")),
-            "{:?}",
-            inside(22, &table, &none)
+            matches!(go(22, &none), Ok(Walk::Inside(reason)) if reason.contains("claude-code"))
         );
-        assert_eq!(inside(31, &table, &none), Ok(None));
-        let agents = HashSet::from([30]);
+        assert!(matches!(go(31, &none), Ok(Walk::Outside(_))));
+        // A live agent counts only by its pid and its birth.
+        assert!(matches!(
+            go(31, &HashMap::from([(30, at(30))])),
+            Ok(Walk::Inside(_))
+        ));
         assert!(
-            matches!(inside(31, &table, &agents), Ok(Some(_))),
-            "under a live agent"
+            matches!(
+                go(31, &HashMap::from([(30, at(999))])),
+                Ok(Walk::Outside(_))
+            ),
+            "a reused pid"
         );
         assert!(
-            inside(99, &table, &none).is_err(),
-            "untraceable authorises nothing"
+            matches!(
+                go(41, &HashMap::from([(40, at(100))])),
+                Ok(Walk::Outside(_))
+            ),
+            "a parent born after its child"
         );
+        assert!(
+            matches!(go(51, &none), Ok(Walk::Outside(_))),
+            "under another user's service"
+        );
+        assert!(
+            matches!(go(61, &none), Ok(Walk::Outside(_))),
+            "a parent that ended"
+        );
+        assert!(
+            go(70, &none).is_err(),
+            "this user's unreadable parent authorises nothing"
+        );
+        assert!(
+            go(99, &none).is_err(),
+            "an untraceable peer authorises nothing"
+        );
+    }
+
+    /// On Windows, where the table holds only this user's readable
+    /// processes, a test run's own ancestry reaches a boundary rather than
+    /// a refusal.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_process_s_own_ancestry_is_walked_to_a_boundary() {
+        let table = procinfo::processes().unwrap();
+        let walked = walk(
+            std::process::id(),
+            &table,
+            &HashMap::new(),
+            procinfo::start_time,
+            procinfo::unseen,
+        );
+        assert!(walked.is_ok(), "{walked:?}");
+    }
+
+    /// Over the real socket: a process under a live agent that says it is
+    /// the person is refused before anything is done; the same request from
+    /// the daemon's own process is not; and a supervised Codex terminal's
+    /// controller — the agent's own process, exactly — may queue what the
+    /// person typed to that agent.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_process_under_an_agent_cannot_act_as_the_person() {
+        use std::io::Write as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("s")).unwrap());
+        let listener = crate::server::bind(&daemon).await.unwrap();
+        let serving = tokio::spawn(crate::server::serve(daemon.clone(), listener));
+        // A shell that, once told, becomes a client sending `request`.
+        let client = "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.connect(sys.argv[1])\ns.sendall(sys.argv[2].encode()+b'\\n')\nprint(s.makefile().readline(),end='')\n";
+        let spawn = |request: String| {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg("read go; exec python3 -c \"$0\" \"$1\" \"$2\"")
+                .arg(client)
+                .arg(&daemon.socket)
+                .arg(request)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        };
+        let register = |name: &str, pid: u32| {
+            let daemon = daemon.clone();
+            let name = name.to_owned();
+            let workdir = tmp.path().to_owned();
+            async move {
+                match daemon
+                    .handle(Request::Register {
+                        spec: AgentSpec {
+                            name,
+                            workdir: Some(workdir),
+                            ..AgentSpec::default()
+                        },
+                        pid: Some(pid),
+                        session: None,
+                    })
+                    .await
+                {
+                    Response::Agent { agent } => agent,
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        let finish = |mut child: std::process::Child| async move {
+            writeln!(child.stdin.take().unwrap(), "go").unwrap();
+            let output = tokio::task::spawn_blocking(move || child.wait_with_output())
+                .await
+                .unwrap()
+                .unwrap();
+            serde_json::from_slice::<Response>(&output.stdout).unwrap()
+        };
+
+        let agent = spawn(r#"{"op":"pause","from":"user","reason":"from an agent"}"#.into());
+        register("an-agent", agent.id()).await;
+        let reply = finish(agent).await;
+        assert!(
+            matches!(&reply, Response::Error { code: ErrorCode::Forbidden, message, .. }
+                if message.contains("an agent's process")),
+            "{reply:?}"
+        );
+        assert!(lock(&daemon.state).pauses.is_empty(), "nothing was paused");
+
+        // A supervised Codex terminal's controller, typing to its own agent:
+        // the registered process itself sends.
+        let typed = spawn(String::new());
+        let record = register("codex-terminal", typed.id()).await;
+        {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get_mut(&record.id).unwrap();
+            record.managed = true;
+            record.spec.runtime = "codex".into();
+            record.spec.env.insert(
+                agentdocker_host::provider_input::CODEX_INPUT_ENV.into(),
+                "1".into(),
+            );
+        }
+        drop(typed);
+        let typed = spawn(format!(
+            r#"{{"op":"send","from":"user","to":"{}","kind":"chat","payload":{{"text":"hello"}}}}"#,
+            record.id
+        ));
+        {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get_mut(&record.id).unwrap();
+            record.pid = Some(typed.id());
+            record.process_started_at = procinfo::start_time(typed.id());
+        }
+        let reply = finish(typed).await;
+        assert!(matches!(reply, Response::Sent { .. }), "{reply:?}");
+
+        // The daemon's own process is trusted, whatever its ancestry.
+        let mine = daemon
+            .person_refusal(
+                Some((std::process::id(), procinfo::start_time(std::process::id()))),
+                &Request::Answer {
+                    from: None,
+                    message: agentdocker_core::MessageId::from("m".to_owned()),
+                    text: "Allow".into(),
+                },
+            )
+            .await;
+        assert!(mine.is_none(), "{mine:?}");
+        serving.abort();
     }
 }

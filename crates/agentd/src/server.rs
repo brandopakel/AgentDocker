@@ -150,9 +150,12 @@ fn without_roles(request: &mut Request) {
 }
 
 async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
-    // Which process this is, as the kernel says: what a request claims
-    // about who sent it is checked against it.
-    let peer = agentdocker_host::ipc::peer_pid(&stream).ok();
+    // Which process this is, as the kernel says, and when it was born:
+    // what a request claims about who sent it is checked against it, and a
+    // later process given the same pid is not taken for it.
+    let peer = agentdocker_host::ipc::peer_pid(&stream)
+        .ok()
+        .map(|pid| (pid, agentdocker_host::procinfo::start_time(pid)));
     let (read_half, mut writer) = stream.into_split();
     let mut reader = Reader::new(read_half);
 
