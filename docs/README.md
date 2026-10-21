@@ -1,6 +1,6 @@
 # Documentation
 
-What each document is for. Status lives in [remaining work](REMAINING-WORK.md), not here.
+What each document is for.
 
 ## Using it
 
