@@ -843,7 +843,7 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
             .unwrap();
     }
     let before = snapshot(&store);
-    let plan = store.plan_resume(&canonical, &retired).unwrap();
+    let plan = store.plan_fold(&canonical, &retired).unwrap();
     assert_eq!(snapshot(&store), before, "planning writes nothing");
     assert_eq!(
         plan.queue
@@ -938,7 +938,7 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
     other.payload = json!({"text": "not the same words"});
     store.enqueue(&last.id, &broadcast, 64).unwrap();
     store.enqueue(&fresh.id, &other, 64).unwrap();
-    let error = store.plan_resume(&canonical, &retired).unwrap_err();
+    let error = store.plan_fold(&canonical, &retired).unwrap_err();
     assert!(error.to_string().contains("different content"), "{error}");
     store
         .conn
@@ -968,7 +968,7 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
             }],
         )
         .unwrap();
-    let error = store.plan_resume(&canonical, &retired).unwrap_err();
+    let error = store.plan_fold(&canonical, &retired).unwrap_err();
     assert!(error.to_string().contains("observations"), "{error}");
     store.delete_document("reads", earlier.id.as_str()).unwrap();
     store.delete_document("reads", last.id.as_str()).unwrap();
@@ -986,7 +986,7 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
             automatic: false,
         })
         .unwrap();
-    let error = store.plan_resume(&canonical, &retired).unwrap_err();
+    let error = store.plan_fold(&canonical, &retired).unwrap_err();
     assert!(error.to_string().contains("lease"), "{error}");
     assert_eq!(
         snapshot(&store)[3],
@@ -995,7 +995,7 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
     );
     assert!(
         store
-            .plan_resume(&canonical, std::slice::from_ref(&last.id))
+            .plan_fold(&canonical, std::slice::from_ref(&last.id))
             .is_err()
     );
     // Queues that together exceed what one record may hold refuse too.
@@ -1006,7 +1006,7 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
             .enqueue(to, &envelope(&format!("many-{n}"), to), 2000)
             .unwrap();
     }
-    let error = store.plan_resume(&canonical, &retired).unwrap_err();
+    let error = store.plan_fold(&canonical, &retired).unwrap_err();
     assert!(error.to_string().contains("one record may hold"), "{error}");
     assert_eq!(snapshot(&store)[0], before[0], "nothing moved");
 }
@@ -1104,7 +1104,7 @@ fn resumed_read_sets_keep_latest_paths_and_roll_back_with_the_queue_and_event() 
     let conflict = snapshot(&store);
     assert!(
         store
-            .plan_resume(&canonical, &retired)
+            .plan_fold(&canonical, &retired)
             .unwrap_err()
             .to_string()
             .contains("self-review")
@@ -1115,7 +1115,7 @@ fn resumed_read_sets_keep_latest_paths_and_roll_back_with_the_queue_and_event() 
         .put_document("channel", room.id.as_str(), &room)
         .unwrap();
     let before = snapshot(&store);
-    let plan = store.plan_resume(&canonical, &retired).unwrap();
+    let plan = store.plan_fold(&canonical, &retired).unwrap();
     assert_eq!(snapshot(&store), before);
     store.conn.execute_batch("CREATE TRIGGER refuse_resume_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;").unwrap();
     assert!(store.write_resume(&plan, &event).is_err());
@@ -1217,7 +1217,7 @@ fn resumed_cards_keep_their_work_without_inventing_a_hold() {
     let held = snapshot(&store);
     assert!(
         store
-            .plan_resume(&last, &retired)
+            .plan_fold(&last, &retired)
             .unwrap_err()
             .to_string()
             .contains("holds a lease")
@@ -1237,7 +1237,7 @@ fn resumed_cards_keep_their_work_without_inventing_a_hold() {
     );
     event.seq = 1;
     let before = snapshot(&store);
-    let plan = store.plan_resume(&last, &retired).unwrap();
+    let plan = store.plan_fold(&last, &retired).unwrap();
     assert_eq!(snapshot(&store), before);
     store.conn.execute_batch("CREATE TRIGGER refuse_card_resume BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;").unwrap();
     assert!(store.write_resume(&plan, &event).is_err());
@@ -1320,7 +1320,7 @@ fn conflicting_or_excessive_resumed_observations_leave_every_record_untouched() 
     for ids in [retired.clone(), retired.iter().rev().cloned().collect()] {
         assert!(
             store
-                .plan_resume(&last, &ids)
+                .plan_fold(&last, &ids)
                 .unwrap_err()
                 .to_string()
                 .contains("same capture time")
@@ -1343,7 +1343,7 @@ fn conflicting_or_excessive_resumed_observations_leave_every_record_untouched() 
     let before = snapshot(&store);
     assert!(
         store
-            .plan_resume(&last, &retired)
+            .plan_fold(&last, &retired)
             .unwrap_err()
             .to_string()
             .contains("capacity")
@@ -1359,7 +1359,7 @@ fn conflicting_or_excessive_resumed_observations_leave_every_record_untouched() 
     let before = snapshot(&store);
     assert!(
         store
-            .plan_resume(&last, &retired)
+            .plan_fold(&last, &retired)
             .unwrap_err()
             .to_string()
             .contains("4 MiB")

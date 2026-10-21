@@ -1312,92 +1312,6 @@ async fn an_empty_session_label_is_treated_as_no_session_at_all() {
     );
 }
 
-/// Duplicates that already exist and do not both name one session are
-/// reported, not repaired.
-///
-/// The obvious repair — retire the half with no leases and an empty
-/// inbox — is a guess. An idle transport is not an unused agent: a
-/// connected MCP server holds that id for its next call, and the
-/// record may own channel membership, pending questions, a journal
-/// cursor and observations, none of which appear as a lease or a
-/// queued message. So both are left alone and named. (Two records that
-/// both name one session are folded with aliases instead: see
-/// `one_sessions_existing_duplicate_is_folded_into_the_record_that_stays`.)
-#[tokio::test]
-async fn an_existing_duplicate_is_reported_and_left_alone() {
-    let dir = TempDir::new().unwrap();
-    let daemon = open(&dir);
-    let me = std::process::id();
-
-    let hooks = register_here(&daemon, "claude-63bc3dca", Some(me)).await;
-    let stale = {
-        // Built by hand, so everything registration would have
-        // filled in has to be filled in here — including the
-        // resolved workdir and the project, which identity compares.
-        let mut record = AgentRecord::new(spec_here("claude-code-4242"), false, Utc::now());
-        record.spec.workdir = hooks.spec.workdir.clone();
-        record.project = hooks.project.clone();
-        record.pid = Some(me);
-        record.process_started_at = procinfo::start_time(me);
-        record.status = AgentStatus::Running;
-        lock(&daemon.state).registry.insert(record.clone()).unwrap();
-        record
-    };
-
-    assert_eq!(
-        daemon.duplicates(),
-        vec![(hooks.id.clone(), stale.id.clone())],
-        "the pair is found and named, oldest first"
-    );
-    #[derive(Clone, Default)]
-    struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-    impl std::io::Write for Captured {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let captured = Captured::default();
-    let writer = captured.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .without_time()
-        .with_ansi(false)
-        .with_max_level(tracing::Level::WARN)
-        .with_writer(move || writer.clone())
-        .finish();
-    let _subscriber = tracing::subscriber::set_default(subscriber);
-    let warnings = || {
-        String::from_utf8_lossy(&captured.0.lock().unwrap())
-            .matches("two live records for one process")
-            .count()
-    };
-    daemon.check_liveness();
-    assert!(daemon.is_live(&hooks.id), "neither is retired:");
-    assert!(
-        daemon.is_live(&stale.id),
-        "an empty inbox now is not evidence nothing will arrive"
-    );
-    assert_eq!(warnings(), 1);
-    daemon.check_liveness();
-    assert_eq!(
-        warnings(),
-        1,
-        "unchanged duplicates must not grow the warning log"
-    );
-    lock(&daemon.state).registry.remove(&stale.id);
-    daemon.check_liveness();
-    lock(&daemon.state).registry.insert(stale).unwrap();
-    daemon.check_liveness();
-    assert_eq!(
-        warnings(),
-        2,
-        "a pair that reappears should be announced again"
-    );
-}
-
 /// A registration for a session in a checkout with a marker, as a real
 /// session's hooks and MCP server send it.
 async fn register_session(
@@ -1481,12 +1395,14 @@ async fn a_hook_from_a_moved_shell_joins_its_sessions_record() {
 /// What a hook from a moved shell could leave before this rule: the MCP
 /// server's record still names no session in the launch checkout, and
 /// an old hook's record names the session in a subdirectory. A hook
-/// from the launch checkout matches both; it joins the transport there,
-/// as it did before, and teaches it the session, and the sweep then
-/// folds the two. Refusing it instead left the session's hooks with no
-/// identity anywhere but that subdirectory.
+/// from the launch checkout matches both; the record that names the
+/// session is the session's and answers, however many transports beside
+/// it name none, and they are neither joined nor taught the session,
+/// which would make a second record of one session. With no record
+/// naming its session, transports in its checkout that cannot be told
+/// apart refuse the registration.
 #[tokio::test]
-async fn a_session_left_beside_a_sessionless_transport_joins_it_and_folds() {
+async fn a_session_left_beside_a_sessionless_transport_is_answered_by_its_own_record() {
     let dir = TempDir::new().unwrap();
     let daemon = open(&dir);
     let checkout = TempDir::new().unwrap();
@@ -1501,6 +1417,17 @@ async fn a_session_left_beside_a_sessionless_transport_joins_it_and_folds() {
         agent(register_session(&daemon, "claude-c960824c", &moved, Some("c960824c")).await);
     let mcp = agent(register_session(&daemon, "claude-code-4321", checkout.path(), None).await);
     assert_ne!(mcp.id, drifted.id);
+    // A second transport in the same checkout naming no session, as only
+    // an older daemon could have left it.
+    let spare = {
+        let mut record = mcp.clone();
+        record.id = AgentId::generate();
+        record.spec.name = "claude-code-spare".into();
+        let mut state = lock(&daemon.state);
+        state.store.upsert_agent(&record).unwrap();
+        state.registry.insert(record.clone()).unwrap();
+        record
+    };
     let hook = agent(
         register_session(
             &daemon,
@@ -1510,29 +1437,41 @@ async fn a_session_left_beside_a_sessionless_transport_joins_it_and_folds() {
         )
         .await,
     );
-    assert_eq!(hook.id, mcp.id, "the transport in its checkout, as before");
-    assert_eq!(
-        hook.spec.labels.get("session_id").map(String::as_str),
-        Some("c960824c"),
-        "which learns the session"
-    );
-    daemon.check_liveness();
-    let state = lock(&daemon.state);
-    assert_eq!(state.registry.live().count(), 1);
-    assert_eq!(
-        state.registry.get(&drifted.id).unwrap().id,
-        state.registry.get(&mcp.id).unwrap().id
+    assert_eq!(hook.id, drifted.id, "the record that names the session");
+    {
+        let state = lock(&daemon.state);
+        for transport in [&mcp, &spare] {
+            let record = state.registry.get(&transport.id).unwrap();
+            assert_eq!(record.id, transport.id, "not folded");
+            assert!(
+                !record.spec.labels.contains_key("session_id"),
+                "and taught nothing"
+            );
+        }
+        assert_eq!(state.registry.live().count(), 3);
+    }
+    let response = register_session(
+        &daemon,
+        "claude-0ther000",
+        checkout.path(),
+        Some("0ther000"),
+    )
+    .await;
+    assert!(
+        matches!(&response, Response::Error { code: ErrorCode::Invalid, message, .. }
+            if message.contains("cannot be told")),
+        "{response:?}"
     );
 }
 
-/// The duplicates the old rule already made: the sweep folds the one
-/// that does not stay into the one that does — exactly as a resumed
-/// session's records fold, so its queue, documents and observations
-/// follow, and its id keeps resolving as an alias — once nothing would
-/// be lost. A lease it holds holds the fold back until it is released.
-/// A registration meanwhile is answered by the record that stays.
+/// One session counted twice, as the old rule could leave it: two live
+/// records of one process and session, the second registered from a
+/// moved shell. A registration of the session is answered by the record
+/// that stays (`identity::keeper`: the first registered, here), and
+/// nothing folds the other while both live; the offline identity repair
+/// reconciles what was left.
 #[tokio::test]
-async fn one_sessions_existing_duplicate_is_folded_into_the_record_that_stays() {
+async fn one_sessions_existing_duplicate_is_answered_by_the_record_that_stays() {
     let dir = TempDir::new().unwrap();
     let daemon = open(&dir);
     let checkout = TempDir::new().unwrap();
@@ -1576,182 +1515,26 @@ async fn one_sessions_existing_duplicate_is_folded_into_the_record_that_stays() 
         state.registry.insert(record.clone()).unwrap();
         record
     };
-    assert_eq!(
-        daemon.duplicates(),
-        vec![(kept.id.clone(), drifted.id.clone())]
-    );
-    // Words wait in the duplicate's queue, and it holds a lease.
-    let peer = register(&daemon, "peer", None).await;
-    let Response::Sent {
-        message: waiting, ..
-    } = send(&daemon, peer.id.as_str(), drifted.id.as_str()).await
-    else {
-        panic!("sent")
-    };
-    let Response::Lease { lease } =
-        claim_waiting(&daemon, drifted.id.as_str(), "task:fixture-held", 0).await
-    else {
-        panic!("claimed")
-    };
-    let folded = |daemon: &Arc<Daemon>| {
-        lock(&daemon.state)
-            .registry
-            .aliases()
-            .get(&drifted.id)
-            .cloned()
-    };
-    daemon.check_liveness();
-    assert_eq!(folded(&daemon), None, "a lease holds the fold back");
-    assert!(daemon.is_live(&drifted.id) && daemon.is_live(&kept.id));
-    // A registration meanwhile is answered by the record that stays.
     let Response::Agent { agent: answered } =
         register_session(&daemon, "claude-c960824c", &moved, Some("c960824c")).await
     else {
         panic!("the session's hook is answered")
     };
     assert_eq!(answered.id, kept.id);
-    release(&daemon, drifted.id.as_str(), lease.id.clone()).await;
-    // Refused once, planned again after the retry interval, not on every
-    // sweep in between.
     daemon.check_liveness();
-    assert_eq!(folded(&daemon), None, "not before the retry interval");
-    lock(&daemon.state).settle_duplicates(Instant::now() + DUPLICATE_FOLD_RETRY);
-    assert_eq!(folded(&daemon), Some(kept.id.clone()));
-    {
-        let state = lock(&daemon.state);
-        let live: Vec<_> = state
-            .registry
-            .live()
-            .filter(|a| a.spec.runtime == "claude-code")
-            .map(|a| a.id.clone())
-            .collect();
-        assert_eq!(live, vec![kept.id.clone()], "one session, one record");
-        assert!(
-            state.inboxes[&kept.id].iter().any(|m| m.id == waiting),
-            "what waited for the duplicate waits for the session"
-        );
-        assert!(!state.inboxes.contains_key(&drifted.id));
-        let record = state.registry.get(&drifted.id).unwrap();
-        assert_eq!(record.id, kept.id, "the retired id resolves");
-        assert_eq!(record.spec.workdir, kept.spec.workdir);
-    }
-    assert!(daemon.duplicates().is_empty());
-    assert!(
-        daemon.recent_events(20).iter().any(|e| matches!(&e.kind,
-            EventKind::SessionDuplicatesFolded { agent, retired, session, pid }
-            if *agent == kept.id && retired == &vec![drifted.id.clone()]
-                && session == "c960824c" && Some(*pid) == kept.pid)),
-        "announced"
-    );
-    // Durable: reopened, the alias still resolves and the queue is whole.
-    drop(daemon);
-    let daemon = open(&dir);
-    let state = lock(&daemon.state);
-    assert_eq!(
-        state.registry.get(&drifted.id).map(|r| &r.id),
-        Some(&kept.id)
-    );
-    assert!(state.inboxes[&kept.id].iter().any(|m| m.id == waiting));
-    assert!(
-        state
-            .store
-            .load_agents()
-            .unwrap()
-            .iter()
-            .all(|r| r.id != drifted.id)
-    );
-}
-
-/// The record a receiver delivers through stays, and nothing goes ahead
-/// of what that receiver may already have offered: the duplicate's own
-/// words queue behind the session's, and a broadcast both hold is
-/// queued once, where the session already had it — in memory and,
-/// after a reopen, in the store.
-#[tokio::test]
-async fn a_fold_never_queues_ahead_of_what_a_receiver_offered() {
-    let dir = TempDir::new().unwrap();
-    let daemon = open(&dir);
-    let checkout = TempDir::new().unwrap();
-    std::fs::write(checkout.path().join("Agentfile.toml"), "").unwrap();
-    let moved = checkout.path().join("dist");
-    std::fs::create_dir_all(&moved).unwrap();
-    let Response::Agent { agent: kept } = register_session(
-        &daemon,
-        "claude-code-5678",
-        checkout.path(),
-        Some("1606cc8b"),
-    )
-    .await
-    else {
-        panic!("the session registers")
-    };
-    let drifted = {
-        let mut record = kept.clone();
-        record.id = AgentId::generate();
-        record.spec.name = "claude-1606cc8b".into();
-        record.spec.workdir = Some(moved.canonicalize().unwrap());
-        record.created_at = kept.created_at + chrono::Duration::minutes(2);
-        let mut state = lock(&daemon.state);
-        state.store.upsert_agent(&record).unwrap();
-        state.registry.insert(record.clone()).unwrap();
-        record
-    };
-    let peer = register(&daemon, "peer", None).await;
-    let sent = async |to: &str| match send(&daemon, peer.id.as_str(), to).await {
-        Response::Sent { message, .. } => message,
-        other => panic!("{other:?}"),
-    };
-    // A broadcast both records hold, then older words for the duplicate,
-    // then newer words for the session.
-    let shared = sent("all").await;
-    let older = sent(drifted.id.as_str()).await;
-    let newer = sent(kept.id.as_str()).await;
-    // And the session's receiver is current.
-    {
-        let mut state = lock(&daemon.state);
-        let record = state.registry.get_mut(&kept.id).unwrap();
-        record.input_delivery = Some(agentdocker_core::InputDelivery {
-            process_started_at: record.process_started_at.unwrap(),
-            paused: false,
-            pause_reason: None,
-            reported_at: Utc::now(),
-            received: None,
-            received_at: None,
-        });
-    }
-    let queue = |daemon: &Arc<Daemon>| -> Vec<MessageId> {
-        lock(&daemon.state).inboxes[&kept.id]
-            .iter()
-            .map(|m| m.id.clone())
-            .collect()
-    };
-    assert_eq!(queue(&daemon), vec![shared.clone(), newer.clone()]);
-    daemon.check_liveness();
+    assert!(daemon.is_live(&kept.id) && daemon.is_live(&drifted.id));
     assert_eq!(
         lock(&daemon.state).registry.aliases().get(&drifted.id),
-        Some(&kept.id),
-        "folded into the record the receiver delivers through"
+        None,
+        "a live duplicate is not folded"
     );
-    let expected = vec![shared, newer, older];
-    assert_eq!(
-        queue(&daemon),
-        expected,
-        "the receiver's head first, the duplicate's own words behind it, the broadcast once"
-    );
-    drop(daemon);
-    let daemon = open(&dir);
-    assert_eq!(queue(&daemon), expected, "the store holds the same order");
 }
 
 /// Codex 0.160 runs a terminal session's MCP servers under its detached
 /// app-server, and an MCP server from before that was understood
 /// registered the app-server as a Codex session of its own beside the
-/// real one. Registration refuses it by what the process is, and a
-/// record made before is folded by the sweep into the session whose
-/// child the app-server is, on the evidence of the process's own command
-/// line, parent and birth — not ended, because the MCP server that made
-/// it still calls under its id. With no session to fold it into it is
-/// the session's only identity and stays.
+/// real one. Registration refuses it by what the process is, on the
+/// evidence of the process's own command line.
 #[cfg(unix)]
 #[tokio::test]
 async fn codexs_detached_app_server_is_never_a_session() {
@@ -1786,7 +1569,7 @@ async fn codexs_detached_app_server_is_never_a_session() {
     spec.runtime = "codex".into();
     let response = daemon
         .handle(Request::Register {
-            spec: spec.clone(),
+            spec,
             pid: Some(pid),
             session: None,
         })
@@ -1796,88 +1579,6 @@ async fn codexs_detached_app_server_is_never_a_session() {
             if message.contains("detached app-server")),
         "{response:?}"
     );
-    // One made before the refusal existed is folded into its session.
-    let project = daemon.project_for(spec.workdir.clone(), true).await;
-    let made_before = {
-        let mut record = AgentRecord::new(spec, false, Utc::now());
-        record.project = project;
-        record.pid = Some(pid);
-        record.process_started_at = procinfo::start_time(pid);
-        record.status = AgentStatus::Running;
-        let mut state = lock(&daemon.state);
-        state.store.upsert_agent(&record).unwrap();
-        state.registry.insert(record.clone()).unwrap();
-        record
-    };
-    // No Codex session registered for its parent: the helper's record
-    // is all that session has, and it stays.
-    daemon.check_liveness();
-    assert!(daemon.is_live(&made_before.id));
-    assert_eq!(
-        lock(&daemon.state)
-            .registry
-            .get(&made_before.id)
-            .unwrap()
-            .id,
-        made_before.id
-    );
-    // The session it serves, the app-server's parent (this test).
-    let mut real = spec_here("codex-real");
-    real.runtime = "codex".into();
-    let Response::Agent { agent: session } = daemon
-        .handle(Request::Register {
-            spec: real,
-            pid: Some(std::process::id()),
-            session: None,
-        })
-        .await
-    else {
-        panic!("registering the session");
-    };
-    assert_ne!(session.id, made_before.id);
-    // A lease the helper's MCP server holds holds the fold back: ending
-    // or moving it under that server would hand its files to peers.
-    let Response::Lease { lease } = claim(&daemon, made_before.id.as_str(), "lock:helper").await
-    else {
-        panic!("the helper's claim");
-    };
-    lock(&daemon.state).helper_checks.clear();
-    daemon.check_liveness();
-    assert_eq!(
-        lock(&daemon.state)
-            .registry
-            .get(&made_before.id)
-            .unwrap()
-            .id,
-        made_before.id,
-        "not folded while it holds a lease"
-    );
-    daemon
-        .handle(Request::Release {
-            agent: made_before.id.to_string(),
-            lease: lease.id.clone(),
-            summary: None,
-            summary_source: agentdocker_core::SummarySource::Explicit,
-        })
-        .await;
-    lock(&daemon.state).helper_checks.clear();
-    daemon.check_liveness();
-    {
-        let state = lock(&daemon.state);
-        let folded = state.registry.get(&made_before.id).unwrap();
-        assert_eq!(
-            folded.id, session.id,
-            "the helper's id is an alias of the session's record now"
-        );
-        assert_eq!(state.registry.live().count(), 1);
-    }
-    // Its MCP server's next call acts as the session.
-    let Response::Lease { lease } = claim(&daemon, made_before.id.as_str(), "lock:after").await
-    else {
-        panic!("a call under the helper's id");
-    };
-    assert_eq!(lease.holder, session.id);
-    assert!(daemon.is_live(&session.id));
     host.kill().unwrap();
     host.wait().unwrap();
 }
@@ -1997,65 +1698,6 @@ async fn reading_its_own_queue_is_a_sessions_contact() {
     let _ = child.kill();
     let _ = child.wait();
     assert!(!agentdocker_core::input::unreachable(&record, later));
-}
-
-/// The session's only read of its queue went through a duplicate
-/// record: the fold keeps it, so the session is not taken for one that
-/// cannot receive.
-#[tokio::test]
-async fn a_fold_keeps_the_duplicates_read_of_the_sessions_queue() {
-    let dir = TempDir::new().unwrap();
-    let daemon = open(&dir);
-    let checkout = TempDir::new().unwrap();
-    std::fs::write(checkout.path().join("Agentfile.toml"), "").unwrap();
-    let moved = checkout.path().join("artifacts");
-    std::fs::create_dir_all(&moved).unwrap();
-    let Response::Agent { agent: kept } = register_session(
-        &daemon,
-        "claude-code-4321",
-        checkout.path(),
-        Some("c960824c"),
-    )
-    .await
-    else {
-        panic!("the session registers")
-    };
-    let born = kept.process_started_at.expect("a live process's birth");
-    assert!(kept.queue_read.is_none());
-    let read = agentdocker_core::AdapterContact {
-        process_started_at: born,
-        observed_at: Utc::now(),
-    };
-    let drifted = {
-        let mut record = AgentRecord::new(
-            AgentSpec {
-                name: "claude-c960824c".into(),
-                runtime: "claude-code".into(),
-                workdir: Some(moved.canonicalize().unwrap()),
-                labels: BTreeMap::from([
-                    ("session_id".into(), "c960824c".into()),
-                    ("via".into(), "hook".into()),
-                ]),
-                ..AgentSpec::default()
-            },
-            false,
-            kept.created_at + chrono::Duration::minutes(35),
-        );
-        record.project = kept.project.clone();
-        record.pid = kept.pid;
-        record.process_started_at = Some(born);
-        record.status = AgentStatus::Running;
-        record.queue_read = Some(read.clone());
-        let mut state = lock(&daemon.state);
-        state.store.upsert_agent(&record).unwrap();
-        state.registry.insert(record.clone()).unwrap();
-        record
-    };
-    daemon.check_liveness();
-    let state = lock(&daemon.state);
-    let record = state.registry.get(&drifted.id).unwrap();
-    assert_eq!(record.id, kept.id, "folded into the record that stays");
-    assert_eq!(record.queue_read.as_ref(), Some(&read));
 }
 
 /// Register something that could be matched with another half.

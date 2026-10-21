@@ -503,7 +503,7 @@ when its PID and process birth time both match. Separate registrations are never
 merged by display name. Two live records for one provider session — the same
 process (PID and birth time), tool, project and session id — are one row and one count everywhere (the project's live count, the
 sessions list, a project's agents, Needs you), under the record that stays,
-until the daemon folds the other into it. A browser agent that came in through
+which is also the one the session's registrations reach. A browser agent that came in through
 the connector has no process here; it counts as live while it is heard from
 and, after an hour without a tool call, sits under **Earlier**, *not
 connected* in its row's spoken name and its panel's standing tooltip. A conversation or session that only loads the connector is not
