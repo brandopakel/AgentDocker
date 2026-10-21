@@ -843,6 +843,11 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **An idle daemon wakes less.** The file watcher's drain now runs only
+  while changes wait to be recorded, and the usage worker waits between
+  collections in one-second steps, not tenth-of-a-second ones: about 60%
+  fewer context switches for an idle daemon.
+
 - **A pairing code works once.** The connector's consent page now asks for the
   pairing code first and shows the projects to choose from only after it.
   Each code opens one consent, so connecting a second browser means reading
