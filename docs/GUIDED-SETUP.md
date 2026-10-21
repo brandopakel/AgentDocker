@@ -125,7 +125,7 @@ CLI inventory also checks standard installation directories when a native app in
 
 Codex hooks must belong to a configuration layer the running provider actually
 loads. The delivery smoke keeps the hook configuration layer active and does not use
-`--ignore-user-config`, which also suppresses inline hook overrides. Inline
+`--ignore-user-config`. Inline
 `hooks.<event>` invocation overrides with invocation-only trust can run vetted
 fixture hooks; this does not grant trust to installed user hooks. Keep configuration health unverified until
 an actual callback is observed; this is separate from a passing MCP round trip.
