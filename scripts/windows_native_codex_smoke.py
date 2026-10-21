@@ -216,6 +216,7 @@ def main():
     env.update(CODEX_HOME=str(profile), AGENTDOCKER_HOME=str(home), AGENTDOCKER_SOCKET=sock,
                AGENTDOCKER_NO_AUTOSTART="1", AGENTDOCKER_NO_NOTIFICATIONS="1",
                AGENTDOCKER_FIXTURE_KEY="fixture-only", TERM="xterm-256color")
+    env["AGENTDOCKER_PERSON_CHECK"] = "off"  # its own daemon: act as the person from anywhere
 
     def rpc(value, timeout=5):
         channel = WindowsSmokePipe(sock, timeout=min(3, timeout), read_timeout=timeout,

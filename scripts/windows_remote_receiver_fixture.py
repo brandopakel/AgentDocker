@@ -82,7 +82,8 @@ class Receiver:
         self.home = root / 'state'
         self.socket = '\\\\.\\pipe\\agentdocker-remote-' + uuid.uuid4().hex
         self.env = dict(env, AGENTDOCKER_HOME=str(self.home), AGENTDOCKER_SOCKET=self.socket,
-                        AGENTDOCKER_NO_AUTOSTART='1', AGENTDOCKER_NO_NOTIFICATIONS='1')
+                        AGENTDOCKER_NO_AUTOSTART='1', AGENTDOCKER_NO_NOTIFICATIONS='1',
+                        AGENTDOCKER_PERSON_CHECK='off')
         self.report = report
         self.children, self.owned, self.logs = [], [], []
         self.daemon = None
