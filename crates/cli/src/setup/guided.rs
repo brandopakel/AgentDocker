@@ -28,7 +28,11 @@ struct Change {
     path: PathBuf,
     target: PathBuf,
     before: Option<String>,
-    after: String,
+    /// The file as the plan leaves it; `None` deletes it (a removal).
+    after: Option<String>,
+    /// A change that takes AgentDocker's wiring out, rather than adding it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    removal: bool,
 }
 
 /// A registration only the provider's own tool can safely make.
@@ -69,6 +73,11 @@ struct Delegated {
     /// inherited override when resuming a plan for the default profile.
     #[serde(default)]
     config_dir: Option<PathBuf>,
+    /// A removal: `add` takes the entry out and `remove` puts back exactly
+    /// `expected`, the entry as the plan found it; `created` records that
+    /// the plan took it out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    removal: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -93,7 +102,12 @@ impl Plan {
             .map(|change| {
                 json!({
                     "runtime":change.runtime, "channel":change.channel, "path":change.path,
-                    "action": if change.before.is_some() {"add to existing configuration"} else {"create configuration"}
+                    "action": match (change.removal, change.before.is_some(), change.after.is_some()) {
+                        (true, _, false) => "delete the file AgentDocker installed",
+                        (true, _, true) => "remove AgentDocker's entries",
+                        (false, true, _) => "add to existing configuration",
+                        (false, false, _) => "create configuration",
+                    }
                 })
             })
             // Listed among the file changes because they are the same
@@ -104,7 +118,11 @@ impl Plan {
             .chain(self.delegated.iter().map(|step| {
                 json!({
                     "runtime":step.runtime, "channel":step.channel, "path":step.path,
-                    "action": format!("register through `{}`", step.add.join(" "))
+                    "action": if step.removal {
+                        format!("remove through `{}`", step.add.join(" "))
+                    } else {
+                        format!("register through `{}`", step.add.join(" "))
+                    }
                 })
             }))
             .collect::<Vec<_>>();
@@ -248,6 +266,7 @@ fn delegated_mcp(
         created: false,
         expected: Some(expected),
         config_dir,
+        removal: false,
     }))
 }
 
@@ -287,6 +306,14 @@ fn require_owned(step: &Delegated, entry: &Value) -> Result<()> {
 
 /// Validate delegated state before any file changes and again at the command.
 fn check_delegated(step: &Delegated, undo: bool) -> Result<()> {
+    // A removal touches only the entry it found: present, it must be that
+    // one; gone, there is nothing left to take or it is to be put back.
+    if step.removal {
+        return match present(step)? {
+            Some(entry) => require_owned(step, &entry),
+            None => Ok(()),
+        };
+    }
     match present(step)? {
         Some(entry) if step.created => require_owned(step, &entry),
         Some(entry) if !undo => {
@@ -371,6 +398,313 @@ fn deregister(step: &Delegated) -> Result<()> {
     Ok(())
 }
 
+/// Take out the entry a removal found, and only that one.
+fn unregister(step: &Delegated) -> Result<()> {
+    match present(step)? {
+        None => return Ok(()),
+        Some(entry) => require_owned(step, &entry)?,
+    }
+    let output = run_step(step, &step.add)?;
+    ensure!(
+        present(step)?.is_none(),
+        "`{}` failed and {} still has an agentdocker entry: {}",
+        step.add.join(" "),
+        step.path.display(),
+        output.text.trim()
+    );
+    Ok(())
+}
+
+/// Put back the entry a removal took out, exactly as it was.
+fn restore(step: &Delegated) -> Result<()> {
+    let expected = step
+        .expected
+        .as_ref()
+        .context("this removal lacks the entry it took out")?;
+    if let Some(entry) = present(step)? {
+        return require_owned(step, &entry);
+    }
+    let output = run_step(step, &step.remove)?;
+    ensure!(
+        present(step)?.as_ref() == Some(expected),
+        "`{}` failed and {} does not hold the agentdocker entry again: {}",
+        step.remove.join(" "),
+        step.path.display(),
+        output.text.trim()
+    );
+    Ok(())
+}
+
+/// The removal of Claude Code's MCP entry, through its own CLI, when the
+/// entry runs us and can be put back exactly: a stdio server with a
+/// command, arguments and plain environment, and nothing else.
+fn delegated_mcp_removal(
+    spec: &RuntimeSpec,
+    runtime: &RuntimeInfo,
+    roots: &Roots,
+    notes: &mut Vec<String>,
+) -> Result<Option<Delegated>> {
+    if spec.name != "claude-code" {
+        return Ok(None);
+    }
+    let path = runtimes::mcp_config_path(spec, roots)
+        .context("Claude Code has no MCP configuration path")?;
+    let config_dir = roots
+        .claude_config_dir
+        .as_deref()
+        .map(project::try_canonical)
+        .transpose()?;
+    let probe = Delegated {
+        runtime: runtime.name.clone(),
+        channel: "mcp".into(),
+        path,
+        add: Vec::new(),
+        remove: Vec::new(),
+        created: false,
+        expected: None,
+        config_dir,
+        removal: true,
+    };
+    let Some(entry) = present(&probe)? else {
+        return Ok(None);
+    };
+    if !super::runs_agentdocker(&entry, "claude-code") {
+        notes.push(format!(
+            "claude-code: the agentdocker entry in {} does not run AgentDocker; left unchanged",
+            probe.path.display()
+        ));
+        return Ok(None);
+    }
+    let Some(cli) = runtime.cli.as_deref().and_then(Path::to_str) else {
+        notes.push("claude-code: remove its MCP entry with `claude mcp remove --scope user agentdocker`; the Claude Code CLI was not found".into());
+        return Ok(None);
+    };
+    let object = entry
+        .as_object()
+        .context("the agentdocker entry is not an object")?;
+    let plain = object
+        .keys()
+        .all(|key| matches!(key.as_str(), "type" | "command" | "args" | "env"))
+        && object.get("type").is_none_or(|kind| kind == "stdio");
+    let env: Option<Vec<String>> = match object.get("env") {
+        None => Some(Vec::new()),
+        Some(Value::Object(env)) => env
+            .iter()
+            .map(|(key, value)| value.as_str().map(|value| format!("{key}={value}")))
+            .collect(),
+        Some(_) => None,
+    };
+    let (Some(command), Some(args), Some(env)) = (
+        object.get("command").and_then(Value::as_str),
+        object.get("args").and_then(Value::as_array),
+        env,
+    ) else {
+        notes.push("claude-code: its agentdocker MCP entry is not one setup can put back; remove it with `claude mcp remove --scope user agentdocker`".into());
+        return Ok(None);
+    };
+    if !plain {
+        notes.push("claude-code: its agentdocker MCP entry carries settings setup cannot put back; remove it with `claude mcp remove --scope user agentdocker`".into());
+        return Ok(None);
+    }
+    let mut remove: Vec<String> = vec![cli.to_owned()];
+    remove.extend(["mcp", "add", "--scope", "user", "agentdocker"].map(str::to_owned));
+    for pair in env {
+        remove.extend(["--env".to_owned(), pair]);
+    }
+    remove.push("--".into());
+    remove.push(command.to_owned());
+    remove.extend(args.iter().filter_map(Value::as_str).map(str::to_owned));
+    let mut add: Vec<String> = vec![cli.to_owned()];
+    add.extend(["mcp", "remove", "--scope", "user", "agentdocker"].map(str::to_owned));
+    Ok(Some(Delegated {
+        add,
+        remove,
+        expected: Some(entry),
+        ..probe
+    }))
+}
+
+/// A change that takes our entries out of `path`'s JSON, when there are any.
+fn json_removal(
+    plan: &mut Plan,
+    runtime: &str,
+    channel: &str,
+    path: PathBuf,
+    take: impl FnOnce(&mut Value) -> Result<bool>,
+) -> Result<()> {
+    let Some(before) = read_config(&path)? else {
+        return Ok(());
+    };
+    let mut value: Value = serde_json::from_str(&before).with_context(|| {
+        format!(
+            "{} is not plain JSON; remove the agentdocker entries by hand",
+            path.display()
+        )
+    })?;
+    if take(&mut value)? {
+        plan.changes.push(Change {
+            runtime: runtime.into(),
+            channel: channel.into(),
+            target: project::try_canonical(&path)?,
+            path,
+            before: Some(before),
+            after: Some(format!("{}\n", serde_json::to_string_pretty(&value)?)),
+            removal: true,
+        });
+    }
+    Ok(())
+}
+
+/// A change that deletes a file AgentDocker installed, when it is still
+/// exactly as installed (its stamp verifies); one the person edited stays.
+fn file_removal(
+    plan: &mut Plan,
+    runtime: &str,
+    channel: &str,
+    path: PathBuf,
+    unmodified: impl FnOnce(&str) -> bool,
+) -> Result<()> {
+    let Some(before) = read_config(&path)? else {
+        return Ok(());
+    };
+    if !unmodified(&before) {
+        plan.notes.push(format!(
+            "{runtime}: {} was edited after AgentDocker installed it; left in place",
+            path.display()
+        ));
+        return Ok(());
+    }
+    plan.changes.push(Change {
+        runtime: runtime.into(),
+        channel: channel.into(),
+        target: project::try_canonical(&path)?,
+        path,
+        before: Some(before),
+        after: None,
+        removal: true,
+    });
+    Ok(())
+}
+
+/// Plan taking AgentDocker's wiring out of the selected tools (every one
+/// it knows when none is named): MCP entries, hooks, skills, the OpenCode
+/// plugin and the shell block — only entries that run AgentDocker, and
+/// only installed files still as installed. Previewed, applied and undone
+/// like any setup plan, without needing the receipt that wired them.
+fn prepare_remove(roots: &Roots, names: &[String]) -> Result<Plan> {
+    let mut plan = Plan {
+        format: 2,
+        id: uuid::Uuid::new_v4().to_string(),
+        phase: "prepared".into(),
+        executable: std::env::current_exe()?,
+        changes: Vec::new(),
+        delegated: Vec::new(),
+        notes: Vec::new(),
+    };
+    let inventory = selected_inventory(roots, names)?;
+    for name in names {
+        ensure!(
+            inventory.iter().any(|runtime| runtime.name == *name),
+            "unknown runtime `{name}`"
+        );
+    }
+    for runtime in inventory
+        .iter()
+        .filter(|runtime| names.is_empty() || names.contains(&runtime.name))
+    {
+        let Some(spec) = RUNTIMES.iter().find(|spec| spec.name == runtime.name) else {
+            continue;
+        };
+        let name = runtime.name.as_str();
+        if let Some(step) = delegated_mcp_removal(spec, runtime, roots, &mut plan.notes)? {
+            plan.delegated.push(step);
+        }
+        if matches!(name, "claude-code" | "codex") {
+            json_removal(
+                &mut plan,
+                name,
+                "hooks",
+                runtimes::hook_config_path(spec, roots),
+                |value| Ok(super::remove::without_hooks(value, name)? > 0),
+            )?;
+        }
+        match name {
+            "claude-code" => {}
+            "opencode" => {
+                if let Some(path) = runtimes::mcp_config_path(spec, roots) {
+                    json_removal(
+                        &mut plan,
+                        name,
+                        "mcp",
+                        path,
+                        super::remove::without_opencode_server,
+                    )?;
+                }
+                file_removal(
+                    &mut plan,
+                    name,
+                    "plugin",
+                    crate::opencode_plugin::path(roots),
+                    crate::opencode_plugin::unmodified_install,
+                )?;
+            }
+            "codex" => {
+                if let Some(path) = runtimes::mcp_config_path(spec, roots)
+                    && let Some(before) = read_config(&path)?
+                {
+                    match super::remove::without_toml_server(&before, name) {
+                        Ok(Some(after)) => plan.changes.push(Change {
+                            runtime: name.into(),
+                            channel: "mcp".into(),
+                            target: project::try_canonical(&path)?,
+                            path,
+                            before: Some(before),
+                            after: Some(after),
+                            removal: true,
+                        }),
+                        Ok(None) => {}
+                        Err(error) => plan.notes.push(format!("codex: {error:#}")),
+                    }
+                }
+            }
+            _ => {
+                if let Some(path) = runtimes::mcp_config_path(spec, roots) {
+                    let key = runtimes::servers_key(spec);
+                    json_removal(&mut plan, name, "mcp", path, |value| {
+                        super::remove::without_json_server(value, key, name)
+                    })?;
+                }
+            }
+        }
+        if let Some(path) = crate::skill::path(name, roots) {
+            file_removal(
+                &mut plan,
+                name,
+                "skill",
+                path,
+                crate::skill::unmodified_install,
+            )?;
+        }
+    }
+    if (names.is_empty() || names.iter().any(|name| name == "claude-code"))
+        && let Some(shell) = runtimes::shell::shell(roots)
+        && let Some(before) = read_config(&shell.rc)?
+        && let Some(after) = runtimes::shell::without_block(&before)
+    {
+        plan.changes.push(Change {
+            runtime: "claude-code".into(),
+            channel: "shell".into(),
+            target: project::try_canonical(&shell.rc)?,
+            path: shell.rc,
+            before: Some(before),
+            after: Some(after),
+            removal: true,
+        });
+    }
+    plan.notes.push("Removal takes out only entries that run AgentDocker and files still as it installed them; everything else in those files stays. `agentdocker setup --undo <id>` puts back what it removed, while the files are unchanged since.".into());
+    Ok(plan)
+}
+
 /// What `--shell` asks for: every terminal `claude` carrying the channel
 /// flag, through a marked block in the shell's startup file.
 fn prepare_shell(plan: &mut Plan, roots: &Roots) -> Result<()> {
@@ -405,7 +739,8 @@ fn prepare_shell(plan: &mut Plan, roots: &Roots) -> Result<()> {
         path: shell.rc,
         target,
         before,
-        after,
+        after: Some(after),
+        removal: false,
     });
     plan.notes.push(
         "shell: a `claude` function that runs the real claude with the channel flag; takes effect in new terminals, and `agentdocker setup --undo` takes it back"
@@ -515,7 +850,8 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> R
                 path,
                 target,
                 before,
-                after,
+                after: Some(after),
+                removal: false,
             });
         } else {
             plan.notes.push(format!(
@@ -561,7 +897,8 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> R
             target: project::try_canonical(&path)?,
             path,
             before,
-            after,
+            after: Some(after),
+            removal: false,
         });
     }
     // OpenCode's hooks are a plugin module in its global plugin directory,
@@ -596,7 +933,8 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> R
             target: project::try_canonical(&path)?,
             path,
             before,
-            after,
+            after: Some(after),
+            removal: false,
         });
     }
     for step in &plan.delegated {
@@ -654,7 +992,8 @@ fn prepare_codex_activity(plan: &mut Plan, roots: &Roots, executable: &Path) -> 
             target: project::try_canonical(&path)?,
             path,
             before,
-            after: format!("{}\n", serde_json::to_string_pretty(&value)?),
+            after: Some(format!("{}\n", serde_json::to_string_pretty(&value)?)),
+            removal: false,
         });
     }
     plan.notes.push("Codex: SessionStart starts the native input receiver when supported. Other hooks report activity and deliver queued messages after prompts/tools, with one Stop continuation. They require lifecycle-hook support and review/trust in /hooks. MCP supplies explicit inbox reads and coordination tools. Setup does not grant hook trust or prove model receipt.".into());
@@ -723,7 +1062,7 @@ fn check(change: &Change) -> Result<Option<String>> {
     );
     let current = read_config(&change.path)?;
     ensure!(
-        current == change.before || current.as_deref() == Some(&change.after),
+        current == change.before || current == change.after,
         "{} changed since preview/apply; preserve the user's edits and create a fresh plan",
         change.path.display()
     );
@@ -768,7 +1107,7 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
         let current = check(change)?;
         let expected = match plan.phase.as_str() {
             "prepared" | "undone" => Some(change.before.as_deref()),
-            "applied" => Some(Some(change.after.as_str())),
+            "applied" => Some(change.after.as_deref()),
             _ => None,
         };
         if let Some(expected) = expected {
@@ -798,7 +1137,7 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
         let desired = if undo {
             change.before.as_deref()
         } else {
-            Some(change.after.as_str())
+            change.after.as_deref()
         };
         if current.as_deref() == desired {
             continue;
@@ -806,7 +1145,8 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
         if let Some(contents) = desired {
             super::write_config(&change.path, current.as_deref(), contents)?;
         } else {
-            // Remove only the new file this receipt created; never its directory.
+            // Remove only the file this receipt created, or the one a removal
+            // takes out; never its directory.
             check(change)?;
             std::fs::remove_file(&change.target)?;
         }
@@ -821,6 +1161,25 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
     // was already there when we ran is somebody else's.
     for index in 0..plan.delegated.len() {
         mutation.covers(&plan.delegated[index].path)?;
+        if plan.delegated[index].removal {
+            if undo {
+                if plan.delegated[index].created {
+                    restore(&plan.delegated[index])?;
+                    plan.delegated[index].created = false;
+                }
+                continue;
+            }
+            check_delegated(&plan.delegated[index], false)?;
+            if !plan.delegated[index].created {
+                if present(&plan.delegated[index])?.is_none() {
+                    continue; // already gone; nothing of it to put back
+                }
+                plan.delegated[index].created = true;
+                save(directory, plan)?;
+            }
+            unregister(&plan.delegated[index])?;
+            continue;
+        }
         if undo {
             if plan.delegated[index].created {
                 deregister(&plan.delegated[index])?;
@@ -895,6 +1254,10 @@ pub enum Action<'a> {
     Install,
     Apply(&'a str),
     Undo(&'a str),
+    /// Take AgentDocker's wiring out of the selected tools, applied at once.
+    Remove,
+    /// The same removal, saved to review and `--apply` later.
+    RemovePreview,
     Health,
     List,
     Show(&'a str),
@@ -908,7 +1271,8 @@ pub async fn run(
     json_output: bool,
     shell: bool,
 ) -> Result<()> {
-    let install = matches!(action, Action::Install);
+    let remove = matches!(action, Action::Remove | Action::RemovePreview);
+    let install = matches!(action, Action::Install | Action::Remove);
     let apply_id = if let Action::Apply(id) = action {
         Some(id)
     } else {
@@ -975,6 +1339,8 @@ pub async fn run(
             .context("another setup operation is in progress")?;
         let mut plan = if let Some(id) = apply_id.or(undo_id) {
             load(&directory, id)?
+        } else if remove {
+            prepare_remove(&roots, names)?
         } else if install {
             prepare_install(&roots, names, &crate::desktop::setup_executable()?)?
         } else {
@@ -1001,7 +1367,11 @@ pub async fn run(
         println!("{}", serde_json::to_string(&value)?);
     } else if let Some(id) = value["id"].as_str() {
         eprintln!("{}", serde_json::to_string_pretty(&value)?);
-        if install {
+        if remove && install {
+            eprintln!("Put back what this removed: agentdocker setup --undo {id}");
+        } else if remove {
+            eprintln!("Remove with: agentdocker setup --apply {id}");
+        } else if install {
             eprintln!("Undo this setup: agentdocker setup --undo {id}");
         }
         println!("{id}");
@@ -1039,6 +1409,8 @@ mod tests {
         assert!(
             plan.changes[0]
                 .after
+                .as_deref()
+                .unwrap()
                 .starts_with("export EDITOR=vi\n\n# >>> agentdocker >>>")
         );
         assert!(plan.delegated.is_empty(), "no provider tool is involved");
@@ -1089,6 +1461,131 @@ mod tests {
             shell: None,
             versions: false,
         }
+    }
+
+    /// A removal takes out only AgentDocker's own wiring, across the tools
+    /// that carry it, with nothing else in those files touched, deletes an
+    /// installed skill still as installed, and an undo puts every file back
+    /// to the byte.
+    #[test]
+    fn removal_takes_out_only_our_wiring_and_undo_puts_it_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut roots = roots(tmp.path());
+        roots.shell = Some("/bin/zsh".into());
+        let home = tmp.path();
+        let write = |relative: &str, text: &str| {
+            let path = home.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        let settings = write(
+            ".claude/settings.json",
+            &serde_json::to_string_pretty(&json!({
+                "model": "opus",
+                "hooks": {"Stop": [{"hooks": [
+                    {"type": "command", "command": "/x/agentdocker hook claude-code"},
+                    {"type": "command", "command": "say done"}
+                ]}]}
+            }))
+            .unwrap(),
+        );
+        let codex = write(
+            ".codex/config.toml",
+            "model = \"m\"\n\n[mcp_servers.agentdocker]\ncommand = \"/x/agentdocker\"\nargs = [\"mcp\", \"--runtime\", \"codex\"]\n",
+        );
+        let cursor = write(
+            ".cursor/mcp.json",
+            &serde_json::to_string_pretty(&json!({"mcpServers": {
+                "agentdocker": {"command": "/x/agentdocker", "args": ["mcp", "--runtime", "cursor"]},
+                "other": {"command": "npx", "args": ["other"]}
+            }}))
+            .unwrap(),
+        );
+        let skill = crate::skill::path("claude-code", &roots).unwrap();
+        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        std::fs::write(&skill, crate::skill::installed_document()).unwrap();
+        let zshrc = write(
+            ".zshrc",
+            &runtimes::shell::with_block(Some("export A=1\n"), "zsh"),
+        );
+        let files = [&settings, &codex, &cursor, &skill, &zshrc];
+        let originals: Vec<String> = files
+            .iter()
+            .map(|path| std::fs::read_to_string(path).unwrap())
+            .collect();
+
+        let mut plan = prepare_remove(&roots, &[]).unwrap();
+        let channels: std::collections::BTreeSet<(String, String)> = plan
+            .changes
+            .iter()
+            .map(|c| (c.runtime.clone(), c.channel.clone()))
+            .collect();
+        for expected in [
+            ("claude-code", "hooks"),
+            ("claude-code", "skill"),
+            ("claude-code", "shell"),
+            ("codex", "mcp"),
+            ("cursor", "mcp"),
+        ] {
+            assert!(
+                channels.contains(&(expected.0.to_owned(), expected.1.to_owned())),
+                "{expected:?} in {channels:?}"
+            );
+        }
+        let directory = directory(home).unwrap();
+        save(&directory, &plan).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        let settings_now: Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            settings_now,
+            json!({"model": "opus", "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "say done"}]}]}})
+        );
+        assert_eq!(std::fs::read_to_string(&codex).unwrap(), "model = \"m\"\n");
+        let cursor_now: Value =
+            serde_json::from_str(&std::fs::read_to_string(&cursor).unwrap()).unwrap();
+        assert_eq!(
+            cursor_now,
+            json!({"mcpServers": {"other": {"command": "npx", "args": ["other"]}}})
+        );
+        assert!(!skill.exists(), "the installed skill goes");
+        assert_eq!(std::fs::read_to_string(&zshrc).unwrap(), "export A=1\n");
+
+        apply(&directory, &mut plan, true).unwrap();
+        for (path, original) in files.iter().zip(&originals) {
+            assert_eq!(
+                &std::fs::read_to_string(path).unwrap(),
+                original,
+                "{} put back",
+                path.display()
+            );
+        }
+    }
+
+    /// A skill the person edited, and an entry under our name that runs
+    /// something else, are left where they are and said so.
+    #[test]
+    fn removal_leaves_what_is_not_ours() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let skill = crate::skill::path("claude-code", &roots).unwrap();
+        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        std::fs::write(&skill, "my own notes about agentdocker\n").unwrap();
+        let cursor = tmp.path().join(".cursor/mcp.json");
+        std::fs::create_dir_all(cursor.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cursor,
+            r#"{"mcpServers": {"agentdocker": {"command": "npx", "args": ["something-else"]}}}"#,
+        )
+        .unwrap();
+        let plan = prepare_remove(&roots, &["claude-code".into(), "cursor".into()]).unwrap();
+        assert!(plan.changes.is_empty(), "{:?}", plan.view());
+        assert!(
+            plan.notes.iter().any(|note| note.contains("edited")),
+            "{:?}",
+            plan.notes
+        );
     }
 
     #[test]
@@ -1312,6 +1809,7 @@ path.write_text(json.dumps(value))
                 json!({"command":"/opt/agentdocker", "args":["mcp","--runtime","claude-code"]}),
             ),
             config_dir: None,
+            removal: false,
         };
         // Removing one is a real failure when the entry survives it.
         let error = deregister(&step).unwrap_err().to_string();
@@ -1936,7 +2434,12 @@ path.write_text(json.dumps(value))
         prepared.phase = "applying".into();
         save(&directory, &prepared).unwrap();
         let first = &prepared.changes[0];
-        super::super::write_config(&first.path, first.before.as_deref(), &first.after).unwrap();
+        super::super::write_config(
+            &first.path,
+            first.before.as_deref(),
+            first.after.as_deref().unwrap(),
+        )
+        .unwrap();
         let mut resumed = load(&directory, &prepared.id).unwrap();
         apply(&directory, &mut resumed, false).unwrap();
         assert_eq!(resumed.phase, "applied");
@@ -1945,7 +2448,7 @@ path.write_text(json.dumps(value))
         let first = &resumed.changes[0];
         super::super::write_config(
             &first.path,
-            Some(&first.after),
+            first.after.as_deref(),
             first.before.as_ref().unwrap(),
         )
         .unwrap();
@@ -2013,7 +2516,7 @@ path.write_text(json.dumps(value))
         let directory = directory(&tmp.path().join("state")).unwrap();
         let path = prepared.changes[0].path.clone();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, &prepared.changes[0].after).unwrap();
+        std::fs::write(&path, prepared.changes[0].after.as_deref().unwrap()).unwrap();
         assert!(
             apply(&directory, &mut prepared, true).is_err(),
             "prepared plan never wrote this file"

@@ -129,6 +129,22 @@ pub fn wiring(roots: &Roots) -> Wiring {
 
 /// The startup file with our block: replaced in place when an older one
 /// is there, appended after a blank line otherwise. Nothing else moves.
+/// `text` with the marked block taken out, and the blank line `with_block`
+/// put before it when it was appended; `None` when there is no block.
+pub fn without_block(text: &str) -> Option<String> {
+    let found = current_block(text)?;
+    let start = text.find(found)?;
+    let (head, tail) = (&text[..start], &text[start + found.len()..]);
+    let head = if tail.is_empty() {
+        head.strip_suffix('\n')
+            .filter(|h| h.ends_with('\n'))
+            .unwrap_or(head)
+    } else {
+        head
+    };
+    Some(format!("{head}{tail}"))
+}
+
 pub fn with_block(before: Option<&str>, shell: &str) -> String {
     let block = block(shell);
     match before {
@@ -232,5 +248,21 @@ mod tests {
         assert_eq!(wiring(&roots(Some("/bin/tcsh"), home)), Wiring::Unsupported);
         assert!(block("fish").contains("function claude\n"));
         assert!(block("fish").contains("$argv\nend\n"));
+    }
+    #[test]
+    fn the_block_comes_out_as_it_went_in() {
+        let rc = "export PATH=$HOME/bin:$PATH\n";
+        let with = with_block(Some(rc), "zsh");
+        assert_eq!(without_block(&with).as_deref(), Some(rc));
+        let middle = format!("{with}alias ll='ls -l'\n");
+        assert_eq!(
+            without_block(&middle).as_deref(),
+            Some(format!("{rc}\nalias ll='ls -l'\n").as_str())
+        );
+        assert_eq!(without_block(rc), None);
+        assert_eq!(
+            without_block(&with_block(None, "fish")).as_deref(),
+            Some("")
+        );
     }
 }
