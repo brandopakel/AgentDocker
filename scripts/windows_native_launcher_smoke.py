@@ -27,6 +27,10 @@ from types import SimpleNamespace
 from windows_native_codex_smoke import current_user_objects, read_shared_file, remove_fixture, response_events, wait
 from windows_remote_receiver_fixture import Receiver, fixture_controller, process_birth
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+
 
 class RecoveryComplete(Exception):
     """A separate bounded recovery scenario completed its own native cleanup."""
@@ -216,6 +220,7 @@ def main():
             'PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP',
             'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)'}}
         env.update(CODEX_HOME=str(profile), AGENTDOCKER_FIXTURE_KEY='fixture-only', TERM='xterm-256color')
+        env['AGENTDOCKER_PERSON_CHECK'] = 'off'  # its own daemon: act as the person from anywhere
         receiver = Receiver(args.binary_dir, root, repo, profile, out, env, report); receiver.start_daemon()
         config = ('model = "fixture-model"\nmodel_provider = "fixture"\napproval_policy = "on-request"\n'
                   'sandbox_mode = "danger-full-access"\ncheck_for_update_on_startup = false\n'

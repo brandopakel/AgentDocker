@@ -103,6 +103,9 @@ impl Fixture {
             }
         }
         let daemon = command
+            // The harness acts as the person from wherever it runs, an
+            // agent's session included.
+            .env("AGENTDOCKER_PERSON_CHECK", "off")
             .arg("--home")
             .arg(&home)
             .arg("--socket")

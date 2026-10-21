@@ -200,6 +200,39 @@ pub struct Process {
     pub argv: Vec<String>,
 }
 
+/// What became of a process a walk up a process's parents cannot see in
+/// [`processes`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unseen {
+    /// It has ended: the chain stops here.
+    Ended,
+    /// It belongs to another user (a system service on Windows): nothing
+    /// above it is this user's doing.
+    OtherUser,
+    /// It is this user's and still runs, but could not be read.
+    Unreadable,
+}
+
+/// Why `pid` is missing from [`processes`]. On Unix every user's processes
+/// are listed, so a missing one has ended, or is a race with its start.
+/// On Windows the table holds only this user's readable processes: a
+/// parent is another user's only on a proven different owner; a token that
+/// cannot be read proves nothing, and is not passed.
+pub fn unseen(pid: u32) -> Unseen {
+    #[cfg(windows)]
+    {
+        imp::unseen(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        if alive(pid) {
+            Unseen::Unreadable
+        } else {
+            Unseen::Ended
+        }
+    }
+}
+
 /// Every process `ps` will show us. Failure is distinct from an empty
 /// successful scan, so background discovery never invents exits on an outage.
 #[cfg(unix)]

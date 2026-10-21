@@ -15,6 +15,10 @@ import sys
 import tempfile
 import time
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault("AGENTDOCKER_PERSON_CHECK", "off")
+
 
 def rpc(endpoint, request):
     with socket.socket(socket.AF_UNIX) as stream:

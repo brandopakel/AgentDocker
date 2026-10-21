@@ -22,6 +22,10 @@ import uuid
 from windows_package_smoke import extract_checked
 from windows_native_codex_smoke import remove_fixture
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+
 REPO = 'brandopakel/AgentDocker'
 TARGET = 'x86_64-pc-windows-msvc'
 ARCHIVE = f'agentdocker-desktop-{TARGET}.zip'
@@ -192,6 +196,7 @@ def main():
                if not k.startswith('AGENTDOCKER_') and k not in ('GH_TOKEN', 'GITHUB_TOKEN')}
         env.update(AGENTDOCKER_HOME=str(home), AGENTDOCKER_NO_AUTOSTART='1',
                    AGENTDOCKER_SOCKET=rf'\\.\pipe\agentdocker-hosted-{uuid.uuid4().hex}')
+        env['AGENTDOCKER_PERSON_CHECK'] = 'off'  # its own daemon: act as the person from anywhere
 
         def command(*argv, executable=None, record_only=False):
             selected = executable or launcher

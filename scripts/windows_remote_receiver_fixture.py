@@ -16,6 +16,10 @@ import uuid
 from windows_native_codex_smoke import fixture_controller, read_snapshot, response_events, wait
 from windows_smoke_pipe import WindowsSmokePipe
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+
 
 def canonical(path):
     """Match Rust canonicalize's verbatim Windows spelling, including Unicode."""
@@ -78,7 +82,8 @@ class Receiver:
         self.home = root / 'state'
         self.socket = '\\\\.\\pipe\\agentdocker-remote-' + uuid.uuid4().hex
         self.env = dict(env, AGENTDOCKER_HOME=str(self.home), AGENTDOCKER_SOCKET=self.socket,
-                        AGENTDOCKER_NO_AUTOSTART='1', AGENTDOCKER_NO_NOTIFICATIONS='1')
+                        AGENTDOCKER_NO_AUTOSTART='1', AGENTDOCKER_NO_NOTIFICATIONS='1',
+                        AGENTDOCKER_PERSON_CHECK='off')
         self.report = report
         self.children, self.owned, self.logs = [], [], []
         self.daemon = None

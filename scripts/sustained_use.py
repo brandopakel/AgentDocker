@@ -252,6 +252,7 @@ def population(binary, output, count, seconds, files, interrupted=None):
             folder.mkdir(exist_ok=True)
             (folder / f"input-{index}.txt").write_text("original\n")
         env = {key: value for key, value in os.environ.items() if not key.startswith("AGENTDOCKER_")}
+        env["AGENTDOCKER_PERSON_CHECK"] = "off"  # its own daemon: act as the person from anywhere
         env.update(AGENTDOCKER_HOME=str(state), AGENTDOCKER_SOCKET=str(endpoint),
                    AGENTDOCKER_NO_AUTOSTART="1", RUST_LOG="warn,agentd_state_timing=debug")
         daemon = None

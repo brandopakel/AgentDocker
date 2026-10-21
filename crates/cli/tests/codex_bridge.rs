@@ -294,6 +294,9 @@ mod fixture {
             )
             .unwrap();
             let child = Command::new(env!("CARGO_BIN_EXE_agentd"))
+                // The harness acts as the person from wherever it runs,
+                // an agent's session included.
+                .env("AGENTDOCKER_PERSON_CHECK", "off")
                 .arg("--home")
                 .arg(home)
                 .arg("--socket")

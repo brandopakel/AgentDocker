@@ -18,6 +18,10 @@ import tempfile
 import time
 import uuid
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -47,6 +51,7 @@ def main():
     assert not home.exists()
     endpoint = '\\\\.\\pipe\\agentdocker-service-smoke-' + token
     env = {k: v for k, v in os.environ.items() if not k.startswith('AGENTDOCKER_')}
+    env['AGENTDOCKER_PERSON_CHECK'] = 'off'  # its own daemon: act as the person from anywhere
     env.update(AGENTDOCKER_HOME=str(home), AGENTDOCKER_SOCKET=endpoint,
                AGENTDOCKER_NO_AUTOSTART='1', AGENTDOCKER_STARTUP_TRACE='1')
     report = {'result': 'failed', 'scope': __doc__, 'home': str(home), 'installed_launchers': bool(args.installed_prefix),
