@@ -78,7 +78,10 @@ pub(crate) fn acting(request: &Request) -> Vec<String> {
     if let Some(reader) = text(fields.get("digest").and_then(|d| d.get("reader"))) {
         names.push(reader);
     }
+    // Attaching to an agent's terminal is the person's: its input is their
+    // keyboard there.
     let person = op == "role"
+        || op == "attach"
         || (op == "me" && fields.get("workdir").is_some_and(|w| !w.is_null()))
         || text(fields.get("runtime")).as_deref() == Some(HUMAN_RUNTIME)
         || text(fields.get("spec").and_then(|spec| spec.get("runtime"))).as_deref()
@@ -125,7 +128,17 @@ fn walk(
                 )),
             };
         };
-        let birth = born(pid);
+        let Some(birth) = born(pid) else {
+            // A row whose birth cannot be read proves nothing about whose it
+            // is: past it only when it has ended or is another user's.
+            return match unseen(pid) {
+                Unseen::Ended | Unseen::OtherUser => Ok(Walk::Outside(chain)),
+                Unseen::Unreadable => Err(format!(
+                    "process {pid}, among its parents, has a birth that could not be read"
+                )),
+            };
+        };
+        let birth = Some(birth);
         if let (Some(birth), Some(child)) = (birth, child)
             && birth > child
         {
@@ -159,11 +172,76 @@ fn refusal(reason: &str) -> Response {
     )
 }
 
+/// What the kernel says the process on a connection is running: its
+/// executable and its arguments.
+pub(crate) struct Running {
+    executable: Option<std::path::PathBuf>,
+    argv: Option<Vec<String>>,
+}
+
+impl Running {
+    fn of(pid: u32) -> Self {
+        Self {
+            executable: procinfo::executable_path_of(pid).ok(),
+            argv: procinfo::arguments(pid),
+        }
+    }
+}
+
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// The CLI shipped beside this daemon: the only program a client may
+/// launch as a supervised Codex terminal's controller.
+pub(crate) fn companion_cli() -> Option<std::path::PathBuf> {
+    let daemon = procinfo::executable_path().ok()?;
+    Some(daemon.with_file_name(if cfg!(windows) {
+        "agentdocker.exe"
+    } else {
+        "agentdocker"
+    }))
+}
+
+/// A client's launch that asks to be a supervised Codex terminal must run
+/// this daemon's own `agentdocker codex-input`: the controller is let send
+/// what the person typed, so it is never a program of the client's choosing.
+pub(crate) fn controller_launch_refusal(request: &Request) -> Option<Response> {
+    let (Request::Run { spec } | Request::RunContainer { spec, .. }) = request else {
+        return None;
+    };
+    if !spec
+        .env
+        .get(agentdocker_host::provider_input::CODEX_INPUT_ENV)
+        .is_some_and(|value| value == "1")
+    {
+        return None;
+    }
+    let genuine = spec.command.get(1).map(String::as_str) == Some("codex-input")
+        && companion_cli().is_some_and(|cli| {
+            spec.command
+                .first()
+                .is_some_and(|program| same_file(std::path::Path::new(program), &cli))
+        });
+    (!genuine).then(|| {
+        Response::error(
+            ErrorCode::Invalid,
+            "a supervised Codex terminal is started through this AgentDocker's own `agentdocker codex-input`",
+        )
+    })
+}
+
 impl State {
     /// A terminal's own input path: the person typing into the terminal a
-    /// supervised Codex runs in, sent by its controller — the agent's own
-    /// registered process, exactly, never anything under it — to that agent.
-    fn controller_typing(&self, peer: Peer, request: &Request) -> bool {
+    /// supervised Codex runs in, sent by its controller to that agent. The
+    /// controller is the agent's own registered process, exactly (never
+    /// anything under it), running the program it was launched as — the
+    /// daemon's companion `agentdocker codex-input`, checked at launch —
+    /// as the kernel reports it.
+    fn controller_typing(&self, peer: Peer, request: &Request, running: &Running) -> bool {
         let Request::Send { from, to, .. } = request else {
             return false;
         };
@@ -179,11 +257,33 @@ impl State {
                 && record.process_started_at.is_some()
                 && record.process_started_at == peer.1
                 && agentdocker_host::provider_input::is_codex_input(record)
+                && record.spec.command.get(1).map(String::as_str) == Some("codex-input")
+                && running
+                    .argv
+                    .as_ref()
+                    .and_then(|argv| argv.get(1))
+                    .map(String::as_str)
+                    == Some("codex-input")
+                && running.executable.as_ref().is_some_and(|exe| {
+                    record
+                        .spec
+                        .command
+                        .first()
+                        .is_some_and(|program| same_file(exe, std::path::Path::new(program)))
+                })
         })
     }
 }
 
 impl Daemon {
+    /// [`controller_launch_refusal`], for the socket.
+    pub(crate) fn launch_refusal(&self, request: &Request) -> Option<Response> {
+        if !self.person_check {
+            return None;
+        }
+        controller_launch_refusal(request)
+    }
+
     /// A refusal when `request` acts as the person and `peer`, the
     /// process on the socket, runs inside an agent's session. `None` lets
     /// it through.
@@ -192,7 +292,9 @@ impl Daemon {
         peer: Option<Peer>,
         request: &Request,
     ) -> Option<Response> {
-        if !self.person_check || !(mutates(request) || matches!(request, Request::Subscribe { .. }))
+        if !self.person_check
+            || !(mutates(request)
+                || matches!(request, Request::Subscribe { .. } | Request::Attach { .. }))
         {
             return None;
         }
@@ -218,9 +320,6 @@ impl Daemon {
             if !person {
                 return None;
             }
-            if peer.is_some_and(|peer| state.controller_typing(peer, request)) {
-                return None;
-            }
             state
                 .registry
                 .live()
@@ -228,13 +327,19 @@ impl Daemon {
                 .filter_map(|a| Some((a.pid?, a.process_started_at?)))
                 .collect()
         };
+        // The process that opened the connection, still: not another that
+        // was given its pid. Checked before anything is let through.
         let Some((pid, Some(born))) = peer else {
             return Some(refusal("a process the daemon cannot identify"));
         };
-        // The process that opened the connection, still: not another that
-        // was given its pid.
         if procinfo::start_time(pid) != Some(born) {
             return Some(refusal("a connection whose process has ended"));
+        }
+        if matches!(request, Request::Send { from, .. } if from == HUMAN) {
+            let running = Running::of(pid);
+            if lock(&self.state).controller_typing((pid, Some(born)), request, &running) {
+                return None;
+            }
         }
         let key = (pid, born.timestamp_micros());
         let known = lock(&self.peers).found.get(&key).cloned();
@@ -391,17 +496,22 @@ mod tests {
             process(60, 901, &["explorer.exe"]),
             process(61, 60, &["agentdocker.exe", "pause", "x"]),
             process(70, 902, &["agentdocker", "pause", "x"]),
+            // A parent whose birth cannot be read, still running; and one
+            // whose birth cannot be read because it has just ended.
+            process(80, 11, &["/opt/tools/custom-agent"]),
+            process(81, 80, &["agentdocker", "pause", "x"]),
+            process(90, 11, &["/opt/tools/gone"]),
+            process(91, 90, &["agentdocker", "pause", "x"]),
         ];
-        let born = |pid: u32| {
-            Some(at(match pid {
-                40 => 100,
-                41 => 50,
-                _ => i64::from(pid),
-            }))
+        let born = |pid: u32| match pid {
+            80 | 90 => None,
+            40 => Some(at(100)),
+            41 => Some(at(50)),
+            _ => Some(at(i64::from(pid))),
         };
         let unseen = |pid: u32| match pid {
             900 => Unseen::OtherUser,
-            901 => Unseen::Ended,
+            901 | 90 => Unseen::Ended,
             _ => Unseen::Unreadable,
         };
         let none = HashMap::new();
@@ -448,8 +558,85 @@ mod tests {
             "this user's unreadable parent authorises nothing"
         );
         assert!(
+            go(81, &none).is_err(),
+            "a running parent of unreadable birth proves nothing"
+        );
+        assert!(
+            matches!(go(91, &none), Ok(Walk::Outside(_))),
+            "a parent that just ended"
+        );
+        assert!(
             go(99, &none).is_err(),
             "an untraceable peer authorises nothing"
+        );
+    }
+
+    /// The controller exemption holds only for the agent's own process,
+    /// born when recorded, running the very program it was launched as —
+    /// the companion `agentdocker codex-input`.
+    #[test]
+    fn only_the_launched_controller_types_as_the_person() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = tmp.path().join("agentdocker");
+        let other = tmp.path().join("python3");
+        std::fs::write(&cli, "x").unwrap();
+        std::fs::write(&other, "x").unwrap();
+        let daemon = Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("s")).unwrap());
+        let mut record = agentdocker_core::AgentRecord::new(
+            AgentSpec {
+                name: "codex-terminal".into(),
+                runtime: "codex".into(),
+                command: vec![
+                    cli.display().to_string(),
+                    "codex-input".into(),
+                    "--".into(),
+                    "codex".into(),
+                ],
+                env: [(
+                    agentdocker_host::provider_input::CODEX_INPUT_ENV.to_owned(),
+                    "1".to_owned(),
+                )]
+                .into(),
+                ..AgentSpec::default()
+            },
+            true,
+            Utc::now(),
+        );
+        record.status = agentdocker_core::AgentStatus::Running;
+        record.pid = Some(4242);
+        record.process_started_at = Some(at(1));
+        let id = record.id.clone();
+        lock(&daemon.state).registry.insert(record).unwrap();
+        let send = Request::Send {
+            from: HUMAN.into(),
+            to: id.to_string(),
+            kind: "chat".into(),
+            payload: serde_json::json!({"text": "hello"}),
+            reply_to: None,
+            links: Vec::new(),
+        };
+        let running = |exe: &std::path::Path, sub: &str| Running {
+            executable: Some(exe.to_owned()),
+            argv: Some(vec![exe.display().to_string(), sub.to_owned()]),
+        };
+        let state = lock(&daemon.state);
+        let peer = (4242, Some(at(1)));
+        assert!(state.controller_typing(peer, &send, &running(&cli, "codex-input")));
+        assert!(
+            !state.controller_typing(peer, &send, &running(&other, "codex-input")),
+            "another program"
+        );
+        assert!(
+            !state.controller_typing(peer, &send, &running(&cli, "mcp")),
+            "another subcommand"
+        );
+        assert!(
+            !state.controller_typing((4242, Some(at(2))), &send, &running(&cli, "codex-input")),
+            "another birth"
+        );
+        assert!(
+            !state.controller_typing((4243, Some(at(1))), &send, &running(&cli, "codex-input")),
+            "another process"
         );
     }
 
@@ -538,8 +725,8 @@ mod tests {
         );
         assert!(lock(&daemon.state).pauses.is_empty(), "nothing was paused");
 
-        // A supervised Codex terminal's controller, typing to its own agent:
-        // the registered process itself sends.
+        // A program that is not the daemon's companion controller, marked as a
+        // supervised Codex terminal, typing "as the person" to itself: refused.
         let typed = spawn(String::new());
         let record = register("codex-terminal", typed.id()).await;
         {
@@ -547,6 +734,7 @@ mod tests {
             let record = state.registry.get_mut(&record.id).unwrap();
             record.managed = true;
             record.spec.runtime = "codex".into();
+            record.spec.command = vec!["python3".into(), "codex-input".into()];
             record.spec.env.insert(
                 agentdocker_host::provider_input::CODEX_INPUT_ENV.into(),
                 "1".into(),
@@ -564,7 +752,27 @@ mod tests {
             record.process_started_at = procinfo::start_time(typed.id());
         }
         let reply = finish(typed).await;
-        assert!(matches!(reply, Response::Sent { .. }), "{reply:?}");
+        assert!(
+            matches!(
+                &reply,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
+            "{reply:?}"
+        );
+        // Nor may a client launch such a program as one.
+        let launch = spawn(
+            r#"{"op":"run","spec":{"name":"fake","runtime":"codex","command":["python3","codex-input"],"env":{"AGENTDOCKER_CODEX_INPUT":"1"}}}"#
+                .into(),
+        );
+        let reply = finish(launch).await;
+        assert!(
+            matches!(&reply, Response::Error { code: ErrorCode::Invalid, message, .. }
+                if message.contains("codex-input")),
+            "{reply:?}"
+        );
 
         // The daemon's own process is trusted, whatever its ancestry.
         let mine = daemon
