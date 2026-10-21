@@ -221,8 +221,8 @@ machine, or, once a browser agent has joined, **… · one browser agent
 connected through the connector** — with the browser, profile and version of
 each copy under **Details**, and the connector: its MCP
 URL, whose tooltip says where in the vendor's settings to add it, and the
-pairing code the consent page asks for (which also asks which project
-the agent joins), or, when none serves, a *Not running* dot with
+pairing code the consent page asks for (one consent each; the page then asks
+which project the agent joins), or, when none serves, a *Not running* dot with
 **Tailscale** and **Cloudflare** to start one, each saying on the pointer what
 its address does. The row offers no **Set up**: what the extension is doing runs
 in the browser and on the vendor's side, and only the connector's consent

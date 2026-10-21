@@ -177,6 +177,14 @@ struct FromFile {
     cidrs: Vec<Cidr>,
 }
 
+/// The client address a tunnel wrote into `header`: the last entry of its
+/// last line, the one the tunnel itself put there.
+pub fn client_ip(request: &Request, header: &str) -> Option<IpAddr> {
+    let name = header.to_ascii_lowercase();
+    let (_, value) = request.headers.iter().rev().find(|(n, _)| *n == name)?;
+    value.rsplit(',').next()?.trim().parse().ok()
+}
+
 /// Literal prefixes, vendor presets, and files re-read when they change.
 /// Automatic OpenAI updates replace one validated snapshot at a time.
 pub struct Allowlist {
@@ -279,9 +287,7 @@ impl Allowlist {
     /// of the last such line is the tunnel's word: anything before it is
     /// the client's own and could name any address, an allowed one too.
     pub fn client_ip(&self, request: &Request) -> Option<IpAddr> {
-        let name = self.header.to_ascii_lowercase();
-        let (_, value) = request.headers.iter().rev().find(|(n, _)| *n == name)?;
-        value.rsplit(',').next()?.trim().parse().ok()
+        client_ip(request, &self.header)
     }
 
     /// Whether this request may reach a vendor-facing endpoint. No
