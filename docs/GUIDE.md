@@ -843,6 +843,10 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **Choose the model and effort.** Launching Claude or Codex from the app
+  offers **Model** and **Effort**, starting at the provider's own defaults,
+  and a session's panel says which it runs (`gpt-6-astra · xhigh`).
+
 - **Stopping a terminal agent leaves its terminal clean.** Stopping a Codex
   or Claude you started in your own terminal used to leave that tab
   reporting every mouse move as typed text (`35;113;27M…`). AgentDocker now
@@ -855,7 +859,8 @@ Newest first. Only what changes how the product is used.
   the new code from `agentdocker connector status` or the Tools screen. Wrong
   codes no longer close consent until a restart: a source that types five
   waits a quarter of an hour, and a code guessed at twenty times is replaced.
-  A service's log no longer records the code.
+  A service's log no longer records the code. A connector that crashes no
+  longer leaves its Tailscale Funnel open: the next start clears it.
 
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   used to be unbound: its AgentDocker tools refused, so its model could reach
