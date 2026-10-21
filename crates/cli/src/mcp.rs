@@ -1231,10 +1231,15 @@ impl<B: Backend> McpServer<B> {
                     }
                     _ => None,
                 };
+                // Every record, ended ones and other projects' included: a
+                // provider block that holds a shown agent can come from one
+                // it is not shown, an ended session sharing its quota among
+                // them, and its fix is decided among them all, as `send`
+                // and `ps` decide it. Only the rows are narrowed.
                 let response = self
                     .backend
                     .call(Request::List {
-                        all: args.all,
+                        all: true,
                         project: None,
                         labels: Default::default(),
                     })
@@ -1247,13 +1252,11 @@ impl<B: Backend> McpServer<B> {
                     return Ok(render(response, verbose));
                 };
                 let agents = everyone.iter().filter(|a| {
-                    mine.is_none()
-                        || a.spec.runtime == agentdocker_core::HUMAN_RUNTIME
-                        || a.project.as_ref().map(agentdocker_core::ProjectRef::id) == mine
+                    (args.all || a.status.is_live())
+                        && (mine.is_none()
+                            || a.spec.runtime == agentdocker_core::HUMAN_RUNTIME
+                            || a.project.as_ref().map(agentdocker_core::ProjectRef::id) == mine)
                 });
-                // A provider block can come from an agent this one is not
-                // shown, in another project: its fix is looked up among
-                // every record listed.
                 let agents: Vec<Value> = agents
                     .map(|a| {
                         if verbose {
@@ -3940,16 +3943,22 @@ mod tests {
 
     #[test]
     fn send_advice_names_unbound_recipients_without_claiming_message_receipt() {
+        let checkout = if cfg!(windows) {
+            r"C:\work\alpha"
+        } else {
+            "/work/alpha"
+        };
         let mut agent = agentdocker_core::AgentRecord::new(
             agentdocker_core::AgentSpec {
                 name: "Claude reviewer".into(),
                 runtime: "claude-code".into(),
-                workdir: Some("/work/alpha".into()),
+                workdir: Some(checkout.into()),
                 ..Default::default()
             },
             false,
             Utc::now(),
         );
+        agent.project = Some(agentdocker_core::ProjectRef::directory(checkout));
         agent.status = agentdocker_core::AgentStatus::Running;
         agent
             .spec
@@ -4060,6 +4069,103 @@ mod tests {
             }
         }
         cases
+    }
+
+    /// `list_agents` decides each shown agent's fix among every record the
+    /// daemon holds: an ended session in another project whose unresolved
+    /// quota block it shares holds it, as `send` and `ps` say, though that
+    /// session is no row of the list. Only the rows are narrowed, by
+    /// project and by `all`.
+    #[tokio::test]
+    async fn list_agents_decides_fixes_among_records_it_does_not_show() {
+        use agentdocker_core::{
+            AgentRecord, AgentSpec, AgentStatus, InputDelivery, ProjectRef, ProviderAvailability,
+            ProviderIssue, ProviderIssueKind,
+        };
+        let now = Utc::now();
+        let quota = |name: &str, project: &str| {
+            let mut agent = AgentRecord::new(
+                AgentSpec {
+                    name: name.into(),
+                    runtime: "codex".into(),
+                    provider: Some("fixture-provider".into()),
+                    labels: [("provider-quota".to_owned(), "shared".to_owned())].into(),
+                    ..AgentSpec::default()
+                },
+                false,
+                now,
+            );
+            agent.id = format!("{name:0>32}").into();
+            agent.project = Some(ProjectRef::directory(project));
+            agent
+        };
+        let mut receiver = quota("receiver", "/work/alpha");
+        receiver.status = AgentStatus::Running;
+        receiver.process_started_at = Some(now);
+        receiver.input_delivery = Some(InputDelivery {
+            process_started_at: now,
+            paused: false,
+            pause_reason: None,
+            reported_at: now,
+            received: None,
+            received_at: None,
+        });
+        let mut source = quota("source", "/work/beta");
+        source.status = AgentStatus::Exited { code: Some(1) };
+        source.provider_availability = Some(ProviderAvailability {
+            process_started_at: now,
+            observed_at: now,
+            issue: Some(ProviderIssue {
+                quota_group: Some("shared".into()),
+                ..ProviderIssue::local(ProviderIssueKind::Usage)
+            }),
+            cleared_observation: None,
+            retries: 0,
+        });
+        let mut gone = quota("gone", "/work/alpha");
+        gone.status = AgentStatus::Exited { code: Some(0) };
+        let mut me = quota("me", "/work/alpha");
+        me.status = AgentStatus::Running;
+        let everyone = vec![receiver.clone(), source.clone(), gone.clone()];
+        for all in [false, true] {
+            let s = server(vec![
+                Response::Agent { agent: me.clone() },
+                Response::Agents {
+                    aliases: Default::default(),
+                    agents: everyone.clone(),
+                },
+            ]);
+            let text = tool_text(
+                &s.handle(rpc(
+                    1,
+                    "tools/call",
+                    json!({ "name": "list_agents", "arguments": { "all": all } }),
+                ))
+                .await
+                .unwrap(),
+            );
+            assert!(
+                s.backend
+                    .requests()
+                    .iter()
+                    .any(|r| matches!(r, Request::List { all: true, .. })),
+                "every record is fetched as a source"
+            );
+            let rows = text["agents"].as_array().unwrap();
+            let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
+            assert_eq!(
+                names,
+                if all {
+                    vec!["receiver", "gone"]
+                } else {
+                    vec!["receiver"]
+                },
+                "another project's source is never a row; ended ones only with all"
+            );
+            assert_eq!(rows[0]["fix"], json!({"kind": "wait_for_provider"}));
+            let decided = agentdocker_core::readiness::decide_among(&receiver, &everyone, now);
+            assert_eq!(rows[0]["fix"], json!(decided.fix), "what send and ps say");
+        }
     }
 
     /// The CLI's `send` and `ps --input-details` lines and the MCP send

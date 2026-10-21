@@ -398,6 +398,13 @@ mod tests {
 
     use super::*;
 
+    /// An absolute checkout on every platform.
+    const CHECKOUT: &str = if cfg!(windows) {
+        r"C:\work\orchard"
+    } else {
+        "/work/orchard"
+    };
+
     #[test]
     fn a_session_nothing_reaches_is_said_to_be_unreachable_with_what_connects_it() {
         let birth = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
@@ -417,6 +424,8 @@ mod tests {
             .spec
             .labels
             .insert("session_id".into(), "de4e3b54-48e1".into());
+        agent.spec.workdir = Some(CHECKOUT.into());
+        agent.project = Some(crate::ProjectRef::directory(CHECKOUT));
         let later = birth + crate::input::FIRST_CONTACT_GRACE;
         let readiness = RecipientReadiness::for_agent(&agent, later, None).unwrap();
         assert_eq!(readiness.issue, SendIssue::Unreachable);
@@ -487,7 +496,8 @@ mod tests {
         assert_eq!(readiness.issue, SendIssue::SessionEnded);
         assert_eq!(readiness.fix, Some(Fix::None), "no folder, no command");
         assert_eq!(readiness.hint(), "Its messages wait until it is resumed.");
-        ended.spec.workdir = Some("/p/orchard".into());
+        ended.spec.workdir = Some(CHECKOUT.into());
+        ended.project = Some(crate::ProjectRef::directory(CHECKOUT));
         let readiness = RecipientReadiness::for_agent(&ended, ended.created_at, None).unwrap();
         let command = claude_resume_command(&ended, cfg!(windows)).unwrap();
         assert_eq!(readiness.fix, Some(Fix::Reconnect { command }));
@@ -628,7 +638,8 @@ mod tests {
             Some(Fix::SetupThenReconnect),
             "no folder to resume in"
         );
-        agent.spec.workdir = Some("/work/orchard".into());
+        agent.spec.workdir = Some(CHECKOUT.into());
+        agent.project = Some(crate::ProjectRef::directory(CHECKOUT));
         let issue = RecipientReadiness::for_agent(&agent, agent.created_at, None).unwrap();
         assert!(issue.guidance().contains("claude --resume session-123_ab --dangerously-load-development-channels server:agentdocker"));
     }

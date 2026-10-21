@@ -1097,17 +1097,25 @@ runtime:
 
 | State | Claude Code | Codex | OpenCode | Other runtimes |
 |---|---|---|---|---|
-| ended | `reconnect` when its resume command can be written (a conversation id and a folder), else `none` | `codex_resume` when its thread is known, else `none` | `none` | `none` |
+| ended | `reconnect`: its resume command when a resumed terminal comes back under its record, `agentdocker reconnect <id>` when only the daemon can bring it back, else `none` | `codex_resume` when a resumed terminal comes back under its record, else `none` | `none` | `none` |
 | provider blocked | `wait_for_provider` | `wait_for_provider` | `wait_for_provider` | `wait_for_provider` |
 | paused | `review_delivery` | `review_delivery` | `review_delivery` | `review_delivery` |
-| silent, waits for prompt | `reconnect`, else `setup_then_reconnect` | `launch_live` | `none` (its plugin wakes it) | `read_inbox` |
-| unreachable | `setup_then_reconnect` | `codex_resume`, else `launch_live` | `setup_then_reconnect` | `read_inbox` |
+| silent, waits for prompt | `reconnect` as above, else `setup_then_reconnect` | `launch_live` | `none` (its plugin wakes it) | `read_inbox` |
+| unreachable | `setup_then_reconnect` | `codex_resume` as above, else `launch_live` | `setup_then_reconnect` | `read_inbox` |
 | awaits check-in | `wait_for_check_in` | `wait_for_check_in` | `wait_for_check_in` | `wait_for_check_in` |
 | ready | `none` | `none` | `none` | `none` |
 
 An unreachable Claude Code session is set up first: without
 `agentdocker setup claude-code` it has no AgentDocker MCP entry, and the
-resume command alone fails. A state's label, the short hint beside a command
+resume command alone fails. A resume command is offered only for a record a
+resumed terminal comes back under (`identity::resumes_from_a_terminal`: a
+plain conversation id, an absolute checkout of a project, and nobody else's
+process running it — not supervised, contained, paned, restored or bound);
+for any other, a plain resume would register a fresh record beside the one
+holding the queue. A Claude Code session AgentDocker supervised comes back
+through the daemon instead (`identity::relaunches_here`, what `resume_session`
+accepts); Codex has no such relaunch, so a supervised or bound Codex record
+gets no command. A state's label, the short hint beside a command
 or button, and the long guidance all say the one fix; a desktop readiness dot
 takes its tone from the state, never from its words.
 
@@ -1149,9 +1157,12 @@ daemon, is said without one. A runtime with no input adapter (`custom`,
 agent's own read (`inbox`/`watch --as <id>`, `read_inbox`) — never an
 instruction to reconnect a receiver that cannot exist. MCP includes the
 guidance for that fix with each detail, and `list_agents`, `inspect_agent`
-and `whoami` add `fix` to an agent's projection whenever it is not `none`,
-the provider block looked up among every listed record (for a single record,
-its own). CLI stderr shows each named issue and its guidance; `ps` has an
+and `whoami` add `fix` to an agent's projection whenever it is not `none`.
+`list_agents` decides it among every record the daemon holds — ended ones and
+other projects' included, so a quota block an ended session left still holds
+the agents that share it, as in `send` and `ps` — and narrows only the rows it
+shows, to the caller's project and the person, and to live ones unless `all`;
+`inspect_agent` and `whoami` decide from the one record's own block. CLI stderr shows each named issue and its guidance; `ps` has an
 INPUT column and `ps --input-details` gives the guidance for every listed
 session, without the send snapshot's 32-detail cap. UI advice belongs to the
 original composer and expands on demand; it is not persisted as fresh state

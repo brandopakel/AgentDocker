@@ -512,9 +512,11 @@ warnings go to stderr: a queued message can still be waiting for another prompt
 in a session without an input receiver. Each warning names where the session
 stands and the one thing that would get it taking messages — the same fix
 `agentdocker ps --input-details`, the INPUT column's words and the desktop
-give: a Claude Code session's resume command, `agentdocker setup <runtime>`
+give: a Claude Code session's resume command (`agentdocker reconnect <id>` for
+one AgentDocker started, which a plain resume could not bring back under its
+record), `agentdocker setup <runtime>`
 first for a session nothing of which ever reached AgentDocker, `codex resume`
-with its conversation, a live Codex from Launch agent, waiting out a provider
+with its conversation (only for a Codex started in a terminal), a live Codex from Launch agent, waiting out a provider
 limit, reviewing a paused delivery, or the agent's own read of its inbox. None
 of them restarts anything. Provider limits remain separate from receiver
 health. When the daemon does not report readiness, `send` prints `recipient input readiness unavailable from this daemon` rather than imply that every recipient can wake.

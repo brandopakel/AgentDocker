@@ -296,19 +296,26 @@ mod tests {
     use super::*;
     use agentdocker_core::{AgentRecord, AgentSpec, AgentStatus};
 
+    /// An absolute checkout on every platform.
+    const CHECKOUT: &str = if cfg!(windows) {
+        r"C:\work\orchard"
+    } else {
+        "/work/orchard"
+    };
+
     fn session(runtime: &str) -> AgentRecord {
         let mut agent = AgentRecord::new(
             AgentSpec {
                 name: format!("{runtime}-1"),
                 runtime: runtime.into(),
-                workdir: Some("/work/orchard".into()),
+                workdir: Some(CHECKOUT.into()),
                 ..Default::default()
             },
             false,
             chrono::Utc::now() - chrono::Duration::minutes(10),
         );
         agent.status = AgentStatus::Running;
-        agent.project = Some(agentdocker_core::ProjectRef::directory("/work/orchard"));
+        agent.project = Some(agentdocker_core::ProjectRef::directory(CHECKOUT));
         agent
             .spec
             .labels
@@ -394,6 +401,19 @@ mod tests {
         let view = seen(app.fix_view(&agent, "inspector", c).unwrap());
         assert!(view.control(&format!("reconnect-{}", agent.id)).is_none());
         assert!(view.reads("Run this in a terminal to bring it back."));
+        // One AgentDocker supervised comes back through the daemon, never
+        // a plain resume that would leave its queue behind: the button
+        // here, and `agentdocker reconnect` where the window cannot.
+        let mut managed = agent.clone();
+        managed.managed = true;
+        managed.spec.tty = true;
+        app.agents = vec![managed.clone()];
+        let view = seen(app.fix_view(&managed, "inspector", c).unwrap());
+        assert!(view.reads(&format!("agentdocker reconnect {}", managed.id)));
+        assert!(!view.reads("claude --resume"));
+        claude_installed(&mut app);
+        let view = seen(app.fix_view(&managed, "inspector", c).unwrap());
+        assert!(view.control(&format!("reconnect-{}", managed.id)).is_some());
     }
 
     /// A Claude session nothing of which reached AgentDocker is set up

@@ -199,14 +199,32 @@ fn state(
 }
 
 fn fix(agent: &AgentRecord, state: State) -> Fix {
+    use crate::identity::{plain_session_id, relaunches_here, resumes_from_a_terminal};
+    // A resume command only for a record a resumed terminal comes back
+    // under: anything else would be a fresh record beside its queue. A
+    // Claude session AgentDocker supervised comes back through the daemon
+    // instead (`agentdocker reconnect`, Reconnect here in the app).
     let reconnect = || {
-        crate::send_readiness::claude_resume_command(agent, cfg!(windows))
-            .map(|command| Fix::Reconnect { command })
+        if resumes_from_a_terminal(agent) {
+            crate::send_readiness::claude_resume_command(agent, cfg!(windows))
+                .map(|command| Fix::Reconnect { command })
+        } else if relaunches_here(agent) && plain_session_id(agent.id.as_str()) {
+            Some(Fix::Reconnect {
+                command: format!("agentdocker reconnect {}", agent.id),
+            })
+        } else {
+            None
+        }
     };
+    // Codex has no relaunch through the daemon: a supervised or bound
+    // record gets no command.
     let codex_resume = || {
-        crate::send_readiness::session_word(agent).map(|session| Fix::CodexResume {
-            session: session.to_owned(),
-        })
+        resumes_from_a_terminal(agent)
+            .then(|| crate::send_readiness::session_word(agent))
+            .flatten()
+            .map(|session| Fix::CodexResume {
+                session: session.to_owned(),
+            })
     };
     let runtime = agent.spec.runtime.as_str();
     match state {
@@ -295,6 +313,11 @@ impl Decision {
             Fix::Reconnect { command } if self.state == State::Ended => format!(
                 "Bring it back with the AgentDocker channel by running this in a terminal: {command}. Complete Claude's channel consent when it asks."
             ),
+            // The pasted resume loads the user's own MCP entry; the
+            // daemon's relaunch supplies its own.
+            Fix::Reconnect { command } if command.starts_with("agentdocker ") => format!(
+                "After saving work and exiting it, run this in a terminal: {command}. Complete Claude's channel consent when it asks."
+            ),
             Fix::Reconnect { command } => format!(
                 "After saving work and exiting it, run this in a terminal: {command}. Complete Claude's channel consent; AgentDocker's MCP entry must include --claude-channel."
             ),
@@ -369,6 +392,13 @@ mod tests {
         "ready",
     ];
 
+    /// An absolute checkout on every platform.
+    const CHECKOUT: &str = if cfg!(windows) {
+        r"C:\work\orchard"
+    } else {
+        "/work/orchard"
+    };
+
     fn born() -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000, 0).unwrap()
     }
@@ -395,7 +425,8 @@ mod tests {
         agent.started_at = Some(birth);
         agent.process_started_at = Some(birth);
         if known {
-            agent.spec.workdir = Some("/work/orchard".into());
+            agent.spec.workdir = Some(CHECKOUT.into());
+            agent.project = Some(crate::ProjectRef::directory(CHECKOUT));
             agent
                 .spec
                 .labels
@@ -566,6 +597,84 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A resume command is offered only for a record a resumed terminal
+    /// comes back under. A session AgentDocker supervised, or one an input
+    /// binding holds, keeps its queue from a plain resume: a Claude one is
+    /// brought back through the daemon, a Codex one has no command.
+    #[test]
+    fn an_ended_session_a_terminal_cannot_take_back_is_not_offered_its_resume() {
+        let binding = |agent: &AgentRecord| crate::InputBinding {
+            provider: crate::ProviderGeneration {
+                process: crate::ProcessIdentity {
+                    pid: 8,
+                    started_at: born(),
+                },
+                session: "1a2b3c4d-5e6f".into(),
+                profile: "default".into(),
+            },
+            controller: crate::ProcessIdentity {
+                pid: 9,
+                started_at: born(),
+            },
+            controller_since: agent.created_at,
+            token_sha256: "digest".into(),
+            bound_at: agent.created_at,
+            controller_generations: 1,
+            uncertain: vec!["queued".to_owned().into()],
+            launch: None,
+            restart: Default::default(),
+        };
+        for state in ["ended", "unreachable"] {
+            let (plain, now, _) = session("codex", state, true);
+            let mut managed = plain.clone();
+            managed.managed = true;
+            let mut bound = plain.clone();
+            bound.input_binding = Some(binding(&plain));
+            let resume = Fix::CodexResume {
+                session: "1a2b3c4d-5e6f".into(),
+            };
+            let none = if state == "ended" {
+                Fix::None
+            } else {
+                Fix::LaunchLive
+            };
+            assert_eq!(decide(&plain, now, None).fix, resume, "{state}");
+            assert_eq!(decide(&managed, now, None).fix, none, "{state} managed");
+            assert_eq!(decide(&bound, now, None).fix, none, "{state} bound");
+        }
+        let (plain, now, _) = session("claude-code", "ended", true);
+        let mut managed = plain.clone();
+        managed.managed = true;
+        managed.spec.tty = true;
+        managed.id = "0123456789abcdef0123456789abcdef".into();
+        assert_eq!(
+            decide(&managed, now, None).fix,
+            Fix::Reconnect {
+                command: "agentdocker reconnect 0123456789abcdef0123456789abcdef".into()
+            },
+            "back under its own record through the daemon"
+        );
+        let mut bound = plain.clone();
+        bound.input_binding = Some(binding(&plain));
+        assert_eq!(decide(&bound, now, None).fix, Fix::None);
+        let mut odd = managed.clone();
+        odd.id = "id; rm".into();
+        assert_eq!(decide(&odd, now, None).fix, Fix::None, "never shell syntax");
+        // Live, the same command waits for it to be quit.
+        let (mut waiting, now, _) = session("claude-code", "waits_for_prompt", true);
+        waiting.managed = true;
+        waiting.id = managed.id.clone();
+        let decision = decide(&waiting, now, None);
+        assert_eq!(decision.fix, decide(&managed, now, None).fix);
+        assert_eq!(decision.hint(), "Quit it, then run this in a terminal.");
+        assert!(
+            !decision
+                .guidance("claude-code", &waiting.id)
+                .contains("--claude-channel"),
+            "the daemon's relaunch brings its own MCP entry"
+        );
     }
 
     /// An absent keyed session is not "unreachable" and not "next prompt":
