@@ -166,6 +166,8 @@ impl App {
                 };
                 super::shell::CardDraft {
                     task: Some(task.id.clone()),
+                    // The caller numbers the opening.
+                    generation: 0,
                     title: words.title.clone(),
                     description: words.description.clone(),
                     acceptance: words.acceptance.clone(),
@@ -217,11 +219,12 @@ impl App {
         (change != super::CardChange::default()).then_some(change)
     }
 
-    /// A save of `change` to card `id` went through: what it set becomes
-    /// what the next save compares against.
-    pub(super) fn card_saved(&mut self, id: &TaskId, change: &super::CardChange) {
+    /// A save of `change` to card `id`, sent by editor opening
+    /// `generation`, went through: what it set becomes what that opening's
+    /// next save compares against. A later opening keeps its own baseline.
+    pub(super) fn card_saved(&mut self, id: &TaskId, change: &super::CardChange, generation: u64) {
         let draft = &mut self.shell.card_draft;
-        if draft.task.as_ref() != Some(id) {
+        if draft.task.as_ref() != Some(id) || draft.generation != generation {
             return;
         }
         let base = &mut draft.base;

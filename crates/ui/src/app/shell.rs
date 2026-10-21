@@ -137,6 +137,9 @@ pub(super) struct CardWords {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct CardDraft {
     pub task: Option<agentdocker_core::TaskId>,
+    /// Which opening of the editor this is: a save's reply advances the
+    /// baseline only of the draft that sent it, never of a later opening.
+    pub generation: u64,
     pub base: CardWords,
     pub title: String,
     pub description: String,
@@ -2067,7 +2070,11 @@ impl App {
                     self.card = None;
                 } else {
                     self.card = None;
-                    self.shell.card_draft = self.draft_of(&task);
+                    let generation = self.shell.card_draft.generation + 1;
+                    self.shell.card_draft = super::shell::CardDraft {
+                        generation,
+                        ..self.draft_of(&task)
+                    };
                     self.send(Cmd::TaskDetail(task.clone()));
                     self.task_open = Some(task);
                 }
@@ -2078,6 +2085,7 @@ impl App {
                     assignee: Some(assignee.map(|a| a.to_string()).unwrap_or_default()),
                     ..Default::default()
                 },
+                draft: None,
             }),
             Message::TaskArchive(task) => self.send(Cmd::TaskArchive(task)),
             Message::TasksMore => self.request_more_tasks(),
@@ -2640,6 +2648,7 @@ impl App {
                             priority: Some(priority),
                             ..Default::default()
                         },
+                        draft: None,
                     });
                 }
             }
@@ -2651,6 +2660,7 @@ impl App {
                             size: Some(size.map(|s| s.as_str().to_owned()).unwrap_or_default()),
                             ..Default::default()
                         },
+                        draft: None,
                     });
                 }
             }
@@ -2658,7 +2668,12 @@ impl App {
                 if let Some(task) = self.task_open.clone()
                     && let Some(change) = self.card_change(&task)
                 {
-                    self.send(Cmd::TaskEdit { task, change });
+                    let draft = Some(self.shell.card_draft.generation);
+                    self.send(Cmd::TaskEdit {
+                        task,
+                        change,
+                        draft,
+                    });
                 }
             }
             Message::CardCommentSend => {
@@ -6234,6 +6249,7 @@ mod tests {
         };
         app.shell.card_draft = CardDraft {
             task: Some(id.clone()),
+            generation: 1,
             title: words.title.clone(),
             description: words.description.clone(),
             acceptance: words.acceptance.clone(),
@@ -6265,7 +6281,7 @@ mod tests {
             "nothing the person left alone: {change:?}"
         );
         messages
-            .send(Msg::CardEdited(id.clone(), change, Ok(())))
+            .send(Msg::CardEdited(id.clone(), change, Some(1), Ok(())))
             .unwrap();
         app.drain();
         let _ = app.update(Message::CardField(
@@ -6280,14 +6296,53 @@ mod tests {
             "the first save is not sent again"
         );
         messages
-            .send(Msg::CardEdited(id.clone(), change, Err("refused".into())))
+            .send(Msg::CardEdited(
+                id.clone(),
+                change,
+                Some(1),
+                Err("refused".into()),
+            ))
             .unwrap();
         app.drain();
         let _ = app.update(Message::CardSave);
+        let change = saved(&requests);
         assert_eq!(
-            saved(&requests).acceptance.as_deref(),
+            change.acceptance.as_deref(),
             Some("tests pass"),
             "a save that failed is sent again"
+        );
+
+        // The card is closed and opened again before that save answers:
+        // the reply belongs to the earlier opening and moves nothing of
+        // the new one, so its untouched title is never sent.
+        let reopened = CardWords {
+            title: "Port the parser".into(),
+            ..CardWords::default()
+        };
+        app.shell.card_draft = CardDraft {
+            task: Some(id.clone()),
+            generation: 2,
+            title: reopened.title.clone(),
+            base: reopened,
+            ..CardDraft::default()
+        };
+        let mut retitled = change;
+        retitled.title = Some("Rewrite the parser".into());
+        messages
+            .send(Msg::CardEdited(id.clone(), retitled, Some(1), Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.shell.card_draft.base.title, "Port the parser");
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Description,
+            "newer words".into(),
+        ));
+        let _ = app.update(Message::CardSave);
+        let change = saved(&requests);
+        assert_eq!(change.description.as_deref(), Some("newer words"));
+        assert!(
+            change.title.is_none(),
+            "the later opening's untouched title is not sent"
         );
     }
 

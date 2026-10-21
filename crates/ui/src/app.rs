@@ -185,6 +185,8 @@ enum Cmd {
     TaskEdit {
         task: agentdocker_core::TaskId,
         change: CardChange,
+        /// The editor opening a text save came from; none for a click.
+        draft: Option<u64>,
     },
     TaskArchive(agentdocker_core::TaskId),
     /// The person says something on a card.
@@ -428,7 +430,12 @@ enum Msg {
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
     /// A card edit went through or not, with what it sent.
-    CardEdited(agentdocker_core::TaskId, CardChange, Result<(), String>),
+    CardEdited(
+        agentdocker_core::TaskId,
+        CardChange,
+        Option<u64>,
+        Result<(), String>,
+    ),
     /// One card in full, or why it could not be read.
     TaskDetail(agentdocker_core::TaskId, Result<Box<CardDetail>, String>),
     Workspace(String, Result<Box<Workspace>, String>),
@@ -1413,9 +1420,11 @@ impl App {
                     }
                     Err(error) => self.say(error),
                 },
-                Msg::CardEdited(task, change, result) => match result {
+                Msg::CardEdited(task, change, draft, result) => match result {
                     Ok(()) => {
-                        self.card_saved(&task, &change);
+                        if let Some(draft) = draft {
+                            self.card_saved(&task, &change, draft);
+                        }
                         self.request_tasks();
                         if let Some(open) = self.task_open.clone() {
                             self.send(Cmd::TaskDetail(open));
@@ -3511,7 +3520,11 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::TaskChanged(result))
         }
-        Cmd::TaskEdit { task, change } => {
+        Cmd::TaskEdit {
+            task,
+            change,
+            draft,
+        } => {
             let sent = change.clone();
             let result = match client.call(&Request::TaskUpdate {
                 agent: agentdocker_core::HUMAN.into(),
@@ -3536,7 +3549,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
-            Some(Msg::CardEdited(task, sent, result))
+            Some(Msg::CardEdited(task, sent, draft, result))
         }
         Cmd::TaskArchive(task) => {
             let result = match client.call(&Request::TaskArchive {
