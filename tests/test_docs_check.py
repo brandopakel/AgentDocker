@@ -29,7 +29,9 @@ class Specifics(unittest.TestCase):
         self.assertEqual(kinds("See #7 and #123456."), ["a pull request or issue number"] * 2)
         self.assertEqual(kinds("Use #000000 for black and #11223344 for translucent colour."), [])
         self.assertEqual(kinds("The colour is fixed, see #123456 and #12345."),
-                         ["a pull request or issue number"])
+                         ["a pull request or issue number"] * 2)
+        self.assertEqual(kinds("The background scan was fixed in #403."), ["a pull request or issue number"])
+        self.assertEqual(kinds("Use #000000 for black; the fix is in #123456."), ["a pull request or issue number"])
         self.assertEqual(set(kinds(r"An escaped \` is printed, then 21 October 2026, then another \`.")), {"a date"})
         self.assertEqual(kinds("Source `10b57894` passed."), ["a commit"])
         self.assertEqual(kinds("See /actions/runs/39558567833 for the log."), ["a CI run"])

@@ -63,8 +63,23 @@ SPECIFICS = (
     ("a home directory", re.compile(rf"(?:/Users/|/home/|\b[A-Za-z]:\\{{1,2}}Users\\{{1,2}})(?!{PLACEHOLDER_USER}|[<$%])[\w.-]+")),
     ("a real agent's name", re.compile(r"\b(?:claude-code|codex|opencode)-\d{3,}\b")),
 )
-# A line about colour reads `#000000` as one, not as an issue.
-COLOUR_CONTEXT = re.compile(r"\b(?:colou?rs?|rgba?|hex|css|fill|stroke|background|foreground)\b", re.IGNORECASE)
+# `#000000` is a colour when a colour word stands within four words of
+# it and the word before it does not point at a reference (`see #123456`).
+COLOUR_WORDS = re.compile(
+    r"(?:colou?rs?|rgba?|hex|css|fill|stroke|background|foreground|black|white|gr[ae]y|red|green|blue|"
+    r"yellow|orange|purple|transparent|translucent|opaque|tint|shade)", re.IGNORECASE)
+REFERENCE_CUES = {"see", "in", "fixed", "merged", "closes", "closed", "resolves", "resolved", "via", "by", "from",
+                  "pr", "issue", "pull", "request", "landed"}
+
+
+def is_colour(line, start, end):
+    if not re.fullmatch(r"#(?:\d{3}|\d{4}|\d{6}|\d{8})", line[start:end]):
+        return False
+    before = re.findall(r"[A-Za-z]+", line[:start])[-4:]
+    after = re.findall(r"[A-Za-z]+", line[end:])[:4]
+    if before and before[-1].lower() in REFERENCE_CUES:
+        return False
+    return any(COLOUR_WORDS.fullmatch(word) for word in before + after)
 
 
 def markdown_files():
@@ -197,13 +212,12 @@ def text_lines(data):
 def specifics(line, denied=()):
     """(what, text) for every specific in one line of a document."""
     code = code_spans(line)
-    colours = COLOUR_CONTEXT.search(line)
 
     def counts(what, m):
         if what == "a date":
             return not any(start < m.start() < end for start, end in code)
-        if what == "a pull request or issue number" and colours:
-            return not re.fullmatch(r"#(?:\d{3}|\d{4}|\d{6}|\d{8})", m.group(0))
+        if what == "a pull request or issue number":
+            return not is_colour(line, m.start(), m.end())
         return True
 
     found = [(what, m.group(0)) for what, pattern in SPECIFICS for m in pattern.finditer(line) if counts(what, m)]
