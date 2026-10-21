@@ -1,14 +1,20 @@
-//! The remote connector: how an agent that works inside a browser — the
-//! Claude side panel, the ChatGPT extension — reaches the agents on this
-//! machine. Those sessions run on the vendor's side and speak to tools
-//! only over public HTTPS with OAuth, so this is a separate, opt-in
-//! process: it binds loopback, a tunnel gives it a public name, and it
-//! serves the vendors an MCP endpoint whose tools are the messaging ones.
-//! One connector serves every project the daemon knows: each consent
-//! chooses the project its browser-agent identity joins. The daemon
-//! itself never listens on the network.
+//! The remote connector: how a client of the person's Claude or ChatGPT
+//! account — the browser side panel, the web and desktop apps, a terminal
+//! reaching the account's connectors — reaches the agents on this machine.
+//! Those surfaces speak to a hosted connector only over public HTTPS with
+//! OAuth, from the vendor's side, so this is a separate, opt-in process: it
+//! binds loopback, a tunnel gives it a public name, and it serves the
+//! vendors an MCP endpoint whose tools are the messaging ones. Every client
+//! of the account presents the same grant from the same vendor addresses,
+//! so nothing here says which one is calling: the agent a consent makes is
+//! named for the connector, labelled `surface=unverified`, and what its
+//! clients say about their software is kept beside its grant. One
+//! connector serves every project the daemon knows: each consent chooses
+//! the project its agent joins. The daemon itself never listens on the
+//! network.
 
 pub mod cimd;
+pub mod clients;
 pub mod http;
 pub mod net;
 pub mod oauth;
@@ -19,7 +25,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use agentdocker_core::agent::{CONNECTOR_LABEL, GENERATED_NAME, NAME_LABEL};
+use agentdocker_core::agent::{
+    CONNECTOR_LABEL, GENERATED_NAME, NAME_LABEL, SURFACE_LABEL, UNVERIFIED_SURFACE,
+};
 use agentdocker_core::{AgentSpec, ErrorCode, Request, Response};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -29,6 +37,7 @@ use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
 use crate::client::{Backend, Client};
+use crate::mcp::native_identity::names_codex_conversation;
 use crate::mcp::{Identity, McpServer};
 use http::{Request as HttpRequest, Response as HttpResponse, escape_html, field};
 use oauth::{AgentIdentity, AuthorizeRefusal, OAuthError, Store, Vendor};
@@ -82,9 +91,9 @@ pub enum ConnectorCommand {
         #[arg(long)]
         dry_run: bool,
     },
-    /// The browser agents that have connected, and whether they still can.
+    /// The agents that have connected through this connector, what their clients said they were, and whether they still can.
     Grants,
-    /// End a browser agent's access: its tokens stop working and the agent is marked finished.
+    /// End a connector agent's access: its tokens stop working and the agent is marked finished.
     Revoke {
         /// The agent's name or id, or the grant id from `grants`.
         agent: String,
@@ -747,7 +756,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 &format!(
                     "<p>This is an AgentDocker connector. It lets a chat in your Claude or ChatGPT account join the messaging and board of one project on this machine. A connector belongs to the whole account, so every surface of it offers the connector, Claude Code sessions about other work included; it acts only in the project chosen at consent.</p>\
                      <p>Add <code>{}</code> as a custom connector: in Claude under <i>Settings › Connectors › Add custom connector</i>, in ChatGPT under <i>Settings › Connectors › Advanced › Developer mode</i>. Consent asks for the pairing code shown by <code>agentdocker connector status</code> or the desktop's Tools screen, and which project the agent joins.</p>\
-                     <p>A browser agent has no checkout here: it can find agents, message them, read its inbox and the journal, and nothing else.</p>",
+                     <p>An agent connected this way has no checkout here: it can find agents, message them, read its inbox and the journal, and nothing else.</p>",
                     escape_html(&self.mcp_url())
                 ),
             ),
@@ -842,7 +851,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             .map(|p| format!("<p class=\"problem\">{}</p>", escape_html(p)))
             .unwrap_or_default();
         page(
-            "Connect a browser agent",
+            "Connect an agent",
             &format!(
                 "<p><b>{who}</b> asks to join a project on this machine.</p>\
                  {problem}\
@@ -892,7 +901,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             )
         };
         page(
-            "Connect a browser agent",
+            "Connect an agent",
             &format!(
                 "<p><b>{who}</b> asks to join a project on this machine. It will be able to find that project's agents, message them, read its own inbox, the journal and the board. It gets no files, leases or worktrees, and nothing of any other project. Your whole account will offer it, Claude Code sessions about other work too, so choose the project you'd want any of them to reach.</p>\
                  {problem}\
@@ -971,7 +980,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
     }
 
     /// The project and the name, under a ticket that holds: the daemon gets
-    /// one new browser-agent identity and the client gets its code.
+    /// one new agent identity and the client gets its code.
     async fn choose(
         &self,
         form: &[(String, String)],
@@ -1072,7 +1081,10 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
 
     /// One external, pidless agent per redeemed consent, in the project
     /// the consent chose. It stays registered until revoked, and counts as
-    /// connected while it is heard from (`AgentRecord::is_present`).
+    /// connected while it is heard from (`AgentRecord::is_present`). The
+    /// callback says whose account the client is, never which of the
+    /// account's surfaces will use it, so the record says the surface is
+    /// unverified.
     async fn register_agent(&self, consent: &oauth::Consent) -> Result<AgentIdentity> {
         let vendor = consent.vendor;
         let generated = consent.generated;
@@ -1081,6 +1093,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             let mut labels = std::collections::BTreeMap::from([
                 (CONNECTOR_LABEL.to_owned(), "true".to_owned()),
                 ("vendor".to_owned(), vendor.label().to_owned()),
+                (SURFACE_LABEL.to_owned(), UNVERIFIED_SURFACE.to_owned()),
             ]);
             if generated {
                 labels.insert(NAME_LABEL.to_owned(), GENERATED_NAME.to_owned());
@@ -1121,10 +1134,10 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 other => bail!("unexpected reply to register: {other:?}"),
             }
         }
-        bail!("could not find a free name for the browser agent")
+        bail!("could not find a free name for the connector agent")
     }
 
-    /// The token endpoint. Redeeming a code is where the browser agent
+    /// The token endpoint. Redeeming a code is where the connector agent
     /// comes into being: the daemon registers it, then the grant and its
     /// first tokens exist. A refresh only rotates.
     async fn token(&self, request: &HttpRequest) -> HttpResponse {
@@ -1156,7 +1169,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                         }
                         Err(error) => {
                             eprintln!(
-                                "agentdocker connector: the daemon refused the browser agent: {error:#}"
+                                "agentdocker connector: the daemon refused the connector agent: {error:#}"
                             );
                             Err(OAuthError {
                                 code: "invalid_grant",
@@ -1243,7 +1256,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&grant.agent_id);
-                return self.unauthorized("this browser agent was ended; connect again");
+                return self.unauthorized("this connector agent was ended; connect again");
             }
             Ok(other) => {
                 eprintln!("agentdocker connector: unexpected reply to inspect: {other:?}");
@@ -1277,11 +1290,38 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 );
             }
         };
+        // What the client says about its software is kept beside the
+        // grant, bounded and without any value a person could be known by:
+        // the grant cannot tell its clients apart any other way.
+        let user_agent = request.header("user-agent");
+        let protocol = request.header("mcp-protocol-version");
+        let mut new_client = false;
+        {
+            let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            for message in messages(&incoming) {
+                if let Some(fingerprint) = clients::Fingerprint::of(user_agent, protocol, message) {
+                    new_client |= store.observe_client(&grant_id, fingerprint, Utc::now());
+                }
+            }
+        }
+        if new_client {
+            self.persist();
+        }
+        if messages(&incoming).any(|message| {
+            message["method"] == "tools/call"
+                && names_codex_conversation(&message["params"]["_meta"])
+        }) {
+            eprintln!(
+                "agentdocker connector: refused a tool call naming a Codex conversation, sent as {}; Codex uses AgentDocker's local MCP server",
+                grant.agent_name
+            );
+        }
         // Only a tool call is somebody using the agent. A vendor's client
         // initializes and lists tools whenever a conversation or session
         // loads the connector — Claude Code loads the claude.ai connectors
-        // at every start — and counting those kept a browser agent
-        // connected an hour after each, with nobody on the other side.
+        // at every start — and counting those kept a connector agent
+        // connected an hour after each, with nobody on the other side. A
+        // call from a Codex conversation is refused, and is nobody using it.
         if calls_a_tool(&incoming) {
             let _ = tokio::time::timeout(
                 std::time::Duration::from_millis(250),
@@ -1340,16 +1380,26 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
     }
 }
 
-/// Whether a JSON-RPC body, one message or a batch, calls a tool.
-fn calls_a_tool(incoming: &Value) -> bool {
-    let calls = |message: &Value| message["method"] == "tools/call";
+/// The messages of a JSON-RPC body, one or a batch.
+fn messages(incoming: &Value) -> std::slice::Iter<'_, Value> {
     match incoming {
-        Value::Array(batch) => batch.iter().any(calls),
-        message => calls(message),
+        Value::Array(batch) => batch.iter(),
+        message => std::slice::from_ref(message).iter(),
     }
 }
 
-/// `claude-browser-k3f9`: the runtime and four random characters.
+/// Whether a JSON-RPC body, one message or a batch, calls a tool as the
+/// connector's agent: a tool call that names a Codex conversation is
+/// refused, and does not count.
+fn calls_a_tool(incoming: &Value) -> bool {
+    messages(incoming).any(|message| {
+        message["method"] == "tools/call" && !names_codex_conversation(&message["params"]["_meta"])
+    })
+}
+
+/// `claude-connector-k3f9`: the vendor, `connector`, and four random
+/// characters. Nothing at consent says which surface of the account will
+/// call, so the name says only how it came in.
 fn generated_name(vendor: Vendor) -> String {
     let suffix: String = oauth::random_token()
         .chars()
@@ -1357,7 +1407,7 @@ fn generated_name(vendor: Vendor) -> String {
         .take(4)
         .collect::<String>()
         .to_ascii_lowercase();
-    format!("{}-{suffix}", vendor.runtime())
+    format!("{}-{suffix}", vendor.name_prefix())
 }
 
 /// A page with no assets to fetch and nothing to run.
@@ -1768,7 +1818,7 @@ async fn status(client: &Client) -> Result<()> {
         }
     }
     println!(
-        "  browser agents: {active} live of {} consents (`connector grants`)",
+        "  connector agents: {active} live of {} consents (`connector grants`)",
         store.grants.len()
     );
     Ok(())
@@ -1777,7 +1827,7 @@ async fn status(client: &Client) -> Result<()> {
 async fn grants(client: &Client) -> Result<()> {
     let store = load_store(&state_path())?;
     if store.grants.is_empty() {
-        eprintln!("no browser agent has connected through this connector");
+        eprintln!("no agent has connected through this connector");
         return Ok(());
     }
     let mut rows = Vec::new();
@@ -1807,6 +1857,7 @@ async fn grants(client: &Client) -> Result<()> {
                 .map(crate::format::ago)
                 .unwrap_or_else(|| "never".to_owned()),
             status,
+            grant.clients_seen.len().to_string(),
             id[..8].to_owned(),
         ]);
     }
@@ -1819,20 +1870,59 @@ async fn grants(client: &Client) -> Result<()> {
             "CONNECTED",
             "LAST USED",
             "STATUS",
+            "CLIENTS",
             "GRANT",
         ],
         &rows,
     );
+    let seen = clients_seen_lines(&store, Utc::now());
+    if !seen.is_empty() {
+        println!();
+        for line in seen {
+            println!("{line}");
+        }
+    }
     Ok(())
 }
 
-/// End a browser agent: tokens first, then the daemon's record. A serving
-/// connector notices on that agent's next request.
+/// What each grant's clients said about their software, most recent
+/// first, for `connector grants`. Every client of an account presents the
+/// same grant, so these are the only sign of which one called, and each
+/// is the client's own word.
+fn clients_seen_lines(store: &Store, now: chrono::DateTime<Utc>) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (id, grant) in &store.grants {
+        if grant.clients_seen.is_empty() {
+            continue;
+        }
+        if lines.is_empty() {
+            lines.push(
+                "Clients seen, as each described its own software (one grant serves every client of the account; none is verified):"
+                    .to_owned(),
+            );
+        }
+        lines.push(format!("  {} (grant {})", grant.agent_name, &id[..8]));
+        let mut seen: Vec<&clients::Seen> = grant.clients_seen.iter().collect();
+        seen.sort_by_key(|s| std::cmp::Reverse(s.last_seen));
+        for client in seen {
+            let secs = (now - client.last_seen).num_seconds().max(0);
+            lines.push(format!(
+                "    {} ago  {}",
+                crate::format::span_secs(secs.unsigned_abs()),
+                client.fingerprint.describe()
+            ));
+        }
+    }
+    lines
+}
+
+/// End a connector agent: tokens first, then the daemon's record. A
+/// serving connector notices on that agent's next request.
 async fn revoke(client: &Client, reference: &str) -> Result<()> {
     let path = state_path();
     let mut store = load_store(&path)?;
     let Some((grant_id, grant)) = store.grant_for_agent(reference) else {
-        bail!("no active browser agent named `{reference}`; see `agentdocker connector grants`");
+        bail!("no active connector agent named `{reference}`; see `agentdocker connector grants`");
     };
     let agent_id = grant.agent_id.clone();
     let name = grant.agent_name.clone();
@@ -1863,7 +1953,7 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     /// The mock behind an `Arc`, so the connector can clone its backend
-    /// for each browser agent's MCP server; `down` makes every call fail
+    /// for each connector agent's MCP server; `down` makes every call fail
     /// the way a stopped daemon's socket does.
     #[derive(Clone)]
     struct Shared(Arc<Mock>, Arc<std::sync::atomic::AtomicBool>);
@@ -2653,25 +2743,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_vendor_connects_a_browser_agent_end_to_end() {
+    async fn a_vendor_connects_an_agent_end_to_end() {
         let (connector, mock) = connector(vec![
             Response::Agents {
                 agents: vec![],
                 aliases: Default::default(),
             }, // List, for the consent page's project chooser
             Response::error(ErrorCode::NotFound, "no such agent"), // Inspect: the typed name is free
-            live_agent("claude-browser-test"), // Register, at the token exchange
-            live_agent("claude-browser-test"), // Inspect before initialize
-            live_agent("claude-browser-test"), // Inspect before tools/list
-            live_agent("claude-browser-test"), // Inspect before send_message
-            Response::Ok,                      // Heartbeat
-            Response::Ok,                      // Send
-            live_agent("claude-browser-test"), // Inspect before the broadcast
-            Response::Ok,                      // Heartbeat
-            Response::Ok,                      // Send to the project
-            live_agent("claude-browser-test"), // Inspect before the notification
-            live_agent("claude-browser-test"), // Inspect before the refused claim
-            Response::Ok,                      // Heartbeat
+            live_agent("claude-connector-test"), // Register, at the token exchange
+            live_agent("claude-connector-test"), // Inspect before initialize
+            live_agent("claude-connector-test"), // Inspect before tools/list
+            live_agent("claude-connector-test"), // Inspect before send_message
+            Response::Ok,                        // Heartbeat
+            Response::Ok,                        // Send
+            live_agent("claude-connector-test"), // Inspect before the broadcast
+            Response::Ok,                        // Heartbeat
+            Response::Ok,                        // Send to the project
+            live_agent("claude-connector-test"), // Inspect before the notification
+            live_agent("claude-connector-test"), // Inspect before the refused claim
+            Response::Ok,                        // Heartbeat
         ]);
         let registered = connector
             .handle(post(
@@ -2761,18 +2851,18 @@ mod tests {
         let ticket = ticket_in(&chooser);
         let forged = connector
             .handle(posted(
-                "consent_ticket=forged&agent_name=claude-browser-test",
+                "consent_ticket=forged&agent_name=claude-connector-test",
             ))
             .await;
         assert_eq!(forged.status, 403, "no ticket, no choice");
         assert!(mock.requests().is_empty());
         let right = connector
             .handle(posted(&format!(
-                "consent_ticket={ticket}&agent_name=claude-browser-test"
+                "consent_ticket={ticket}&agent_name=claude-connector-test"
             )))
             .await;
         assert!(
-            matches!(&mock.requests()[..], [Request::Inspect { agent }] if agent == "claude-browser-test"),
+            matches!(&mock.requests()[..], [Request::Inspect { agent }] if agent == "claude-connector-test"),
             "consent checks the name and registers nothing yet"
         );
         assert_eq!(
@@ -2784,7 +2874,7 @@ mod tests {
         assert_eq!(
             connector
                 .handle(posted(&format!(
-                    "consent_ticket={ticket}&agent_name=claude-browser-again"
+                    "consent_ticket={ticket}&agent_name=claude-connector-again"
                 )))
                 .await
                 .status,
@@ -2834,12 +2924,13 @@ mod tests {
             matches!(
                 &mock.requests()[1],
                 Request::Register { spec, pid: None, .. }
-                    if spec.name == "claude-browser-test"
+                    if spec.name == "claude-connector-test"
                         && spec.runtime == "claude-browser"
                         && spec.workdir.as_deref() == Some(Path::new("/p/orchard"))
                         && spec.labels.get("connector").map(String::as_str) == Some("true")
+                        && spec.labels.get("surface").map(String::as_str) == Some("unverified")
             ),
-            "the agent is registered when the code is redeemed"
+            "the agent is registered when the code is redeemed, its surface unverified"
         );
 
         let init = connector
@@ -3093,7 +3184,7 @@ mod tests {
         });
         let (connector, mock) = connector(vec![
             Response::error(ErrorCode::NotFound, "no such agent"), // Inspect: the typed name is free
-            live_agent("chatgpt-browser-test"), // Register, at the token exchange
+            live_agent("chatgpt-connector-test"), // Register, at the token exchange
         ]);
         let connector = connector.with_fetcher(fetcher);
         let server = json_body(
@@ -3154,7 +3245,7 @@ mod tests {
         let consent = consented(
             &connector,
             &query,
-            "agent_name=chatgpt-browser-test&project=%2Fp%2Forchard",
+            "agent_name=chatgpt-connector-test&project=%2Fp%2Forchard",
         )
         .await;
         assert_eq!(
@@ -3218,17 +3309,17 @@ mod tests {
 
     /// One connector, every project: the consent page proposes the
     /// default and takes any folder on this machine, refuses one that is
-    /// not here, and the browser agent is registered where the person
+    /// not here, and the connector agent is registered where the person
     /// said, with `project` broadcasts going there.
     #[tokio::test]
-    async fn consent_chooses_the_project_the_browser_agent_joins() {
+    async fn consent_chooses_the_project_the_connector_agent_joins() {
         let here = tempfile::tempdir().unwrap();
         let root = here.path().canonicalize().unwrap();
         let (connector, mock) = connector(vec![
-            live_agent("claude-browser-here"), // Register
-            live_agent("claude-browser-here"), // Inspect before send_message
-            Response::Ok,                      // Heartbeat
-            Response::Ok,                      // Send
+            live_agent("claude-connector-here"), // Register
+            live_agent("claude-connector-here"), // Inspect before send_message
+            Response::Ok,                        // Heartbeat
+            Response::Ok,                        // Send
         ]);
         let registered = json_body(
             &connector
@@ -3372,5 +3463,194 @@ mod tests {
         assert_eq!(load_store(&path).unwrap().clients, store.clients);
         std::fs::write(&path, "{broken").unwrap();
         assert!(load_store(&path).is_err());
+    }
+
+    /// A request as a vendor's client makes it, with its own headers.
+    fn with_headers(mut request: HttpRequest, headers: &[(&str, &str)]) -> HttpRequest {
+        request.headers.extend(
+            headers
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+        );
+        request
+    }
+
+    /// A name the connector makes up says how the agent came in — the
+    /// vendor's account and `connector` — never that it is a browser, and
+    /// the record says its surface is unverified; the runtime stays the
+    /// one existing records, logos and the inventory know.
+    #[tokio::test]
+    async fn a_made_up_name_says_connector_and_the_surface_is_unverified() {
+        let (connector, mock) = connector(vec![live_agent("made-up")]);
+        connected(&connector, "https://claude.ai/api/mcp/auth_callback").await;
+        let requests = mock.requests();
+        let Some(Request::Register { spec, .. }) = requests.first() else {
+            panic!("{requests:?}");
+        };
+        let suffix = spec
+            .name
+            .strip_prefix("claude-connector-")
+            .unwrap_or_else(|| panic!("{}", spec.name));
+        assert_eq!(suffix.len(), 4);
+        assert_eq!(spec.runtime, "claude-browser");
+        assert_eq!(spec.labels["surface"], "unverified");
+        assert_eq!(spec.labels["connector"], "true");
+        assert_eq!(spec.labels["vendor"], "Claude");
+        assert_eq!(spec.labels[NAME_LABEL], GENERATED_NAME);
+        assert!(generated_name(Vendor::ChatGpt).starts_with("chatgpt-connector-"));
+        assert!(generated_name(Vendor::Other).starts_with("connector-"));
+        assert_eq!(Vendor::Other.label(), "another client");
+    }
+
+    /// Each client's description of its software is kept on the grant —
+    /// `User-Agent`, `clientInfo`, protocol version and the names of its
+    /// `_meta` keys, never their values — and a tool call that names a
+    /// Codex conversation is refused, with the way to the local server,
+    /// and is no heartbeat.
+    #[tokio::test]
+    async fn clients_are_fingerprinted_and_a_codex_call_is_refused_without_a_heartbeat() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("connector/state.json");
+        let mock = Arc::new(Mock::with(vec![
+            live_agent("chatgpt-connector-fixture"), // Register
+            live_agent("chatgpt-connector-fixture"), // Inspect before initialize
+            live_agent("chatgpt-connector-fixture"), // Inspect before send_message
+            Response::Ok,                            // Heartbeat
+            Response::Ok,                            // Send
+            live_agent("chatgpt-connector-fixture"), // Inspect before the Codex call
+            live_agent("chatgpt-connector-fixture"), // Inspect before the second initialize
+        ]));
+        let connector = Connector::new(
+            Shared(
+                mock.clone(),
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            ),
+            "https://x.trycloudflare.com".into(),
+            Some(agentdocker_core::ProjectRef {
+                root: "/p/orchard".into(),
+                worktree: None,
+                fingerprint: None,
+                source: agentdocker_core::ProjectSource::Directory,
+            }),
+            vec![],
+            "ABCD-EFGH".into(),
+            Store::default(),
+            Some(path.clone()),
+        );
+        let access = connected(
+            &connector,
+            "https://chatgpt.com/connector_platform_oauth_redirect",
+        )
+        .await;
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"openai-mcp","version":"1.0.0"}}}"#;
+        let initialized = connector
+            .handle(with_headers(
+                post("/mcp", "application/json", init, Some(&access)),
+                &[("user-agent", "openai-mcp/1.0.0")],
+            ))
+            .await;
+        assert_eq!(initialized.status, 200);
+        let sent = connector
+            .handle(with_headers(
+                post(
+                    "/mcp",
+                    "application/json",
+                    r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"project","text":"hello"},"_meta":{"openai/locale":"fr-FR","openai/userLocation":{"city":"Lyon"}}}}"#,
+                    Some(&access),
+                ),
+                &[
+                    ("user-agent", "openai-mcp/1.0.0"),
+                    ("mcp-protocol-version", "2025-06-18"),
+                ],
+            ))
+            .await;
+        assert_eq!(sent.status, 200);
+        assert!(json_body(&sent)["error"].is_null(), "{}", json_body(&sent));
+        let before = mock.requests().len();
+        let codex = connector
+            .handle(with_headers(
+                post(
+                    "/mcp",
+                    "application/json",
+                    r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"project","text":"from a terminal"},"_meta":{"threadId":"019a-root-thread","sessionId":"019a-root-thread","x-codex-turn-metadata":{"thread_id":"019a-root-thread","session_id":"019a-root-thread"}}}}"#,
+                    Some(&access),
+                ),
+                &[("user-agent", "codex_cli_rs/0.162.0")],
+            ))
+            .await;
+        assert_eq!(codex.status, 200);
+        let refusal = json_body(&codex);
+        let message = refusal["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("Codex conversation") && message.contains("local MCP server"),
+            "{message}"
+        );
+        assert!(
+            matches!(&mock.requests()[before..], [Request::Inspect { .. }]),
+            "a refused Codex call is no heartbeat and reaches nothing: {:?}",
+            &mock.requests()[before..]
+        );
+        assert_eq!(
+            mock.requests()
+                .iter()
+                .filter(|r| matches!(r, Request::Heartbeat { .. }))
+                .count(),
+            1,
+            "only the vendor client's tool call was somebody using the agent"
+        );
+        // Seen again: nothing new to keep.
+        connector
+            .handle(with_headers(
+                post("/mcp", "application/json", init, Some(&access)),
+                &[("user-agent", "openai-mcp/1.0.0")],
+            ))
+            .await;
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        for value in ["fr-FR", "Lyon", "019a-root-thread", "from a terminal"] {
+            assert!(!saved.contains(value), "{value} is not kept: {saved}");
+        }
+        let store = load_store(&path).unwrap();
+        let grant = store.grants.values().next().unwrap();
+        let seen: Vec<&clients::Fingerprint> =
+            grant.clients_seen.iter().map(|s| &s.fingerprint).collect();
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert_eq!(
+            seen[0],
+            &clients::Fingerprint {
+                user_agent: Some("openai-mcp/1.0.0".into()),
+                client_name: Some("openai-mcp".into()),
+                client_version: Some("1.0.0".into()),
+                protocol_version: Some("2025-06-18".into()),
+                meta_keys: vec![],
+            }
+        );
+        assert_eq!(seen[1].meta_keys, ["openai/locale", "openai/userLocation"]);
+        assert_eq!(seen[1].protocol_version.as_deref(), Some("2025-06-18"));
+        assert_eq!(seen[2].user_agent.as_deref(), Some("codex_cli_rs/0.162.0"));
+        assert_eq!(
+            seen[2].meta_keys,
+            ["sessionId", "threadId", "x-codex-turn-metadata"]
+        );
+
+        let mut listed = Store::default();
+        let mut shown = grant.clone();
+        let now = Utc::now();
+        for (seen, minutes) in shown.clients_seen.iter_mut().zip([3, 2, 0]) {
+            seen.last_seen = now - chrono::Duration::minutes(minutes);
+        }
+        listed.grants.insert("0123456789abcdef".into(), shown);
+        assert_eq!(
+            clients_seen_lines(&listed, now),
+            [
+                "Clients seen, as each described its own software (one grant serves every client of the account; none is verified):",
+                "  chatgpt-connector-fixture (grant 01234567)",
+                "    0s ago  user-agent \"codex_cli_rs/0.162.0\" · _meta keys sessionId, threadId, x-codex-turn-metadata",
+                "    2m ago  user-agent \"openai-mcp/1.0.0\" · protocol 2025-06-18 · _meta keys openai/locale, openai/userLocation",
+                "    3m ago  user-agent \"openai-mcp/1.0.0\" · client openai-mcp 1.0.0 · protocol 2025-06-18",
+            ],
+            "most recent first"
+        );
+        assert!(clients_seen_lines(&Store::default(), now).is_empty());
     }
 }

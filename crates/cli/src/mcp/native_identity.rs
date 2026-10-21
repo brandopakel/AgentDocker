@@ -106,6 +106,19 @@ fn root_thread(meta: &Value) -> Result<&str> {
     Ok(thread)
 }
 
+/// Whether a tool call's `_meta` names a Codex conversation: a `threadId`,
+/// or `x-codex-turn-metadata` naming a thread or session — the shapes
+/// [`root_thread`] reads, which every Codex that sends a session sends.
+/// Positive evidence only: a bare `sessionId`, a name other clients may
+/// use too, is not taken for Codex on its own.
+pub(crate) fn names_codex_conversation(meta: &Value) -> bool {
+    let named = |value: &Value| value.as_str().is_some_and(|v| !v.trim().is_empty());
+    named(&meta["threadId"])
+        || meta
+            .get("x-codex-turn-metadata")
+            .is_some_and(|turn| named(&turn["thread_id"]) || named(&turn["session_id"]))
+}
+
 /// Preserve the established transport diagnostic without mislabelling bindings.
 pub(super) fn mcp_error(error: anyhow::Error) -> (i64, String) {
     match error.downcast::<TransportError>() {
@@ -1029,6 +1042,33 @@ mod tests {
                 .select(vec![agent.clone(), agent], &meta, |_| true, |_| Ok(()))
                 .is_err()
         );
+    }
+
+    /// What the remote connector takes for a Codex conversation: the
+    /// shapes the native path reads, current and legacy, and nothing that
+    /// another client might also send.
+    #[test]
+    fn a_codex_conversation_is_named_by_its_thread_or_turn_metadata() {
+        for codex in [
+            json!({"threadId":"root-thread","sessionId":"root-thread"}),
+            json!({"threadId":"child-thread"}),
+            json!({"x-codex-turn-metadata":{"thread_id":"root-thread","session_id":"root-thread"}}),
+            json!({"x-codex-turn-metadata":{"session_id":"root-thread"}}),
+        ] {
+            assert!(names_codex_conversation(&codex), "{codex}");
+        }
+        for other in [
+            Value::Null,
+            json!({}),
+            json!({"sessionId":"a-session"}),
+            json!({"threadId":""}),
+            json!({"threadId":7}),
+            json!({"x-codex-turn-metadata":{}}),
+            json!({"openai/locale":"fr-FR","openai/subject":"s"}),
+            json!({"claudecode/toolUseId":"toolu_1"}),
+        ] {
+            assert!(!names_codex_conversation(&other), "{other}");
+        }
     }
 
     #[test]

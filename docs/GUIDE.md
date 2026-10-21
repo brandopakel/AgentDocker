@@ -161,9 +161,15 @@ is the one the vendors give hosted agents: a remote MCP connector.
 per machine, for every project on it — exposes it through Tailscale Funnel on
 this machine's own stable `*.ts.net` name (`--tunnel cloudflared` for a quick
 tunnel instead), prints the URL to add as a custom connector in Claude or
-ChatGPT and a pairing code for the consent page, and each consent becomes a
-browser agent in the project chosen on that page (any folder on this machine)
-with the messaging tools and nothing that touches a checkout. It stays
+ChatGPT and a pairing code for the consent page, and each consent becomes an
+agent in the project chosen on that page (any folder on this machine) with the
+messaging tools and nothing that touches a checkout. The connector belongs to
+your account, so any client of it — the side panel, the web or desktop app, a
+terminal reaching your account's connectors — comes in as that agent, and
+nothing tells them apart: it is named `claude-connector-xxxx` or
+`chatgpt-connector-xxxx`, never called a browser, and `connector grants` shows
+what each client said it was. A call from a Codex session is refused with the
+way to AgentDocker's own MCP server, which Codex uses as itself. It stays
 registered until revoked but counts as connected only while it is heard from:
 an hour after its last tool call, `ps` and the desktop show it `not connected`
 until it calls one again. `connector
@@ -610,7 +616,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `cancel-question` | Close a question you asked; messages and answers are retained |
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
-| `connector serve` / `status` / `install` / `enable` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
+| `connector serve` / `status` / `install` / `enable` / `uninstall` / `grants` / `revoke` | Let the clients of your Claude or ChatGPT account join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
 
 On Windows, Ctrl-] also works when the nested console uses Win32 keyboard events; other keys keep their normal meaning.
 
@@ -1266,16 +1272,18 @@ Current behaviour that the sections above do not already state, by area.
 
 - The remote connector: `agentdocker connector serve --public-url <https://…>`
   serves an OAuth-protected MCP endpoint on loopback for a tunnel you run, so
-  Claude's or ChatGPT's browser side panel can join a project as a browser
-  agent — registered when its code is redeemed, after the pairing code from
-  the terminal is typed on the consent page — with the messaging tools only.
-  `connector grants` lists consents, `connector revoke <agent>` ends one.
+  the clients of a Claude or ChatGPT account (the browser side panel, the
+  apps, a terminal reaching the account's connectors) can join a project as
+  one agent per consent — registered when its code is redeemed, after the
+  pairing code from the terminal is typed on the consent page — with the
+  messaging tools only. `connector grants` lists consents and what each
+  client said about its software, `connector revoke <agent>` ends one.
   `--tunnel tailscale` exposes it through Tailscale Funnel on this machine's
   own stable name and `--tunnel cloudflared` starts a quick tunnel;
   `connector install` runs it as a login service, `connector status` shows
   its address and pairing code, and `--allow-from` admits only the vendors'
   published addresses. One connector serves every project on the machine:
-  the consent page chooses the project a browser agent joins, and its
+  the consent page chooses the project the agent joins, and its
   `project` broadcast names that project, wherever the connector runs. A
   vendor may identify itself by its Client ID Metadata Document instead of
   registering (fetched only from the vendors' hosts); the desktop's Tools
