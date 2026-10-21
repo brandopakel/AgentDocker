@@ -842,6 +842,10 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **Choose the model and effort.** Launching Claude or Codex from the app
+  offers **Model** and **Effort**, starting at the provider's own defaults,
+  and a session's panel says which it runs (`gpt-6-astra · xhigh`).
+
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   used to be unbound: its AgentDocker tools refused, so its model could reach
   for other tools (a ChatGPT connector) and become a second agent. Its

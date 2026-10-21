@@ -228,6 +228,15 @@ pub(super) struct State {
     pub launch_more: bool,
     pub launch_name: String,
     pub launch_arguments: String,
+    /// The model and effort chosen for the new session; `None` leaves it
+    /// to the provider's own default.
+    pub launch_model: Option<String>,
+    pub launch_effort: Option<String>,
+    /// What the chosen tool offers here for both, read off the UI thread,
+    /// by the tool it was read for.
+    pub launch_choices: Option<(String, agentdocker_core::model_choice::ModelChoices)>,
+    /// The model or effort menu that is open.
+    pub launch_choice_menu: Option<ChoiceMenu>,
     /// Provider input is on for supported new sessions by default. The launch
     /// control can turn it off; provider consent and policy still apply.
     pub launch_channel: bool,
@@ -855,6 +864,13 @@ pub enum DeliveryTarget {
 type PullRequestKey = crate::pull_request::Key;
 type PullRequestAnswer = Result<Option<crate::pull_request::PullRequest>, String>;
 
+/// Which of the launch form's choices has its menu open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChoiceMenu {
+    Model,
+    Effort,
+}
+
 /// Where an **Open in…** menu opens from: the project's header, or the
 /// selected session's details, for the worktree it works in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1143,6 +1159,12 @@ pub enum Message {
     LaunchMore,
     LaunchName(String),
     LaunchArguments(String),
+    /// What a tool offers for its model and effort, read for the form.
+    LaunchChoices(String, agentdocker_core::model_choice::ModelChoices),
+    LaunchChoiceMenu(Option<ChoiceMenu>),
+    /// A model for the new session; `None` is the provider's default.
+    LaunchModel(Option<String>),
+    LaunchEffort(Option<String>),
     LaunchChannel(bool),
     LaunchWorktree(bool),
     Launch,
@@ -3425,8 +3447,28 @@ impl App {
                 // A normal launch connects the supported input adapter. The
                 // provider still asks for its own channel/tool consent.
                 self.shell.launch_channel = matches!(runtime.as_str(), "claude-code" | "codex");
-                self.shell.launch_runtime = Some(runtime);
+                // Another tool, other models: what was chosen for the last
+                // one is not carried over.
+                if self.shell.launch_runtime.as_deref() != Some(runtime.as_str()) {
+                    self.shell.launch_model = None;
+                    self.shell.launch_effort = None;
+                    self.shell.launch_choice_menu = None;
+                }
+                self.shell.launch_runtime = Some(runtime.clone());
                 tasks.push(self.refresh_codex_trust());
+                tasks.push(Task::perform(
+                    {
+                        let runtime = runtime.clone();
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                agentdocker_host::models::choices(&runtime)
+                            })
+                            .await
+                            .unwrap_or_default()
+                        }
+                    },
+                    move |choices| Message::LaunchChoices(runtime.clone(), choices),
+                ));
             }
             Message::CodexTrustLoaded(generation, root, trusted) => {
                 if self.shell.launch
@@ -3479,6 +3521,33 @@ impl App {
             Message::LaunchName(name) => self.shell.launch_name = name.chars().take(120).collect(),
             Message::LaunchArguments(args) => {
                 self.shell.launch_arguments = args.chars().take(8192).collect()
+            }
+            Message::LaunchChoices(runtime, choices) => {
+                if self.shell.launch_runtime.as_deref() == Some(runtime.as_str()) {
+                    self.shell.launch_choices = Some((runtime, choices));
+                }
+            }
+            Message::LaunchChoiceMenu(menu) => self.shell.launch_choice_menu = menu,
+            Message::LaunchModel(model) => {
+                self.shell.launch_model = model;
+                self.shell.launch_choice_menu = None;
+                // An effort the new model does not take goes back to its default.
+                let takes = self
+                    .launch_choices()
+                    .map(|c| c.efforts_for(self.launch_model_now()).to_vec())
+                    .unwrap_or_default();
+                if self
+                    .shell
+                    .launch_effort
+                    .as_ref()
+                    .is_some_and(|effort| !takes.is_empty() && !takes.contains(effort))
+                {
+                    self.shell.launch_effort = None;
+                }
+            }
+            Message::LaunchEffort(effort) => {
+                self.shell.launch_effort = effort;
+                self.shell.launch_choice_menu = None;
             }
             Message::LaunchChannel(on) => self.shell.launch_channel = on,
             Message::LaunchWorktree(on) => self.shell.launch_worktree = on,
@@ -4848,6 +4917,24 @@ impl App {
             .is_some_and(|entry| entry.project.source == agentdocker_core::ProjectSource::Git)
     }
 
+    /// What the chosen tool offers for its model and effort, once read.
+    pub(super) fn launch_choices(&self) -> Option<&agentdocker_core::model_choice::ModelChoices> {
+        self.shell
+            .launch_choices
+            .as_ref()
+            .filter(|(runtime, _)| self.shell.launch_runtime.as_deref() == Some(runtime.as_str()))
+            .map(|(_, choices)| choices)
+    }
+
+    /// The model the new session will use: the one chosen, else the
+    /// provider's default.
+    pub(super) fn launch_model_now(&self) -> Option<&str> {
+        self.shell.launch_model.as_deref().or_else(|| {
+            self.launch_choices()
+                .and_then(|c| c.default_model.as_deref())
+        })
+    }
+
     fn launch_spec(&self) -> Result<agentdocker_core::AgentSpec, String> {
         let entry = self
             .shell
@@ -4865,7 +4952,25 @@ impl App {
             .ok_or("This tool has no launchable command-line executable")?;
         let args = shell_words(&self.shell.launch_arguments)
             .ok_or("The launch arguments have unbalanced quotes")?;
+        let chosen = agentdocker_core::model_choice::choice_args(
+            &runtime.name,
+            self.shell.launch_model.as_deref(),
+            self.shell.launch_effort.as_deref(),
+            &args,
+        )?;
+        // What it runs with, said on its record: the person's own
+        // arguments, else the choice, else the provider's default.
+        let (given_model, given_effort) =
+            agentdocker_core::model_choice::given_choices(&runtime.name, &args);
+        let defaults = self.launch_choices();
+        let model = given_model
+            .or_else(|| self.shell.launch_model.clone())
+            .or_else(|| defaults.and_then(|c| c.default_model.clone()));
+        let effort = given_effort
+            .or_else(|| self.shell.launch_effort.clone())
+            .or_else(|| defaults.and_then(|c| c.default_effort.clone()));
         let mut command = vec![cli.to_string_lossy().into_owned()];
+        command.extend(chosen);
         command.extend(args);
         let generated_name = self.shell.launch_name.trim().is_empty();
         let name = if generated_name {
@@ -4877,17 +4982,25 @@ impl App {
             name,
             runtime: runtime.name.clone(),
             provider: None,
-            model: None,
+            model,
             command,
             workdir: Some(entry.project.root.clone()),
             env: BTreeMap::new(),
-            labels: if generated_name {
-                BTreeMap::from([(
-                    agentdocker_core::agent::NAME_LABEL.to_owned(),
-                    agentdocker_core::agent::GENERATED_NAME.to_owned(),
-                )])
-            } else {
-                BTreeMap::new()
+            labels: {
+                let mut labels = BTreeMap::new();
+                if generated_name {
+                    labels.insert(
+                        agentdocker_core::agent::NAME_LABEL.to_owned(),
+                        agentdocker_core::agent::GENERATED_NAME.to_owned(),
+                    );
+                }
+                if let Some(effort) = effort {
+                    labels.insert(
+                        agentdocker_core::model_choice::EFFORT_LABEL.to_owned(),
+                        effort,
+                    );
+                }
+                labels
             },
             isolate: self.shell.launch_worktree
                 && entry.project.source == agentdocker_core::ProjectSource::Git,
@@ -5414,6 +5527,123 @@ mod tests {
 
     /// In a git project the launch form starts a session in its own
     /// worktree unless told otherwise; a plain folder has no branches to
+    /// The model and effort chosen in the form reach the command in the
+    /// tool's own options and the record says them; nothing chosen, the
+    /// provider's default is said and the command is left alone; the
+    /// person's own arguments win, and a new tool starts from its defaults.
+    #[test]
+    fn a_launch_runs_and_records_the_model_and_effort_chosen() {
+        use agentdocker_core::model_choice::{EFFORT_LABEL, ModelChoices, ModelOption};
+        let (mut app, _, _) = app();
+        let runtime = |name: &str| agentdocker_core::runtime::RuntimeInfo {
+            name: name.into(),
+            vendor: "fixture".into(),
+            label: runtime_label(name),
+            cli: Some("/fixture/provider".into()),
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: agentdocker_core::runtime::Wiring::Missing,
+            hooks: agentdocker_core::runtime::Wiring::Missing,
+            hooks_missing: vec![],
+            shell: agentdocker_core::runtime::Wiring::Unsupported,
+            running: 0,
+        };
+        app.runtimes = vec![runtime("codex"), runtime("claude-code")];
+        app.shell
+            .catalog
+            .pin(ProjectRef::directory("/plain"))
+            .unwrap();
+        app.shell.launch_runtime = Some("codex".into());
+        let _ = app.update(Message::LaunchChoices(
+            "codex".into(),
+            ModelChoices {
+                default_model: Some("gpt-6-astra".into()),
+                default_effort: Some("xhigh".into()),
+                models: vec![
+                    ModelOption {
+                        id: "gpt-6-astra".into(),
+                        name: "GPT-6-Astra".into(),
+                        efforts: vec!["low".into(), "xhigh".into()],
+                    },
+                    ModelOption {
+                        id: "gpt-6-luna".into(),
+                        name: "GPT-6-Luna".into(),
+                        efforts: vec!["low".into(), "medium".into()],
+                    },
+                ],
+                efforts: vec![],
+            },
+        ));
+        let spec = app.launch_spec().unwrap();
+        assert_eq!(
+            spec.command,
+            ["/fixture/provider"],
+            "the provider's own default"
+        );
+        assert_eq!(spec.model.as_deref(), Some("gpt-6-astra"));
+        assert_eq!(
+            spec.labels.get(EFFORT_LABEL).map(String::as_str),
+            Some("xhigh")
+        );
+
+        let _ = app.update(Message::LaunchEffort(Some("xhigh".into())));
+        let _ = app.update(Message::LaunchModel(Some("gpt-6-luna".into())));
+        assert_eq!(
+            app.shell.launch_effort, None,
+            "an effort the new model lacks goes"
+        );
+        let _ = app.update(Message::LaunchEffort(Some("medium".into())));
+        let spec = app.launch_spec().unwrap();
+        assert_eq!(
+            spec.command,
+            [
+                "/fixture/provider",
+                "--model",
+                "gpt-6-luna",
+                "-c",
+                "model_reasoning_effort=\"medium\""
+            ]
+        );
+        assert_eq!(spec.model.as_deref(), Some("gpt-6-luna"));
+        assert_eq!(
+            spec.labels.get(EFFORT_LABEL).map(String::as_str),
+            Some("medium")
+        );
+        assert_eq!(
+            view::model_and_effort(&AgentRecord::new(spec, true, Utc::now())).as_deref(),
+            Some("gpt-6-luna · medium")
+        );
+
+        let _ = app.update(Message::LaunchArguments("-m o9".into()));
+        let spec = app.launch_spec().unwrap();
+        assert_eq!(
+            spec.command,
+            [
+                "/fixture/provider",
+                "-c",
+                "model_reasoning_effort=\"medium\"",
+                "-m",
+                "o9"
+            ],
+            "the person's own model wins"
+        );
+        assert_eq!(spec.model.as_deref(), Some("o9"));
+
+        let _ = app.update(Message::LaunchArguments(String::new()));
+        let _ = app.update(Message::LaunchRuntime("claude-code".into()));
+        assert_eq!(
+            (
+                app.shell.launch_model.as_deref(),
+                app.shell.launch_effort.as_deref()
+            ),
+            (None, None),
+            "another tool starts from its own defaults"
+        );
+    }
+
     /// give, so it is never asked for one.
     #[test]
     fn a_git_project_launches_into_its_own_worktree_by_default() {

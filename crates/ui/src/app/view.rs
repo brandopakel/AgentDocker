@@ -831,6 +831,27 @@ pub(super) fn menu<'a>(items: impl Into<Element<'a, Message>>, c: Colors) -> Ele
 }
 
 /// One entry of a menu; a destructive one is said in red.
+/// The model a session runs and the effort it was launched with, as its
+/// record says them: `gpt-6-astra · xhigh`. `None` when it says neither.
+pub(super) fn model_and_effort(agent: &AgentRecord) -> Option<String> {
+    let effort = agent
+        .spec
+        .labels
+        .get(agentdocker_core::model_choice::EFFORT_LABEL)
+        .filter(|e| agentdocker_core::model_choice::plain_choice(e));
+    let model = agent
+        .spec
+        .model
+        .as_deref()
+        .filter(|m| agentdocker_core::model_choice::plain_choice(m));
+    match (model, effort) {
+        (Some(model), Some(effort)) => Some(format!("{model} · {effort}")),
+        (Some(model), None) => Some(model.to_owned()),
+        (None, Some(effort)) => Some(format!("Effort {effort}")),
+        (None, None) => None,
+    }
+}
+
 pub(super) fn menu_item<'a>(
     id: impl Into<String>,
     label: impl Into<String>,
@@ -3114,6 +3135,9 @@ impl App {
         if let Some(roles) = self.roles_control(agent, c) {
             body = body.push(roles);
         }
+        if let Some(model) = model_and_effort(agent) {
+            body = body.push(small(model, c));
+        }
         if agent.spec.runtime != "human" {
             // How messages reach it: its readiness as a dot, what waits for
             // it as a count; the words are the marks' tooltips and names.
@@ -3766,6 +3790,13 @@ impl App {
             self.shell.launch_runtime.as_deref(),
             Some("claude-code" | "codex")
         ) {
+            // Which model and how hard it thinks: the provider's own default
+            // unless chosen, said on the chip.
+            if let Some(choices) = self.launch_choices() {
+                switches = switches
+                    .push(self.launch_choice(super::shell::ChoiceMenu::Model, choices, c))
+                    .push(self.launch_choice(super::shell::ChoiceMenu::Effort, choices, c));
+            }
             // The normal launch has a receiver. Turning it off is explicit;
             // provider consent remains a separate provider-owned step.
             switches = switches.push(tip(
@@ -3902,6 +3933,86 @@ impl App {
             container(footer).padding([12, 20]),
         ]
         .into()
+    }
+
+    /// The new session's model or effort as a chip that opens the list to
+    /// choose from, the provider's default first.
+    fn launch_choice<'a>(
+        &'a self,
+        which: super::shell::ChoiceMenu,
+        choices: &'a agentdocker_core::model_choice::ModelChoices,
+        c: Colors,
+    ) -> Element<'a, Message> {
+        let open = self.shell.launch_choice_menu == Some(which);
+        let (word, key, chosen, default, options): (_, _, _, _, Vec<(String, String)>) = match which
+        {
+            super::shell::ChoiceMenu::Model => (
+                "Model",
+                "model",
+                self.shell.launch_model.as_deref(),
+                choices.default_model.as_deref(),
+                choices
+                    .models
+                    .iter()
+                    .map(|m| (m.id.clone(), m.name.clone()))
+                    .collect(),
+            ),
+            super::shell::ChoiceMenu::Effort => (
+                "Effort",
+                "effort",
+                self.shell.launch_effort.as_deref(),
+                choices.default_effort.as_deref(),
+                choices
+                    .efforts_for(self.launch_model_now())
+                    .iter()
+                    .map(|e| (e.clone(), e.clone()))
+                    .collect(),
+            ),
+        };
+        let name_of = |id: &str| {
+            options
+                .iter()
+                .find(|(option, _)| option == id)
+                .map_or_else(|| id.to_owned(), |(_, name)| name.clone())
+        };
+        let shown = chosen
+            .or(default)
+            .map_or_else(|| "Default".to_owned(), name_of);
+        let trigger = action(
+            format!("launch-{key}"),
+            format!("{word}: {shown}"),
+            (!self.shell.launching).then_some(Message::LaunchChoiceMenu((!open).then_some(which))),
+            chosen.is_some(),
+        );
+        let pick = move |value: Option<String>| match which {
+            super::shell::ChoiceMenu::Model => Message::LaunchModel(value),
+            super::shell::ChoiceMenu::Effort => Message::LaunchEffort(value),
+        };
+        let popup = open.then(|| {
+            let mut items = column![].spacing(1).width(Fill);
+            items = items.push(menu_item(
+                format!("launch-{key}-default"),
+                match default {
+                    Some(default) => format!("Default ({})", name_of(default)),
+                    None => "Default".to_owned(),
+                },
+                Some(pick(None)),
+                false,
+            ));
+            for (id, name) in &options {
+                items = items.push(menu_item(
+                    format!("launch-{key}-{id}"),
+                    name.clone(),
+                    Some(pick(Some(id.clone()))),
+                    false,
+                ));
+            }
+            menu(items, c)
+        });
+        crate::controls::popover(trigger, popup)
+            .width(220.0)
+            .on_dismiss(Message::LaunchChoiceMenu(None))
+            .into()
     }
 
     /// Messages sent to the person directly, oldest first, minus the ones
