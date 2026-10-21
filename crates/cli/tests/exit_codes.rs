@@ -160,14 +160,19 @@ fn the_exit_status_is_the_class_of_what_went_wrong() {
 
 #[test]
 fn send_reports_recipient_input_status_without_polluting_the_message_id() {
+    let command = "cd '/work/alpha' && AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 claude --resume session-123 --dangerously-load-development-channels server:agentdocker";
     for current in [false, true] {
         let (tmp, socket) = private_socket("readiness");
         let mut response = json!({"type":"sent", "message":"accepted-123", "subscribers":99});
         if current {
             response["recipient_readiness"] = json!({
-                "recipients":2, "needs_attention":1, "details":[{
+                "recipients":3, "needs_attention":2, "details":[{
                     "agent":"unbound-123", "name":"Claude reviewer", "runtime":"claude-code",
-                    "issue":{"kind":"no_receiver"}, "resume_session":"session-123"
+                    "issue":{"kind":"no_receiver"}, "resume_session":"session-123",
+                    "fix":{"kind":"reconnect","command":command}
+                }, {
+                    "agent":"browser-456", "name":"Browser helper", "runtime":"claude-browser",
+                    "issue":{"kind":"no_receiver"}, "fix":{"kind":"wait_for_check_in"}
                 }]
             });
         }
@@ -188,9 +193,12 @@ fn send_reports_recipient_input_status_without_polluting_the_message_id() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("provider receipt unconfirmed"));
         if current {
+            // The fix the daemon decided, whole: the command to run.
             assert!(stderr.contains("Claude reviewer"));
             assert!(stderr.contains("Messages may wait for its next prompt"));
-            assert!(stderr.contains("claude --resume session-123"));
+            assert!(stderr.contains(command), "{stderr}");
+            // The same wire kind, told apart by its fix.
+            assert!(stderr.contains("Browser helper (browser-456): Waits until it checks in"));
         } else {
             assert!(stderr.contains("readiness unavailable"));
         }

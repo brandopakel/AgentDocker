@@ -108,9 +108,8 @@ impl Daemon {
                             .is_some_and(|r| r.messages.contains(&message))
                     })
                     .and_then(|d| d.received_at);
-                let blocked = record
-                    .and_then(|r| agentdocker_core::provider_block(r, &everyone))
-                    .and_then(|(_, block)| block.issue.as_ref().map(|issue| issue.kind));
+                let blocked =
+                    record.and_then(|r| agentdocker_core::readiness::provider_issue(r, &everyone));
                 let mut recipient = Recipient {
                     agent: id.clone(),
                     name: record.map(|r| r.spec.name.clone()),

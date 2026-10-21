@@ -467,7 +467,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); `--input-details` adds reconnect guidance |
+| `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); `--input-details` adds the one fix for each session that cannot take messages now |
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is doing: working, idle, or blocked on a named resource |
 | `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour`), each count with its coverage (`~` where some samples did not say, `—` where none did), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on, and AgentDocker's emitted-byte overhead with partial coverage, or *not measured* without matching records; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
@@ -515,16 +515,25 @@ each one by pid.
 
 A successful `send` prints the message ID on stdout. Acceptance and recipient
 warnings go to stderr: a queued message can still be waiting for another prompt
-in a session without an input receiver. `agentdocker ps --input-details` names
-these sessions and gives reconnect guidance; it does not restart them. Provider
-limits remain separate from receiver health. When the daemon does not report readiness, `send` prints `recipient input readiness unavailable from this daemon` rather than imply that every recipient can wake.
+in a session without an input receiver. Each warning names where the session
+stands and the one thing that would get it taking messages — the same fix
+`agentdocker ps --input-details`, the INPUT column's words and the desktop
+give: a Claude Code session's resume command (`agentdocker reconnect <id>` for
+one AgentDocker started, which a plain resume could not bring back under its
+record), `agentdocker setup <runtime>`
+first for a session nothing of which ever reached AgentDocker, `codex resume`
+with its conversation (only for a Codex started in a terminal), a live Codex from Launch agent, waiting out a provider
+limit, reviewing a paused delivery, or the agent's own read of its inbox. None
+of them restarts anything. Provider limits remain separate from receiver
+health. When the daemon does not report readiness, `send` prints `recipient input readiness unavailable from this daemon` rather than imply that every recipient can wake.
 
 For an existing Claude session with no channel, save the current work, exit that
-Claude session, and either press **Reconnect here** in the app's session Details,
+Claude session, and either press **Reconnect here** on its row or in the app's
+session Details,
 run `agentdocker reconnect <session>` (`--claude <path>` to choose a different
 executable; otherwise the recorded command or `claude` on PATH is used), or use
-the session-specific resume command shown in Delivery
-details or `ps --input-details` from its project folder. The first two bring the
+the session-specific resume command that the session's panel, `send`'s warning
+and `ps --input-details` show, from its project folder. The first two bring the
 session back under its own record with its conversation and the channel — what
 was queued for it stays its own — and refuse with the reason while its process
 is still running, in another checkout, or with somebody attached; the app opens

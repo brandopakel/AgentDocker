@@ -57,12 +57,37 @@ impl App {
             .any(|q| q.from == id && !q.expired(Utc::now()))
     }
 
+    /// Whether this agent can receive input now, and the one fix: the
+    /// decision every surface shows (`agentdocker_core::readiness`), its
+    /// provider block looked up among every record the app holds.
+    pub(super) fn readiness_decision(
+        &self,
+        agent: &AgentRecord,
+    ) -> agentdocker_core::readiness::Decision {
+        agentdocker_core::readiness::decide_among(agent, &self.agents, Utc::now())
+    }
+
+    /// A live session whose delivery is held: its provider is blocked or
+    /// its receiver paused, as the readiness decision says. An ended
+    /// session's held delivery is [`Self::delivery_needs_you`]'s to say.
     pub(super) fn delivery_paused(&self, agent: &AgentRecord) -> bool {
-        agentdocker_core::provider_block(agent, &self.agents).is_some()
-            || agent
-                .input_delivery
-                .as_ref()
-                .is_some_and(|d| d.paused_for(agent.process_started_at))
+        use agentdocker_core::readiness::State;
+        matches!(
+            self.readiness_decision(agent).state,
+            State::ProviderBlocked(_) | State::Paused
+        )
+    }
+
+    /// Whether this window can do the session's fix itself: an ended
+    /// Claude Code session whose decided fix is its reconnect, with nothing
+    /// in the way of **Reconnect here**.
+    pub(super) fn reconnects_here(&self, agent: &AgentRecord) -> bool {
+        !agent.status.is_live()
+            && matches!(
+                self.readiness_decision(agent).fix,
+                agentdocker_core::readiness::Fix::Reconnect { .. }
+            )
+            && self.reconnect_blocker(agent).is_none()
     }
 
     /// Messages this session holds that no model has taken. The binding's
@@ -111,10 +136,12 @@ impl App {
     /// dismissed. It colours the row; it is not a question for the person,
     /// so Needs you and Needs input leave it out.
     pub(super) fn delivery_needs_you(&self, agent: &AgentRecord) -> bool {
-        let blocked = agentdocker_core::provider_block(agent, &self.agents).is_some();
         if agent.status.is_live() {
-            return blocked || self.delivery_paused(agent);
+            return self.delivery_paused(agent);
         }
+        // Ended, the decision is only that; a block it ended under, or
+        // messages it left, stay on its row until the notice is put away.
+        let blocked = agentdocker_core::provider_block(agent, &self.agents).is_some();
         (blocked || self.ended_with_undelivered(agent)) && !self.notice_dismissed(agent)
     }
 

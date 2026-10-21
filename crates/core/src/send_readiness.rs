@@ -3,7 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, AgentRecord, HUMAN_RUNTIME, InputReadiness, ProviderIssueKind};
+use crate::readiness::{Decision, Fix, State};
+use crate::{AgentId, AgentRecord, HUMAN_RUNTIME, ProviderIssueKind};
 
 pub const MAX_DETAILS: usize = 32;
 
@@ -22,12 +23,11 @@ pub struct RecipientReadiness {
     pub issue: SendIssue,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_session: Option<String>,
-    /// A Claude resume command can be written for it (a session and a
-    /// folder to resume in), so a short hint may point at one. Read off
-    /// the record here, never sent: a readiness from the wire points at
-    /// no command.
-    #[serde(skip)]
-    pub resumable: bool,
+    /// The one thing that would get it taking messages, as
+    /// [`crate::readiness::decide`] named it. Absent from an older daemon
+    /// and for a session it does not know.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix: Option<Fix>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -112,10 +112,13 @@ impl RecipientReadiness {
             runtime: String::new(),
             issue: SendIssue::UnknownSession,
             resume_session: None,
-            resumable: false,
+            fix: None,
         }
     }
 
+    /// The readiness a send reports for `agent`, from the one decision
+    /// ([`crate::readiness::decide`]); none for a ready receiver or the
+    /// person.
     pub fn for_agent(
         agent: &AgentRecord,
         now: DateTime<Utc>,
@@ -124,113 +127,90 @@ impl RecipientReadiness {
         if agent.spec.runtime == HUMAN_RUNTIME {
             return None;
         }
-        let issue = if !agent.status.is_live() {
-            SendIssue::SessionEnded
-        } else if let Some(kind) = blocked {
-            SendIssue::ProviderBlocked(kind)
-        } else {
-            match InputReadiness::for_agent(agent, now) {
-                InputReadiness::SessionEnded => SendIssue::SessionEnded,
-                InputReadiness::Unreachable => SendIssue::Unreachable,
-                InputReadiness::Unverified => SendIssue::NoReceiver,
-                InputReadiness::Paused => SendIssue::DeliveryPaused,
-                InputReadiness::Stale => SendIssue::ReceiverSilent,
-                InputReadiness::AwaitingFirstReceipt | InputReadiness::Verified => return None,
-            }
+        Self::from_decision(agent, &crate::readiness::decide(agent, now, blocked))
+    }
+
+    /// The wire form of a decision about `agent`: its state as the send
+    /// issue it has always been, and its fix beside it.
+    pub fn from_decision(agent: &AgentRecord, decision: &Decision) -> Option<Self> {
+        let issue = match decision.state {
+            State::Ended => SendIssue::SessionEnded,
+            State::ProviderBlocked(kind) => SendIssue::ProviderBlocked(kind),
+            State::Paused => SendIssue::DeliveryPaused,
+            State::Silent => SendIssue::ReceiverSilent,
+            State::Unreachable => SendIssue::Unreachable,
+            State::AwaitsCheckIn | State::WaitsForPrompt => SendIssue::NoReceiver,
+            State::Ready { .. } => return None,
         };
-        let resume_session = session_word(agent).map(str::to_owned);
         Some(Self {
-            resumable: claude_resume_command(agent, false).is_some(),
             agent: agent.id.clone(),
             name: plain(&agent.spec.name, 80),
             runtime: plain(&agent.spec.runtime, 40),
             issue,
-            resume_session,
+            resume_session: session_word(agent).map(str::to_owned),
+            fix: Some(decision.fix.clone()),
         })
+    }
+
+    /// The decided state this readiness reports. A session that waits for
+    /// its check-in and one that waits for its next prompt share the wire
+    /// kind `no_receiver`; the fix tells them apart.
+    pub fn state(&self) -> Option<State> {
+        Some(match self.issue {
+            SendIssue::SessionEnded => State::Ended,
+            SendIssue::ProviderBlocked(kind) => State::ProviderBlocked(kind),
+            SendIssue::DeliveryPaused => State::Paused,
+            SendIssue::ReceiverSilent => State::Silent,
+            SendIssue::Unreachable => State::Unreachable,
+            SendIssue::NoReceiver if self.fix == Some(Fix::WaitForCheckIn) => State::AwaitsCheckIn,
+            SendIssue::NoReceiver => State::WaitsForPrompt,
+            SendIssue::UnknownSession | SendIssue::Unknown => return None,
+        })
+    }
+
+    /// The decision this readiness carries, when it names both.
+    pub fn decision(&self) -> Option<Decision> {
+        Some(Decision {
+            state: self.state()?,
+            fix: self.fix.clone()?,
+        })
+    }
+
+    /// The words for where it stands: the decided state's, else the issue's.
+    pub fn label(&self) -> &'static str {
+        self.state().map_or(self.issue.label(), State::label)
     }
 
     /// The fix in a few words, beside the command or the button that does
     /// it. The long form, for an agent reading a send result, is
     /// [`Self::guidance`].
     pub fn hint(&self) -> &'static str {
-        let claude = self.runtime == "claude-code";
-        match self.issue {
-            SendIssue::Unknown | SendIssue::UnknownSession => "Check it before sending again.",
-            SendIssue::ProviderBlocked(_) => "Resume delivery once the provider is back.",
-            SendIssue::DeliveryPaused => "Review its delivery before reconnecting it.",
-            SendIssue::SessionEnded if claude && self.resumable => {
-                "Run this in a terminal to bring it back."
-            }
-            SendIssue::SessionEnded => "Its messages wait until it is resumed.",
-            SendIssue::Unreachable if claude && self.resumable => {
-                "It never reached AgentDocker; run this to restart it."
-            }
-            SendIssue::Unreachable => "It never reached AgentDocker; its messages are kept.",
-            SendIssue::NoReceiver | SendIssue::ReceiverSilent if claude => {
-                if self.resumable {
-                    "Quit it, then run this in a terminal."
-                } else {
-                    "Restart it with the AgentDocker channel."
-                }
-            }
-            SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "codex" => {
-                "It takes messages at its next prompt."
-            }
-            SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "opencode" => {
-                "Its plugin wakes it; without it, at its next turn."
-            }
-            SendIssue::NoReceiver | SendIssue::ReceiverSilent => {
-                "It takes messages when it reads its inbox."
-            }
+        match self.decision() {
+            Some(decision) => decision.hint(),
+            None if self.state().is_some() => "See agentdocker ps --input-details for the fix.",
+            None => "Check it before sending again.",
         }
     }
 
+    /// Why it cannot take messages now and the one fix, in full.
     pub fn guidance(&self) -> String {
-        match self.issue {
-            SendIssue::Unknown => "The message was queued; check delivery details before sending again. This app does not recognize the newer delivery status.".into(),
-            SendIssue::UnknownSession => "Check the destination in AgentDocker before sending again; whether the message arrived is not known.".into(),
-            SendIssue::ProviderBlocked(_) => "Check the provider limit or sign-in, then explicitly resume input after recovery.".into(),
-            SendIssue::DeliveryPaused => "Review this session's delivery in AgentDocker before reconnecting it; its messages are kept.".into(),
-            SendIssue::SessionEnded => "Resume this conversation from its project folder; its messages are kept until it takes them.".into(),
-            // Kept, but nothing of the session will read them: say what
-            // connects it, never "may wait".
-            SendIssue::Unreachable if self.runtime == "codex" => match &self.resume_session {
-                Some(session) => format!("Nothing of this Codex session has reached AgentDocker, so it can't take messages; they are kept. Resume it from its project folder with: codex resume {session}, or start it from Launch agent."),
-                None => "Nothing of this Codex session has reached AgentDocker, so it can't take messages; they are kept. A Codex started as plain `codex` names no conversation AgentDocker can find: resume it by id from its project folder (codex resume <id>), or start it from Launch agent.".into(),
-            },
-            SendIssue::Unreachable if self.runtime == "claude-code" => "Nothing of this Claude session has reached AgentDocker: its hooks and MCP server aren't running for it, so it can't take messages; they are kept. Run agentdocker setup claude-code, then restart it from its project folder.".into(),
-            SendIssue::Unreachable => format!(
-                "Nothing of this {} session has reached AgentDocker, so it can't take messages; they are kept. It reads them only through agentdocker inbox --as {}.",
-                self.runtime, self.agent.short()
+        if let Some(decision) = self.decision() {
+            return decision.guidance(&self.runtime, &self.agent);
+        }
+        match (self.state(), self.issue) {
+            (Some(state), _) => format!(
+                "{} This daemon did not say what would fix it; agentdocker ps --input-details does.",
+                crate::readiness::why(state, &self.runtime)
             ),
-            SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "claude-code" => {
-                match &self.resume_session {
-                    Some(session) => format!("After saving work and exiting the current Claude session, resume from the same project folder with: AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 claude --resume {session} --dangerously-load-development-channels server:agentdocker. Complete Claude's channel consent; AgentDocker's MCP entry must include --claude-channel."),
-                    None => "Resume Claude from its project folder with AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 and --dangerously-load-development-channels server:agentdocker, then complete its channel consent. See Tools for AgentDocker setup.".into(),
-                }
-            }
-            // OpenCode's plugin watches an idle session and wakes it; a
-            // session started without the plugin only reads its queue itself.
-            SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "opencode" => format!(
-                "An OpenCode session with AgentDocker's plugin takes this at its next turn, and is woken for it when idle. Without the plugin (agentdocker setup opencode, then restart OpenCode) it waits until the agent reads its inbox (agentdocker inbox --as {}).",
-                self.agent.short()
-            ),
-            SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "codex" => "This Codex session takes messages at its next prompt; nothing can wake it in its terminal. A Codex started from AgentDocker's Launch agent takes them live.".into(),
-            // No adapter exists for this runtime: nothing here can wake
-            // it, and saying "reconnect a receiver" would send the person
-            // looking for one. The message waits in its queue for the
-            // agent's own read.
-            SendIssue::NoReceiver | SendIssue::ReceiverSilent => format!(
-                "A {} session cannot be woken by a message: it waits until the agent reads its inbox (agentdocker inbox --as {} or watch --as {}, or the MCP read_inbox tool).",
-                self.runtime, self.agent.short(), self.agent.short()
-            ),
+            (None, SendIssue::UnknownSession) => "Check the destination in AgentDocker before sending again; whether the message arrived is not known.".into(),
+            (None, _) => "The message was queued; check delivery details before sending again. This app does not recognize the newer delivery status.".into(),
         }
     }
 }
 
 /// An agent's provider session id, when it is one a copied command can
 /// carry as one plain word: never shell syntax, never a flag.
-fn session_word(agent: &AgentRecord) -> Option<&str> {
+pub(crate) fn session_word(agent: &AgentRecord) -> Option<&str> {
     agent
         .spec
         .labels
@@ -368,7 +348,8 @@ mod tests {
         assert_eq!(claude_resume_command(&agent, false), None, "Claude's only");
     }
 
-    /// Every issue says its fix in one short line.
+    /// Every issue says its fix in one short line, whatever fix the wire
+    /// carries, a newer one or none included.
     #[test]
     fn every_hint_is_one_short_line() {
         for runtime in ["claude-code", "codex", "opencode", "custom"] {
@@ -382,23 +363,47 @@ mod tests {
                 SendIssue::DeliveryPaused,
                 SendIssue::ProviderBlocked(ProviderIssueKind::Rate),
             ] {
-                for resume_session in [None, Some("abc".to_owned())] {
-                    let hint = RecipientReadiness {
+                for fix in [
+                    None,
+                    Some(Fix::Reconnect {
+                        command: "cd '/w' && claude".into(),
+                    }),
+                    Some(Fix::SetupThenReconnect),
+                    Some(Fix::CodexResume {
+                        session: "abc".into(),
+                    }),
+                    Some(Fix::LaunchLive),
+                    Some(Fix::WaitForProvider),
+                    Some(Fix::ReviewDelivery),
+                    Some(Fix::ReadInbox),
+                    Some(Fix::WaitForCheckIn),
+                    Some(Fix::None),
+                    Some(Fix::Other),
+                ] {
+                    let readiness = RecipientReadiness {
                         agent: AgentId::from("a".to_owned()),
                         name: "a".into(),
                         runtime: runtime.into(),
                         issue,
-                        resumable: resume_session.is_some(),
-                        resume_session,
-                    }
-                    .hint();
+                        resume_session: None,
+                        fix,
+                    };
+                    let hint = readiness.hint();
                     assert!(hint.len() <= 60 && !hint.contains('\n'), "{hint}");
+                    assert!(!readiness.guidance().is_empty());
                 }
             }
         }
     }
 
     use super::*;
+
+    /// An absolute checkout on every platform.
+    const CHECKOUT: &str = if cfg!(windows) {
+        r"C:\work\orchard"
+    } else {
+        "/work/orchard"
+    };
 
     #[test]
     fn a_session_nothing_reaches_is_said_to_be_unreachable_with_what_connects_it() {
@@ -419,6 +424,8 @@ mod tests {
             .spec
             .labels
             .insert("session_id".into(), "de4e3b54-48e1".into());
+        agent.spec.workdir = Some(CHECKOUT.into());
+        agent.project = Some(crate::ProjectRef::directory(CHECKOUT));
         let later = birth + crate::input::FIRST_CONTACT_GRACE;
         let readiness = RecipientReadiness::for_agent(&agent, later, None).unwrap();
         assert_eq!(readiness.issue, SendIssue::Unreachable);
@@ -435,20 +442,31 @@ mod tests {
 
     #[test]
     fn newer_readiness_kinds_do_not_turn_a_committed_send_into_a_decode_failure() {
-        for (wire_issue, expected) in [
+        for (wire_issue, wire_fix, expected, fix) in [
             (
                 serde_json::json!({"kind": "future_status", "detail": {"new": true}}),
+                serde_json::Value::Null,
                 SendIssue::Unknown,
+                None,
             ),
             (
                 serde_json::json!({"kind": "provider_blocked", "detail": "future_limit"}),
+                serde_json::json!({"kind": "wait_for_provider"}),
                 SendIssue::ProviderBlocked(ProviderIssueKind::Unknown),
+                Some(Fix::WaitForProvider),
+            ),
+            (
+                serde_json::json!({"kind": "no_receiver"}),
+                serde_json::json!({"kind": "future_fix", "detail": {"new": true}}),
+                SendIssue::NoReceiver,
+                Some(Fix::Other),
             ),
         ] {
             let response: crate::Response = serde_json::from_value(serde_json::json!({
                 "type": "sent", "message": "accepted-id", "subscribers": 0,
                 "recipient_readiness": {"recipients": 1, "needs_attention": 1, "details": [{
-                    "agent": "recipient", "name": "Reviewer", "runtime": "custom", "issue": wire_issue
+                    "agent": "recipient", "name": "Reviewer", "runtime": "custom", "issue": wire_issue,
+                    "fix": wire_fix
                 }]}
             })).unwrap();
             let crate::Response::Sent {
@@ -461,6 +479,7 @@ mod tests {
             };
             assert_eq!(message.as_str(), "accepted-id");
             assert_eq!(readiness.details[0].issue, expected);
+            assert_eq!(readiness.details[0].fix, fix);
             assert!(!readiness.details[0].guidance().is_empty());
         }
     }
@@ -475,11 +494,13 @@ mod tests {
         );
         let readiness = RecipientReadiness::for_agent(&ended, ended.created_at, None).unwrap();
         assert_eq!(readiness.issue, SendIssue::SessionEnded);
-        assert!(!readiness.resumable, "no folder, no command");
+        assert_eq!(readiness.fix, Some(Fix::None), "no folder, no command");
         assert_eq!(readiness.hint(), "Its messages wait until it is resumed.");
-        ended.spec.workdir = Some("/p/orchard".into());
+        ended.spec.workdir = Some(CHECKOUT.into());
+        ended.project = Some(crate::ProjectRef::directory(CHECKOUT));
         let readiness = RecipientReadiness::for_agent(&ended, ended.created_at, None).unwrap();
-        assert!(readiness.resumable);
+        let command = claude_resume_command(&ended, cfg!(windows)).unwrap();
+        assert_eq!(readiness.fix, Some(Fix::Reconnect { command }));
         assert_eq!(readiness.hint(), "Run this in a terminal to bring it back.");
     }
 
@@ -559,12 +580,19 @@ mod tests {
             );
             assert!(!guidance.contains("reconnect"), "{runtime}: {guidance}");
         }
-        // OpenCode is woken by its plugin, and told how to get it.
-        let opencode = agent("opencode");
+        // OpenCode is woken by its plugin; one that never reached
+        // AgentDocker is told how to get it.
+        let mut opencode = agent("opencode");
         let guidance = RecipientReadiness::for_agent(&opencode, opencode.created_at, None)
             .unwrap()
             .guidance();
         assert!(guidance.contains("woken for it when idle"), "{guidance}");
+        assert!(!guidance.contains("setup"), "one fix, not two: {guidance}");
+        opencode.started_at = Some(opencode.created_at);
+        let later = opencode.created_at + crate::input::FIRST_CONTACT_GRACE;
+        let guidance = RecipientReadiness::for_agent(&opencode, later, None)
+            .unwrap()
+            .guidance();
         assert!(
             guidance.contains("agentdocker setup opencode"),
             "{guidance}"
@@ -604,6 +632,14 @@ mod tests {
             .spec
             .labels
             .insert("session_id".into(), "session-123_ab".into());
+        let issue = RecipientReadiness::for_agent(&agent, agent.created_at, None).unwrap();
+        assert_eq!(
+            issue.fix,
+            Some(Fix::SetupThenReconnect),
+            "no folder to resume in"
+        );
+        agent.spec.workdir = Some(CHECKOUT.into());
+        agent.project = Some(crate::ProjectRef::directory(CHECKOUT));
         let issue = RecipientReadiness::for_agent(&agent, agent.created_at, None).unwrap();
         assert!(issue.guidance().contains("claude --resume session-123_ab --dangerously-load-development-channels server:agentdocker"));
     }

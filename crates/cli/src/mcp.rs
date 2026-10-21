@@ -1209,10 +1209,11 @@ impl<B: Backend> McpServer<B> {
                 let Response::Agent { agent } = response else {
                     return Ok(render(response, verbose));
                 };
+                let sources = std::slice::from_ref(&agent);
                 let mut record = if verbose {
-                    whole_agent(&agent)
+                    whole_agent(&agent, sources)
                 } else {
-                    brief_agent(&agent)
+                    brief_agent(&agent, sources)
                 };
                 // Whether its project is paused, so an agent checking a
                 // lifecycle notice needs no shell: a sandboxed provider
@@ -1250,34 +1251,42 @@ impl<B: Backend> McpServer<B> {
                     }
                     _ => None,
                 };
+                // Every record, ended ones and other projects' included: a
+                // provider block that holds a shown agent can come from one
+                // it is not shown, an ended session sharing its quota among
+                // them, and its fix is decided among them all, as `send`
+                // and `ps` decide it. Only the rows are narrowed.
                 let response = self
                     .backend
                     .call(Request::List {
-                        all: args.all,
+                        all: true,
                         project: None,
                         labels: Default::default(),
                     })
                     .await
                     .map_err(transport)?;
-                let response = match (response, mine) {
-                    (Response::Agents { agents, aliases }, Some(mine)) => {
-                        let agents: Vec<_> = agents
-                            .into_iter()
-                            .filter(|a| {
-                                a.spec.runtime == agentdocker_core::HUMAN_RUNTIME
-                                    || a.project.as_ref().map(agentdocker_core::ProjectRef::id)
-                                        == Some(mine.clone())
-                            })
-                            .collect();
-                        let aliases = aliases
-                            .into_iter()
-                            .filter(|(_, canonical)| agents.iter().any(|a| &a.id == canonical))
-                            .collect();
-                        Response::Agents { agents, aliases }
-                    }
-                    (other, _) => other,
+                let Response::Agents {
+                    agents: everyone, ..
+                } = response
+                else {
+                    return Ok(render(response, verbose));
                 };
-                Ok(render(response, verbose))
+                let agents = everyone.iter().filter(|a| {
+                    (args.all || a.status.is_live())
+                        && (mine.is_none()
+                            || a.spec.runtime == agentdocker_core::HUMAN_RUNTIME
+                            || a.project.as_ref().map(agentdocker_core::ProjectRef::id) == mine)
+                });
+                let agents: Vec<Value> = agents
+                    .map(|a| {
+                        if verbose {
+                            whole_agent(a, &everyone)
+                        } else {
+                            brief_agent(a, &everyone)
+                        }
+                    })
+                    .collect();
+                Ok(text_result(&json!({ "agents": agents }), false))
             }
             "inspect_agent" => {
                 let args: InspectAgentArgs = parse(arguments)?;
@@ -1957,15 +1966,32 @@ fn tight(value: Value) -> Value {
     }
 }
 
+/// The one fix the readiness decision names for `agent`, its provider
+/// block looked up among `sources` (`agentdocker_core::readiness`), or
+/// nothing when there is nothing to do: an agent sees what the person's
+/// app and `ps --input-details` would say.
+fn agent_fix(
+    agent: &agentdocker_core::AgentRecord,
+    sources: &[agentdocker_core::AgentRecord],
+) -> Option<agentdocker_core::readiness::Fix> {
+    let decision = agentdocker_core::readiness::decide_among(agent, sources, chrono::Utc::now());
+    (decision.fix != agentdocker_core::readiness::Fix::None).then_some(decision.fix)
+}
+
 /// What one agent needs to know about another. The whole record is most
 /// of a kilobyte of daemon bookkeeping — pids, timestamps, process
-/// groups — that no model reads.
-fn brief_agent(agent: &agentdocker_core::AgentRecord) -> Value {
+/// groups — that no model reads. `sources` are the records a provider
+/// block may come from.
+fn brief_agent(
+    agent: &agentdocker_core::AgentRecord,
+    sources: &[agentdocker_core::AgentRecord],
+) -> Value {
     tight(json!({
         "id": agent.id,
         "name": agent.spec.name,
         "runtime": agent.spec.runtime,
         "input_readiness": agentdocker_core::InputReadiness::for_agent(agent, chrono::Utc::now()),
+        "fix": agent_fix(agent, sources),
         "provider_availability": agent.provider_availability,
         "status": agent.status.to_string(),
         "project": agent.project.as_ref().map(|p| p.name()),
@@ -1974,12 +2000,18 @@ fn brief_agent(agent: &agentdocker_core::AgentRecord) -> Value {
 }
 
 /// Verbose records keep derived readiness alongside the persisted evidence.
-fn whole_agent(agent: &agentdocker_core::AgentRecord) -> Value {
+fn whole_agent(
+    agent: &agentdocker_core::AgentRecord,
+    sources: &[agentdocker_core::AgentRecord],
+) -> Value {
     let mut record = json!(agent);
     record["input_readiness"] = json!(agentdocker_core::InputReadiness::for_agent(
         agent,
         chrono::Utc::now()
     ));
+    if let Some(fix) = agent_fix(agent, sources) {
+        record["fix"] = json!(fix);
+    }
     // What `run -e` set is the person's to see, not every model's that
     // asks (a browser agent's among them): the names stay, the values go.
     if let Some(env) = record["spec"]["env"].as_object_mut() {
@@ -2059,9 +2091,11 @@ fn render(response: Response, verbose: bool) -> Value {
             &json!({ "contests": contests.iter().map(brief_contest).collect::<Vec<_>>() }),
             false,
         ),
-        Response::Agent { agent } => text_result(&brief_agent(&agent), false),
+        Response::Agent { agent } => {
+            text_result(&brief_agent(&agent, std::slice::from_ref(&agent)), false)
+        }
         Response::Agents { agents, .. } => text_result(
-            &json!({ "agents": agents.iter().map(brief_agent).collect::<Vec<_>>() }),
+            &json!({ "agents": agents.iter().map(|a| brief_agent(a, &agents)).collect::<Vec<_>>() }),
             false,
         ),
         Response::Lease { lease } => text_result(&brief_lease(&lease), false),
@@ -2088,9 +2122,11 @@ fn render_whole(response: Response) -> Value {
             &json!({ "error": message, "code": code, "details": details }),
             true,
         ),
-        Response::Agent { agent } => text_result(&whole_agent(&agent), false),
+        Response::Agent { agent } => {
+            text_result(&whole_agent(&agent, std::slice::from_ref(&agent)), false)
+        }
         Response::Agents { agents, .. } => text_result(
-            &json!({ "agents": agents.iter().map(whole_agent).collect::<Vec<_>>() }),
+            &json!({ "agents": agents.iter().map(|a| whole_agent(a, &agents)).collect::<Vec<_>>() }),
             false,
         ),
         Response::Sent {
@@ -2380,7 +2416,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "inspect_agent",
-            "description": "Inspect an agent by id, id prefix, or name. input_readiness is session_ended, unverified, paused, stale, awaiting_first_receipt or verified. Verified means a fresh receiver and a prior receipt for this process, not receipt of your message or provider availability. provider_availability reports known limits. Hooks/MCP contact alone cannot prove idle wake. Use verbose for full records plus derived readiness.",
+            "description": "Inspect an agent by id, id prefix, or name. input_readiness is session_ended, unreachable, unverified, paused, stale, awaiting_first_receipt or verified. Verified means a fresh receiver and a prior receipt for this process, not receipt of your message or provider availability. provider_availability reports known limits; fix, when present, is the one thing that would get it taking messages, provider limits included. Hooks/MCP contact alone cannot prove idle wake. Use verbose for full records plus derived readiness.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "agent": { "type": "string" }, "verbose": verbose.clone() },
@@ -3022,7 +3058,7 @@ mod tests {
             chrono::Utc::now(),
         );
         agent.status = agentdocker_core::AgentStatus::Running;
-        let whole = whole_agent(&agent);
+        let whole = whole_agent(&agent, std::slice::from_ref(&agent));
         assert_eq!(whole["spec"]["env"]["API_TOKEN"], REDACTED);
         for rendered in [
             render(
@@ -3974,15 +4010,22 @@ mod tests {
 
     #[test]
     fn send_advice_names_unbound_recipients_without_claiming_message_receipt() {
+        let checkout = if cfg!(windows) {
+            r"C:\work\alpha"
+        } else {
+            "/work/alpha"
+        };
         let mut agent = agentdocker_core::AgentRecord::new(
             agentdocker_core::AgentSpec {
                 name: "Claude reviewer".into(),
                 runtime: "claude-code".into(),
+                workdir: Some(checkout.into()),
                 ..Default::default()
             },
             false,
             Utc::now(),
         );
+        agent.project = Some(agentdocker_core::ProjectRef::directory(checkout));
         agent.status = agentdocker_core::AgentStatus::Running;
         agent
             .spec
@@ -4013,6 +4056,221 @@ mod tests {
                 .unwrap()
                 .contains("claude --resume resume-me")
         );
+        assert_eq!(
+            text["recipient_readiness"]["details"][0]["fix"]["kind"],
+            "reconnect"
+        );
+    }
+
+    /// Sessions in every readiness state, of the runtimes that differ, and
+    /// a provider block where one applies: what the surfaces are checked on.
+    fn readiness_cases() -> Vec<(
+        agentdocker_core::AgentRecord,
+        Option<agentdocker_core::ProviderIssueKind>,
+    )> {
+        use agentdocker_core::{
+            AdapterContact, AdapterKind, AgentRecord, AgentSpec, AgentStatus, InputDelivery,
+        };
+        let birth = Utc::now() - chrono::Duration::minutes(10);
+        let delivery = |paused: bool, reported_at| InputDelivery {
+            process_started_at: birth,
+            paused,
+            pause_reason: None,
+            reported_at,
+            received: None,
+            received_at: None,
+        };
+        let mut cases = Vec::new();
+        for runtime in ["claude-code", "codex", "opencode", "custom"] {
+            for state in [
+                "ended",
+                "blocked",
+                "paused",
+                "silent",
+                "unreachable",
+                "away",
+                "waits",
+            ] {
+                let mut agent = AgentRecord::new(
+                    AgentSpec {
+                        name: format!("{runtime}-{state}"),
+                        runtime: runtime.into(),
+                        workdir: Some("/work/alpha".into()),
+                        labels: [("session_id".to_owned(), "1a2b3c4d".to_owned())].into(),
+                        ..Default::default()
+                    },
+                    false,
+                    birth,
+                );
+                agent.status = AgentStatus::Running;
+                agent.started_at = Some(birth);
+                agent.process_started_at = Some(birth);
+                let mut block = None;
+                match state {
+                    "ended" => agent.status = AgentStatus::Exited { code: Some(0) },
+                    "blocked" => {
+                        agent.input_delivery = Some(delivery(false, Utc::now()));
+                        block = Some(agentdocker_core::ProviderIssueKind::Rate);
+                    }
+                    "paused" => agent.input_delivery = Some(delivery(true, Utc::now())),
+                    "silent" => agent.input_delivery = Some(delivery(false, birth)),
+                    "away" => {
+                        agent.process_started_at = None;
+                        agent.session_contact = Some(agentdocker_core::SessionContact {
+                            adapter: AdapterKind::Hooks,
+                            observed_at: birth - chrono::Duration::days(1),
+                        });
+                    }
+                    "waits" => {
+                        agent.adapter_contacts.insert(
+                            AdapterKind::Hooks,
+                            AdapterContact {
+                                process_started_at: birth,
+                                observed_at: birth,
+                            },
+                        );
+                    }
+                    _ => {}
+                }
+                cases.push((agent, block));
+            }
+        }
+        cases
+    }
+
+    /// `list_agents` decides each shown agent's fix among every record the
+    /// daemon holds: an ended session in another project whose unresolved
+    /// quota block it shares holds it, as `send` and `ps` say, though that
+    /// session is no row of the list. Only the rows are narrowed, by
+    /// project and by `all`.
+    #[tokio::test]
+    async fn list_agents_decides_fixes_among_records_it_does_not_show() {
+        use agentdocker_core::{
+            AgentRecord, AgentSpec, AgentStatus, InputDelivery, ProjectRef, ProviderAvailability,
+            ProviderIssue, ProviderIssueKind,
+        };
+        let now = Utc::now();
+        let quota = |name: &str, project: &str| {
+            let mut agent = AgentRecord::new(
+                AgentSpec {
+                    name: name.into(),
+                    runtime: "codex".into(),
+                    provider: Some("fixture-provider".into()),
+                    labels: [("provider-quota".to_owned(), "shared".to_owned())].into(),
+                    ..AgentSpec::default()
+                },
+                false,
+                now,
+            );
+            agent.id = format!("{name:0>32}").into();
+            agent.project = Some(ProjectRef::directory(project));
+            agent
+        };
+        let mut receiver = quota("receiver", "/work/alpha");
+        receiver.status = AgentStatus::Running;
+        receiver.process_started_at = Some(now);
+        receiver.input_delivery = Some(InputDelivery {
+            process_started_at: now,
+            paused: false,
+            pause_reason: None,
+            reported_at: now,
+            received: None,
+            received_at: None,
+        });
+        let mut source = quota("source", "/work/beta");
+        source.status = AgentStatus::Exited { code: Some(1) };
+        source.provider_availability = Some(ProviderAvailability {
+            process_started_at: now,
+            observed_at: now,
+            issue: Some(ProviderIssue {
+                quota_group: Some("shared".into()),
+                ..ProviderIssue::local(ProviderIssueKind::Usage)
+            }),
+            cleared_observation: None,
+            retries: 0,
+        });
+        let mut gone = quota("gone", "/work/alpha");
+        gone.status = AgentStatus::Exited { code: Some(0) };
+        let mut me = quota("me", "/work/alpha");
+        me.status = AgentStatus::Running;
+        let everyone = vec![receiver.clone(), source.clone(), gone.clone()];
+        for all in [false, true] {
+            let s = server(vec![
+                Response::Agent { agent: me.clone() },
+                Response::Agents {
+                    aliases: Default::default(),
+                    agents: everyone.clone(),
+                },
+            ]);
+            let text = tool_text(
+                &s.handle(rpc(
+                    1,
+                    "tools/call",
+                    json!({ "name": "list_agents", "arguments": { "all": all } }),
+                ))
+                .await
+                .unwrap(),
+            );
+            assert!(
+                s.backend
+                    .requests()
+                    .iter()
+                    .any(|r| matches!(r, Request::List { all: true, .. })),
+                "every record is fetched as a source"
+            );
+            let rows = text["agents"].as_array().unwrap();
+            let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
+            assert_eq!(
+                names,
+                if all {
+                    vec!["receiver", "gone"]
+                } else {
+                    vec!["receiver"]
+                },
+                "another project's source is never a row; ended ones only with all"
+            );
+            assert_eq!(rows[0]["fix"], json!({"kind": "wait_for_provider"}));
+            let decided = agentdocker_core::readiness::decide_among(&receiver, &everyone, now);
+            assert_eq!(rows[0]["fix"], json!(decided.fix), "what send and ps say");
+        }
+    }
+
+    /// The CLI's `send` and `ps --input-details` lines and the MCP send
+    /// result say, for the same session, exactly what the one readiness
+    /// decision says: its label, its fix and the guidance for it.
+    #[test]
+    fn the_cli_and_the_mcp_tools_render_the_one_decision() {
+        let now = Utc::now();
+        for (agent, block) in readiness_cases() {
+            let decision = agentdocker_core::readiness::decide(&agent, now, block);
+            let readiness =
+                agentdocker_core::RecipientReadiness::for_agent(&agent, now, block).unwrap();
+            let guidance = decision.guidance(&agent.spec.runtime, &agent.id);
+            let [said, advice] = crate::format::recipient_lines(&readiness);
+            assert!(said.ends_with(decision.state.label()), "{said}");
+            assert_eq!(advice.trim(), guidance);
+            let mut report = agentdocker_core::SendReadiness::default();
+            report.observe(Some(readiness));
+            let result = render_whole(Response::Sent {
+                message: "m1".to_owned().into(),
+                subscribers: 0,
+                recipient_readiness: Some(report),
+            });
+            let text: Value =
+                serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+            let detail = &text["recipient_readiness"]["details"][0];
+            assert_eq!(detail["fix"], json!(decision.fix), "{}", agent.spec.name);
+            assert_eq!(detail["guidance"], guidance);
+            // An agent inspecting it is told the same fix.
+            let brief = brief_agent(&agent, std::slice::from_ref(&agent));
+            if block.is_none() {
+                let expected = match decision.fix {
+                    agentdocker_core::readiness::Fix::None => Value::Null,
+                    ref fix => json!(fix),
+                };
+                assert_eq!(brief["fix"], expected, "{}", agent.spec.name);
+            }
+        }
     }
 
     #[test]

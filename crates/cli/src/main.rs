@@ -2424,9 +2424,7 @@ async fn run() -> Result<()> {
             if input_details {
                 let now = chrono::Utc::now();
                 for agent in &agents {
-                    let blocked = agentdocker_core::provider_block(agent, sources)
-                        .and_then(|(_, state)| state.issue.as_ref())
-                        .map(|issue| issue.kind);
+                    let blocked = agentdocker_core::readiness::provider_issue(agent, sources);
                     if let Some(issue) =
                         agentdocker_core::RecipientReadiness::for_agent(agent, now, blocked)
                     {
@@ -5380,17 +5378,9 @@ fn print_agents(
                 },
                 if a.spec.runtime == agentdocker_core::HUMAN_RUNTIME {
                     "App inbox".into()
-                } else if let Some((_, state)) = agentdocker_core::provider_block(a, input_sources)
-                {
-                    state
-                        .issue
-                        .as_ref()
-                        .expect("provider block")
-                        .kind
-                        .label()
-                        .into()
                 } else {
-                    agentdocker_core::InputReadiness::for_agent(a, chrono::Utc::now())
+                    agentdocker_core::readiness::decide_among(a, input_sources, chrono::Utc::now())
+                        .state
                         .label()
                         .into()
                 },
