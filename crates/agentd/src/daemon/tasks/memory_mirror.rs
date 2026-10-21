@@ -48,6 +48,10 @@ pub(in crate::daemon) struct Mirrored {
     pub processing: BTreeSet<String>,
     #[serde(default)]
     pub pending: BTreeSet<String>,
+    /// The last processing id looked at again: the next run goes on from
+    /// it, so every one is looked at in turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -60,6 +64,7 @@ impl Mirrored {
             ids: BTreeSet::new(),
             processing: BTreeSet::new(),
             pending: BTreeSet::new(),
+            checked: None,
             updated_at: None,
         }
     }
@@ -103,11 +108,16 @@ enum Status {
     Failed,
 }
 
-fn status(word: Option<&str>) -> Status {
-    match word {
-        Some("done") => Status::Done,
-        Some("failed") => Status::Failed,
-        _ => Status::Processing,
+/// A status the contract names, or none: an answer without one is not an
+/// answer to act on.
+fn status(word: Option<&str>) -> Option<Status> {
+    match word? {
+        "done" => Some(Status::Done),
+        "failed" => Some(Status::Failed),
+        "unknown" | "queued" | "extracting" | "chunking" | "embedding" | "indexing" => {
+            Some(Status::Processing)
+        }
+        _ => None,
     }
 }
 
@@ -154,10 +164,19 @@ impl Server {
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             .ok_or(())
             .map_err(|_| "removing memories gave an answer that is not JSON".to_owned())?;
-        let failed: BTreeSet<&str> = answer["errors"]
-            .as_array()
-            .into_iter()
-            .flatten()
+        // The contract's answer, or nothing is taken as deleted.
+        let (Some(_), Some(errors)) = (answer["count"].as_u64(), answer["errors"].as_array())
+        else {
+            return Err("removing memories gave an answer the contract does not".to_owned());
+        };
+        if errors
+            .iter()
+            .any(|e| !e["id"].is_string() || !e["error"].is_string())
+        {
+            return Err("removing memories gave an answer the contract does not".to_owned());
+        }
+        let failed: BTreeSet<&str> = errors
+            .iter()
             .filter(|e| {
                 !e["error"]
                     .as_str()
@@ -203,7 +222,8 @@ impl Server {
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             .ok_or(())
             .map_err(|_| "adding a memory gave an answer that is not JSON".to_owned())?;
-        Ok(status(answer["status"].as_str()))
+        status(answer["status"].as_str())
+            .ok_or_else(|| "adding a memory gave no status the contract names".to_owned())
     }
 
     /// One document's status now; `None` when the server has no such one.
@@ -224,7 +244,9 @@ impl Server {
                     .and_then(|text| serde_json::from_str::<Value>(&text).ok())
                     .ok_or(())
                     .map_err(|_| "checking a memory gave an answer that is not JSON".to_owned())?;
-                Ok(Some(status(answer["system"]["status"].as_str())))
+                status(answer["system"]["status"].as_str())
+                    .map(Some)
+                    .ok_or_else(|| "checking a memory gave no status the contract names".to_owned())
             }
             code => Err(format!("checking a memory was refused (HTTP {code})")),
         }
@@ -365,12 +387,18 @@ impl Daemon {
             return;
         }
         let mut held = self.mirror_state(&project, &destination);
-        // What was already processing there is looked at again: what is
-        // sent below is left until the next run.
+        // What was already processing there is looked at again, in turn
+        // from where the last run stopped: what is sent below is left until
+        // the next run.
+        let after = held.checked.clone().unwrap_or_default();
         let checking: Vec<String> = held
             .processing
-            .iter()
-            .take(CHECKS_PER_RUN)
+            .range::<String, _>((
+                std::ops::Bound::Excluded(&after),
+                std::ops::Bound::Unbounded,
+            ))
+            .chain(held.processing.iter())
+            .take(CHECKS_PER_RUN.min(held.processing.len()))
             .cloned()
             .collect();
         for id in checking {
@@ -378,15 +406,21 @@ impl Daemon {
             match tokio::task::spawn_blocking(move || server.check(&asked)).await {
                 Ok(Ok(Some(Status::Done))) => {
                     held.processing.remove(&id);
-                    held.ids.insert(id);
+                    held.ids.insert(id.clone());
                 }
                 Ok(Ok(Some(Status::Processing))) => {}
-                // Failed there, or gone: sent again next run.
-                Ok(Ok(Some(Status::Failed) | None)) => {
+                // Failed there: it may still be there, and is sent again.
+                Ok(Ok(Some(Status::Failed))) => {
+                    held.processing.remove(&id);
+                    held.pending.insert(id.clone());
+                }
+                // Confirmed absent: sent again if still said.
+                Ok(Ok(None)) => {
                     held.processing.remove(&id);
                 }
                 Ok(Err(_)) | Err(_) => break,
             }
+            held.checked = Some(id);
         }
         let mut added = 0;
         for memory in sending {
@@ -429,7 +463,11 @@ mod tests {
     struct Fake {
         post: (u16, &'static str),
         delete_errors: Vec<String>,
+        /// Answer a delete with a body the contract does not have.
+        delete_malformed: bool,
         get: &'static str,
+        /// A status for one document's check, over `get`.
+        get_one: std::collections::HashMap<String, &'static str>,
         seen: Vec<(String, String, String)>,
     }
 
@@ -486,9 +524,17 @@ mod tests {
                             .map(|id| json!({"id": id, "error": "temporarily locked"}))
                             .collect();
                         let count = asked["ids"].as_array().unwrap().len() - errors.len();
-                        (200, json!({"count": count, "errors": errors}).to_string())
+                        if fake.delete_malformed {
+                            (200, json!({"count": 0}).to_string())
+                        } else {
+                            (200, json!({"count": count, "errors": errors}).to_string())
+                        }
                     }
-                    _ => (200, json!({"system": {"status": fake.get}}).to_string()),
+                    _ => {
+                        let id = path.rsplit('/').next().unwrap_or("").to_owned();
+                        let status = fake.get_one.get(&id).copied().unwrap_or(fake.get);
+                        (200, json!({"system": {"status": status}}).to_string())
+                    }
                 };
                 fake.seen.push((format!("{method} {path}"), auth, body));
                 drop(fake);
@@ -724,6 +770,89 @@ mod tests {
                 .ids
                 .is_empty()
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_document_that_failed_there_is_still_deleted_when_forgotten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, agent, project) = project(&tmp).await;
+        let (url, fake) = server((200, "queued"));
+        configure(&tmp, &url, project.as_str(), true, "sm-test-key-0123456789");
+        let id = keep(&daemon, &agent, "deploys go out on Mondays").await;
+        daemon.mirror_once().await;
+        fake.lock().unwrap().get = "failed";
+        daemon.mirror_once().await;
+        let now = held(&daemon, &project, &url, "sm-test-key-0123456789");
+        assert!(
+            now.pending.contains(&id),
+            "failed there: still may be there"
+        );
+        forget(&daemon, &agent, &id).await;
+        daemon.mirror_once().await;
+        let fake = fake.lock().unwrap();
+        let (line, _, body) = fake
+            .seen
+            .iter()
+            .find(|(l, _, _)| l.starts_with("DELETE"))
+            .unwrap();
+        assert!(line.starts_with("DELETE"));
+        assert_eq!(
+            serde_json::from_str::<Value>(body).unwrap()["ids"],
+            json!([id])
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_answer_the_contract_does_not_have_clears_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, agent, project) = project(&tmp).await;
+        let (url, fake) = server((200, "done"));
+        configure(&tmp, &url, project.as_str(), true, "sm-test-key-0123456789");
+        let id = keep(&daemon, &agent, "tests run with nextest").await;
+        daemon.mirror_once().await;
+        fake.lock().unwrap().delete_malformed = true;
+        forget(&daemon, &agent, &id).await;
+        daemon.mirror_once().await;
+        assert!(
+            held(&daemon, &project, &url, "sm-test-key-0123456789")
+                .ids
+                .contains(&id)
+        );
+        // And a POST answered with no status is not an addition.
+        fake.lock().unwrap().post = (200, "");
+        let other = keep(&daemon, &agent, "the board has a review lane").await;
+        daemon.mirror_once().await;
+        let now = held(&daemon, &project, &url, "sm-test-key-0123456789");
+        assert!(now.pending.contains(&other) && !now.ids.contains(&other));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn every_document_processing_there_is_looked_at_in_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, agent, project) = project(&tmp).await;
+        let (url, fake) = server((200, "queued"));
+        configure(&tmp, &url, project.as_str(), true, "sm-test-key-0123456789");
+        for n in 0..25 {
+            keep(&daemon, &agent, &format!("fact number {n} about the build")).await;
+        }
+        daemon.mirror_once().await;
+        let processing = held(&daemon, &project, &url, "sm-test-key-0123456789").processing;
+        assert_eq!(processing.len(), 25);
+        // The early ones stay queued; the last one has failed there.
+        let last = processing.iter().next_back().unwrap().clone();
+        {
+            let mut fake = fake.lock().unwrap();
+            fake.get = "queued";
+            fake.get_one.insert(last.clone(), "failed");
+        }
+        daemon.mirror_once().await;
+        daemon.mirror_once().await;
+        let now = held(&daemon, &project, &url, "sm-test-key-0123456789");
+        assert!(now.pending.contains(&last), "the late one was looked at");
+        assert!(!now.processing.contains(&last));
     }
 
     #[cfg(unix)]
