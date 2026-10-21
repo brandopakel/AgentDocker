@@ -3724,6 +3724,9 @@ async fn run() -> Result<()> {
                     &agentdocker_host::procinfo::executable_path()?,
                 )?;
             }
+            // Roles are given after the launch, as the person: a launch
+            // never carries one in.
+            let roles = spec.labels.remove(agentdocker_core::agent::ROLE_LABEL);
             let request = match args.image_build {
                 Some(build) => Request::RunContainer {
                     spec,
@@ -3742,6 +3745,9 @@ async fn run() -> Result<()> {
             };
             if let Response::Agent { agent } = client.call(&request).await? {
                 println!("{}", agent.id);
+                if let Some(roles) = roles {
+                    teams::give_roles(&client, agent.id.as_str(), &roles).await;
+                }
             }
         }
         Command::Register(args) => {

@@ -17,6 +17,10 @@ import tempfile
 import time
 from pathlib import Path
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+
 def smoke(binary_dir, output):
     binary_dir = binary_dir.resolve(strict=True)
     output = output.absolute()

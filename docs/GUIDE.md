@@ -916,6 +916,14 @@ Newest first. Only what changes how the product is used.
   under headings, empty-state captions, key footers and section intros are
   gone. It is set in IBM Plex Sans, with an ink primary action.
 
+- **Only you act as you.** A command or tool that acts as you — gives a
+  role, answers a question or an approval, pauses a project, merges —
+  is refused when it comes from inside an agent's session, whatever it
+  says about who sent it: the daemon checks which process is asking. Run
+  those from your own terminal or the app. A launch no longer carries a
+  role in: `agentdocker run --label role=…` and an Agentfile's
+  `labels = { role = … }` give the roles after the launch, as you.
+
 - **A quieter, neutral desktop.** The navy rail is retired for a neutral
   sidebar one step off the page, in both appearances; colour is kept for
   state and the one primary action. Every agent row is one line that leads
