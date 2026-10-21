@@ -141,10 +141,10 @@ impl<'a> Naming<'a> {
 
     /// One provider session the daemon holds twice — live records with the
     /// same process birth, runtime, project and named session — and this
-    /// is not the record that stays. The daemon folds such a record into
-    /// the one that stays as soon as nothing would be lost; until it has,
-    /// the session is one row here. Nothing else is evidence: no name,
-    /// directory or pid alone.
+    /// is not the record that stays. The daemon answers the session's
+    /// registrations with the one that stays and leaves the other until an
+    /// offline identity repair; the session is one row here. Nothing else is
+    /// evidence: no name, directory or pid alone.
     fn duplicate(&self, agent: &AgentRecord) -> bool {
         // Cheap refusals first: lists ask this of every record, most of
         // them ended.
@@ -383,15 +383,15 @@ mod tests {
         assert_eq!(names.display(&former), names.display(&current));
     }
 
-    /// The daemon can hold one session twice for a while: a hook that ran
-    /// from a subdirectory registered a second live record for the same
+    /// The daemon can hold one session twice: a hook that ran from a
+    /// subdirectory once registered a second live record for the same
     /// process and session (`claude-c960824c` beside `claude-code-4321`),
-    /// and the daemon folds it only once nothing would be lost. Until then
-    /// the session is one row — the record that stays — and is counted
-    /// once. Two sessions in one process, or records without a known
-    /// process birth, are not one session.
+    /// and nothing folds it while both live. The session is one row — the
+    /// record that stays — and is counted once. Two sessions in one
+    /// process, or records without a known process birth, are not one
+    /// session.
     #[test]
-    fn one_session_held_twice_is_one_row_until_the_daemon_folds_it() {
+    fn one_session_held_twice_is_one_row() {
         let born = Utc::now() - Duration::hours(1);
         let session = |name: &str, id: &str, session: &str, minutes: i64| {
             let mut record = record(name, "claude-code", id, "/p/a");

@@ -506,7 +506,7 @@ when its PID and process birth time both match. Separate registrations are never
 merged by display name. Two live records for one provider session — the same
 process (PID and birth time), tool, project and session id — are one row and one count everywhere (the project's live count, the
 sessions list, a project's agents, Needs you), under the record that stays,
-until the daemon folds the other into it. An agent that came in through
+which is also the one the session's registrations reach. An agent that came in through
 the connector is named for it — its tool reads **Claude (connector)** or
 **ChatGPT (connector)**, not the browser extension, since any client of the
 account may be calling — and has no process here; it counts as live while it is heard from
