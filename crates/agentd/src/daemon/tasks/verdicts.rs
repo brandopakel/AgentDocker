@@ -2,6 +2,8 @@
 //! the gate over them: documents of their own kind, by project. An agent
 //! holding a role in the project, or the person, gives one; anybody may
 //! ask the gate.
+use std::collections::HashMap;
+
 use super::*;
 use agentdocker_core::gate::{
     self, CodeVerdict, Findings, GATE_ROLE, VERDICTS_PER_PROJECT, full_commit,
@@ -145,6 +147,30 @@ impl Daemon {
             }
         }
         let mut state = lock(&self.state);
+        // What was checked before the branch was read must still hold: the
+        // same record, in the same project, with the same roles.
+        if !actor.human {
+            let now = state.registry.get(&AgentId::from(actor.id.as_str()));
+            let same = now.is_some_and(|now| {
+                record.as_ref().is_some_and(|then| {
+                    now.pid == then.pid
+                        && now.process_started_at == then.process_started_at
+                        && now.project.as_ref().map(ProjectRef::id) == Some(project.clone())
+                        && now.status.is_live()
+                }) && now
+                    .roles()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+                    == roles
+            });
+            if !same {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    "the reviewer changed while its verdict was checked; give it again",
+                );
+            }
+        }
         if let Some(error) = state.write_failure() {
             return error;
         }
@@ -253,24 +279,42 @@ impl Daemon {
         if !self.person_check || peer.is_some_and(|(pid, _)| pid == std::process::id()) {
             return None;
         }
-        let target = {
+        // Every live agent's own process and bound input controller, by pid
+        // and birth: the processes a session is known by.
+        let (target, sessions) = {
             let state = lock(&self.state);
             // A name nobody has is the handler's to answer.
             let id = state.registry.resolve(agent).ok()?;
-            let record = state.registry.get(&id)?;
-            if super::super::humans::is_human(record) {
+            if state
+                .registry
+                .get(&id)
+                .is_some_and(super::super::humans::is_human)
+            {
                 return None;
             }
-            (record.pid, record.process_started_at)
+            let mut sessions: HashMap<u32, (DateTime<Utc>, AgentId)> = HashMap::new();
+            for record in state
+                .registry
+                .live()
+                .filter(|r| !super::super::humans::is_human(r))
+            {
+                if let (Some(pid), Some(born)) = (record.pid, record.process_started_at) {
+                    sessions.insert(pid, (born, record.id.clone()));
+                }
+                if let Some(binding) = &record.input_binding {
+                    sessions.insert(
+                        binding.controller.pid,
+                        (binding.controller.started_at, record.id.clone()),
+                    );
+                }
+            }
+            (id, sessions)
         };
         let refuse = |why: &str| {
             Some(Response::error(
                 ErrorCode::Forbidden,
                 format!("a verdict is given from the reviewer's own session, and {why}"),
             ))
-        };
-        let (Some(pid), Some(born)) = target else {
-            return refuse("this reviewer has no process to check it against");
         };
         let Some((sender, Some(sender_born))) = peer else {
             return refuse("the process that sent it cannot be identified");
@@ -283,10 +327,17 @@ impl Daemon {
         else {
             return refuse("its sender's parents could not be read");
         };
+        // The nearest session above the sender, itself included, must be the
+        // reviewer's: an agent the reviewer started is a session of its own.
         let mut current = sender;
         for _ in 0..64 {
-            if current == pid && agentdocker_host::procinfo::start_time(current) == Some(born) {
-                return None;
+            if let Some((born, owner)) = sessions.get(&current)
+                && agentdocker_host::procinfo::start_time(current) == Some(*born)
+            {
+                if *owner == target {
+                    return None;
+                }
+                return refuse("it was sent from inside another agent's session");
             }
             let Some(process) = table.iter().find(|p| p.pid == current) else {
                 break;
@@ -641,7 +692,7 @@ mod tests {
     /// Over the real socket: a verdict naming a reviewer is refused unless
     /// the reviewer's own process sent it, or one of its parents did.
     #[cfg(unix)]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn only_the_reviewer_s_own_session_gives_its_word() {
         use std::io::Write as _;
         let tmp = tempfile::tempdir().unwrap();
@@ -702,6 +753,76 @@ mod tests {
                 if message.contains("outside it")),
             "{reply:?}"
         );
+        // An agent the reviewer started, registered as itself, saying it is
+        // the reviewer: its own session is the nearest, so it is refused.
+        {
+            use std::io::BufRead as _;
+            let inner = tmp.path().join("inner.sh");
+            let asked = tmp.path().join("asked");
+            std::fs::write(
+                &inner,
+                "#!/bin/sh\nwhile [ ! -f \"$ASKED\" ]; do sleep 0.05; done\nexec python3 -c \"$CLIENT\" \"$SOCK\" \"$(cat \"$ASKED\")\"\n",
+            )
+            .unwrap();
+            let mut nesting = std::process::Command::new("sh")
+                .arg("-c")
+                .arg("sh \"$0\" & echo $!; wait")
+                .arg(&inner)
+                .env("ASKED", &asked)
+                .env("CLIENT", client)
+                .env("SOCK", &daemon.socket)
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut out = std::io::BufReader::new(nesting.stdout.take().unwrap());
+            let mut line = String::new();
+            out.read_line(&mut line).unwrap();
+            let nested: u32 = line.trim().parse().unwrap();
+            let outer = match daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: "outer-reviewer".into(),
+                        workdir: Some(repo.clone()),
+                        ..AgentSpec::default()
+                    },
+                    pid: Some(nesting.id()),
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("{other:?}"),
+            };
+            give_role(&daemon, &outer.id, "reviewer");
+            let registered = daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: "nested".into(),
+                        workdir: Some(repo.clone()),
+                        ..AgentSpec::default()
+                    },
+                    pid: Some(nested),
+                    session: None,
+                })
+                .await;
+            assert!(
+                matches!(registered, Response::Agent { .. }),
+                "{registered:?}"
+            );
+            let request =
+                serde_json::to_string(&verdict(outer.id.as_str(), None, "feature/y", A, "approve"))
+                    .unwrap();
+            std::fs::write(&asked, request).unwrap();
+            let mut reply = String::new();
+            out.read_line(&mut reply).unwrap();
+            let reply: Response = serde_json::from_str(&reply).unwrap();
+            assert!(
+                matches!(&reply, Response::Error { code: ErrorCode::Forbidden, message, .. }
+                    if message.contains("another agent's session")),
+                "{reply:?}"
+            );
+            let _ = nesting.wait();
+        }
         // The reviewer's own process.
         let reply = send(reviewer_process, request).await;
         assert!(matches!(reply, Response::CodeVerdict { .. }), "{reply:?}");

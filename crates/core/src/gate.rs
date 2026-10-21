@@ -130,19 +130,35 @@ impl CodeVerdict {
     }
 }
 
-/// Each reviewer's standing word on each branch: its latest approval or
-/// request for changes. A comment is never one.
+/// Each reviewer's standing word on each branch, for every role a gate may
+/// be asked about: the latest approval or request for changes among the
+/// verdicts that count for that role (a comment is never one). A word one
+/// role's gate still reads stands, whatever a later word in another role
+/// says.
 pub fn standing(verdicts: &[CodeVerdict]) -> std::collections::BTreeSet<&str> {
-    let mut latest: std::collections::BTreeMap<(&str, &AgentId), &CodeVerdict> = Default::default();
-    for verdict in verdicts.iter().filter(|v| v.verdict != Verdict::Comment) {
-        let kept = latest
-            .entry((verdict.branch.as_str(), &verdict.by))
-            .or_insert(verdict);
-        if verdict.order() > kept.order() {
-            *kept = verdict;
+    let mut roles: std::collections::BTreeSet<&str> = verdicts
+        .iter()
+        .flat_map(|v| v.roles.iter().map(String::as_str))
+        .collect();
+    roles.insert(GATE_ROLE);
+    let mut kept = std::collections::BTreeSet::new();
+    for role in roles {
+        let mut latest: std::collections::BTreeMap<(&str, &AgentId), &CodeVerdict> =
+            Default::default();
+        for verdict in verdicts
+            .iter()
+            .filter(|v| v.verdict != Verdict::Comment && v.counts_for(role))
+        {
+            let kept = latest
+                .entry((verdict.branch.as_str(), &verdict.by))
+                .or_insert(verdict);
+            if verdict.order() > kept.order() {
+                *kept = verdict;
+            }
         }
+        kept.extend(latest.values().map(|v| v.id.as_str()));
     }
-    latest.values().map(|v| v.id.as_str()).collect()
+    kept
 }
 
 /// Which of a project's verdicts to forget so that `given` fits under
@@ -381,6 +397,32 @@ mod tests {
             to_forget(only_standing, &replaced, 2).unwrap(),
             [all[0].id.clone()]
         );
+    }
+
+    #[test]
+    fn forgetting_keeps_a_word_another_role_s_gate_still_reads() {
+        // R asked for changes as a reviewer, then approved holding only the
+        // tester role; S approved as a reviewer. The reviewer gate is held
+        // by R's changes, and must still be after forgetting.
+        let all = vec![
+            verdict("r", &["reviewer"], A, Verdict::Changes, 0),
+            verdict("r", &["tester"], A, Verdict::Approve, 1),
+            verdict("s", &["reviewer"], A, Verdict::Approve, 2),
+            verdict("s", &["reviewer"], A, Verdict::Comment, 3),
+        ];
+        let before = gate(&all, "feature/x", A, GATE_ROLE);
+        assert!(matches!(before, Gate::Changes { .. }));
+        let next = verdict("s", &["reviewer"], A, Verdict::Comment, 9);
+        let forget = to_forget(&all, &next, all.len()).unwrap();
+        assert_eq!(forget, [all[3].id.clone()], "only the comment goes");
+        let after: Vec<CodeVerdict> = all
+            .iter()
+            .filter(|v| !forget.contains(&v.id))
+            .cloned()
+            .chain([next])
+            .collect();
+        assert_eq!(gate(&after, "feature/x", A, GATE_ROLE), before);
+        assert!(gate(&after, "feature/x", A, "tester").approved());
     }
 
     #[test]
