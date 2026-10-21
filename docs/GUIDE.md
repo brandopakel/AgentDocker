@@ -843,6 +843,11 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **An idle daemon rests.** With nothing watching — no app open, no
+  `agentdocker events`, no webhook — the daemon no longer scans the process
+  table every five seconds; `agentdocker ps` and the app still scan when they
+  look.
+
 - **Choose the model and effort.** Launching Claude or Codex from the app
   offers **Model** and **Effort**, starting at the provider's own defaults,
   and a session's panel says which it runs (`gpt-6-astra · xhigh`).
