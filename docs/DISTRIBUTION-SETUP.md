@@ -1,42 +1,13 @@
 # Setting up distribution
 
 The release workflow generates the Homebrew formula and optional desktop cask.
-Apple signing/notarization still needs a private developer identity and actual
-release acceptance. Other engineering and platform work is tracked in
-[Remaining work](REMAINING-WORK.md); distribution setup is one part of delivery.
-
-Published beta.13 adds bounded emitted-byte accounting and Linux session-owner
-reaping of orphaned descendants. Emitted bytes remain separate from provider
-tokens and carry partial coverage; collection stays opt-in. Ledger 15/state
-schema 27 is unchanged. Actual hosted beta.12 → beta.13 rollback and reapply
-passed: recorded accounting metadata, event cursors and tracking totals survived
-all three stopped-daemon generations, with exact-ID deduplication and no database
-restore. This does not prove live handover or provider continuity. Beta.9/schema26
-remains incompatible. Included final-source review, CI and hosted acceptance
-are recorded in [the verification index](verification/INDEX.md).
-
-The unpublished beta.14 candidate includes the Windows service staging,
-native Codex launch configuration and watcher responsiveness corrections, plus
-longer pending-question retention, durable question-stream recovery, accurate
-activity/pause reporting and the desktop Codex trust notice. Ledger 15/state
-schema 27 is unchanged. The candidate still requires final versioned-source
-review and CI, protected-tag publication and hosted beta.13 → beta.14 install,
-update, rollback, reapply and service acceptance. Earlier candidate trials do
-not replace those hosted checks. Stable v0.1.0 and Homebrew remain unchanged.
+Apple signing and notarization need a private developer identity.
 
 ## Release workflow and retry policy
 
 A protected `v*` tag triggers `.github/workflows/release.yml`; editing the
 workflow does not publish anything. The tag version must match `Cargo.toml`
-and the recorded build must have clean source. The current published preview is
-`0.2.0-beta.13`, reviewed source `c9e03f64`; all 31 hosted assets and both preview
-feeds passed verification. Mac ARM64, hosted Ubuntu and a Windows runner passed
-bounded beta.12/schema27 → beta.13/schema27 update, rollback and reapply. Unix
-terminal, graphical, daemon-service and selective pruning checks passed; Windows
-hosted lifecycle and daemon/connector service checks passed. Stable signing,
-fresh accounts, independent physical hardware and sleep/reboot remain open in
-[Remaining work](REMAINING-WORK.md).
-Tags exclude `+build` metadata.
+and the recorded build must have clean source. Tags exclude `+build` metadata.
 The workflow builds CLI archives and four native desktop targets: Apple
 Silicon, Intel Mac, Linux x86_64 and Linux ARM64. The graphical Linux packages
 use GNU libc; the separate CLI-only Linux archives use musl.
@@ -56,16 +27,14 @@ and `file://` sources always need that flag. Staying on the preview channel
 skips Gatekeeper's policy assessment only for a build the feed marks
 `local-preview` (ad-hoc, which Gatekeeper would refuse); a Developer-ID-signed
 preview is still assessed. Only `--local-preview` itself skips it for any
-build. A channel with
-nothing published (404) is reported as `published: false`, not as a failure. Prereleases leave the stable latest-release
-endpoint and Homebrew tap unchanged; older maintenance releases cannot move
-either backwards.
+build. A channel with nothing published (404) is reported as `published: false`, not
+as a failure. Prereleases leave the stable latest-release endpoint and Homebrew
+tap unchanged; older maintenance releases cannot move either backwards.
 
 Assets are uploaded to a draft before publication. An upload failure leaves the
 draft for a retry; an already published release is refused. Create releases
 through the workflow, or leave a manually created release as a draft for it to
-finish. A protected-tag run, hosted downloads, update/rollback and independent
-machine acceptance remain necessary; generated assets alone do not establish them.
+finish.
 
 ### Preview update channel
 
@@ -81,16 +50,16 @@ contains only the feed. Download URLs still name immutable versioned releases;
 the stable latest-release endpoint and Homebrew tap remain unchanged. Clients
 keep downloads manual and activation explicit. A stable installation must opt
 into previews; an existing preview installation has already chosen that channel.
-Before the first successful promotion, the channel URL returns 404.
+Until the first promotion, the channel URL returns 404.
 
-The `channel-preview` tag remains at its first promotion's commit; subsequent
+The `channel-preview` tag stays at its first promotion's commit; later
 promotions replace only the feed and its record. Use the feed's versioned URLs
 and source identities, not the channel tag's commit, to identify a build. The
-macOS/Linux feed retains its four fixed targets. Windows installation uses the
+macOS/Linux feed keeps its four fixed targets. Windows installation uses the
 separate `channel-preview-windows` release and `updates-preview-windows.json`
-asset. Published beta.5 verifies that installed channel; beta.4 contains only
-its portable Windows ZIP and cannot serve as an installed baseline. Neither Windows feed is added to the
-four-target feed or the stable update channel.
+asset; a release that carries only the portable Windows ZIP cannot serve as an
+installed baseline. Neither Windows feed is added to the four-target feed or the
+stable update channel.
 
 The publisher checks the actual versioned release, source commit, four target
 assets, sizes and available GitHub digests before copying the feed. Promotions
@@ -108,14 +77,13 @@ If the versioned release is published but channel promotion fails, repair only
 the channel from reviewed `main`:
 
 ```sh
-gh workflow run preview-channel.yml --ref main -f release_tag=v0.2.0-beta.2
+gh workflow run preview-channel.yml --ref main -f release_tag="v<version>"
 ```
 
-Use the actual already-published prerelease tag. This does not rebuild artifacts
+Use the tag of the already-published prerelease. This does not rebuild artifacts
 or edit the versioned release. A new channel stays draft until its uploaded
 feed verifies. Existing channel bodies/assets that do not match the publisher's
-format are preserved and require investigation. Hosted feed and client
-acceptance remain necessary after the first real promotion.
+format are preserved and require investigation.
 
 GitHub's release-by-tag endpoint only returns published releases. On a channel
 404, the publisher also checks the authenticated release inventory for the
@@ -127,23 +95,19 @@ verify uploaded draft assets before exposing the feed.
 
 ## The Homebrew tap
 
-The tap and publishing configuration are present. The release generator builds
-formula checksums from real archives and CI checks Ruby syntax.
-
 A "tap" is just a GitHub repository named `homebrew-<something>` with a
-`Formula/` directory in it. That is the whole mechanism.
+`Formula/` directory in it. That is the whole mechanism. The release generator
+builds formula checksums from real archives and CI checks Ruby syntax.
 
-**Status: done.** The tap exists at
-[brandopakel/homebrew-tap](https://github.com/brandopakel/homebrew-tap),
-carries the v0.1.0 formula, and both `HOMEBREW_TAP_REPOSITORY` and
-`HOMEBREW_TAP_TOKEN` are set on this repository. The formula is available through:
+The tap is [brandopakel/homebrew-tap](https://github.com/brandopakel/homebrew-tap).
+Publishing needs the `HOMEBREW_TAP_REPOSITORY` repository variable
+(`owner/homebrew-tap`) and the `HOMEBREW_TAP_TOKEN` secret on this repository.
+The formula is available through:
 
 ```sh
 brew tap brandopakel/tap
 brew install agentdocker
 ```
-
-Verified by installing it and running both binaries.
 
 Every protected tagged release generates and validates the formula/cask,
 publishes the download assets, then attempts to push the formula to
@@ -151,8 +115,6 @@ publishes the download assets, then attempts to push the formula to
 depends on successful asset publication, preventing an upload failure from
 advancing the tap to unavailable downloads. If the tap token is revoked the
 job warns; the formula and cask remain attached to the run for manual recovery.
-This ordering is implemented; the next tagged release must verify publication
-end to end.
 
 Replacing the token, when it expires: make a *fine-grained* personal
 access token at
@@ -172,8 +134,7 @@ it stays in the shell history afterwards.
 
 Homebrew has two kinds of thing and we need both. A **formula** installs
 commands — `agentdocker` and `agentd`, plus the daemon as a Homebrew service.
-The older v0.1.0 Mac archives also carried the UI; current CLI archives contain
-only the two commands. A **cask** installs an
+CLI archives contain only the two commands. A **cask** installs an
 application, which is what `AgentDocker.app` is: Homebrew puts it in
 `/Applications` and knows how to take it away again.
 
@@ -181,11 +142,8 @@ application, which is what `AgentDocker.app` is: Homebrew puts it in
 produce it, from the SHA-256 of the desktop archives the desktop
 workflow builds. The release publishes both, and the cask is skipped —
 loudly, not silently — when a release has no packaged app, because a
-cask pointing at a download that is not there is worse than no cask.
-
-The template exists, but as of the last recorded September 17 GitHub check the tap's `Casks/`
-directory contains only a README. The install command below becomes available
-only after a release publishes the app cask:
+cask pointing at a download that is not there is worse than no cask. The
+install command is available once a release publishes the app cask:
 
 ```sh
 brew install --cask brandopakel/tap/agentdocker-app
@@ -203,10 +161,7 @@ at `brew upgrade --cask agentdocker-app` rather than installing a second copy
 beside it.
 
 Stable tagged releases require Developer ID signing and notarization before
-publishing a cask. Unsigned prereleases leave the stable tap unchanged. The
-current cask template still contains a legacy unsigned-app caveat; reconcile it
-with the final signed release before publication, rather than promising an
-unsigned stable cask.
+publishing a cask. Unsigned prereleases leave the stable tap unchanged.
 
 ## Every route, one installation
 
@@ -218,9 +173,9 @@ unsigned stable cask.
 | Homebrew formula | `brew install brandopakel/tap/agentdocker` | The two commands and an optional `brew services` daemon | `brew upgrade agentdocker` |
 | Local build | `make install` / `agentdocker desktop install --from` | The same managed installation as the desktop route | `agentdocker desktop update` or another local install |
 
-A release before the desktop archives existed (v0.1.0) has no desktop zip;
-the script says so and installs the commands instead, unless a version was
-pinned, in which case it fails rather than guess.
+A release without a desktop archive has no desktop zip; the script says so and
+installs the commands instead, unless a version was pinned, in which case it
+fails rather than guess.
 
 After an install, update or rollback changes the active desktop release, the
 installer automatically prunes unused owned builds under its installation lock.
@@ -236,24 +191,13 @@ that manual operation; a later activation again keeps only protected builds.
 
 ## Apple Developer ID and notification acceptance
 
-The local app has its icon and native notification-routing implementation.
-The former AppleScript fallback, which could open Script Editor, has been
-removed. A failed notification post retains its inbox message; it does not
-prove the user saw a notification or that a click will route correctly.
-
-An earlier local ad-hoc bundle returned this notification-post error:
-
-```text
-notifications are not permitted: Notifications are not allowed for this application (1)
-```
-
-That probe did not isolate signing from notification authorization and bundle
-registration. Its result does not establish that paying for membership or
-adding a signature alone fixes posting or navigation. The
-notification audit (NOTIFICATION-ROUTING-AUDIT.md in git history) keeps those checks separate:
-actual Notification Center clicks must open the right destination while the app
-is active, backgrounded or closed, including retained drafts and expired targets.
-Physical installed-app acceptance remains open.
+The app has its icon and native notification-routing implementation. A failed
+notification post retains its inbox message; it does not prove the user saw a
+notification or that a click will route correctly. Notification authorization
+and bundle registration are separate from signing, so a signature alone does
+not establish posting or navigation. Actual Notification Center clicks must open
+the right destination while the app is active, backgrounded or closed, including
+retained drafts and expired targets.
 
 The packaging pipeline accepts `--identity` and `--notary-profile` through
 `packaging/desktop/package.py`. Stable Mac releases require a Developer ID
@@ -282,39 +226,33 @@ fails. Credential files are private and are never release artifacts. The jobs
 use ephemeral GitHub-hosted Mac runners.
 
 Verify signing, notarization, stapling and Gatekeeper against the final app/DMG
-on an independent Mac before publication. These acceptance steps remain
-necessary after the credentials are configured.
-
-The source-built app and CLI can continue local testing while release setup is
-unfinished. The current stable CLI/formula remains v0.1.0; the newer installed
-local app is identified by its source commit, not that shared version string.
+on an independent Mac before publication.
 
 Disk-image creation allows at most three attempts when `hdiutil` exits 1 with
 the exact `create failed - Resource busy` diagnostic, waiting two then four
 seconds. Each creation attempt and final image verification has a 180-second
 timeout. Other failures stop packaging. A completed image must pass
-`hdiutil verify` before publication. This mitigates transient contention; it
-does not establish the cause of a runner failure.
+`hdiutil verify` before publication.
 
 The packager retains attempt status, duration and the last 64 KiB of each output
 stream in `OUTPUT-dmg-create.json`, outside the temporary package directory.
 Use a fresh output prefix; existing diagnostics are never overwritten. The
-optional `--dmg-diagnostics` selects another fresh path. Desktop CI
-retain this report even on failure; the manifest records the attempt count and
-whether recovery was needed. Signing and notarization checks still apply.
+optional `--dmg-diagnostics` selects another fresh path. Desktop CI retains this
+report even on failure; the manifest records the attempt count and whether
+recovery was needed.
 
 ## Windows portable preview
 
 The Windows packaging path targets `x86_64-pc-windows-msvc`. It builds a ZIP
 with `agentdocker-ui.exe`, `agentdocker.exe` and `agentd.exe` together in the
 `AgentDocker` folder, build metadata, licenses and opening instructions. The
-packager checks native-build hashes again after copying and the PE x64 executable headers before
-publishing the directory. The manifest and sidecar checksum identify the exact
-archive; this preview is unsigned, without Authenticode. Beta.5 and later also
-publish the separate installed-package manifest and Windows update feed after
-installer lifecycle acceptance. Prerelease tags attach this separately tested Windows portable ZIP;
-stable tags and the four-target update feeds remain macOS/Linux. Windows ARM64
-is not claimed. The beta.2 protected-tag publication passed its native Windows gate.
+packager checks native-build hashes again after copying and the PE x64 executable
+headers before publishing the directory. The manifest and sidecar checksum
+identify the exact archive; the preview is unsigned, without Authenticode.
+Prerelease tags attach this Windows portable ZIP; stable tags and the
+four-target update feeds are macOS/Linux only. After installer lifecycle
+acceptance the release also publishes the installed-package manifest and the
+separate Windows update feed. Windows ARM64 is not supported.
 
 On a native Windows build host, from the repository root in PowerShell:
 
@@ -325,97 +263,65 @@ python scripts/windows_package_smoke.py --native-manifest artifacts/native-build
 ```
 
 The supplied build manifest must match the source-input and executable hashes
-in the binary directory's manifest. The Windows workflow runs this trial before exposing its
-`windows-desktop-preview-x86_64` artifact. It verifies the ZIP, extracts it
-outside the checkout into a path containing spaces and Unicode, verifies every
-executable against the manifest, removes the original staging payload, and runs
-the daemon/CLI/terminal and fresh-home GUI trial on those extracted files.
-The smoke's executable hashes must match the archive's hashes. A checksum,
-runner trial and CI artifact do not establish publisher authentication or
-clean-machine/provider acceptance. Those tests and the user installer, service lifecycle,
-update and rollback path remain in [Remaining work](REMAINING-WORK.md).
-The Windows workflow ran this trial on `13e87591` (run 35666723079): 284 native tests and 51/51 steps on the extracted bytes; the line is in the [verification index](verification/INDEX.md).
+in the binary directory's manifest. The Windows workflow runs this trial before
+exposing its `windows-desktop-preview-x86_64` artifact. It verifies the ZIP,
+extracts it outside the checkout into a path containing spaces and Unicode,
+verifies every executable against the manifest, removes the original staging
+payload, and runs the daemon/CLI/terminal and fresh-home GUI trial on those
+extracted files. The smoke's executable hashes must match the archive's hashes.
+A checksum, runner trial and CI artifact do not establish publisher
+authentication or clean-machine or provider acceptance.
 
-Prerelease tags also build an **unsigned Windows x64 portable ZIP**. The Windows
-job extracts that archive outside the build directory and runs the native
-daemon/CLI/terminal/desktop trial before `release.py windows-preview` prepares
-assets. Promotion checks the clean tag/build provenance, exact archived EXE
-hashes, successful step results, GUI result and screenshot hash. It rechecks the
-staged ZIP before exposing the output directory. A failed Windows build or trial
-blocks the prerelease; stable tags skip this preview-only job.
+Prerelease tags build the archive the same way. The Windows job extracts it
+outside the build directory and runs the native daemon/CLI/terminal/desktop
+trial before `release.py windows-preview` prepares assets. Promotion checks the
+clean tag/build provenance, exact archived EXE hashes, successful step results,
+GUI result and screenshot hash, and rechecks the staged ZIP before exposing the
+output directory. A failed Windows build or trial blocks the prerelease; stable
+tags skip this preview-only job. The Windows installed-package preview channel
+is published only when installation and installed-service acceptance pass on
+the exact archive.
 
 Windows assets have separate `windows-preview-manifest.json` and
 `windows-preview-acceptance.json` files and `WINDOWS-PREVIEW.txt` instructions.
-They are not inputs to the four-target update feed. Beta.5 also publishes the installed-package manifest and separate
-Windows update feed after installer lifecycle acceptance. Release notes identify
-the unsigned distribution and remaining native/physical acceptance. Optional
-per-user Task Scheduler startup is implemented, with login/reboot and managed-provider
-survival acceptance still open. The package instructions require finishing managed
-work, quitting the app, uninstalling an enabled task with `daemon uninstall`, and
-stopping the daemon before moving or replacing its folder. Extraction alone does
-not install a startup task.
-The public upload selects only release assets, excluding diagnostic artifacts.
+They are not inputs to the four-target update feed. Release notes identify the
+unsigned distribution. Optional per-user Task Scheduler startup is described in
+[the Windows port](WINDOWS-PORT.md#services). The package instructions require
+finishing managed work, quitting the app, uninstalling an enabled task with
+`daemon uninstall`, and stopping the daemon before moving or replacing its
+folder. Extraction alone does not install a startup task. The public upload
+selects only release assets, excluding diagnostic artifacts.
 
-Windows promotion refusal and exact-byte retention have fixture coverage. The
-beta.2 protected-tag Windows job passed, and its hosted ZIP passed 61 native
-checks on a physical Windows PC. An actual Claude trial exposed a transcript ownership problem;
-the corrected CI package passed delivery and automatic receipt checks. Beta.5
-passed hosted installation and both installed service lifecycles. Beta.6 passed
-the actual beta.5 → beta.6 hosted update/rollback/reapplication and both installed
-service trials. Current native Codex, physical terminal attachment and service
-login/reboot acceptance remain separate gates.
+The native Windows workflow also accepts `hosted_tag` and `hosted_source` for an
+immutable published preview. `scripts/windows_hosted_smoke.py` verifies the tag,
+GitHub asset digests, checksum, archive layout and executable provenance before
+running a fresh private-prefix installation, the default installed preview
+feed, and installed daemon and connector service lifecycles. It confirms stable
+and the Homebrew tap are unchanged and preserves failed scratch. With no
+baseline this covers first installation and current-version feed discovery. An
+optional older `baseline_tag`/`baseline_source` must support native
+installation contract 2; the trial then requires an actual hosted update,
+rollback and reapply. A portable-only older release is refused before
+execution.
 
-## Coworker preview releases
+## Preview releases
 
-The failed immutable `v0.2.0-beta.1` tag remains at `d46db1f2`; it published no
-release. The current published preview is **0.2.0-beta.13**, immutable source
-`c9e03f64`; protected-tag run 38510224265 passed all 15 jobs. All 31 hosted assets, nine
-archives, five manifests and both preview feeds were verified. Explicit-version
-CLI installation and beta.12 → beta.13 desktop installation/default-feed update,
-same-schema rollback and reapply passed on Mac ARM64 and hosted Ubuntu x86_64.
-Both platforms passed eight terminal/32 graphical checks with synthetic providers
-and five selective pruning/startup checks. Mac passed 21 daemon checks, including
-twelve consecutive restarts; hosted Linux passed 17 systemd checks. Windows passed
-15 hosted lifecycle checks plus 13 daemon and 24 connector service checks.
-Owned services/process generations retired and pre-existing state was preserved.
-Both fixed preview channels advertise beta.13; stable v0.1.0 and Homebrew remain
-unchanged. Trial scopes and original failures remain in the verification index.
+Versioned published releases are immutable.
 
-Beta.11, beta.12 and beta.13 use state schema 27 and delivery ledger 15.
-Beta.9/schema26 and earlier releases cannot replace schema27. Never restore an
-older delivery ledger over acknowledged input; use isolated state for an
-older-version trial. Hosted Mac/Linux trials independently verified beta.13's
-additive accounting metadata through stopped-daemon rollback/reapply. Matching
-schema versions alone do not establish compatibility for a future release.
+Releases carry a state schema version and a delivery ledger version. A release
+cannot replace one with a newer schema, and package rollback to an older schema
+refuses before changing the selected binaries. Never restore an older
+delivery ledger over acknowledged input; use isolated state for an
+older-version trial. Matching schema versions alone do not establish
+compatibility for another release.
 
-Native Codex launch, managed secret input and live replacement remain
-experimental. Fresh accounts, physical input, independent Mac, automatic Mac
-crash recovery and login/reboot remain open. Versioned published releases are
-immutable.
+Native Codex launch, managed secret input and live replacement are
+experimental.
 
-Before announcing the preview, download its actual hosted archives and sidecar
+Before announcing a preview, download its actual hosted archives and sidecar
 checksums, verify package provenance, and exercise the explicit-version install
 route on macOS/Linux and ZIP extraction on Windows. Check that GitHub's stable
-latest release, the stable update feed and Homebrew tap have not moved. Then
-record first-run provider and restart acceptance on each declared platform in
-the existing verification index. A Windows portable trial gives early feedback;
-it does not complete the installer/service/update or native Codex input work.
-
-## Order
-
-1. Complete: the tap and v0.1.0 formula exist; publishing configuration names were
-   present at the September 9 check. Secret values/token validity were not audited.
-2. Open: configure Developer ID/notarization privately, reconcile the cask
-   signing/installation contract, and validate final artifacts.
-3. Complete for beta.8: protected-tag publication and bounded hosted installation,
-   update and schema rollback refusal. Repeat for each later preview; stable
-   formula/cask publication remains separate and requires stable acceptance.
-4. Open: finish physical notification and independent-machine acceptance; retain
-   results in the existing audit/verification records.
-
-The beta.2 hosted updater has a macOS staging defect: an installed ad-hoc preview
-can discover the next preview without new consent, but staging still requests a
-Gatekeeper assessment unless `--local-preview` is supplied explicitly. Source now
-passes the computed preview consent through both staging and activation; a signed
-preview still receives Gatekeeper assessment. The correction shipped in later previews and passed beta.4 hosted lifecycle
-acceptance; do not replace beta.2 assets.
+latest release, the stable update feed and the Homebrew tap have not moved. Then
+record first-run provider and restart acceptance on each declared platform. A
+Windows portable trial gives early feedback; it does not complete the
+installer, service, update or native Codex input path.
