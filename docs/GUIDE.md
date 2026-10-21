@@ -851,11 +851,9 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
-- **Take AgentDocker out of your tools.** `agentdocker setup --remove` removes
-  its MCP entries, hooks, skills, OpenCode plugin and shell block from every
-  tool, only the entries that run AgentDocker, with nothing else in those files
-  touched; `setup --undo <id>` puts them back. Run it before
-  `desktop uninstall`.
+- **Choose the model and effort.** Launching Claude or Codex from the app
+  offers **Model** and **Effort**, starting at the provider's own defaults,
+  and a session's panel says which it runs (`gpt-6-astra · xhigh`).
 
 - **A pairing code works once.** The connector's consent page now asks for the
   pairing code first and shows the projects to choose from only after it.
@@ -863,7 +861,8 @@ Newest first. Only what changes how the product is used.
   the new code from `agentdocker connector status` or the Tools screen. Wrong
   codes no longer close consent until a restart: a source that types five
   waits a quarter of an hour, and a code guessed at twenty times is replaced.
-  A service's log no longer records the code.
+  A service's log no longer records the code. A connector that crashes no
+  longer leaves its Tailscale Funnel open: the next start clears it.
 
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   used to be unbound: its AgentDocker tools refused, so its model could reach
@@ -883,6 +882,12 @@ Newest first. Only what changes how the product is used.
   same command, network destination, files or access through without asking
   until that Codex session ends (`agentdocker answer <id> "Allow for session"`
   from the command line). Offered only where Codex offers it.
+
+- **Take AgentDocker out of your tools.** `agentdocker setup --remove` removes
+  its MCP entries, hooks, skills, OpenCode plugin and shell block from every
+  tool, only the entries that run AgentDocker, with nothing else in those files
+  touched; `setup --undo <id>` puts them back. Run it before
+  `desktop uninstall`.
 
 - **A provider outage no longer stops an agent for good.** When a provider's
   servers fail (overloaded, unreachable), the agent's queued messages wait a
