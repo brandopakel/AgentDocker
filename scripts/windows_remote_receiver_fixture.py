@@ -16,6 +16,10 @@ import uuid
 from windows_native_codex_smoke import fixture_controller, read_snapshot, response_events, wait
 from windows_smoke_pipe import WindowsSmokePipe
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+
 
 def canonical(path):
     """Match Rust canonicalize's verbatim Windows spelling, including Unicode."""

@@ -127,7 +127,7 @@ try:
         (profile/'config.toml').write_text(config,encoding='utf-8')
         report['config_sha256']=hashlib.sha256((profile/'config.toml').read_bytes()).hexdigest()
         env={k:v for k,v in os.environ.items() if k.upper() in ['PATH','SYSTEMROOT','WINDIR','USERPROFILE','TEMP','TMP','LOCALAPPDATA','APPDATA','COMSPEC','PATHEXT','PROGRAMFILES','PROGRAMFILES(X86)','LANG','LC_ALL','PYTHONUTF8']}
-        env.update(CODEX_HOME=str(profile),AGENTDOCKER_HOME=str(state),AGENTDOCKER_SOCKET=str(endpoint),AGENTDOCKER_NO_AUTOSTART='1',AGENTDOCKER_NO_NOTIFICATIONS='1',AGENTDOCKER_FIXTURE_KEY='fixture-only')
+        env.update(CODEX_HOME=str(profile),AGENTDOCKER_HOME=str(state),AGENTDOCKER_SOCKET=str(endpoint),AGENTDOCKER_NO_AUTOSTART='1',AGENTDOCKER_NO_NOTIFICATIONS='1',AGENTDOCKER_FIXTURE_KEY='fixture-only',AGENTDOCKER_PERSON_CHECK='off')
         receiver=Receiver(bin,root,project,profile,out,env,report)
         receiver.socket=endpoint;receiver.env['AGENTDOCKER_SOCKET']=endpoint
         receiver.start_daemon();capture_owned()

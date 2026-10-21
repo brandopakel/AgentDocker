@@ -17,6 +17,10 @@ import subprocess
 import tempfile
 import time
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault("AGENTDOCKER_PERSON_CHECK", "off")
+
 
 def digest(path):
     with path.open("rb") as stream:
@@ -77,6 +81,7 @@ def run(args):
         root = Path(scratch).resolve()
         home, endpoint = root / "state", root / "sock"
         env = {key: value for key, value in os.environ.items() if not key.startswith("AGENTDOCKER_")}
+        env["AGENTDOCKER_PERSON_CHECK"] = "off"  # its own daemon: act as the person from anywhere
         env.update(AGENTDOCKER_HOME=str(home), AGENTDOCKER_SOCKET=str(endpoint), AGENTDOCKER_NO_AUTOSTART="1")
 
         def start(binary):

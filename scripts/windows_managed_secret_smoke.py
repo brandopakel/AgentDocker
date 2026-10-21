@@ -28,6 +28,10 @@ import threading
 import time
 import traceback
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+
 
 def terminal_chunks(terminal, closing):
     """Drain buffered output to EOF even after the native child has exited."""

@@ -22,6 +22,10 @@ import uuid
 from windows_package_smoke import extract_checked
 from windows_native_codex_smoke import remove_fixture
 
+# The daemons this starts are its own: they let it act as the person from
+# wherever it runs, an agent's session included.
+os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+
 REPO = 'brandopakel/AgentDocker'
 TARGET = 'x86_64-pc-windows-msvc'
 ARCHIVE = f'agentdocker-desktop-{TARGET}.zip'
