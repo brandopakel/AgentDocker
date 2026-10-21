@@ -196,8 +196,9 @@ pub(super) struct State {
     pub role_delete: Option<(String, std::time::Instant)>,
     pub rule_draft: RuleDraft,
     pub plan_draft: PlanDraft,
-    /// A memory being written for the project, kept until it is added.
-    pub memory_draft: String,
+    /// Each project's memory card: what is being written, searched, and
+    /// sent, by project root, so nothing written for one is kept in another.
+    pub memory: BTreeMap<String, MemoryForm>,
     /// The open card's fields as the person edits them.
     pub card_draft: CardDraft,
     /// A card being dragged, and the lane (and card) it would land at.
@@ -857,6 +858,19 @@ pub enum DeliveryTarget {
 type PullRequestKey = crate::pull_request::Key;
 type PullRequestAnswer = Result<Option<crate::pull_request::PullRequest>, String>;
 
+/// A project's memory card as the person left it.
+#[derive(Clone, Debug, Default)]
+pub struct MemoryForm {
+    /// A memory being written, kept until it is confirmed kept.
+    pub draft: String,
+    /// The words searched for; empty shows the newest.
+    pub query: String,
+    /// The last answer, and the words it answers.
+    pub results: Option<(String, Vec<agentdocker_core::memory::Memory>)>,
+    /// The text sent and not yet confirmed.
+    pub adding: Option<String>,
+}
+
 /// Where an **Open in…** menu opens from: the project's header, or the
 /// selected session's details, for the worktree it works in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1037,6 +1051,8 @@ pub enum Message {
     /// A project file deleted, from Plans.
     FileDelete(String),
     MemoryDraft(String),
+    /// Search the project's memory; empty shows the newest.
+    MemoryQuery(String),
     /// Keep the draft as a memory of the project, as the person.
     MemoryAdd,
     MemoryForget(String),
@@ -2211,24 +2227,39 @@ impl App {
                 file,
             }),
             Message::MemoryDraft(text) => {
-                self.shell.memory_draft = text
-                    .chars()
-                    .take(agentdocker_core::memory::MEMORY_CHARS)
-                    .collect();
+                if let Some(root) = self.selected_project_root() {
+                    self.shell.memory.entry(root).or_default().draft = text
+                        .chars()
+                        .take(agentdocker_core::memory::MEMORY_CHARS)
+                        .collect();
+                }
+            }
+            Message::MemoryQuery(words) => {
+                if let Some(root) = self.selected_project_root() {
+                    let form = self.shell.memory.entry(root.clone()).or_default();
+                    form.query = words.chars().take(200).collect();
+                    let query = form.query.trim().to_owned();
+                    if query.is_empty() {
+                        form.results = None;
+                    } else {
+                        self.send(Cmd::MemorySearch {
+                            project: root,
+                            query,
+                        });
+                    }
+                }
             }
             Message::MemoryAdd => {
-                let text = self.shell.memory_draft.trim().to_owned();
-                if let Some(root) = self.selected_project_root()
-                    && !text.is_empty()
-                {
-                    self.board_act(Request::MemoryAdd {
-                        from: agentdocker_core::HUMAN.into(),
-                        project: Some(root),
-                        text,
-                        links: Vec::new(),
-                        supersedes: None,
-                    });
-                    self.shell.memory_draft.clear();
+                if let Some(root) = self.selected_project_root() {
+                    let form = self.shell.memory.entry(root.clone()).or_default();
+                    let text = form.draft.trim().to_owned();
+                    if !text.is_empty() && form.adding.is_none() {
+                        form.adding = Some(text.clone());
+                        self.send(Cmd::MemoryAdd {
+                            project: root,
+                            text,
+                        });
+                    }
                 }
             }
             Message::MemoryForget(memory) => self.board_act(Request::MemoryForget {
@@ -5191,47 +5222,151 @@ mod tests {
     }
 
     /// The person keeps a fact for the project's agents from its Plans
-    /// screen, and forgets one; nothing blank is kept, and a memory kept
-    /// anywhere refreshes what the screen shows.
+    /// screen: each project its own draft, the draft kept until the daemon
+    /// confirms it (and then only if unchanged), a search answered only for
+    /// the words on view, a failed read keeping what was shown, a forget
+    /// sent as the person's, and a memory kept anywhere reading again.
     #[test]
-    fn the_person_keeps_and_forgets_a_projects_memory() {
-        let (mut app, commands, _messages) = app();
+    fn the_person_keeps_searches_and_forgets_a_projects_memory() {
+        use agentdocker_core::memory::Memory;
+        let (mut app, commands, messages) = app();
         app.connected = Ok(());
+        let memory = |id: &str, text: &str| Memory {
+            id: id.into(),
+            project: agentdocker_core::ProjectId::from("a"),
+            author: "codex-1".into(),
+            text: text.into(),
+            links: vec![],
+            supersedes: None,
+            created_at: Utc::now(),
+        };
+        let drain = |commands: &CommandReceiver| commands.try_iter().collect::<Vec<_>>();
+        app.shell
+            .catalog
+            .pin(ProjectRef::directory("/work/b"))
+            .unwrap();
+        let _ = app.update(Message::MemoryDraft("a fact of b".into()));
         app.shell
             .catalog
             .pin(ProjectRef::directory("/work/a"))
             .unwrap();
-        let acts = |commands: &CommandReceiver| {
-            commands
-                .try_iter()
-                .filter_map(|c| match c {
-                    Cmd::BoardAct { request, .. } => Some(*request),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        };
+        assert!(
+            app.shell
+                .memory
+                .get("/work/a")
+                .is_none_or(|f| f.draft.is_empty()),
+            "b's draft is b's"
+        );
         let _ = app.update(Message::MemoryDraft("   ".into()));
         let _ = app.update(Message::MemoryAdd);
-        assert!(acts(&commands).is_empty(), "nothing blank is kept");
+        assert!(
+            !drain(&commands)
+                .iter()
+                .any(|c| matches!(c, Cmd::MemoryAdd { .. })),
+            "nothing blank is kept"
+        );
         let _ = app.update(Message::MemoryDraft("Codex reviews every PR".into()));
         let _ = app.update(Message::MemoryAdd);
-        assert!(matches!(
-            &acts(&commands)[..],
-            [Request::MemoryAdd { from, project: Some(project), text, .. }]
-                if from == agentdocker_core::HUMAN
-                    && project == "/work/a"
-                    && text == "Codex reviews every PR"
+        assert!(drain(&commands).iter().any(|c| matches!(
+            c,
+            Cmd::MemoryAdd { project, text } if project == "/work/a" && text == "Codex reviews every PR"
+        )));
+        // Refused: the text stays to fix.
+        messages
+            .send(Msg::MemoryAdded(
+                "/work/a".into(),
+                "Codex reviews every PR".into(),
+                Err("that reads like a secret".into()),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.shell.memory["/work/a"].draft, "Codex reviews every PR");
+        // Kept while the person went on writing: the newer words stay.
+        let _ = app.update(Message::MemoryAdd);
+        let _ = app.update(Message::MemoryDraft(
+            "Codex reviews every PR, Claude builds".into(),
         ));
-        assert!(
-            app.shell.memory_draft.is_empty(),
-            "the draft goes once kept"
+        messages
+            .send(Msg::MemoryAdded(
+                "/work/a".into(),
+                "Codex reviews every PR".into(),
+                Ok(()),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.shell.memory["/work/a"].draft,
+            "Codex reviews every PR, Claude builds"
         );
+        assert_eq!(app.shell.memory["/work/b"].draft, "a fact of b");
+
+        // A search: only the answer to the words on view counts.
+        let _ = app.update(Message::MemoryQuery("review".into()));
+        assert!(drain(&commands).iter().any(|c| matches!(
+            c,
+            Cmd::MemorySearch { project, query } if project == "/work/a" && query == "review"
+        )));
+        let _ = app.update(Message::MemoryQuery("reviews".into()));
+        messages
+            .send(Msg::MemorySearched(
+                "/work/a".into(),
+                "review".into(),
+                Ok(vec![memory("old", "stale answer")]),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(
+            app.shell.memory["/work/a"].results.is_none(),
+            "an older answer is not shown"
+        );
+        messages
+            .send(Msg::MemorySearched(
+                "/work/a".into(),
+                "reviews".into(),
+                Ok(vec![memory("m1", "Codex reviews every PR")]),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.shell.memory["/work/a"]
+                .results
+                .as_ref()
+                .map(|(q, found)| (q.as_str(), found.len())),
+            Some(("reviews", 1))
+        );
+
+        // A read that fails keeps what was shown.
+        messages
+            .send(Msg::Workspace(
+                "/work/a".into(),
+                Ok(Box::new(Workspace {
+                    memories: vec![memory("m1", "kept")],
+                    ..Workspace::default()
+                })),
+            ))
+            .unwrap();
+        messages
+            .send(Msg::Workspace(
+                "/work/a".into(),
+                Ok(Box::new(Workspace {
+                    memory: MemoryRead::Failed("storage unavailable".into()),
+                    ..Workspace::default()
+                })),
+            ))
+            .unwrap();
+        app.drain();
+        let workspace = &app.workspaces["/work/a"];
+        assert_eq!(workspace.memories.len(), 1, "the old list stays");
+        assert!(matches!(workspace.memory, MemoryRead::Failed(_)));
+
         let _ = app.update(Message::MemoryForget("m1".into()));
-        assert!(matches!(
-            &acts(&commands)[..],
-            [Request::MemoryForget { from, memory }]
-                if from == agentdocker_core::HUMAN && memory == "m1"
-        ));
+        assert!(drain(&commands).iter().any(|c| matches!(
+            c,
+            Cmd::BoardAct { request, .. } if matches!(
+                request.as_ref(),
+                Request::MemoryForget { from, memory } if from == agentdocker_core::HUMAN && memory == "m1"
+            )
+        )));
         app.on_event(Event::new(
             EventKind::MemoryAdded {
                 project: agentdocker_core::ProjectId::from("a"),
@@ -5240,11 +5375,17 @@ mod tests {
             },
             Utc::now(),
         ));
+        let after = drain(&commands);
         assert!(
-            commands
-                .try_iter()
-                .any(|c| matches!(c, Cmd::Workspace(root) if root == "/work/a")),
-            "the screen is read again"
+            after
+                .iter()
+                .any(|c| matches!(c, Cmd::Workspace(root) if root == "/work/a"))
+        );
+        assert!(
+            after
+                .iter()
+                .any(|c| matches!(c, Cmd::MemorySearch { query, .. } if query == "reviews")),
+            "the search on view is asked again"
         );
     }
 

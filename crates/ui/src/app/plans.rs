@@ -39,39 +39,103 @@ impl App {
             )
     }
 
-    /// The project's memory: a line to keep a fact, then each fact kept,
-    /// newest first, with who kept it and when, and its forget.
+    /// The project's memory: a line to keep a fact, a line to search, then
+    /// each fact kept, newest first (or the best answers to the search),
+    /// with who kept it and when, and its forget. A daemon from before
+    /// memory says so; a read that failed says so over what was there.
     fn memory_card<'a>(
         &'a self,
         workspace: Option<&'a super::Workspace>,
         connected: bool,
         c: Colors,
     ) -> Element<'a, Message> {
-        let draft = self.shell.memory_draft.trim();
+        let header = row![tip(icon(Icon::Note, c.faint, 14.0), "Memory", c)].align_y(Center);
+        let card = |content: iced::widget::Column<'a, Message>| -> Element<'a, Message> {
+            container(content)
+                .padding(8)
+                .width(Fill)
+                .style(move |_| c.card_style())
+                .into()
+        };
+        let read = workspace.map(|w| &w.memory);
+        if read == Some(&super::MemoryRead::Unsupported) {
+            return card(
+                column![
+                    header,
+                    super::view::small(
+                        "This AgentDocker keeps no project memory; update it to keep one.",
+                        c
+                    ),
+                ]
+                .spacing(6),
+            );
+        }
+        let empty = super::shell::MemoryForm::default();
+        let form = self
+            .selected_project_root()
+            .and_then(|root| self.shell.memory.get(&root))
+            .unwrap_or(&empty);
+        let draft = form.draft.trim();
         let mut memory = column![
-            row![tip(icon(Icon::Note, c.faint, 14.0), "Memory", c)].align_y(Center),
+            header,
             row![
                 container(input_enabled(
                     "memory-draft",
                     "A fact for this project's agents",
-                    &self.shell.memory_draft,
+                    &form.draft,
                     Message::MemoryDraft,
-                    connected,
+                    connected && form.adding.is_none(),
                 ))
                 .width(Fill),
                 primary(
                     "memory-add",
-                    "Keep",
-                    (connected && !draft.is_empty()).then_some(Message::MemoryAdd),
+                    if form.adding.is_some() {
+                        "Keeping…"
+                    } else {
+                        "Keep"
+                    },
+                    (connected && !draft.is_empty() && form.adding.is_none())
+                        .then_some(Message::MemoryAdd),
                 ),
             ]
             .spacing(8)
             .align_y(Center),
+            input_enabled(
+                "memory-search",
+                "Search memory",
+                &form.query,
+                Message::MemoryQuery,
+                connected,
+            ),
         ]
         .spacing(6)
         .width(Fill);
+        if let Some(super::MemoryRead::Failed(error)) = read {
+            memory = memory.push(
+                super::view::small(format!("Memory could not be read: {error}"), c).color(c.amber),
+            );
+        }
+        let query = form.query.trim();
+        let (shown, limit_note): (&[agentdocker_core::memory::Memory], Option<&str>) =
+            if query.is_empty() {
+                let kept = workspace.map(|w| w.memories.as_slice()).unwrap_or_default();
+                (
+                    kept,
+                    (kept.len() >= super::MEMORY_PAGE)
+                        .then_some("The newest 100; search to find older ones."),
+                )
+            } else {
+                match &form.results {
+                    Some((words, found)) if words == query => (
+                        found.as_slice(),
+                        (found.len() >= super::MEMORY_PAGE)
+                            .then_some("The best 100 answers; more words narrow them."),
+                    ),
+                    _ => (&[], None),
+                }
+            };
         let now = chrono::Utc::now();
-        for kept in workspace.map(|w| w.memories.as_slice()).unwrap_or_default() {
+        for kept in shown {
             memory = memory.push(
                 row![
                     column![
@@ -106,11 +170,10 @@ impl App {
                 .align_y(Center),
             );
         }
-        container(memory)
-            .padding(8)
-            .width(Fill)
-            .style(move |_| c.card_style())
-            .into()
+        if let Some(note) = limit_note {
+            memory = memory.push(super::view::small(note, c));
+        }
+        card(memory)
     }
 
     pub(super) fn plans_view(&self, c: Colors) -> Element<'_, Message> {

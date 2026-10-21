@@ -214,6 +214,16 @@ enum Cmd {
     },
     /// A project's tags, rules, plans and files.
     Workspace(String),
+    /// A project's memories that answer the words.
+    MemorySearch {
+        project: String,
+        query: String,
+    },
+    /// Keep the person's memory in a project; its text is the draft sent.
+    MemoryAdd {
+        project: String,
+        text: String,
+    },
     /// A project's roles to give.
     Palette(String),
     /// A change to the board's model (a tag, a rule, a plan, a file, an
@@ -420,6 +430,12 @@ enum Msg {
     /// One card in full, or why it could not be read.
     TaskDetail(agentdocker_core::TaskId, Result<Box<CardDetail>, String>),
     Workspace(String, Result<Box<Workspace>, String>),
+    MemorySearched(
+        String,
+        String,
+        Result<Vec<agentdocker_core::memory::Memory>, String>,
+    ),
+    MemoryAdded(String, String, Result<(), String>),
     /// What reading a project's roles came back with.
     Palette(String, PaletteRead),
     BoardActed(String, Result<(), String>),
@@ -1038,6 +1054,12 @@ impl App {
                 Cmd::Palette(project) => {
                     self.palettes_asked.remove(&project);
                 }
+                // Not sent: the draft stays, and Keep is offered again.
+                Cmd::MemoryAdd { project, .. } => {
+                    if let Some(form) = self.shell.memory.get_mut(&project) {
+                        form.adding = None;
+                    }
+                }
                 Cmd::TaskMove { .. }
                 | Cmd::TaskEdit { .. }
                 | Cmd::TaskArchive(_)
@@ -1397,11 +1419,45 @@ impl App {
                     Err(error) => self.say(format!("The boards could not be read: {error}")),
                 },
                 Msg::Workspace(project, result) => match result {
-                    Ok(workspace) => {
+                    Ok(mut workspace) => {
+                        // A read of the memory that failed keeps what was
+                        // shown; the card says it could not be read again.
+                        if matches!(workspace.memory, MemoryRead::Failed(_))
+                            && let Some(before) = self.workspaces.get(&project)
+                        {
+                            workspace.memories = before.memories.clone();
+                        }
                         self.workspaces.insert(project, *workspace);
                     }
                     Err(error) => self.say(error),
                 },
+                Msg::MemorySearched(project, query, result) => {
+                    let form = self.shell.memory.entry(project).or_default();
+                    // Only the answer to the words on view now.
+                    if form.query.trim() == query {
+                        match result {
+                            Ok(found) => form.results = Some((query, found)),
+                            Err(error) => {
+                                self.say(format!("Memory could not be searched: {error}"))
+                            }
+                        }
+                    }
+                }
+                Msg::MemoryAdded(project, text, result) => {
+                    let form = self.shell.memory.entry(project.clone()).or_default();
+                    form.adding = None;
+                    match result {
+                        // The draft goes only once kept, and only if it is
+                        // still what was sent.
+                        Ok(()) => {
+                            if form.draft.trim() == text {
+                                form.draft.clear();
+                            }
+                            self.send(Cmd::Workspace(project));
+                        }
+                        Err(error) => self.say(format!("The memory was not kept: {error}")),
+                    }
+                }
                 Msg::Palette(project, read) => match read {
                     PaletteRead::Roles(roles) => {
                         self.palettes.insert(project, Some(roles));
@@ -2020,6 +2076,16 @@ impl App {
             | EventKind::MemoryAdded { .. }
             | EventKind::MemoryForgotten { .. } => {
                 if let Some(project) = self.selected_project_root() {
+                    // A search on view is asked again, so it shows the change.
+                    if let Some(form) = self.shell.memory.get(&project)
+                        && !form.query.trim().is_empty()
+                    {
+                        let query = form.query.trim().to_owned();
+                        self.send(Cmd::MemorySearch {
+                            project: project.clone(),
+                            query,
+                        });
+                    }
                     self.send(Cmd::Workspace(project));
                 }
                 if let EventKind::PlanChanged { plan, .. } = &event.kind
@@ -3527,16 +3593,34 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 })? {
                     workspace.files = files;
                 }
-                // A daemon from before memory cannot read the request: the
-                // rest of the workspace still shows.
-                if let Ok(Response::Memories { memories }) = client.call(&Request::MemorySearch {
+                // The memory is read on its own: a daemon from before memory,
+                // or a failure, leaves the rest of the workspace to show.
+                workspace.memory = match client.call(&Request::MemorySearch {
                     from: None,
                     project: Some(project.clone()),
                     query: String::new(),
-                    limit: Some(100),
+                    limit: Some(MEMORY_PAGE),
                 }) {
-                    workspace.memories = memories;
-                }
+                    Ok(Response::Memories { memories }) => {
+                        workspace.memories = memories;
+                        MemoryRead::Loaded
+                    }
+                    Ok(Response::Error { code, message, .. }) if unsupported(code, &message) => {
+                        MemoryRead::Unsupported
+                    }
+                    Ok(Response::Error { message, .. }) => {
+                        MemoryRead::Failed(crate::client::explain(&message))
+                    }
+                    Ok(other) => MemoryRead::Failed(unexpected_reply(&other)),
+                    Err(error)
+                        if error
+                            .downcast_ref::<crate::client::RemoteError>()
+                            .is_some_and(|remote| unsupported(remote.code, &remote.message)) =>
+                    {
+                        MemoryRead::Unsupported
+                    }
+                    Err(error) => MemoryRead::Failed(format!("{error:#}")),
+                };
                 Ok(workspace)
             };
             let result = read().map(Box::new);
@@ -3592,6 +3676,35 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::Todo(result))
+        }
+        Cmd::MemorySearch { project, query } => {
+            let result = match client.call(&Request::MemorySearch {
+                from: None,
+                project: Some(project.clone()),
+                query: query.clone(),
+                limit: Some(MEMORY_PAGE),
+            }) {
+                Ok(Response::Memories { memories }) => Ok(memories),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::MemorySearched(project, query, result))
+        }
+        Cmd::MemoryAdd { project, text } => {
+            let result = match client.call(&Request::MemoryAdd {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project.clone()),
+                text: text.clone(),
+                links: Vec::new(),
+                supersedes: None,
+            }) {
+                Ok(Response::Memory { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::MemoryAdded(project, text, result))
         }
         Cmd::PlanSave { project, request } => match client.call(&request) {
             Ok(Response::Plan { plan, tasks }) => Some(Msg::Plan(Ok(Box::new((plan, tasks))))),
@@ -4604,6 +4717,9 @@ pub(crate) enum PaletteRead {
     Failed,
 }
 
+/// Memories read at once: the newest, or the best answers to a search.
+pub(crate) const MEMORY_PAGE: usize = 100;
+
 /// A project's tags, rules, plans (without bodies) and files.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Workspace {
@@ -4611,8 +4727,26 @@ pub(crate) struct Workspace {
     pub rules: Vec<agentdocker_core::Rule>,
     pub plans: Vec<agentdocker_core::Plan>,
     pub files: Vec<agentdocker_core::ProjectFile>,
-    /// Its current memories, newest first.
+    /// Its current memories, newest first, as last read.
     pub memories: Vec<agentdocker_core::memory::Memory>,
+    /// How the last read of its memory went.
+    pub memory: MemoryRead,
+}
+
+/// How reading a project's memory went: read, a daemon from before memory,
+/// or a failure, which keeps the memories read before it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum MemoryRead {
+    #[default]
+    Loaded,
+    Unsupported,
+    Failed(String),
+}
+
+/// Whether an error says the daemon cannot read the request at all.
+fn unsupported(code: agentdocker_core::protocol::ErrorCode, message: &str) -> bool {
+    code == agentdocker_core::protocol::ErrorCode::Invalid
+        && message.starts_with("malformed request")
 }
 
 /// What the person changes on a card: each field given is set; an
