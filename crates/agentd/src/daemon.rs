@@ -2393,10 +2393,12 @@ impl Daemon {
                 blocked_by,
                 tags,
                 plan,
+                expected_updated_at,
             } => self.task_update(
                 &agent,
                 &task,
                 tasks::TaskChange {
+                    expected_updated_at,
                     title,
                     acceptance,
                     assignee,

@@ -2708,6 +2708,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "parent": { "type": "string", "description": "The card it is part of; empty to clear." },
                     "plan": { "type": "string", "description": "The plan it carries out, by id or title (`list_plans`); empty to clear." },
                     "blocked_by": { "type": "array", "maxItems": 16, "items": { "type": "string" }, "description": "Cards that must be done first." },
+                    "expected_updated_at": { "type": "string", "format": "date-time", "description": "The card's `updated_at` as you read it (`get_task`): if it has changed since, the edit is refused as a conflict instead of writing over the newer one." },
                     "links": { "type": "array", "maxItems": 16, "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
                 },
                 "required": ["task"],

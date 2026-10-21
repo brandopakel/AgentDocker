@@ -155,16 +155,29 @@ impl App {
             .as_ref()
             .and_then(|b| b.cards.iter().find(|t| &t.id == id));
         match card {
-            Some(task) => super::shell::CardDraft {
-                task: Some(task.id.clone()),
-                title: task.title.clone(),
-                description: task.description.clone(),
-                acceptance: task.acceptance.clone(),
-                due: task.due.map(|d| d.to_string()).unwrap_or_default(),
-                blocker: task.external_blocker.clone(),
-                tags: task.tags.join(" "),
-                comment: String::new(),
-            },
+            Some(task) => {
+                let words = super::shell::CardWords {
+                    title: task.title.clone(),
+                    description: task.description.clone(),
+                    acceptance: task.acceptance.clone(),
+                    due: task.due.map(|d| d.to_string()).unwrap_or_default(),
+                    blocker: task.external_blocker.clone(),
+                    tags: task.tags.join(" "),
+                };
+                super::shell::CardDraft {
+                    task: Some(task.id.clone()),
+                    // The caller numbers the opening.
+                    generation: 0,
+                    title: words.title.clone(),
+                    description: words.description.clone(),
+                    acceptance: words.acceptance.clone(),
+                    due: words.due.clone(),
+                    blocker: words.blocker.clone(),
+                    tags: words.tags.clone(),
+                    base: words,
+                    comment: String::new(),
+                }
+            }
             None => super::shell::CardDraft {
                 task: Some(id.clone()),
                 ..Default::default()
@@ -172,45 +185,63 @@ impl App {
         }
     }
 
-    /// What the editor changes on a card: the fields that differ from it.
+    /// What the person changed in the editor: the fields that differ from
+    /// what the editor took (or last saved), never one they left alone,
+    /// so a save does not put back what somebody else changed meanwhile.
     pub(super) fn card_change(&self, id: &TaskId) -> Option<super::CardChange> {
-        let task = self
-            .card
-            .as_ref()
-            .map(|d| &d.task)
-            .filter(|t| &t.id == id)
-            .or_else(|| {
-                self.tasks
-                    .as_ref()
-                    .and_then(|b| b.cards.iter().find(|t| &t.id == id))
-            })?;
         let draft = &self.shell.card_draft;
         if draft.task.as_ref() != Some(id) {
             return None;
         }
+        let base = &draft.base;
         let changed =
             |now: &str, was: &str| (now.trim() != was.trim()).then(|| now.trim().to_owned());
-        let mut tags: Vec<String> = draft
-            .tags
-            .split([' ', ','])
-            .map(agentdocker_core::task::tag_of)
-            .filter(|t| !t.is_empty())
-            .collect();
-        tags.sort();
-        tags.dedup();
+        let tags_of = |words: &str| {
+            let mut tags: Vec<String> = words
+                .split([' ', ','])
+                .map(agentdocker_core::task::tag_of)
+                .filter(|t| !t.is_empty())
+                .collect();
+            tags.sort();
+            tags.dedup();
+            tags
+        };
+        let tags = tags_of(&draft.tags);
         let change = super::CardChange {
-            title: changed(&draft.title, &task.title).filter(|t| !t.is_empty()),
-            description: changed(&draft.description, &task.description),
-            acceptance: changed(&draft.acceptance, &task.acceptance),
-            due: changed(
-                &draft.due,
-                &task.due.map(|d| d.to_string()).unwrap_or_default(),
-            ),
-            external_blocker: changed(&draft.blocker, &task.external_blocker),
-            tags: (tags != task.tags).then_some(tags),
+            title: changed(&draft.title, &base.title).filter(|t| !t.is_empty()),
+            description: changed(&draft.description, &base.description),
+            acceptance: changed(&draft.acceptance, &base.acceptance),
+            due: changed(&draft.due, &base.due),
+            external_blocker: changed(&draft.blocker, &base.blocker),
+            tags: (tags != tags_of(&base.tags)).then_some(tags),
             ..Default::default()
         };
         (change != super::CardChange::default()).then_some(change)
+    }
+
+    /// A save of `change` to card `id`, sent by editor opening
+    /// `generation`, went through: what it set becomes what that opening's
+    /// next save compares against. A later opening keeps its own baseline.
+    pub(super) fn card_saved(&mut self, id: &TaskId, change: &super::CardChange, generation: u64) {
+        let draft = &mut self.shell.card_draft;
+        if draft.task.as_ref() != Some(id) || draft.generation != generation {
+            return;
+        }
+        let base = &mut draft.base;
+        for (sent, kept) in [
+            (&change.title, &mut base.title),
+            (&change.description, &mut base.description),
+            (&change.acceptance, &mut base.acceptance),
+            (&change.due, &mut base.due),
+            (&change.external_blocker, &mut base.blocker),
+        ] {
+            if let Some(sent) = sent {
+                *kept = sent.clone();
+            }
+        }
+        if let Some(tags) = &change.tags {
+            base.tags = tags.join(" ");
+        }
     }
 
     /// Whether a card passes the board's search words and toggles.

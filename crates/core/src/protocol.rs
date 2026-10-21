@@ -824,6 +824,11 @@ pub enum Request {
         /// The plan it carries out, by id or title; empty clears it.
         #[serde(default)]
         plan: Option<String>,
+        /// The card's `updated_at` as the editor last read it: when the
+        /// card has changed since, the edit is refused as a conflict
+        /// rather than writing over the newer one.
+        #[serde(default)]
+        expected_updated_at: Option<chrono::DateTime<chrono::Utc>>,
     },
     /// Off the board, kept for the record. Answers `ok`.
     TaskArchive {
