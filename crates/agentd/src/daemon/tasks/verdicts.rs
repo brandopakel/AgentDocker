@@ -466,16 +466,24 @@ impl Daemon {
 }
 
 /// The branch a checkout is on, from git: `None` when its HEAD is
-/// detached, an error when git cannot say.
+/// detached or names something other than a branch, an error when git
+/// cannot say.
 fn checkout_branch(checkout: &std::path::Path) -> Result<Option<String>, String> {
-    let argv: Vec<String> = ["git", "symbolic-ref", "--quiet", "--short", "HEAD"]
+    // The full ref, never `--short`: git lengthens a short name it finds
+    // ambiguous (`heads/feature/mine` once a tag `feature/mine` exists),
+    // which would let a reviewer dodge the own-branch refusal with a tag.
+    let argv: Vec<String> = ["git", "symbolic-ref", "--quiet", "HEAD"]
         .map(str::to_owned)
         .to_vec();
     let output =
         agentdocker_host::command::run(checkout, &argv, std::time::Duration::from_secs(10))
             .map_err(|error| error.kind().to_string())?;
     if output.success {
-        return Ok(Some(output.stdout.trim().to_owned()));
+        return Ok(output
+            .stdout
+            .trim()
+            .strip_prefix("refs/heads/")
+            .map(str::to_owned));
     }
     // `--quiet` makes a detached HEAD a plain failure with nothing said.
     if output.text.trim().is_empty() {
@@ -536,6 +544,35 @@ fn journal_entry(verdict: &CodeVerdict) -> JournalEntry {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_tag_named_like_the_branch_does_not_hide_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "-c",
+                    "user.name=Test",
+                ])
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap();
+            assert!(status.status.success(), "git {args:?}: {status:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["checkout", "-q", "-b", "feature/mine"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "first"]);
+        git(&["tag", "feature/mine"]);
+        assert_eq!(
+            super::checkout_branch(tmp.path()).unwrap().as_deref(),
+            Some("feature/mine")
+        );
+        git(&["checkout", "-q", "--detach"]);
+        assert_eq!(super::checkout_branch(tmp.path()).unwrap(), None);
+    }
+
     use super::*;
     use tempfile::TempDir;
 
