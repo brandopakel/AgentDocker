@@ -125,7 +125,7 @@ the agent starting to work again; **Mark unread** in a session's panel brings
 the dot back, to come back to it later. In the session list the row's one
 trailing slot is the time left to answer, as a ring, while it waits on you,
 else the **pull request chip**; in the chat's list it is the pull request
-chip, and what the agent is doing and for how long is the name's tooltip. The pull request chip names the pull request of the agent's branch — **#<n>**
+chip, and what the agent is doing and for how long is the name's tooltip. The pull request chip names the pull request of the agent's branch — **#&lt;n&gt;**
 with a green tick when its checks passed, an amber dot while they run, a red
 cross when one failed, a done glyph once merged — and opens it in the
 browser. It is read with the `gh` you are signed in to, in the background, at
@@ -173,7 +173,7 @@ a question mark for a question, an hourglass when its hooks did not say which
 — read aloud as *Claude Code wants permission in its terminal*, *has a
 question in its terminal* or *is waiting for you in its terminal*; **Go to
 Terminal** takes you there. Seen across
-projects, each row starts with its project's name (*<project> · Claude Code · Badger*).
+projects, each row starts with its project's name (*&lt;project&gt; · Claude Code · Badger*).
 A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not
 here: its row's amber dot marks it, with the reason in its spoken name, and
@@ -325,16 +325,16 @@ not committed, uncommitted files in the main folder, conflicts, somebody
 holding files there — and nothing for what is fine, and **Merge into main**, enabled only
 when nothing stops it, with the command it runs on its tooltip (`git merge
 --no-ff <branch>`, in the main folder). What only the agent can fix goes back
-to it as a message, one click each: **Ask <agent> to commit** for its own
-uncommitted work, **Ask <agent> to resolve** for conflicts (naming the files),
-and **Ask <agent> to fix checks** when its pull request's checks failed. The
+to it as a message, one click each: **Ask &lt;agent&gt; to commit** for its own
+uncommitted work, **Ask &lt;agent&gt; to resolve** for conflicts (naming the files),
+and **Ask &lt;agent&gt; to fix checks** when its pull request's checks failed. The
 main folder's own uncommitted files and other agents' leases stay yours to sort
 out. A merge, rebase, cherry-pick, revert or bisect you have under way in the
 main folder is the one blocker shown (*the main folder is in the
 middle of a rebase; finish or abort it there first*); nothing is merged, and
 your operation is left in place. Merging makes a merge commit in the main folder
 and shows a green tick whose tooltip and spoken name say so (*Merged into main
-as <commit>.*); a refusal is one line beside the alert mark. A refusal before execution changes
+as &lt;commit&gt;.*); a refusal is one line beside the alert mark. A refusal before execution changes
 nothing. If Git fails during execution, inspect the main folder: a rejected
 merge-commit hook can leave a pending merge to finish or abort. The app never
 automatically aborts or resets, since a concurrent operation may belong to you.
@@ -343,7 +343,7 @@ since it was read is never merged unseen. Nothing is pushed. Changes are read
 again when the session commits or its branch moves, and with **Refresh**. Once
 nothing is left to merge the section says **Up to date**; once GitHub reports
 a merged pull request whose head matches both the reviewed and the current
-branch head it says **Merged #<n>** and offers no Merge, since a squash leaves
+branch head it says **Merged #&lt;n&gt;** and offers no Merge, since a squash leaves
 the branch's own commits uncounted by the main branch. Either way the next step
 is right there: while the session runs there is no button, since its worktree
 stays until it is done; once it has ended, **Remove worktree (may delete its
@@ -480,7 +480,7 @@ new leases until **Resume**, and while it holds the header shows the amber
 pause mark beside **Resume**, the reason on its tooltip and in its spoken name
 (*Paused · reason*). What an agent already holds, it keeps; your own actions are not
 held; only you can pause or resume, an agent asks with a message.
-**Launch agent…** opens the form. For Claude and Codex it offers **Model** and **Effort**, each a chip that opens its list: the provider's default first, named (*Default (<model>)*), then the models the provider shows on this machine (Codex's `models_cache.json`; Claude's aliases) and the efforts the chosen model takes. The defaults are read from the provider's own settings (`~/.codex/config.toml`, `~/.claude/settings.json`) off the UI thread; nothing is fetched. A choice becomes the tool's own options (`--model`, `--effort`, `-c model_reasoning_effort=…`) before **More options**' arguments, which win where they name one (in any spelling the tool takes, the last in force): the chip then shows the argument's value and gives way to it, and an effort the model in force does not take is dropped. Changing the tool starts from its defaults, and a read made for an earlier tool never applies. The session's panel says the model and effort it was launched with (`<model> · xhigh`). In a git project it offers **Own worktree**, on by default: the session works on a branch of its own (`agent/<name>`) in its own folder under AgentDocker's worktree directory, with the files the project's `.worktreeinclude` lists copied in; off, it works in the project folder on its current branch. Pressing the button again leaves the form open; **Cancel**
+**Launch agent…** opens the form. For Claude and Codex it offers **Model** and **Effort**, each a chip that opens its list: the provider's default first, named (*Default (&lt;model&gt;)*), then the models the provider shows on this machine (Codex's `models_cache.json`; Claude's aliases) and the efforts the chosen model takes. The defaults are read from the provider's own settings (`~/.codex/config.toml`, `~/.claude/settings.json`) off the UI thread; nothing is fetched. A choice becomes the tool's own options (`--model`, `--effort`, `-c model_reasoning_effort=…`) before **More options**' arguments, which win where they name one (in any spelling the tool takes, the last in force): the chip then shows the argument's value and gives way to it, and an effort the model in force does not take is dropped. Changing the tool starts from its defaults, and a read made for an earlier tool never applies. The session's panel says the model and effort it was launched with (`<model> · xhigh`). In a git project it offers **Own worktree**, on by default: the session works on a branch of its own (`agent/<name>`) in its own folder under AgentDocker's worktree directory, with the files the project's `.worktreeinclude` lists copied in; off, it works in the project folder on its current branch. Pressing the button again leaves the form open; **Cancel**
 or a press outside the dialog closes it) to choose an installed CLI and start it at the project root
 (the folder on the header title's tooltip). With Codex chosen and no saved trusted entry found for the project root, the form shows *Trust unconfirmed* in amber, whose tooltip directs the person to open Codex in that folder to review trust before launching. A missing trust entry alone does not establish effective sandbox or approval policy; explicit provider configuration can override those defaults. Saved trust is read off the UI thread only for an open Codex form; results for an older form, project or tool are ignored, and unreadable paths remain unknown. Every project-selection path, including notifications while the form stays open, clears the previous notice and checks the newly selected project. AgentDocker never trusts a folder on the person's behalf. Claude and Codex launches default to **Idle messages: On**;
 each switch says what it means on its tooltip, and turned off this one says
@@ -661,11 +661,11 @@ agent whose session or terminal is open, or the project whose chat is open;
 the window keeps a short-lived `viewing.json` in the AgentDocker home for the
 poster), and an agent's newer notification replaces its last one in
 Notification Center rather than stacking. When an agent finishes while the window is
-not in front, the app posts a quiet notice itself (*Badger finished · In <project>.
+not in front, the app posts a quiet notice itself (*Badger finished · In &lt;project&gt;.
 Click to see what it did.*), one per agent, replacing its last — but not when
 your next message to it is already queued, since it goes straight on to that.
 An agent that stops for you in its own terminal is told the same way (*Badger
-wants permission*, *has a question* or *is waiting for you · In <project>. It is
+wants permission*, *has a question* or *is waiting for you · In &lt;project&gt;. It is
 waiting in its terminal.*) once the stop has lasted two seconds, so a prompt you
 answer at once, at the terminal, never notifies. Returning to the app or turning
 these notifications off during that delay cancels the pending notice. If an agent
@@ -834,7 +834,7 @@ is not reachable yet (an amber dot and *Reconnecting…*, the dot read aloud
 than the app — an older version, or another installed release of the same
 version, which is what an update installed underneath a running daemon looks
 like — an amber dot whose tooltip gives both versions, and **Restart…**; or an update is ready
-to install (a dot and *Update <version>*). A healthy service says nothing and takes no room. The restart's
+to install (a dot and *Update &lt;version&gt;*). A healthy service says nothing and takes no room. The restart's
 confirmation, an amber strip across the bottom with **Restart** and **Cancel**,
 says what a restart costs:
 how many sessions AgentDocker itself started will stop (and how many are set to

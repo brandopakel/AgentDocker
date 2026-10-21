@@ -56,9 +56,9 @@ sources before invoking the provider. Account-synced plugin caches can exist in 
 fresh profile, so both plugin loaders are disabled for this invocation with
 `--disable plugins --disable remote_plugin`; cached files and saved preferences
 are left unchanged. One-invocation hook trust is for the fixture's reviewed inline
-hooks. A rejected profile records a failure before any child launches. `--ignore-user-config` suppresses these
-inline hooks, so the fixture does not pass it and keeps that layer
-active only in the checked profile. This follows the [official hook-source and
+hooks. A rejected profile records a failure before any child launches. The fixture does not pass
+`--ignore-user-config`: it keeps the hook configuration layer
+active, only in the checked profile. This follows the [official hook-source and
 trust contract](https://learn.chatgpt.com/docs/hooks). Managed policy remains in
 force; the preflight checks the dedicated profile and fresh trial project, not
 system configuration or provider-managed settings. Those host layers can affect
@@ -75,7 +75,7 @@ References: [nextest configuration](https://nexte.st/docs/configuring-nextest/),
 
 ## Repository commands and installation
 
-`bash scripts/verify.sh check` runs the PR gate. `test` runs nextest and doctests; `coverage` writes `artifacts/coverage.lcov`; `bench` runs Criterion and the native socket workload at 1/10/100 clients; `fuzz` runs four bounded nightly campaigns (`FUZZ_SECONDS`, default 60 per target). The native load workload runs shared-path contention and disjoint per-client paths separately. The `socket_v2` series separates successful claim/release cycles (two requests) from claim conflicts (one request), including connection setup. Each outcome records sample count and throughput over the same campaign duration; empty outcomes omit latency percentiles. Attempts, elapsed seconds and conflict ratio accompany each workload. Stale detection/restart scenarios are correctness integration tests, not latency workloads. Custom counts use [Bencher Metric Format measures](https://bencher.dev/docs/reference/bencher-metric-format/).
+`bash scripts/verify.sh check` runs the PR gate. `test` runs nextest and doctests; `coverage` writes `artifacts/coverage.lcov`; `bench` runs Criterion and the native socket workload at 1/10/100 clients; `fuzz` runs four bounded nightly campaigns (`FUZZ_SECONDS`, default 60 per target). The native load workload runs shared-path contention and disjoint per-client paths separately. The `socket_v2` series separates successful claim/release cycles (two requests) from claim conflicts (one request), including connection setup. Each outcome records sample count and throughput over the same campaign duration; empty outcomes omit latency percentiles. Attempts, elapsed seconds and conflict ratio accompany each workload. Retained `socket_claim_release` results are not comparable with `socket_v2`: the older series mixed successes and conflicts, which `socket_v2` splits into different request counts. Stale detection/restart scenarios are correctness integration tests, not latency workloads. Custom counts use [Bencher Metric Format measures](https://bencher.dev/docs/reference/bencher-metric-format/).
 
 Install tools with `cargo install --locked cargo-nextest --version 0.9.143`, `cargo install --locked cargo-llvm-cov --version 0.9.0`, and `cargo install --locked cargo-fuzz --version 0.13.2`. Add `rustup component add llvm-tools-preview` and `rustup toolchain install nightly --profile minimal`. Criterion and Proptest are workspace development dependencies, pinned transitively by Cargo.lock. Benchmarks use a stable MSRV-compatible Criterion 0.5 harness. Keep workspace and fuzz lockfiles checked in. Fuzz campaigns first require locked dependency resolution and retain before/after source, lockfile, nightly compiler and cargo-fuzz manifests, including when a target fails. A campaign fails if these change during execution. Tools are development-only and do not ship in the release binaries.
 
@@ -258,4 +258,3 @@ for the idle CPU/RSS sample. The report marks `idle_resources` as `not_run`;
 this mode supplies no idle performance evidence. The default command and CI
 continue to run that measurement. Smoke workflow windows remain behind the
 ordinary app window.
-

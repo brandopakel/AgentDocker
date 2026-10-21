@@ -250,7 +250,7 @@ control does, its id or its accessible label:
   live and how many finished unviewed (`hint`); an icon button says its name
   (`tip`); a status mark says its words (`status_dot`, `alert_mark`, `said`
   under a `tip`). The hover target is padded to about sixteen points; the mark itself
-  stays small. 
+  stays small.
 - **Tabs carry glyphs** (stacked bars, pulse, speech bubble, three dots) drawn
   the same way as the rail icons. Icon geometry is cached between frames and
   redrawn only when its colour changes, so idle frames repaint nothing for it.
@@ -707,7 +707,7 @@ Readiness trials explicitly enter the compact Messages layout and use its
 project selects shared chat; Messages preserves that conversation, so the list
 is hidden on a compact display until the person goes back. The fixture asserts
 both the list entry and destination composer instead of assuming a wide sidebar
-or changing the saved conversation. 
+or changing the saved conversation.
 
 The standard suite includes strict lint, nextest, doctests, installer/package
 checks and release builds. Desktop CI packages and runs native workflow acceptance
