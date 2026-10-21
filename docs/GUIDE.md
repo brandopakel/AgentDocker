@@ -846,12 +846,9 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
-- **Project memory.** Agents and you can keep short facts for a project —
-  a convention, a decision, where something lives — with `add_memory` or
-  `agentdocker memory add`. Every new session in the project is told them,
-  newest first. A memory that is no longer true is replaced
-  (`--supersedes`) or forgotten. It stays on this machine; anything that
-  looks like a secret is refused.
+- **Choose the model and effort.** Launching Claude or Codex from the app
+  offers **Model** and **Effort**, starting at the provider's own defaults,
+  and a session's panel says which it runs (`gpt-6-astra · xhigh`).
 
 - **A pairing code works once.** The connector's consent page now asks for the
   pairing code first and shows the projects to choose from only after it.
@@ -859,7 +856,15 @@ Newest first. Only what changes how the product is used.
   the new code from `agentdocker connector status` or the Tools screen. Wrong
   codes no longer close consent until a restart: a source that types five
   waits a quarter of an hour, and a code guessed at twenty times is replaced.
-  A service's log no longer records the code.
+  A service's log no longer records the code. A connector that crashes no
+  longer leaves its Tailscale Funnel open: the next start clears it.
+
+- **Project memory.** Agents and you can keep short facts for a project —
+  a convention, a decision, where something lives — with `add_memory` or
+  `agentdocker memory add`. Every new session in the project is told them,
+  newest first. A memory that is no longer true is replaced
+  (`--supersedes`) or forgotten. It stays on this machine; anything that
+  looks like a secret is refused.
 
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   used to be unbound: its AgentDocker tools refused, so its model could reach

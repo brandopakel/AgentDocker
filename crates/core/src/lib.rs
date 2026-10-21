@@ -28,6 +28,7 @@ pub mod lease;
 pub mod link;
 pub mod memory;
 pub mod message;
+pub mod model_choice;
 pub mod notification;
 pub mod paths;
 pub mod permissions;
