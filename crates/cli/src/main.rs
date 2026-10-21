@@ -4549,9 +4549,18 @@ async fn run() -> Result<()> {
         Command::CodexQueue(args) => codex_input::external::run(client, socket, args).await?,
         Command::CodexNative(args) => codex_input::external::launch::run(client, args).await?,
         Command::Codex(args) => {
-            let program = agentdocker_host::codex_binary::native_codex_on_path().context(
-                "the Codex executable behind `codex` on PATH was not found; install Codex (`npm install -g @openai/codex`), or name it with `agentdocker codex-native --program <path>`",
-            )?;
+            let program = match agentdocker_host::codex_binary::native_codex_on_path() {
+                Ok(program) => program,
+                Err(agentdocker_host::codex_binary::NotFound::Absent) => anyhow::bail!(
+                    "no `codex` is on PATH; install Codex (`npm install -g @openai/codex`), or name its binary with `agentdocker codex-native --program <path>`"
+                ),
+                Err(agentdocker_host::codex_binary::NotFound::Unrecognized(found)) => {
+                    anyhow::bail!(
+                        "{} is not Codex's own binary, npm entry point or npm shim (a wrapper of your own, or a package missing its platform binary); name the binary with `agentdocker codex-native --program <path>`",
+                        found.display()
+                    )
+                }
+            };
             codex_input::external::launch::run(
                 client,
                 codex_input::external::launch::Args::new(program, args.name, args.arguments),

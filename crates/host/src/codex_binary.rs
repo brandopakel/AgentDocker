@@ -53,48 +53,93 @@ fn codex_package_of(entry: &Path) -> Option<PathBuf> {
     (manifest["name"] == "@openai/codex").then(|| package.to_path_buf())
 }
 
-/// The entry point an npm shim runs, when the shim is one npm generated
-/// for Codex: `codex.cmd`, `codex.ps1` or the `sh` shim beside them in the
-/// npm prefix. Every line of it that runs a program must run node on
-/// exactly `node_modules/@openai/codex/bin/codex.js` under the prefix, as
-/// npm writes it; a comment naming it, or any other program run, is not
-/// such a shim.
+/// The lines npm writes into the shims it makes for a package's `bin`
+/// (`cmd-shim`: the `sh` shim, `codex.cmd`, `codex.ps1`), with `@ENTRY@`
+/// where the path to the entry point goes, `/` and `\` forms each.
+const SHIM_LINES: &[&str] = &[
+    // sh
+    "#!/bin/sh",
+    r#"basedir=$(dirname "$(echo "$0" | sed -e 's,\\,/,g')")"#,
+    "case `uname` in",
+    "*CYGWIN*|*MINGW*|*MSYS*)",
+    "if command -v cygpath > /dev/null 2>&1; then",
+    r#"basedir=`cygpath -w "$basedir"`"#,
+    "fi",
+    ";;",
+    "esac",
+    r#"if [ -x "$basedir/node" ]; then"#,
+    r#"exec "$basedir/node" "$basedir/@ENTRY@" "$@""#,
+    "else",
+    r#"exec node "$basedir/@ENTRY@" "$@""#,
+    // cmd
+    "@ECHO off",
+    "GOTO start",
+    ":find_dp0",
+    "SET dp0=%~dp0",
+    "EXIT /b",
+    ":start",
+    "SETLOCAL",
+    "CALL :find_dp0",
+    r#"IF EXIST "%dp0%\node.exe" ("#,
+    r#"SET "_prog=%dp0%\node.exe""#,
+    ") ELSE (",
+    r#"SET "_prog=node""#,
+    "SET PATHEXT=%PATHEXT:;.JS;=;%",
+    ")",
+    r#"endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "%dp0%\@WINENTRY@" %*"#,
+    // ps1
+    "#!/usr/bin/env pwsh",
+    "$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent",
+    r#"$exe="""#,
+    r#"if ($PSVersionTable.PSVersion -lt "6.0" -or $IsWindows) {"#,
+    r#"$exe=".exe""#,
+    "}",
+    "$ret=0",
+    r#"if (Test-Path "$basedir/node$exe") {"#,
+    "if ($MyInvocation.ExpectingInput) {",
+    r#"$input | & "$basedir/node$exe" "$basedir/@ENTRY@" $args"#,
+    "} else {",
+    r#"& "$basedir/node$exe" "$basedir/@ENTRY@" $args"#,
+    "$ret=$LASTEXITCODE",
+    r#"$input | & "node$exe" "$basedir/@ENTRY@" $args"#,
+    r#"& "node$exe" "$basedir/@ENTRY@" $args"#,
+    "exit $ret",
+];
+
+/// The entry point an npm shim runs, when the shim is one npm generated for
+/// Codex beside its package: every line is one of npm's own, with
+/// Codex's entry point in it, or a comment. A line of anything else (a
+/// `basedir` or `_prog` set elsewhere, another program run) and the shim is
+/// not followed, so it is never taken for a package it does not run.
 fn shim_entry(shim: &Path) -> Option<PathBuf> {
-    const SH: &str = "\"$basedir/node_modules/@openai/codex/bin/codex.js\"";
-    const CMD: &str = "\"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js\"";
+    const ENTRY: &str = "node_modules/@openai/codex/bin/codex.js";
+    let normal = |line: &str| line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let known: std::collections::HashSet<String> = SHIM_LINES
+        .iter()
+        .map(|line| {
+            normal(
+                &line
+                    .replace("@WINENTRY@", &ENTRY.replace('/', "\\"))
+                    .replace("@ENTRY@", ENTRY),
+            )
+        })
+        .collect();
     let text = read_small(shim)?;
-    let code = text.lines().map(str::trim).filter(|line| {
-        !(line.starts_with('#')
-            || line.starts_with("::")
-            || line.to_ascii_uppercase().starts_with("REM "))
-    });
     let mut runs = 0;
-    for line in code {
-        let invokes =
-            line.starts_with("exec ") || line.contains("& \"") || line.contains("\"%_prog%\"");
-        if !invokes {
+    for line in text.lines().map(normal) {
+        let comment = line.starts_with('#') && !line.starts_with("#!");
+        if line.is_empty() || comment {
             continue;
         }
-        let node = line.starts_with("exec node ")
-            || line.starts_with("exec \"$basedir/node\" ")
-            || line.contains("& \"$basedir/node$exe\" ")
-            || line.contains("& \"node$exe\" ")
-            || line.contains("& \"%_prog%\" ");
-        if !(node && (line.contains(SH) || line.contains(CMD))) {
+        if !known.contains(&line) {
             return None;
         }
-        runs += 1;
+        runs += usize::from(line.contains("codex.js"));
     }
     if runs == 0 {
         return None;
     }
-    let entry = shim
-        .parent()?
-        .join("node_modules")
-        .join("@openai")
-        .join("codex")
-        .join("bin")
-        .join("codex.js");
+    let entry = shim.parent()?.join(ENTRY);
     entry.is_file().then_some(entry)
 }
 
@@ -119,8 +164,13 @@ fn native_codex_for(found: &Path, (triple, package): (&str, &str)) -> Option<Pat
     if !found.is_file() {
         return None;
     }
+    // A native file is Codex only by its own name: a version manager's
+    // binary shim a `codex` link resolves to is some other program.
     if is_native(&found) {
-        return Some(found);
+        let named = found
+            .file_name()
+            .is_some_and(|name| name == "codex" || name == "codex.exe");
+        return named.then_some(found);
     }
     let entry = if codex_package_of(&found).is_some() {
         found
@@ -144,13 +194,24 @@ fn native_codex_for(found: &Path, (triple, package): (&str, &str)) -> Option<Pat
     .find(|candidate| candidate.is_file() && is_native(candidate))
 }
 
+/// Why no native Codex was found behind `PATH`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotFound {
+    /// No `codex` on `PATH` at all.
+    Absent,
+    /// The first `codex` on `PATH` is not one this can follow: a wrapper of
+    /// its own, or an npm package without its platform binary.
+    Unrecognized(PathBuf),
+}
+
 /// The native binary behind the first `codex` on `PATH`.
-pub fn native_codex_on_path() -> Option<PathBuf> {
+pub fn native_codex_on_path() -> Result<PathBuf, NotFound> {
     let dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();
     // The bare name, so `PATH` and `PATHEXT` order it as the shell would.
-    native_codex(&crate::command::find_program(&dirs, "codex")?)
+    let found = crate::command::find_program(&dirs, "codex").ok_or(NotFound::Absent)?;
+    native_codex(&found).ok_or(NotFound::Unrecognized(found))
 }
 
 #[cfg(all(test, unix))]
@@ -289,6 +350,13 @@ b"@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\n
             b"#!/bin/sh\n# replaces @openai/codex/bin/codex.js\nexec /opt/pinned/codex \"$@\"\n",
         );
         assert_eq!(native_codex_for(&custom, MAC), None);
+        // Nor one that sets its own `basedir` before npm's line.
+        let moved = prefix.join("codex-moved");
+        file(
+            &moved,
+            b"#!/bin/sh\nbasedir=/opt/pinned\nexec node \"$basedir/node_modules/@openai/codex/bin/codex.js\" \"$@\"\n",
+        );
+        assert_eq!(native_codex_for(&moved, MAC), None);
         // Nor one that runs it and something else as well.
         let both = prefix.join("codex-both");
         file(
@@ -312,6 +380,13 @@ b"@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\n
             Some(binary.canonicalize().unwrap())
         );
         assert_eq!(native_codex_for(&root.path().join("missing"), MAC), None);
+        // A link named codex to some other native program is not Codex.
+        let manager = root.path().join("tools/mise");
+        file(&manager, MACH_O);
+        let link = root.path().join("shims/codex");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&manager, &link).unwrap();
+        assert_eq!(native_codex_for(&link, MAC), None);
     }
 }
 
@@ -325,6 +400,7 @@ fn the_installed_codex_leads_to_its_binary() {
         return;
     }
     let native = native_codex_on_path().expect("the installed codex has its binary");
+    assert_eq!(native.file_name().unwrap(), "codex");
     assert!(
         native.is_file() && is_native(&native),
         "{}",
