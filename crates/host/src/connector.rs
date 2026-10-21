@@ -37,6 +37,50 @@ pub struct TunnelStatus {
     pub name: Option<String>,
 }
 
+/// A Tailscale Funnel a connector set or is about to set: a configuration
+/// in tailscaled that outlives the process. It is written before the set
+/// can take effect and removed only once the Funnel is confirmed undone, so
+/// a connector stopped at any point leaves the next one what it needs to
+/// clear it, and nothing that is not its own.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FunnelRecord {
+    pub pid: u32,
+    pub https_port: u16,
+    /// The loopback address the Funnel points at, `127.0.0.1:<port>`.
+    pub target: String,
+}
+
+impl FunnelRecord {
+    /// Whether the process that set it is still there.
+    pub fn alive(&self) -> bool {
+        crate::procinfo::alive(self.pid)
+    }
+}
+
+pub fn funnel_path(home: &Path) -> PathBuf {
+    home.join("connector").join("funnel.json")
+}
+
+pub fn write_funnel(home: &Path, record: &FunnelRecord) -> std::io::Result<()> {
+    write_private(
+        &funnel_path(home),
+        record.pid,
+        &serde_json::to_vec_pretty(record)?,
+    )
+}
+
+pub fn read_funnel(home: &Path) -> Option<FunnelRecord> {
+    serde_json::from_str(&std::fs::read_to_string(funnel_path(home)).ok()?).ok()
+}
+
+/// Only the process that wrote the record takes it away, or a successor
+/// that has seen to its Funnel; `pid` is the record's own.
+pub fn clear_funnel(home: &Path, pid: u32) {
+    if read_funnel(home).is_some_and(|r| r.pid == pid) {
+        let _ = std::fs::remove_file(funnel_path(home));
+    }
+}
+
 impl Serving {
     pub fn mcp_url(&self) -> String {
         format!("{}/mcp", self.public_url)
@@ -54,12 +98,24 @@ pub fn status_path(home: &Path) -> PathBuf {
 }
 
 pub fn write_status(home: &Path, serving: &Serving) -> std::io::Result<()> {
-    let path = status_path(home);
+    write_private(
+        &status_path(home),
+        serving.pid,
+        &serde_json::to_vec_pretty(serving)?,
+    )
+}
+
+/// Replace `path` with `bytes`, through a temporary of `pid`'s beside it.
+fn write_private(path: &Path, pid: u32, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| std::io::Error::other("status path has no parent"))?;
     std::fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(".serve.{}.tmp", serving.pid));
+    let name = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("state");
+    let temporary = parent.join(format!(".{name}.{pid}.tmp"));
     // It carries the pairing code: private from its first byte, never
     // written at the umask's mode and narrowed after.
     match std::fs::remove_file(&temporary) {
@@ -68,9 +124,9 @@ pub fn write_status(home: &Path, serving: &Serving) -> std::io::Result<()> {
         Err(error) => return Err(error),
     }
     let mut file = crate::dirs::create_private_file(&temporary)?;
-    std::io::Write::write_all(&mut file, &serde_json::to_vec_pretty(serving)?)?;
+    std::io::Write::write_all(&mut file, bytes)?;
     drop(file);
-    std::fs::rename(&temporary, &path)
+    std::fs::rename(&temporary, path)
 }
 
 /// Only the process that wrote the file takes it away.
@@ -131,6 +187,25 @@ mod tests {
         );
         clear_status(home.path(), mine.pid);
         assert!(read_status(home.path()).is_none());
+    }
+
+    #[test]
+    fn a_funnel_record_is_cleared_only_by_its_own_pid() {
+        let home = tempfile::tempdir().unwrap();
+        let record = FunnelRecord {
+            pid: std::process::id(),
+            https_port: 443,
+            target: "127.0.0.1:62800".into(),
+        };
+        write_funnel(home.path(), &record).unwrap();
+        assert_eq!(read_funnel(home.path()), Some(record.clone()));
+        clear_funnel(home.path(), record.pid + 1);
+        assert!(
+            read_funnel(home.path()).is_some(),
+            "another pid clears nothing"
+        );
+        clear_funnel(home.path(), record.pid);
+        assert!(read_funnel(home.path()).is_none());
     }
 
     #[cfg(unix)]
