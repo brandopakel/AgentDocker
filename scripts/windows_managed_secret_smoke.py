@@ -289,6 +289,7 @@ def main():
         env.update(HOME=str(root), USERPROFILE=str(root), APPDATA=str(root/'AppData/Roaming'), LOCALAPPDATA=str(root/'AppData/Local'),
                    CODEX_HOME=str(profile), AGENTDOCKER_HOME=str(root/'state'), AGENTDOCKER_NO_AUTOSTART='1',
                    AGENTDOCKER_NO_NOTIFICATIONS='1', AGENTDOCKER_FIXTURE_KEY='fixture-only', AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT='1')
+        env['AGENTDOCKER_PERSON_CHECK'] = 'off'  # its own daemon: act as the person from anywhere
         receiver = Receiver(binary, root, project, profile, internal, env, report); receiver.start_daemon(); capture()
         human = rpc({'op': 'me', 'workdir': str(project)})['agent']['id']
         cli = binary/'agentdocker.exe'

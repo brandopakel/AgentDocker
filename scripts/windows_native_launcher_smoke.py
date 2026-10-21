@@ -220,6 +220,7 @@ def main():
             'PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP',
             'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)'}}
         env.update(CODEX_HOME=str(profile), AGENTDOCKER_FIXTURE_KEY='fixture-only', TERM='xterm-256color')
+        env['AGENTDOCKER_PERSON_CHECK'] = 'off'  # its own daemon: act as the person from anywhere
         receiver = Receiver(args.binary_dir, root, repo, profile, out, env, report); receiver.start_daemon()
         config = ('model = "fixture-model"\nmodel_provider = "fixture"\napproval_policy = "on-request"\n'
                   'sandbox_mode = "danger-full-access"\ncheck_for_update_on_startup = false\n'

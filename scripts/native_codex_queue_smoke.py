@@ -550,6 +550,7 @@ try:
             for k, v in os.environ.items()
             if k in ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "LC_ALL"]
         }
+        env["AGENTDOCKER_PERSON_CHECK"] = "off"  # its own daemon: act as the person from anywhere
         env.update(
             CODEX_HOME=str(profile),
             AGENTDOCKER_FIXTURE_KEY="fixture-only",
