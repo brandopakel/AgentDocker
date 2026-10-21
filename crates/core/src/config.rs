@@ -344,16 +344,33 @@ impl SupermemoryConfig {
             return Err("memory.supermemory names no projects; name the ones to copy".into());
         }
         let url = self.base_url();
-        let loopback = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
-            .iter()
-            .any(|host| {
-                url.strip_prefix(host)
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
-            });
-        if !(url.starts_with("https://") || loopback) {
-            return Err(
-                "memory.supermemory.base_url must be https://, or http:// on loopback".into(),
-            );
+        let bad = |why: &str| Err(format!("memory.supermemory.base_url {why}"));
+        let Some((scheme, rest)) = url.split_once("://") else {
+            return bad("needs a scheme");
+        };
+        if rest.contains(['?', '#']) {
+            return bad("takes no query or fragment");
+        }
+        let authority = rest.split('/').next().unwrap_or("");
+        if authority.contains('@') {
+            return bad("carries no credentials; the key goes in key_file");
+        }
+        let host = authority
+            .rsplit_once(':')
+            .filter(|(_, port)| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+            .map_or(authority, |(host, _)| host);
+        if host.is_empty() {
+            return bad("has no host");
+        }
+        let local = matches!(host, "127.0.0.1" | "[::1]" | "localhost");
+        match scheme {
+            "https" => {}
+            "http" if local => {}
+            _ => {
+                return bad(
+                    "must be https://, or http:// on this machine (127.0.0.1, [::1], localhost)",
+                );
+            }
         }
         Ok(())
     }
@@ -365,9 +382,20 @@ impl SupermemoryConfig {
             .trim_end_matches('/')
     }
 
-    /// The namespace a project's memories are kept under there.
+    /// The namespace a project's memories are kept under there: letters,
+    /// digits, `_`, `:` and `-` only, at most 100 characters.
     pub fn namespace(project: &crate::ProjectId) -> String {
         format!("agentdocker_{}", project.as_str())
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '-') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .take(100)
+            .collect()
     }
 }
 
@@ -509,8 +537,24 @@ mod tests {
             SupermemoryConfig::namespace(&crate::ProjectId::from("abc")),
             "agentdocker_abc"
         );
+        let odd = SupermemoryConfig::namespace(&crate::ProjectId::from(&*"a/b c".repeat(40)));
+        assert!(
+            odd.len() <= 100
+                && odd
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_:-".contains(c))
+        );
         assert!(parsed(&on("")).supermemory().is_err(), "no projects");
-        for url in ["http://example.com", "ftp://x", "http://localhost.evil.com"] {
+        for url in [
+            "http://example.com",
+            "ftp://x",
+            "http://localhost.evil.com",
+            "http://localhost:80@collector.example",
+            "https://user:pw@api.supermemory.ai",
+            "https://api.supermemory.ai?x=1",
+            "https://api.supermemory.ai#x",
+            "http://127.0.0.1.example",
+        ] {
             let config = parsed(&on(&format!("projects = [\"p\"]\nbase_url = {url:?}\n")));
             assert!(config.supermemory().is_err(), "{url}");
         }

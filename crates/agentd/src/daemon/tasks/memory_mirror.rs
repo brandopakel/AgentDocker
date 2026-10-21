@@ -4,12 +4,21 @@
 //! it, and a mirror that cannot be reached only falls behind.
 //!
 //! Once a minute the copy is brought in step with the project's current
-//! memories: what it lacks is added under the memory's own id, and what is
-//! no longer said — forgotten, or superseded — is deleted. What it holds is
-//! kept here as one document per project, written only after the server
-//! said yes, so a failure is retried from where it stopped and nothing is
-//! sent twice on purpose. Only memories go: kept on purpose, refused when
-//! they read like a secret.
+//! memories, against Supermemory's v5 API. What may be there is kept here
+//! per project *and destination* (the server and the account's key), so a
+//! change of either starts a new copy rather than inheriting another's:
+//!
+//! - `ids` — confirmed there;
+//! - `processing` — accepted and still being processed, checked again;
+//! - `pending` — about to be sent, or sent without an answer: may be there.
+//!
+//! Each run first takes out what is no longer said (forgotten or
+//! superseded) from all three, by the server's per-document answer, so a
+//! failing addition never holds a forget back; then records the additions
+//! it is about to send as pending before any is sent, so a lost answer or
+//! a restart can never leave a forgotten memory behind unrecorded; then
+//! sends them, reading each answer's status. Only memories go: kept on
+//! purpose, refused when they read like a secret.
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 
@@ -17,39 +26,218 @@ use super::*;
 use agentdocker_core::config::SupermemoryConfig;
 use agentdocker_core::memory::{self, Memory};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub(in crate::daemon) const MIRROR: &str = "memory_mirror";
 /// Memories sent in one run, so a long backlog drains over several.
 const ADDS_PER_RUN: usize = 50;
+/// Documents in processing looked at again in one run.
+const CHECKS_PER_RUN: usize = 20;
 /// Ids taken out per request.
 const REMOVALS_PER_REQUEST: usize = 100;
 /// The whole of one request.
 const REQUEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// What a project's copy holds, as far as this machine knows.
+/// What a project's copy at one destination may hold.
 #[derive(Debug, Serialize, Deserialize)]
 pub(in crate::daemon) struct Mirrored {
     pub project: ProjectId,
+    pub destination: String,
     pub ids: BTreeSet<String>,
+    #[serde(default)]
+    pub processing: BTreeSet<String>,
+    #[serde(default)]
+    pub pending: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-/// What one run managed before it stopped, and why it stopped, if it did.
-#[derive(Debug, Default)]
-struct Pushed {
-    added: Vec<String>,
-    removed: Vec<String>,
-    stopped: Option<String>,
-}
-
 impl Mirrored {
-    fn empty(project: &ProjectId) -> Self {
+    fn empty(project: &ProjectId, destination: &str) -> Self {
         Self {
             project: project.clone(),
+            destination: destination.to_owned(),
             ids: BTreeSet::new(),
+            processing: BTreeSet::new(),
+            pending: BTreeSet::new(),
             updated_at: None,
         }
+    }
+
+    /// Every id that may be there.
+    fn held(&self) -> BTreeSet<String> {
+        self.ids
+            .iter()
+            .chain(&self.processing)
+            .chain(&self.pending)
+            .cloned()
+            .collect()
+    }
+
+    fn forget(&mut self, id: &str) {
+        self.ids.remove(id);
+        self.processing.remove(id);
+        self.pending.remove(id);
+    }
+}
+
+/// A destination's fingerprint: the server and the key's own fingerprint,
+/// never the key.
+fn destination(base_url: &str, key: &str) -> String {
+    let key = Sha256::digest(key.as_bytes());
+    let mut digest = Sha256::new();
+    digest.update(base_url.as_bytes());
+    digest.update(b"\n");
+    digest.update(key);
+    digest.finalize()[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// What the server said of one document.
+#[derive(Debug, PartialEq, Eq)]
+enum Status {
+    Done,
+    Processing,
+    Failed,
+}
+
+fn status(word: Option<&str>) -> Status {
+    match word {
+        Some("done") => Status::Done,
+        Some("failed") => Status::Failed,
+        _ => Status::Processing,
+    }
+}
+
+/// The calls one destination is reached by.
+struct Server {
+    agent: ureq::Agent,
+    auth: String,
+    documents: String,
+}
+
+impl Server {
+    fn new(base: &str, namespace: &str, key: &str) -> Self {
+        Self {
+            agent: ureq::Agent::config_builder()
+                .timeout_global(Some(REQUEST_DEADLINE))
+                .max_redirects(0)
+                .http_status_as_error(false)
+                .build()
+                .into(),
+            auth: format!("Bearer {key}"),
+            documents: format!("{base}/ns/{namespace}/document"),
+        }
+    }
+
+    /// Delete `ids`: those the server says it deleted, or never had.
+    fn delete(&self, ids: &[String]) -> Result<Vec<String>, String> {
+        let body = json!({ "ids": ids });
+        let mut response = self
+            .agent
+            .delete(&self.documents)
+            .header("Authorization", &self.auth)
+            .header("Content-Type", "application/json")
+            .force_send_body()
+            .send(body.to_string().as_bytes())
+            .map_err(|error| format!("removing memories failed ({})", failure(&error)))?;
+        let code = response.status().as_u16();
+        if !(200..300).contains(&code) {
+            return Err(format!("removing memories was refused (HTTP {code})"));
+        }
+        let answer: Value = response
+            .body_mut()
+            .read_to_string()
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .ok_or(())
+            .map_err(|_| "removing memories gave an answer that is not JSON".to_owned())?;
+        let failed: BTreeSet<&str> = answer["errors"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|e| {
+                !e["error"]
+                    .as_str()
+                    .is_some_and(|why| why.to_ascii_lowercase().contains("not found"))
+            })
+            .filter_map(|e| e["id"].as_str())
+            .collect();
+        Ok(ids
+            .iter()
+            .filter(|id| !failed.contains(id.as_str()))
+            .cloned()
+            .collect())
+    }
+
+    /// Add one memory under its id; the status the server answers with.
+    fn add(&self, memory: &Memory) -> Result<Status, String> {
+        let body = json!({
+            "content": memory.text,
+            "id": memory.id,
+            "taskType": "memory",
+            "metadata": {
+                "agentdocker_memory": memory.id,
+                "project": memory.project,
+                "author": memory.author,
+                "kept_at": memory.created_at,
+            },
+        });
+        let mut response = self
+            .agent
+            .post(&self.documents)
+            .header("Authorization", &self.auth)
+            .header("Content-Type", "application/json")
+            .send(body.to_string().as_bytes())
+            .map_err(|error| format!("adding a memory failed ({})", failure(&error)))?;
+        let code = response.status().as_u16();
+        if !(200..300).contains(&code) {
+            return Err(format!("adding a memory was refused (HTTP {code})"));
+        }
+        let answer: Value = response
+            .body_mut()
+            .read_to_string()
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .ok_or(())
+            .map_err(|_| "adding a memory gave an answer that is not JSON".to_owned())?;
+        Ok(status(answer["status"].as_str()))
+    }
+
+    /// One document's status now; `None` when the server has no such one.
+    fn check(&self, id: &str) -> Result<Option<Status>, String> {
+        let mut response = self
+            .agent
+            .get(format!("{}/{id}", self.documents))
+            .header("Authorization", &self.auth)
+            .call()
+            .map_err(|error| format!("checking a memory failed ({})", failure(&error)))?;
+        match response.status().as_u16() {
+            404 => Ok(None),
+            200..=299 => {
+                let answer: Value = response
+                    .body_mut()
+                    .read_to_string()
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                    .ok_or(())
+                    .map_err(|_| "checking a memory gave an answer that is not JSON".to_owned())?;
+                Ok(Some(status(answer["system"]["status"].as_str())))
+            }
+            code => Err(format!("checking a memory was refused (HTTP {code})")),
+        }
+    }
+}
+
+/// A transport failure, said without the address or anything sent.
+fn failure(error: &ureq::Error) -> &'static str {
+    match error {
+        ureq::Error::Timeout(_) => "timed out",
+        ureq::Error::Io(_) | ureq::Error::ConnectionFailed => "could not connect",
+        ureq::Error::Tls(_) => "TLS failed",
+        _ => "transport error",
     }
 }
 
@@ -104,147 +292,127 @@ impl Daemon {
         }
     }
 
+    fn mirror_state(self: &Arc<Self>, project: &ProjectId, destination: &str) -> Mirrored {
+        let id = format!("{}/{destination}", project.as_str());
+        lock(&self.state)
+            .store_read("memory mirror", |store| {
+                store.document::<Mirrored>(MIRROR, &id)
+            })
+            .flatten()
+            .unwrap_or_else(|| Mirrored::empty(project, destination))
+    }
+
+    /// Record what the copy may hold now, with how much changed.
+    fn record_mirror(self: &Arc<Self>, mut held: Mirrored, added: usize, removed: usize) -> bool {
+        held.updated_at = Some(Utc::now());
+        let id = format!("{}/{}", held.project.as_str(), held.destination);
+        let kinds = if added + removed > 0 {
+            vec![EventKind::MemoryMirrored {
+                project: held.project.clone(),
+                added,
+                removed,
+            }]
+        } else {
+            Vec::new()
+        };
+        lock(&self.state)
+            .commit_documents("memory mirror", vec![doc(MIRROR, id, &held)], kinds)
+            .is_none()
+    }
+
     async fn mirror_project(
         self: &Arc<Self>,
         mirror: &SupermemoryConfig,
         key: &str,
         project: ProjectId,
     ) {
-        let (memories, mirrored) = {
-            let mut state = lock(&self.state);
-            let memories = match state.project_memories(&project) {
-                Ok(memories) => memories,
-                Err(_) => return,
-            };
-            let mirrored = state
-                .store_read("memory mirror", |store| {
-                    store.document::<Mirrored>(MIRROR, project.as_str())
-                })
-                .flatten()
-                .unwrap_or_else(|| Mirrored::empty(&project));
-            (memories, mirrored)
+        let destination = destination(mirror.base_url(), key);
+        let memories = match lock(&self.state).project_memories(&project) {
+            Ok(memories) => memories,
+            Err(_) => return,
         };
-        let (add, remove) = memory::mirror_plan(&memories, &mirrored.ids);
-        if add.is_empty() && remove.is_empty() {
+        let mut held = self.mirror_state(&project, &destination);
+        let server = Arc::new(Server::new(
+            mirror.base_url(),
+            &SupermemoryConfig::namespace(&project),
+            key,
+        ));
+        let (_, gone) = memory::mirror_plan(&memories, &held.held());
+        let mut removed = 0;
+        // What is no longer said goes first, and on its own.
+        for ids in gone.chunks(REMOVALS_PER_REQUEST) {
+            let (server, ids) = (server.clone(), ids.to_vec());
+            match tokio::task::spawn_blocking(move || server.delete(&ids)).await {
+                Ok(Ok(deleted)) => {
+                    removed += deleted.len();
+                    for id in &deleted {
+                        held.forget(id);
+                    }
+                }
+                Ok(Err(reason)) => {
+                    warn!(project = %project.short(), %reason, "memory mirror fell behind; it tries again in a minute");
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
+        // Additions are recorded as possibly there before any is sent.
+        let present: BTreeSet<String> = held.ids.iter().chain(&held.processing).cloned().collect();
+        let (lacking, _) = memory::mirror_plan(&memories, &present);
+        let sending: Vec<Memory> = lacking.into_iter().take(ADDS_PER_RUN).cloned().collect();
+        held.pending.extend(sending.iter().map(|m| m.id.clone()));
+        if !self.record_mirror(held, 0, removed) {
             return;
         }
-        let add: Vec<Memory> = add.into_iter().take(ADDS_PER_RUN).cloned().collect();
-        let base = mirror.base_url().to_owned();
-        let namespace = SupermemoryConfig::namespace(&project);
-        let key = key.to_owned();
-        let pushed =
-            tokio::task::spawn_blocking(move || push(&base, &namespace, &key, &add, &remove))
-                .await
-                .unwrap_or_else(|_| Pushed {
-                    stopped: Some("the mirror run did not complete".into()),
-                    ..Pushed::default()
-                });
-        if let Some(reason) = &pushed.stopped {
-            warn!(project = %project.short(), %reason, "memory mirror fell behind; it tries again in a minute");
-        }
-        if pushed.added.is_empty() && pushed.removed.is_empty() {
-            return;
-        }
-        let mut state = lock(&self.state);
-        // What the copy holds now, read again under the lock: a forget
-        // between the reads changes only the next run's plan.
-        let mut now = state
-            .store_read("memory mirror", |store| {
-                store.document::<Mirrored>(MIRROR, project.as_str())
-            })
-            .flatten()
-            .unwrap_or_else(|| Mirrored::empty(&project));
-        now.ids.extend(pushed.added.iter().cloned());
-        for id in &pushed.removed {
-            now.ids.remove(id);
-        }
-        now.updated_at = Some(Utc::now());
-        let kinds = vec![EventKind::MemoryMirrored {
-            project: project.clone(),
-            added: pushed.added.len(),
-            removed: pushed.removed.len(),
-        }];
-        let _ = state.commit_documents(
-            "memory mirror",
-            vec![doc(MIRROR, project.as_str().to_owned(), &now)],
-            kinds,
-        );
-    }
-}
-
-/// Send what the plan says, in order, stopping at the first refusal. The
-/// key goes in a header and never in what is logged or returned.
-fn push(base: &str, namespace: &str, key: &str, add: &[Memory], remove: &[String]) -> Pushed {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(REQUEST_DEADLINE))
-        .max_redirects(0)
-        .http_status_as_error(false)
-        .build()
-        .into();
-    let auth = format!("Bearer {key}");
-    let url = format!("{base}/ns/{namespace}/document");
-    let mut pushed = Pushed::default();
-    for memory in add {
-        let body = json!({
-            "content": memory.text,
-            "id": memory.id,
-            "taskType": "memory",
-            "metadata": {
-                "agentdocker_memory": memory.id,
-                "project": memory.project,
-                "author": memory.author,
-                "kept_at": memory.created_at,
-            },
-        });
-        let sent = agent
-            .post(&url)
-            .header("Authorization", &auth)
-            .header("Content-Type", "application/json")
-            .send(body.to_string().as_bytes());
-        match sent.map(|response| response.status().as_u16()) {
-            // Already there under its id is as good as added.
-            Ok(200..=299 | 409) => pushed.added.push(memory.id.clone()),
-            Ok(status) => {
-                pushed.stopped = Some(format!("adding a memory was refused (HTTP {status})"));
-                return pushed;
-            }
-            Err(error) => {
-                pushed.stopped = Some(format!("adding a memory failed ({})", failure(&error)));
-                return pushed;
+        let mut held = self.mirror_state(&project, &destination);
+        // What was already processing there is looked at again: what is
+        // sent below is left until the next run.
+        let checking: Vec<String> = held
+            .processing
+            .iter()
+            .take(CHECKS_PER_RUN)
+            .cloned()
+            .collect();
+        for id in checking {
+            let (server, asked) = (server.clone(), id.clone());
+            match tokio::task::spawn_blocking(move || server.check(&asked)).await {
+                Ok(Ok(Some(Status::Done))) => {
+                    held.processing.remove(&id);
+                    held.ids.insert(id);
+                }
+                Ok(Ok(Some(Status::Processing))) => {}
+                // Failed there, or gone: sent again next run.
+                Ok(Ok(Some(Status::Failed) | None)) => {
+                    held.processing.remove(&id);
+                }
+                Ok(Err(_)) | Err(_) => break,
             }
         }
-    }
-    for ids in remove.chunks(REMOVALS_PER_REQUEST) {
-        let body = json!({ "ids": ids });
-        let sent = agent
-            .delete(&url)
-            .header("Authorization", &auth)
-            .header("Content-Type", "application/json")
-            .force_send_body()
-            .send(body.to_string().as_bytes());
-        match sent.map(|response| response.status().as_u16()) {
-            // Gone already is as good as removed.
-            Ok(200..=299 | 404) => pushed.removed.extend(ids.iter().cloned()),
-            Ok(status) => {
-                pushed.stopped = Some(format!("removing memories was refused (HTTP {status})"));
-                return pushed;
-            }
-            Err(error) => {
-                pushed.stopped = Some(format!("removing memories failed ({})", failure(&error)));
-                return pushed;
+        let mut added = 0;
+        for memory in sending {
+            let server = server.clone();
+            let id = memory.id.clone();
+            match tokio::task::spawn_blocking(move || server.add(&memory)).await {
+                Ok(Ok(Status::Done)) => {
+                    held.pending.remove(&id);
+                    held.ids.insert(id);
+                    added += 1;
+                }
+                Ok(Ok(Status::Processing)) => {
+                    held.pending.remove(&id);
+                    held.processing.insert(id);
+                    added += 1;
+                }
+                // Failed there: left pending, sent again next run.
+                Ok(Ok(Status::Failed)) => {}
+                Ok(Err(reason)) => {
+                    warn!(project = %project.short(), %reason, "memory mirror fell behind; it tries again in a minute");
+                    break;
+                }
+                Err(_) => break,
             }
         }
-    }
-    pushed
-}
-
-/// A transport failure, said without the address or anything sent.
-fn failure(error: &ureq::Error) -> &'static str {
-    match error {
-        ureq::Error::Timeout(_) => "timed out",
-        ureq::Error::Io(_) | ureq::Error::ConnectionFailed => "could not connect",
-        ureq::Error::Tls(_) => "TLS failed",
-        _ => "transport error",
+        self.record_mirror(held, added, 0);
     }
 }
 
@@ -255,16 +423,27 @@ mod tests {
     use std::sync::Mutex as StdMutex;
     use tempfile::TempDir;
 
-    /// What a fake server was sent: request line, authorization, body.
-    type Seen = Arc<StdMutex<Vec<(String, String, String)>>>;
+    /// How the fake server answers, and what it was sent: method and path,
+    /// authorization, body.
+    #[derive(Default)]
+    struct Fake {
+        post: (u16, &'static str),
+        delete_errors: Vec<String>,
+        get: &'static str,
+        seen: Vec<(String, String, String)>,
+    }
 
-    /// A server that answers every request with `status` and keeps what
-    /// it was sent.
-    fn server(status: u16) -> (String, Seen) {
+    type Shared = Arc<StdMutex<Fake>>;
+
+    fn server(post: (u16, &'static str)) -> (String, Shared) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
-        let seen = Arc::new(StdMutex::new(Vec::new()));
-        let kept = seen.clone();
+        let shared: Shared = Arc::new(StdMutex::new(Fake {
+            post,
+            get: "done",
+            ..Fake::default()
+        }));
+        let fake = shared.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
@@ -288,21 +467,40 @@ mod tests {
                 }
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
-                kept.lock().unwrap().push((
-                    line.trim_end().to_owned(),
-                    auth,
-                    String::from_utf8(body).unwrap(),
-                ));
-                let reply = "{\"id\":\"x\",\"status\":\"queued\"}";
+                let body = String::from_utf8(body).unwrap();
+                let request: Vec<&str> = line.split_whitespace().collect();
+                let (method, path) = (request[0].to_owned(), request[1].to_owned());
+                let mut fake = fake.lock().unwrap();
+                let (code, reply) = match method.as_str() {
+                    "POST" => (
+                        fake.post.0,
+                        json!({"id": "x", "status": fake.post.1}).to_string(),
+                    ),
+                    "DELETE" => {
+                        let asked: Value = serde_json::from_str(&body).unwrap();
+                        let errors: Vec<Value> = asked["ids"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .filter(|id| fake.delete_errors.iter().any(|e| id == &e))
+                            .map(|id| json!({"id": id, "error": "temporarily locked"}))
+                            .collect();
+                        let count = asked["ids"].as_array().unwrap().len() - errors.len();
+                        (200, json!({"count": count, "errors": errors}).to_string())
+                    }
+                    _ => (200, json!({"system": {"status": fake.get}}).to_string()),
+                };
+                fake.seen.push((format!("{method} {path}"), auth, body));
+                drop(fake);
                 write!(
                     stream,
-                    "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
                     reply.len()
                 )
                 .unwrap();
             }
         });
-        (address, seen)
+        (address, shared)
     }
 
     fn open(dir: &TempDir) -> Arc<Daemon> {
@@ -328,19 +526,19 @@ mod tests {
         }
     }
 
-    fn configure(dir: &TempDir, url: &str, project: &str, enabled: bool) {
-        let key = dir.path().join("supermemory.key");
-        std::fs::write(&key, "sm-test-key-0123456789\n").unwrap();
+    fn configure(dir: &TempDir, url: &str, project: &str, enabled: bool, key: &str) {
+        let file = dir.path().join("supermemory.key");
+        std::fs::write(&file, format!("{key}\n")).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         std::fs::write(
             dir.path().join(agentdocker_core::config::FILE_NAME),
             format!(
                 "[memory.supermemory]\nenabled = {enabled}\nkey_file = {:?}\nprojects = [{project:?}]\nbase_url = {url:?}\n",
-                key.display().to_string()
+                file.display().to_string()
             ),
         )
         .unwrap();
@@ -362,89 +560,192 @@ mod tests {
         }
     }
 
+    async fn forget(daemon: &Arc<Daemon>, agent: &AgentRecord, id: &str) {
+        let forgotten = daemon
+            .handle(Request::MemoryForget {
+                from: agent.id.to_string(),
+                memory: id.to_owned(),
+            })
+            .await;
+        assert!(matches!(forgotten, Response::Ok), "{forgotten:?}");
+    }
+
+    async fn project(dir: &TempDir) -> (Arc<Daemon>, AgentRecord, ProjectId) {
+        let daemon = open(dir);
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let agent = register(&daemon, &repo).await;
+        let project = agent.project.as_ref().unwrap().id();
+        (daemon, agent, project)
+    }
+
+    fn methods(fake: &Shared) -> Vec<String> {
+        fake.lock()
+            .unwrap()
+            .seen
+            .iter()
+            .map(|(line, _, _)| line.split(' ').next().unwrap().to_owned())
+            .collect()
+    }
+
+    fn held(daemon: &Arc<Daemon>, project: &ProjectId, url: &str, key: &str) -> Mirrored {
+        daemon.mirror_state(project, &destination(url, key))
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn the_copy_gets_what_is_kept_and_loses_what_is_forgotten() {
         let tmp = tempfile::tempdir().unwrap();
-        let daemon = open(&tmp);
-        let repo = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        let agent = register(&daemon, &repo).await;
-        let project = agent.project.as_ref().unwrap().id();
-        let (url, seen) = server(200);
-        configure(&tmp, &url, project.as_str(), true);
+        let (daemon, agent, project) = project(&tmp).await;
+        let (url, fake) = server((200, "done"));
+        configure(&tmp, &url, project.as_str(), true, "sm-test-key-0123456789");
 
         let first = keep(&daemon, &agent, "tests run with nextest").await;
         let second = keep(&daemon, &agent, "the reviewer gives verdicts").await;
         daemon.mirror_once().await;
         let path = format!("/ns/agentdocker_{}/document", project.as_str());
         {
-            let seen = seen.lock().unwrap();
-            assert_eq!(seen.len(), 2, "{seen:?}");
-            for (line, auth, body) in seen.iter() {
-                assert_eq!(line, &format!("POST {path} HTTP/1.1"));
+            let fake = fake.lock().unwrap();
+            assert_eq!(fake.seen.len(), 2, "{:?}", fake.seen);
+            for (line, auth, body) in &fake.seen {
+                assert_eq!(line, &format!("POST {path}"));
                 assert_eq!(auth, "Bearer sm-test-key-0123456789");
-                let body: Value = serde_json::from_str(body).unwrap();
-                assert_eq!(body["taskType"], "memory");
-                assert!([&first, &second].contains(&&body["id"].as_str().unwrap().to_owned()));
+                assert_eq!(
+                    serde_json::from_str::<Value>(body).unwrap()["taskType"],
+                    "memory"
+                );
             }
         }
         // In step: nothing more is sent.
         daemon.mirror_once().await;
-        assert_eq!(seen.lock().unwrap().len(), 2);
+        assert_eq!(methods(&fake).len(), 2);
 
-        let forgotten = daemon
-            .handle(Request::MemoryForget {
-                from: agent.id.to_string(),
-                memory: first.clone(),
-            })
-            .await;
-        assert!(matches!(forgotten, Response::Ok), "{forgotten:?}");
+        forget(&daemon, &agent, &first).await;
         daemon.mirror_once().await;
-        let seen = seen.lock().unwrap();
-        let (line, _, body) = seen.last().unwrap();
-        assert_eq!(line, &format!("DELETE {path} HTTP/1.1"));
+        let (line, _, body) = fake.lock().unwrap().seen.last().cloned().unwrap();
+        assert_eq!(line, format!("DELETE {path}"));
         assert_eq!(
-            serde_json::from_str::<Value>(body).unwrap()["ids"],
+            serde_json::from_str::<Value>(&body).unwrap()["ids"],
             json!([first])
         );
-        let held = lock(&daemon.state)
-            .store_read("test", |store| {
-                store.document::<Mirrored>(MIRROR, project.as_str())
-            })
-            .flatten()
-            .unwrap();
-        assert_eq!(held.ids, BTreeSet::from([second]));
+        let now = held(&daemon, &project, &url, "sm-test-key-0123456789");
+        assert_eq!(now.ids, BTreeSet::from([second]));
+        assert!(now.pending.is_empty() && now.processing.is_empty());
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn nothing_leaves_unless_turned_on_and_a_refusal_is_retried() {
+    async fn work_still_processing_there_is_checked_until_done() {
         let tmp = tempfile::tempdir().unwrap();
-        let daemon = open(&tmp);
-        let repo = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        let agent = register(&daemon, &repo).await;
-        let project = agent.project.as_ref().unwrap().id();
-        let (url, seen) = server(500);
-        keep(&daemon, &agent, "deploys go out on Mondays").await;
+        let (daemon, agent, project) = project(&tmp).await;
+        let (url, fake) = server((200, "queued"));
+        configure(&tmp, &url, project.as_str(), true, "sm-test-key-0123456789");
+        let id = keep(&daemon, &agent, "deploys go out on Mondays").await;
+        daemon.mirror_once().await;
+        assert!(
+            held(&daemon, &project, &url, "sm-test-key-0123456789")
+                .processing
+                .contains(&id)
+        );
+        daemon.mirror_once().await;
+        assert_eq!(methods(&fake), ["POST", "GET"]);
+        assert!(
+            held(&daemon, &project, &url, "sm-test-key-0123456789")
+                .ids
+                .contains(&id)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn nothing_leaves_unless_turned_on_and_a_refusal_stays_pending() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, agent, project) = project(&tmp).await;
+        let (url, fake) = server((409, "x"));
+        let id = keep(&daemon, &agent, "deploys go out on Mondays").await;
 
         // No file, and a file that does not turn it on: nothing is sent.
         daemon.mirror_once().await;
-        configure(&tmp, &url, project.as_str(), false);
+        configure(
+            &tmp,
+            &url,
+            project.as_str(),
+            false,
+            "sm-test-key-0123456789",
+        );
         daemon.mirror_once().await;
-        assert!(seen.lock().unwrap().is_empty());
+        assert!(methods(&fake).is_empty());
 
-        // On, and refused: nothing is recorded as held, so it is tried again.
-        configure(&tmp, &url, project.as_str(), true);
+        // On, and refused (a conflict is not "already there"): recorded as
+        // possibly there before it was sent, held as nothing more, tried again.
+        configure(&tmp, &url, project.as_str(), true, "sm-test-key-0123456789");
         daemon.mirror_once().await;
+        let now = held(&daemon, &project, &url, "sm-test-key-0123456789");
+        assert!(now.pending.contains(&id) && now.ids.is_empty());
         daemon.mirror_once().await;
-        assert_eq!(seen.lock().unwrap().len(), 2, "tried again");
-        let held = lock(&daemon.state)
-            .store_read("test", |store| {
-                store.document::<Mirrored>(MIRROR, project.as_str())
-            })
-            .flatten();
-        assert!(held.is_none_or(|held| held.ids.is_empty()));
+        assert_eq!(methods(&fake), ["POST", "POST"]);
+
+        // Forgotten while only possibly there: it is still taken out, and
+        // first, though additions keep failing.
+        forget(&daemon, &agent, &id).await;
+        let second = keep(&daemon, &agent, "the board has a review lane").await;
+        daemon.mirror_once().await;
+        let sent = methods(&fake);
+        assert_eq!(&sent[2..], ["DELETE", "POST"], "{sent:?}");
+        let now = held(&daemon, &project, &url, "sm-test-key-0123456789");
+        assert!(!now.pending.contains(&id));
+        assert!(now.pending.contains(&second));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_document_the_server_did_not_delete_is_kept_to_try_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, agent, project) = project(&tmp).await;
+        let (url, fake) = server((200, "done"));
+        configure(&tmp, &url, project.as_str(), true, "sm-test-key-0123456789");
+        let stuck = keep(&daemon, &agent, "the cache lives in target").await;
+        let other = keep(&daemon, &agent, "tests run with nextest").await;
+        daemon.mirror_once().await;
+        fake.lock().unwrap().delete_errors = vec![stuck.clone()];
+        forget(&daemon, &agent, &stuck).await;
+        forget(&daemon, &agent, &other).await;
+        daemon.mirror_once().await;
+        let now = held(&daemon, &project, &url, "sm-test-key-0123456789");
+        assert_eq!(
+            now.ids,
+            BTreeSet::from([stuck.clone()]),
+            "only the one it deleted goes"
+        );
+        fake.lock().unwrap().delete_errors.clear();
+        daemon.mirror_once().await;
+        assert!(
+            held(&daemon, &project, &url, "sm-test-key-0123456789")
+                .ids
+                .is_empty()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn another_destination_is_a_copy_of_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, agent, project) = project(&tmp).await;
+        let (url, fake) = server((200, "done"));
+        configure(&tmp, &url, project.as_str(), true, "sm-test-key-0123456789");
+        keep(&daemon, &agent, "tests run with nextest").await;
+        daemon.mirror_once().await;
+        // Another account's key: what the first holds is not this one's.
+        configure(
+            &tmp,
+            &url,
+            project.as_str(),
+            true,
+            "sm-other-account-key-987",
+        );
+        daemon.mirror_once().await;
+        assert_eq!(methods(&fake), ["POST", "POST"]);
+        let seen = fake.lock().unwrap().seen.clone();
+        assert_eq!(seen[1].1, "Bearer sm-other-account-key-987");
     }
 }
