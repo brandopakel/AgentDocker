@@ -280,6 +280,7 @@ fn dedicated_server(
     table: &[agentdocker_host::procinfo::Process],
     born: &impl Fn(u32) -> Option<DateTime<Utc>>,
     program: &impl Fn(u32) -> Option<std::path::PathBuf>,
+    companion: &impl Fn(&std::path::Path) -> bool,
 ) -> bool {
     let Some(terminal) = reviewer
         .pid
@@ -296,13 +297,20 @@ fn dedicated_server(
             .argv
             .windows(2)
             .any(|w| w[0] == "--listen" && w[1].starts_with("ws://127.0.0.1:"));
+    // The launcher is this daemon's own companion CLI, by the file the
+    // kernel says it runs; and the terminal speaks to this server, on the
+    // loopback port the server listens on.
     let ours = matches!(
         launcher.argv.get(1).map(String::as_str),
         Some("codex" | "codex-native")
-    ) && program(launcher.pid).is_some_and(|exe| {
-        exe.file_stem()
-            .is_some_and(|stem| stem.eq_ignore_ascii_case("agentdocker"))
-    });
+    ) && program(launcher.pid).is_some_and(|exe| companion(&exe));
+    let port = |argv: &[String], flag: &str| {
+        argv.windows(2)
+            .find(|w| w[0] == flag && w[1].starts_with("ws://127.0.0.1:"))
+            .map(|w| w[1].clone())
+    };
+    let paired = port(&server.argv, "--listen").is_some()
+        && port(&server.argv, "--listen") == port(&terminal.argv, "--remote");
     let in_order = match (
         born(launcher.pid),
         born(server.pid),
@@ -312,7 +320,12 @@ fn dedicated_server(
         (Some(l), Some(s), Some(t), Some(recorded)) => s >= l && t >= l && t == recorded,
         _ => false,
     };
-    reviewer.spec.runtime == "codex" && terminal.ppid == server.ppid && serving && ours && in_order
+    reviewer.spec.runtime == "codex"
+        && terminal.ppid == server.ppid
+        && serving
+        && ours
+        && paired
+        && in_order
 }
 
 /// Walk up from `sender`, itself included, to the nearest session: a live
@@ -328,13 +341,18 @@ fn author(
     table: &[agentdocker_host::procinfo::Process],
     born: impl Fn(u32) -> Option<DateTime<Utc>>,
     program: impl Fn(u32) -> Option<std::path::PathBuf>,
+    companion: impl Fn(&std::path::Path) -> bool,
 ) -> Author {
     let mut current = sender;
     for _ in 0..64 {
         let Some(process) = table.iter().find(|p| p.pid == current) else {
             break;
         };
-        let birth = born(current);
+        let Some(birth) = born(current) else {
+            // A process whose birth cannot be read could be anybody's.
+            return Author::Other("its sender's parents could not all be read");
+        };
+        let birth = Some(birth);
         if let Some((recorded, owner)) = agents.get(&current)
             && birth == Some(*recorded)
         {
@@ -351,7 +369,7 @@ fn author(
                 && birth.is_some()
                 && birth == reviewer.process_started_at)
                 || agentdocker_host::provider_input::owns_codex_process(reviewer, current, table)
-                || dedicated_server(reviewer, process, table, &born, &program);
+                || dedicated_server(reviewer, process, table, &born, &program, &companion);
             return if own {
                 Author::Reviewer
             } else {
@@ -381,9 +399,16 @@ impl Daemon {
         };
         let (reviewer, agents) = {
             let state = lock(&self.state);
-            // A name nobody has is the handler's to answer.
-            let id = state.registry.resolve(agent).ok()?;
-            let record = state.registry.get(&id)?.clone();
+            // Only a record named here reaches the handler, by its id: a name
+            // that resolves to nobody now is refused, not looked up again
+            // later when it might name somebody else.
+            let id = match state.registry.resolve(agent) {
+                Ok(id) => id,
+                Err(error) => return Some(registry_error(error)),
+            };
+            let Some(record) = state.registry.get(&id).cloned() else {
+                return Some(Response::error(ErrorCode::NotFound, "agent vanished"));
+            };
             let agents: HashMap<u32, (DateTime<Utc>, AgentId)> = state
                 .registry
                 .live()
@@ -423,6 +448,12 @@ impl Daemon {
             &table,
             agentdocker_host::procinfo::start_time,
             |pid| agentdocker_host::procinfo::executable_path_of(pid).ok(),
+            |exe| {
+                crate::daemon::person::companion_cli()
+                    .and_then(|cli| std::fs::canonicalize(cli).ok())
+                    .zip(std::fs::canonicalize(exe).ok())
+                    .is_some_and(|(cli, exe)| cli == exe)
+            },
         ) {
             Author::Reviewer => None,
             Author::Other(why) => refuse(why),
@@ -762,9 +793,15 @@ mod tests {
     /// whose launcher is not ours; and nothing at all.
     #[test]
     fn a_verdict_is_the_reviewer_s_only_from_the_nearest_session_being_its_own() {
-        let born = |pid: u32| DateTime::from_timestamp(1_700_000_000 + i64::from(pid), 0);
-        let ours = |pid: u32| {
-            (pid == 300 || pid == 400).then(|| std::path::PathBuf::from("/opt/agentdocker"))
+        // 40's birth cannot be read.
+        let born = |pid: u32| {
+            (pid != 40).then(|| DateTime::from_timestamp(1_700_000_000 + i64::from(pid), 0))?
+        };
+        // 500 runs another program also called agentdocker.
+        let ours = |pid: u32| match pid {
+            300 | 600 => Some(std::path::PathBuf::from("/opt/agentdocker")),
+            500 => Some(std::path::PathBuf::from("/tmp/agentdocker")),
+            _ => None,
         };
         let table = [
             // A Claude reviewer (10) and what runs under it.
@@ -801,6 +838,18 @@ mod tests {
                 &["/x/codex", "app-server", "--listen", "ws://127.0.0.1:4200"],
             ),
             row(503, 502, &["/opt/agentdocker", "mcp"]),
+            // Our launcher, but its server is not the terminal's (600).
+            row(600, 5, &["/opt/agentdocker", "codex-native"]),
+            row(601, 600, &["/x/codex", "--remote", "ws://127.0.0.1:4300"]),
+            row(
+                602,
+                600,
+                &["/x/codex", "app-server", "--listen", "ws://127.0.0.1:4999"],
+            ),
+            row(603, 602, &["/opt/agentdocker", "mcp"]),
+            // A custom agent the reviewer started, whose birth is unreadable.
+            row(40, 10, &["/opt/tools/custom-agent"]),
+            row(41, 40, &["python3", "client.py"]),
             row(5, 1, &["-zsh"]),
             row(6, 5, &["python3", "client.py"]),
         ];
@@ -811,9 +860,10 @@ mod tests {
             (20, (born(20).unwrap(), nested.id.clone())),
         ]
         .into();
+        let companion = |exe: &std::path::Path| exe == std::path::Path::new("/opt/agentdocker");
         let go =
             |sender, reviewer: &AgentRecord, agents: &HashMap<u32, (DateTime<Utc>, AgentId)>| {
-                author(sender, reviewer, agents, &table, born, ours)
+                author(sender, reviewer, agents, &table, born, ours, companion)
             };
         assert_eq!(go(11, &claude, &agents), Author::Reviewer);
         assert!(
@@ -843,6 +893,25 @@ mod tests {
             "another reviewer's server"
         );
         assert!(matches!(go(6, &claude, &agents), Author::Other(why) if why.contains("outside")));
+        let unpaired = reviewer_record(601, "codex");
+        let unpaired_agents: HashMap<u32, (DateTime<Utc>, AgentId)> =
+            [(601, (born(601).unwrap(), unpaired.id.clone()))].into();
+        assert!(
+            matches!(go(603, &unpaired, &unpaired_agents), Author::Other(_)),
+            "a sibling server the terminal does not speak to"
+        );
+        let mut with_custom = agents.clone();
+        with_custom.insert(
+            40,
+            (
+                DateTime::from_timestamp(1_700_000_040, 0).unwrap(),
+                reviewer_record(40, "custom").id,
+            ),
+        );
+        assert!(
+            matches!(go(41, &claude, &with_custom), Author::Other(why) if why.contains("could not all be read")),
+            "an unreadable birth stops the walk"
+        );
     }
 
     /// The reviewer is named by its id once it is authenticated, so a name
@@ -869,6 +938,15 @@ mod tests {
             unreachable!()
         };
         assert_eq!(agent, &reviewer.id.to_string());
+        // A name nobody has now is refused here, never looked up later.
+        let mut unknown = verdict("unused-name", None, "feature/x", A, "approve");
+        assert!(matches!(
+            daemon.authenticate_verdict(own, &mut unknown).await,
+            Some(Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
