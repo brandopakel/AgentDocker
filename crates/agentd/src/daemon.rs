@@ -653,6 +653,13 @@ fn default_name(id: &AgentId) -> String {
     format!("agent-{}", &id.as_str()[..6])
 }
 
+/// Whether `pid` is still the process born at `born`: strictly, so a
+/// process that is gone or whose birth cannot be read is not it.
+#[cfg(unix)]
+fn born_as(pid: u32, born: DateTime<Utc>) -> bool {
+    procinfo::start_time(pid) == Some(born)
+}
+
 /// Where a stopped terminal program ran: its terminal, held open since
 /// before the signal, and the shell that started it, by pid and birth.
 #[cfg(unix)]
@@ -693,12 +700,12 @@ fn restore_terminal_after(pid: u32, started: DateTime<Utc>, mut ran: RanIn) {
                 return;
             }
             let shell_is_back = wait_until(2, &mut || {
-                same_process(ran.shell, Some(ran.shell_born))
+                born_as(ran.shell, ran.shell_born)
                     && agentdocker_host::terminal::foreground_of(ran.shell)
                         .is_some_and(|place| place.holds(&ran.tty))
             });
             if shell_is_back
-                && same_process(ran.shell, Some(ran.shell_born))
+                && born_as(ran.shell, ran.shell_born)
                 && let Err(error) = ran.terminal.restore_modes()
             {
                 debug!(%error, tty = ran.tty, "could not restore the stopped program's terminal");
@@ -9014,6 +9021,19 @@ impl Drop for Subscription {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_is_its_original_only_by_its_own_birth() {
+        let me = std::process::id();
+        let born = procinfo::start_time(me).expect("this process has a birth");
+        assert!(born_as(me, born));
+        assert!(
+            !born_as(me, born + chrono::Duration::seconds(1)),
+            "another birth"
+        );
+        assert!(!born_as(u32::MAX - 7, born), "a process that is gone");
+    }
     use super::*;
     use agentdocker_core::Activity;
     use agentdocker_core::contest::{Contest, Measure, Metric, Standing};
