@@ -168,7 +168,8 @@ registered until revoked but counts as connected only while it is heard from:
 an hour after its last tool call, `ps` and the desktop show it `not connected`
 until it calls one again. `connector
 install` runs the same as a login service; `connector status` and the
-desktop's Tools screen show its address and pairing code. On macOS and Linux,
+desktop's Tools screen show its address and pairing code, which works for one
+consent and is then replaced. On macOS and Linux,
 open a browser tool's **Details** and choose **Enable with Tailscale** or
 **Enable with Cloudflare** to install and start the connection at login. The
 first needs Funnel enabled; the second gives a new address after each restart.
@@ -845,6 +846,14 @@ Newest first. Only what changes how the product is used.
 - **Choose the model and effort.** Launching Claude or Codex from the app
   offers **Model** and **Effort**, starting at the provider's own defaults,
   and a session's panel says which it runs (`gpt-6-astra · xhigh`).
+
+- **A pairing code works once.** The connector's consent page now asks for the
+  pairing code first and shows the projects to choose from only after it.
+  Each code opens one consent, so connecting a second browser means reading
+  the new code from `agentdocker connector status` or the Tools screen. Wrong
+  codes no longer close consent until a restart: a source that types five
+  waits a quarter of an hour, and a code guessed at twenty times is replaced.
+  A service's log no longer records the code.
 
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   used to be unbound: its AgentDocker tools refused, so its model could reach
