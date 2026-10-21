@@ -3231,6 +3231,7 @@ async fn run() -> Result<()> {
                         blocked_by: replace(blocked_by, no_blocked_by),
                         tags: replace(tags, no_tags),
                         plan,
+                        expected_updated_at: None,
                     };
                     if let Response::Task { task } = client.call(&request).await? {
                         println!("{}", card_line(&task));

@@ -3516,6 +3516,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 blocked_by: None,
                 tags: change.tags,
                 plan: None,
+                expected_updated_at: change.seen,
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -4780,6 +4781,9 @@ pub(crate) struct CardChange {
     pub due: Option<String>,
     pub external_blocker: Option<String>,
     pub tags: Option<Vec<String>>,
+    /// When the card was last updated as the person read it; a save
+    /// against a card that changed since is refused.
+    pub seen: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// How long a changed card flashes.

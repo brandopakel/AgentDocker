@@ -775,6 +775,7 @@ async fn a_waiting_card_is_started_on_only_once_it_clears() {
             blocked_by: None,
             tags: None,
             plan: None,
+            expected_updated_at: None,
         })
         .await,
     );

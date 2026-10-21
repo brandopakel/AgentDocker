@@ -124,6 +124,10 @@ pub enum RuleFieldKind {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct CardDraft {
     pub task: Option<agentdocker_core::TaskId>,
+    /// When the card it was taken from was last updated: a save is
+    /// refused if the card has changed since, so it never puts back
+    /// what somebody else changed meanwhile.
+    pub seen: Option<chrono::DateTime<chrono::Utc>>,
     pub title: String,
     pub description: String,
     pub acceptance: String,
@@ -2215,6 +2219,7 @@ impl App {
                         blocked_by: None,
                         tags: None,
                         plan: Some(plan.unwrap_or_default()),
+                        expected_updated_at: None,
                     });
                 }
             }
@@ -9787,6 +9792,7 @@ fn update_links(task: agentdocker_core::TaskId, links: Vec<agentdocker_core::Lin
         blocked_by: None,
         tags: None,
         plan: None,
+        expected_updated_at: None,
     }
 }
 

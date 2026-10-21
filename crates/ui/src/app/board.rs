@@ -157,6 +157,7 @@ impl App {
         match card {
             Some(task) => super::shell::CardDraft {
                 task: Some(task.id.clone()),
+                seen: Some(task.updated_at),
                 title: task.title.clone(),
                 description: task.description.clone(),
                 acceptance: task.acceptance.clone(),
@@ -210,7 +211,10 @@ impl App {
             tags: (tags != task.tags).then_some(tags),
             ..Default::default()
         };
-        (change != super::CardChange::default()).then_some(change)
+        (change != super::CardChange::default()).then_some(super::CardChange {
+            seen: draft.seen,
+            ..change
+        })
     }
 
     /// Whether a card passes the board's search words and toggles.
