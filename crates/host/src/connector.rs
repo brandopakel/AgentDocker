@@ -60,12 +60,16 @@ pub fn write_status(home: &Path, serving: &Serving) -> std::io::Result<()> {
         .ok_or_else(|| std::io::Error::other("status path has no parent"))?;
     std::fs::create_dir_all(parent)?;
     let temporary = parent.join(format!(".serve.{}.tmp", serving.pid));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(serving)?)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))?;
+    // It carries the pairing code: private from its first byte, never
+    // written at the umask's mode and narrowed after.
+    match std::fs::remove_file(&temporary) {
+        Ok(()) => (),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error),
     }
+    let mut file = crate::dirs::create_private_file(&temporary)?;
+    std::io::Write::write_all(&mut file, &serde_json::to_vec_pretty(serving)?)?;
+    drop(file);
     std::fs::rename(&temporary, &path)
 }
 
@@ -127,6 +131,29 @@ mod tests {
         );
         clear_status(home.path(), mine.pid);
         assert!(read_status(home.path()).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_status_file_is_private_from_its_first_byte() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let mine = serving(std::process::id());
+        // A temporary left by a crash is replaced, not written through.
+        std::fs::create_dir_all(status_path(home.path()).parent().unwrap()).unwrap();
+        let stale = status_path(home.path())
+            .parent()
+            .unwrap()
+            .join(format!(".serve.{}.tmp", mine.pid));
+        std::fs::write(&stale, b"old").unwrap();
+        write_status(home.path(), &mine).unwrap();
+        let mode = std::fs::metadata(status_path(home.path()))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(read_status(home.path()), Some(mine));
+        assert!(!stale.exists());
     }
 
     #[test]
