@@ -216,12 +216,15 @@ pub fn search<'a>(
         .into_iter()
         .zip(&held)
         .map(|(memory, words)| {
-            let score = weights
+            // Summed in one fixed order, so equal evidence is an equal
+            // score and the newer memory wins the tie.
+            let mut held: Vec<f64> = weights
                 .iter()
                 .filter(|(word, _)| words.contains(*word))
-                .map(|(_, weight)| weight)
-                .sum();
-            (score, memory)
+                .map(|(_, weight)| *weight)
+                .collect();
+            held.sort_by(f64::total_cmp);
+            (held.into_iter().sum::<f64>(), memory)
         })
         .filter(|(score, _)| asked.is_empty() || *score > 0.0)
         .collect();
@@ -472,6 +475,26 @@ mod tests {
             ids("alpha beta"),
             "case and marks aside"
         );
+    }
+
+    #[test]
+    fn equal_evidence_is_an_equal_score_and_the_newer_wins() {
+        let all = vec![
+            memory("older", "a b common", 0, None),
+            memory("newer", "c d common", 1, None),
+            memory("x", "unrelated one", 2, None),
+            memory("y", "unrelated two", 3, None),
+        ];
+        // Whatever order the query's words are held in, the sums match.
+        for query in ["a b c d common", "common d c b a", "b common a d c"] {
+            for _ in 0..20 {
+                let ids: Vec<&str> = search(&all, query, 10, now())
+                    .iter()
+                    .map(|m| m.id.as_str())
+                    .collect();
+                assert_eq!(ids, ["newer", "older"], "{query}");
+            }
+        }
     }
 
     #[test]

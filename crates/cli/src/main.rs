@@ -1761,7 +1761,9 @@ fn parse_when(text: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
     if let Ok(when) = chrono::DateTime::parse_from_rfc3339(text) {
         return Ok(when.with_timezone(&chrono::Utc));
     }
-    let (count, unit) = text.split_at(text.len().saturating_sub(1));
+    // The unit is the last character, whatever its width.
+    let split = text.char_indices().last().map_or(0, |(at, _)| at);
+    let (count, unit) = text.split_at(split);
     let count: i64 = count
         .parse()
         .ok()
@@ -5948,7 +5950,18 @@ mod tests {
                 .parse::<chrono::DateTime<chrono::Utc>>()
                 .unwrap()
         );
-        for refused in ["", "d", "0d", "-3h", "5y", "soon", "99999999999999w"] {
+        for refused in [
+            "",
+            "d",
+            "0d",
+            "-3h",
+            "5y",
+            "soon",
+            "99999999999999w",
+            "é",
+            "7日",
+            "3hé",
+        ] {
             assert!(parse_when(refused).is_err(), "{refused:?}");
         }
     }
