@@ -186,7 +186,7 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
         };
         let mut request = frame.request;
         without_roles(&mut request);
-        if let Some(refusal) = daemon.launch_refusal(&request) {
+        if let Some(refusal) = daemon.admit_launch(&mut request) {
             write(&mut writer, &refusal).await?;
             continue;
         }

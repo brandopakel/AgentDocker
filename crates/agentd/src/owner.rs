@@ -285,6 +285,20 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
             "TERM",
             std::env::var("TERM").as_deref().unwrap_or("xterm-256color"),
         );
+    // A supervised Codex terminal's controller may queue what the person
+    // typed: nothing that loads code into it is passed on, whoever set it.
+    if launch
+        .env
+        .get(agentdocker_host::provider_input::CODEX_INPUT_ENV)
+        .is_some_and(|value| value == "1")
+    {
+        for (key, _) in std::env::vars_os() {
+            let key = key.to_string_lossy();
+            if key.starts_with("LD_") || key.starts_with("DYLD_") {
+                command.env_remove(key.as_ref());
+            }
+        }
+    }
     let mut pty = if launch.tty {
         Some(agentdocker_host::pty::Pty::open().context("cannot open a terminal for the agent")?)
     } else {
@@ -468,6 +482,13 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
                 tokio::select! {
                     accepted = listener.accept() => match accepted {
                         Ok((stream, _)) => {
+                            // Only a daemon takes the child over: a process
+                            // that reaches this socket some other way is not
+                            // let type into the agent's terminal.
+                            if !from_daemon(&stream, &shared.launch.socket).await {
+                                tracing::warn!("owner refused a connection that is not the daemon's");
+                                continue;
+                            }
                             let epoch = {
                                 let _takeover = shared.dispatch.lock().await;
                                 shared
@@ -832,6 +853,49 @@ fn write_durably(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// One controller connection: hello, then commands in, reports out.
+/// Whether the process on `stream` is a daemon: the one serving `socket`
+/// as it answers there, or — while one hands over to its successor, and the
+/// predecessor still answers — a process the kernel says runs `agentd`.
+/// The owner's own process (in-process callers) is trusted.
+async fn from_daemon(stream: &Stream, socket: &std::path::Path) -> bool {
+    let Ok(peer) = agentdocker_host::ipc::peer_pid(stream) else {
+        return false;
+    };
+    if peer == std::process::id() {
+        return true;
+    }
+    let serving = tokio::time::timeout(Duration::from_secs(2), serving_pid(socket))
+        .await
+        .ok()
+        .flatten();
+    if serving == Some(peer) {
+        return true;
+    }
+    agentdocker_host::procinfo::executable_path_of(peer)
+        .ok()
+        .and_then(|exe| {
+            exe.file_stem()
+                .map(|stem| stem.eq_ignore_ascii_case("agentd"))
+        })
+        .unwrap_or(false)
+}
+
+/// The pid of the daemon serving `socket`, as it says.
+async fn serving_pid(socket: &std::path::Path) -> Option<u32> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let mut stream = Stream::connect(socket).await.ok()?;
+    stream.write_all(b"{\"op\":\"ping\"}\n").await.ok()?;
+    let mut line = String::new();
+    tokio::io::BufReader::new(stream)
+        .read_line(&mut line)
+        .await
+        .ok()?;
+    match serde_json::from_str::<agentdocker_core::Response>(&line).ok()? {
+        agentdocker_core::Response::Pong { pid, .. } => pid,
+        _ => None,
+    }
+}
+
 async fn controller(stream: Stream, shared: Arc<Shared>, epoch: u64) -> anyhow::Result<()> {
     // Only the newest connection's commands are obeyed; an older one is
     // told nothing more and dropped.
@@ -1236,6 +1300,32 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::os::fd::OwnedFd;
+
+    /// A process that reaches the owner's socket and is not a daemon is
+    /// not let take the child over; the owner's own process is.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_a_daemon_reaches_the_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("owner.sock");
+        let listener = agentdocker_host::ipc::Listener::bind(&path).unwrap();
+        let absent = dir.path().join("no-daemon.sock");
+        let mut client = std::process::Command::new("python3")
+            .arg("-c")
+            .arg("import socket,sys,time\ns=socket.socket(socket.AF_UNIX)\ns.connect(sys.argv[1])\ntime.sleep(5)\n")
+            .arg(&path)
+            .spawn()
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        assert!(!from_daemon(&stream, &absent).await, "another program");
+        let _ = client.kill();
+        let _ = client.wait();
+        let own = Stream::connect(&path);
+        let (accepted, _held) = tokio::join!(listener.accept(), own);
+        assert!(
+            from_daemon(&accepted.unwrap().0, &absent).await,
+            "this process"
+        );
+    }
 
     #[tokio::test]
     async fn failed_exec_waits_for_its_actual_controller_acknowledgement() {
