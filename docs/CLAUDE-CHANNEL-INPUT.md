@@ -16,7 +16,7 @@ written just before Claude registered its channel handler; an uninstrumented
 run lost that offer. The settling interval narrows that race and the first
 offer's repeat closes it: while no receipt has yet been seen on the channel,
 an offer that has none after thirty seconds is written a second time, once,
-under the same message id with `repeat: true` in its metadata, and the
+under the same message id with `repeat: "true"` (a string: Claude Code drops a notification whose meta values are not all strings) in its metadata, and the
 delivery rule tells the model a repeat is the same message, acknowledged
 once. From the first receipt on, the channel offers nothing twice: a missing
 receipt pauses its queue visibly, and the session's lifecycle hooks then take
@@ -269,7 +269,7 @@ blocking the receipt/control path or offering the message again. The one
 exception is a session's first offer, which may have been written before
 Claude registered its channel handler: while no receipt has been accepted on
 the channel, an offer 30 seconds without one is written a second time, once,
-under the same `message_id` and with `repeat: true` in its metadata, and the
+under the same `message_id` and with `repeat: "true"` in its metadata, and the
 pause is reported only after the next 30 seconds pass without a receipt. A
 receipt the daemon accepts, whichever message it names and whether or not it
 was offered on this channel, ends the exception: later offers and diagnostic

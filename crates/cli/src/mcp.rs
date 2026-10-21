@@ -3412,6 +3412,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reply["result"]["protocolVersion"], LATEST_PROTOCOL);
+        // Claude Code turns channels off on MCP 2026-07-28 and later, and
+        // this server offers a channel: it never agrees to one.
+        assert!(SUPPORTED_PROTOCOLS.iter().all(|v| *v < "2026-07-28"));
     }
 
     #[tokio::test]
