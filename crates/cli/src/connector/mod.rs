@@ -1402,12 +1402,20 @@ async fn serve(
             "the connector listens on loopback only; the tunnel in front of it is what is public"
         );
     }
-    // The tunnel first, so the public name is known before anything is
+    // Whatever can fail without the network fails before a tunnel opens.
+    let home = agentdocker_host::dirs::home();
+    let _owner = claim_home(&home)?;
+    let path = state_path();
+    let store = load_store(&path)?;
+    // A connector killed before it could clear its Funnel left it
+    // publishing a loopback port nothing serves; clear it first.
+    clear_stale_funnel(&home, args.tailscale.as_deref()).await?;
+    // The tunnel next, so the public name is known before anything is
     // said or written; it dies with this process and this process with it.
     let mut tunnel = match args.tunnel.as_deref() {
         Some("tailscale") => {
             let binary = tunnel::find_tailscale(args.tailscale.as_deref())?;
-            Some(tunnel::funnel_tailscale(&binary, local.port(), args.tunnel_port).await?)
+            Some(tunnel::funnel_tailscale(&binary, local.port(), args.tunnel_port, &home).await?)
         }
         Some("cloudflared") => {
             let binary = tunnel::find_cloudflared(args.cloudflared.as_deref())?;
@@ -1433,9 +1441,6 @@ async fn serve(
         ),
     };
     let prefixes = allowlist.as_ref().map(net::Allowlist::len).unwrap_or(0);
-    let home = agentdocker_host::dirs::home();
-    let path = state_path();
-    let store = load_store(&path)?;
     let pairing = oauth::pairing_code();
     let pid = std::process::id();
     let serving = service::Serving {
@@ -1520,8 +1525,11 @@ async fn serve(
                         continue;
                     }
                 };
-                let Ok(permit) = limit.clone().acquire_owned().await else {
-                    break Ok(());
+                // Full, the connection is closed now rather than waited
+                // on: waiting here would stall shutdown and the tunnel check.
+                let Ok(permit) = limit.clone().try_acquire_owned() else {
+                    drop(stream);
+                    continue;
                 };
                 let connector = connector.clone();
                 tokio::spawn(async move {
@@ -1534,8 +1542,13 @@ async fn serve(
                         Err(http::HttpError::Bad(status, why)) => HttpResponse::text(status, why),
                         Err(http::HttpError::Io(_)) => return,
                     };
-                    let _ = connector.write_response(&mut write, &response).await;
-                    let _ = write.shutdown().await;
+                    // A reader that never drains the reply does not keep the
+                    // connection's place.
+                    let _ = tokio::time::timeout(http::READ_DEADLINE, async {
+                        let _ = connector.write_response(&mut write, &response).await;
+                        let _ = write.shutdown().await;
+                    })
+                    .await;
                 });
             }
             _ = tunnel_check.tick() => {
@@ -1558,11 +1571,79 @@ async fn serve(
             }
         }
     };
-    service::clear_status(&home, pid);
-    if let Some(t) = tunnel.as_mut() {
-        t.stop().await;
+    // The record goes only once the tunnel is down: a Funnel that could not
+    // be cleared stays in serve.json for the next start to check and clear.
+    let stopped = match tunnel.as_mut() {
+        Some(t) => t.stop().await,
+        None => Ok(()),
+    };
+    match stopped {
+        Ok(()) => service::clear_status(&home, pid),
+        Err(error) => eprintln!(
+            "agentdocker connector: could not clear the tunnel ({error}); {} keeps its record for the next start",
+            agentdocker_host::connector::status_path(&home).display()
+        ),
     }
     outcome
+}
+
+/// One connector serves from a home at a time, for as long as it runs: its
+/// OAuth state, its status file and its Funnel record are single files, and
+/// a second connector would write over the first's.
+fn claim_home(home: &Path) -> Result<agentdocker_host::lock::Lock> {
+    let dir = home.join("connector");
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    agentdocker_host::lock::try_exclusive(&dir.join("serve.lock"))
+        .with_context(|| format!("cannot lock {}", dir.display()))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "a connector already serves from {}; `agentdocker connector status` says which, and it stops before another starts",
+                home.display()
+            )
+        })
+}
+
+/// The Funnel a connector that is gone left recorded. A live connector's
+/// is its own business.
+fn stale_funnel(home: &Path) -> Option<agentdocker_host::connector::FunnelRecord> {
+    agentdocker_host::connector::read_funnel(home).filter(|record| !record.alive())
+}
+
+/// Clear the Funnel a stopped connector recorded, when tailscaled still
+/// points it at that connector's own address. One pointed elsewhere now is
+/// somebody else's and is left alone. One that cannot be checked or
+/// cleared stops this start and keeps its record, so it is never forgotten
+/// while it may still be open.
+async fn clear_stale_funnel(home: &Path, explicit: Option<&Path>) -> Result<()> {
+    let Some(record) = stale_funnel(home) else {
+        return Ok(());
+    };
+    let (port, target) = (record.https_port, record.target.clone());
+    let unconfirmed = |why: String| {
+        anyhow::anyhow!(
+            "a stopped connector left a Tailscale Funnel on port {port} for {target}, and {why}; check `tailscale serve status`, clear it with `tailscale funnel --https={port} off` if it still serves {target}, then remove {} and start again",
+            agentdocker_host::connector::funnel_path(home).display()
+        )
+    };
+    let binary = tunnel::find_tailscale(explicit).map_err(|error| {
+        unconfirmed(format!("tailscale cannot be found to check it ({error:#})"))
+    })?;
+    match tunnel::funnel_target_now(&binary, port).await {
+        Ok(now) if now.as_deref() == Some(target.as_str()) => {
+            eprintln!(
+                "agentdocker connector: clearing the Funnel on port {port} a stopped connector left"
+            );
+            tunnel::clear_funnel(&binary, port)
+                .await
+                .map_err(|error| unconfirmed(format!("clearing it failed ({error})")))?;
+        }
+        Ok(_) => eprintln!(
+            "agentdocker connector: the Funnel on port {port} no longer serves the stopped connector's {target}; left as it is"
+        ),
+        Err(error) => return Err(unconfirmed(format!("it cannot be read ({error})"))),
+    }
+    agentdocker_host::connector::clear_funnel(home, record.pid);
+    Ok(())
 }
 
 /// Polled beside HTTP acceptance, rather than detached: shutdown drops the
@@ -2447,6 +2528,128 @@ mod tests {
             302,
             "its own request it still chooses for"
         );
+    }
+
+    /// A fake tailscale whose serve configuration points the Funnel on
+    /// `port` at `proxy`, recording every command it is given; with
+    /// `status_fails`, reading the configuration fails.
+    #[cfg(unix)]
+    fn fake_tailscale(dir: &Path, port: u16, proxy: &str, status_fails: bool) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let fake = dir.join("tailscale");
+        let log = dir.join("calls.log");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {log}\nif [ \"$1\" = serve ]; then {}; fi\nexit 0\n",
+                if status_fails {
+                    "echo broken >&2; exit 1".to_owned()
+                } else {
+                    format!(
+                        "echo '{{\"Web\":{{\"mac.tail1.ts.net:{port}\":{{\"Handlers\":{{\"/\":{{\"Proxy\":\"{proxy}\"}}}}}}}}}}'"
+                    )
+                },
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fake
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stale_funnel_is_cleared_only_while_it_still_serves_the_stopped_connector() {
+        let record = agentdocker_host::connector::FunnelRecord {
+            // Well above any live pid on a test machine.
+            pid: u32::MAX - 7,
+            https_port: 443,
+            target: "127.0.0.1:62800".into(),
+        };
+        let calls = |dir: &Path| std::fs::read_to_string(dir.join("calls.log")).unwrap_or_default();
+
+        // Still its own: cleared, and the record with it.
+        let home = tempfile::TempDir::new().unwrap();
+        let tools = tempfile::TempDir::new().unwrap();
+        agentdocker_host::connector::write_funnel(home.path(), &record).unwrap();
+        let fake = fake_tailscale(tools.path(), 443, "http://127.0.0.1:62800", false);
+        clear_stale_funnel(home.path(), Some(&fake)).await.unwrap();
+        assert!(calls(tools.path()).contains("funnel --https=443 off"));
+        assert!(agentdocker_host::connector::read_funnel(home.path()).is_none());
+
+        // Pointed at something else since: somebody else's, left alone.
+        agentdocker_host::connector::write_funnel(home.path(), &record).unwrap();
+        let tools = tempfile::TempDir::new().unwrap();
+        let fake = fake_tailscale(tools.path(), 443, "http://127.0.0.1:3000", false);
+        clear_stale_funnel(home.path(), Some(&fake)).await.unwrap();
+        assert!(
+            !calls(tools.path()).contains("off"),
+            "{}",
+            calls(tools.path())
+        );
+        assert!(agentdocker_host::connector::read_funnel(home.path()).is_none());
+
+        // Cannot be read: this start stops, and the record is kept.
+        agentdocker_host::connector::write_funnel(home.path(), &record).unwrap();
+        let tools = tempfile::TempDir::new().unwrap();
+        let fake = fake_tailscale(tools.path(), 443, "", true);
+        let error = clear_stale_funnel(home.path(), Some(&fake))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("cannot be read"), "{error}");
+        assert!(!calls(tools.path()).contains("off"));
+        assert_eq!(
+            agentdocker_host::connector::read_funnel(home.path()),
+            Some(record),
+            "the evidence stays"
+        );
+    }
+
+    #[test]
+    fn one_connector_serves_from_a_home_at_a_time() {
+        let home = tempfile::TempDir::new().unwrap();
+        let first = claim_home(home.path()).unwrap();
+        let error = claim_home(home.path()).unwrap_err().to_string();
+        assert!(error.contains("already serves"), "{error}");
+        drop(first);
+        // A test forking in parallel can hold the descriptor for a moment
+        // before its exec, as the host lock's own test allows for.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while claim_home(home.path()).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "free again once it stops"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn only_a_gone_connectors_funnel_is_cleared() {
+        let home = tempfile::TempDir::new().unwrap();
+        let record = |pid: u32| agentdocker_host::connector::FunnelRecord {
+            pid,
+            https_port: 8443,
+            target: "127.0.0.1:62800".into(),
+        };
+        assert_eq!(
+            stale_funnel(home.path()),
+            None,
+            "no record, nothing to clear"
+        );
+        let gone = record(u32::MAX - 7);
+        agentdocker_host::connector::write_funnel(home.path(), &gone).unwrap();
+        assert_eq!(stale_funnel(home.path()), Some(gone));
+        if cfg!(unix) {
+            agentdocker_host::connector::write_funnel(home.path(), &record(std::process::id()))
+                .unwrap();
+            assert_eq!(
+                stale_funnel(home.path()),
+                None,
+                "a live connector's is its own"
+            );
+        }
     }
 
     #[tokio::test]
