@@ -5,6 +5,7 @@
 
 pub mod guided;
 pub(crate) mod mutation;
+mod remove;
 
 use std::io::Write;
 #[cfg(unix)]

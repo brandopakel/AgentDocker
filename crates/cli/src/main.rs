@@ -510,6 +510,9 @@ enum Command {
         /// Make every `claude` typed in a terminal carry the channel flag that lets AgentDocker wake it: a marked block in your shell's startup file, previewed like every other change.
         #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "health", "list", "show"])]
         shell: bool,
+        /// Take AgentDocker's wiring out of the tools (all, or those named): MCP entries, hooks, skills, the OpenCode plugin and the shell block. Only entries that run AgentDocker go; `--preview` saves the plan first, `--undo` puts it back.
+        #[arg(long, conflicts_with_all = ["dry_run", "apply", "undo", "health", "list", "show", "shell"])]
+        remove: bool,
     },
     /// Launch a command as a supervised agent and print its id.
     Run(RunArgs),
@@ -795,6 +798,11 @@ enum Command {
     /// Experimental owned Codex native-terminal launcher.
     #[command(hide = true)]
     CodexNative(codex_input::external::launch::Args),
+    /// Start Codex in this terminal so AgentDocker can reach it: the same
+    /// Codex, run through AgentDocker's launcher, so messages wake it even
+    /// while it is idle and it can hold a role like any agent.
+    /// Experimental.
+    Codex(CodexArgs),
     /// Upgrade only an existing Codex session's receiver to this CLI release.
     #[command(hide = true)]
     CodexQueueUpgrade(codex_input::external::upgrade::Args),
@@ -932,6 +940,16 @@ struct ChannelArgs {
 struct TaskArgs {
     #[command(subcommand)]
     action: TaskAction,
+}
+
+#[derive(clap::Args)]
+struct CodexArgs {
+    /// The agent's name; `codex-<pid>` when absent.
+    #[arg(long)]
+    name: Option<String>,
+    /// Codex's own options, after `--`: `-- --model gpt-6-astra`.
+    #[arg(last = true, allow_hyphen_values = true)]
+    arguments: Vec<String>,
 }
 
 #[derive(clap::Args)]
@@ -3764,8 +3782,10 @@ async fn run() -> Result<()> {
             show,
             json,
             shell,
+            remove,
         } => {
-            if preview
+            if remove
+                || preview
                 || !dry_run
                 || shell
                 || apply.is_some()
@@ -3785,6 +3805,10 @@ async fn run() -> Result<()> {
                     Action::Health
                 } else if list {
                     Action::List
+                } else if remove && preview {
+                    Action::RemovePreview
+                } else if remove {
+                    Action::Remove
                 } else if preview || shell {
                     Action::Preview
                 } else {
@@ -4645,6 +4669,25 @@ async fn run() -> Result<()> {
         Command::CodexInput(args) => codex_input::run(client, socket, args).await?,
         Command::CodexQueue(args) => codex_input::external::run(client, socket, args).await?,
         Command::CodexNative(args) => codex_input::external::launch::run(client, args).await?,
+        Command::Codex(args) => {
+            let program = match agentdocker_host::codex_binary::native_codex_on_path() {
+                Ok(program) => program,
+                Err(agentdocker_host::codex_binary::NotFound::Absent) => anyhow::bail!(
+                    "no `codex` is on PATH; install Codex (`npm install -g @openai/codex`), or name its binary with `agentdocker codex-native --program <path>`"
+                ),
+                Err(agentdocker_host::codex_binary::NotFound::Unrecognized(found)) => {
+                    anyhow::bail!(
+                        "{} is not Codex's own binary, npm entry point or npm shim (a wrapper of your own, or a package missing its platform binary); name the binary with `agentdocker codex-native --program <path>`",
+                        found.display()
+                    )
+                }
+            };
+            codex_input::external::launch::run(
+                client,
+                codex_input::external::launch::Args::new(program, args.name, args.arguments),
+            )
+            .await?
+        }
         Command::CodexQueueUpgrade(args) => {
             codex_input::external::upgrade::run(client, args).await?
         }

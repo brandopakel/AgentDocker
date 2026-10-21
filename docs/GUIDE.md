@@ -66,7 +66,10 @@ and Mac/Linux feeds. It remains unsigned and requires explicit preview consent.
 
 `desktop prune --preview` reports removable old builds; omit `--preview` to remove
 them. `desktop uninstall --preview` reports launcher removal; omit `--preview` to
-apply. Both preserve settings, running versions and unrecognized files. Loaded
+apply. Both preserve settings, running versions and unrecognized files.
+Uninstall leaves the tools' configuration alone: run `agentdocker setup --remove`
+first, or Claude Code, Codex and the rest keep MCP entries and hooks that point
+at the removed binary. Loaded
 launchers move into a private retirement directory until they close; a later
 activation, prune or uninstall removes their verified files. Retirement is capped
 at eight directories and 256 MiB. Uninstall
@@ -267,7 +270,12 @@ versions and MCP/hooks configuration. **Other supported tools** expands the rest
 of the inventory. **Review setup**, **Apply reviewed changes**, and **Undo this
 setup** use saved plans. Ordinary `agentdocker setup <runtime>` also saves an
 undo receipt and prints its ID; `setup --show ID` reviews it and `setup --undo ID`
-reverses only unchanged configuration. **Check connections** provides bounded diagnostics;
+reverses only unchanged configuration. `setup --remove [runtime…]` takes
+AgentDocker's wiring out of every tool (or the ones named) without a receipt:
+MCP entries and hooks that run AgentDocker, its skills and OpenCode plugin while
+still as installed, and the shell block; everything else in those files stays,
+and it saves a receipt `setup --undo` puts back. `--remove --preview` saves the
+plan to review and `--apply` first. **Check connections** provides bounded diagnostics;
 actual provider delivery requires a real round trip.
 
 ### Usage
@@ -473,6 +481,7 @@ each one by pid.
 | Command | What it does |
 |---|---|
 | `run <command>` | Launch a command as a supervised agent |
+| `codex [--name <name>] [-- <codex options>]` | Start Codex in this terminal so AgentDocker can reach it: the same Codex and conversation, run through AgentDocker's launcher, so a message wakes it even while it is idle, and it can hold a role (`role --as <name> reviewer`, or the app's Roles menu) like an agent the app launched. The binary behind the `codex` on `PATH` is used; experimental |
 | `register` | Announce an already-running process as an agent |
 | `discover` | Agent processes nobody registered |
 | `adopt <pid>` | Register one of them; `--all` for all |
@@ -846,9 +855,20 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **An idle daemon rests.** With nothing watching — no app open, no
+  `agentdocker events`, no webhook — the daemon no longer scans the process
+  table every five seconds; `agentdocker ps` and the app still scan when they
+  look.
+
 - **Choose the model and effort.** Launching Claude or Codex from the app
   offers **Model** and **Effort**, starting at the provider's own defaults,
   and a session's panel says which it runs (`gpt-6-astra · xhigh`).
+
+- **Stopping a terminal agent leaves its terminal clean.** Stopping a Codex
+  or Claude you started in your own terminal used to leave that tab
+  reporting every mouse move as typed text (`35;113;27M…`). AgentDocker now
+  turns those modes off once the program has exited. In a tab already left
+  like that, type `reset`.
 
 - **A pairing code works once.** The connector's consent page now asks for the
   pairing code first and shows the projects to choose from only after it.
@@ -876,17 +896,34 @@ Newest first. Only what changes how the product is used.
   and its messages reach it at its next prompt. It cannot be woken while
   idle; a Codex launched from AgentDocker can.
 
+- **Your own terminal's Codex can be the reviewer.** `agentdocker codex`
+  starts Codex in the terminal you are in, through AgentDocker's launcher:
+  messages wake it even while it is idle, and you can give it a role, such
+  as reviewer, like any agent. Codex's own options go after `--`. A plain
+  `codex` still works, but reads its messages only at its next prompt.
+
 - **Roles in the app.** In a session's panel, **Roles** gives an agent roles
   from its project's palette, several to an agent and one role to several
   agents; they show as coloured labels after its name. **Edit roles…** in the
   same menu recolours, deletes or adds a project's roles. Nothing gets a role
   unless you give it one.
 
+- **An idle daemon wakes less.** The file watcher's drain now runs only
+  while changes wait to be recorded, and the usage worker waits between
+  collections in one-second steps, not tenth-of-a-second ones: about 60%
+  fewer context switches for an idle daemon.
+
 - **Allow for session.** A Codex approval that Codex offers to remember has a
   third answer beside **Allow once** and **Deny**: **Allow for session** lets the
   same command, network destination, files or access through without asking
   until that Codex session ends (`agentdocker answer <id> "Allow for session"`
   from the command line). Offered only where Codex offers it.
+
+- **Take AgentDocker out of your tools.** `agentdocker setup --remove` removes
+  its MCP entries, hooks, skills, OpenCode plugin and shell block from every
+  tool, only the entries that run AgentDocker, with nothing else in those files
+  touched; `setup --undo <id>` puts them back. Run it before
+  `desktop uninstall`.
 
 - **A provider outage no longer stops an agent for good.** When a provider's
   servers fail (overloaded, unreachable), the agent's queued messages wait a

@@ -316,6 +316,7 @@ fn run_with<T: Into<services::References>>(
             "maintenance":plan, "plan_id":id, "preview":preview,
             "sessions":"running sessions continue; versions with lifetime pins are retained",
             "settings":"daemon state, provider configuration and service registration are preserved",
+            "provider_configuration":"tools keep AgentDocker's MCP entries and hooks; `agentdocker setup --remove` takes them out (and `setup --undo` puts them back)",
         }))?
     );
     Ok(())
