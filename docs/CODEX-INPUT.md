@@ -294,8 +294,15 @@ refused because there is no retained input; the completed receipt is the deliver
 record. Lost replies, refused starts or interrupted journal writes leave the input
 retained without an automatic retry or hook handoff. The ordinary exact provider
 receipt is still required before acknowledgement. A reply naming a turn is not a
-delivery receipt. Discarded client replies on Windows and automatic crash/reopen
-recovery are not covered by this path.
+delivery receipt. The path never adds, deletes, reorders or repeats the queued
+submission to recover a lost reply: the original submission ID is the only thing
+started. A lost provider reply, a closed client, or a crash after the
+transmission marker leaves the intent retained as possibly transmitted, and the
+only ways forward are the ordinary exact provider receipt or an explicit
+manual-readback resolution. An explicit retry is permitted only before
+transmission has begun, and then reuses the persisted intent and repeats every
+live preflight check. The same generation-bound intent and reconciliation path
+applies on every platform.
 
 The receiver ledger (current version 7) migrates versions 2 through 6 without
 changing their input or token. Versions before 5 cannot contain the immutable
@@ -501,9 +508,9 @@ in-memory attempt.
 Provider `requestUserInput` bundles reject `isSecret: true` before opening any
 ordinary question route. A supplied flag must be a boolean; malformed values,
 including strings and null, cannot fall back to persisted ordinary answers.
-Masking a question is not proof that Codex or its model does not retain its
-answer: an answer supplied to an `isSecret: true` callback reaches the model and
-is written to the provider's private rollout history.
+Masking a question is not proof that the provider or model does not retain its
+answer: the provider and model receive the value and may retain it, including in
+the provider's private rollout history.
 
 The secret route keeps answers out of AgentDocker's messages, database, events,
 delivery-ledger payloads, logs and ordinary drafts. It uses dedicated masked
@@ -926,6 +933,18 @@ private daemon has started, before the terminal reader or input binding exists.
 and private local model; add `--scenario lost-reply` for recovery,
 `--scenario refused` for an injected no-active-turn failure, or
 `--scenario changed-turn` for a refusal followed by that other turn's completion.
+
+On native Windows, `scripts/windows_package_smoke.py` runs against an extracted
+package: `--native-manifest <manifest> --output <new-directory> --codex
+<native-codex.exe>`, with `--codex-scenario automatic` for the product-owned
+launcher. Add `--queue-recovery` (requires the automatic scenario) for explicit
+queued start and daemon holds; `--mcp-forms` for managed Codex form decisions
+(Submit, Decline, Cancel, invalid-answer refusal, held peer input and exact
+ordinary-input receipts); `--mcp-urls` for website decisions without opening a
+browser (the original destination and callback, no form content, and exact
+receipts); `--mcp-idle` for form and website decisions after the model turn
+ends; and `--managed-secret` for experimental masked input and synthetic ConPTY
+boundaries. The `--mcp-*` and `--managed-secret` options require `--codex`.
 
 These drivers use an actual Codex client with a loopback model fixture and
 synthetic terminals; they do not exercise a real account or provider service.
