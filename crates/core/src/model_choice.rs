@@ -94,6 +94,10 @@ fn settings(runtime: &str, given: &[String]) -> Vec<(Setting, String)> {
                 .map(|rest| rest.strip_prefix('=').unwrap_or(rest).to_owned())
         };
     while let Some(arg) = args.next() {
+        // Past `--` everything is the program's own text, never an option.
+        if arg == "--" {
+            break;
+        }
         match runtime {
             "codex" => {
                 if let Some(model) = value(arg, "--model", Some("-m"), &mut args) {
@@ -289,6 +293,21 @@ mod tests {
         assert_eq!(
             given_choices("claude-code", &words(&["--effort=low", "--effort", "max"])),
             (None, Some("max".into()))
+        );
+    }
+
+    #[test]
+    fn text_after_the_option_terminator_is_never_a_setting() {
+        let given = words(&["--", "--model=sonnet", "--effort", "max"]);
+        assert_eq!(given_choices("claude-code", &given), (None, None));
+        assert_eq!(
+            choice_args("claude-code", Some("opus"), Some("high"), &given).unwrap(),
+            words(&["--model", "opus", "--effort", "high"]),
+            "the chips still say it"
+        );
+        assert_eq!(
+            given_choices("codex", &words(&["--", "-m", "o9"])),
+            (None, None)
         );
     }
 
