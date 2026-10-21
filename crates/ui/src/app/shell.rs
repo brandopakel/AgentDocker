@@ -3680,6 +3680,7 @@ impl App {
                         if let (Some(pid), Some(started_at)) = (agent.pid, agent.process_started_at)
                         {
                             let session = agent.session.clone();
+                            let provider_session = agent.spec.labels.get("session_id").cloned();
                             self.shell.terminal_opening = true;
                             self.say("Opening terminal…");
                             tasks.push(open_native_terminal(
@@ -3687,6 +3688,7 @@ impl App {
                                     pid,
                                     started_at,
                                     session,
+                                    provider_session,
                                 },
                             ));
                         } else {
