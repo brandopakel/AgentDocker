@@ -132,29 +132,55 @@ pub(super) fn without_toml_server(text: &str, runtime: &str) -> Result<Option<St
     if !agentdocker_host::runtimes::mcp_command_matches(command, &args, "agentdocker", runtime) {
         return Ok(None);
     }
-    let ours = |header: &str| {
-        let name = header
-            .trim()
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .trim();
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let header = |line: &str| {
+        let line = line.trim_start();
+        line.starts_with('[') && !line.starts_with("[[")
+    };
+    let ours = |line: &str| {
+        let line = line.trim();
+        let name = line.split('#').next().unwrap_or(line).trim();
+        let name = name.trim_start_matches('[').trim_end_matches(']').trim();
         name == "mcp_servers.agentdocker" || name.starts_with("mcp_servers.agentdocker.")
     };
-    let mut kept = Vec::new();
-    let mut skipping = false;
-    for line in text.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('[') && !trimmed.starts_with("[[") {
-            skipping = ours(trimmed.split('#').next().unwrap_or(trimmed));
+    let blank = |line: &str| line.trim().is_empty();
+    let quiet = |line: &str| blank(line) || line.trim_start().starts_with('#');
+    let mut keep = vec![true; lines.len()];
+    let mut at = 0;
+    while at < lines.len() {
+        if !(header(lines[at]) && ours(lines[at])) {
+            at += 1;
+            continue;
         }
-        if !skipping {
-            kept.push(line);
+        // Our tables run from this header to their last key line before a
+        // table that is not ours: a comment or blank line before that one
+        // belongs to it, and stays.
+        let mut last = at;
+        let mut next = at + 1;
+        while next < lines.len() {
+            if header(lines[next]) && !ours(lines[next]) {
+                break;
+            }
+            if !quiet(lines[next]) {
+                last = next;
+            }
+            next += 1;
         }
+        keep[at..=last].fill(false);
+        // The one blank line setup puts before our table goes with it, when
+        // keeping it would leave two blank lines together or end the file.
+        let after_blank = lines.get(last + 1).is_none_or(|line| blank(line));
+        if at > 0 && keep[at - 1] && blank(lines[at - 1]) && after_blank {
+            keep[at - 1] = false;
+        }
+        at = last + 1;
     }
-    let mut after = kept.concat();
-    while after.ends_with("\n\n") {
-        after.pop();
-    }
+    let after: String = lines
+        .iter()
+        .zip(&keep)
+        .filter(|(_, kept)| **kept)
+        .map(|(line, _)| *line)
+        .collect();
     // What the lines left must mean: the document, less our entry.
     let mut expected = parsed.clone();
     if let Some(servers) = expected
@@ -269,12 +295,39 @@ mod tests {
             after,
             "model = \"gpt-6-astra\"\n# my servers\n[mcp_servers.other]\ncommand = \"npx\"\n\n[projects.\"/repo\"]\ntrust_level = \"trusted\"\n"
         );
+        // A comment that introduces the next table stays with it, and blank
+        // lines that are not ours stay as they were.
+        let commented = "[mcp_servers.agentdocker]\ncommand = \"agentdocker\"\nargs = [\"mcp\", \"--runtime\", \"codex\"]\n\n# why this project is trusted\n[projects.\"/repo\"]\ntrust_level = \"trusted\"\n\n\n";
+        assert_eq!(
+            without_toml_server(commented, "codex").unwrap().unwrap(),
+            "\n# why this project is trusted\n[projects.\"/repo\"]\ntrust_level = \"trusted\"\n\n\n"
+        );
         // Appended last, as setup writes it: nothing left trailing.
         let appended = "model = \"x\"\n\n[mcp_servers.agentdocker]\ncommand = \"agentdocker\"\nargs = [\"mcp\", \"--runtime\", \"codex\"]\n";
         assert_eq!(
             without_toml_server(appended, "codex").unwrap().unwrap(),
             "model = \"x\"\n"
         );
+        // Whatever setup appended to, removal gives back, trailing blank
+        // lines and comments included.
+        for original in [
+            "model = \"x\"\n",
+            "model = \"x\"\n\n\n",
+            "model = \"x\"\n# the end\n\n",
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("config.toml");
+            std::fs::write(&path, original).unwrap();
+            super::super::register_toml(&path, &tmp.path().join("agentdocker"), "codex", false)
+                .unwrap();
+            let wired = std::fs::read_to_string(&path).unwrap();
+            assert_ne!(wired, original);
+            assert_eq!(
+                without_toml_server(&wired, "codex").unwrap().as_deref(),
+                Some(original),
+                "{wired:?}"
+            );
+        }
         // Not ours, or not there: nothing to do.
         assert_eq!(
             without_toml_server(

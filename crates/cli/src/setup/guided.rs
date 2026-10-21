@@ -119,9 +119,9 @@ impl Plan {
                 json!({
                     "runtime":step.runtime, "channel":step.channel, "path":step.path,
                     "action": if step.removal {
-                        format!("remove through `{}`", step.add.join(" "))
+                        format!("remove through `{}`", shown(&step.add))
                     } else {
-                        format!("register through `{}`", step.add.join(" "))
+                        format!("register through `{}`", shown(&step.add))
                     }
                 })
             }))
@@ -335,6 +335,35 @@ fn check_delegated(step: &Delegated, undo: bool) -> Result<()> {
     }
 }
 
+/// `argv` as it may be shown: each `--env` value, which may be a secret,
+/// masked.
+fn shown(argv: &[String]) -> String {
+    let mut env = false;
+    argv.iter()
+        .map(|word| {
+            let masked = match word.split_once('=') {
+                Some((key, _)) if env => format!("{key}=…"),
+                _ => word.clone(),
+            };
+            env = word == "--env";
+            masked
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// What a provider printed, as it may be shown: without any `--env` value
+/// of `argv`, which it may repeat.
+fn masked(output: &str, argv: &[String]) -> String {
+    argv.windows(2)
+        .filter(|pair| pair[0] == "--env")
+        .filter_map(|pair| pair[1].split_once('=').map(|(_, value)| value))
+        .filter(|value| !value.is_empty())
+        .fold(output.trim().to_owned(), |output, value| {
+            output.replace(value, "…")
+        })
+}
+
 fn run_step(step: &Delegated, argv: &[String]) -> Result<agentdocker_host::command::Output> {
     agentdocker_host::command::run_with_env(
         &std::env::current_dir()?,
@@ -366,9 +395,9 @@ fn register(step: &Delegated) -> Result<()> {
     ensure!(
         present(step)?.as_ref() == Some(expected),
         "`{}` failed and {} still does not register the AgentDocker MCP server: {}",
-        step.add.join(" "),
+        shown(&step.add),
         step.path.display(),
-        output.text.trim()
+        masked(&output.text, &step.add)
     );
     Ok(())
 }
@@ -391,9 +420,9 @@ fn deregister(step: &Delegated) -> Result<()> {
     ensure!(
         present(step)?.is_none(),
         "`{}` failed and {} still has an agentdocker entry: {}",
-        step.remove.join(" "),
+        shown(&step.remove),
         step.path.display(),
-        output.text.trim()
+        masked(&output.text, &step.remove)
     );
     Ok(())
 }
@@ -408,9 +437,9 @@ fn unregister(step: &Delegated) -> Result<()> {
     ensure!(
         present(step)?.is_none(),
         "`{}` failed and {} still has an agentdocker entry: {}",
-        step.add.join(" "),
+        shown(&step.add),
         step.path.display(),
-        output.text.trim()
+        masked(&output.text, &step.add)
     );
     Ok(())
 }
@@ -428,16 +457,17 @@ fn restore(step: &Delegated) -> Result<()> {
     ensure!(
         present(step)?.as_ref() == Some(expected),
         "`{}` failed and {} does not hold the agentdocker entry again: {}",
-        step.remove.join(" "),
+        shown(&step.remove),
         step.path.display(),
-        output.text.trim()
+        masked(&output.text, &step.remove)
     );
     Ok(())
 }
 
 /// The removal of Claude Code's MCP entry, through its own CLI, when the
-/// entry runs us and can be put back exactly: a stdio server with a
-/// command, arguments and plain environment, and nothing else.
+/// entry runs us and `claude mcp add` can put it back exactly: it always
+/// writes `type: "stdio"`, the command, string arguments and an `env`
+/// object of strings (empty when none is given), and nothing else.
 fn delegated_mcp_removal(
     spec: &RuntimeSpec,
     runtime: &RuntimeInfo,
@@ -482,30 +512,33 @@ fn delegated_mcp_removal(
     let object = entry
         .as_object()
         .context("the agentdocker entry is not an object")?;
-    let plain = object
-        .keys()
-        .all(|key| matches!(key.as_str(), "type" | "command" | "args" | "env"))
-        && object.get("type").is_none_or(|kind| kind == "stdio");
-    let env: Option<Vec<String>> = match object.get("env") {
-        None => Some(Vec::new()),
-        Some(Value::Object(env)) => env
+    let strings = |values: &Vec<Value>| -> Option<Vec<String>> {
+        values
             .iter()
-            .map(|(key, value)| value.as_str().map(|value| format!("{key}={value}")))
-            .collect(),
-        Some(_) => None,
+            .map(|value| value.as_str().map(str::to_owned))
+            .collect()
     };
-    let (Some(command), Some(args), Some(env)) = (
+    let env = object
+        .get("env")
+        .and_then(Value::as_object)
+        .and_then(|env| {
+            env.iter()
+                .map(|(key, value)| value.as_str().map(|value| format!("{key}={value}")))
+                .collect::<Option<Vec<String>>>()
+        });
+    let (4, Some("stdio"), Some(command), Some(args), Some(env)) = (
+        object.len(),
+        object.get("type").and_then(Value::as_str),
         object.get("command").and_then(Value::as_str),
-        object.get("args").and_then(Value::as_array),
+        object
+            .get("args")
+            .and_then(Value::as_array)
+            .and_then(strings),
         env,
     ) else {
-        notes.push("claude-code: its agentdocker MCP entry is not one setup can put back; remove it with `claude mcp remove --scope user agentdocker`".into());
+        notes.push("claude-code: its agentdocker MCP entry is not one `claude mcp add` can put back as it is; remove it with `claude mcp remove --scope user agentdocker`".into());
         return Ok(None);
     };
-    if !plain {
-        notes.push("claude-code: its agentdocker MCP entry carries settings setup cannot put back; remove it with `claude mcp remove --scope user agentdocker`".into());
-        return Ok(None);
-    }
     let mut remove: Vec<String> = vec![cli.to_owned()];
     remove.extend(["mcp", "add", "--scope", "user", "agentdocker"].map(str::to_owned));
     for pair in env {
@@ -513,7 +546,7 @@ fn delegated_mcp_removal(
     }
     remove.push("--".into());
     remove.push(command.to_owned());
-    remove.extend(args.iter().filter_map(Value::as_str).map(str::to_owned));
+    remove.extend(args);
     let mut add: Vec<String> = vec![cli.to_owned()];
     add.extend(["mcp", "remove", "--scope", "user", "agentdocker"].map(str::to_owned));
     Ok(Some(Delegated {
@@ -1046,8 +1079,18 @@ fn load(directory: &Path, id: &str) -> Result<Plan> {
         "setup receipt exceeds 64 MiB"
     );
     let plan: Plan = serde_json::from_reader(file.take(64 * 1024 * 1024))?;
+    // Format 2 adds removals: changes that may delete a file, and steps
+    // that take a registration out. A format 1 receipt holds neither, and
+    // only a removal deletes.
+    let removals = plan.changes.iter().any(|change| change.removal)
+        || plan.delegated.iter().any(|step| step.removal);
     ensure!(
-        plan.format == 1 && plan.id == id,
+        plan.id == id
+            && (plan.format == 2 || (plan.format == 1 && !removals))
+            && plan
+                .changes
+                .iter()
+                .all(|change| change.after.is_some() || change.removal),
         "unsupported or mismatched setup receipt"
     );
     Ok(plan)
@@ -1515,7 +1558,7 @@ mod tests {
             .map(|path| std::fs::read_to_string(path).unwrap())
             .collect();
 
-        let mut plan = prepare_remove(&roots, &[]).unwrap();
+        let plan = prepare_remove(&roots, &[]).unwrap();
         let channels: std::collections::BTreeSet<(String, String)> = plan
             .changes
             .iter()
@@ -1535,6 +1578,9 @@ mod tests {
         }
         let directory = directory(home).unwrap();
         save(&directory, &plan).unwrap();
+        // Applied and undone from the saved receipt, as `--apply <id>` and
+        // `--undo <id>` do.
+        let mut plan = load(&directory, &plan.id).unwrap();
         apply(&directory, &mut plan, false).unwrap();
         let settings_now: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
@@ -1552,6 +1598,7 @@ mod tests {
         assert!(!skill.exists(), "the installed skill goes");
         assert_eq!(std::fs::read_to_string(&zshrc).unwrap(), "export A=1\n");
 
+        let mut plan = load(&directory, &plan.id).unwrap();
         apply(&directory, &mut plan, true).unwrap();
         for (path, original) in files.iter().zip(&originals) {
             assert_eq!(
@@ -1561,6 +1608,128 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    /// A format 1 receipt, from before removals, never deletes: one that
+    /// says it would is refused, as a format 2 one that deletes outside a
+    /// removal is.
+    #[test]
+    fn a_receipt_deletes_only_as_a_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prepared = plan(tmp.path(), &["claude-code"]);
+        let directory = directory(&tmp.path().join("state")).unwrap();
+        save(&directory, &prepared).unwrap();
+        assert!(load(&directory, &prepared.id).is_ok());
+        let path = receipt(&directory, &prepared.id).unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for (format, removal) in [(1, false), (1, true), (2, false)] {
+            let mut damaged = saved.clone();
+            damaged["format"] = json!(format);
+            damaged["changes"][0]["after"] = Value::Null;
+            if removal {
+                damaged["changes"][0]["removal"] = json!(true);
+            }
+            std::fs::write(&path, damaged.to_string()).unwrap();
+            assert!(
+                load(&directory, &prepared.id).is_err(),
+                "format {format}, removal {removal}"
+            );
+        }
+    }
+
+    fn claude_entry(home: &Path, entry: &Value) -> PathBuf {
+        let path = home.join(".claude.json");
+        std::fs::write(
+            &path,
+            json!({"numStartups": 3, "mcpServers": {"agentdocker": entry, "other": {"type": "stdio", "command": "npx", "args": [], "env": {}}}}).to_string(),
+        )
+        .unwrap();
+        path
+    }
+
+    fn claude_servers(path: &Path) -> Value {
+        serde_json::from_str::<Value>(&std::fs::read_to_string(path).unwrap()).unwrap()["mcpServers"]
+            .clone()
+    }
+
+    /// Claude Code's entry is taken out through `claude mcp remove`, and an
+    /// undo from the saved receipt puts back exactly the entry it found,
+    /// with an environment or without one.
+    #[test]
+    fn removal_through_claude_puts_back_the_entry_it_found() {
+        for env in [json!({}), json!({"RUST_LOG": "debug", "MODE": "a=b"})] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (roots, _) = fake_claude(tmp.path());
+            writing_claude(tmp.path());
+            let entry = json!({"type": "stdio", "command": "/x/agentdocker",
+                "args": ["mcp", "--runtime", "claude-code"], "env": env});
+            let config = claude_entry(tmp.path(), &entry);
+            let plan = prepare_remove(&roots, &["claude-code".into()]).unwrap();
+            assert_eq!(plan.delegated.len(), 1, "{:?}", plan.notes);
+            let directory = directory(&tmp.path().join("state")).unwrap();
+            save(&directory, &plan).unwrap();
+
+            let mut plan = load(&directory, &plan.id).unwrap();
+            apply(&directory, &mut plan, false).unwrap();
+            let servers = claude_servers(&config);
+            assert!(servers.get("agentdocker").is_none() && servers.get("other").is_some());
+
+            let mut plan = load(&directory, &plan.id).unwrap();
+            apply(&directory, &mut plan, true).unwrap();
+            assert_eq!(claude_servers(&config)["agentdocker"], entry);
+        }
+    }
+
+    /// An entry `claude mcp add` would not write back as it is (no type, no
+    /// environment, a setting of its own) is left for the person to remove.
+    #[test]
+    fn removal_through_claude_leaves_an_entry_it_cannot_put_back() {
+        for entry in [
+            json!({"command": "/x/agentdocker", "args": ["mcp", "--runtime", "claude-code"]}),
+            json!({"type": "stdio", "command": "/x/agentdocker", "args": ["mcp", "--runtime", "claude-code"]}),
+            json!({"command": "/x/agentdocker", "args": ["mcp", "--runtime", "claude-code"], "env": {}}),
+            json!({"type": "stdio", "command": "/x/agentdocker", "args": ["mcp", "--runtime", "claude-code"], "env": {}, "timeout": 5}),
+            json!({"type": "stdio", "command": "/x/agentdocker", "args": ["mcp", "--runtime", "claude-code"], "env": {"N": 1}}),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (roots, _) = fake_claude(tmp.path());
+            claude_entry(tmp.path(), &entry);
+            let plan = prepare_remove(&roots, &["claude-code".into()]).unwrap();
+            assert!(plan.delegated.is_empty(), "{entry}");
+            assert!(
+                plan.notes
+                    .iter()
+                    .any(|note| note.contains("claude mcp remove --scope user agentdocker")),
+                "{entry}: {:?}",
+                plan.notes
+            );
+        }
+    }
+
+    /// An environment value the removal saved, which may be a secret, is
+    /// never shown: not in the plan, not in a failed restore's error, not
+    /// in what the provider printed.
+    #[test]
+    fn a_saved_environment_value_is_never_shown() {
+        let secret = "synthetic-secret-4f1c9a";
+        let tmp = tempfile::tempdir().unwrap();
+        let (roots, claude) = fake_claude(tmp.path());
+        writing_claude(tmp.path());
+        let entry = json!({"type": "stdio", "command": "/x/agentdocker",
+            "args": ["mcp", "--runtime", "claude-code"], "env": {"API_TOKEN": secret}});
+        claude_entry(tmp.path(), &entry);
+        let mut plan = prepare_remove(&roots, &["claude-code".into()]).unwrap();
+        assert!(!plan.view().to_string().contains(secret));
+        let directory = directory(&tmp.path().join("state")).unwrap();
+        save(&directory, &plan).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        // A `claude` that repeats its arguments and fails.
+        std::fs::write(&claude, "#!/bin/sh\necho \"$@\"\nexit 1\n").unwrap();
+        let error = apply(&directory, &mut plan, true).unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains("API_TOKEN=…"), "{error}");
+        assert!(!error.contains(secret), "{error}");
+        assert!(!plan.view().to_string().contains(secret));
     }
 
     /// A skill the person edited, and an entry under our name that runs
@@ -1626,7 +1795,7 @@ if args[1] == "add":
     if "agentdocker" in servers:
         sys.exit(1)
     split = args.index("--")
-    env = dict([args[args.index("--env") + 1].split("=", 1)])
+    env = dict(args[i + 1].split("=", 1) for i in range(split) if args[i] == "--env")
     servers["agentdocker"] = {"type": "stdio", "command": args[split + 1],
                               "args": args[split + 2:], "env": env}
 elif args[1] == "remove":
