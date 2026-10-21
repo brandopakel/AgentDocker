@@ -2016,7 +2016,9 @@ impl App {
             EventKind::RuleChanged { .. }
             | EventKind::TagChanged { .. }
             | EventKind::PlanChanged { .. }
-            | EventKind::ProjectFileChanged { .. } => {
+            | EventKind::ProjectFileChanged { .. }
+            | EventKind::MemoryAdded { .. }
+            | EventKind::MemoryForgotten { .. } => {
                 if let Some(project) = self.selected_project_root() {
                     self.send(Cmd::Workspace(project));
                 }
@@ -3525,6 +3527,16 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 })? {
                     workspace.files = files;
                 }
+                // A daemon from before memory cannot read the request: the
+                // rest of the workspace still shows.
+                if let Ok(Response::Memories { memories }) = client.call(&Request::MemorySearch {
+                    from: None,
+                    project: Some(project.clone()),
+                    query: String::new(),
+                    limit: Some(100),
+                }) {
+                    workspace.memories = memories;
+                }
                 Ok(workspace)
             };
             let result = read().map(Box::new);
@@ -4599,6 +4611,8 @@ pub(crate) struct Workspace {
     pub rules: Vec<agentdocker_core::Rule>,
     pub plans: Vec<agentdocker_core::Plan>,
     pub files: Vec<agentdocker_core::ProjectFile>,
+    /// Its current memories, newest first.
+    pub memories: Vec<agentdocker_core::memory::Memory>,
 }
 
 /// What the person changes on a card: each field given is set; an

@@ -431,13 +431,16 @@ then by due day and priority. A row is a circle that ticks the card done
 (to its board's Done), its key, title, priority and due marks, and its
 holder; pressed, it opens the card on its project's board.
 
-**More → Plans** is the project's plans and files. The list is each plan's
+**More → Plans** is the project's plans, files and memory. The list is each plan's
 name with a dot for where it stands (draft, active, done, archived) and a
 **New plan**; the plan open is its title, its status as segments, its
 Markdown in an editor, **Save** while it has changes, and the cards that
 carry it out, each opening on its board. Under it are the project's files,
 each opening with the system's app (a private copy) or deleted, and **Add a
-file**. An agent pulls the
+file**. Under those is the project's **Memory**: one line to keep a fact for
+its agents (**Keep**, kept as the person's), then each memory, newest first,
+with who kept it and when, and a cross to forget it; a memory an agent keeps
+appears at once. An agent pulls the
 next ready card with `pull_task` (or names one), and the board shows it in
 progress under that agent at once; two agents never get one card, and a
 card that waits on an open card is skipped. When the person moves, hands or

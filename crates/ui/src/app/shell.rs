@@ -196,6 +196,8 @@ pub(super) struct State {
     pub role_delete: Option<(String, std::time::Instant)>,
     pub rule_draft: RuleDraft,
     pub plan_draft: PlanDraft,
+    /// A memory being written for the project, kept until it is added.
+    pub memory_draft: String,
     /// The open card's fields as the person edits them.
     pub card_draft: CardDraft,
     /// A card being dragged, and the lane (and card) it would land at.
@@ -1034,6 +1036,10 @@ pub enum Message {
     PlanSave,
     /// A project file deleted, from Plans.
     FileDelete(String),
+    MemoryDraft(String),
+    /// Keep the draft as a memory of the project, as the person.
+    MemoryAdd,
+    MemoryForget(String),
     /// The open card's fields as the person edits them, and saving them.
     CardField(CardFieldKind, String),
     CardPriority(agentdocker_core::Priority),
@@ -2203,6 +2209,31 @@ impl App {
             Message::FileDelete(file) => self.board_act(Request::FileDelete {
                 from: agentdocker_core::HUMAN.into(),
                 file,
+            }),
+            Message::MemoryDraft(text) => {
+                self.shell.memory_draft = text
+                    .chars()
+                    .take(agentdocker_core::memory::MEMORY_CHARS)
+                    .collect();
+            }
+            Message::MemoryAdd => {
+                let text = self.shell.memory_draft.trim().to_owned();
+                if let Some(root) = self.selected_project_root()
+                    && !text.is_empty()
+                {
+                    self.board_act(Request::MemoryAdd {
+                        from: agentdocker_core::HUMAN.into(),
+                        project: Some(root),
+                        text,
+                        links: Vec::new(),
+                        supersedes: None,
+                    });
+                    self.shell.memory_draft.clear();
+                }
+            }
+            Message::MemoryForget(memory) => self.board_act(Request::MemoryForget {
+                from: agentdocker_core::HUMAN.into(),
+                memory,
             }),
             Message::CardMenu(menu) => {
                 if menu == CardMenu::Start
@@ -5157,6 +5188,64 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    /// The person keeps a fact for the project's agents from its Plans
+    /// screen, and forgets one; nothing blank is kept, and a memory kept
+    /// anywhere refreshes what the screen shows.
+    #[test]
+    fn the_person_keeps_and_forgets_a_projects_memory() {
+        let (mut app, commands, _messages) = app();
+        app.connected = Ok(());
+        app.shell
+            .catalog
+            .pin(ProjectRef::directory("/work/a"))
+            .unwrap();
+        let acts = |commands: &CommandReceiver| {
+            commands
+                .try_iter()
+                .filter_map(|c| match c {
+                    Cmd::BoardAct { request, .. } => Some(*request),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let _ = app.update(Message::MemoryDraft("   ".into()));
+        let _ = app.update(Message::MemoryAdd);
+        assert!(acts(&commands).is_empty(), "nothing blank is kept");
+        let _ = app.update(Message::MemoryDraft("Codex reviews every PR".into()));
+        let _ = app.update(Message::MemoryAdd);
+        assert!(matches!(
+            &acts(&commands)[..],
+            [Request::MemoryAdd { from, project: Some(project), text, .. }]
+                if from == agentdocker_core::HUMAN
+                    && project == "/work/a"
+                    && text == "Codex reviews every PR"
+        ));
+        assert!(
+            app.shell.memory_draft.is_empty(),
+            "the draft goes once kept"
+        );
+        let _ = app.update(Message::MemoryForget("m1".into()));
+        assert!(matches!(
+            &acts(&commands)[..],
+            [Request::MemoryForget { from, memory }]
+                if from == agentdocker_core::HUMAN && memory == "m1"
+        ));
+        app.on_event(Event::new(
+            EventKind::MemoryAdded {
+                project: agentdocker_core::ProjectId::from("a"),
+                memory: "m2".into(),
+                by: "codex-1".into(),
+            },
+            Utc::now(),
+        ));
+        assert!(
+            commands
+                .try_iter()
+                .any(|c| matches!(c, Cmd::Workspace(root) if root == "/work/a")),
+            "the screen is read again"
+        );
     }
 
     /// A project's roles are read for every project an agent on the list
