@@ -897,6 +897,11 @@ Newest first. Only what changes how the product is used.
   same menu recolours, deletes or adds a project's roles. Nothing gets a role
   unless you give it one.
 
+- **An idle daemon wakes less.** The file watcher's drain now runs only
+  while changes wait to be recorded, and the usage worker waits between
+  collections in one-second steps, not tenth-of-a-second ones: about 60%
+  fewer context switches for an idle daemon.
+
 - **Allow for session.** A Codex approval that Codex offers to remember has a
   third answer beside **Allow once** and **Deny**: **Allow for session** lets the
   same command, network destination, files or access through without asking

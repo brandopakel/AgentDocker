@@ -157,10 +157,15 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
     let (attach_tx, mut attach_rx) = tokio::sync::mpsc::channel::<WatcherAttachment>(8);
     daemon.set_watcher_attach(attach_tx);
     loop {
+        // The periodic drain runs only while something waits for it: events
+        // not yet recorded, or a gap (events the OS dropped) to repair. An
+        // idle daemon is not woken ten times a second for nothing.
+        let flush_due = !pending.is_empty() || gap.load(Ordering::Relaxed);
         let flush_ack = match next_watcher_action(
             &mut attach_rx,
             &mut flush_rx,
             &mut flush,
+            flush_due,
             &mut reconcile,
             &mut rx,
         )
@@ -175,6 +180,11 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
                 continue;
             }
             WatcherAction::Event(event) => {
+                // The first event of a batch starts its period, so a burst
+                // is still recorded together, one period after it began.
+                if pending.is_empty() {
+                    flush.reset();
+                }
                 if pending.len() < 4096 {
                     pending.push(event);
                 } else {
@@ -235,6 +245,7 @@ async fn next_watcher_action(
     attachments: &mut mpsc::Receiver<WatcherAttachment>,
     flush_requests: &mut mpsc::Receiver<tokio::sync::oneshot::Sender<()>>,
     flush: &mut tokio::time::Interval,
+    flush_due: bool,
     reconcile: &mut tokio::time::Interval,
     events: &mut mpsc::Receiver<notify::Event>,
 ) -> WatcherAction {
@@ -242,7 +253,7 @@ async fn next_watcher_action(
         biased;
         Some(request) = attachments.recv() => WatcherAction::Attachment(request),
         Some(ack) = flush_requests.recv() => WatcherAction::Flush(Some(ack)),
-        _ = flush.tick() => WatcherAction::Flush(None),
+        _ = flush.tick(), if flush_due => WatcherAction::Flush(None),
         _ = reconcile.tick() => WatcherAction::Reconcile,
         Some(event) = events.recv() => WatcherAction::Event(event),
     }
@@ -583,6 +594,7 @@ mod tests {
                         &mut attachments,
                         &mut flush_requests,
                         &mut flush,
+                        true,
                         &mut reconcile,
                         &mut events,
                     ),
@@ -621,6 +633,52 @@ mod tests {
                 flushed.await.unwrap();
             }
         }
+    }
+
+    /// With nothing waiting to be recorded, a due drain is not taken: the
+    /// loop waits for real work instead of waking for an empty flush.
+    #[tokio::test]
+    async fn an_idle_watcher_takes_no_periodic_flush() {
+        use tokio::time::Instant;
+        let (_attach_tx, mut attachments) = mpsc::channel::<WatcherAttachment>(8);
+        let (_flush_tx, mut flush_requests) = mpsc::channel::<tokio::sync::oneshot::Sender<()>>(8);
+        let (event_tx, mut events) = mpsc::channel::<notify::Event>(8);
+        let later = Instant::now() + Duration::from_secs(3600);
+        let mut reconcile = tokio::time::interval_at(later, Duration::from_secs(3600));
+        // Due already.
+        let mut flush = tokio::time::interval_at(
+            Instant::now() - Duration::from_secs(1),
+            Duration::from_millis(100),
+        );
+        let idle = tokio::time::timeout(
+            Duration::from_millis(300),
+            next_watcher_action(
+                &mut attachments,
+                &mut flush_requests,
+                &mut flush,
+                false,
+                &mut reconcile,
+                &mut events,
+            ),
+        )
+        .await;
+        assert!(idle.is_err(), "nothing to drain, nothing taken");
+        event_tx
+            .send(notify::Event::new(EventKind::Any))
+            .await
+            .unwrap();
+        assert!(matches!(
+            next_watcher_action(
+                &mut attachments,
+                &mut flush_requests,
+                &mut flush,
+                false,
+                &mut reconcile,
+                &mut events,
+            )
+            .await,
+            WatcherAction::Event(_)
+        ));
     }
 
     #[tokio::test]

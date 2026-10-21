@@ -374,10 +374,22 @@ fn worker(weak: Weak<Daemon>) {
                 daemon.reconcile_usage(&config);
             }
         }
-        if !alive_wait(&weak, 300) {
+        if !idle_wait(&weak, 30) {
             return;
         }
     }
+}
+
+/// Wait `seconds` between collections, checking once a second that the
+/// daemon is still there: an idle worker is not woken ten times a second.
+fn idle_wait(weak: &Weak<Daemon>, seconds: usize) -> bool {
+    for _ in 0..seconds {
+        if weak.strong_count() == 0 {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    true
 }
 
 fn snapshot(weak: &Weak<Daemon>, collection: &Collection, gaps: &[(&str, &str)]) -> bool {
