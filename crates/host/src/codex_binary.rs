@@ -53,11 +53,11 @@ fn codex_package_of(entry: &Path) -> Option<PathBuf> {
     (manifest["name"] == "@openai/codex").then(|| package.to_path_buf())
 }
 
-/// The lines npm writes into the shims it makes for a package's `bin`
-/// (`cmd-shim`: the `sh` shim, `codex.cmd`, `codex.ps1`), with `@ENTRY@`
-/// where the path to the entry point goes, `/` and `\` forms each.
-const SHIM_LINES: &[&str] = &[
-    // sh
+/// The shims npm writes for a package's `bin` (`cmd-shim`), each the whole
+/// of one, line by line in order, with `@ENTRY@` where the path to the
+/// entry point goes (`@WINENTRY@` in its `\` form). Comments and blank lines
+/// are not part of them.
+const SH: &[&str] = &[
     "#!/bin/sh",
     r#"basedir=$(dirname "$(echo "$0" | sed -e 's,\\,/,g')")"#,
     "case `uname` in",
@@ -71,7 +71,19 @@ const SHIM_LINES: &[&str] = &[
     r#"exec "$basedir/node" "$basedir/@ENTRY@" "$@""#,
     "else",
     r#"exec node "$basedir/@ENTRY@" "$@""#,
-    // cmd
+    "fi",
+];
+/// The `sh` shim before `cmd-shim` learnt Cygwin paths.
+const SH_PLAIN: &[&str] = &[
+    "#!/bin/sh",
+    r#"basedir=$(dirname "$(echo "$0" | sed -e 's,\\,/,g')")"#,
+    r#"if [ -x "$basedir/node" ]; then"#,
+    r#"exec "$basedir/node" "$basedir/@ENTRY@" "$@""#,
+    "else",
+    r#"exec node "$basedir/@ENTRY@" "$@""#,
+    "fi",
+];
+const CMD: &[&str] = &[
     "@ECHO off",
     "GOTO start",
     ":find_dp0",
@@ -87,7 +99,8 @@ const SHIM_LINES: &[&str] = &[
     "SET PATHEXT=%PATHEXT:;.JS;=;%",
     ")",
     r#"endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "%dp0%\@WINENTRY@" %*"#,
-    // ps1
+];
+const PS1: &[&str] = &[
     "#!/usr/bin/env pwsh",
     "$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent",
     r#"$exe="""#,
@@ -100,43 +113,49 @@ const SHIM_LINES: &[&str] = &[
     r#"$input | & "$basedir/node$exe" "$basedir/@ENTRY@" $args"#,
     "} else {",
     r#"& "$basedir/node$exe" "$basedir/@ENTRY@" $args"#,
+    "}",
     "$ret=$LASTEXITCODE",
+    "} else {",
+    "if ($MyInvocation.ExpectingInput) {",
     r#"$input | & "node$exe" "$basedir/@ENTRY@" $args"#,
+    "} else {",
     r#"& "node$exe" "$basedir/@ENTRY@" $args"#,
+    "}",
+    "$ret=$LASTEXITCODE",
+    "}",
     "exit $ret",
 ];
 
-/// The entry point an npm shim runs, when the shim is one npm generated for
-/// Codex beside its package: every line is one of npm's own, with
-/// Codex's entry point in it, or a comment. A line of anything else (a
-/// `basedir` or `_prog` set elsewhere, another program run) and the shim is
-/// not followed, so it is never taken for a package it does not run.
+/// One line as compared: trimmed, its runs of blanks one space; `None` for
+/// a blank line or a comment (a `#` line that is not a `#!` line).
+fn shim_line(line: &str) -> Option<String> {
+    let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!line.is_empty() && !(line.starts_with('#') && !line.starts_with("#!"))).then_some(line)
+}
+
+/// The entry point an npm shim runs, when the shim is the whole of one npm
+/// generated for Codex beside its package: its lines, in order, are
+/// exactly those of one of npm's shims with Codex's entry point in them.
+/// Any other body (a `basedir` or `_prog` set otherwise or not at all,
+/// lines left out, moved or added) and the shim is not followed, so it is
+/// never taken for a package it does not run.
 fn shim_entry(shim: &Path) -> Option<PathBuf> {
     const ENTRY: &str = "node_modules/@openai/codex/bin/codex.js";
-    let normal = |line: &str| line.split_whitespace().collect::<Vec<_>>().join(" ");
-    let known: std::collections::HashSet<String> = SHIM_LINES
-        .iter()
-        .map(|line| {
-            normal(
-                &line
-                    .replace("@WINENTRY@", &ENTRY.replace('/', "\\"))
-                    .replace("@ENTRY@", ENTRY),
-            )
-        })
-        .collect();
     let text = read_small(shim)?;
-    let mut runs = 0;
-    for line in text.lines().map(normal) {
-        let comment = line.starts_with('#') && !line.starts_with("#!");
-        if line.is_empty() || comment {
-            continue;
-        }
-        if !known.contains(&line) {
-            return None;
-        }
-        runs += usize::from(line.contains("codex.js"));
-    }
-    if runs == 0 {
+    let lines: Vec<String> = text.lines().filter_map(shim_line).collect();
+    let is = |template: &[&str]| {
+        template.len() == lines.len()
+            && template.iter().zip(&lines).all(|(expected, line)| {
+                shim_line(
+                    &expected
+                        .replace("@WINENTRY@", &ENTRY.replace('/', "\\"))
+                        .replace("@ENTRY@", ENTRY),
+                )
+                .as_deref()
+                    == Some(line.as_str())
+            })
+    };
+    if ![SH, SH_PLAIN, CMD, PS1].into_iter().any(is) {
         return None;
     }
     let entry = shim.parent()?.join(ENTRY);
@@ -228,6 +247,24 @@ mod tests {
     const MAC: (&str, &str) = ("aarch64-apple-darwin", "codex-darwin-arm64");
     const WINDOWS: (&str, &str) = ("x86_64-pc-windows-msvc", "codex-win32-x64");
     const MACH_O: &[u8] = b"\xcf\xfa\xed\xfe native";
+    /// The sh shim npm 10 writes for Codex's `bin`.
+    const NPM_SH: &str = r#"#!/bin/sh
+basedir=$(dirname "$(echo "$0" | sed -e 's,\\,/,g')")
+
+case `uname` in
+    *CYGWIN*|*MINGW*|*MSYS*)
+        if command -v cygpath > /dev/null 2>&1; then
+            basedir=`cygpath -w "$basedir"`
+        fi
+    ;;
+esac
+
+if [ -x "$basedir/node" ]; then
+  exec "$basedir/node"  "$basedir/node_modules/@openai/codex/bin/codex.js" "$@"
+else 
+  exec node  "$basedir/node_modules/@openai/codex/bin/codex.js" "$@"
+fi
+"#;
 
     /// `<prefix>/lib/node_modules/@openai/codex`, its manifest and entry point.
     fn package(prefix: &Path) -> PathBuf {
@@ -332,12 +369,9 @@ b"@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\n
         let native = package
             .join("node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex");
         file(&native, MACH_O);
-        // The sh shim npm writes.
+        // The sh shim npm writes, whole.
         let generated = prefix.join("codex");
-        file(
-            &generated,
-            b"#!/bin/sh\nbasedir=$(dirname \"$(echo \"$0\" | sed -e 's,\\\\,/,g')\")\n\nif [ -x \"$basedir/node\" ]; then\n  exec \"$basedir/node\"  \"$basedir/node_modules/@openai/codex/bin/codex.js\" \"$@\"\nelse \n  exec node  \"$basedir/node_modules/@openai/codex/bin/codex.js\" \"$@\"\nfi\n",
-        );
+        file(&generated, NPM_SH.as_bytes());
         assert_eq!(
             native_codex_for(&generated, MAC),
             Some(native.canonicalize().unwrap())
@@ -350,6 +384,25 @@ b"@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\n
             b"#!/bin/sh\n# replaces @openai/codex/bin/codex.js\nexec /opt/pinned/codex \"$@\"\n",
         );
         assert_eq!(native_codex_for(&custom, MAC), None);
+        // Nor npm's exec line without the line that sets `basedir`, which
+        // would then come from the caller's environment.
+        let uninitialised = prefix.join("codex-bare");
+        file(
+            &uninitialised,
+            b"#!/bin/sh\nexec node \"$basedir/node_modules/@openai/codex/bin/codex.js\" \"$@\"\n",
+        );
+        assert_eq!(native_codex_for(&uninitialised, MAC), None);
+        // Nor npm's lines in another order.
+        let mut reordered: Vec<&str> = NPM_SH.lines().collect();
+        let at = reordered
+            .iter()
+            .position(|l| l.starts_with("basedir=$("))
+            .unwrap();
+        let line = reordered.remove(at);
+        reordered.push(line);
+        let shuffled = prefix.join("codex-shuffled");
+        file(&shuffled, reordered.join("\n").as_bytes());
+        assert_eq!(native_codex_for(&shuffled, MAC), None);
         // Nor one that sets its own `basedir` before npm's line.
         let moved = prefix.join("codex-moved");
         file(
