@@ -1463,6 +1463,40 @@ pub enum Request {
         #[serde(default)]
         note: Option<String>,
     },
+    /// A reviewer's word on a branch at the commit it read: `approve`,
+    /// `changes` or `comment`, with how many findings of each priority it
+    /// raised. Given by an agent holding a role in the project, or by the
+    /// person. Answers `code_verdict`.
+    CodeVerdict {
+        agent: String,
+        #[serde(default)]
+        project: Option<String>,
+        branch: String,
+        /// The full id of the commit the reviewer read.
+        head: String,
+        /// The commit an earlier review read, when this one read only
+        /// what came after it.
+        #[serde(default)]
+        from: Option<String>,
+        verdict: String,
+        #[serde(default)]
+        findings: crate::gate::Findings,
+        #[serde(default)]
+        note: Option<String>,
+    },
+    /// Whether a branch at a commit may land: approved at exactly that
+    /// commit by a holder of `role` (`reviewer` when absent) or the person,
+    /// with nobody asking for changes. Answers `review_gate`.
+    ReviewGate {
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        project: Option<String>,
+        branch: String,
+        head: String,
+        #[serde(default)]
+        role: Option<String>,
+    },
     /// Attach a terminal to a managed agent that was given one. The reply
     /// is a stream of `output`; the client may then send `attach_input`
     /// and `attach_resize` on the same connection, and closing it detaches
@@ -1711,6 +1745,12 @@ pub enum Response {
         branch_removed: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
+    },
+    CodeVerdict {
+        verdict: crate::gate::CodeVerdict,
+    },
+    ReviewGate {
+        gate: crate::gate::Gate,
     },
     BranchReview {
         review: crate::review::Review,
