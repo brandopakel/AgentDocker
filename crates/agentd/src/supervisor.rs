@@ -1162,11 +1162,11 @@ mod tests {
         let report = |code, signal, log_flushed| ExitReport {
             agent: AgentId::from("6f1c2a9b3d7e4c5f8a0b1c2d3e4f5a6b".to_owned()),
             owner: SessionOwner {
-                pid: 23152,
+                pid: 4242,
                 started_at: now,
             },
             child: ChildIdentity {
-                pid: 23153,
+                pid: 4243,
                 started_at: now,
                 tty: true,
             },

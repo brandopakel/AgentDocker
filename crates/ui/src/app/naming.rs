@@ -245,14 +245,14 @@ mod tests {
     fn names_are_the_tool_and_the_sessions_own_id_and_never_the_branch() {
         let aliases = BTreeMap::new();
         let mut first = record(
-            "codex-5124",
+            "codex-1111",
             "codex",
             "6f1c2a9b3d7e4c5f8a0b1c2d3e4f5a6b",
             "/p/a",
         );
         on(&mut first, "main");
         let mut second = record(
-            "codex-6250",
+            "codex-2222",
             "codex",
             "9b8a7c6d5e4f40312a1b2c3d4e5f6a7b",
             "/p/a",
@@ -385,7 +385,7 @@ mod tests {
 
     /// The daemon can hold one session twice for a while: a hook that ran
     /// from a subdirectory registered a second live record for the same
-    /// process and session (`claude-c960824c` beside `claude-code-2923`),
+    /// process and session (`claude-c960824c` beside `claude-code-4321`),
     /// and the daemon folds it only once nothing would be lost. Until then
     /// the session is one row — the record that stays — and is counted
     /// once. Two sessions in one process, or records without a known
@@ -395,7 +395,7 @@ mod tests {
         let born = Utc::now() - Duration::hours(1);
         let session = |name: &str, id: &str, session: &str, minutes: i64| {
             let mut record = record(name, "claude-code", id, "/p/a");
-            record.pid = Some(51890);
+            record.pid = Some(4300);
             record.process_started_at = Some(born);
             record.created_at = born + Duration::minutes(minutes);
             record
@@ -404,9 +404,9 @@ mod tests {
                 .insert("session_id".into(), session.into());
             record
         };
-        let kept = session("claude-code-2923", "id-kept", "c960824c", 0);
+        let kept = session("claude-code-4321", "id-kept", "c960824c", 0);
         let mut drifted = session("claude-c960824c", "id-drifted", "c960824c", 35);
-        drifted.spec.workdir = Some("/p/a/artifacts/21st".into());
+        drifted.spec.workdir = Some("/p/a/artifacts/out".into());
         let other = session("claude-0ther000", "id-other", "another-session", 40);
         let aliases = BTreeMap::new();
         let agents = vec![drifted.clone(), kept.clone(), other.clone()];

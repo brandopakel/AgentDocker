@@ -212,9 +212,9 @@ pub fn line_of(envelope: &Envelope) -> String {
     }
 }
 
-/// The names a text mentions with `@`: `@codex-51242` is a mention of
-/// `codex-51242`, and a name ends where the text stops being a name
-/// character (letters, digits, `-`, `_`, `.`), so `@codex-51242,` and
+/// The names a text mentions with `@`: `@codex-4242` is a mention of
+/// `codex-4242`, and a name ends where the text stops being a name
+/// character (letters, digits, `-`, `_`, `.`), so `@codex-4242,` and
 /// `(@user)` mention as written. An `@` inside a word (`a@b.c`) is not a
 /// mention. Case is the text's own; callers compare as they see fit.
 pub fn mentions_in(text: &str) -> Vec<&str> {
@@ -301,8 +301,8 @@ mod tests {
     #[test]
     fn mentions_are_names_after_an_at_sign() {
         assert_eq!(
-            mentions_in("@codex-51242, can @Claude-Code look? (@user) mail a@b.c; done@"),
-            ["codex-51242", "Claude-Code", "user"]
+            mentions_in("@codex-4242, can @Claude-Code look? (@user) mail a@b.c; done@"),
+            ["codex-4242", "Claude-Code", "user"]
         );
         assert_eq!(mentions_in("@here.").as_slice(), ["here"]);
         assert!(mentions_in("nothing here").is_empty());
