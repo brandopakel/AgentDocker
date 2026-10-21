@@ -653,6 +653,66 @@ fn default_name(id: &AgentId) -> String {
     format!("agent-{}", &id.as_str()[..6])
 }
 
+/// Whether `pid` is still the process born at `born`: strictly, so a
+/// process that is gone or whose birth cannot be read is not it.
+#[cfg(unix)]
+fn born_as(pid: u32, born: DateTime<Utc>) -> bool {
+    procinfo::start_time(pid) == Some(born)
+}
+
+/// Where a stopped terminal program ran: its terminal, held open since
+/// before the signal, and the shell that started it, by pid and birth.
+#[cfg(unix)]
+struct RanIn {
+    terminal: agentdocker_host::terminal::Pinned,
+    tty: String,
+    shell: u32,
+    shell_born: DateTime<Utc>,
+}
+
+/// Once the stopped terminal program `pid` has gone, give its terminal back
+/// clean: the modes it set (mouse reporting above all) are turned off. Only
+/// when the same shell (pid and birth) has its own job back in the
+/// terminal's foreground: a job it started next keeps its modes, and a
+/// terminal closed meanwhile has its device revoked, so nothing reaches
+/// another window. Off the caller's thread; a program that outlives the
+/// wait, or a shell that never takes the terminal back, is left alone.
+#[cfg(unix)]
+fn restore_terminal_after(pid: u32, started: DateTime<Utc>, mut ran: RanIn) {
+    let _ = std::thread::Builder::new()
+        .name("restore-terminal".into())
+        .spawn(move || {
+            let wait_until = |seconds: u64, done: &mut dyn FnMut() -> bool| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+                loop {
+                    if done() {
+                        return true;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            };
+            if !wait_until(10, &mut || {
+                !(process_exists(pid) && same_process(pid, Some(started)))
+            }) {
+                return;
+            }
+            let shell_is_back = wait_until(2, &mut || {
+                born_as(ran.shell, ran.shell_born)
+                    && agentdocker_host::terminal::foreground_of(ran.shell)
+                        .is_some_and(|place| place.holds(&ran.tty))
+            });
+            if shell_is_back
+                && born_as(ran.shell, ran.shell_born)
+                && let Err(error) = ran.terminal.restore_modes()
+            {
+                debug!(%error, tty = ran.tty, "could not restore the stopped program's terminal");
+            }
+        });
+}
+
 /// Is there a process with this pid? `EPERM` means it exists but belongs to
 /// someone else, which still counts as alive. Zero and out-of-range values
 /// would address process groups, so they are never alive.
@@ -1308,6 +1368,26 @@ impl Daemon {
             // never ended by mistake.
             #[cfg(unix)]
             {
+                // A terminal program AgentDocker did not start ends without
+                // undoing its terminal modes; read where it runs first.
+                let restore = (!record.managed)
+                    .then(|| {
+                        let tty = record
+                            .terminal
+                            .as_ref()
+                            .and_then(|host| host.tty.clone())
+                            .or_else(|| agentdocker_host::terminal::device_of(pid))?;
+                        let shell = procinfo::inspect(pid)?.ppid;
+                        let shell_born = procinfo::start_time(shell)?;
+                        let terminal = agentdocker_host::terminal::pin(&tty).ok()?;
+                        Some(RanIn {
+                            terminal,
+                            tty,
+                            shell,
+                            shell_born,
+                        })
+                    })
+                    .flatten();
                 let target = if record.managed && record.process_group == Some(pid) {
                     Pid::from_raw(-target.as_raw())
                 } else {
@@ -1327,6 +1407,9 @@ impl Daemon {
                             format!("cannot signal pid {pid}: {err}"),
                         );
                     }
+                }
+                if let Some(ran) = restore {
+                    restore_terminal_after(pid, started, ran);
                 }
             }
             #[cfg(windows)]
@@ -8946,6 +9029,19 @@ impl Drop for Subscription {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_is_its_original_only_by_its_own_birth() {
+        let me = std::process::id();
+        let born = procinfo::start_time(me).expect("this process has a birth");
+        assert!(born_as(me, born));
+        assert!(
+            !born_as(me, born + chrono::Duration::seconds(1)),
+            "another birth"
+        );
+        assert!(!born_as(u32::MAX - 7, born), "a process that is gone");
+    }
     use super::*;
     use agentdocker_core::Activity;
     use agentdocker_core::contest::{Contest, Measure, Metric, Standing};

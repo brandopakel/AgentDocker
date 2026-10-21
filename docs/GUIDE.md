@@ -853,6 +853,12 @@ Newest first. Only what changes how the product is used.
   offers **Model** and **Effort**, starting at the provider's own defaults,
   and a session's panel says which it runs (`gpt-6-astra · xhigh`).
 
+- **Stopping a terminal agent leaves its terminal clean.** Stopping a Codex
+  or Claude you started in your own terminal used to leave that tab
+  reporting every mouse move as typed text (`35;113;27M…`). AgentDocker now
+  turns those modes off once the program has exited. In a tab already left
+  like that, type `reset`.
+
 - **A pairing code works once.** The connector's consent page now asks for the
   pairing code first and shows the projects to choose from only after it.
   Each code opens one consent, so connecting a second browser means reading
