@@ -31,6 +31,9 @@ use sha2::{Digest, Sha256};
 pub(in crate::daemon) const MIRROR: &str = "memory_mirror";
 /// Memories sent in one run, so a long backlog drains over several.
 const ADDS_PER_RUN: usize = 50;
+/// What every request says it comes from, so the server can tell
+/// AgentDocker's documents apart.
+const SOURCE: &str = "agentdocker";
 /// Documents in processing looked at again in one run.
 const CHECKS_PER_RUN: usize = 20;
 /// Ids taken out per request.
@@ -149,6 +152,7 @@ impl Server {
             .agent
             .delete(&self.documents)
             .header("Authorization", &self.auth)
+            .header("x-sm-source", SOURCE)
             .header("Content-Type", "application/json")
             .force_send_body()
             .send(body.to_string().as_bytes())
@@ -208,6 +212,7 @@ impl Server {
             .agent
             .post(&self.documents)
             .header("Authorization", &self.auth)
+            .header("x-sm-source", SOURCE)
             .header("Content-Type", "application/json")
             .send(body.to_string().as_bytes())
             .map_err(|error| format!("adding a memory failed ({})", failure(&error)))?;
@@ -232,6 +237,7 @@ impl Server {
             .agent
             .get(format!("{}/{id}", self.documents))
             .header("Authorization", &self.auth)
+            .header("x-sm-source", SOURCE)
             .call()
             .map_err(|error| format!("checking a memory failed ({})", failure(&error)))?;
         match response.status().as_u16() {
@@ -473,6 +479,8 @@ mod tests {
         /// A document whose check the server refuses.
         get_refused: Option<String>,
         seen: Vec<(String, String, String)>,
+        /// The `x-sm-source` of every request, in order.
+        sources: Vec<String>,
     }
 
     type Shared = Arc<StdMutex<Fake>>;
@@ -492,7 +500,7 @@ mod tests {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
-                let (mut length, mut auth) = (0usize, String::new());
+                let (mut length, mut auth, mut source) = (0usize, String::new(), String::new());
                 loop {
                     let mut header = String::new();
                     reader.read_line(&mut header).unwrap();
@@ -504,6 +512,7 @@ mod tests {
                     match name.to_ascii_lowercase().as_str() {
                         "content-length" => length = value.trim().parse().unwrap(),
                         "authorization" => auth = value.trim().to_owned(),
+                        "x-sm-source" => source = value.trim().to_owned(),
                         _ => {}
                     }
                 }
@@ -525,7 +534,8 @@ mod tests {
                             .unwrap()
                             .iter()
                             .filter(|id| fake.delete_errors.iter().any(|e| id == &e))
-                            .map(|id| json!({"id": id, "error": "temporarily locked"}))
+                            // What the server says of one it is still processing.
+                            .map(|id| json!({"id": id, "error": "Document is still processing"}))
                             .collect();
                         let count = asked["ids"].as_array().unwrap().len() - errors.len();
                         if fake.delete_malformed {
@@ -545,6 +555,7 @@ mod tests {
                     }
                 };
                 fake.seen.push((format!("{method} {path}"), auth, body));
+                fake.sources.push(source);
                 drop(fake);
                 write!(
                     stream,
@@ -753,7 +764,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_document_the_server_did_not_delete_is_kept_to_try_again() {
+    async fn a_document_still_processing_there_is_kept_to_delete_again() {
         let tmp = tempfile::tempdir().unwrap();
         let (daemon, agent, project) = project(&tmp).await;
         let (url, fake) = server((200, "done"));
@@ -777,6 +788,11 @@ mod tests {
             held(&daemon, &project, &url, "sm-test-key-0123456789")
                 .ids
                 .is_empty()
+        );
+        let sources = fake.lock().unwrap().sources.clone();
+        assert!(
+            !sources.is_empty() && sources.iter().all(|s| s == SOURCE),
+            "every request names its source: {sources:?}"
         );
     }
 
