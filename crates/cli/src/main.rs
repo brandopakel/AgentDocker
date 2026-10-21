@@ -792,6 +792,11 @@ enum Command {
     /// Experimental owned Codex native-terminal launcher.
     #[command(hide = true)]
     CodexNative(codex_input::external::launch::Args),
+    /// Start Codex in this terminal so AgentDocker can reach it: the same
+    /// Codex, run through AgentDocker's launcher, so messages wake it even
+    /// while it is idle and it can hold a role like any agent.
+    /// Experimental.
+    Codex(CodexArgs),
     /// Upgrade only an existing Codex session's receiver to this CLI release.
     #[command(hide = true)]
     CodexQueueUpgrade(codex_input::external::upgrade::Args),
@@ -929,6 +934,16 @@ struct ChannelArgs {
 struct TaskArgs {
     #[command(subcommand)]
     action: TaskAction,
+}
+
+#[derive(clap::Args)]
+struct CodexArgs {
+    /// The agent's name; `codex-<pid>` when absent.
+    #[arg(long)]
+    name: Option<String>,
+    /// Codex's own options, after `--`: `-- --model gpt-6-astra`.
+    #[arg(last = true, allow_hyphen_values = true)]
+    arguments: Vec<String>,
 }
 
 #[derive(clap::Args)]
@@ -4533,6 +4548,16 @@ async fn run() -> Result<()> {
         Command::CodexInput(args) => codex_input::run(client, socket, args).await?,
         Command::CodexQueue(args) => codex_input::external::run(client, socket, args).await?,
         Command::CodexNative(args) => codex_input::external::launch::run(client, args).await?,
+        Command::Codex(args) => {
+            let program = agentdocker_host::codex_binary::native_codex_on_path().context(
+                "the Codex executable behind `codex` on PATH was not found; install Codex (`npm install -g @openai/codex`), or name it with `agentdocker codex-native --program <path>`",
+            )?;
+            codex_input::external::launch::run(
+                client,
+                codex_input::external::launch::Args::new(program, args.name, args.arguments),
+            )
+            .await?
+        }
         Command::CodexQueueUpgrade(args) => {
             codex_input::external::upgrade::run(client, args).await?
         }

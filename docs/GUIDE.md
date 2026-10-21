@@ -473,6 +473,7 @@ each one by pid.
 | Command | What it does |
 |---|---|
 | `run <command>` | Launch a command as a supervised agent |
+| `codex [--name <name>] [-- <codex options>]` | Start Codex in this terminal so AgentDocker can reach it: the same Codex and conversation, run through AgentDocker's launcher, so a message wakes it even while it is idle, and it can hold a role (`role --as <name> reviewer`, or the app's Roles menu) like an agent the app launched. The binary behind the `codex` on `PATH` is used; experimental |
 | `register` | Announce an already-running process as an agent |
 | `discover` | Agent processes nobody registered |
 | `adopt <pid>` | Register one of them; `--all` for all |
@@ -842,6 +843,12 @@ separate operation: stopping terminates managed agents.
 Newest first. Only what changes how the product is used.
 
 ### Unreleased
+
+- **Your own terminal's Codex can be the reviewer.** `agentdocker codex`
+  starts Codex in the terminal you are in, through AgentDocker's launcher:
+  messages wake it even while it is idle, and you can give it a role, such
+  as reviewer, like any agent. Codex's own options go after `--`. A plain
+  `codex` still works, but reads its messages only at its next prompt.
 
 - **A pairing code works once.** The connector's consent page now asks for the
   pairing code first and shows the projects to choose from only after it.

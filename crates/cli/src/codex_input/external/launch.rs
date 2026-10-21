@@ -46,6 +46,21 @@ pub struct Args {
     arguments: Vec<String>,
 }
 
+impl Args {
+    /// A launch of `program` in the current directory under the person's
+    /// own profile: what `agentdocker codex` starts.
+    pub fn new(program: PathBuf, name: Option<String>, arguments: Vec<String>) -> Self {
+        Self {
+            program,
+            profile: None,
+            cwd: None,
+            name,
+            resume: None,
+            arguments,
+        }
+    }
+}
+
 /// Remote resume restores the destination thread's permissions. Codex rejects
 /// direct permission overrides there; refuse them before creating an owner or
 /// provider rather than silently dropping a caller's requested restrictions.
