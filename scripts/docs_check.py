@@ -79,6 +79,9 @@ def is_colour(line, start, end):
     after = re.findall(r"[A-Za-z]+", line[end:])[:4]
     if before and before[-1].lower() in REFERENCE_CUES:
         return False
+    # The next of a list of references is one too: `#403 and #404`.
+    if re.search(r"#\d+\s*,?\s*(?:and|or)\s*$", line[:start], re.IGNORECASE):
+        return False
     return any(COLOUR_WORDS.fullmatch(word) for word in before + after)
 
 

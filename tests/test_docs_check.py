@@ -31,6 +31,9 @@ class Specifics(unittest.TestCase):
         self.assertEqual(kinds("The colour is fixed, see #123456 and #12345."),
                          ["a pull request or issue number"] * 2)
         self.assertEqual(kinds("The background scan was fixed in #403."), ["a pull request or issue number"])
+        for line in ("See #403 and #404 for background changes.", "Fixed background scan in #403, #404 or #405."):
+            with self.subTest(line=line):
+                self.assertEqual(len(kinds(line)), line.count("#"))
         self.assertEqual(kinds("Use #000000 for black; the fix is in #123456."), ["a pull request or issue number"])
         self.assertEqual(set(kinds(r"An escaped \` is printed, then 21 October 2026, then another \`.")), {"a date"})
         self.assertEqual(kinds("Source `10b57894` passed."), ["a commit"])
