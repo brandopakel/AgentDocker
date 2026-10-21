@@ -1344,8 +1344,8 @@ mod tests {
     /// when it is not.
     #[test]
     fn usage_rows_name_what_they_can() {
-        let names = [("abc123".to_owned(), "codex-96813".to_owned())].into();
-        assert_eq!(super::usage_key(Some("abc123"), &names), "codex-96813");
+        let names = [("abc123".to_owned(), "codex-4242".to_owned())].into();
+        assert_eq!(super::usage_key(Some("abc123"), &names), "codex-4242");
         assert_eq!(super::usage_key(Some("gone"), &names), "gone");
         assert_eq!(super::usage_key(None, &names), "(unattributed)");
     }

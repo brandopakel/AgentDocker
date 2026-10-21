@@ -195,7 +195,7 @@ mod tests {
         let record = FunnelRecord {
             pid: std::process::id(),
             https_port: 443,
-            target: "127.0.0.1:62800".into(),
+            target: "127.0.0.1:8765".into(),
         };
         write_funnel(home.path(), &record).unwrap();
         assert_eq!(read_funnel(home.path()), Some(record.clone()));

@@ -8010,15 +8010,15 @@ pub(crate) mod tests {
             agentdocker_core::agent::GENERATED_NAME.into(),
         );
         // An older record: only the exact adapter form from its own pid.
-        let by_pid = record("codex-51242", "codex", Some(51242));
+        let by_pid = record("codex-4242", "codex", Some(4242));
         let mut by_session = record("claude-5e55a0d1", "claude-code", None);
         by_session.spec.labels.insert(
             "session_id".into(),
             "5e55a0d1-7c3b-4f2e-9a61-0b4d2c8e7f13".into(),
         );
         // Chosen names that merely look like identifiers stay as chosen.
-        let chosen_hex = record("codex-cafe", "codex", Some(51242));
-        let chosen_pid_elsewhere = record("codex-51242", "codex", Some(999));
+        let chosen_hex = record("codex-cafe", "codex", Some(4242));
+        let chosen_pid_elsewhere = record("codex-4242", "codex", Some(999));
         let chosen = record("reviewer", "codex", Some(1));
         app.agents = vec![
             labelled.clone(),
@@ -8032,7 +8032,7 @@ pub(crate) mod tests {
         assert!(app.display_name(&by_pid).starts_with("Codex"));
         assert!(app.display_name(&by_session).starts_with("Claude Code · "));
         assert_eq!(app.display_name(&chosen_hex), "codex-cafe");
-        assert_eq!(app.display_name(&chosen_pid_elsewhere), "codex-51242");
+        assert_eq!(app.display_name(&chosen_pid_elsewhere), "codex-4242");
         assert_eq!(app.display_name(&chosen), "reviewer");
     }
 
@@ -8377,7 +8377,7 @@ pub(crate) mod tests {
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         let now = Utc::now();
-        let mut first = record("codex-5124", "codex", Some(5124));
+        let mut first = record("codex-1111", "codex", Some(1111));
         first.id = agentdocker_core::AgentId::from("6f1c2a9b3d7e4c5f8a0b1c2d3e4f5a6b");
         first.created_at = now;
         first.vcs = Some(agentdocker_core::VcsState {
@@ -8386,7 +8386,7 @@ pub(crate) mod tests {
             dirty: None,
             updated_at: now,
         });
-        let mut second = record("codex-6250", "codex", Some(6250));
+        let mut second = record("codex-2222", "codex", Some(2222));
         second.id = agentdocker_core::AgentId::from("9b8a7c6d5e4f40312a1b2c3d4e5f6a7b");
         second.created_at = now + chrono::Duration::seconds(1);
         app.agents = vec![second.clone(), first.clone()];

@@ -463,8 +463,8 @@ pub const NAME_LABEL: &str = "name";
 /// The value of [`NAME_LABEL`] for a made-up name.
 pub const GENERATED_NAME: &str = "generated";
 /// The value of [`NAME_LABEL`] for a name a person chose with `rename`. It
-/// overrides every inference from the name's shape: `codex-96813` chosen for
-/// the process 96813 is a chosen name, not the adapter's.
+/// overrides every inference from the name's shape: `codex-4242` chosen for
+/// the process 4242 is a chosen name, not the adapter's.
 pub const CHOSEN_NAME: &str = "chosen";
 
 /// Label the remote connector puts on the browser agent it registers
@@ -783,7 +783,7 @@ mod tests {
         let registered = chrono::DateTime::from_timestamp(1_000_000, 0).unwrap();
         let mut browser = AgentRecord::new(
             AgentSpec {
-                name: "chatgpt-browser-nsq1".into(),
+                name: "chatgpt-browser-ab12".into(),
                 runtime: "chatgpt-browser".into(),
                 labels: BTreeMap::from([
                     (CONNECTOR_LABEL.into(), "true".into()),

@@ -816,7 +816,7 @@ mod tests {
         let serving = Serving {
             pid: 4242,
             public_url: "https://x.trycloudflare.com".into(),
-            bind: "127.0.0.1:62800".into(),
+            bind: "127.0.0.1:8765".into(),
             default_project: Some("/Users/p/orchard".into()),
             pairing_code: "ABCD-EFGH".into(),
             started_at: chrono::Utc::now(),

@@ -1152,8 +1152,8 @@ impl Daemon {
     /// Fold what an MCP server registered for Codex's detached app-server
     /// into the Codex session it serves: the app-server is the process a
     /// Codex terminal session runs its MCP servers under, never a session of
-    /// its own — one Codex session counted twice (`codex-88774`, the
-    /// app-server, beside `codex-88544`, the session). Registration refuses
+    /// its own — one Codex session counted twice (`codex-7002`, the
+    /// app-server, beside `codex-7001`, the session). Registration refuses
     /// such a pid now and a current MCP server never asks, but a record made
     /// before either stays live as long as the app-server does, and the MCP
     /// server that made it still calls under its id. So it is folded, not

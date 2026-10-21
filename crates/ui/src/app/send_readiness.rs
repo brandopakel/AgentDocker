@@ -266,7 +266,7 @@ mod tests {
         agent
             .spec
             .labels
-            .insert("session_id".into(), "3ebbfa91-6e52".into());
+            .insert("session_id".into(), "1a2b3c4d-5e6f".into());
         agent
     }
 

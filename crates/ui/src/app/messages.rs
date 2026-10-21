@@ -1914,12 +1914,12 @@ mod tests {
     fn a_mention_is_offered_while_typed_and_finished_when_picked() {
         assert_eq!(mention_prefix("ask @co"), Some("co"));
         assert_eq!(mention_prefix("ask @"), Some(""));
-        assert_eq!(mention_prefix("ask @codex-51242 to"), None);
+        assert_eq!(mention_prefix("ask @codex-4242 to"), None);
         assert_eq!(mention_prefix("mail a@b"), None);
         assert_eq!(mention_prefix(""), None);
         assert_eq!(
-            complete_mention("ask @co", "codex-51242"),
-            "ask @codex-51242 "
+            complete_mention("ask @co", "codex-4242"),
+            "ask @codex-4242 "
         );
         assert_eq!(complete_mention("@", "user"), "@user ");
     }

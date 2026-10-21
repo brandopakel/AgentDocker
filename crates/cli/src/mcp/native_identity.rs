@@ -842,7 +842,7 @@ mod tests {
         use crate::client::mock::Mock;
         let now = Utc::now();
         let terminal = ProcessIdentity {
-            pid: 80494,
+            pid: 4243,
             started_at: now,
         };
         // The daemon answers with the keyed record, the terminal joined.
@@ -873,7 +873,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             &backend.requests()[1],
-            Request::Register { spec, pid: Some(80494), .. }
+            Request::Register { spec, pid: Some(4243), .. }
                 if spec.labels.get(agentdocker_core::agent::PROFILE_LABEL).map(String::as_str)
                     == Some("/profile")
                     && spec.labels.get("session_id").map(String::as_str) == Some("root-thread")
@@ -885,7 +885,7 @@ mod tests {
         use crate::client::mock::Mock;
         let now = Utc::now();
         let terminal = ProcessIdentity {
-            pid: 80494,
+            pid: 4243,
             started_at: now,
         };
         let checkout = Path::new("/project");
@@ -917,9 +917,9 @@ mod tests {
 
         // A record without its conversation learns it; the daemon folds it
         // into the record that held the conversation before.
-        let folded = record("codex-12856", Some("root-thread"));
+        let folded = record("codex-4244", Some("root-thread"));
         let backend = Mock::with(vec![
-            listed(vec![record("codex-release", None)]),
+            listed(vec![record("codex-sample", None)]),
             Response::Agent {
                 agent: folded.clone(),
             },
@@ -930,14 +930,14 @@ mod tests {
         assert_eq!(bound.id, folded.id);
         assert!(matches!(
             &backend.requests()[1],
-            Request::Register { spec, pid: Some(80494), session: None }
-                if spec.name == "codex-release"
+            Request::Register { spec, pid: Some(4243), session: None }
+                if spec.name == "codex-sample"
                     && spec.labels.get("session_id").map(String::as_str) == Some("root-thread")
         ));
 
         // An adopted terminal joins as its own registration, not adopted
         // again, which the daemon would refuse for a registered process.
-        let mut adopted = record("codex-release", None);
+        let mut adopted = record("codex-sample", None);
         adopted.spec.labels.insert("adopted".into(), "true".into());
         let backend = Mock::with(vec![
             listed(vec![adopted]),
@@ -955,7 +955,7 @@ mod tests {
 
         // Already bound: nothing is registered.
         let backend = Mock::with(vec![listed(vec![record(
-            "codex-release",
+            "codex-sample",
             Some("root-thread"),
         )])]);
         bind_terminal(&backend, &terminal, "root-thread", checkout, None)
@@ -967,7 +967,7 @@ mod tests {
         let backend = Mock::with(vec![
             listed(vec![]),
             Response::Agent {
-                agent: record("codex-80494", Some("root-thread")),
+                agent: record("codex-4243", Some("root-thread")),
             },
         ]);
         bind_terminal(&backend, &terminal, "root-thread", checkout, None)
@@ -975,12 +975,12 @@ mod tests {
             .unwrap();
         assert!(matches!(
             &backend.requests()[1],
-            Request::Register { spec, .. } if spec.name == "codex-80494"
+            Request::Register { spec, .. } if spec.name == "codex-4243"
         ));
 
         // Bound to another conversation, or answered with a record that is
         // not this terminal's: refused.
-        let backend = Mock::with(vec![listed(vec![record("codex-release", Some("other"))])]);
+        let backend = Mock::with(vec![listed(vec![record("codex-sample", Some("other"))])]);
         assert!(
             bind_terminal(&backend, &terminal, "root-thread", checkout, None)
                 .await
