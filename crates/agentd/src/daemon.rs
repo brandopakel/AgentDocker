@@ -234,6 +234,7 @@ fn mutates(request: &Request) -> bool {
             | Request::Validations { .. }
             | Request::WorktreeDiff { .. }
             | Request::ReviewBranch { .. }
+            | Request::ReviewGate { .. }
             | Request::List { .. }
             | Request::Inspect { .. }
             | Request::Changes { .. }
@@ -2914,6 +2915,31 @@ impl Daemon {
                 verdict,
                 note,
             } => self.review(&agent, &channel, of, &verdict, note),
+            Request::CodeVerdict {
+                agent,
+                project,
+                branch,
+                head,
+                from,
+                verdict,
+                findings,
+                note,
+            } => {
+                self.code_verdict(
+                    &agent, project, &branch, &head, from, &verdict, findings, note,
+                )
+                .await
+            }
+            Request::ReviewGate {
+                agent,
+                project,
+                branch,
+                head,
+                role,
+            } => {
+                self.review_gate(agent.as_deref(), project, &branch, &head, role)
+                    .await
+            }
             Request::JournalPrune {
                 project,
                 before_seq,

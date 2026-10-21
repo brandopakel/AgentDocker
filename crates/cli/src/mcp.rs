@@ -964,6 +964,14 @@ impl<B: Backend> McpServer<B> {
                 )
                 .await
             }
+            "review_verdict" => {
+                self.forward(tagged_request(arguments, "code_verdict", &me)?)
+                    .await
+            }
+            "review_gate" => {
+                self.forward(tagged_request(arguments, "review_gate", &me)?)
+                    .await
+            }
             "open_channel" | "close_channel" | "request_review" | "review" => {
                 let op = match name {
                     "open_channel" => "channel_open",
@@ -2130,6 +2138,9 @@ fn annotations(name: &str) -> Value {
         | "put_file" | "link_file" => (false, false, false, false),
         // Changes files in a checkout: an uncommitted merge.
         "integrate_worktree" => (false, true, false, false),
+        // The gate is a reading; a verdict is one more word on record.
+        "review_gate" => (true, false, true, false),
+        "review_verdict" => (false, false, false, false),
         // Runs whatever command it is given.
         "validate" => (false, true, false, true),
         _ => (false, true, false, true),
@@ -2232,6 +2243,47 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "note": { "type": "string" }
                 },
                 "required": ["channel", "verdict"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "review_verdict",
+            "description": "Give your verdict on a branch at the exact commit you read: `approve` (no P1 findings), `changes`, or `comment`. It counts at the review gate for the roles the person gave you, and only for that commit: any later commit, a merge included, needs your word again. Name the earlier commit in `from` when you read only what came after it. Say what you checked in the note.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "branch": { "type": "string" },
+                    "head": { "type": "string", "description": "Full id of the commit you read (40 or 64 hex digits)." },
+                    "from": { "type": "string", "description": "Full id of the commit an earlier review read." },
+                    "verdict": { "type": "string", "enum": ["approve", "changes", "comment"] },
+                    "findings": {
+                        "type": "object",
+                        "properties": {
+                            "p1": { "type": "integer", "minimum": 0 },
+                            "p2": { "type": "integer", "minimum": 0 },
+                            "p3": { "type": "integer", "minimum": 0 }
+                        },
+                        "additionalProperties": false
+                    },
+                    "note": { "type": "string" },
+                    "project": { "type": "string", "description": "Omit for your own project." }
+                },
+                "required": ["branch", "head", "verdict"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "review_gate",
+            "description": "Whether a branch may land at a commit: approved at exactly that commit by a holder of `role` (default `reviewer`) or the person, with nobody asking for changes. `stale` means the approval read an earlier commit.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "branch": { "type": "string" },
+                    "head": { "type": "string", "description": "Full commit id." },
+                    "role": { "type": "string" },
+                    "project": { "type": "string", "description": "Omit for your own project." }
+                },
+                "required": ["branch", "head"],
                 "additionalProperties": false
             }
         }),
@@ -3524,6 +3576,8 @@ mod tests {
                 "open_channel",
                 "request_review",
                 "review",
+                "review_verdict",
+                "review_gate",
                 "close_channel",
                 "overlap",
                 "list_handoffs",

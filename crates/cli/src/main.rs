@@ -10,6 +10,7 @@ mod connector;
 mod desktop;
 mod emission;
 mod format;
+mod gate;
 mod hooks;
 mod input_status;
 mod mcp;
@@ -464,6 +465,10 @@ enum Command {
         /// What you want to say.
         note: Option<String>,
     },
+    /// Give your verdict on a branch at the commit you read. An approval counts at the gate for the roles you hold; any later commit makes it stale.
+    Verdict(gate::VerdictArgs),
+    /// Whether a pull request or branch may land: approved at its head as it is now. Exits 1 when not.
+    Gate(gate::GateArgs),
     /// The agent tools installed on this machine — CLI, version, apps — and whether AgentDocker is wired into each.
     Runtimes,
     /// Open the desktop app: a native window over the same socket, showing agents, runtimes, the journal, leases and events.
@@ -3615,6 +3620,12 @@ async fn run() -> Result<()> {
             };
             if let Response::Channel { channel } = client.call(&request).await? {
                 print_reviews(&client, &channel).await?;
+            }
+        }
+        Command::Verdict(args) => gate::verdict(&client, args).await?,
+        Command::Gate(args) => {
+            if !gate::gate(&client, args).await? {
+                std::process::exit(1);
             }
         }
         Command::Runtimes => {

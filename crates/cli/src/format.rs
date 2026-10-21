@@ -675,6 +675,17 @@ pub fn event_line(event: &Event) -> String {
             by.short(),
             of.short()
         ),
+        EventKind::CodeVerdictGiven {
+            branch,
+            head,
+            by,
+            verdict,
+            ..
+        } => format!(
+            "verdict          {} {verdict} on {branch} at {}",
+            by.short(),
+            head.chars().take(8).collect::<String>()
+        ),
         EventKind::WatcherStarting => "watcher starting".to_owned(),
         EventKind::WatcherStarted => "watcher started".to_owned(),
         EventKind::WatcherUnavailable { reason } => format!("watcher unavailable ({reason})"),

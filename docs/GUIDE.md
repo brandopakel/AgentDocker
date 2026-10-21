@@ -580,6 +580,8 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one |
 | `review-request` / `review` | Ask for and give verdicts; requested changes block |
+| `verdict <branch> --head <commit> --approve\|--changes\|--comment [--from <commit>] [--findings P1,P2,P3] [note]` | Give your verdict on a branch at the commit you read; it counts for the roles you hold, and only for that commit |
+| `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: approved at its head as it is now (exit 0), else changes asked, stale (commits since the approval) or unreviewed (exit 1). `--publish` sets the `agentdocker/review` commit status on GitHub |
 | `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first |
 
 ### Containers
@@ -669,7 +671,7 @@ about us:
 `list_handoffs`
 
 `open_channel` · `list_channels` · `close_channel` · `request_review` ·
-`review`
+`review` · `review_verdict` · `review_gate`
 
 `contests` · `enter_contest` · `submit_entry`
 
@@ -880,6 +882,15 @@ Newest first. Only what changes how the product is used.
   minute and then go to it again, twice as long after each failed try and at
   most half an hour; the first turn that goes through ends it. Limits and
   sign-in problems still wait for the provider or for **Resume delivery**.
+
+- **A review counts for the commit it read.** A reviewer gives its verdict
+  on a branch at the exact commit it read (`agentdocker verdict`, or the
+  `review_verdict` tool), and `agentdocker gate <PR|branch>` says whether
+  the branch may land now: approved only at that commit. Any later commit,
+  a merge of main included, makes the approval stale until the reviewer
+  reads what came after. Whose word counts is a role you give
+  (`reviewer` by default); `--publish` also sets it as a GitHub commit
+  status that branch protection can require.
 
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or

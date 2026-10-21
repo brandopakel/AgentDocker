@@ -748,6 +748,14 @@ pub enum EventKind {
         of: AgentId,
         verdict: crate::Verdict,
     },
+    /// A reviewer gave its word on a branch at the commit it read.
+    CodeVerdictGiven {
+        project: ProjectId,
+        branch: String,
+        head: String,
+        by: AgentId,
+        verdict: crate::Verdict,
+    },
     /// A journal entry was appended to a project.
     JournalAppended {
         entry: JournalEntry,

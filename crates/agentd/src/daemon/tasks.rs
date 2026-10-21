@@ -18,6 +18,7 @@ mod catalog;
 mod plans;
 mod roles;
 mod rules;
+mod verdicts;
 
 const DOCUMENT: &str = "task";
 const BOARD: &str = "board";
