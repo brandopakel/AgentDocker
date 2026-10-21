@@ -56,7 +56,7 @@ pub struct GateArgs {
     agent: Option<String>,
     /// A pull request (`#402` or `402`, read with `gh`) or a branch.
     target: String,
-    /// The commit to ask about (default: the pull request's head, or the branch's on `origin`, else here).
+    /// The commit to ask about (default: the pull request's head, or the branch's head on `origin` now).
     #[arg(long)]
     head: Option<String>,
     /// Whose approvals count, besides the person's (default: `reviewer`).
@@ -170,10 +170,32 @@ fn branch_and_head(target: &str, head: Option<&str>) -> Result<(String, String)>
     }
     let head = match head {
         Some(head) => commit(head)?,
-        None => commit(&format!("refs/remotes/origin/{target}"))
-            .or_else(|_| commit(&format!("refs/heads/{target}")))?,
+        None => remote_head(target)?,
     };
     Ok((target.to_owned(), head))
+}
+
+/// The branch's head on `origin` as it is now, asked of the remote rather
+/// than read from a tracking ref a fetch may not have updated. Not found
+/// is an error, never a commit taken from somewhere else: name one with
+/// `--head` to ask about a branch `origin` does not have.
+fn remote_head(branch: &str) -> Result<String> {
+    let listed = tool(&[
+        "git",
+        "ls-remote",
+        "--end-of-options",
+        "origin",
+        &format!("refs/heads/{branch}"),
+    ])
+    .context("cannot ask origin for the branch's head; name the commit with --head")?;
+    let head = listed
+        .lines()
+        .find_map(|line| line.split_whitespace().next())
+        .filter(|commit| agentdocker_core::gate::full_commit(commit))
+        .with_context(|| {
+            format!("origin has no branch {branch}; name the commit to ask about with --head")
+        })?;
+    Ok(head.to_owned())
 }
 
 fn short(commit: &str) -> &str {
@@ -269,7 +291,10 @@ pub async fn verdict(client: &Client, args: VerdictArgs) -> Result<()> {
     let Response::CodeVerdict { verdict } = client.call(&request).await? else {
         bail!("the daemon did not record the verdict");
     };
-    println!(
+    // Its id, as every command that makes something says it; the rest is
+    // for the person reading.
+    println!("{}", verdict.id);
+    eprintln!(
         "{} {} at {}",
         verdict.verdict,
         verdict.branch,

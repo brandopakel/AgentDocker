@@ -61,6 +61,8 @@ impl Daemon {
         findings: Findings,
         note: Option<String>,
     ) -> Response {
+        // One spelling of each, checked and kept alike.
+        let (branch, head) = (branch.trim(), head.trim());
         let Some(word) = Verdict::parse(verdict) else {
             return Response::error(
                 ErrorCode::Invalid,
@@ -122,8 +124,8 @@ impl Daemon {
         let given = CodeVerdict {
             id: gate::verdict_id(at),
             project: project.clone(),
-            branch: branch.trim().to_owned(),
-            head: head.trim().to_owned(),
+            branch: branch.to_owned(),
+            head: head.to_owned(),
             from: from.map(|c| c.trim().to_owned()).filter(|c| !c.is_empty()),
             by: AgentId::from(actor.id.as_str()),
             by_name: record
@@ -440,17 +442,17 @@ mod tests {
             dirty: None,
             updated_at: Utc::now(),
         });
-        assert!(refused(
-            daemon
-                .handle(verdict(
-                    reviewer.id.as_str(),
-                    None,
-                    "feature/mine",
-                    A,
-                    "approve"
-                ))
-                .await,
-            ErrorCode::Invalid
-        ));
+        // However it is padded.
+        for own in ["feature/mine", " feature/mine", "feature/mine\t"] {
+            assert!(
+                refused(
+                    daemon
+                        .handle(verdict(reviewer.id.as_str(), None, own, A, "approve"))
+                        .await,
+                    ErrorCode::Invalid
+                ),
+                "{own:?}"
+            );
+        }
     }
 }
