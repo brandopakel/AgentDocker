@@ -133,7 +133,7 @@ impl Daemon {
             match read {
                 Ok(Some(own)) if own == branch => {
                     return Response::error(
-                        ErrorCode::Invalid,
+                        ErrorCode::Forbidden,
                         "an agent does not review its own branch",
                     );
                 }
@@ -750,7 +750,7 @@ mod tests {
                     daemon
                         .handle(verdict(reviewer.id.as_str(), None, own, A, "approve"))
                         .await,
-                    ErrorCode::Invalid
+                    ErrorCode::Forbidden
                 ),
                 "{own:?}"
             );
