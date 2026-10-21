@@ -54,6 +54,7 @@ pub mod humans;
 mod images;
 mod panes;
 mod pause;
+mod person;
 pub mod policies;
 mod provider;
 mod read_content;
@@ -317,6 +318,13 @@ pub struct Daemon {
     /// across an await.
     #[cfg(test)]
     relaunch_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// What was found of the processes that asked to act as the person.
+    /// Never held with the state lock.
+    peers: Mutex<person::Peers>,
+    /// Whether a request acting as the person is checked against the
+    /// process that sent it (`AGENTDOCKER_PERSON_CHECK=off` at start, for a
+    /// test harness's own daemon, turns it off).
+    person_check: bool,
 }
 
 /// Release the scan slot and wake joiners on completion or cancellation.
@@ -1720,6 +1728,8 @@ impl Daemon {
             transferred_exit: Notify::new(),
             #[cfg(test)]
             relaunch_hold: Mutex::new(None),
+            peers: Mutex::new(person::Peers::default()),
+            person_check: std::env::var_os("AGENTDOCKER_PERSON_CHECK").is_none_or(|v| v != "off"),
             scan_finished: Notify::new(),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),

@@ -136,7 +136,26 @@ fn transient_accept_failure(error: &io::Error) -> bool {
     ) || descriptors_exhausted(error)
 }
 
+/// A client's launch or registration never brings a role with it: roles
+/// are the person's to give (`role_assign`), and a spec is whatever the
+/// client wrote. A record keeps the roles it already holds.
+fn without_roles(request: &mut Request) {
+    if let Request::Run { spec }
+    | Request::RunContainer { spec, .. }
+    | Request::Register { spec, .. }
+    | Request::ResumeSession { spec, .. } = request
+    {
+        spec.labels.remove(agentdocker_core::agent::ROLE_LABEL);
+    }
+}
+
 async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
+    // Which process this is, as the kernel says, and when it was born:
+    // what a request claims about who sent it is checked against it, and a
+    // later process given the same pid is not taken for it.
+    let peer = agentdocker_host::ipc::peer_pid(&stream)
+        .ok()
+        .map(|pid| (pid, agentdocker_host::procinfo::start_time(pid)));
     let (read_half, mut writer) = stream.into_split();
     let mut reader = Reader::new(read_half);
 
@@ -165,8 +184,14 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
                 continue;
             }
         };
+        let mut request = frame.request;
+        without_roles(&mut request);
+        if let Some(refusal) = daemon.person_refusal(peer, &request).await {
+            write(&mut writer, &refusal).await?;
+            continue;
+        }
         // Streaming requests own the connection until it closes.
-        match frame.request {
+        match request {
             Request::Subscribe { agent, topics } => {
                 return stream_messages(&daemon, agent, topics, &mut reader, &mut writer).await;
             }
@@ -1178,6 +1203,40 @@ mod tests {
                 "owned terminal survived cleanup"
             );
             result.unwrap().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_client_launch_or_registration_brings_no_role() {
+        let spec = AgentSpec {
+            labels: [
+                ("role".to_owned(), "reviewer".to_owned()),
+                ("team".to_owned(), "a".to_owned()),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        for mut request in [
+            Request::Run { spec: spec.clone() },
+            Request::Register {
+                spec: spec.clone(),
+                pid: None,
+                session: None,
+            },
+            Request::ResumeSession {
+                agent: "a".into(),
+                spec: spec.clone(),
+            },
+        ] {
+            without_roles(&mut request);
+            let (Request::Run { spec }
+            | Request::Register { spec, .. }
+            | Request::ResumeSession { spec, .. }) = &request
+            else {
+                unreachable!()
+            };
+            assert!(!spec.labels.contains_key("role"));
+            assert_eq!(spec.labels["team"], "a", "other labels stay");
         }
     }
 
