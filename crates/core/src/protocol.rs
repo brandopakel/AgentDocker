@@ -1756,9 +1756,12 @@ pub enum Response {
         pid: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         started_at: Option<chrono::DateTime<chrono::Utc>>,
-        /// The process a handover in flight names as the next daemon.
+        /// The process a handover in flight names as the next daemon, and
+        /// its birth as read when it was named.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         successor: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        successor_started_at: Option<chrono::DateTime<chrono::Utc>>,
     },
     Agent {
         agent: AgentRecord,

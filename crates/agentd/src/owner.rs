@@ -871,21 +871,30 @@ async fn from_daemon(stream: &Stream, socket: &std::path::Path) -> bool {
     else {
         return false;
     };
-    (peer == pid && born.is_some() && (started_at.is_none() || born == started_at))
-        || successor == Some(peer)
+    born.is_some()
+        && ((peer == pid && (started_at.is_none() || born == started_at))
+            || successor == Some((peer, born)))
 }
 
 /// The daemon serving `socket`: its pid, birth and named successor. A
 /// daemon older than `daemon_process` answers `ping` with its pid alone.
-async fn serving(
-    socket: &std::path::Path,
-) -> Option<(u32, Option<chrono::DateTime<chrono::Utc>>, Option<u32>)> {
+type Born = Option<chrono::DateTime<chrono::Utc>>;
+
+async fn serving(socket: &std::path::Path) -> Option<(u32, Born, Option<(u32, Born)>)> {
     match ask(socket, "{\"op\":\"daemon_process\"}\n").await? {
         agentdocker_core::Response::DaemonProcess {
             pid,
             started_at,
             successor,
-        } => Some((pid, started_at, successor)),
+            successor_started_at,
+        } => Some((
+            pid,
+            started_at,
+            // A successor is named with its birth, or not at all.
+            successor
+                .zip(successor_started_at)
+                .map(|(pid, born)| (pid, Some(born))),
+        )),
         _ => match ask(socket, "{\"op\":\"ping\"}\n").await? {
             agentdocker_core::Response::Pong { pid, .. } => Some((pid?, None, None)),
             _ => None,
@@ -1310,6 +1319,18 @@ mod tests {
     use std::io::Write;
     use std::os::fd::OwnedFd;
 
+    /// The client half of `only_the_daemon_reaches_the_owner`, run by a
+    /// copy of this binary named `agentd`.
+    #[test]
+    #[ignore = "a child process of only_the_daemon_reaches_the_owner"]
+    fn connect_to_the_owner_and_wait() {
+        let Some(path) = std::env::var_os("AGENTDOCKER_TEST_OWNER_SOCKET") else {
+            return;
+        };
+        let _held = std::os::unix::net::UnixStream::connect(path).unwrap();
+        std::thread::sleep(Duration::from_secs(10));
+    }
+
     /// A process that reaches the owner's socket and is not the daemon is
     /// not let take the child over — a copy of a program named `agentd`
     /// included, with a daemon serving and with none; the owner's own
@@ -1327,27 +1348,44 @@ mod tests {
         );
         let daemon_listener = crate::server::bind(&daemon).await.unwrap();
         let serving_task = tokio::spawn(crate::server::serve(daemon.clone(), daemon_listener));
-        // A client that calls itself `agentd`.
-        let client = "import socket,sys,time\ns=socket.socket(socket.AF_UNIX)\ns.connect(sys.argv[1])\ntime.sleep(5)\n";
+        // A native program whose file is named `agentd`: this test binary,
+        // copied under that name, running the helper below.
+        let named = dir.path().join("agentd");
+        std::fs::copy(std::env::current_exe().unwrap(), &named).unwrap();
         for socket in [&absent, &daemon.socket] {
-            let mut named = std::process::Command::new("bash")
-                .arg("-c")
-                .arg("exec -a agentd python3 -c \"$0\" \"$1\"")
-                .arg(client)
-                .arg(&path)
+            let mut client = std::process::Command::new(&named)
+                .args([
+                    "--exact",
+                    "owner::tests::connect_to_the_owner_and_wait",
+                    "--ignored",
+                    "--quiet",
+                ])
+                .env("AGENTDOCKER_TEST_OWNER_SOCKET", &path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .spawn()
                 .unwrap();
-            let (stream, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+            let (stream, _) = tokio::time::timeout(Duration::from_secs(20), listener.accept())
                 .await
                 .expect("the client connects")
                 .unwrap();
+            let program = agentdocker_host::procinfo::executable_path_of(
+                agentdocker_host::ipc::peer_pid(&stream).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                program.file_stem().unwrap(),
+                "agentd",
+                "{}",
+                program.display()
+            );
             assert!(
                 !from_daemon(&stream, socket).await,
                 "a program named agentd, daemon at {}",
                 socket.display()
             );
-            let _ = named.kill();
-            let _ = named.wait();
+            let _ = client.kill();
+            let _ = client.wait();
         }
         let own = Stream::connect(&path);
         let (accepted, _held) = tokio::time::timeout(Duration::from_secs(10), async {
