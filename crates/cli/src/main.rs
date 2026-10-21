@@ -1010,6 +1010,14 @@ enum MemoryAction {
         /// The memory this one replaces.
         #[arg(long)]
         supersedes: Option<String>,
+        /// Said first in the profile, before the recent ones: a convention
+        /// or a decision rather than news.
+        #[arg(long)]
+        standing: bool,
+        /// No longer said after this: an RFC 3339 time, or a span from now
+        /// such as 90m, 12h, 7d or 2w.
+        #[arg(long, value_name = "WHEN", value_parser = parse_when)]
+        forget_after: Option<chrono::DateTime<chrono::Utc>>,
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -1745,6 +1753,31 @@ struct HandoffArgs {
 /// `kind:target` from the command line, checked for its kind's shape.
 fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
     agentdocker_core::Link::parse(text).map_err(str::to_owned)
+}
+
+/// A moment from the command line: an RFC 3339 time, or a span from now
+/// in minutes, hours, days or weeks (`90m`, `12h`, `7d`, `2w`).
+fn parse_when(text: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    if let Ok(when) = chrono::DateTime::parse_from_rfc3339(text) {
+        return Ok(when.with_timezone(&chrono::Utc));
+    }
+    let (count, unit) = text.split_at(text.len().saturating_sub(1));
+    let count: i64 = count
+        .parse()
+        .ok()
+        .filter(|count| *count > 0)
+        .ok_or_else(|| format!("{text:?} is neither an RFC 3339 time nor a span like 12h or 7d"))?;
+    let span = match unit {
+        "m" => chrono::Duration::try_minutes(count),
+        "h" => chrono::Duration::try_hours(count),
+        "d" => chrono::Duration::try_days(count),
+        "w" => chrono::Duration::try_weeks(count),
+        _ => None,
+    }
+    .ok_or_else(|| format!("{text:?}: a span is a number of m, h, d or w"))?;
+    chrono::Utc::now()
+        .checked_add_signed(span)
+        .ok_or_else(|| format!("{text:?} is too far away"))
 }
 
 #[derive(Args)]
@@ -2664,6 +2697,8 @@ async fn run() -> Result<()> {
                 MemoryAction::Add {
                     text,
                     supersedes,
+                    standing,
+                    forget_after,
                     project,
                     from,
                 } => {
@@ -2675,6 +2710,8 @@ async fn run() -> Result<()> {
                         text,
                         links: Vec::new(),
                         supersedes,
+                        standing,
+                        forget_after,
                     };
                     if let Response::Memory { memory } = client.call(&request).await? {
                         println!("{}", memory.id);
@@ -5894,6 +5931,26 @@ mod tests {
             .expect("a parsing thread")
             .join()
             .expect("parsing does not panic")
+    }
+
+    #[test]
+    fn a_moment_is_a_time_or_a_span_from_now() {
+        let now = chrono::Utc::now();
+        let week = parse_when("7d").unwrap();
+        assert!(
+            week > now + chrono::Duration::days(6)
+                && week <= chrono::Utc::now() + chrono::Duration::days(7)
+        );
+        assert!(parse_when("90m").unwrap() > now + chrono::Duration::minutes(89));
+        assert_eq!(
+            parse_when("2031-01-02T03:04:05+01:00").unwrap(),
+            "2031-01-02T02:04:05Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
+        );
+        for refused in ["", "d", "0d", "-3h", "5y", "soon", "99999999999999w"] {
+            assert!(parse_when(refused).is_err(), "{refused:?}");
+        }
     }
 
     #[test]

@@ -3716,6 +3716,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 text: text.clone(),
                 links: Vec::new(),
                 supersedes: None,
+                standing: false,
+                forget_after: None,
             }) {
                 Ok(Response::Memory { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),

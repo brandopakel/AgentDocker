@@ -1085,6 +1085,8 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         text: text.into(),
         links: vec![],
         supersedes,
+        standing: false,
+        forget_after: None,
     };
     let Response::Memory { memory: first } = d
         .handle(add(
@@ -1183,6 +1185,8 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
             text: "a fact of another project".into(),
             links: vec![],
             supersedes: None,
+            standing: false,
+            forget_after: None,
         })
         .await
     else {

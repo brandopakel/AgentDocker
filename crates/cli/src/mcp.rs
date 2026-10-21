@@ -2887,6 +2887,8 @@ fn bare_tool_definitions() -> Vec<Value> {
                 "properties": {
                     "content": { "type": "string", "maxLength": 2048 },
                     "supersedes": { "type": "string", "description": "The id of the memory this one replaces." },
+                    "standing": { "type": "boolean", "description": "Said first in the profile, before the recent ones: a convention or a decision rather than news." },
+                    "forget_after": { "type": "string", "format": "date-time", "description": "An RFC 3339 time after which it is no longer said." },
                     "links": { "type": "array", "maxItems": 8, "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
                 },
                 "required": ["content"],
@@ -2895,7 +2897,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "search_memory",
-            "description": "This project's memories that answer the words, the best first; superseded ones are left out.",
+            "description": "This project's memories that answer the words, the best first: whole words, the rarer ones counting for more, a newer memory winning a tie; superseded and expired ones are left out.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2908,7 +2910,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_profile",
-            "description": "What this project's agents should know first: its current memories, newest first.",
+            "description": "What this project's agents should know first: its standing memories, the oldest first, then the others, newest first.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
