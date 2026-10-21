@@ -653,28 +653,55 @@ fn default_name(id: &AgentId) -> String {
     format!("agent-{}", &id.as_str()[..6])
 }
 
-/// Once the stopped terminal program `pid` has gone, give its terminal
-/// back clean: the modes it set (mouse reporting above all) are turned off,
-/// but only while the shell that ran it still holds that terminal, so a
-/// device that has since gone to another window is never written to. Off
-/// the caller's thread; a program that outlives the wait is left alone.
+/// Where a stopped terminal program ran: its terminal, held open since
+/// before the signal, and the shell that started it, by pid and birth.
 #[cfg(unix)]
-fn restore_terminal_after(pid: u32, started: DateTime<Utc>, tty: String, shell: u32) {
+struct RanIn {
+    terminal: agentdocker_host::terminal::Pinned,
+    tty: String,
+    shell: u32,
+    shell_born: DateTime<Utc>,
+}
+
+/// Once the stopped terminal program `pid` has gone, give its terminal back
+/// clean: the modes it set (mouse reporting above all) are turned off. Only
+/// when the same shell (pid and birth) has its own job back in the
+/// terminal's foreground: a job it started next keeps its modes, and a
+/// terminal closed meanwhile has its device revoked, so nothing reaches
+/// another window. Off the caller's thread; a program that outlives the
+/// wait, or a shell that never takes the terminal back, is left alone.
+#[cfg(unix)]
+fn restore_terminal_after(pid: u32, started: DateTime<Utc>, mut ran: RanIn) {
     let _ = std::thread::Builder::new()
         .name("restore-terminal".into())
         .spawn(move || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while process_exists(pid) && same_process(pid, Some(started)) {
-                if std::time::Instant::now() >= deadline {
-                    return;
+            let wait_until = |seconds: u64, done: &mut dyn FnMut() -> bool| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+                loop {
+                    if done() {
+                        return true;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-                std::thread::sleep(std::time::Duration::from_millis(50));
+            };
+            if !wait_until(10, &mut || {
+                !(process_exists(pid) && same_process(pid, Some(started)))
+            }) {
+                return;
             }
-            if process_exists(shell)
-                && agentdocker_host::terminal::device_of(shell).as_deref() == Some(tty.as_str())
-                && let Err(error) = agentdocker_host::terminal::restore_modes(&tty)
+            let shell_is_back = wait_until(2, &mut || {
+                same_process(ran.shell, Some(ran.shell_born))
+                    && agentdocker_host::terminal::foreground_of(ran.shell)
+                        .is_some_and(|place| place.holds(&ran.tty))
+            });
+            if shell_is_back
+                && same_process(ran.shell, Some(ran.shell_born))
+                && let Err(error) = ran.terminal.restore_modes()
             {
-                debug!(%error, tty, "could not restore the stopped program's terminal");
+                debug!(%error, tty = ran.tty, "could not restore the stopped program's terminal");
             }
         });
 }
@@ -1344,7 +1371,14 @@ impl Daemon {
                             .and_then(|host| host.tty.clone())
                             .or_else(|| agentdocker_host::terminal::device_of(pid))?;
                         let shell = procinfo::inspect(pid)?.ppid;
-                        Some((tty, shell))
+                        let shell_born = procinfo::start_time(shell)?;
+                        let terminal = agentdocker_host::terminal::pin(&tty).ok()?;
+                        Some(RanIn {
+                            terminal,
+                            tty,
+                            shell,
+                            shell_born,
+                        })
                     })
                     .flatten();
                 let target = if record.managed && record.process_group == Some(pid) {
@@ -1367,8 +1401,8 @@ impl Daemon {
                         );
                     }
                 }
-                if let Some((tty, shell)) = restore {
-                    restore_terminal_after(pid, started, tty, shell);
+                if let Some(ran) = restore {
+                    restore_terminal_after(pid, started, ran);
                 }
             }
             #[cfg(windows)]

@@ -67,20 +67,29 @@ pub fn device_of(pid: u32) -> Option<String> {
     device(&output.stdout)
 }
 
-/// What a full-screen program turns on in its terminal and undoes on a
-/// clean exit: mouse reporting (every mode, every encoding), focus and
-/// bracketed-paste reports, application cursor keys and keypad, the
-/// keyboard protocol it pushed, the alternate screen, a hidden cursor and
-/// its colours.
-const RESTORE_MODES: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b>\x1b[<u\x1b[?1049l\x1b[?25h\x1b[0m";
+/// What a full-screen program turns on in its terminal that a shell at its
+/// prompt does not use: mouse reporting (every mode, every encoding), focus
+/// reports, the keyboard protocol it pushed, a hidden cursor. Turning these
+/// off never takes away the returning shell's own modes; bracketed paste,
+/// cursor-key and keypad modes and the alternate screen are the shell's to
+/// set at its prompt, and are left alone.
+const RESTORE_MODES: &[u8] =
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[<u\x1b[?25h";
 
-/// Undo, on `tty`, what a full-screen program ended by a signal had no
-/// chance to: without it a shell gets its terminal back still reporting
-/// every mouse move as typed text. Written as output to the device, never
-/// as input, so the shell reading it sees nothing. `tty` is a device path.
+/// A terminal held open from the moment a program on it is stopped, so what
+/// is written later reaches that terminal: when its window closes, the
+/// device is revoked and the write fails, never landing in a window that
+/// opened on the same path since.
 #[cfg(unix)]
-pub fn restore_modes(tty: &str) -> std::io::Result<()> {
-    use std::io::Write;
+pub struct Pinned {
+    device: std::fs::File,
+}
+
+/// Hold `tty` open, for writing only and never as a controlling terminal.
+/// Refused for anything but a terminal device.
+#[cfg(unix)]
+pub fn pin(tty: &str) -> std::io::Result<Pinned> {
+    use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
     if !tty.starts_with("/dev/") || tty.contains("..") {
         return Err(std::io::Error::new(
@@ -88,11 +97,69 @@ pub fn restore_modes(tty: &str) -> std::io::Result<()> {
             "not a terminal device",
         ));
     }
-    let mut device = std::fs::OpenOptions::new()
+    let device = std::fs::OpenOptions::new()
         .write(true)
         .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
         .open(tty)?;
-    device.write_all(RESTORE_MODES)
+    // SAFETY: `isatty` only reads the descriptor.
+    if unsafe { libc::isatty(device.as_raw_fd()) } != 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a terminal device",
+        ));
+    }
+    Ok(Pinned { device })
+}
+
+#[cfg(unix)]
+impl Pinned {
+    /// Undo what a full-screen program ended by a signal had no chance to:
+    /// without it a shell gets its terminal back still reporting every mouse
+    /// move as typed text. Written as output, so the shell reads nothing.
+    pub fn restore_modes(&mut self) -> std::io::Result<()> {
+        std::io::Write::write_all(&mut self.device, RESTORE_MODES)
+    }
+}
+
+/// A process's place on its terminal, as `ps` reports it: its own process
+/// group, the group in the terminal's foreground, and the terminal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Foreground {
+    pub pgid: u32,
+    pub tpgid: u32,
+    pub tty: String,
+}
+
+impl Foreground {
+    /// Whether the process's own job is the one in the foreground of `tty`:
+    /// a shell has its terminal back, and no job it started holds it.
+    pub fn holds(&self, tty: &str) -> bool {
+        self.tty == tty && self.pgid != 0 && self.pgid == self.tpgid
+    }
+}
+
+/// Where `pid` stands on its terminal, or `None` for a process without one.
+pub fn foreground_of(pid: u32) -> Option<Foreground> {
+    let output = crate::command::run(
+        Path::new("/"),
+        &[
+            "ps".into(),
+            "-p".into(),
+            pid.to_string(),
+            "-o".into(),
+            "pgid=,tpgid=,tty=".into(),
+        ],
+        Duration::from_secs(3),
+    )
+    .ok()?;
+    if !output.success {
+        return None;
+    }
+    let mut fields = output.stdout.split_whitespace();
+    let pgid = fields.next()?.parse().ok()?;
+    let tpgid = fields.next()?.parse().ok()?;
+    let tty = device(fields.next()?)?;
+    Some(Foreground { pgid, tpgid, tty })
 }
 
 #[cfg(all(test, unix))]
@@ -100,12 +167,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_device_has_its_modes_restored() {
-        for path in ["", "relative", "/etc/passwd/../dev/x", "/tmp/not-a-device"] {
-            assert!(restore_modes(path).is_err(), "{path}");
+    fn only_a_terminal_device_is_pinned() {
+        for path in [
+            "",
+            "relative",
+            "/etc/passwd/../dev/x",
+            "/tmp/not-a-device",
+            "/dev/null",
+        ] {
+            assert!(pin(path).is_err(), "{path}");
         }
-        // Writing to the null device stands in for a terminal.
-        restore_modes("/dev/null").unwrap();
+    }
+
+    #[test]
+    fn a_shell_holds_its_terminal_only_while_its_own_job_is_in_front() {
+        let shell = |tpgid| Foreground {
+            pgid: 400,
+            tpgid,
+            tty: "/dev/ttys002".into(),
+        };
+        assert!(shell(400).holds("/dev/ttys002"), "back at its prompt");
+        assert!(
+            !shell(512).holds("/dev/ttys002"),
+            "a job it started next holds the terminal"
+        );
+        assert!(!shell(400).holds("/dev/ttys003"), "another terminal");
+        assert!(
+            !Foreground {
+                pgid: 0,
+                tpgid: 0,
+                tty: "/dev/ttys002".into()
+            }
+            .holds("/dev/ttys002")
+        );
+        assert!(
+            !String::from_utf8_lossy(RESTORE_MODES).contains("?2004l")
+                && !String::from_utf8_lossy(RESTORE_MODES).contains("?1049l"),
+            "the shell's own modes are left alone"
+        );
     }
 
     #[test]
