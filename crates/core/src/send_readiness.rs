@@ -22,6 +22,12 @@ pub struct RecipientReadiness {
     pub issue: SendIssue,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_session: Option<String>,
+    /// A Claude resume command can be written for it (a session and a
+    /// folder to resume in), so a short hint may point at one. Read off
+    /// the record here, never sent: a readiness from the wire points at
+    /// no command.
+    #[serde(skip)]
+    pub resumable: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -106,6 +112,7 @@ impl RecipientReadiness {
             runtime: String::new(),
             issue: SendIssue::UnknownSession,
             resume_session: None,
+            resumable: false,
         }
     }
 
@@ -133,6 +140,7 @@ impl RecipientReadiness {
         };
         let resume_session = session_word(agent).map(str::to_owned);
         Some(Self {
+            resumable: claude_resume_command(agent, false).is_some(),
             agent: agent.id.clone(),
             name: plain(&agent.spec.name, 80),
             runtime: plain(&agent.spec.runtime, 40),
@@ -150,16 +158,16 @@ impl RecipientReadiness {
             SendIssue::Unknown | SendIssue::UnknownSession => "Check it before sending again.",
             SendIssue::ProviderBlocked(_) => "Resume delivery once the provider is back.",
             SendIssue::DeliveryPaused => "Review its delivery before reconnecting it.",
-            SendIssue::SessionEnded if claude && self.resume_session.is_some() => {
+            SendIssue::SessionEnded if claude && self.resumable => {
                 "Run this in a terminal to bring it back."
             }
             SendIssue::SessionEnded => "Its messages wait until it is resumed.",
-            SendIssue::Unreachable if claude && self.resume_session.is_some() => {
+            SendIssue::Unreachable if claude && self.resumable => {
                 "It never reached AgentDocker; run this to restart it."
             }
             SendIssue::Unreachable => "It never reached AgentDocker; its messages are kept.",
             SendIssue::NoReceiver | SendIssue::ReceiverSilent if claude => {
-                if self.resume_session.is_some() {
+                if self.resumable {
                     "Quit it, then run this in a terminal."
                 } else {
                     "Restart it with the AgentDocker channel."
@@ -380,6 +388,7 @@ mod tests {
                         name: "a".into(),
                         runtime: runtime.into(),
                         issue,
+                        resumable: resume_session.is_some(),
                         resume_session,
                     }
                     .hint();
@@ -454,6 +463,24 @@ mod tests {
             assert_eq!(readiness.details[0].issue, expected);
             assert!(!readiness.details[0].guidance().is_empty());
         }
+    }
+
+    #[test]
+    fn an_ended_claude_session_with_no_folder_is_never_told_to_run_a_command() {
+        let mut ended = agent("claude-code");
+        ended.status = AgentStatus::Exited { code: Some(0) };
+        ended.spec.labels.insert(
+            "session_id".into(),
+            "0b5c5e2e-0000-4000-8000-000000000001".into(),
+        );
+        let readiness = RecipientReadiness::for_agent(&ended, ended.created_at, None).unwrap();
+        assert_eq!(readiness.issue, SendIssue::SessionEnded);
+        assert!(!readiness.resumable, "no folder, no command");
+        assert_eq!(readiness.hint(), "Its messages wait until it is resumed.");
+        ended.spec.workdir = Some("/p/orchard".into());
+        let readiness = RecipientReadiness::for_agent(&ended, ended.created_at, None).unwrap();
+        assert!(readiness.resumable);
+        assert_eq!(readiness.hint(), "Run this in a terminal to bring it back.");
     }
 
     fn agent(runtime: &str) -> AgentRecord {

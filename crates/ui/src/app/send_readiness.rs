@@ -153,7 +153,9 @@ pub(super) fn reconnect(
             | agentdocker_core::SendIssue::Unreachable
             | agentdocker_core::SendIssue::SessionEnded
     );
-    let command = restart
+    // The hint says a command when `resumable` does; the command is shown
+    // on the same condition, so the two never disagree.
+    let command = (restart && issue.resumable)
         .then(|| agentdocker_core::send_readiness::claude_resume_command(agent, cfg!(windows)))
         .flatten();
     if let Some(command) = command {
