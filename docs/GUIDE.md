@@ -14,7 +14,7 @@ If you want the reasoning instead of the instructions, read
 - [MCP tools](#mcp-tools)
 - [Hooks](#hooks)
 - [Tutorials](#tutorials)
-- [What changed](#what-changed)
+- [Behaviour by area](#behaviour-by-area)
 
 ---
 
@@ -511,7 +511,7 @@ A successful `send` prints the message ID on stdout. Acceptance and recipient
 warnings go to stderr: a queued message can still be waiting for another prompt
 in a session without an input receiver. `agentdocker ps --input-details` names
 these sessions and gives reconnect guidance; it does not restart them. Provider
-limits remain separate from receiver health.
+limits remain separate from receiver health. When the daemon does not report readiness, `send` prints `recipient input readiness unavailable from this daemon` rather than imply that every recipient can wake.
 
 For an existing Claude session with no channel, save the current work, exit that
 Claude session, and either press **Reconnect here** in the app's session Details,
@@ -861,80 +861,11 @@ sending; a missing acknowledgement never restores the answer or resubmits it.
 
 ---
 
-## What changed
+## Behaviour by area
 
-Newest first. Only what changes how the product is used.
+Current behaviour that the sections above do not already state, by area.
 
-### Unreleased
-
-- **An idle daemon rests.** With nothing watching — no app open, no
-  `agentdocker events`, no webhook — the daemon does not scan the process
-  table periodically; `agentdocker ps` and the app scan when they look. The
-  file watcher's drain runs only while changes wait to be recorded, and the
-  usage worker waits between collections in one-second steps.
-
-- **Choose the model and effort.** Launching Claude or Codex from the app
-  offers **Model** and **Effort**, starting at the provider's own defaults,
-  and a session's panel says which it runs (`<model> · <effort>`).
-
-- **Stopping a terminal agent leaves its terminal clean.** Stopping a Codex
-  or Claude you started in your own terminal turns mouse-reporting modes off
-  once the program has exited. In a tab left reporting every mouse move as
-  typed text, type `reset`.
-
-- **A pairing code works once.** The connector's consent page asks for the
-  pairing code first and shows the projects to choose from only after it.
-  Each code opens one consent, so connecting a second browser means reading
-  the new code from `agentdocker connector status` or the Tools screen.
-  A source that types five wrong codes waits a quarter of an hour, and a code
-  guessed at twenty times is replaced. A service's log does not record the
-  code. A connector that crashes leaves no Tailscale Funnel open: the next
-  start clears it.
-
-- **Project memory.** Agents and you can keep short facts for a project —
-  a convention, a decision, where something lives — with `add_memory` or
-  `agentdocker memory add`. Every new session in the project is told them,
-  newest first. A memory that is no longer true is replaced
-  (`--supersedes`) or forgotten. It stays on this machine; anything that
-  looks like a secret is refused. To keep a copy in Supermemory as well,
-  name the projects and a key file under `[memory.supermemory]` in
-  `agentd.toml` (off unless you turn it on; the hosted service is
-  Supermemory's, on its terms).
-
-- **A Codex started in a terminal is itself.** A plain `codex` in a terminal
-  has its own record, by its thread: its AgentDocker tools work as it, and
-  its messages reach it at its next prompt. It cannot be woken while idle; a
-  Codex launched from AgentDocker can.
-
-- **Your own terminal's Codex can be the reviewer.** `agentdocker codex`
-  starts Codex in the terminal you are in, through AgentDocker's launcher:
-  messages wake it even while it is idle, and you can give it a role, such
-  as reviewer, like any agent. Codex's own options go after `--`. A plain
-  `codex` still works, but reads its messages only at its next prompt.
-
-- **Roles in the app.** In a session's panel, **Roles** gives an agent roles
-  from its project's palette, several to an agent and one role to several
-  agents; they show as coloured labels after its name. **Edit roles…** in the
-  same menu recolours, deletes or adds a project's roles. Nothing gets a role
-  unless you give it one.
-
-- **Allow for session.** A Codex approval that Codex offers to remember has a
-  third answer beside **Allow once** and **Deny**: **Allow for session** lets the
-  same command, network destination, files or access through without asking
-  until that Codex session ends (`agentdocker answer <id> "Allow for session"`
-  from the command line). Offered only where Codex offers it.
-
-- **Take AgentDocker out of your tools.** `agentdocker setup --remove` removes
-  its MCP entries, hooks, skills, OpenCode plugin and shell block from every
-  tool, only the entries that run AgentDocker, with nothing else in those files
-  touched; `setup --undo <id>` puts them back. Run it before
-  `desktop uninstall`.
-
-- **A provider outage does not stop an agent for good.** When a provider's
-  servers fail (overloaded, unreachable), the agent's queued messages wait a
-  minute and then go to it again, twice as long after each failed try and at
-  most half an hour; the first turn that goes through ends it. Limits and
-  sign-in problems wait for the provider or for **Resume delivery**.
+### Board, plans and files
 
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or
@@ -952,6 +883,7 @@ Newest first. Only what changes how the product is used.
   tag and agent filters, board shortcuts, and opening, copying and adding
   links. Browser agents can read the board, plans and comment on cards.
 
+
 - **A full board, for agents.** A board is lanes you name, each with
   a category (Backlog, Ready, In progress, Review, Blocked, Done, Cancelled),
   whose turn it is (anyone, you, an agent, or a role) and an optional limit;
@@ -966,154 +898,18 @@ Newest first. Only what changes how the product is used.
   board files with a line at a lane's foot, moves by drag, and opens a card
   in place.
 
-- **Text only where it is a name.** The desktop says state with marks, dots,
-  rings and meters, named for screen readers and in tooltips; it has no
-  sentences under headings, empty-state captions, key footers or section
-  intros. It is set in IBM Plex Sans, with an ink primary action.
 
-- **Only you act as you.** A command or tool that acts as you — gives a
-  role, answers a question or an approval, pauses a project, merges —
-  is refused when it comes from inside an agent's session, whatever it
-  says about who sent it: the daemon checks which process is asking. Run
-  those from your own terminal or the app. A launch does not carry a
-  role in: `agentdocker run --label role=…` and an Agentfile's
-  `labels = { role = … }` give the roles after the launch, as you.
+### Messaging and delivery
 
-- **A quieter, neutral desktop.** The sidebar is neutral, one step off the
-  page, in both appearances; colour is kept for state and the one primary
-  action. Every agent row is one line that leads with one glyph for where the
-  agent stands — the same function decides it in the chat, the session list
-  and the rail — and prints a word only when it calls for you. The project
-  header keeps **Launch agent…** as its one labelled button; Pause, the
-  terminal and Open in are icons named in their tooltips. A project's rail row
-  shows its loudest agent's glyph and a number only for agents that need you.
-  **Launch agent…** starts from what the agent should work on, sent as its
-  first message; its name and arguments are under **More options**.
-  Command/Ctrl+Shift+U goes to the next agent that needs you. The
-  background-service notice is one quiet line until you act on it.
+- Conversations: every message is archived in the one conversation its
+  destination names (`everyone:<project>`, `all`, `channel:<id>`,
+  `dm:<a>:<b>`, `notices:<agent>`), beside the queue it is delivered to and
+  never instead of it, bounded by a per-conversation cap and `[messages]
+  retention`. `conversations` lists them with unread counts per reader,
+  `history` reads one back with reply counts, `thread` a root and its
+  replies, `search` finds text; reading moves a cursor forward, never back.
+  Channels get a `#name`; a person is not put in a collision room.
 
-- **Changes hands repairs to the agent.** **Ask <agent> to commit**, **Ask
-  <agent> to resolve** (naming the conflicting files) and **Ask <agent> to fix
-  checks** send the words to the agent in one click; the merge command is
-  printed under **Merge into main**, and after a merge the panel says what
-  happens to the worktree next. A command a session asks to run is allowed or
-  denied from the Needs-you row itself. Ended sessions are grouped by the day
-  they ended. A board card shows its holder's standing and pull request and
-  moves on to Review when the pull request opens and to Done when it merges.
-  No notification is posted about what the focused window already shows, and
-  an agent's newer notification replaces its last.
-
-- **Told when an agent finishes.** While the window is not in front, an agent
-  that finishes its turn gets one quiet notification, replacing its last;
-  **When an agent finishes or waits** in Settings turns it off.
-
-- **Told when an agent waits on you.** An agent that stops at a permission
-  prompt or question in its own terminal while the window is not in front
-  gets one too, saying which. A notice is taken back once it is no longer
-  true, and a finish is not told when your next message is already queued.
-
-- A Claude Code session survives Claude's own restart. Restarting in place
-  re-executes `claude` without the channel flag; the flag on the running
-  `claude` decides whether the channel is used, and the hooks deliver whatever
-  a stalled channel holds at the session's next prompt or tool use.
-- A channel message is confirmed by a later reply in the session even when the
-  transcript could not link the reply to the message, so the queue behind it
-  (a Pause included) is not held for a receipt that was never recorded.
-- **Launch agent…** waits up to 15 s for a new worktree to be watched, so a
-  launch on a busy machine does not fail with *watcher did not confirm checkout
-  coverage within 500 ms*. A launched agent opens in its terminal, where
-  Claude's folder-trust and channel-consent questions wait to be answered
-  before it can start.
-- An agent's row, in a project's chat and in the session list, shows its
-  branch's pull request as one chip — **#<n>** and a tick, a dot or a cross
-  for its checks, or **#<n> merged** — that opens it in the browser. It is
-  read with your signed-in `gh` every two minutes and when the window regains
-  focus; without `gh`, on a default branch or off GitHub there is no chip.
-  Every agent row leads with one glyph for where the agent stands (amber:
-  needs you; red: failed; muted dot: working; accent dot: finished since you
-  looked; nothing: idle), the same in the chat, the session list and the
-  rail. An agent that finished while you were not looking keeps its accent
-  dot until you open it or its project.
-- **Open in…** (the code icon beside the terminal icon in a project's header) opens the project
-  in an editor installed on this computer — Visual Studio Code, Cursor,
-  Windsurf, Zed, Sublime Text, Nova, BBEdit, Xcode, Fleet or a JetBrains IDE —
-  from a small menu of the ones found, the last one chosen first. A session in
-  its own worktree offers it in Details for that worktree, and the command
-  palette has one **Open in** row per editor.
-- A Claude Code session stopped at a permission prompt or question shows as
-  *waiting for you*: it is in Needs you with **Go to Terminal**, counted on
-  the dock icon, and `agentdocker activity` shows it `waiting`. It needs the
-  `Notification` hook, so run `agentdocker setup claude-code` to add it to an
-  existing install.
-- Clicking an agent in a project's chat goes to its terminal: the tab in
-  Terminal or iTerm it runs in, its tmux or herdr pane, or the editor or app
-  its terminal is in. Its details are on the chevron beside it, and they say
-  where it runs. macOS asks once to let AgentDocker control Terminal or iTerm.
-- Codex input needs an app-server of 0.154.0 or later and refuses an older one
-  when it attaches, naming both versions. A turn Codex refuses outright leaves
-  the message queued with the provider's reason on the record.
-- The experimental switches have one home: `[experimental]` in
-  `~/.agentdocker/agentd.toml` (`reload`, `secret_input`, `native_codex`),
-  reported by `daemon status`. The environment variables they have still turn
-  one on for a process; `native_codex = false` leaves an existing Codex
-  session to its hooks, with no receiver started for it.
-- `agentdocker --help` lists the commands a person types. The ones only an
-  adapter or an administrator runs (`heartbeat`, `report-activity`,
-  `report-adapter`, `report-input`, `identity-repair`, `secret-review`,
-  `usage-storage`, `usage-scan`, the `codex-*` controllers) are hidden from
-  the list and still work by name; the guide's reference still names them.
-- Every environment variable AgentDocker reads is in one table under
-  **Environment** in the command reference.
-- A Claude channel session's first message survives the moment before
-  Claude's channel handler is registered: when no receipt has yet been seen on
-  the channel, an offer without one after thirty seconds is made a second
-  time, once, under the same message id and marked `repeat`. A receipt the
-  daemon accepted counts whichever message it names, one sent before the first
-  offer included. After the first receipt there is no replay, and a missing
-  receipt pauses the queue visibly.
-- Finished agents' records are forgotten by themselves. Thirty days after an
-  agent ended, if it holds no lease, has no open question, no queued message
-  and no input binding, and is not set to restart or restore, its record goes the way
-  `rm` would take it (`agent_removed`, and the batch as `agents_pruned`);
-  `[agents] retention = "90d"` in `~/.agentdocker/agentd.toml` changes the
-  window and `"off"` keeps every record. The journal and the ledger keep a
-  forgotten agent's id.
-- The ledger entries for one batch of file changes are written in one
-  transaction, so a branch switch does not stall claims and releases.
-- The daemon keeps serving through a momentary accept failure on its socket
-  (descriptors exhausted under a burst of clients, a handshake the client
-  dropped): it retries with a short backoff instead of stopping.
-- A state database held for a moment by another connection (an offline
-  repair, a successor opening it, a `sqlite3` shell) does not put the
-  daemon into read-only `storage_unavailable`: a write waits up to a second
-  for the lock first, and every write transaction takes the lock as it
-  begins, so one that reads before it writes cannot meet a busy database
-  after the wait.
-- The app forgets the note it keeps about a failed answer once the question
-  it belonged to is gone.
-- The dock icon counts the questions waiting on you, across projects, and
-  Command/Ctrl+N opens Launch agent.
-- Sessions start in their own worktree. In a git project, **Launch agent…**
-  has **Own worktree: On** by default: the session works on a branch of its
-  own in its own folder, its changes are reviewed and merged from Changes, and
-  once merged and ended, **Remove its worktree** (or `agentdocker
-  worktree-remove`) cleans up. Files git ignores that the project lists in
-  `.worktreeinclude` (one pathspec per line, e.g. `.env`) are copied into each
-  new worktree on macOS and Linux (not on Windows, where the worktree says so).
-- One-click review: a session's details show **Changes** — its branch against
-  the branch in the project's main folder, the commits and files, each file's
-  diff, and what a merge needs — and **Merge into main** merges it with a
-  merge commit, or says why not with nothing changed. `agentdocker
-  review-branch` and `merge-branch` do the same from the CLI. Nothing is
-  pushed.
-- Needs you holds only questions waiting on you, each naming its project. A
-  session that is blocked, not receiving messages or ended with messages
-  queued says so on its own row instead. Messages lists only conversations
-  with something in them, and an ended session's conversation only while it
-  holds something unread.
-- Under your own messages in the app, one line per agent says where each
-  message stands: answered, delivered, received by the model, shown to its
-  session, or why it is still waiting.
 - The app keeps to each project's chat and your direct messages. Messages
   lists **Projects** (each project's chat, opening its Chat) and **Direct
   messages**; `#all`, channels and the rooms AgentDocker opens over contested
@@ -1126,25 +922,99 @@ Newest first. Only what changes how the product is used.
   <agent>`) and `agentdocker send --to channel:<id>`. A notification about
   such a message opens your conversation with its sender and names the
   command; a reply typed into it is refused with the command to use instead.
+
 - Projects keep their own messages. An agent reaches only its own project's
   agents, its channels and you: a send, ask or question to another project's
   agent, project or channel is refused, and an agent's `all` means its own
   project. `list_agents` and the session-start note do not name agents in
   other projects. You can still message anyone anywhere.
-- Token usage counts the Claude Code or Codex release you are on: a release of
-  the same major version as one that has been checked is counted as it
-  reports, and the usage report's coverage says unchecked releases may be in
-  it.
-- Tokens where you look: `agentdocker ps` has a TOKENS 24H column, and the
-  desktop's session rows show each session's tokens over the last day, with
-  one line above the list that sums them and opens Usage. Both appear only
-  when usage collection is on and there is something to show.
-- `agentdocker delivery <message>` says where one of your messages stands with
-  each agent it went to: answered, delivered, received by the model, shown to
-  its session, or why it is still waiting. `send` points to it.
+
+- The Messages workspace: **+** for a new direct message or channel,
+  invitations, `@` mentions with counts, Enter to send, resizable panes,
+  an Earlier group for ended sessions' conversations.
+
+- Needs you holds only questions waiting on you, each naming its project. A
+  session that is blocked, not receiving messages or ended with messages
+  queued says so on its own row instead. Messages lists only conversations
+  with something in them, and an ended session's conversation only while it
+  holds something unread.
+
+- Under your own messages in the app, one line per agent says where each
+  message stands: answered, delivered, received by the model, shown to its
+  session, or why it is still waiting.
+
 - A session that opens within an hour of your message to everyone in a project
   still gets it, as its first input. Only your own messages count, and only
   once.
+
+- A Claude channel session's first message survives the moment before
+  Claude's channel handler is registered: when no receipt has yet been seen on
+  the channel, an offer without one after thirty seconds is made a second
+  time, once, under the same message id and marked `repeat`. A receipt the
+  daemon accepted counts whichever message it names, one sent before the first
+  offer included. After the first receipt there is no replay, and a missing
+  receipt pauses the queue visibly.
+
+- A channel message is confirmed by a later reply in the session even when the
+  transcript could not link the reply to the message, so the queue behind it
+  (a Pause included) is not held for a receipt that was never recorded.
+
+- A Claude Code session survives Claude's own restart. Restarting in place
+  re-executes `claude` without the channel flag; the flag on the running
+  `claude` decides whether the channel is used, and the hooks deliver whatever
+  a stalled channel holds at the session's next prompt or tool use.
+
+- **A provider outage does not stop an agent for good.** When a provider's
+  servers fail (overloaded, unreachable), the agent's queued messages wait a
+  minute and then go to it again, twice as long after each failed try and at
+  most half an hour; the first turn that goes through ends it. Limits and
+  sign-in problems wait for the provider or for **Resume delivery**.
+
+
+- Reply from the notification: on macOS a message notification has a
+  **Reply** field, and what is typed there reaches the conversation — an
+  answer to a question closes it — without opening the window.
+
+- Notifications open their message: a click on a notification for an
+  archived message opens the conversation on the Messages screen and
+  scrolls to the row, paging back a bounded number of pages for an older
+  one, even when that conversation is already open.
+
+### Agents, roles and setup
+
+- **A Codex started in a terminal is itself.** A plain `codex` in a terminal
+  has its own record, by its thread: its AgentDocker tools work as it, and
+  its messages reach it at its next prompt. It cannot be woken while idle; a
+  Codex launched from AgentDocker can.
+
+
+- **Your own terminal's Codex can be the reviewer.** `agentdocker codex`
+  starts Codex in the terminal you are in, through AgentDocker's launcher:
+  messages wake it even while it is idle, and you can give it a role, such
+  as reviewer, like any agent. Codex's own options go after `--`. A plain
+  `codex` still works, but reads its messages only at its next prompt.
+
+
+- **Roles in the app.** In a session's panel, **Roles** gives an agent roles
+  from its project's palette, several to an agent and one role to several
+  agents; they show as coloured labels after its name. **Edit roles…** in the
+  same menu recolours, deletes or adds a project's roles. Nothing gets a role
+  unless you give it one.
+
+
+- **Only you act as you.** A command or tool that acts as you — gives a
+  role, answers a question or an approval, pauses a project, merges —
+  is refused when it comes from inside an agent's session, whatever it
+  says about who sent it: the daemon checks which process is asking. Run
+  those from your own terminal or the app. A launch does not carry a
+  role in: `agentdocker run --label role=…` and an Agentfile's
+  `labels = { role = … }` give the roles after the launch, as you.
+
+
+- Codex input needs an app-server of 0.154.0 or later and refuses an older one
+  when it attaches, naming both versions. A turn Codex refuses outright leaves
+  the message queued with the provider's reason on the record.
+
 - **Reconnect here** in a Claude Code session's Details, and `agentdocker
   reconnect <session>`: once the session has exited in its terminal, the daemon
   brings it back under its own record with its conversation (`--resume`) and
@@ -1153,17 +1023,84 @@ Newest first. Only what changes how the product is used.
   appears. Refused with the reason while the process still runs, in another
   checkout or with somebody attached. The copyable command stays as the
   alternative.
-- Roles: `agentdocker role reviewer --as <agent>` gives an agent a role,
-  and `role:reviewer` names it as the recipient of a `send`, an `ask` or
-  a `handoff` — the one live agent holding that role in the sender's
-  project; none is not found, two are ambiguous. `--clear` takes it away.
-- Reply from the notification: on macOS a message notification has a
-  **Reply** field, and what is typed there reaches the conversation — an
-  answer to a question closes it — without opening the window.
+
+- `claude attach` (shown as `claude agents`) is the terminal in front of
+  a background Claude Code session, whose `bg-spare` process registers itself:
+  neither is discovered or adoptable as a second agent. A command run from
+  that session's tools (`agentdocker send`, `ask`, `pause`…) is still that
+  session's: the CLI finds its `bg-spare` ancestor and sends as its agent, not
+  as you.
+
+- `agentdocker setup --shell` makes every terminal `claude` carry the channel
+  flag so AgentDocker can wake it; the Claude Code card in Tools offers it as
+  **Wake terminal sessions**, and the MCP server reads the flag from its
+  parent `claude`, so `AGENTDOCKER_CLAUDE_CHANNEL_INPUT` is not required
+  from a terminal.
+
+- Agents that work inside a browser are inventoried: `runtimes` lists each
+  vendor's extension per browser profile (`claude-browser`, `chatgpt-browser`)
+  and says that its sessions run in the browser and cannot be listed or
+  messaged; a runtime's helper such as `claude --chrome-native-host` is never
+  discovered and cannot be adopted; `rm` on a live external record says
+  `deregister`.
+
+- `agentdocker runtimes` heads its last column UNREGISTERED: it counts a
+  tool's processes nobody registered, which `ps` never shows as sessions.
+
+- A provider session that comes back as a new process (a resumed Claude
+  or Codex) is folded into the record it had, keeping its queue and name.
+
+- Setup writes the channel-capable Claude MCP entry (`--claude-channel`)
+  and health checks recognise it; a plain entry stays valid MCP.
+
+- Finished agents' records are forgotten by themselves. Thirty days after an
+  agent ended, if it holds no lease, has no open question, no queued message
+  and no input binding, and is not set to restart or restore, its record goes the way
+  `rm` would take it (`agent_removed`, and the batch as `agents_pruned`);
+  `[agents] retention = "90d"` in `~/.agentdocker/agentd.toml` changes the
+  window and `"off"` keeps every record. The journal and the ledger keep a
+  forgotten agent's id.
+
+### Sessions and worktrees
+
+- Sessions start in their own worktree. In a git project, **Launch agent…**
+  has **Own worktree: On** by default: the session works on a branch of its
+  own in its own folder, its changes are reviewed and merged from Changes, and
+  once merged and ended, **Remove its worktree** (or `agentdocker
+  worktree-remove`) cleans up. Files git ignores that the project lists in
+  `.worktreeinclude` (one pathspec per line, e.g. `.env`) are copied into each
+  new worktree on macOS and Linux (not on Windows, where the worktree says so).
+
+- One-click review: a session's details show **Changes** — its branch against
+  the branch in the project's main folder, the commits and files, each file's
+  diff, and what a merge needs — and **Merge into main** merges it with a
+  merge commit, or says why not with nothing changed. `agentdocker
+  review-branch` and `merge-branch` do the same from the CLI. Nothing is
+  pushed.
+
+- **Changes hands repairs to the agent.** **Ask <agent> to commit**, **Ask
+  <agent> to resolve** (naming the conflicting files) and **Ask <agent> to fix
+  checks** send the words to the agent in one click; the merge command is
+  printed under **Merge into main**, and after a merge the panel says what
+  happens to the worktree next. A command a session asks to run is allowed or
+  denied from the Needs-you row itself. Ended sessions are grouped by the day
+  they ended. A board card shows its holder's standing and pull request and
+  moves on to Review when the pull request opens and to Done when it merges.
+  No notification is posted about what the focused window already shows, and
+  an agent's newer notification replaces its last.
+
+
+- **Launch agent…** waits up to 15 s for a new worktree to be watched, so a
+  launch on a busy machine does not fail with *watcher did not confirm checkout
+  coverage within 500 ms*. A launched agent opens in its terminal, where
+  Claude's folder-trust and channel-consent questions wait to be answered
+  before it can start.
+
 - A turn's end gives back only the per-file edit leases the Claude Code `Stop`
   hook took itself (`automatic`), so a worktree, branch or build-campaign lease
   claimed through `claim` or the MCP tools holds until released or expired.
   `SessionEnd` gives everything back.
+
 - Commits in a private checkout are attributed: a worktree made with
   `agentdocker worktree-create` (with `--from <ref>`) is remembered as its
   maker's, and a checkout held under an exclusive `path:` lease is its
@@ -1182,6 +1119,140 @@ Newest first. Only what changes how the product is used.
   rather than negotiating the slot against their own parent, and the
   suites run without a managed session's identity, socket or home in the
   environment.
+
+- The watcher covers every checkout of a project, not only the one an
+  agent registered in. Commits in a worktree nobody registered reach
+  the journal and the ledger, and `overlap` compares real checkouts.
+
+### Desktop
+
+- **Choose the model and effort.** Launching Claude or Codex from the app
+  offers **Model** and **Effort**, starting at the provider's own defaults,
+  and a session's panel says which it runs (`<model> · <effort>`).
+
+
+- **Stopping a terminal agent leaves its terminal clean.** Stopping a Codex
+  or Claude you started in your own terminal turns mouse-reporting modes off
+  once the program has exited. In a tab left reporting every mouse move as
+  typed text, type `reset`.
+
+
+- **Allow for session.** A Codex approval that Codex offers to remember has a
+  third answer beside **Allow once** and **Deny**: **Allow for session** lets the
+  same command, network destination, files or access through without asking
+  until that Codex session ends (`agentdocker answer <id> "Allow for session"`
+  from the command line). Offered only where Codex offers it.
+
+
+- **Text only where it is a name.** The desktop says state with marks, dots,
+  rings and meters, named for screen readers and in tooltips; it has no
+  sentences under headings, empty-state captions, key footers or section
+  intros. It is set in IBM Plex Sans, with an ink primary action.
+
+
+- **A quieter, neutral desktop.** The sidebar is neutral, one step off the
+  page, in both appearances; colour is kept for state and the one primary
+  action. Every agent row is one line that leads with one glyph for where the
+  agent stands — the same function decides it in the chat, the session list
+  and the rail — and prints a word only when it calls for you. The project
+  header keeps **Launch agent…** as its one labelled button; Pause, the
+  terminal and Open in are icons named in their tooltips. A project's rail row
+  shows its loudest agent's glyph and a number only for agents that need you.
+  **Launch agent…** starts from what the agent should work on, sent as its
+  first message; its name and arguments are under **More options**.
+  Command/Ctrl+Shift+U goes to the next agent that needs you. The
+  background-service notice is one quiet line until you act on it.
+
+
+- **Told when an agent finishes.** While the window is not in front, an agent
+  that finishes its turn gets one quiet notification, replacing its last;
+  **When an agent finishes or waits** in Settings turns it off.
+
+
+- **Told when an agent waits on you.** An agent that stops at a permission
+  prompt or question in its own terminal while the window is not in front
+  gets one too, saying which. A notice is taken back once it is no longer
+  true, and a finish is not told when your next message is already queued.
+
+
+- An agent's row, in a project's chat and in the session list, shows its
+  branch's pull request as one chip — **#<n>** and a tick, a dot or a cross
+  for its checks, or **#<n> merged** — that opens it in the browser. It is
+  read with your signed-in `gh` every two minutes and when the window regains
+  focus; without `gh`, on a default branch or off GitHub there is no chip.
+  Every agent row leads with one glyph for where the agent stands (amber:
+  needs you; red: failed; muted dot: working; accent dot: finished since you
+  looked; nothing: idle), the same in the chat, the session list and the
+  rail. An agent that finished while you were not looking keeps its accent
+  dot until you open it or its project.
+
+- **Open in…** (the code icon beside the terminal icon in a project's header) opens the project
+  in an editor installed on this computer — Visual Studio Code, Cursor,
+  Windsurf, Zed, Sublime Text, Nova, BBEdit, Xcode, Fleet or a JetBrains IDE —
+  from a small menu of the ones found, the last one chosen first. A session in
+  its own worktree offers it in Details for that worktree, and the command
+  palette has one **Open in** row per editor.
+
+- A Claude Code session stopped at a permission prompt or question shows as
+  *waiting for you*: it is in Needs you with **Go to Terminal**, counted on
+  the dock icon, and `agentdocker activity` shows it `waiting`. It needs the
+  `Notification` hook, so run `agentdocker setup claude-code` to add it to an
+  existing install.
+
+- Clicking an agent in a project's chat goes to its terminal: the tab in
+  Terminal or iTerm it runs in, its tmux or herdr pane, or the editor or app
+  its terminal is in. Its details are on the chevron beside it, and they say
+  where it runs. macOS asks once to let AgentDocker control Terminal or iTerm.
+
+- The app forgets the note it keeps about a failed answer once the question
+  it belonged to is gone.
+
+- The dock icon counts the questions waiting on you, across projects, and
+  Command/Ctrl+N opens Launch agent.
+
+- The desktop app ships as `AgentDocker.app` on macOS, with its own icon,
+  so the Dock and the app switcher name it properly. `agentdocker ui`
+  first launches a matching sibling `agentdocker-ui`, then falls back to the
+  bundle when no sibling exists. Local preview bundles use ad-hoc signing. Public macOS
+  distribution requires Developer ID signing and notarization.
+
+### Usage
+
+- Token usage counts the Claude Code or Codex release you are on: a release of
+  the same major version as one that has been checked is counted as it
+  reports, and the usage report's coverage says unchecked releases may be in
+  it.
+
+- Tokens where you look: `agentdocker ps` has a TOKENS 24H column, and the
+  desktop's session rows show each session's tokens over the last day, with
+  one line above the list that sums them and opens Usage. Both appear only
+  when usage collection is on and there is something to show.
+
+### Project memory
+
+- **Project memory.** Agents and you can keep short facts for a project —
+  a convention, a decision, where something lives — with `add_memory` or
+  `agentdocker memory add`. Every new session in the project is told them,
+  newest first. A memory that is no longer true is replaced
+  (`--supersedes`) or forgotten. It stays on this machine; anything that
+  looks like a secret is refused. To keep a copy in Supermemory as well,
+  name the projects and a key file under `[memory.supermemory]` in
+  `agentd.toml` (off unless you turn it on; the hosted service is
+  Supermemory's, on its terms).
+
+
+### Remote connector
+
+- **A pairing code works once.** The connector's consent page asks for the
+  pairing code first and shows the projects to choose from only after it.
+  Each code opens one consent, so connecting a second browser means reading
+  the new code from `agentdocker connector status` or the Tools screen.
+  A source that types five wrong codes waits a quarter of an hour, and a code
+  guessed at twenty times is replaced. A service's log does not record the
+  code. A connector that crashes leaves no Tailscale Funnel open: the next
+  start clears it.
+
+
 - The remote connector: `agentdocker connector serve --public-url <https://…>`
   serves an OAuth-protected MCP endpoint on loopback for a tunnel you run, so
   Claude's or ChatGPT's browser side panel can join a project as a browser
@@ -1198,94 +1269,38 @@ Newest first. Only what changes how the product is used.
   vendor may identify itself by its Client ID Metadata Document instead of
   registering (fetched only from the vendors' hosts); the desktop's Tools
   screen shows whether the connector is serving, its URL and pairing code.
+
 - Every MCP tool carries annotations (read-only, destructive, idempotent,
   open-world), so a host that asks before risky calls lets the reads through.
-- `claude attach` (shown as `claude agents`) is the terminal in front of
-  a background Claude Code session, whose `bg-spare` process registers itself:
-  neither is discovered or adoptable as a second agent. A command run from
-  that session's tools (`agentdocker send`, `ask`, `pause`…) is still that
-  session's: the CLI finds its `bg-spare` ancestor and sends as its agent, not
-  as you.
-- `agentdocker setup --shell` makes every terminal `claude` carry the channel
-  flag so AgentDocker can wake it; the Claude Code card in Tools offers it as
-  **Wake terminal sessions**, and the MCP server reads the flag from its
-  parent `claude`, so `AGENTDOCKER_CLAUDE_CHANNEL_INPUT` is not required
-  from a terminal.
-- Agents that work inside a browser are inventoried: `runtimes` lists each
-  vendor's extension per browser profile (`claude-browser`, `chatgpt-browser`)
-  and says that its sessions run in the browser and cannot be listed or
-  messaged; a runtime's helper such as `claude --chrome-native-host` is never
-  discovered and cannot be adopted; `rm` on a live external record says
-  `deregister`.
-- The Board's five columns share the width, and an open card's title,
-  acceptance text and moves sit beneath them where there is room to read
-  them (under the card when the window is narrow). A clicked control keeps no
-  focus ring: the ring is the keyboard's.
-- `agentdocker runtimes` heads its last column UNREGISTERED: it counts a
-  tool's processes nobody registered, which `ps` never shows as sessions.
-- A project pause: `agentdocker pause "reason"` tells every agent in the
-  project to hold — the reason reaches each live one as a `pause` message
-  and their new leases are refused with it until `pause --lift`; `pause
-  --list` shows what is paused. The app has **Pause…**/**Resume** on the
-  project header.
-- Notifications open their message: a click on a notification for an
-  archived message opens the conversation on the Messages screen and
-  scrolls to the row, paging back a bounded number of pages for an older
-  one, even when that conversation is already open.
-- A provider session that comes back as a new process (a resumed Claude
-  or Codex) is folded into the record it had, keeping its queue and name.
-- Setup writes the channel-capable Claude MCP entry (`--claude-channel`)
-  and health checks recognise it; a plain entry stays valid MCP.
-- The Messages workspace: **+** for a new direct message or channel,
-  invitations, `@` mentions with counts, Enter to send, resizable panes,
-  an Earlier group for ended sessions' conversations.
-- Opt-in local token collection, hourly accounting and the `usage` command and
-  screen, with explicit unknown/partial coverage.
-- Conversations: every message is archived in the one conversation its
-  destination names (`everyone:<project>`, `all`, `channel:<id>`,
-  `dm:<a>:<b>`, `notices:<agent>`), beside the queue it is delivered to and
-  never instead of it, bounded by a per-conversation cap and `[messages]
-  retention`. `conversations` lists them with unread counts per reader,
-  `history` reads one back with reply counts, `thread` a root and its
-  replies, `search` finds text; reading moves a cursor forward, never back.
-  Channels get a `#name`; a person is not put in a collision room.
-- The desktop app ships as `AgentDocker.app` on macOS, with its own icon,
-  so the Dock and the app switcher name it properly. `agentdocker ui`
-  first launches a matching sibling `agentdocker-ui`, then falls back to the
-  bundle when no sibling exists. Local preview bundles use ad-hoc signing. Public macOS
-  distribution requires Developer ID signing and notarization.
-- A new mark: three agents, in the app's own project colours, meeting at
-  one host. Drawn on Apple's icon grid, and simplified below 24pt where
-  the connectors would otherwise be a smudge.
+
+### Daemon
+
+- **An idle daemon rests.** With nothing watching — no app open, no
+  `agentdocker events`, no webhook — the daemon does not scan the process
+  table periodically; `agentdocker ps` and the app scan when they look. The
+  file watcher's drain runs only while changes wait to be recorded, and the
+  usage worker waits between collections in one-second steps.
+
+
+- `agentdocker --help` lists the commands a person types. The ones only an
+  adapter or an administrator runs (`heartbeat`, `report-activity`,
+  `report-adapter`, `report-input`, `identity-repair`, `secret-review`,
+  `usage-storage`, `usage-scan`, the `codex-*` controllers) are hidden from
+  the list and still work by name; the guide's reference still names them.
+
+- The ledger entries for one batch of file changes are written in one
+  transaction, so a branch switch does not stall claims and releases.
+
+- The daemon keeps serving through a momentary accept failure on its socket
+  (descriptors exhausted under a burst of clients, a handshake the client
+  dropped): it retries with a short backoff instead of stopping.
+
+- A state database held for a moment by another connection (an offline
+  repair, a successor opening it, a `sqlite3` shell) does not put the
+  daemon into read-only `storage_unavailable`: a write waits up to a second
+  for the lock first, and every write transaction takes the lock as it
+  begins, so one that reads before it writes cannot meet a busy database
+  after the wait.
+
 - An event kind a client has never heard of is ignored instead of taking
   the event stream down with it.
-- The window fits what is in it: the initial size is clamped to the
-  monitor, the terminal grid is measured from the font you chose rather
-  than a hard-coded 13pt cell, and a table wider than the window scrolls
-  sideways instead of being cut off.
-- The console looks and behaves like a terminal: dark ground, monospace,
-  a prompt on the floor, the up arrow for history, and a transcript that
-  accumulates.
-- The app has no Events screen. `agentdocker events` is the place for the
-  raw stream.
-- `daemon reload` refuses replacement unless the experimental gate is on.
-- `agentdocker commit` — an agent commits its checkout through the
-  daemon, so the journal entry names it and carries its message.
-- `logs --compress` and `validation <id> --compress` — an rtk view of a
-  retained log, where rtk is installed. The log itself is untouched.
-- The watcher covers every checkout of a project, not only the one an
-  agent registered in. Commits in a worktree nobody registered reach
-  the journal and the ledger, and `overlap` compares real checkouts.
-- Agents are grouped and coloured by project throughout the app.
-- A Settings screen: terminal palette, text sizes, and row density,
-  applied to the console and the agent terminal alike and remembered
-  between runs.
-- The window reads like a desktop control panel: a sidebar on its own
-  ground, one accent for the selected place, and rows that breathe.
-
-### v0.1.0
-
-The first release: registry, supervision, messaging, leases, the project
-watcher, the change journal, worktrees and validated integration,
-handoffs, containers, policy and quotas, restart policies, channels,
-contests, PTY sessions, the desktop app, and the descriptor handoff.
