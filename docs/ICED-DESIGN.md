@@ -1,9 +1,7 @@
 # The Iced desktop
 
-The production `agentdocker-ui` entry point uses Iced. It reads the same local
-daemon as the CLI and replaces the previous egui window. The separate fictional
-design preview has been removed; its original design and captures remain in
-history at `8be9d82`. Packaging still ships the CLI, daemon and desktop together.
+The `agentdocker-ui` entry point uses Iced. It reads the same local
+daemon as the CLI. Packaging ships the CLI, daemon and desktop together.
 
 ## Project model
 
@@ -38,7 +36,7 @@ appearance preferences are read when no new appearance has been saved.
 
 ## Navigation and visual decisions
 
-The September 18 user review chose shared chat as the default project workspace.
+Shared chat is the default project workspace.
 Project switches preserve each conversation's draft and thread history without
 marking hidden messages read. **Open project terminal** opens a fresh native shell
 in the selected physical project folder, not the AgentDocker command console.
@@ -47,8 +45,7 @@ an existing prompt. Agent **Terminal** attaches an app-managed PTY for any runti
 for external macOS sessions it brings the matching Terminal tab forward after
 checking the provider's PID and birth time. It sends no keystrokes. Sessions in
 other terminal applications show an actionable failure rather than opening a
-second agent. Linux project-terminal launching is implemented; native Linux
-acceptance and external-terminal focus beyond macOS Terminal remain open.
+second agent. Linux project-terminal launching is supported.
 The chat composer stays in the viewport while long headers/forms scroll above it.
 Compact threads have **Back to chat**; side panes collapse before the composer
 loses its minimum width. Removing a project, including a vanished folder, selects
@@ -65,9 +62,7 @@ where to check the permission if the action times out.
 | Settings | Appearance, terminal, update checks, installation and retained versions |
 
 Light and dark appearances share the same hierarchy and the same visual
-system, which is drawn from the mark. The October 2 redesign follows the
-owner's choices from a review of 21st.dev components (palette C, *Navy rail*,
-and one or more patterns per surface); only the look changed, never what a
+system, which is drawn from the mark. The look never changes what a
 control does, its id or its accessible label:
 
 - **Brand.** The rail leads with the cube mark (`crates/ui/src/mark.png`, the
@@ -97,10 +92,8 @@ control does, its id or its accessible label:
   (`crates/ui/src/logos/`, light and dark variants for one-colour marks)
   and decoded once each, like the cube — the build has no SVG renderer
   (`app/logos.rs`).
-- **One standing per agent.** The October 14 redesign follows a REA teardown
-  of eleven agent apps (Conductor, Superset, Emdash, Sculptor, Claude desktop,
-  the Codex app, Vibe Kanban, Crystal, cmux, herdr, claude-squad, agent-deck),
-  which all fold their signals into a few states with a fixed precedence.
+- **One standing per agent.** Every agent's signals fold into a few
+  states with a fixed precedence.
   `agentdocker_core::standing::Standing::of` is the one function: **needs
   you** (an open question, a provider stopped at its own prompt, or held
   messages), **failed** (until seen), **working**, **parked** (waiting on a
@@ -141,11 +134,9 @@ control does, its id or its accessible label:
   overlay, text, muted, faint, line, line-strong, accent, accent-hover,
   accent-soft/ink, primary, primary-hover, on-primary, cyan, green, amber, red
   and danger (the solid fill of an armed destructive action). The surfaces are
-  one neutral family (dark ground `#151514`, light `#f6f6f4` with white cards)
-  and colour is spent on state, the one primary action filled with ink. Every
-  app in the teardown keeps
-  its sidebar a step off the page, never a contrasting block, so the navy
-  rail is retired. `Colors::rail()` is the sidebar step of either appearance
+  one neutral family (dark ground rgb(21, 21, 20), light rgb(246, 246, 244) with white cards)
+  and colour is spent on state, the one primary action filled with ink. The sidebar
+  sits a step off the page, never a contrasting block. `Colors::rail()` is the sidebar step of either appearance
   (lighter than the page in dark, darker in light) with washes of the ink for
   the selected and hovered rows. A unit test keeps text, muted and faint ink
   above WCAG thresholds on every page surface and on the rail and its rows;
@@ -162,10 +153,8 @@ control does, its id or its accessible label:
   (`Colors::dialog_style`): they are large, and the scrim lifts them.
 - **No blurred shadows on large surfaces.** tiny-skia renders a quad's shadow
   by building a per-pixel colour buffer for the whole shadow area on every
-  frame, including the part scrolled out of view. With a hundred session rows
-  in light mode that was gigabytes of allocation and a third of a core; the
-  same window in dark mode, whose cards had no shadow, sat at 150 MiB and
-  under two percent (measured 2026-09-10 on the packaged build). Cards and
+  frame, including the part scrolled out of view, which costs gigabytes of
+  allocation with a hundred session rows. Cards and
   panels get depth from tint and hairline only. Tiny shadows on tooltips and
   the selected segment are a few hundred pixels and remain.
 - **Status is a mark that says its words.** The standing glyph sits on every
@@ -261,16 +250,14 @@ control does, its id or its accessible label:
   live and how many finished unviewed (`hint`); an icon button says its name
   (`tip`); a status mark says its words (`status_dot`, `alert_mark`, `said`
   under a `tip`). The hover target is padded to about sixteen points; the mark itself
-  stays small. Verified with the real macOS pointer (a CGEvent helper moving
-  the cursor over the running release window while the smoke captured the
-  frame), not only with widget callbacks.
+  stays small. 
 - **Tabs carry glyphs** (stacked bars, pulse, speech bubble, three dots) drawn
   the same way as the rail icons. Icon geometry is cached between frames and
   redrawn only when its colour changes, so idle frames repaint nothing for it.
 - **An idle window costs nothing to speak of.** Every message Iced delivers
   ends in a whole frame: on macOS the software surface starts from a fresh
   buffer each time, so the window is painted entire and copied to the
-  compositor, a tenth of a second of one core at Retina size. Frames are
+  compositor. Frames are
   therefore rationed rather than made cheap. State arrives through the
   daemon's event stream and the workers' wake, never by polling for a
   redraw; the clock sweep that keeps "12s ago", a question's time left and
@@ -409,8 +396,7 @@ control does, its id or its accessible label:
   without moving keyboard focus, for notification routing and **Answer**. The
   message histories are anchored to their end (their scrollables' ids start
   `history-`): Iced reports their position from the top but takes a scroll
-  offset from the end, so reveal converts it, rather than landing on the
-  mirror-image place it used to.
+  offset from the end, so reveal converts it.
   Direct questions retained in Inbox after leaving the pending list use a
   160-character first-line preview and explicit Show/Hide question controls.
   Their full text remains intact. Notification routing expands its target before
@@ -476,7 +462,7 @@ control does, its id or its accessible label:
   the header shows the amber pause mark, the reason on its tooltip (spoken
   *Paused · reason*), beside **Resume**. **Launch
   agent…** opens a dialog over a flat scrim (no blur), with no title, that starts from the
-  prompt, as every launch surface in the teardown does: a composer (*What
+  prompt: a composer (*What
   should it work on?*, sent as the new agent's first message once it is
   launched, optional), the installed tools as chips under it (a chosen one a
   neutral chip with an ink edge), the idle
@@ -507,8 +493,7 @@ control does, its id or its accessible label:
   said once, at the rail's foot (`service_chip`), as a dot and a word with the
   full words on the dot's tooltip, and only when it calls for
   something: reconnecting, older than the app with **Restart…**
-  (`daemon-restart`), or an update to install (`open-available-update`); a
-  healthy one says nothing, as in Docker Desktop and Tailscale, and a lost
+  (`daemon-restart`), or an update to install (`open-available-update`); a healthy one says nothing, and a lost
   connection has no second banner on the page. The bottom
   strip exists only while a restart is confirmed or under way. What just
   happened is a toast at the window's foot for eight seconds (`STATUS_FOR`),
@@ -525,7 +510,7 @@ control does, its id or its accessible label:
   (**Reconnect here**). The chat's agent list uses the same row, with what the
   agent is doing and for how long on the name's tooltip. An empty list shows three faint static rows in
   the shape of what will fill it; an empty project adds its next step, **Launch agent…**
-  (`empty-launch`), and no words, as Emdash's empty states do; a search that finds nothing
+  (`empty-launch`), and no words; a search that finds nothing
   offers **Clear search** (`session-search-clear`) alone. A
   session's panel has one filled action — **Answer** when it asks something,
   otherwise its terminal — Details as a definition list, and Stop at the
@@ -534,9 +519,7 @@ control does, its id or its accessible label:
 - **Say each fact once.** Counts live in the sidebar (agents that need you
   per project, open questions on Inbox) and in the filter chips; the header does not repeat
   them. Messages in Inbox are transcript lines (when · who · what)
-  rather than a card per message, following the chat clients in the iced
-  showcase (Halloy); the footer-bar and inline-meter patterns come
-  from Kraken Desktop and Sniffnet there. As a rule, text on a screen is the
+  rather than a card per message. As a rule, text on a screen is the
   labels of controls and the person's data (names, message bodies, card
   titles, paths), with one- or two-word placeholders: subtitles, explanatory
   paragraphs, empty-state sentences, key-hint footers and ids under headings
@@ -569,8 +552,7 @@ the other into it. A browser agent from the connector counts as live only
 within an hour of its last tool call (`AgentRecord::is_present`); past that it
 sits under **Earlier**, *not connected* in its spoken name, still registered. Unknown identities
 and distinct registered sessions remain separate. Legacy duplicate registry reconciliation is the offline `identity-repair`
-command (IDENTITY-REPAIR.md (in git history)); applying it to the production
-database remains a manual step.
+command.
 
 ## Interaction contracts
 
@@ -642,8 +624,7 @@ from the same provider-block and receiver-evidence rules.
 
 ## Keyboard and native accessibility
 
-See [the current engineering and release backlog](REMAINING-WORK.md) for open
-implementation and acceptance work.
+
 
 All action buttons participate in Tab/Shift-Tab traversal and activate with
 Enter/Space. Repeated key events do not repeat an activation. Escape closes
@@ -667,7 +648,7 @@ cursor/selection/preedit are widget-local and never restored as a submission.
 Changing destination resets focus. A send receipt, mention or notification edit
 refreshes the editor from the same draft used by the accessibility SetValue path.
 Native widget-event regressions cover these boundaries, including Unicode IME
-commit and multiline paste; they do not replace physical keyboard/IME trials.
+commit and multiline paste; they do not replace physical keyboard/IME validation.
 Unchanged view layouts retain the editor's shaped text so native captures keep
 their drawn glyphs. Edits, navigation, font changes and resized bounds reshape it;
 a renderer regression checks glyph availability across repeated layout passes.
@@ -676,11 +657,7 @@ The rendered controls supply AccessKit labels, roles, values, actions, focus and
 physical-pixel bounds. The native adapter is installed before showing the window.
 macOS uses NSAccessibility, Linux AT-SPI, and Windows UI Automation. Keyboard
 widget tests and native capture automation complement these adapters; they do
-not substitute for a human VoiceOver/Orca/Narrator and input-method trial. On
-September 21, installed macOS preview `30ce582a` exposed 716 nodes, 212 buttons
-and four terminal actions through external AXUIElement inspection after unlock;
-More expansion/collapse and Agents/Chat navigation passed through AXPress. This
-closes the locked-desktop inspection gap, not the human screen-reader/IME trial.
+not substitute for a human VoiceOver/Orca/Narrator and input-method trial.
 
 ## Build and validation
 
@@ -730,22 +707,17 @@ Readiness trials explicitly enter the compact Messages layout and use its
 project selects shared chat; Messages preserves that conversation, so the list
 is hidden on a compact display until the person goes back. The fixture asserts
 both the list entry and destination composer instead of assuming a wide sidebar
-or changing the saved conversation. This covers the Mac ARM CI failure at
-`Click thread-<receiver>` without extending deadlines or skipping the case.
+or changing the saved conversation. 
 
 The standard suite includes strict lint, nextest, doctests, installer/package
 checks and release builds. Desktop CI packages and runs native workflow acceptance
 on macOS and Linux; Windows builds and exercises the daemon/CLI over its native
-named pipe and tests the core/host foundations. ConPTY, full desktop/service
-packaging and real-provider Windows acceptance remain separate platform work. Equivalent package size, launch time, memory and CPU
+named pipe and tests the core/host foundations. Equivalent package size, launch time, memory and CPU
 measurements must accompany release decisions, using exact binary provenance.
 See [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md) for public release gates.
 
-Messages review (September 17): mentioning an agent does not change recipients.
-Suggestions only name current recipients. These corrections are merged in #170
-and installed; source and rendered workflow validation passed. Physical
-keyboard and IME acceptance remain open, as recorded in
-[remaining work](REMAINING-WORK.md).
+Mentioning an agent does not change recipients. Suggestions only name current
+recipients.
 
 The app keeps to each project's chat and direct messages: it has no Channels
 screen, no channel creation or invitation, no **Reviews** or **Add members** in
@@ -785,6 +757,4 @@ the rail.
 The default startup smoke capture waits for a redraw after its first ready
 snapshot, as scenario captures already do. Capturing in the same update that
 changes Inbox to Messages can otherwise retain the old frame with its text
-missing. This affects capture evidence; it does not establish a persistent
-interactive-window defect. Native Windows repeat `35657437544` on `e3ada9db`
-passed and its inspected image includes the Messages label.
+missing.

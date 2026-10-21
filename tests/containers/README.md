@@ -11,34 +11,34 @@ Run an isolated native daemon, then `python3 tests/containers/smoke.py --engine 
 
 On native Linux the engine socket path is the daemon home's `container.sock`, or — for a home path too long for a socket name — the `container.sock` that `agentdocker daemon status` reports. The fixture disables SELinux labeling for its test-owned mounts; production adapters must choose an explicit labeling policy. No host control or Docker/Podman engine socket is mounted.
 
-On macOS, bind mounting a host Unix socket through the VM filesystem is not assumed to work. The development check used a dedicated Podman VM and an SSH reverse Unix-socket forward of **only** `container.sock` to `/tmp/ad-container-e2e.sock` in that VM. The checkout/token paths were under Podman's shared `/private` directory. Use `podman machine inspect` for that machine's SSH port/key and `ssh -N -R <vm-socket>:<host-container.sock> ...` with a verified host key and `ExitOnForwardFailure=yes`. Keep the bridge alive for the test and close it afterward. Never forward `host.sock`.
+On macOS, bind mounting a host Unix socket through the VM filesystem is not assumed to work. Use a dedicated Podman VM and an SSH reverse Unix-socket forward of **only** `container.sock` to a socket path in that VM. Keep the checkout and token paths under Podman's shared directory. Use `podman machine inspect` for that machine's SSH port/key and `ssh -N -R <vm-socket>:<host-container.sock> ...` with a verified host key and `ExitOnForwardFailure=yes`. Keep the bridge alive for the test and close it afterward. Never forward `host.sock`.
 
-September 5, 2026 local result: Podman 6.1.1, rootless Linux arm64 in the macOS VM, all scenarios passed. Fixture image ID: `54a2fa1cd8bdd568099ef6ecc826826a4a15690e95aabca5801045dd7534da4c`. This is protocol interoperability evidence; it does not claim managed container lifecycle or immutable container validation support. Docker has a separate Linux CI matrix entry and is reported independently.
+A pass of this smoke test is protocol interoperability evidence; it does not claim managed container lifecycle or immutable container validation support. Docker has a separate Linux CI matrix entry and is reported independently.
 
 
 `workspace.py` owns a managed workspace fixture and verifies authenticated mounted requests, identity/admin/traversal rejection, physical alias conflicts, stale rereads, daemon-crash reconnects, read-only validation in the image, durable validation deadlines, source/image recovery checks and revocation. Linux CI runs it independently for Docker and rootless Podman:
 
 ```sh
-python3 tests/containers/workspace.py --engine podman --daemon target/debug/agentd --cli target/debug/agentdocker --context tests/containers --root /tmp/ad-workspace-new --result /tmp/workspace-result.json
+python3 tests/containers/workspace.py --engine podman --daemon target/debug/agentd --cli target/debug/agentdocker --context tests/containers --root /tmp/ad-workspace --result /tmp/workspace-result.json
 ```
 
-On macOS, add `--machine NAME` for a running rootless Podman machine whose connection matches the build. Use a short fixture root because Unix sockets have pathname limits. The fixture exercises AgentDocker's managed SSH forward; SSH credentials and control files never enter the container. It removes only fixture-owned, label-verified containers and stops its daemon. It retains test files/logs and cached images; the caller owns VM startup/shutdown. Docker Desktop selects the engine-volume relay automatically; its actual macOS result must be reported separately.
+On macOS, add `--machine NAME` for a running rootless Podman machine whose connection matches the build. Use a short fixture root because Unix sockets have pathname limits. The fixture exercises AgentDocker's managed SSH forward; SSH credentials and control files never enter the container. It removes only fixture-owned, label-verified containers and stops its daemon. It retains test files/logs and cached images; the caller owns VM startup/shutdown. Docker Desktop selects the engine-volume relay automatically; its macOS result is reported separately.
 
 The managed workspace fixture also uses a deliberately long daemon home to exercise short private socket paths, starts an isolated image worker that immediately edits a file, checks the resulting ledger observation and Git status, validates with read-only Git metadata, and resumes an image handoff after restart. An identical rebuild with a different local build ID is accepted; changed source blocks lease transfer until restored.
 
-Add `--relay` to the workspace fixture to exercise the engine-volume transport explicitly. The test also checks helper confinement and disabled logging, routes 32 concurrent requests with distinct results, kills only the helper and verifies reconnection without releasing the writer lease, then repeats daemon-crash and handoff recovery. Linux CI runs this separately for both engines. A Podman VM pass does not establish Docker Desktop support; run the same fixture on an initialized Desktop context to collect that evidence.
+Add `--relay` to the workspace fixture to exercise the engine-volume transport explicitly. The test also checks helper confinement and disabled logging, routes 32 concurrent requests with distinct results, kills only the helper and verifies reconnection without releasing the writer lease, then repeats daemon-crash and handoff recovery. Linux CI runs this separately for both engines. A Podman VM pass does not establish Docker Desktop support; run the same fixture on an initialized Desktop context for that.
 
 The macOS Docker Desktop run uses the same fixture with automatic relay selection:
 
 ```sh
-DOCKER_CONTEXT=desktop-linux python3 tests/containers/workspace.py --engine docker --daemon target/release/agentd --cli target/release/agentdocker --context tests/containers --root /private/tmp/ad-desktop-new --result /private/tmp/desktop-result.json
+DOCKER_CONTEXT=desktop-linux python3 tests/containers/workspace.py --engine docker --daemon target/release/agentd --cli target/release/agentdocker --context tests/containers --root /private/tmp/ad-desktop --result /private/tmp/desktop-result.json
 ```
 
-Keep the Docker CLI on PATH for the fixture and daemon. Results include the host OS/architecture, engine versions and selected transport so Desktop evidence stays distinct from Linux Docker. This requires an initialized Desktop installation; the current GitHub matrix has no such macOS runner.
+Keep the Docker CLI on PATH for the fixture and daemon. Results include the host OS/architecture, engine versions and selected transport so Desktop results stay distinct from Linux Docker. This requires an initialized Desktop installation, which the GitHub matrix does not provide.
 
 With Desktop's containerd image store, a cached rebuild may have a new image index ID because [BuildKit attaches provenance attestations to that index](https://docs.docker.com/build/metadata/attestations/). The fixture requires identical captured inputs, tests rejection if the immutable image ID changed, and uses the original retained image for the successful handoff. If the rebuilt image ID is identical, it also tests portability across local build IDs. Production recovery always requires exact immutable image identity.
 
-Failure evidence is retained beside `--result`: the failed scenario and primary
+Failure diagnostics are retained beside `--result`: the failed scenario and primary
 error, a daemon log tail, and one container log tail per owned container. Each
 container diagnostic has a fixed 30-second deadline and a 2 MiB output cap;
 exit status, timeout and truncation are recorded. A diagnostic failure stays
@@ -49,7 +49,4 @@ create its socket as the configured workspace UID in a new root-owned volume.
 The socket itself is mode 0600 and the writer mounts the volume read-only.
 The sole writable mount belongs to the confined relay; no credentials are
 stored in the volume. Volume ownership labels and its local driver/options
-are verified before use. Engine administration is a trusted boundary. Making
-existing root-owned volumes private would require a separate ownership
-initialization design; adding a root helper is not part of the relay readability
-fix. Host credential/state directories remain mode 0700.
+are verified before use. Engine administration is a trusted boundary. Existing root-owned volumes are not made private, and the relay adds no root helper. Host credential/state directories remain mode 0700.
