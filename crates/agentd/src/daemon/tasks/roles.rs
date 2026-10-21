@@ -66,9 +66,10 @@ impl Daemon {
         }
     }
 
-    /// Make a role, or rename, recolour or describe one: the person's to do.
-    /// A built-in role the person took out comes back when they make it
-    /// again.
+    /// Make a role, or rename, recolour or describe one, or name the tools
+    /// its holders are offered: the person's to do. A built-in role the
+    /// person took out comes back when they make it again.
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::daemon) async fn role_save(
         self: &Arc<Self>,
         from: &str,
@@ -77,6 +78,7 @@ impl Daemon {
         name: &str,
         color: Option<RoleColor>,
         description: Option<String>,
+        tools: Option<Vec<String>>,
     ) -> Response {
         let project = match self.named_project(project.as_deref(), Some(from)).await {
             Ok(project) => project,
@@ -149,6 +151,7 @@ impl Daemon {
                             color: RoleColor::after(catalog.len()),
                             description: String::new(),
                             removed: false,
+                            tools: None,
                             created_by: actor.id.clone(),
                             created_at: now,
                             updated_at: now,
@@ -167,6 +170,19 @@ impl Daemon {
         if let Err(reason) = role::check_words(&def.name, &def.description) {
             return Response::error(ErrorCode::Invalid, reason);
         }
+        // An empty list lifts the limit: a role is never kept naming no tool.
+        let mut tools_changed = None;
+        if let Some(tools) = tools {
+            let tools = match role::check_tools(&tools) {
+                Ok(tools) => tools,
+                Err(reason) => return Response::error(ErrorCode::Invalid, reason),
+            };
+            let tools = (!tools.is_empty()).then_some(tools);
+            if tools != def.tools {
+                tools_changed = Some(tools.clone().unwrap_or_default());
+                def.tools = tools;
+            }
+        }
         def.created_by = actor.id.clone();
         def.updated_at = now;
         let kinds = vec![EventKind::RoleChanged {
@@ -174,6 +190,7 @@ impl Daemon {
             role: def.role.clone(),
             by: actor.id.clone(),
             deleted: false,
+            tools: tools_changed,
         }];
         if let Some(error) = state.commit_change("role", vec![role_doc(&def)], Vec::new(), kinds) {
             return error;
@@ -239,6 +256,7 @@ impl Daemon {
             role: def.role.clone(),
             by: actor.id.clone(),
             deleted: true,
+            tools: None,
         }];
         if let Some(error) = state.commit_change("role", put, delete, kinds) {
             return error;

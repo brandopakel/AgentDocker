@@ -11,9 +11,10 @@
 
 #[cfg(windows)]
 use agentdocker_host::procinfo::parent_id;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 #[cfg(unix)]
 use std::os::unix::process::parent_id;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use agentdocker_core::{
@@ -179,6 +180,34 @@ pub struct McpServer<B> {
     /// its backlog in order. What was asked for is a claim; only the
     /// hook's word is identity.
     resume_vouch: Option<ResumeVouch>,
+    /// What each agent this server speaks for is offered by its roles,
+    /// read through the daemon and kept briefly; absent, no role limits
+    /// anything here. Shared with the server bound for one conversation
+    /// of a shared Codex host, so the reading outlives the call.
+    role_tools: Option<Arc<RoleTools>>,
+}
+
+/// How long what an agent's roles offer it is kept before the daemon is
+/// asked again: a role the person changes reaches a busy session within
+/// this, without a request before every call.
+const ROLE_TOOLS_FOR: Duration = Duration::from_secs(30);
+
+/// The tools an agent's roles offer it, and which roles set them, so a
+/// refusal can say why.
+#[derive(Debug)]
+struct RoleLimit {
+    roles: Vec<String>,
+    tools: BTreeSet<String>,
+}
+
+/// What the daemon said an agent's roles offer it, and when: `None` is
+/// every tool.
+type RoleReading = (Instant, Option<Arc<RoleLimit>>);
+
+/// The last reading for each agent this server speaks for.
+#[derive(Default)]
+struct RoleTools {
+    seen: std::sync::Mutex<HashMap<String, RoleReading>>,
 }
 
 /// Borrow the transport for a single verified conversation without changing
@@ -271,7 +300,7 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
         "agentdocker mcp: serving as {} ({})",
         identity.name, identity.id
     );
-    let mut server = McpServer::new(client, identity);
+    let mut server = McpServer::new(client, identity).limit_by_roles();
     server.native_context = native_context;
     server.claude_channel = claude_channel;
     server.codex_input =
@@ -506,7 +535,81 @@ impl<B: Backend> McpServer<B> {
             project_root: None,
             last_contact: std::sync::Mutex::new(None),
             resume_vouch: None,
+            role_tools: None,
         }
+    }
+
+    /// Offer each agent only the tools its roles name, as the person set
+    /// them: every server that speaks for an agent does.
+    pub fn limit_by_roles(mut self) -> Self {
+        self.role_tools = Some(Arc::default());
+        self
+    }
+
+    /// What this agent's roles offer it, or `None` for every tool. Read
+    /// through the daemon at most once in [`ROLE_TOOLS_FOR`]; a daemon
+    /// that cannot say limits nothing and is asked again at the next
+    /// call, which it would answer itself.
+    async fn role_limit(&self, agent: &str) -> Option<Arc<RoleLimit>> {
+        let cache = self.role_tools.as_ref()?;
+        if agent.is_empty() {
+            return None;
+        }
+        let kept = cache
+            .seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(agent)
+            .filter(|(at, _)| at.elapsed() < ROLE_TOOLS_FOR)
+            .map(|(_, limit)| limit.clone());
+        if let Some(limit) = kept {
+            return limit;
+        }
+        let limit = self.read_role_limit(agent).await.ok()?;
+        let mut seen = cache.seen.lock().unwrap_or_else(|e| e.into_inner());
+        seen.retain(|_, (at, _)| at.elapsed() < ROLE_TOOLS_FOR);
+        seen.insert(agent.to_owned(), (Instant::now(), limit.clone()));
+        limit
+    }
+
+    /// The agent's roles and its project's palette, from the daemon. The
+    /// person, and an agent holding no role, are offered everything.
+    async fn read_role_limit(&self, agent: &str) -> Result<Option<Arc<RoleLimit>>, ()> {
+        let record = match self
+            .backend
+            .call(Request::Inspect {
+                agent: agent.to_owned(),
+            })
+            .await
+        {
+            Ok(Response::Agent { agent }) => agent,
+            _ => return Err(()),
+        };
+        let held = record.roles();
+        if held.is_empty() || record.spec.runtime == agentdocker_core::HUMAN_RUNTIME {
+            return Ok(None);
+        }
+        let Some(project) = record.project.as_ref().map(|p| p.id()) else {
+            return Ok(None);
+        };
+        let palette = match self
+            .backend
+            .call(Request::RoleCatalog {
+                project: Some(project.as_str().to_owned()),
+            })
+            .await
+        {
+            Ok(Response::RoleCatalog { roles }) => roles,
+            _ => return Err(()),
+        };
+        Ok(
+            agentdocker_core::role::tool_limit(&held, &palette).map(|tools| {
+                Arc::new(RoleLimit {
+                    roles: held.iter().map(|&role| role.to_owned()).collect(),
+                    tools,
+                })
+            }),
+        )
     }
 
     /// Serve the agent of a remote connector grant, whose project is
@@ -683,6 +786,14 @@ impl<B: Backend> McpServer<B> {
                         )
                     });
                 }
+                // What the agent's roles offer it, on top of the rest.
+                if let Some(limit) = self.role_limit(&self.identity.id).await {
+                    tools.retain(|tool| {
+                        tool["name"]
+                            .as_str()
+                            .is_some_and(|name| limit.tools.contains(name))
+                    });
+                }
                 if self.claude_channel || self.native_input {
                     for tool in &mut tools {
                         if tool["name"] == "ask_human" {
@@ -822,6 +933,7 @@ impl<B: Backend> McpServer<B> {
             )
             .await;
             let mut bound = McpServer::new(BorrowedBackend(&self.backend), identity);
+            bound.role_tools = self.role_tools.clone();
             bound.native_input = native;
             bound.project_root = agent.project.map(|project| project.root);
             return bound.tool(name, arguments).await;
@@ -850,6 +962,26 @@ impl<B: Backend> McpServer<B> {
                 format!(
                     "`{name}` is not offered through the remote connector: it has no checkout here. The tools are {}.",
                     REMOTE_TOOLS.join(", ")
+                ),
+            ));
+        }
+        // The tools every agent keeps need no reading; the rest are its
+        // roles' to offer, refused here before anything reaches the daemon.
+        if !agentdocker_core::role::ALWAYS_TOOLS.contains(&name)
+            && let Some(limit) = self.role_limit(&self.identity.id).await
+            && !limit.tools.contains(name)
+        {
+            return Err((
+                INVALID_PARAMS,
+                format!(
+                    "`{name}` is not offered to this agent: its roles ({}) limit it to {}. The person sets a role's tools.",
+                    limit.roles.join(", "),
+                    limit
+                        .tools
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             ));
         }
@@ -2226,6 +2358,14 @@ fn annotations(name: &str) -> Value {
     })
 }
 
+/// Every tool's name, as a role names its tools.
+pub(crate) fn tool_names() -> Vec<String> {
+    bare_tool_definitions()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
 fn tool_definitions() -> Vec<Value> {
     let mut tools = bare_tool_definitions();
     for tool in &mut tools {
@@ -3392,6 +3532,192 @@ mod tests {
             s.backend.requests().last().unwrap(),
             Request::Send { to, .. } if to == "project:/p/orchard"
         ));
+    }
+
+    /// An agent holding `roles` in `/work/alpha`, as the daemon says it.
+    fn holder(roles: &str, runtime: &str) -> Response {
+        let mut agent = agentdocker_core::AgentRecord::new(
+            AgentSpec {
+                name: "tester".into(),
+                runtime: runtime.into(),
+                labels: if roles.is_empty() {
+                    BTreeMap::new()
+                } else {
+                    [(
+                        agentdocker_core::agent::ROLE_LABEL.to_owned(),
+                        roles.to_owned(),
+                    )]
+                    .into()
+                },
+                ..AgentSpec::default()
+            },
+            false,
+            Utc::now(),
+        );
+        agent.project = Some(agentdocker_core::ProjectRef::directory("/work/alpha"));
+        Response::Agent { agent }
+    }
+
+    /// `/work/alpha`'s roles, the reviewer and the tester limited as given.
+    fn palette(reviewer: Option<&[&str]>, tester: Option<&[&str]>) -> Response {
+        let project = agentdocker_core::ProjectRef::directory("/work/alpha").id();
+        let mut roles = agentdocker_core::role::defaults(&project, Utc::now());
+        let names = |tools: &[&str]| tools.iter().map(|&t| t.to_owned()).collect();
+        roles[2].tools = reviewer.map(names);
+        roles[4].tools = tester.map(names);
+        Response::RoleCatalog { roles }
+    }
+
+    async fn listed(s: &McpServer<Mock>) -> BTreeSet<String> {
+        let reply = s.handle(rpc(1, "tools/list", json!({}))).await.unwrap();
+        reply["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    fn with_always(tools: &[&str]) -> BTreeSet<String> {
+        agentdocker_core::role::ALWAYS_TOOLS
+            .iter()
+            .chain(tools)
+            .map(|&t| t.to_owned())
+            .collect()
+    }
+
+    /// An agent holding only a limited role is offered that role's tools
+    /// and the few every agent keeps; a call to another is refused, naming
+    /// the role, before it reaches the daemon; and the roles are read once
+    /// for the lot.
+    #[tokio::test]
+    async fn a_limited_role_offers_only_its_tools_and_refuses_the_rest() {
+        let s = server(vec![
+            holder("reviewer", "claude-code"),
+            palette(Some(&["review_gate", "get_task"]), None),
+        ])
+        .limit_by_roles();
+        assert_eq!(listed(&s).await, with_always(&["get_task", "review_gate"]));
+        let reply = s
+            .handle(rpc(
+                2,
+                "tools/call",
+                json!({"name": "claim", "arguments": {"resource": "path:/x"}}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reply["error"]["code"], INVALID_PARAMS);
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("`claim`") && message.contains("its roles (reviewer)"),
+            "{message}"
+        );
+        // A tool every agent keeps, and one the role names, go through.
+        for name in ["whoami", "get_task"] {
+            let reply = s
+                .handle(rpc(
+                    3,
+                    "tools/call",
+                    json!({"name": name, "arguments": {"task": "AD-1"}}),
+                ))
+                .await
+                .unwrap();
+            assert!(reply.get("error").is_none(), "{name}: {reply}");
+        }
+        let requests = s.backend.requests();
+        assert!(matches!(requests[0], Request::Inspect { .. }));
+        assert!(matches!(requests[1], Request::RoleCatalog { ref project } if project.is_some()));
+        assert!(
+            !requests[2..]
+                .iter()
+                .any(|r| matches!(r, Request::RoleCatalog { .. } | Request::Claim { .. })),
+            "read once, and the refused call never sent: {requests:?}"
+        );
+    }
+
+    /// Two limited roles offer their tools together; a role without a
+    /// limit offers every tool; so does holding none, which needs no
+    /// palette; and the person is never limited.
+    #[tokio::test]
+    async fn an_agents_roles_offer_their_tools_together_or_every_tool() {
+        let every: BTreeSet<String> = tool_names().into_iter().collect();
+        let s = server(vec![
+            holder("reviewer,tester", "codex"),
+            palette(Some(&["review_gate"]), Some(&["validate"])),
+        ])
+        .limit_by_roles();
+        assert_eq!(listed(&s).await, with_always(&["review_gate", "validate"]));
+
+        let s = server(vec![
+            holder("implementer,reviewer", "codex"),
+            palette(Some(&["review_gate"]), None),
+        ])
+        .limit_by_roles();
+        assert_eq!(listed(&s).await, every, "an unlimited role wins");
+
+        let s = server(vec![holder("", "codex")]).limit_by_roles();
+        assert_eq!(listed(&s).await, every, "no role, every tool");
+        assert_eq!(s.backend.requests().len(), 1, "no palette is read");
+
+        let s = server(vec![holder("reviewer", agentdocker_core::HUMAN_RUNTIME)]).limit_by_roles();
+        assert_eq!(listed(&s).await, every, "the person is never limited");
+
+        // A daemon that cannot say limits nothing, and is asked again.
+        let s = server(vec![Response::error(ErrorCode::NotFound, "gone")]).limit_by_roles();
+        assert_eq!(listed(&s).await, every);
+        listed(&s).await;
+        assert_eq!(s.backend.requests().len(), 2, "not kept");
+    }
+
+    /// What the roles offer is kept for a while and then read again, so a
+    /// role the person changes reaches a busy session.
+    #[tokio::test]
+    async fn a_role_change_reaches_the_session_when_its_reading_lapses() {
+        let s = server(vec![
+            holder("reviewer", "claude-code"),
+            palette(Some(&["review_gate"]), None),
+            holder("reviewer", "claude-code"),
+            palette(Some(&["review_gate", "claim"]), None),
+        ])
+        .limit_by_roles();
+        assert_eq!(listed(&s).await, with_always(&["review_gate"]));
+        assert_eq!(listed(&s).await, with_always(&["review_gate"]), "kept");
+        assert_eq!(s.backend.requests().len(), 2);
+        for (at, _) in s
+            .role_tools
+            .as_ref()
+            .unwrap()
+            .seen
+            .lock()
+            .unwrap()
+            .values_mut()
+        {
+            *at = Instant::now()
+                .checked_sub(ROLE_TOOLS_FOR + Duration::from_secs(1))
+                .unwrap();
+        }
+        assert_eq!(listed(&s).await, with_always(&["claim", "review_gate"]));
+        assert_eq!(s.backend.requests().len(), 4);
+    }
+
+    /// A connector session keeps its own narrower list, and its roles
+    /// narrow it further.
+    #[tokio::test]
+    async fn a_remote_agents_roles_narrow_the_messaging_tools() {
+        let s = server(vec![
+            holder("reviewer", "remote"),
+            palette(Some(&["get_task", "claim"]), None),
+        ])
+        .remote("/work/alpha".into())
+        .limit_by_roles();
+        let expected: BTreeSet<String> = REMOTE_TOOLS
+            .iter()
+            .filter(|t| with_always(&["get_task", "claim"]).contains(**t))
+            .map(|&t| t.to_owned())
+            .collect();
+        assert_eq!(listed(&s).await, expected);
+        assert!(!expected.contains("claim") && expected.contains("get_task"));
+        assert!(!expected.contains("list_tasks"), "not the role's");
     }
 
     /// The flag on the parent `claude` is what makes the channel real: one

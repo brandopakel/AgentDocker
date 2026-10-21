@@ -452,14 +452,20 @@ pub fn event_line(event: &Event) -> String {
             _ => format!("tag set          {name} by {by}"),
         },
         EventKind::RoleChanged {
-            role, by, deleted, ..
-        } => {
-            if *deleted {
-                format!("role taken out   {role} by {by}")
-            } else {
-                format!("role set         {role} by {by}")
-            }
-        }
+            role,
+            by,
+            deleted,
+            tools,
+            ..
+        } => match (deleted, tools.as_deref()) {
+            (true, _) => format!("role taken out   {role} by {by}"),
+            (_, Some([])) => format!("role set         {role} by {by}, every tool"),
+            (_, Some(tools)) => format!(
+                "role set         {role} by {by}, tools {}",
+                tools.join(", ")
+            ),
+            _ => format!("role set         {role} by {by}"),
+        },
         EventKind::PlanChanged { plan, by, .. } => format!("plan written     {plan} by {by}"),
         EventKind::MemoryAdded { memory, by, .. } => format!("memory kept     {memory} by {by}"),
         EventKind::MemoryForgotten { memory, by, .. } => {
@@ -1415,6 +1421,28 @@ mod tests {
         let text = super::event_line(&event);
         assert!(!text.chars().any(char::is_control));
         assert!(text.contains("\\n"));
+    }
+
+    #[test]
+    fn a_role_change_says_the_tools_it_set() {
+        let line = |tools: Option<Vec<String>>| {
+            super::event_line(&agentdocker_core::Event::new(
+                agentdocker_core::EventKind::RoleChanged {
+                    project: agentdocker_core::ProjectId::from("p"),
+                    role: "reviewer".into(),
+                    by: "user".into(),
+                    deleted: false,
+                    tools,
+                },
+                chrono::Utc::now(),
+            ))
+        };
+        assert!(line(None).ends_with("role set         reviewer by user"));
+        assert!(
+            line(Some(vec!["get_task".into(), "review_gate".into()]))
+                .ends_with("reviewer by user, tools get_task, review_gate")
+        );
+        assert!(line(Some(Vec::new())).ends_with("reviewer by user, every tool"));
     }
     #[test]
     fn extensions_read_as_apps_of_the_browser() {

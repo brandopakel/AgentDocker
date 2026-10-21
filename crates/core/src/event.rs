@@ -564,6 +564,10 @@ pub enum EventKind {
         by: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         deleted: bool,
+        /// The tools its holders are now offered, when this change set
+        /// them; empty when it lifted the limit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tools: Option<Vec<String>>,
     },
     /// A memory was kept in a project.
     MemoryAdded {

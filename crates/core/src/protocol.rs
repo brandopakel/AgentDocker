@@ -988,8 +988,9 @@ pub enum Request {
         #[serde(default)]
         project: Option<String>,
     },
-    /// Make a role, or rename, recolour or describe one; its address never
-    /// changes. The person's to do. Answers `role_def`.
+    /// Make a role, or rename, recolour or describe one, or name the MCP
+    /// tools its holders are offered; its address never changes. The
+    /// person's to do. Answers `role_def`.
     RoleSave {
         from: String,
         #[serde(default)]
@@ -1002,6 +1003,10 @@ pub enum Request {
         color: Option<crate::RoleColor>,
         #[serde(default)]
         description: Option<String>,
+        /// The tools its holders are offered; an empty list lifts the
+        /// limit, so they are offered every tool. Absent, unchanged.
+        #[serde(default)]
+        tools: Option<Vec<String>>,
     },
     /// Give an agent roles from its project's palette, or take some away.
     /// The person's to do. Answers `agent`.

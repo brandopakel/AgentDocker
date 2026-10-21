@@ -1538,4 +1538,69 @@ mod tests {
         }
         assert!(bound.backend.requests().is_empty());
     }
+
+    /// A shared host refuses a conversation the tools its roles do not
+    /// offer, and keeps that reading across calls, though each call binds
+    /// the conversation afresh.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_shared_host_keeps_each_conversations_role_limit_across_calls() {
+        use crate::{client::mock::Mock, mcp::McpServer};
+        let (mut context, mut agent, meta) = fixture();
+        let pid = std::process::id();
+        let birth = procinfo::start_time(pid).unwrap();
+        context.host = ProcessIdentity {
+            pid,
+            started_at: birth,
+        };
+        context.executable = procinfo::executable_path().unwrap().canonicalize().unwrap();
+        agent.pid = Some(pid);
+        agent.process_started_at = Some(birth);
+        agent.input_binding.as_mut().unwrap().provider.process = context.host.clone();
+        let mut holder = agent.clone();
+        holder.project = Some(agentdocker_core::ProjectRef::directory("/work/alpha"));
+        holder.spec.labels.insert(
+            agentdocker_core::agent::ROLE_LABEL.into(),
+            "reviewer".into(),
+        );
+        let mut palette = agentdocker_core::role::defaults(
+            &agentdocker_core::ProjectRef::directory("/work/alpha").id(),
+            chrono::Utc::now(),
+        );
+        palette[2].tools = Some(vec!["get_task".into()]);
+        let resolved = || Response::Agents {
+            agents: vec![agent.clone()],
+            aliases: Default::default(),
+        };
+        let backend = Mock::with(vec![
+            resolved(),
+            Response::Ok,
+            Response::Agent { agent: holder },
+            Response::RoleCatalog { roles: palette },
+            resolved(),
+            Response::Ok,
+        ]);
+        let mut server = McpServer::new(backend, context.unbound_identity()).limit_by_roles();
+        server.native_context = Some(context);
+        for _ in 0..2 {
+            let refused = server
+                .call_tool(
+                    json!({"name":"claim", "arguments":{"resource":"path:/work/alpha"}, "_meta":meta}),
+                    &mut None,
+                )
+                .await
+                .unwrap_err();
+            assert!(refused.1.contains("its roles (reviewer)"), "{}", refused.1);
+        }
+        let requests = server.backend.requests();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| matches!(r, Request::Inspect { .. } | Request::RoleCatalog { .. }))
+                .count(),
+            2,
+            "read once for both calls: {requests:?}"
+        );
+        assert!(!requests.iter().any(|r| matches!(r, Request::Claim { .. })));
+    }
 }
