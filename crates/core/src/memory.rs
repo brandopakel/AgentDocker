@@ -194,6 +194,28 @@ pub fn profile(memories: &[Memory], max_chars: usize) -> Vec<&Memory> {
         .collect()
 }
 
+/// What a copy of a project's memory elsewhere must do to hold exactly its
+/// current memories, given the ids it holds: the memories to add, and the
+/// ids to take out — forgotten, or superseded by a newer one. A memory
+/// never changes once kept, so its id says everything.
+pub fn mirror_plan<'a>(
+    memories: &'a [Memory],
+    mirrored: &std::collections::BTreeSet<String>,
+) -> (Vec<&'a Memory>, Vec<String>) {
+    let said = current(memories);
+    let wanted: std::collections::BTreeSet<&str> = said.iter().map(|m| m.id.as_str()).collect();
+    let add = said
+        .into_iter()
+        .filter(|m| !mirrored.contains(&m.id))
+        .collect();
+    let remove = mirrored
+        .iter()
+        .filter(|id| !wanted.contains(id.as_str()))
+        .cloned()
+        .collect();
+    (add, remove)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,6 +326,23 @@ mod tests {
         assert_eq!(ids("absent"), Vec::<String>::new());
         assert_eq!(ids(""), ["c", "b", "a"], "no words, the newest");
         assert_eq!(search(&all, "", 1).len(), 1);
+    }
+
+    #[test]
+    fn a_mirror_adds_what_it_lacks_and_drops_what_is_no_longer_said() {
+        let all = vec![
+            memory("old", "deploys go out on Fridays", 0, None),
+            memory("new", "deploys go out on Mondays", 5, Some("old")),
+            memory("kept", "the reviewer is a role", 3, None),
+        ];
+        let mirrored: std::collections::BTreeSet<String> =
+            ["old", "kept", "forgotten"].map(str::to_owned).into();
+        let (add, remove) = mirror_plan(&all, &mirrored);
+        let added: Vec<&str> = add.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(added, ["new"]);
+        assert_eq!(remove, ["forgotten", "old"]);
+        let (add, remove) = mirror_plan(&all, &["new", "kept"].map(str::to_owned).into());
+        assert!(add.is_empty() && remove.is_empty(), "in step");
     }
 
     #[test]

@@ -575,6 +575,13 @@ pub enum EventKind {
         memory: String,
         by: String,
     },
+    /// The copy of a project's memory kept elsewhere caught up: how many
+    /// memories it was given and how many it no longer holds.
+    MemoryMirrored {
+        project: ProjectId,
+        added: usize,
+        removed: usize,
+    },
     /// A plan was written or changed.
     PlanChanged {
         project: ProjectId,
