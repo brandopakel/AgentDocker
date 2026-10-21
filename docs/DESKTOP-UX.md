@@ -443,7 +443,9 @@ has kept them, and stay to fix when it refuses them), a line to search it,
 then each memory, newest first or the best answers to the search, with who
 kept it and when, and a cross to forget it. At 100 it says that only the
 newest are shown and that a search finds older ones. Each project has its
-own words to keep and search. A memory an agent keeps appears at once; a
+own words to keep and search; a saved search is asked again whenever its
+project comes back into view or a memory changes, and one that could not
+be sent is sent on the next tick. A memory an agent keeps appears at once; a
 read that fails says so over what was shown; an AgentDocker from before
 memory says it keeps none. An agent pulls the
 next ready card with `pull_task` (or names one), and the board shows it in

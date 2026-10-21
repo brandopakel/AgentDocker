@@ -1060,6 +1060,13 @@ impl App {
                         form.adding = None;
                     }
                 }
+                // Not sent: asked again on a later tick, once there is room.
+                Cmd::MemorySearch { project, .. } => {
+                    if let Some(form) = self.shell.memory.get_mut(&project) {
+                        form.search_due = true;
+                    }
+                    return;
+                }
                 Cmd::TaskMove { .. }
                 | Cmd::TaskEdit { .. }
                 | Cmd::TaskArchive(_)
@@ -1427,7 +1434,15 @@ impl App {
                         {
                             workspace.memories = before.memories.clone();
                         }
+                        // A project read again is on view: its saved search,
+                        // if any, is asked again with it.
+                        if let Some(form) = self.shell.memory.get_mut(&project)
+                            && !form.query.trim().is_empty()
+                        {
+                            form.search_due = true;
+                        }
                         self.workspaces.insert(project, *workspace);
+                        self.ask_due_memory_search();
                     }
                     Err(error) => self.say(error),
                 },
@@ -2075,17 +2090,20 @@ impl App {
             | EventKind::ProjectFileChanged { .. }
             | EventKind::MemoryAdded { .. }
             | EventKind::MemoryForgotten { .. } => {
-                if let Some(project) = self.selected_project_root() {
-                    // A search on view is asked again, so it shows the change.
-                    if let Some(form) = self.shell.memory.get(&project)
-                        && !form.query.trim().is_empty()
-                    {
-                        let query = form.query.trim().to_owned();
-                        self.send(Cmd::MemorySearch {
-                            project: project.clone(),
-                            query,
-                        });
+                // Every saved search may now answer differently: each is asked
+                // again when its project is on view, this one at once.
+                if matches!(
+                    event.kind,
+                    EventKind::MemoryAdded { .. } | EventKind::MemoryForgotten { .. }
+                ) {
+                    for form in self.shell.memory.values_mut() {
+                        if !form.query.trim().is_empty() {
+                            form.search_due = true;
+                        }
                     }
+                    self.ask_due_memory_search();
+                }
+                if let Some(project) = self.selected_project_root() {
                     self.send(Cmd::Workspace(project));
                 }
                 if let EventKind::PlanChanged { plan, .. } = &event.kind

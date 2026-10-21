@@ -869,6 +869,9 @@ pub struct MemoryForm {
     pub results: Option<(String, Vec<agentdocker_core::memory::Memory>)>,
     /// The text sent and not yet confirmed.
     pub adding: Option<String>,
+    /// The search on view still has to be asked: its answer is out of date,
+    /// or the request could not be sent yet.
+    pub search_due: bool,
 }
 
 /// Where an **Open in…** menu opens from: the project's header, or the
@@ -1541,6 +1544,7 @@ impl App {
         }
         match message {
             Message::Tick => {
+                self.ask_due_memory_search();
                 for activation in crate::notification_route::take() {
                     tasks.push(self.update(Message::Notification(activation)));
                 }
@@ -2241,7 +2245,9 @@ impl App {
                     let query = form.query.trim().to_owned();
                     if query.is_empty() {
                         form.results = None;
+                        form.search_due = false;
                     } else {
+                        form.search_due = false;
                         self.send(Cmd::MemorySearch {
                             project: root,
                             query,
@@ -4464,6 +4470,27 @@ impl App {
             .and_then(|agent| self.project_of(agent))
     }
 
+    /// Ask again the search on view whose answer is out of date or whose
+    /// request could not be sent: on the next tick, so a full queue that
+    /// has drained since takes it.
+    pub(super) fn ask_due_memory_search(&mut self) {
+        let Some(root) = self.selected_project_root() else {
+            return;
+        };
+        let Some(form) = self.shell.memory.get_mut(&root) else {
+            return;
+        };
+        let query = form.query.trim().to_owned();
+        if !form.search_due || query.is_empty() {
+            return;
+        }
+        form.search_due = false;
+        self.send(Cmd::MemorySearch {
+            project: root,
+            query,
+        });
+    }
+
     pub(super) fn board_act(&mut self, request: Request) {
         if let Some(project) = self.selected_project_root() {
             self.send(Cmd::BoardAct {
@@ -5387,6 +5414,52 @@ mod tests {
                 .any(|c| matches!(c, Cmd::MemorySearch { query, .. } if query == "reviews")),
             "the search on view is asked again"
         );
+
+        // A's search, then B on view while A's memory changes elsewhere:
+        // back on A, its search is asked again rather than shown stale.
+        app.shell
+            .catalog
+            .pin(ProjectRef::directory("/work/b"))
+            .unwrap();
+        app.on_event(Event::new(
+            EventKind::MemoryForgotten {
+                project: agentdocker_core::ProjectId::from("a"),
+                memory: "m1".into(),
+                by: "codex-1".into(),
+            },
+            Utc::now(),
+        ));
+        assert!(
+            !drain(&commands)
+                .iter()
+                .any(|c| matches!(c, Cmd::MemorySearch { project, .. } if project == "/work/a")),
+            "not while another project is on view"
+        );
+        app.shell
+            .catalog
+            .pin(ProjectRef::directory("/work/a"))
+            .unwrap();
+        messages
+            .send(Msg::Workspace("/work/a".into(), Ok(Box::default())))
+            .unwrap();
+        app.drain();
+        assert!(drain(&commands).iter().any(|c| matches!(
+            c,
+            Cmd::MemorySearch { project, query } if project == "/work/a" && query == "reviews"
+        )));
+
+        // The queue full as the words change: the search is asked once
+        // there is room, on a later tick.
+        while app.tx.send(Cmd::Workspace("/filler".into())).is_ok() {}
+        let _ = app.update(Message::MemoryQuery("claude builds".into()));
+        assert!(app.shell.memory["/work/a"].search_due, "kept to ask");
+        drop(drain(&commands));
+        let _ = app.update(Message::Tick);
+        assert!(drain(&commands).iter().any(|c| matches!(
+            c,
+            Cmd::MemorySearch { query, .. } if query == "claude builds"
+        )));
+        assert!(!app.shell.memory["/work/a"].search_due);
     }
 
     /// A project's roles are read for every project an agent on the list
