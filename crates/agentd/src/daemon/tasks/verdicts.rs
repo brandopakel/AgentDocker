@@ -404,6 +404,10 @@ impl Daemon {
             // later when it might name somebody else.
             let id = match state.registry.resolve(agent) {
                 Ok(id) => id,
+                // The person by name, before they have a record: the person
+                // check has already judged that claim, and the handler takes
+                // the person as they are.
+                Err(_) if agent == HUMAN => return None,
                 Err(error) => return Some(registry_error(error)),
             };
             let Some(record) = state.registry.get(&id).cloned() else {
@@ -938,6 +942,18 @@ mod tests {
             unreachable!()
         };
         assert_eq!(agent, &reviewer.id.to_string());
+        // The person by name, with no record yet, goes on as the person.
+        let mut person = verdict(HUMAN, None, "feature/x", A, "approve");
+        assert!(
+            daemon
+                .authenticate_verdict(own, &mut person)
+                .await
+                .is_none()
+        );
+        let Request::CodeVerdict { agent, .. } = &person else {
+            unreachable!()
+        };
+        assert_eq!(agent, HUMAN);
         // A name nobody has now is refused here, never looked up later.
         let mut unknown = verdict("unused-name", None, "feature/x", A, "approve");
         assert!(matches!(
