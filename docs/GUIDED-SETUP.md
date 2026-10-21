@@ -19,9 +19,9 @@ agentdocker setup --list
 agentdocker setup --undo PLAN_ID
 ```
 
-Preview prints the new plan ID on stdout and its redacted description on stderr. `--json` prints a machine-readable description instead. The public description includes paths, channels and the AgentDocker executable, never the contents of existing provider configuration. Ordinary `agentdocker setup [runtime...]` creates and applies a saved plan, prints its ID and an undo command, and supports `--json`. `--dry-run` remains read-only; `--shell` still saves a preview that needs an explicit apply. The native window uses the same saved-plan apply/undo safeguards.
+Preview prints the new plan ID on stdout and its redacted description on stderr. `--json` prints a machine-readable description instead. The public description includes paths, channels and the AgentDocker executable, never the contents of existing provider configuration. Ordinary `agentdocker setup [runtime...]` creates and applies a saved plan, prints its ID and an undo command, and supports `--json`. `--dry-run` is read-only; `--shell` saves a preview that needs an explicit apply. The native window uses the same saved-plan apply/undo safeguards.
 
-Guided Claude Code setup installs the complete seven-event hooks adapter in `.claude/settings.json`. When MCP registration is missing and the Claude CLI is available, setup delegates registration to that CLI; it does not restore or rewrite `.claude.json` as a file snapshot. The receipt tracks ownership for undo. Identity reuse is verified; existing duplicates are repaired offline with `identity-repair` (IDENTITY-REPAIR.md (in git history)). Codex receives both stdio MCP and activity hooks; other supported JSON MCP hosts receive their stdio adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement. Inventory labels it `unverified`, even when another alias is configured correctly; **Review setup** and **Check connections** remain available. Missing registration and malformed or unreadable configuration are also reported separately.
+Guided Claude Code setup installs the complete seven-event hooks adapter in `.claude/settings.json`. When MCP registration is missing and the Claude CLI is available, setup delegates registration to that CLI; it does not restore or rewrite `.claude.json` as a file snapshot. The receipt tracks ownership for undo. Identity reuse is verified; existing duplicates are repaired offline with `identity-repair`. Codex receives both stdio MCP and activity hooks; other supported JSON MCP hosts receive their stdio adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement. Inventory labels it `unverified`, even when another alias is configured correctly; **Review setup** and **Check connections** remain available. Missing registration and malformed or unreadable configuration are also reported separately.
 
 ## Shared coordination skill
 
@@ -46,16 +46,11 @@ copy is preserved and reported for comparison. Undo refuses later edits.
 The [Codex skill loader](https://learn.chatgpt.com/docs/build-skills),
 [Claude skill loader](https://code.claude.com/docs/en/skills) and
 [Gemini skill loader](https://geminicli.com/docs/cli/skills/) support the common
-SKILL.md format. Actual Codex 0.154.0 profile discovery and Claude Code 2.1.273's SDK
-initialization found the installed skill in isolated profiles on September 15,
-without a model call. Combined `d7bd90c` passed 969 Rust tests, 70 Python checks,
-the release gate and an actual Codex TUI queue/answer trial.
-[Recorded setup and discovery evidence](verification/INDEX.md) preserves source/binary provenance and limits. This proves discovery, not automatic activation for every
-prompt. Gemini's path follows its documentation and still needs an actual CLI
-trial here. Other tools can use the exported file through their own documented
-loader; desktop inventory alone does not imply skill support. Provider trust,
-skill policy and tool permissions still apply. No AGENTS.md, CLAUDE.md or global
-approval settings are rewritten.
+SKILL.md format. An installed skill is discovered, not automatically activated
+for every prompt. Other tools can use the exported file through their own
+documented loader; desktop inventory alone does not imply skill support.
+Provider trust, skill policy and tool permissions still apply. No AGENTS.md,
+CLAUDE.md or global approval settings are rewritten.
 
 ## Apply, recovery and undo
 
@@ -70,14 +65,14 @@ server entry and a unique ownership marker in its environment. Undo requires
 that exact entry, including command, arguments, environment and flags. A
 matching runtime name alone does not authorize removal. Existing registrations
 are left alone; an interrupted add cannot claim a later registration with a
-different marker. Older receipts without this evidence refuse to remove a
+different marker. Receipts without this evidence refuse to remove a
 present entry. Invalid provider JSON or an invalid `mcpServers` container fails
 preflight before hook changes. A provider command succeeds only when the exact
 planned entry appears after add, or the reserved entry is absent after remove.
 
 The provider CLI remains the writer of its live application state, using its
 [documented MCP registration interface](https://code.claude.com/docs/en/mcp).
-AgentDocker writers now lock the canonical configuration targets for the entire
+AgentDocker writers lock the canonical configuration targets for the entire
 operation. Guided apply/undo, legacy setup and hook installation coordinate even
 when they use different AgentDocker homes; symlink aliases share a lock. A busy
 target fails before configuration or receipt changes. Independent profiles can
@@ -93,25 +88,6 @@ Ordinary unrelated provider application-state updates do not invalidate a receip
 ## Removal
 
 `agentdocker setup --remove [runtime...]` plans taking AgentDocker's wiring out of every tool it knows (or those named), installed or not, without the receipt that wired it, and applies it at once; `--remove --preview` saves it for review and `setup --apply`. Only what runs AgentDocker goes, recognised as setup and health recognise it: a Claude Code, Codex or JSON-host hook object or MCP entry whose command runs `agentdocker` with its own arguments (an entry under the reserved name that runs anything else stays, and is said); Codex's `[mcp_servers.agentdocker]` table and the tables under it, taken out by lines and kept only when the rest parses to exactly the document without it (a dotted-key entry is left to remove by hand); OpenCode's `mcp.agentdocker`; skills and the OpenCode plugin only while their stamp verifies (an edited one stays, and is said); the shell block between its markers. Hook groups and events left empty go with them; other tools' hooks, theirs beside ours in one group included, stay. Claude Code's MCP entry is removed through `claude mcp remove`, never by rewriting `.claude.json`, and only when it has exactly the shape `claude mcp add` writes (`type: "stdio"`, the command, string arguments and an `env` of strings, nothing else), so the undo puts it back exactly; otherwise the plan says to remove it by hand. An `--env` value it saved is masked wherever the plan or an error shows it. Codex's table is cut from its header to its last key, with the one blank line setup put before it; a comment or blank line that belongs to the next table, or ends the file, stays. The plan is an ordinary receipt (format 2: a change may delete a file; a format 1 receipt never does, and is refused if it says so): apply refuses a file changed since the preview, and `setup --undo` restores each file to the byte, recreates a deleted skill or plugin, and re-adds the exact Claude Code entry it removed. `desktop uninstall` does not touch provider configuration; run removal first.
-
-## Planned app-guided live-message connection
-
-An **Enable live messages / Reconnect** action must let the person preview and
-approve connecting an existing session from the app. It should discover the
-session and construct the supported launch/resume settings, preserve the same
-conversation, queued IDs and drafts, and guide any provider-required startup
-consent. Keep a copyable CLI command as an alternative. Do not require repeated
-manual flags when the supported setup can remember them; do not imply the app
-can grant consent that belongs to the provider.
-
-A running session that cannot attach in place needs a clear, approved handoff,
-with busy-session, cancellation, launch failure and provider-limit handling.
-No failed handoff may consume input or silently start a different conversation.
-Show setup, waiting for consent, receiver contact and verified delivery
-separately; close the flow only after a real receipt. Test actual idle wake as
-well as reconnect, retained drafts and queued-message order for each supported
-provider. This is requested engineering work, not a shipped button yet; see the
-[remaining work](REMAINING-WORK.md).
 
 ## What a connection check proves
 
@@ -140,25 +116,17 @@ MCP diagnostics recognize a direct `agentdocker mcp` launch and the `mcp --runti
 
 An available executable is not a successful adapter call. Checks never execute configured commands or contact a model, and do not prove provider message consumption. Bare commands are checked against the inspecting process's PATH; relative paths need an explicit working directory. Claude user settings that disable hooks are reported, while project/managed settings may override them. Claude Code can use its complete hooks adapter without an optional MCP registration. These checks do not resolve every provider setting layer or certify that an available executable will run correctly. MCP approval remains controlled by the provider; setup does not preapprove tools.
 
-The [local trial](LOCAL-TRIAL.md) requires a fresh real-provider round trip. During the native delivery work, a disposable Claude Code session received a token through hooks and wrote it to its fixture file; a fresh Codex session received a different token through MCP, echoed it to its fixture peer and recorded it in the journal. Both used private fixture IPC and left the monitored provider settings unchanged. This is bounded acceptance of those installed CLI versions, not certification of every provider/version or sustained use. The first Codex run correctly failed consumption assertions because tool approval was not configured; the passing run explicitly approved only its five fixture tools for that invocation.
+The [local trial](LOCAL-TRIAL.md) requires a fresh real-provider round trip.
 
-The September 14 readiness candidate in [PR #125](https://github.com/brandopakel/AgentDocker/pull/125) passed 882 Rust tests, 65 Python checks and 165 native workflow steps at `0dedf24`. Native controls distinguished activity-only, adapter contact, an active receiver awaiting its first receipt, verified receipt and paused delivery. A 90-second actual Codex 0.154.0 conversation completed six ordered human/peer inputs and replies, survived a dropped read response, retained one controller/conversation and refreshed readiness after the last receipt. The separate Claude channel transport trial refreshed while idle without duplicating its outstanding offer or acknowledging any input. Provider settings were unchanged and fixture processes exited. These are bounded source-specific trials. September 15 installed acceptance at
-`cf64ca3` additionally verified automatic receiver startup in an existing Codex
-0.154.0 session, a peer message starting the next ordinary turn without a human
-prompt, and its exact receipt/queue acknowledgement. Hook and Claude settings
-were unchanged. See the [native input record](verification/INDEX.md);
-zero-prompt startup/reopen and broader platform acceptance remain separate.
-
-Provider configuration follows the installed CLI capabilities and the official [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) and [Claude Code hooks reference](https://code.claude.com/docs/en/hooks). Private raw trial records remain outside the repository. Packaging and signing are documented in [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md).
+Provider configuration follows the installed CLI capabilities and the official [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) and [Claude Code hooks reference](https://code.claude.com/docs/en/hooks). Packaging and signing are documented in [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md).
 
 
 CLI inventory also checks standard installation directories when a native app inherits a minimal PATH. Connection checks continue to use the inspecting process's actual PATH; finding a CLI in an inventory fallback does not validate a bare MCP command. Selecting a runtime explicitly inspects only that target, so an unrelated malformed desktop launcher does not block its setup preview. Codex desktop and ChatGPT have independent inventory rows without a supported setup adapter; the Codex CLI configuration is not treated as their connection health.
 
 Codex hooks must belong to a configuration layer the running provider actually
-loads. An earlier trial with `--ignore-user-config` invoked no callbacks. The
-September 10 trial of 0.153.4 passed with inline `hooks.<event>` invocation
-overrides and invocation-only trust for vetted fixture hooks. This does not
-grant trust to installed user hooks. Keep configuration health unverified until
+loads. Running Codex with `--ignore-user-config` invokes no callbacks. Inline
+`hooks.<event>` invocation overrides with invocation-only trust can run vetted
+fixture hooks; this does not grant trust to installed user hooks. Keep configuration health unverified until
 an actual callback is observed; this is separate from a passing MCP round trip.
 For isolated trials, explicitly configure the MCP child's `AGENTDOCKER_HOME`,
 `AGENTDOCKER_SOCKET` and `AGENTDOCKER_NO_AUTOSTART`: Codex filters the inherited
@@ -171,44 +139,19 @@ three-second timeout; other activity hooks retain a fifteen-second outer limit.
 Claude Code inventory, connection checks, user hooks and guided setup respect
 [`CLAUDE_CONFIG_DIR`](https://code.claude.com/docs/en/env-vars). A selected profile
 uses `settings.json` and `.claude.json` inside that directory; without an
-override the default remains `~/.claude/settings.json` and `~/.claude.json`.
+override the default is `~/.claude/settings.json` and `~/.claude.json`.
 Saved delegated steps pin the selected profile directory at preview. Apply,
 resume and undo set that profile only in the provider child process; a plan for
 the default profile explicitly removes an inherited override from that child.
 Changing the invoking shell's profile after preview does not redirect the saved
 plan. Setup does not switch the profiles of existing provider sessions.
 
-The [packaged Claude profile trial](verification/INDEX.md)
-passed with Claude Code 2.1.263 and candidate `a65d956`: preview in profile A,
-apply and undo while invoking from profile B, matching health diagnostics,
-preservation of unrelated MCP entries/hooks, and refusal before edits for a
-changed server environment or malformed provider JSON. Both disposable profiles
-were removed; monitored user configurations stayed unchanged. The trial driver
-is in git history; it is a configuration-only trial that does not invoke a model
-or prove automatic inbox consumption.
+## Ordinary setup
 
-## First-install configuration acceptance (September 19)
-
-The installed `9e75e834` package (source `ce82d06`) was installed into a private
-trial prefix and exercised against empty provider configuration. Saved preview,
-apply, health and undo covered Claude/Codex MCP entries, hooks and both shared
-skills; shell setup/undo also passed. Codex hook trust correctly remained
-unverified. The private daemon was stopped after the trial. Details and the
-original operator bookkeeping side effect are retained in the existing
-[integrated record](verification/INDEX.md).
-
-That trial found ordinary setup left no saved undo receipt on `ce82d06`.
-Current source fixes this: ordinary `setup <runtime>` persists a new plan before
-applying through the same guarded flow as the app. A failed apply retains its
-receipt for review, resume or undo. Repeated setup owns only its own changes;
-undo refuses later user edits. Ordinary Claude setup refuses unverified MCP
-configuration or a missing CLI needed for registration before writing hooks or
-skills; an explicit preview can still offer hooks-only changes for review.
-This does not retroactively create receipts for
-older installations. Preview/apply remains available when review before writing
-is preferred.
-
-This closes configuration-only first-install acceptance at that candidate.
-No provider session used the test profile; authentication, hook trust, startup
-consent, actual idle receipt, independent OS-user behavior and Gatekeeper remain
-separate acceptance.
+Ordinary `setup <runtime>` persists a new plan before applying through the same
+guarded flow as the app. A failed apply retains its receipt for review, resume or
+undo. Repeated setup owns only its own changes; undo refuses later user edits.
+Ordinary Claude setup refuses unverified MCP configuration or a missing CLI
+needed for registration before writing hooks or skills; an explicit preview can
+still offer hooks-only changes for review. Preview/apply remains available when
+review before writing is preferred.
