@@ -250,6 +250,9 @@ pub enum Request {
         agent: String,
     },
 
+    /// Which process is the daemon serving this socket, born when, and the
+    /// successor it is handing over to, if any. Answers `daemon_process`.
+    DaemonProcess,
     /// Spawn `spec.command` and supervise it.
     Run {
         spec: crate::AgentSpec,
@@ -1788,6 +1791,14 @@ pub enum Response {
         /// Absent from a daemon older than the switches.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         experimental: Option<crate::config::ExperimentalConfig>,
+    },
+    DaemonProcess {
+        pid: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at: Option<chrono::DateTime<chrono::Utc>>,
+        /// The process a handover in flight names as the next daemon.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        successor: Option<u32>,
     },
     Agent {
         agent: AgentRecord,

@@ -206,10 +206,26 @@ pub(crate) fn companion_cli() -> Option<std::path::PathBuf> {
     }))
 }
 
+/// Environment a client may not give a supervised Codex terminal's
+/// controller: anything that loads code into it.
+fn loads_code(key: &str) -> bool {
+    key.starts_with("LD_") || key.starts_with("DYLD_")
+}
+
 /// A client's launch that asks to be a supervised Codex terminal must run
 /// this daemon's own `agentdocker codex-input`: the controller is let send
 /// what the person typed, so it is never a program of the client's choosing.
-pub(crate) fn controller_launch_refusal(request: &Request) -> Option<Response> {
+/// The command is resolved to the real file here, once, and launched as
+/// that, so a link changed afterwards changes nothing; and nothing that
+/// loads code into it may come with it.
+pub(crate) fn admit_controller_launch(request: &mut Request) -> Option<Response> {
+    admit_controller_launch_beside(request, companion_cli())
+}
+
+fn admit_controller_launch_beside(
+    request: &mut Request,
+    companion: Option<std::path::PathBuf>,
+) -> Option<Response> {
     let (Request::Run { spec } | Request::RunContainer { spec, .. }) = request else {
         return None;
     };
@@ -220,18 +236,32 @@ pub(crate) fn controller_launch_refusal(request: &Request) -> Option<Response> {
     {
         return None;
     }
-    let genuine = spec.command.get(1).map(String::as_str) == Some("codex-input")
-        && companion_cli().is_some_and(|cli| {
-            spec.command
-                .first()
-                .is_some_and(|program| same_file(std::path::Path::new(program), &cli))
-        });
-    (!genuine).then(|| {
-        Response::error(
+    let refuse = |why: &str| {
+        Some(Response::error(
             ErrorCode::Invalid,
-            "a supervised Codex terminal is started through this AgentDocker's own `agentdocker codex-input`",
-        )
-    })
+            format!(
+                "a supervised Codex terminal is started through this AgentDocker's own `agentdocker codex-input`, {why}"
+            ),
+        ))
+    };
+    if spec.env.keys().any(|key| loads_code(key)) {
+        return refuse("with nothing that loads code into it");
+    }
+    let resolved = spec
+        .command
+        .first()
+        .and_then(|program| std::fs::canonicalize(program).ok());
+    let companion = companion.and_then(|cli| std::fs::canonicalize(cli).ok());
+    match (resolved, companion) {
+        (Some(resolved), Some(companion))
+            if resolved == companion
+                && spec.command.get(1).map(String::as_str) == Some("codex-input") =>
+        {
+            spec.command[0] = resolved.display().to_string();
+            None
+        }
+        _ => refuse("and this is not it"),
+    }
 }
 
 impl State {
@@ -276,12 +306,12 @@ impl State {
 }
 
 impl Daemon {
-    /// [`controller_launch_refusal`], for the socket.
-    pub(crate) fn launch_refusal(&self, request: &Request) -> Option<Response> {
+    /// [`admit_controller_launch`], for the socket.
+    pub(crate) fn admit_launch(&self, request: &mut Request) -> Option<Response> {
         if !self.person_check {
             return None;
         }
-        controller_launch_refusal(request)
+        admit_controller_launch(request)
     }
 
     /// A refusal when `request` acts as the person and `peer`, the
@@ -389,6 +419,7 @@ impl Daemon {
 mod tests {
     use super::*;
     use agentdocker_core::AgentSpec;
+    use std::collections::BTreeMap;
 
     fn process(pid: u32, ppid: u32, argv: &[&str]) -> procinfo::Process {
         procinfo::Process {
@@ -638,6 +669,79 @@ mod tests {
             !state.controller_typing((4243, Some(at(1))), &send, &running(&cli, "codex-input")),
             "another process"
         );
+    }
+
+    /// A controller launch runs the companion CLI's real file, resolved
+    /// once at admission, and carries nothing that loads code into it.
+    #[cfg(unix)]
+    #[test]
+    fn a_controller_launch_is_the_real_companion_and_loads_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = tmp.path().join("agentdocker");
+        std::fs::write(&cli, "x").unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&cli, &link).unwrap();
+        let launch = |program: &std::path::Path, extra: &[(&str, &str)]| {
+            let mut env: BTreeMap<String, String> = [(
+                agentdocker_host::provider_input::CODEX_INPUT_ENV.to_owned(),
+                "1".to_owned(),
+            )]
+            .into();
+            env.extend(
+                extra
+                    .iter()
+                    .map(|(k, v)| ((*k).to_owned(), (*v).to_owned())),
+            );
+            Request::Run {
+                spec: AgentSpec {
+                    name: "codex".into(),
+                    runtime: "codex".into(),
+                    command: vec![
+                        program.display().to_string(),
+                        "codex-input".into(),
+                        "--".into(),
+                        "codex".into(),
+                    ],
+                    env,
+                    ..AgentSpec::default()
+                },
+            }
+        };
+        // Through a link: admitted as the file it names, so a later change
+        // to the link changes nothing.
+        let mut request = launch(&link, &[]);
+        assert!(admit_controller_launch_beside(&mut request, Some(cli.clone())).is_none());
+        let Request::Run { spec } = &request else {
+            unreachable!()
+        };
+        assert_eq!(
+            std::path::Path::new(&spec.command[0]),
+            std::fs::canonicalize(&cli).unwrap()
+        );
+        for (key, value) in [
+            ("LD_PRELOAD", "/tmp/x.so"),
+            ("DYLD_INSERT_LIBRARIES", "/tmp/x.dylib"),
+        ] {
+            let mut request = launch(&cli, &[(key, value)]);
+            assert!(
+                admit_controller_launch_beside(&mut request, Some(cli.clone())).is_some(),
+                "{key}"
+            );
+        }
+        let other = tmp.path().join("python3");
+        std::fs::write(&other, "x").unwrap();
+        assert!(
+            admit_controller_launch_beside(&mut launch(&other, &[]), Some(cli.clone())).is_some()
+        );
+        // An ordinary launch is not this check's to judge.
+        let mut ordinary = Request::Run {
+            spec: AgentSpec {
+                name: "x".into(),
+                command: vec!["/bin/sh".into()],
+                ..AgentSpec::default()
+            },
+        };
+        assert!(admit_controller_launch_beside(&mut ordinary, Some(cli)).is_none());
     }
 
     /// On Windows, where the table holds only this user's readable

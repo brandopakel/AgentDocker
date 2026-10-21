@@ -227,6 +227,7 @@ fn mutates(request: &Request) -> bool {
         Request::Shutdown
             | Request::Reload
             | Request::Ping
+            | Request::DaemonProcess
             | Request::Images
             | Request::Stale { .. }
             | Request::Reads { .. }
@@ -2115,6 +2116,25 @@ impl Daemon {
                 executable: agentdocker_host::procinfo::executable_path().ok(),
                 experimental: Some(crate::config::experimental(&self.home)),
             },
+            Request::DaemonProcess => {
+                let state = lock(&self.state);
+                let successor = match &state.coordination {
+                    Coordination::Quiescing { transfer }
+                    | Coordination::Transferred { transfer } => state
+                        .store
+                        .transfer()
+                        .ok()
+                        .flatten()
+                        .filter(|t| &t.id == transfer)
+                        .and_then(|t| t.successor_pid),
+                    Coordination::Serving => None,
+                };
+                Response::DaemonProcess {
+                    pid: std::process::id(),
+                    started_at: agentdocker_host::procinfo::start_time(std::process::id()),
+                    successor,
+                }
+            }
             Request::Run { spec } => self.run(spec).await,
             Request::RunContainer {
                 spec,
