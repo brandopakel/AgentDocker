@@ -73,6 +73,7 @@ pub fn device_of(pid: u32) -> Option<String> {
 /// off never takes away the returning shell's own modes; bracketed paste,
 /// cursor-key and keypad modes and the alternate screen are the shell's to
 /// set at its prompt, and are left alone.
+#[cfg(unix)]
 const RESTORE_MODES: &[u8] =
     b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[<u\x1b[?25h";
 
