@@ -353,15 +353,36 @@ fn shown(argv: &[String]) -> String {
 }
 
 /// What a provider printed, as it may be shown: without any `--env` value
-/// of `argv`, which it may repeat.
+/// of `argv`, which it may repeat. Every place any value occurs is found in
+/// the output as printed and hidden together, so a short value can never
+/// break up a longer one before it is found.
 fn masked(output: &str, argv: &[String]) -> String {
-    argv.windows(2)
+    let output = output.trim();
+    let values: Vec<&str> = argv
+        .windows(2)
         .filter(|pair| pair[0] == "--env")
         .filter_map(|pair| pair[1].split_once('=').map(|(_, value)| value))
         .filter(|value| !value.is_empty())
-        .fold(output.trim().to_owned(), |output, value| {
-            output.replace(value, "…")
-        })
+        .collect();
+    let mut hidden = vec![false; output.len()];
+    for (at, _) in output.char_indices() {
+        for value in &values {
+            if output[at..].starts_with(value) {
+                hidden[at..at + value.len()].fill(true);
+            }
+        }
+    }
+    let mut shown = String::with_capacity(output.len());
+    let mut hiding = false;
+    for (at, c) in output.char_indices() {
+        if !hidden[at] {
+            shown.push(c);
+        } else if !hiding {
+            shown.push('…');
+        }
+        hiding = hidden[at];
+    }
+    shown
 }
 
 fn run_step(step: &Delegated, argv: &[String]) -> Result<agentdocker_host::command::Output> {
@@ -1711,12 +1732,15 @@ mod tests {
     /// in what the provider printed.
     #[test]
     fn a_saved_environment_value_is_never_shown() {
-        let secret = "synthetic-secret-4f1c9a";
+        let secret = "synthetic-secret-1a2b3c";
         let tmp = tempfile::tempdir().unwrap();
         let (roots, claude) = fake_claude(tmp.path());
         writing_claude(tmp.path());
+        // A short value given first, which also occurs inside the secret,
+        // cannot break the secret up before it is hidden.
         let entry = json!({"type": "stdio", "command": "/x/agentdocker",
-            "args": ["mcp", "--runtime", "claude-code"], "env": {"API_TOKEN": secret}});
+            "args": ["mcp", "--runtime", "claude-code"],
+            "env": {"A_FLAG": "1", "API_TOKEN": secret, "Z_FLAG": "c"}});
         claude_entry(tmp.path(), &entry);
         let mut plan = prepare_remove(&roots, &["claude-code".into()]).unwrap();
         assert!(!plan.view().to_string().contains(secret));
@@ -1728,7 +1752,16 @@ mod tests {
         let error = apply(&directory, &mut plan, true).unwrap_err();
         let error = format!("{error:#}");
         assert!(error.contains("API_TOKEN=…"), "{error}");
-        assert!(!error.contains(secret), "{error}");
+        for part in ["synthetic", "secret-", "a2b3"] {
+            assert!(!error.contains(part), "{part}: {error}");
+        }
+        assert_eq!(
+            masked(
+                "A_FLAG=1 API_TOKEN=synthetic-secret-1a2b3c ok",
+                &plan.delegated[0].remove
+            ),
+            "A_FLAG=… API_TOKEN=… ok"
+        );
         assert!(!plan.view().to_string().contains(secret));
     }
 
