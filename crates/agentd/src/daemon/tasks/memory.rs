@@ -204,10 +204,14 @@ impl Daemon {
             Ok(memory) => memory,
             Err(response) => return *response,
         };
-        if !actor.human && memory.author != actor.id {
+        // An agent forgets only what it kept, and only in its own project,
+        // whether it names the memory by its full id or a prefix.
+        if !actor.human
+            && (memory.author != actor.id || actor.project.as_ref() != Some(&memory.project))
+        {
             return Response::error(
                 ErrorCode::Forbidden,
-                "a memory is forgotten by whoever kept it, or by the person",
+                "a memory is forgotten by whoever kept it, in its own project, or by the person",
             );
         }
         let kinds = vec![EventKind::MemoryForgotten {

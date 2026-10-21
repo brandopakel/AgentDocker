@@ -1171,4 +1171,38 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         panic!()
     };
     assert!(memories.is_empty(), "forgotten for good");
+
+    // Kept by the agent in another project: not its to forget from here,
+    // by full id or by prefix.
+    let other = std::path::Path::new(&f.work).join("other-project");
+    std::fs::create_dir_all(&other).unwrap();
+    let Response::Memory { memory: elsewhere } = d
+        .handle(Request::MemoryAdd {
+            from: f.agent.id.to_string(),
+            project: Some(other.display().to_string()),
+            text: "a fact of another project".into(),
+            links: vec![],
+            supersedes: None,
+        })
+        .await
+    else {
+        panic!("kept elsewhere")
+    };
+    assert_ne!(
+        Some(&elsewhere.project),
+        f.agent.project.as_ref().map(|p| p.id()).as_ref()
+    );
+    for reference in [elsewhere.id.clone(), elsewhere.id[..6].to_owned()] {
+        assert!(
+            !matches!(
+                d.handle(Request::MemoryForget {
+                    from: f.agent.id.to_string(),
+                    memory: reference.clone(),
+                })
+                .await,
+                Response::Ok
+            ),
+            "{reference}"
+        );
+    }
 }

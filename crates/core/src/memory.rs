@@ -66,7 +66,15 @@ impl Memory {
         for link in &self.links {
             link.check()?;
         }
-        if secret_like(&self.text) {
+        // Every word that is kept is checked, a link's too.
+        if std::iter::once(self.text.as_str())
+            .chain(
+                self.links.iter().flat_map(|link| {
+                    std::iter::once(link.target.as_str()).chain(link.note.as_deref())
+                }),
+            )
+            .any(secret_like)
+        {
             return Err(
                 "that reads like a secret (a key, a token, a private key); a memory is kept in plain text, so keep secrets out of it",
             );
@@ -82,32 +90,38 @@ pub fn secret_like(text: &str) -> bool {
     if text.contains("-----BEGIN") && text.contains("PRIVATE KEY") {
         return true;
     }
-    text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | ',' | ';' | '(' | ')'))
-        .any(|word| {
-            let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
-            let token = |prefix: &str, min: usize| {
-                word.strip_prefix(prefix).is_some_and(|rest| {
-                    rest.len() >= min
-                        && rest
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
-                })
-            };
-            token("sk-", 20)
-                || token("sk_live_", 16)
-                || token("ghp_", 30)
-                || token("gho_", 30)
-                || token("github_pat_", 30)
-                || token("xoxb-", 20)
-                || token("xoxp-", 20)
-                || token("glpat-", 20)
-                || (word.len() == 20
-                    && word.starts_with("AKIA")
-                    && word
+    // Words as written, so a base64 key with `+ / =` is one; and the same
+    // text cut at every character a token never holds, so one inside
+    // `token=…`, a URL or a path is a word of its own.
+    let written = text.split(|c: char| {
+        c.is_whitespace() || matches!(c, '"' | '\'' | '`' | ',' | ';' | '(' | ')')
+    });
+    let cut = text.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-')));
+    written.chain(cut).any(|word| {
+        let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        let token = |prefix: &str, min: usize| {
+            word.strip_prefix(prefix).is_some_and(|rest| {
+                rest.len() >= min
+                    && rest
                         .chars()
-                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
-                || high_entropy(word)
-        })
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+            })
+        };
+        token("sk-", 20)
+            || token("sk_live_", 16)
+            || token("ghp_", 30)
+            || token("gho_", 30)
+            || token("github_pat_", 30)
+            || token("xoxb-", 20)
+            || token("xoxp-", 20)
+            || token("glpat-", 20)
+            || (word.len() == 20
+                && word.starts_with("AKIA")
+                && word
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+            || high_entropy(word)
+    })
 }
 
 /// A run of 32 or more letters and digits that mixes upper case, lower
@@ -167,9 +181,15 @@ pub fn profile(memories: &[Memory], max_chars: usize) -> Vec<&Memory> {
     let mut used = 0;
     current(memories)
         .into_iter()
-        .take_while(|memory| {
-            used += memory.text.chars().count() + 1;
-            used <= max_chars
+        // One too long for what is left is passed over, not the end: the
+        // shorter ones after it still fit.
+        .filter(|memory| {
+            let size = memory.text.chars().count() + 1;
+            let fits = used + size <= max_chars;
+            if fits {
+                used += size;
+            }
+            fits
         })
         .collect()
 }
@@ -230,6 +250,36 @@ mod tests {
     }
 
     #[test]
+    fn a_secret_inside_an_assignment_a_url_or_a_link_is_refused() {
+        let now = Utc::now();
+        let project = ProjectId::from("p");
+        for text in [
+            "token=ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            "see https://example.invalid/?token=ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            "path /keys/sk-abcdefghijklmnopqrstuvwx/x",
+        ] {
+            assert!(
+                Memory::new(project.clone(), "a", text, vec![], None, now).is_err(),
+                "{text}"
+            );
+        }
+        let mut link = Link::new(crate::LinkKind::Memory, "sk-abcdefghijklmnopqrstuvwx");
+        assert!(
+            Memory::new(project.clone(), "a", "fine", vec![link.clone()], None, now).is_err(),
+            "a link's target"
+        );
+        link.target = "notes".into();
+        link.note = Some("ghp_abcdefghijklmnopqrstuvwxyz0123456789".into());
+        assert!(
+            Memory::new(project.clone(), "a", "fine", vec![link], None, now).is_err(),
+            "a link's note"
+        );
+        assert!(!secret_like(
+            "set RUST_LOG=debug and see https://docs.rs/tokio"
+        ));
+    }
+
+    #[test]
     fn a_superseded_memory_is_kept_but_no_longer_said() {
         let all = vec![
             memory("old", "deploys go out on Fridays", 0, None),
@@ -266,5 +316,13 @@ mod tests {
         let ids: Vec<&str> = profile(&all, 22).iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["c", "b"]);
         assert!(profile(&all, 5).is_empty());
+        let mut long = all.clone();
+        long.push(memory("big", &"z".repeat(900), 3, None));
+        let ids: Vec<&str> = profile(&long, 22).iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["c", "b"],
+            "a long newest one is passed over, not the end"
+        );
     }
 }
