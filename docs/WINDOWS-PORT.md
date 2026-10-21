@@ -353,12 +353,19 @@ with these inputs; each one narrows or extends what the native run exercises:
   FIFO input, exact receipts and receiver replacement. A narrower scenario never
   changes the strict `startup` outcome.
 - `--queue-recovery` (requires `--codex` with `--codex-scenario automatic`) runs
-  two private ConPTY scenarios: explicit queued-entry recovery after a
-  deliberate interruption, and refusal during provider-rate and project holds.
-  Each retains the next entry for 30 seconds; recovery requires distinct
-  confirmation, action and order, starts one existing entry and treats a
-  same-intent retry as the same entry, and the hold scenario requires refusal
-  before intent with a still-readable preview.
+  three private ConPTY scenarios, selected for the launcher driver as
+  `--queued-recovery normal`, `holds` and `client-reply-loss`:
+  - `normal`: explicit queued-entry recovery after a deliberate interruption.
+    Recovery requires distinct confirmation, action and order, starts one
+    existing entry and treats a same-intent retry as the same entry.
+  - `holds`: refusal during provider-rate and project holds, before any intent,
+    with the preview still readable.
+  - `client-reply-loss`: the local client sends the start request over the
+    private resolve named pipe and is closed without reading the reply, once the
+    durable intent exists. The intent is retained and the entry is started once;
+    a repeat start is reported as already attempted or already delivered and
+    nothing is started twice.
+  Each scenario retains the next entry for 30 seconds.
 - `--startup-samples N` (0 to 20) and `--service` are the script's forms of the
   inputs above.
 - `--mcp-forms`, `--mcp-urls`, `--mcp-idle` and `--managed-secret` (each
