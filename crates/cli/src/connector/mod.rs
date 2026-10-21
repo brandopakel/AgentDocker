@@ -17,7 +17,6 @@ pub mod tunnel;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agentdocker_core::agent::{CONNECTOR_LABEL, GENERATED_NAME, NAME_LABEL};
@@ -34,10 +33,20 @@ use crate::mcp::{Identity, McpServer};
 use http::{Request as HttpRequest, Response as HttpResponse, escape_html, field};
 use oauth::{AgentIdentity, AuthorizeRefusal, OAuthError, Store, Vendor};
 
-/// Consents refused for a wrong pairing code before this process stops
-/// taking any: a code is eight characters, and nobody types it wrong
-/// this often.
-const MAX_CONSENT_FAILURES: u32 = 5;
+/// Wrong pairing codes one source may type within `STRIKE_WINDOW` before
+/// it is refused for the rest of it: nobody types the code wrong this often.
+const SOURCE_STRIKES: u32 = 5;
+const STRIKE_WINDOW: chrono::Duration = chrono::Duration::minutes(15);
+/// Sources remembered at once; the oldest strikes are forgotten first.
+const MAX_SOURCES: usize = 4096;
+/// Wrong codes typed against one pairing code, from anywhere, before it is
+/// replaced: no guess gets further than this on any code, and nobody is
+/// locked out by somebody else's guessing.
+const CODE_GUESSES: u32 = 20;
+/// How long the page that chooses the project stays good after the code.
+const TICKET_LIFETIME: chrono::Duration = chrono::Duration::minutes(10);
+/// Consent pages open at once.
+const MAX_TICKETS: usize = 64;
 /// Registered clients kept at most; DCR is unauthenticated by design, so
 /// a flood of registrations must not grow the state file without bound.
 const MAX_CLIENTS: usize = 200;
@@ -272,13 +281,61 @@ pub struct Connector<B> {
     /// Proposed first on the consent page; the person may choose another.
     default_project: Option<agentdocker_core::ProjectRef>,
     extra_callbacks: Vec<String>,
-    pairing_code: String,
+    /// The pairing code and every guess at it, under one lock.
+    gate: Mutex<Gate>,
     store: Mutex<Store>,
     state_path: Option<PathBuf>,
     servers: Mutex<HashMap<String, Arc<McpServer<B>>>>,
-    consent_failures: AtomicU32,
+    /// The header the tunnel writes the client's address into, when known.
+    client_ip_header: Option<String>,
+    /// Consent pages past the code, by the hash of their ticket.
+    tickets: Mutex<HashMap<String, Ticket>>,
+    /// The status file and what it says, so the code it shows is current.
+    status: Mutex<Option<(PathBuf, service::Serving)>>,
     allowlist: Option<net::Allowlist>,
     fetcher: Arc<cimd::Fetcher>,
+}
+
+/// The pairing code in force, the wrong guesses made against it, and the
+/// wrong codes by where they came from. A guess is judged, counted, and
+/// spends or replaces the code in one step under its lock, so two guesses
+/// at once are two guesses in turn: one right code opens one page.
+struct Gate {
+    code: String,
+    guesses: u32,
+    strikes: HashMap<String, Strikes>,
+}
+
+/// What one typed code comes to.
+enum Attempt {
+    /// Its source has typed too many wrong codes to try again yet.
+    StruckOut,
+    Wrong,
+    /// Right, and spent: the connector shows another now.
+    Right,
+}
+
+struct Strikes {
+    count: u32,
+    since: chrono::DateTime<Utc>,
+}
+
+/// A right pairing code, spent on one authorization request: the page that
+/// chooses the project is shown, and posts back, only under it.
+struct Ticket {
+    request: String,
+    expires_at: chrono::DateTime<Utc>,
+}
+
+/// What a ticket is bound to: the request as the client made it.
+fn request_key(pending: &oauth::Pending) -> String {
+    oauth::hash(&format!(
+        "{}\n{}\n{}\n{}",
+        pending.client_id,
+        pending.redirect_uri,
+        pending.code_challenge,
+        pending.state.as_deref().unwrap_or("")
+    ))
 }
 
 /// A project the consent page offers: its root and the name shown.
@@ -304,11 +361,17 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             public_url,
             default_project,
             extra_callbacks,
-            pairing_code,
+            gate: Mutex::new(Gate {
+                code: pairing_code,
+                guesses: 0,
+                strikes: HashMap::new(),
+            }),
             store: Mutex::new(store),
             state_path,
             servers: Mutex::new(HashMap::new()),
-            consent_failures: AtomicU32::new(0),
+            client_ip_header: None,
+            tickets: Mutex::new(HashMap::new()),
+            status: Mutex::new(None),
             allowlist: None,
             fetcher: Arc::new(cimd::fetch),
         }
@@ -318,6 +381,147 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
     pub fn with_allowlist(mut self, allowlist: Option<net::Allowlist>) -> Self {
         self.allowlist = allowlist;
         self
+    }
+
+    /// The header the tunnel writes the client's address into, whether or
+    /// not any address is allowlisted: wrong codes are counted against it.
+    /// Empty is none known.
+    pub fn with_client_ip_header(mut self, header: &str) -> Self {
+        self.client_ip_header = (!header.is_empty()).then(|| header.to_ascii_lowercase());
+        self
+    }
+
+    /// Keep the status file under `home` saying what this connector serves,
+    /// and write it now.
+    pub fn with_status(self, home: PathBuf, serving: service::Serving) -> Self {
+        *self.status.lock().unwrap_or_else(|e| e.into_inner()) = Some((home, serving));
+        self.publish_status(|_| ());
+        self
+    }
+
+    fn publish_status(&self, update: impl FnOnce(&mut service::Serving)) {
+        let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((home, serving)) = status.as_mut() else {
+            return;
+        };
+        update(serving);
+        if let Err(error) = service::write_status(home, serving) {
+            eprintln!("agentdocker connector: could not write the status file: {error:#}");
+        }
+    }
+
+    /// The pairing code the person types now.
+    #[cfg(test)]
+    fn pairing_code(&self) -> String {
+        self.gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .code
+            .clone()
+    }
+
+    /// Put a new pairing code in force and show it where the person reads
+    /// it; the log says only that it changed. Called under the gate's lock,
+    /// so the status file is written in the order the codes were made and
+    /// never shows a code already replaced.
+    fn replace_code(&self, gate: &mut Gate, why: &str) {
+        let code = oauth::pairing_code();
+        gate.code = code.clone();
+        gate.guesses = 0;
+        self.publish_status(|serving| serving.pairing_code = code);
+        eprintln!(
+            "agentdocker connector: pairing code replaced ({why}); `agentdocker connector status` shows the new one"
+        );
+    }
+
+    /// Where a consent came from, as the tunnel reports it in the header it
+    /// is known to write (the last entry of its last line, as the allowlist
+    /// reads it). With no such header known, or none on the request, there
+    /// is no source: no source is ever refused, and the code's own budget
+    /// is what bounds guessing.
+    fn source_of(&self, request: &HttpRequest) -> Option<String> {
+        let header = self.client_ip_header.as_deref()?;
+        net::client_ip(request, header).map(|ip| ip.to_string())
+    }
+
+    /// Judge one typed code, count it and spend or replace the code, in
+    /// one step.
+    fn attempt(&self, source: Option<&str>, typed: &str, now: chrono::DateTime<Utc>) -> Attempt {
+        let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
+        gate.strikes
+            .retain(|_, s| now.signed_duration_since(s.since) < STRIKE_WINDOW);
+        if let Some(source) = source
+            && gate
+                .strikes
+                .get(source)
+                .is_some_and(|s| s.count >= SOURCE_STRIKES)
+        {
+            return Attempt::StruckOut;
+        }
+        if oauth::pairing_code_matches(&gate.code, typed) {
+            self.replace_code(&mut gate, "used");
+            return Attempt::Right;
+        }
+        gate.guesses += 1;
+        if let Some(source) = source {
+            if gate.strikes.len() >= MAX_SOURCES
+                && !gate.strikes.contains_key(source)
+                && let Some(oldest) = gate
+                    .strikes
+                    .iter()
+                    .min_by_key(|(_, s)| s.since)
+                    .map(|(k, _)| k.clone())
+            {
+                gate.strikes.remove(&oldest);
+            }
+            gate.strikes
+                .entry(source.to_owned())
+                .or_insert(Strikes {
+                    count: 0,
+                    since: now,
+                })
+                .count += 1;
+        }
+        if gate.guesses >= CODE_GUESSES {
+            self.replace_code(&mut gate, "too many wrong guesses");
+        }
+        Attempt::Wrong
+    }
+
+    /// Spend a right code on this request: a ticket for its next page.
+    fn issue_ticket(&self, pending: &oauth::Pending, now: chrono::DateTime<Utc>) -> String {
+        let ticket = oauth::random_token();
+        let mut tickets = self.tickets.lock().unwrap_or_else(|e| e.into_inner());
+        tickets.retain(|_, t| t.expires_at > now);
+        if tickets.len() >= MAX_TICKETS
+            && let Some(oldest) = tickets
+                .iter()
+                .min_by_key(|(_, t)| t.expires_at)
+                .map(|(k, _)| k.clone())
+        {
+            tickets.remove(&oldest);
+        }
+        tickets.insert(
+            oauth::hash(&ticket),
+            Ticket {
+                request: request_key(pending),
+                expires_at: now + TICKET_LIFETIME,
+            },
+        );
+        ticket
+    }
+
+    fn ticket_holds(
+        &self,
+        ticket: &str,
+        pending: &oauth::Pending,
+        now: chrono::DateTime<Utc>,
+    ) -> bool {
+        let mut tickets = self.tickets.lock().unwrap_or_else(|e| e.into_inner());
+        tickets.retain(|_, t| t.expires_at > now);
+        tickets
+            .get(&oauth::hash(ticket))
+            .is_some_and(|t| t.request == request_key(pending))
     }
 
     /// What fetches a client's metadata document; tests supply a table.
@@ -406,14 +610,14 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             return Ok(());
         }
         {
-            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             if store.metadata_client_fresh(client_id, Utc::now()) {
                 return Ok(());
             }
-            if store.clients.len() >= MAX_CLIENTS && !store.clients.contains_key(client_id) {
+            if !store.clients.contains_key(client_id) && !store.make_room(MAX_CLIENTS, Utc::now()) {
                 return Err(OAuthError::new(
                     "invalid_client",
-                    "this connector holds as many clients as it will; revoke or restart",
+                    "this connector holds as many clients as it will; try again in a few minutes",
                 ));
             }
         }
@@ -563,10 +767,10 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         };
         let outcome = {
             let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-            if store.clients.len() >= MAX_CLIENTS {
+            if !store.make_room(MAX_CLIENTS, Utc::now()) {
                 return HttpResponse::json(
                     429,
-                    &json!({"error": "too_many_clients", "error_description": "this connector holds as many registered clients as it will; revoke or restart"}),
+                    &json!({"error": "too_many_clients", "error_description": "this connector holds as many registered clients as it will; try again in a few minutes"}),
                 );
             }
             store.register_client(&body, &self.extra_callbacks, Utc::now())
@@ -580,7 +784,8 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         }
     }
 
-    /// Validate the request and show the consent form, or say why not.
+    /// Validate the request and ask for the pairing code, or say why not.
+    /// Nothing about this machine is shown before the code is right.
     async fn consent_form(&self, request: &HttpRequest) -> HttpResponse {
         let params = http::parse_query(request.query());
         if let Some(client_id) = field(&params, "client_id")
@@ -593,10 +798,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             store.begin_authorization(&params)
         };
         match pending {
-            Ok(pending) => {
-                let projects = self.known_projects().await;
-                HttpResponse::html(200, self.consent_html(&pending, &projects, None))
-            }
+            Ok(pending) => HttpResponse::html(200, self.code_html(&pending, None)),
             Err(refusal) => self.refuse_authorization(refusal),
         }
     }
@@ -619,16 +821,8 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         }
     }
 
-    /// The consent page: who asks, the pairing code, a name, and which
-    /// project the agent joins — the ones the daemon knows to pick from,
-    /// or any folder on this machine typed in.
-    fn consent_html(
-        &self,
-        pending: &oauth::Pending,
-        projects: &[ProjectChoice],
-        problem: Option<&str>,
-    ) -> String {
-        let hidden: String = pending
+    fn hidden_fields(pending: &oauth::Pending) -> String {
+        pending
             .fields()
             .iter()
             .map(|(name, value)| {
@@ -637,7 +831,40 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                     escape_html(value)
                 )
             })
-            .collect();
+            .collect()
+    }
+
+    /// The first consent page: who asks, and the pairing code.
+    fn code_html(&self, pending: &oauth::Pending, problem: Option<&str>) -> String {
+        let hidden = Self::hidden_fields(pending);
+        let who = escape_html(&pending.shown_as);
+        let problem = problem
+            .map(|p| format!("<p class=\"problem\">{}</p>", escape_html(p)))
+            .unwrap_or_default();
+        page(
+            "Connect a browser agent",
+            &format!(
+                "<p><b>{who}</b> asks to join a project on this machine.</p>\
+                 {problem}\
+                 <form method=\"post\" action=\"/authorize\">{hidden}\
+                 <label>Pairing code, from <code>agentdocker connector status</code> or the desktop's Tools screen<br><input name=\"pairing_code\" autocomplete=\"off\" autofocus required placeholder=\"ABCDE-FGHJK\"></label>\
+                 <button type=\"submit\">Continue</button></form>"
+            ),
+        )
+    }
+
+    /// The second consent page, past the code: what the agent may do, a
+    /// name, and which project it joins — the ones the daemon knows to
+    /// pick from, or any folder on this machine typed in.
+    fn choose_html(
+        &self,
+        pending: &oauth::Pending,
+        ticket: &str,
+        projects: &[ProjectChoice],
+        problem: Option<&str>,
+    ) -> String {
+        let hidden = Self::hidden_fields(pending);
+        let ticket = escape_html(ticket);
         let who = escape_html(&pending.shown_as);
         let suggested = generated_name(pending.vendor);
         let problem = problem
@@ -670,7 +897,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 "<p><b>{who}</b> asks to join a project on this machine. It will be able to find that project's agents, message them, read its own inbox, the journal and the board. It gets no files, leases or worktrees, and nothing of any other project. Your whole account will offer it, Claude Code sessions about other work too, so choose the project you'd want any of them to reach.</p>\
                  {problem}\
                  <form method=\"post\" action=\"/authorize\">{hidden}\
-                 <label>Pairing code, from <code>agentdocker connector status</code> or the desktop's Tools screen<br><input name=\"pairing_code\" autocomplete=\"off\" autofocus required placeholder=\"ABCD-EFGH\"></label>\
+                 <input type=\"hidden\" name=\"consent_ticket\" value=\"{ticket}\">\
                  {chooser}\
                  <label>Name for this agent<br><input name=\"agent_name\" value=\"{suggested}\" maxlength=\"64\" pattern=\"[A-Za-z0-9._-]+\"></label>\
                  <button type=\"submit\">Connect</button></form>"
@@ -678,9 +905,9 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         )
     }
 
-    /// The consent form came back: the pairing code proves the person at
-    /// this page is the person at the machine; then the daemon gets one
-    /// new browser-agent identity and the client gets its code.
+    /// A consent form came back. The pairing code proves the person at
+    /// this page is the person at the machine, and is spent on it: the
+    /// next page, under a ticket, chooses the project and the name.
     async fn consent(&self, request: &HttpRequest) -> HttpResponse {
         let Some(form) = request.form() else {
             return HttpResponse::text(
@@ -701,10 +928,60 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             Ok(pending) => pending,
             Err(refusal) => return self.refuse_authorization(refusal),
         };
+        let now = Utc::now();
+        if let Some(ticket) = field(&form, "consent_ticket") {
+            if !self.ticket_holds(ticket, &pending, now) {
+                return HttpResponse::html(
+                    403,
+                    self.code_html(
+                        &pending,
+                        Some("That page has expired; type the pairing code again."),
+                    ),
+                );
+            }
+            return self.choose(&form, &pending, ticket).await;
+        }
+        let source = self.source_of(request);
+        let typed = field(&form, "pairing_code").unwrap_or("");
+        match self.attempt(source.as_deref(), typed, now) {
+            Attempt::StruckOut => {
+                return HttpResponse::html(
+                    429,
+                    page(
+                        "Too many wrong codes",
+                        "<p>Too many wrong pairing codes from here. Try again in a quarter of an hour.</p>",
+                    ),
+                );
+            }
+            Attempt::Wrong => {
+                eprintln!("agentdocker connector: consent refused, wrong pairing code");
+                return HttpResponse::html(
+                    403,
+                    self.code_html(
+                        &pending,
+                        Some("That is not the pairing code this connector shows now."),
+                    ),
+                );
+            }
+            Attempt::Right => {}
+        }
+        let ticket = self.issue_ticket(&pending, now);
+        let projects = self.known_projects().await;
+        HttpResponse::html(200, self.choose_html(&pending, &ticket, &projects, None))
+    }
+
+    /// The project and the name, under a ticket that holds: the daemon gets
+    /// one new browser-agent identity and the client gets its code.
+    async fn choose(
+        &self,
+        form: &[(String, String)],
+        pending: &oauth::Pending,
+        ticket: &str,
+    ) -> HttpResponse {
         // The page comes back with what was chosen, so a slip costs one
         // field, not the whole form.
         let again = |problem: &str| {
-            let chosen: Vec<ProjectChoice> = field(&form, "project")
+            let chosen: Vec<ProjectChoice> = field(form, "project")
                 .filter(|p| !p.trim().is_empty())
                 .map(|p| ProjectChoice {
                     root: PathBuf::from(p),
@@ -724,36 +1001,16 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                     }
                     choices
                 });
-            self.consent_html(&pending, &chosen, Some(problem))
+            self.choose_html(pending, ticket, &chosen, Some(problem))
         };
-        if self.consent_failures.load(Ordering::Relaxed) >= MAX_CONSENT_FAILURES {
-            return HttpResponse::html(
-                429,
-                page(
-                    "Consent closed",
-                    "<p>Too many wrong pairing codes: this connector takes no more consents until it is restarted.</p>",
-                ),
-            );
-        }
-        let typed = field(&form, "pairing_code").unwrap_or("");
-        if !oauth::pairing_code_matches(&self.pairing_code, typed) {
-            let failures = self.consent_failures.fetch_add(1, Ordering::Relaxed) + 1;
-            eprintln!(
-                "agentdocker connector: consent refused, wrong pairing code ({failures}/{MAX_CONSENT_FAILURES})"
-            );
-            return HttpResponse::html(
-                403,
-                again("That pairing code is not the one this connector shows."),
-            );
-        }
-        let project = match self.chosen_project(&form) {
+        let project = match self.chosen_project(form) {
             Ok(Some(project)) => project,
             Ok(None) => {
                 return HttpResponse::html(400, again("Choose the project this agent joins."));
             }
             Err(problem) => return HttpResponse::html(400, again(problem)),
         };
-        let typed_name = field(&form, "agent_name")
+        let typed_name = field(form, "agent_name")
             .filter(|n| {
                 n.len() <= 64
                     && n.chars()
@@ -778,10 +1035,26 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 again("That name is already a live agent's here; pick another."),
             );
         }
+        // One consent per ticket, and only while it holds: taken out, then
+        // judged against the time now, however long the checks above took.
+        let taken = self
+            .tickets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&oauth::hash(ticket));
+        if !taken.is_some_and(|t| t.expires_at > Utc::now() && t.request == request_key(pending)) {
+            return HttpResponse::html(
+                403,
+                self.code_html(
+                    pending,
+                    Some("That page has expired; type the pairing code again."),
+                ),
+            );
+        }
         let redirect = {
             let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             store.complete_authorization(
-                &pending,
+                pending,
                 name.clone(),
                 generated,
                 project.root.clone(),
@@ -1164,18 +1437,6 @@ async fn serve(
     let path = state_path();
     let store = load_store(&path)?;
     let pairing = oauth::pairing_code();
-    let connector = Arc::new(
-        Connector::new(
-            client,
-            public.clone(),
-            default_project.clone(),
-            args.allow_callbacks.clone(),
-            pairing.clone(),
-            store,
-            Some(path),
-        )
-        .with_allowlist(allowlist),
-    );
     let pid = std::process::id();
     let serving = service::Serving {
         pid,
@@ -1191,11 +1452,29 @@ async fn serve(
         }),
         allowlist_prefixes: prefixes,
     };
-    if let Err(error) = service::write_status(&home, &serving) {
-        eprintln!("agentdocker connector: could not write the status file: {error:#}");
-    }
+    let connector = Arc::new(
+        Connector::new(
+            client,
+            public.clone(),
+            default_project.clone(),
+            args.allow_callbacks.clone(),
+            pairing.clone(),
+            store,
+            Some(path),
+        )
+        .with_allowlist(allowlist)
+        .with_client_ip_header(&args.client_ip_header())
+        .with_status(home.clone(), serving),
+    );
+    // A service's stderr is a log file: the code is shown where only the
+    // person reads it, never written there.
+    let shown = if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        format!("{pairing}   (typed on the consent page; each code works once)")
+    } else {
+        "shown by `agentdocker connector status` and the desktop's Tools screen".to_owned()
+    };
     eprintln!(
-        "AgentDocker connector{}\n  listening on http://{local}, published as {public}{}\n  MCP URL to add as a custom connector: {public}/mcp\n  pairing code: {pairing}   (typed on the consent page; new each time this runs)\n  admitted addresses: {}\n  Claude:  Settings › Connectors › Add custom connector › paste the URL › Connect\n  ChatGPT: Settings › Connectors › Advanced › Developer mode › Create › paste the URL, OAuth{}",
+        "AgentDocker connector{}\n  listening on http://{local}, published as {public}{}\n  MCP URL to add as a custom connector: {public}/mcp\n  pairing code: {shown}\n  admitted addresses: {}\n  Claude:  Settings › Connectors › Add custom connector › paste the URL › Connect\n  ChatGPT: Settings › Connectors › Advanced › Developer mode › Create › paste the URL, OAuth{}",
         match &default_project {
             Some(p) => format!(
                 ", proposing project {} ({}) at consent",
@@ -1226,7 +1505,7 @@ async fn serve(
     let mut shutdown = shutdown_signal();
     let mut service_stop = service_stop.unwrap_or_else(|| Box::pin(std::future::pending()));
     let mut tunnel_check = tokio::time::interval(std::time::Duration::from_secs(2));
-    let refresh = refresh_allowlist(connector.allowlist.as_ref(), &home, serving.clone());
+    let refresh = refresh_allowlist(&connector);
     tokio::pin!(refresh);
     let outcome = loop {
         tokio::select! {
@@ -1288,12 +1567,12 @@ async fn serve(
 
 /// Polled beside HTTP acceptance, rather than detached: shutdown drops the
 /// loop, so an in-flight bounded fetch cannot later rewrite the status file.
-async fn refresh_allowlist(
-    list: Option<&net::Allowlist>,
-    home: &Path,
-    mut serving: service::Serving,
-) {
-    let Some(list) = list.filter(|list| list.auto_refresh()) else {
+async fn refresh_allowlist<B: Backend + Clone + Send + Sync + 'static>(connector: &Connector<B>) {
+    let Some(list) = connector
+        .allowlist
+        .as_ref()
+        .filter(|list| list.auto_refresh())
+    else {
         return std::future::pending().await;
     };
     loop {
@@ -1302,10 +1581,8 @@ async fn refresh_allowlist(
         tokio::time::sleep(net::REFRESH_INTERVAL).await;
         match list.refresh_openai().await {
             Ok(()) => {
-                serving.allowlist_prefixes = list.len();
-                if let Err(error) = service::write_status(home, &serving) {
-                    eprintln!("agentdocker connector: could not update prefix count: {error}");
-                }
+                let prefixes = list.len();
+                connector.publish_status(|serving| serving.allowlist_prefixes = prefixes);
             }
             Err(error) => eprintln!(
                 "agentdocker connector: OpenAI egress refresh failed; keeping last valid list: {error:#}"
@@ -1502,6 +1779,7 @@ mod tests {
     use crate::client::mock::Mock;
     use crate::mcp::REMOTE_TOOLS;
     use agentdocker_core::{AgentRecord, AgentStatus};
+    use std::sync::atomic::Ordering;
 
     /// The mock behind an `Arc`, so the connector can clone its backend
     /// for each browser agent's MCP server; `down` makes every call fail
@@ -1581,6 +1859,54 @@ mod tests {
         (connector, mock, down)
     }
 
+    /// The ticket a consent page past the code carries.
+    fn ticket_in(page: &HttpResponse) -> String {
+        String::from_utf8_lossy(&page.body)
+            .split("name=\"consent_ticket\" value=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("a page past the code carries its ticket")
+            .to_owned()
+    }
+
+    /// A consent as the person's browser makes it: the pairing code, then,
+    /// under the ticket that page carries, `choice`. The second page's
+    /// project list is answered here and its request forgotten, so a
+    /// test's script and record stay about what it tests.
+    async fn consented(connector: &Connector<Shared>, request: &str, choice: &str) -> HttpResponse {
+        let mock = &connector.backend.0;
+        mock.responses.lock().unwrap().push_front(Response::Agents {
+            agents: vec![],
+            aliases: Default::default(),
+        });
+        let before = mock.requests().len();
+        let code = connector.pairing_code();
+        let page = connector
+            .handle(post(
+                "/authorize",
+                "application/x-www-form-urlencoded",
+                &format!("{request}&pairing_code={code}"),
+                None,
+            ))
+            .await;
+        assert_eq!(page.status, 200, "{}", String::from_utf8_lossy(&page.body));
+        mock.requests.lock().unwrap().truncate(before);
+        let ticket = ticket_in(&page);
+        let choice = if choice.is_empty() {
+            String::new()
+        } else {
+            format!("&{choice}")
+        };
+        connector
+            .handle(post(
+                "/authorize",
+                "application/x-www-form-urlencoded",
+                &format!("{request}&consent_ticket={ticket}{choice}"),
+                None,
+            ))
+            .await
+    }
+
     /// Consent and redeem a code for a generated name, as a vendor would,
     /// and return the access token.
     async fn connected(connector: &Connector<Shared>, callback: &str) -> String {
@@ -1596,17 +1922,15 @@ mod tests {
         );
         let client_id = registered["client_id"].as_str().unwrap().to_owned();
         let verifier = "v".repeat(60);
-        let consent = connector
-            .handle(post(
-                "/authorize",
-                "application/x-www-form-urlencoded",
-                &format!(
-                    "response_type=code&client_id={client_id}&code_challenge={}&code_challenge_method=S256&pairing_code=ABCD-EFGH",
-                    oauth::s256(&verifier)
-                ),
-                None,
-            ))
-            .await;
+        let consent = consented(
+            connector,
+            &format!(
+                "response_type=code&client_id={client_id}&code_challenge={}&code_challenge_method=S256",
+                oauth::s256(&verifier)
+            ),
+            "",
+        )
+        .await;
         assert_eq!(
             consent.status,
             302,
@@ -1828,6 +2152,303 @@ mod tests {
     /// Registration, consent with the pairing code, the code exchange
     /// and a first MCP call, in the order the vendor performs them; the
     /// daemon sees one registration and the messaging tools only.
+    /// A registered client and an authorization request for it, as query
+    /// pairs the consent pages post.
+    async fn pending_request(connector: &Connector<Shared>, state: &str) -> String {
+        let registered = json_body(
+            &connector
+                .handle(post(
+                    "/register",
+                    "application/json",
+                    r#"{"redirect_uris":["https://claude.ai/api/mcp/auth_callback"]}"#,
+                    None,
+                ))
+                .await,
+        );
+        let client_id = registered["client_id"].as_str().unwrap().to_owned();
+        format!(
+            "response_type=code&client_id={client_id}&code_challenge={}&code_challenge_method=S256&state={state}",
+            oauth::s256(&"v".repeat(60))
+        )
+    }
+
+    fn from(mut request: HttpRequest, address: &str) -> HttpRequest {
+        request.headers.push((
+            "x-forwarded-for".to_owned(),
+            format!("198.51.100.9, {address}"),
+        ));
+        request
+    }
+
+    #[tokio::test]
+    async fn wrong_codes_cost_their_source_and_wear_out_a_code_but_lock_nobody_out() {
+        let (connector, mock) = connector(vec![]);
+        let home = tempfile::TempDir::new().unwrap();
+        let serving = service::Serving {
+            pid: std::process::id(),
+            public_url: "https://x.trycloudflare.com".into(),
+            bind: "127.0.0.1:1".into(),
+            default_project: None,
+            pairing_code: "ABCD-EFGH".into(),
+            started_at: Utc::now(),
+            tunnel: None,
+            allowlist_prefixes: 0,
+        };
+        let connector = connector
+            .with_client_ip_header("x-forwarded-for")
+            .with_status(home.path().to_path_buf(), serving);
+        let request = pending_request(&connector, "s1").await;
+        let code_from = |code: &str, address: &str| {
+            from(
+                post(
+                    "/authorize",
+                    "application/x-www-form-urlencoded",
+                    &format!("{request}&pairing_code={code}"),
+                    None,
+                ),
+                address,
+            )
+        };
+
+        // One source: five wrong codes, then not even the right one.
+        for _ in 0..SOURCE_STRIKES {
+            assert_eq!(
+                connector
+                    .handle(code_from("ZZZZZ-ZZZZZ", "203.0.113.7"))
+                    .await
+                    .status,
+                403
+            );
+        }
+        assert_eq!(
+            connector
+                .handle(code_from("ABCD-EFGH", "203.0.113.7"))
+                .await
+                .status,
+            429,
+            "that source waits out its window"
+        );
+        // Another source is not held back by it, and the code is unchanged.
+        mock.responses.lock().unwrap().push_back(Response::Agents {
+            agents: vec![],
+            aliases: Default::default(),
+        });
+        let chooser = connector
+            .handle(code_from("ABCD-EFGH", "203.0.113.8"))
+            .await;
+        assert_eq!(
+            chooser.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&chooser.body)
+        );
+
+        // Spent, the code is replaced, and the status file says the new one.
+        let replaced = connector.pairing_code();
+        assert_ne!(replaced, "ABCD-EFGH");
+        assert_eq!(
+            service::read_status(home.path()).unwrap().pairing_code,
+            replaced,
+            "the person reads the code in force"
+        );
+
+        // Guesses from everywhere wear a code out: it is replaced, never
+        // closed, so the person's next code still works.
+        for n in 0..CODE_GUESSES {
+            let status = connector
+                .handle(code_from("ZZZZZ-ZZZZZ", &format!("192.0.2.{}", n + 1)))
+                .await
+                .status;
+            assert_eq!(status, 403);
+        }
+        let fresh = connector.pairing_code();
+        assert_ne!(fresh, replaced, "guessed at too often, the code changes");
+        assert_eq!(
+            service::read_status(home.path()).unwrap().pairing_code,
+            fresh
+        );
+        assert_eq!(
+            connector
+                .handle(code_from(&replaced, "192.0.2.200"))
+                .await
+                .status,
+            403,
+            "the worn-out code opens nothing"
+        );
+        mock.responses.lock().unwrap().push_back(Response::Agents {
+            agents: vec![],
+            aliases: Default::default(),
+        });
+        assert_eq!(
+            connector
+                .handle(code_from(&fresh, "192.0.2.201"))
+                .await
+                .status,
+            200,
+            "nobody is locked out"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn one_right_code_typed_at_once_on_many_pages_opens_one() {
+        let (connector, _mock) = connector(vec![]);
+        let connector = Arc::new(connector.with_client_ip_header("x-forwarded-for"));
+        let code = connector.pairing_code();
+        let mut requests = Vec::new();
+        for n in 0..8 {
+            requests.push(pending_request(&connector, &format!("s{n}")).await);
+        }
+        // Every attempt is spawned first and held at the barrier, then all
+        // are let go at once.
+        let start = Arc::new(tokio::sync::Barrier::new(requests.len()));
+        let attempts: Vec<_> = requests
+            .into_iter()
+            .map(|request| {
+                let connector = connector.clone();
+                let code = code.clone();
+                let start = start.clone();
+                tokio::spawn(async move {
+                    start.wait().await;
+                    connector
+                        .handle(post(
+                            "/authorize",
+                            "application/x-www-form-urlencoded",
+                            &format!("{request}&pairing_code={code}"),
+                            None,
+                        ))
+                        .await
+                        .status
+                })
+            })
+            .collect();
+        let mut opened = 0;
+        for attempt in attempts {
+            match attempt.await.unwrap() {
+                200 => opened += 1,
+                status => assert_eq!(status, 403),
+            }
+        }
+        assert_eq!(opened, 1, "a code is spent by the first page it opens");
+    }
+
+    #[tokio::test]
+    async fn with_no_trusted_header_nobody_is_struck_out() {
+        let (connector, _mock) = connector(vec![]);
+        let request = pending_request(&connector, "s1").await;
+        let typed = |code: &str| {
+            from(
+                post(
+                    "/authorize",
+                    "application/x-www-form-urlencoded",
+                    &format!("{request}&pairing_code={code}"),
+                    None,
+                ),
+                "203.0.113.7",
+            )
+        };
+        for _ in 0..SOURCE_STRIKES + 2 {
+            assert_eq!(connector.handle(typed("ZZZZZ-ZZZZZ")).await.status, 403);
+        }
+        let code = connector.pairing_code();
+        assert_eq!(
+            connector.handle(typed(&code)).await.status,
+            200,
+            "a header the tunnel is not known to write is nobody's address"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ticket_that_lapses_while_its_page_is_checked_chooses_nothing() {
+        let (connector, mock) = connector(vec![]);
+        let request = pending_request(&connector, "s1").await;
+        let code = connector.pairing_code();
+        let chooser = connector
+            .handle(post(
+                "/authorize",
+                "application/x-www-form-urlencoded",
+                &format!("{request}&pairing_code={code}"),
+                None,
+            ))
+            .await;
+        assert_eq!(chooser.status, 200);
+        let ticket = ticket_in(&chooser);
+        let form = http::parse_query(&format!("{request}&consent_ticket={ticket}"));
+        let pending = connector
+            .store
+            .lock()
+            .unwrap()
+            .begin_authorization(&form)
+            .ok()
+            .unwrap();
+        // It held when the page came back; it lapses before it is spent.
+        for held in connector.tickets.lock().unwrap().values_mut() {
+            held.expires_at = Utc::now() - chrono::Duration::seconds(1);
+        }
+        mock.requests.lock().unwrap().clear();
+        let lapsed = connector.choose(&form, &pending, &ticket).await;
+        assert_eq!(
+            lapsed.status,
+            403,
+            "{}",
+            String::from_utf8_lossy(&lapsed.body)
+        );
+        assert!(
+            connector.tickets.lock().unwrap().is_empty(),
+            "a lapsed ticket is gone, not left to try again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ticket_chooses_only_for_the_request_it_was_issued_on() {
+        let (connector, _mock) = connector(vec![Response::Agents {
+            agents: vec![],
+            aliases: Default::default(),
+        }]);
+        let first = pending_request(&connector, "s1").await;
+        let second = pending_request(&connector, "s2").await;
+        let code = connector.pairing_code();
+        let chooser = connector
+            .handle(post(
+                "/authorize",
+                "application/x-www-form-urlencoded",
+                &format!("{first}&pairing_code={code}"),
+                None,
+            ))
+            .await;
+        assert_eq!(chooser.status, 200);
+        let ticket = ticket_in(&chooser);
+        let elsewhere = connector
+            .handle(post(
+                "/authorize",
+                "application/x-www-form-urlencoded",
+                &format!("{second}&consent_ticket={ticket}"),
+                None,
+            ))
+            .await;
+        assert_eq!(
+            elsewhere.status, 403,
+            "another request's ticket chooses nothing"
+        );
+        let html = String::from_utf8_lossy(&elsewhere.body);
+        assert!(
+            html.contains("name=\"pairing_code\"") && !html.contains("/p/orchard"),
+            "it asks for the code again and shows nothing more: {html}"
+        );
+        assert_eq!(
+            connector
+                .handle(post(
+                    "/authorize",
+                    "application/x-www-form-urlencoded",
+                    &format!("{first}&consent_ticket={ticket}"),
+                    None,
+                ))
+                .await
+                .status,
+            302,
+            "its own request it still chooses for"
+        );
+    }
+
     #[tokio::test]
     async fn a_vendor_connects_a_browser_agent_end_to_end() {
         let (connector, mock) = connector(vec![
@@ -1873,39 +2494,79 @@ mod tests {
         assert_eq!(form.status, 200);
         let html = String::from_utf8_lossy(&form.body);
         assert!(html.contains("<b>Claude (Claude)</b>"), "{html}");
-        assert!(
-            html.contains("<option value=\"/p/orchard\" selected>orchard — /p/orchard</option>")
-                && html.contains("name=\"project_path\""),
-            "the default project is proposed and any folder may be typed: {html}"
-        );
         assert!(html.contains("name=\"pairing_code\""));
         assert!(html.contains(&format!("value=\"{challenge}\"")));
         assert!(
-            matches!(&mock.requests()[..], [Request::List { all: true, .. }]),
-            "the page asks the daemon which projects it knows"
+            !html.contains("/p/orchard")
+                && !html.contains("<select")
+                && !html.contains("project_path"),
+            "nothing about this machine before the code: {html}"
         );
-        mock.requests.lock().unwrap().clear();
+        assert!(
+            mock.requests().is_empty(),
+            "the first page asks the daemon nothing"
+        );
 
-        let consent = |code: &str, name: &str| {
+        let request = format!(
+            "response_type=code&client_id={client_id}&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback&code_challenge={challenge}&code_challenge_method=S256&state=s1"
+        );
+        let posted = |fields: &str| {
             post(
                 "/authorize",
                 "application/x-www-form-urlencoded",
-                &format!(
-                    "response_type=code&client_id={client_id}&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback&code_challenge={challenge}&code_challenge_method=S256&state=s1&pairing_code={code}&agent_name={name}"
-                ),
+                &format!("{request}&{fields}"),
                 None,
             )
         };
-        let wrong = connector
-            .handle(consent("ABCD-XXXX", "claude-browser-test"))
-            .await;
+        let wrong = connector.handle(posted("pairing_code=ABCD-XXXX")).await;
         assert_eq!(wrong.status, 403);
+        assert!(
+            !String::from_utf8_lossy(&wrong.body).contains("/p/orchard"),
+            "a wrong code shows nothing more"
+        );
         assert!(
             mock.requests().is_empty(),
             "a wrong code asks the daemon nothing"
         );
+        let chooser = connector.handle(posted("pairing_code=abcd+efgh")).await;
+        assert_eq!(
+            chooser.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&chooser.body)
+        );
+        let html = String::from_utf8_lossy(&chooser.body);
+        assert!(
+            html.contains("<option value=\"/p/orchard\" selected>orchard — /p/orchard</option>")
+                && html.contains("name=\"project_path\""),
+            "past the code, the default project is proposed and any folder may be typed: {html}"
+        );
+        assert!(
+            matches!(&mock.requests()[..], [Request::List { all: true, .. }]),
+            "the second page asks the daemon which projects it knows"
+        );
+        mock.requests.lock().unwrap().clear();
+        assert_ne!(connector.pairing_code(), "ABCD-EFGH", "a code works once");
+        assert_eq!(
+            connector
+                .handle(posted("pairing_code=ABCD-EFGH"))
+                .await
+                .status,
+            403,
+            "the spent code opens nothing"
+        );
+        let ticket = ticket_in(&chooser);
+        let forged = connector
+            .handle(posted(
+                "consent_ticket=forged&agent_name=claude-browser-test",
+            ))
+            .await;
+        assert_eq!(forged.status, 403, "no ticket, no choice");
+        assert!(mock.requests().is_empty());
         let right = connector
-            .handle(consent("abcd+efgh", "claude-browser-test"))
+            .handle(posted(&format!(
+                "consent_ticket={ticket}&agent_name=claude-browser-test"
+            )))
             .await;
         assert!(
             matches!(&mock.requests()[..], [Request::Inspect { agent }] if agent == "claude-browser-test"),
@@ -1916,6 +2577,16 @@ mod tests {
             302,
             "{}",
             String::from_utf8_lossy(&right.body)
+        );
+        assert_eq!(
+            connector
+                .handle(posted(&format!(
+                    "consent_ticket={ticket}&agent_name=claude-browser-again"
+                )))
+                .await
+                .status,
+            403,
+            "one consent per ticket"
         );
         let location = right
             .headers
@@ -2127,17 +2798,15 @@ mod tests {
         );
         let client_id = registered["client_id"].as_str().unwrap().to_owned();
         let verifier = "v".repeat(60);
-        let consent = connector
-            .handle(post(
-                "/authorize",
-                "application/x-www-form-urlencoded",
-                &format!(
-                    "response_type=code&client_id={client_id}&code_challenge={}&code_challenge_method=S256&pairing_code=ABCD-EFGH",
-                    oauth::s256(&verifier)
-                ),
-                None,
-            ))
-            .await;
+        let consent = consented(
+            &connector,
+            &format!(
+                "response_type=code&client_id={client_id}&code_challenge={}&code_challenge_method=S256",
+                oauth::s256(&verifier)
+            ),
+            "",
+        )
+        .await;
         assert_eq!(consent.status, 302);
         let location = consent
             .headers
@@ -2220,14 +2889,6 @@ mod tests {
             }
         });
         let (connector, mock) = connector(vec![
-            Response::Agents {
-                agents: vec![],
-                aliases: Default::default(),
-            }, // List, first consent page
-            Response::Agents {
-                agents: vec![],
-                aliases: Default::default(),
-            }, // List, second consent page
             Response::error(ErrorCode::NotFound, "no such agent"), // Inspect: the typed name is free
             live_agent("chatgpt-browser-test"), // Register, at the token exchange
         ]);
@@ -2287,14 +2948,12 @@ mod tests {
             "a fresh document is not fetched again"
         );
 
-        let consent = connector
-            .handle(post(
-                "/authorize",
-                "application/x-www-form-urlencoded",
-                &format!("{query}&pairing_code=ABCD-EFGH&agent_name=chatgpt-browser-test&project=%2Fp%2Forchard"),
-                None,
-            ))
-            .await;
+        let consent = consented(
+            &connector,
+            &query,
+            "agent_name=chatgpt-browser-test&project=%2Fp%2Forchard",
+        )
+        .await;
         assert_eq!(
             consent.status,
             302,
@@ -2380,19 +3039,17 @@ mod tests {
         );
         let client_id = registered["client_id"].as_str().unwrap().to_owned();
         let verifier = "v".repeat(60);
+        let request = format!(
+            "response_type=code&client_id={client_id}&code_challenge={}&code_challenge_method=S256",
+            oauth::s256(&verifier)
+        );
         let consent = |project: &str| {
-            post(
-                "/authorize",
-                "application/x-www-form-urlencoded",
-                &format!(
-                    "response_type=code&client_id={client_id}&code_challenge={}&code_challenge_method=S256&pairing_code=ABCD-EFGH&project=%2Fp%2Forchard&project_path={}",
-                    oauth::s256(&verifier),
-                    http::percent_encode(project)
-                ),
-                None,
+            format!(
+                "project=%2Fp%2Forchard&project_path={}",
+                http::percent_encode(project)
             )
         };
-        let missing = connector.handle(consent("/no/such/folder/here")).await;
+        let missing = consented(&connector, &request, &consent("/no/such/folder/here")).await;
         assert_eq!(missing.status, 400);
         let html = String::from_utf8_lossy(&missing.body);
         assert!(
@@ -2403,14 +3060,14 @@ mod tests {
             html.contains("<option value=\"/p/orchard\" selected>"),
             "the page comes back with its choices: {html}"
         );
-        let relative = connector.handle(consent("orchard")).await;
+        let relative = consented(&connector, &request, &consent("orchard")).await;
         assert_eq!(relative.status, 400);
         assert!(
             mock.requests().is_empty(),
             "a refused project asks the daemon nothing"
         );
 
-        let chosen = connector.handle(consent(&root.to_string_lossy())).await;
+        let chosen = consented(&connector, &request, &consent(&root.to_string_lossy())).await;
         assert_eq!(
             chosen.status,
             302,
