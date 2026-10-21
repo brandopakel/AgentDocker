@@ -2966,7 +2966,7 @@ impl App {
                 .map(|t| format!("{} tokens in 24h", t.label()));
             // One line: everything else is a point away, in the name's
             // hint and in the session's details.
-            let mut facts = vec![activity.clone(), super::runtime_label(&agent.spec.runtime)];
+            let mut facts = vec![activity.clone(), super::agent_tool_label(agent)];
             if let Some(branch) = branch {
                 facts.push(branch.to_owned());
             }
@@ -3093,10 +3093,8 @@ impl App {
             row![
                 heading(name.clone(), 15).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 {
-                    let mut words = vec![
-                        self.activity_label(agent),
-                        super::runtime_label(&agent.spec.runtime),
-                    ];
+                    let mut words =
+                        vec![self.activity_label(agent), super::agent_tool_label(agent)];
                     if let Some(place) = Self::whereabouts(agent).filter(|_| agent.status.is_live())
                     {
                         words.push(place);

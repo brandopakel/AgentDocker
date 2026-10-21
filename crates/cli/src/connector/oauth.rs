@@ -1,7 +1,7 @@
 //! The connector's own authorization server, as small as OAuth 2.1 lets
 //! it be: dynamic client registration that admits only the vendors'
 //! callback URLs, an authorization code bound to a PKCE challenge and to
-//! one browser-agent identity, short access tokens and rotating refresh
+//! one agent identity, short access tokens and rotating refresh
 //! tokens. Pure: every step takes `now`, nothing here does I/O, and what
 //! is kept at rest is a hash, never a token.
 
@@ -50,8 +50,11 @@ pub const MAX_METADATA_BYTES: usize = 64 * 1024;
 /// again at the next authorization.
 pub const METADATA_LIFETIME: Duration = Duration::hours(1);
 
-/// Whose hosted surface a client is, by the callback it registered: it
-/// decides the runtime the browser agent is recorded as.
+/// Whose account a client is, by the callback it registered: it decides
+/// the runtime the connector's agent is recorded as. The callback names
+/// the vendor, not the surface: the browser side panel, the web and
+/// desktop apps and a terminal reaching the account's connectors all come
+/// through the one grant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Vendor {
@@ -62,6 +65,9 @@ pub enum Vendor {
 }
 
 impl Vendor {
+    /// The runtime the agent is recorded as: it names the vendor account,
+    /// whichever client calls. Records, logos and the inventory know these
+    /// names, so they are kept although no browser is proven.
     pub fn runtime(self) -> &'static str {
         match self {
             Self::Claude => "claude-browser",
@@ -70,11 +76,21 @@ impl Vendor {
         }
     }
 
+    /// What a made-up agent name starts with: the account's vendor and
+    /// `connector`, which is all a consent knows about the client.
+    pub fn name_prefix(self) -> &'static str {
+        match self {
+            Self::Claude => "claude-connector",
+            Self::ChatGpt => "chatgpt-connector",
+            Self::Other => "connector",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Claude => "Claude",
             Self::ChatGpt => "ChatGPT",
-            Self::Other => "a browser agent",
+            Self::Other => "another client",
         }
     }
 
@@ -183,8 +199,8 @@ impl Client {
     }
 }
 
-/// One consent: one browser-agent identity, and the refresh token that
-/// keeps it reachable across access tokens.
+/// One consent: one agent identity, whichever client of the account uses
+/// it, and the refresh token that keeps it reachable across access tokens.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Grant {
     pub agent_id: String,
@@ -200,6 +216,10 @@ pub struct Grant {
     pub last_used_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<DateTime<Utc>>,
+    /// What the clients using this grant said about their software, the
+    /// last [`super::clients::MAX_SEEN`] distinct ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clients_seen: Vec<super::clients::Seen>,
 }
 
 impl Grant {
@@ -875,10 +895,25 @@ impl Store {
                 refresh_hash: None,
                 last_used_at: None,
                 revoked_at: None,
+                clients_seen: Vec::new(),
             },
         );
         self.tokens_for(&grant_id, now)
             .expect("a grant just inserted is active")
+    }
+
+    /// A client of `grant_id` said this about itself. Whether it was new
+    /// to the grant, which is when the store is worth saving; a known one
+    /// is only seen again, in memory, like `last_used_at`.
+    pub fn observe_client(
+        &mut self,
+        grant_id: &str,
+        fingerprint: super::clients::Fingerprint,
+        now: DateTime<Utc>,
+    ) -> bool {
+        self.grants
+            .get_mut(grant_id)
+            .is_some_and(|grant| super::clients::observe(&mut grant.clients_seen, fingerprint, now))
     }
 
     /// The refresh grant: single use, and a token that has already been
@@ -1015,7 +1050,7 @@ mod tests {
     fn agent() -> AgentIdentity {
         AgentIdentity {
             id: "a1".into(),
-            name: "claude-browser-ab12".into(),
+            name: "claude-connector-ab12".into(),
             runtime: "claude-browser".into(),
             project: "/p/orchard".into(),
         }
@@ -1123,7 +1158,7 @@ mod tests {
         assert_eq!(pending.state.as_deref(), Some("xyz"));
         let redirect = store.complete_authorization(
             &pending,
-            "claude-browser-ab12".into(),
+            "claude-connector-ab12".into(),
             false,
             "/p/orchard".into(),
             now(),
@@ -1153,7 +1188,7 @@ mod tests {
 
         let redirect = store.complete_authorization(
             &pending,
-            "claude-browser-ab12".into(),
+            "claude-connector-ab12".into(),
             false,
             "/p/orchard".into(),
             now(),
@@ -1172,7 +1207,7 @@ mod tests {
             Consent {
                 vendor: Vendor::Claude,
                 client_id: client.clone(),
-                agent_name: "claude-browser-ab12".into(),
+                agent_name: "claude-connector-ab12".into(),
                 generated: false,
                 project: "/p/orchard".into(),
             }
@@ -1180,7 +1215,7 @@ mod tests {
         let issued = store.issue(&consent, agent(), now());
         assert_eq!(issued.expires_in, 3600);
         let (id, grant) = store.authenticate(&issued.access_token, now()).unwrap();
-        assert_eq!(grant.agent_name, "claude-browser-ab12");
+        assert_eq!(grant.agent_name, "claude-connector-ab12");
         assert_eq!(store.grant_for_agent("a1").map(|(g, _)| g), Some(id));
         assert!(
             store
@@ -1192,7 +1227,7 @@ mod tests {
         // An expired code is gone too.
         let redirect = store.complete_authorization(
             &pending,
-            "claude-browser-ab12".into(),
+            "claude-connector-ab12".into(),
             false,
             "/p/orchard".into(),
             now(),
@@ -1220,7 +1255,7 @@ mod tests {
             .unwrap();
         let redirect = store.complete_authorization(
             &pending,
-            "claude-browser-ab12".into(),
+            "claude-connector-ab12".into(),
             true,
             "/p/orchard".into(),
             now(),
@@ -1232,7 +1267,7 @@ mod tests {
             now(),
         )
         .unwrap();
-        let (grant_id, _) = store.grant_for_agent("claude-browser-ab12").unwrap();
+        let (grant_id, _) = store.grant_for_agent("claude-connector-ab12").unwrap();
         let second = store
             .refresh(
                 &pairs(&format!(
@@ -1266,7 +1301,7 @@ mod tests {
             now(),
         );
         assert_eq!(after.unwrap_err().code, "invalid_grant");
-        assert!(store.grant_for_agent("claude-browser-ab12").is_none());
+        assert!(store.grant_for_agent("claude-connector-ab12").is_none());
         assert_eq!(
             store
                 .refresh(&pairs("grant_type=refresh_token"), now())
@@ -1349,7 +1384,7 @@ mod tests {
             .unwrap();
         let redirect = store.complete_authorization(
             &pending,
-            "claude-browser-ab12".into(),
+            "claude-connector-ab12".into(),
             true,
             "/p/orchard".into(),
             now(),
@@ -1405,7 +1440,7 @@ mod tests {
             "g".into(),
             Grant {
                 agent_id: "a".into(),
-                agent_name: "claude-browser-test".into(),
+                agent_name: "claude-connector-test".into(),
                 runtime: "claude".into(),
                 project: "/p/orchard".into(),
                 client_id: "granted".into(),
@@ -1414,6 +1449,7 @@ mod tests {
                 refresh_hash: None,
                 last_used_at: None,
                 revoked_at: None,
+                clients_seen: Vec::new(),
             },
         );
         assert!(store.make_room(4, now), "under the cap, nothing goes");
@@ -1602,7 +1638,7 @@ mod tests {
         assert_eq!(pending.issuer, "https://node.example.ts.net");
         let redirect = store.complete_authorization(
             &pending,
-            "chatgpt-browser-ab12".into(),
+            "chatgpt-connector-ab12".into(),
             true,
             "/p/orchard".into(),
             now(),

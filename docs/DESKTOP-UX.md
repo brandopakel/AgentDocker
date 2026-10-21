@@ -215,10 +215,13 @@ also keeps the full setup controls.
 A vendor's browser extension (Claude, ChatGPT) has its own Tools row, whose
 state dot says on the pointer and to a reader
 **Installed in Chrome · its sessions reach here only through the connector,
-which is not running**, or **… · the connector is ready; add it in Claude and
-its sessions appear here** while `agentdocker connector` serves on this
-machine, or, once a browser agent has joined, **… · one browser agent
-connected through the connector** — with the browser, profile and version of
+which is not running**, or **… · the connector is ready; add it to your Claude
+account and its clients appear here** while `agentdocker connector` serves on
+this machine, or, once a consent has made an agent, **… · clients of your
+Claude account reach here as one agent through the connector** (a consent is
+the account's: the side panel, the apps and a terminal reaching the account's
+connectors all come in as that agent, and nothing tells them apart) — with
+the browser, profile and version of
 each copy under **Details**, and the connector: its MCP
 URL, whose tooltip says where in the vendor's settings to add it, and the
 pairing code the consent page asks for (one consent each; the page then asks
@@ -503,8 +506,10 @@ when its PID and process birth time both match. Separate registrations are never
 merged by display name. Two live records for one provider session — the same
 process (PID and birth time), tool, project and session id — are one row and one count everywhere (the project's live count, the
 sessions list, a project's agents, Needs you), under the record that stays,
-until the daemon folds the other into it. A browser agent that came in through
-the connector has no process here; it counts as live while it is heard from
+until the daemon folds the other into it. An agent that came in through
+the connector is named for it — its tool reads **Claude (connector)** or
+**ChatGPT (connector)**, not the browser extension, since any client of the
+account may be calling — and has no process here; it counts as live while it is heard from
 and, after an hour without a tool call, sits under **Earlier**, *not
 connected* in its row's spoken name and its panel's standing tooltip. A conversation or session that only loads the connector is not
 using it. It is still registered, messages still wait for it, and its next

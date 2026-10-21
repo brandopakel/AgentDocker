@@ -787,7 +787,7 @@ enum Command {
     Hook(hooks::HookArgs),
     /// Serve AgentDocker's tools to an MCP host (Claude Code, Codex, Cursor...) over stdio.
     Mcp(mcp::McpArgs),
-    /// Let agents that work inside a browser (Claude's or ChatGPT's extension) join a project's messaging, through a tunnel you run.
+    /// Let clients of your Claude or ChatGPT account (its browser side panel, its apps, a terminal reaching its connectors) join a project's messaging, through a tunnel you run.
     Connector(connector::ConnectorArgs),
     /// Supervised Codex input controller (launched by run --codex-input).
     #[command(hide = true)]

@@ -467,9 +467,20 @@ pub const GENERATED_NAME: &str = "generated";
 /// the process 4242 is a chosen name, not the adapter's.
 pub const CHOSEN_NAME: &str = "chosen";
 
-/// Label the remote connector puts on the browser agent it registers
+/// Label the remote connector puts on the agent it registers
 /// (`connector=true`): an external agent with no process on this machine.
+/// Its runtime (`claude-browser`, `chatgpt-browser`) names the vendor
+/// account it came through, not a browser: every client of that account
+/// presents the same grant.
 pub const CONNECTOR_LABEL: &str = "connector";
+
+/// Label the remote connector puts on the agent it registers, saying what
+/// is known of the surface that will use it: [`UNVERIFIED_SURFACE`], since
+/// the browser side panel, the web and desktop apps and a terminal reaching
+/// the account's connectors are indistinguishable at consent.
+pub const SURFACE_LABEL: &str = "surface";
+/// The value of [`SURFACE_LABEL`] when nothing proves which surface it is.
+pub const UNVERIFIED_SURFACE: &str = "unverified";
 
 /// How long a browser agent reached through the remote connector counts as
 /// connected after its last tool call: one access token's lifetime. Such an

@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 
 use agentdocker_core::AgentRecord;
 
-use super::runtime_label;
+use super::agent_tool_label;
 
 /// How much of an id tells two sessions with one word apart.
 const TIE_CHARS: usize = 4;
@@ -90,7 +90,7 @@ impl<'a> Naming<'a> {
         if !agent.name_is_generated() {
             return agent.spec.name.clone();
         }
-        let tool = runtime_label(&agent.spec.runtime);
+        let tool = agent_tool_label(agent);
         let me = self.canonical(agent.id.as_str());
         let word = word_for(me);
         let rivals = self.same_word(agent, word);
