@@ -737,10 +737,10 @@ mod tests {
         let dumped = |code: &str, signal: &str, flushed: bool| {
             format!(
                 "left (failed: command could not be launched: command exited before it was activated: \
-                 ExitReport {{ agent: AgentId(\"6f1c2a9b3d7e4c5f8a0b1c2d3e4f5a6b\"), owner: SessionOwner {{ pid: 23152, \
-                 started_at: 2026-09-18T21:59:30.123Z }}, child: ChildIdentity {{ pid: 23153, started_at: \
-                 2026-09-18T21:59:30.223Z, tty: true }}, code: {code}, signal: {signal}, log_flushed: {flushed}, \
-                 at: 2026-09-18T21:59:31.000Z }})"
+                 ExitReport {{ agent: AgentId(\"6f1c2a9b3d7e4c5f8a0b1c2d3e4f5a6b\"), owner: SessionOwner {{ pid: 4242, \
+                 started_at: 2026-01-02T03:04:05.123Z }}, child: ChildIdentity {{ pid: 4243, started_at: \
+                 2026-01-02T03:04:05.223Z, tty: true }}, code: {code}, signal: {signal}, log_flushed: {flushed}, \
+                 at: 2026-01-02T03:04:06.000Z }})"
             )
         };
         let dump = |code: &str, signal: &str| dumped(code, signal, true);

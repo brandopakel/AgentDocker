@@ -8833,7 +8833,7 @@ mod tests {
         let now = Utc::now();
         let mut paused = AgentRecord::new(
             agentdocker_core::AgentSpec {
-                name: "claude-code-0180".into(),
+                name: "claude-code-4245".into(),
                 runtime: "claude-code".into(),
                 workdir: Some("/work/repo".into()),
                 ..Default::default()

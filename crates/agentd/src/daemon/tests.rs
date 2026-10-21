@@ -93,7 +93,7 @@ async fn two_halves_of_one_session_register_as_one_agent() {
     let me = std::process::id();
 
     let hooks = register_here(&daemon, "claude-63bc3dca", Some(me)).await;
-    let mcp = register_here(&daemon, "claude-code-45856", Some(me)).await;
+    let mcp = register_here(&daemon, "claude-code-4242", Some(me)).await;
     assert_eq!(mcp.id, hooks.id, "the second half is the first half");
     assert_eq!(
         mcp.spec.name, "claude-63bc3dca",
@@ -107,7 +107,7 @@ async fn two_halves_of_one_session_register_as_one_agent() {
 
     // A different process is a different agent, and an agent with no
     // pid at all — the human — is never folded into one.
-    let other = register_here(&daemon, "codex-27221", Some(1)).await;
+    let other = register_here(&daemon, "codex-4343", Some(1)).await;
     assert_ne!(other.id, hooks.id);
     let human = register(&daemon, "user", None).await;
     let also_human = register(&daemon, "someone-else", None).await;
@@ -268,7 +268,7 @@ async fn a_record_learns_its_session_so_the_next_one_cannot_take_it() {
     };
 
     // MCP first, naming no session. Then session A joins it.
-    let mcp = register(with_session("claude-code-45856", None)).await;
+    let mcp = register(with_session("claude-code-4242", None)).await;
     let first = register(with_session("claude-aaaa", Some("session-a"))).await;
     assert_eq!(first.id, mcp.id, "the hooks half joins the MCP record");
     assert_eq!(
@@ -327,14 +327,14 @@ async fn one_identity_survives_both_halves_and_keeps_what_it_was_given() {
 
     // MCP registers, hooks joins the same record, and the session
     // takes a lease and is sent something.
-    let mcp = register("claude-code-45856", None).await;
+    let mcp = register("claude-code-4242", None).await;
     let hooks = register("claude-63bc3dca", Some("session-a")).await;
     assert_eq!(hooks.id, mcp.id);
     // The name that survives is the first registrar's, so the hooks
-    // half is answered as `claude-code-45856` however it asked. That
+    // half is answered as `claude-code-4242` however it asked. That
     // is a race and it is deliberately not settled here; what
     // matters is that there is one identity, and the id is it.
-    assert_eq!(hooks.spec.name, "claude-code-45856");
+    assert_eq!(hooks.spec.name, "claude-code-4242");
     assert!(matches!(
         claim(&daemon, &hooks.id.to_string(), "task:in-progress").await,
         Response::Lease { .. }
@@ -413,7 +413,7 @@ async fn an_unnamed_registration_refuses_to_guess_between_two_sessions() {
     // Refused outright. Giving it a record of its own would be
     // giving this process a third sessionless wildcard — one that
     // matches every future session here and breeds more duplicates.
-    let refused = register("claude-code-45856", None).await;
+    let refused = register("claude-code-4242", None).await;
     let Response::Error { code, message, .. } = refused else {
         panic!("a registration that cannot be placed must not be placed anyway")
     };
@@ -575,7 +575,7 @@ async fn a_bound_session_is_stored_and_announced_before_it_is_answered() {
             })
             .await
     };
-    register("claude-code-45856", None).await;
+    register("claude-code-4242", None).await;
     let joined = register("claude-aaaa", Some("session-a")).await;
     let Response::Agent { agent } = joined else {
         panic!("{joined:?}")
@@ -1212,7 +1212,7 @@ async fn a_binding_that_cannot_be_stored_changes_nothing() {
             })
             .await
     };
-    let Response::Agent { agent: mcp } = register("claude-code-45856", None).await else {
+    let Response::Agent { agent: mcp } = register("claude-code-4242", None).await else {
         panic!("the first half registers")
     };
     let events_before = daemon.recent_events(200).len();
@@ -1302,7 +1302,7 @@ async fn an_empty_session_label_is_treated_as_no_session_at_all() {
             other => panic!("unexpected {other:?}"),
         }
     };
-    let blank = register("claude-code-45856", "").await;
+    let blank = register("claude-code-4242", "").await;
     let joined = register("claude-aaaa", "session-a").await;
     assert_eq!(joined.id, blank.id, "the empty label did not block joining");
     assert_eq!(
@@ -1334,7 +1334,7 @@ async fn an_existing_duplicate_is_reported_and_left_alone() {
         // Built by hand, so everything registration would have
         // filled in has to be filled in here — including the
         // resolved workdir and the project, which identity compares.
-        let mut record = AgentRecord::new(spec_here("claude-code-45856"), false, Utc::now());
+        let mut record = AgentRecord::new(spec_here("claude-code-4242"), false, Utc::now());
         record.spec.workdir = hooks.spec.workdir.clone();
         record.project = hooks.project.clone();
         record.pid = Some(me);
@@ -1428,8 +1428,8 @@ async fn register_session(
 /// Code reports that as every later hook's `cwd`. Identity required the
 /// two halves to agree on the directory, so the next hook registered a
 /// second agent for the same process and session — the `claude-c960824c`
-/// beside `claude-code-2923`, and `claude-1606cc8b` beside
-/// `claude-code-19625`, that made the desktop count three sessions
+/// beside `claude-code-4321`, and `claude-1606cc8b` beside
+/// `claude-code-5678`, that made the desktop count three sessions
 /// where there were two, and five where there was one.
 #[tokio::test]
 async fn a_hook_from_a_moved_shell_joins_its_sessions_record() {
@@ -1437,13 +1437,13 @@ async fn a_hook_from_a_moved_shell_joins_its_sessions_record() {
     let daemon = open(&dir);
     let checkout = TempDir::new().unwrap();
     std::fs::write(checkout.path().join("Agentfile.toml"), "").unwrap();
-    let moved = checkout.path().join("artifacts").join("21st");
+    let moved = checkout.path().join("artifacts").join("out");
     std::fs::create_dir_all(&moved).unwrap();
     let agent = |response: Response| match response {
         Response::Agent { agent } => agent,
         other => panic!("{other:?}"),
     };
-    let mcp = agent(register_session(&daemon, "claude-code-2923", checkout.path(), None).await);
+    let mcp = agent(register_session(&daemon, "claude-code-4321", checkout.path(), None).await);
     let started = agent(
         register_session(
             &daemon,
@@ -1499,7 +1499,7 @@ async fn a_session_left_beside_a_sessionless_transport_joins_it_and_folds() {
     };
     let drifted =
         agent(register_session(&daemon, "claude-c960824c", &moved, Some("c960824c")).await);
-    let mcp = agent(register_session(&daemon, "claude-code-2923", checkout.path(), None).await);
+    let mcp = agent(register_session(&daemon, "claude-code-4321", checkout.path(), None).await);
     assert_ne!(mcp.id, drifted.id);
     let hook = agent(
         register_session(
@@ -1537,11 +1537,11 @@ async fn one_sessions_existing_duplicate_is_folded_into_the_record_that_stays() 
     let daemon = open(&dir);
     let checkout = TempDir::new().unwrap();
     std::fs::write(checkout.path().join("Agentfile.toml"), "").unwrap();
-    let moved = checkout.path().join("artifacts").join("21st");
+    let moved = checkout.path().join("artifacts").join("out");
     std::fs::create_dir_all(&moved).unwrap();
     let Response::Agent { agent: kept } = register_session(
         &daemon,
-        "claude-code-2923",
+        "claude-code-4321",
         checkout.path(),
         Some("c960824c"),
     )
@@ -1677,7 +1677,7 @@ async fn a_fold_never_queues_ahead_of_what_a_receiver_offered() {
     std::fs::create_dir_all(&moved).unwrap();
     let Response::Agent { agent: kept } = register_session(
         &daemon,
-        "claude-code-19625",
+        "claude-code-5678",
         checkout.path(),
         Some("1606cc8b"),
     )
@@ -1782,7 +1782,7 @@ async fn codexs_detached_app_server_is_never_a_session() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(table_shows(), "{:?}", procinfo::inspect(pid));
-    let mut spec = spec_here("codex-88774");
+    let mut spec = spec_here("codex-7002");
     spec.runtime = "codex".into();
     let response = daemon
         .handle(Request::Register {
@@ -2012,7 +2012,7 @@ async fn a_fold_keeps_the_duplicates_read_of_the_sessions_queue() {
     std::fs::create_dir_all(&moved).unwrap();
     let Response::Agent { agent: kept } = register_session(
         &daemon,
-        "claude-code-2923",
+        "claude-code-4321",
         checkout.path(),
         Some("c960824c"),
     )

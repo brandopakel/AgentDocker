@@ -25,7 +25,7 @@ trial_cli="$PWD/target/release/agentdocker"
 
 Keep the current shell and `trial_dir` value for cleanup. Add a small fixture file and commit it before worktree/validation tests. Discovery can list real processes; adopt only deliberately created fixture agents in this stage. Do not run `adopt --all` against an active development machine as a substitute for integration testing. Close the trial window and run `"$trial_cli" daemon stop` in the same environment to stop this daemon; verify fixture writers exited before removing trial files.
 
-The private parent also isolates fixture scripts and captured evidence; current state-file creation uses private defaults. Do not copy credentials into test fixtures, command lines or reports. Enable `--restore` only in test-owned sessions after the candidate passes the restore regression scenarios. Test-owned restore probes may intentionally inject failure into a disposable database.
+The private parent also isolates fixture scripts and captured evidence; state-file creation uses private defaults. Do not copy credentials into test fixtures, command lines or reports. Enable `--restore` only in test-owned sessions after the candidate passes the restore regression scenarios. Test-owned restore probes may intentionally inject failure into a disposable database.
 
 ## Stage 2 — Native acceptance scenarios
 
@@ -43,7 +43,7 @@ The private parent also isolates fixture scripts and captured evidence; current 
 | Storage/restart | Graceful shutdown, forced daemon death, SQLite write failures, missing executable/cwd, reboot/sleep/wake | No unprotected writer, lost durable transition or duplicate launch; restored writers wait for readiness; explicit stop stays stopped |
 | Installation/update | Install current bundle, move/rename it, update between pinned versions, service dry-run, uninstall/rollback | Config references stay valid; live sessions are handled explicitly; old data is backed up and schema compatibility respected |
 
-The existing suite covers many protocol/core cases; a checkbox here becomes complete only when its actual platform/integration evidence is saved. Do not infer graphical runtime or notifications from compilation.
+A scenario counts only on the platform and integration where it was exercised. Do not infer graphical runtime or notifications from compilation.
 
 ## Stage 3 — One real integration at a time
 
@@ -55,17 +55,17 @@ first use `desktop --prefix <trial-prefix> install --from <candidate-app>
 launcher can refuse a trial home because its installation points at the system
 Applications folder. This is separate from the source-built Stage 1 route.
 
-For candidates containing the guided setup stack, use `setup --preview`, inspect the saved plan, then `--apply PLAN_ID`; the native window uses **Review setup** and **Apply changes**. Use the scoped `--undo PLAN_ID` flow after checking for later user edits. Older candidates may have only direct setup and backups; record which behavior is under test. See [GUIDED-SETUP.md](GUIDED-SETUP.md).
+For candidates containing the guided setup stack, use `setup --preview`, inspect the saved plan, then `--apply PLAN_ID`; the native window uses **Review setup** and **Apply changes**. Use the scoped `--undo PLAN_ID` flow after checking for later user edits. See [GUIDED-SETUP.md](GUIDED-SETUP.md).
 
 Apply only the chosen adapter when the trial is ready. Ensure the launched hook/MCP server targets the trial endpoint; setting the environment only in a testing terminal does not prove a desktop vendor host inherits it. Verify registry identity, inbox delivery, read observation/stale detection, lease conflict behavior and journal continuity end to end. A `wired` inventory flag alone is not acceptance. Preserve existing unrelated MCP servers/hooks, validate the vendor's actual tool/version, and inspect the diff before restoring a backup so later user changes are not overwritten.
 
-Agent API calls count against your normal provider usage. Keep test prompts short and bounded; recording source/runtime versions and outcomes is more useful than a long uncontrolled session. Do not copy provider credentials or complete private transcripts into GitHub evidence.
+Agent API calls count against your normal provider usage. Keep test prompts short and bounded; recording source and runtime versions and outcomes is more useful than a long uncontrolled session. Do not copy provider credentials or complete private transcripts into reports.
 
 ## Stage 4 — Install and sustained use
 
-After the blockers and Stage 2 pass, install the verified **agentdocker** bundle in your Applications folder and verify its CLI/daemon companions and stable setup paths. Prefer on-demand startup for the first trial. A launchd service install stops an existing managed daemon and can terminate its managed agents, so review the concrete service dry-run and arrange a controlled transition after the current trial is quiescent.
+After Stage 2 passes, install the verified **agentdocker** bundle in your Applications folder and verify its CLI/daemon companions and stable setup paths. Prefer on-demand startup for the first trial. A launchd service install stops an existing managed daemon and can terminate its managed agents, so review the concrete service dry-run and arrange a controlled transition after the current trial is quiescent.
 
-Run a few hours of supervised work, then an overnight soak with 1/10/100 synthetic agents. Record CPU/RSS/descriptor counts, disk/log growth, GUI responsiveness, p50/p95/p99 request/hook latency, stale-warning delay, reconnect and restart outcomes, and watcher gaps. Correctness is blocking; performance thresholds follow repeated baselines. The current socket benchmark measures contention/release, not all these latency scenarios.
+Run a few hours of supervised work, then an overnight soak with 1/10/100 synthetic agents. Record CPU/RSS/descriptor counts, disk/log growth, GUI responsiveness, p50/p95/p99 request/hook latency, stale-warning delay, reconnect and restart outcomes, and watcher gaps. Correctness is blocking; performance thresholds follow repeated baselines. The socket benchmark measures contention/release, not all these latency scenarios.
 
 Test sleep/wake, logout/login, app closure, daemon crash and planned upgrade separately. Snapshot command relaunch does not restore model context or terminal state; each vendor conversation-resume integration needs its own acceptance test. Keep Bencher uploads private, with matching before/after manifests and exact source identity.
 
@@ -79,15 +79,18 @@ version; a pass on one platform does not complete another platform's row.
 | --- | --- |
 | macOS | Downloaded desktop on an independent Mac/account; signing/Gatekeeper status, first provider setup/consent, native terminals and Stage 2–4 acceptance. |
 | Linux | Downloaded desktop on the declared target distributions/architectures; graphical session, user service, provider setup, terminals and Stage 2–4 acceptance. |
-| Windows | Complete the [native port](WINDOWS-PORT.md), then test the actual Windows installer, named-pipe daemon/client, ConPTY, provider setup, startup/update and Stage 2–4 acceptance. Foundations CI and WSL do not qualify. |
+| Windows | The actual Windows installer, named-pipe daemon/client, ConPTY, provider setup, startup/update and Stage 2–4 acceptance, as described in [the Windows port](WINDOWS-PORT.md). WSL does not qualify. |
 
 Transfer the same verified candidate to a second Mac and repeat startup/inventory, one Claude hooks or Codex MCP trial and shutdown. Record architecture and OS version. It has its own registry; do not expect automatic federation. Execute on Intel hardware before claiming Intel runtime validation.
 
 For Linux, record the image's installed graphical prerequisites before adding
-anything: run `ldd` on the extracted desktop executable and retain missing-library
-failures. The minimal hosted Ubuntu trial required private extracted libraries,
-Xvfb and its keyboard helper; it is VM acceptance, not evidence of a stock desktop
-install or physical Linux input. Repeat on a normal target desktop and physical
-Linux hardware, and record any packages required there.
+anything: run `ldd` on the extracted desktop executable and keep any
+missing-library failures. A minimal hosted image that needs private extracted
+libraries, Xvfb and its keyboard helper is VM acceptance, not evidence of a stock
+desktop install or physical Linux input. Repeat on a normal target desktop and
+physical Linux hardware, and record any packages required there.
 
-Repeat the graphical and user-service scenarios on target Linux distributions and ARM64/x86-64. Build Windows support before offering a Windows install; then run the same semantic scenarios against Windows IPC/process/terminal/service adapters. WSL running Linux code is not evidence of native Windows desktop support.
+Repeat the graphical and user-service scenarios on each target Linux distribution
+and on ARM64 and x86-64. For Windows, run the same semantic scenarios against the
+Windows IPC, process, terminal and service adapters. WSL running Linux code is not
+evidence of native Windows desktop support.

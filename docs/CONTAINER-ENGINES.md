@@ -1,20 +1,18 @@
-# Docker and Podman delivery plan
+# Docker and Podman containers
 
-> Scope: an optional sandbox runtime. AgentDocker is a native daemon and CLI for coordinating agents; it does not require Docker or Podman, and nothing in the core depends on them. This plan covers the adapter that lets an agent run inside a container with closed defaults.
+> Scope: an optional sandbox runtime. AgentDocker is a native daemon and CLI for coordinating agents; it does not require Docker or Podman, and nothing in the core depends on them. This document covers the adapter that lets an agent run inside a container with closed defaults.
 
-Correct stale-context detection and verified session handoff remain the acceptance criteria across engines.
+Correct stale-context detection and verified session handoff are the acceptance criteria across engines. The adapter guarantees:
 
-| Step | Deliverable | Acceptance |
-|---|---|---|
-| 1 (implemented for builds) | Separate container-engine configuration from agent runtime; shared engine interface with Docker and Podman adapters | Explicit engine choice, capability errors, persisted identity; no silent fallback |
-| 2 (implemented) | Common image build input with engine-specific options | Both engines build the same test Containerfile; immutable image identity, source/recipe identity, engine version and platform recorded |
-| 3 (implemented) | Managed container lifecycle and crash recovery | Stop/kill acts on the recorded container; lost client or daemon restart never means a still-running container has exited |
-| 4 (implemented) | Authenticated endpoint and checkout mapping | No token, wrong identity, expiry, revocation, traversal and host-admin requests fail; aliases of one physical file conflict |
-| 5 (Linux and Podman VM implemented) | Rootless Linux and macOS VM transport | UID/mount checks and scoped bridge work without mounting the host control or engine socket |
-| 6 (implemented) | Engine-aware validation and handoff | A reads, B changes, A is warned and rereads; handoff survives restart; changed source or image invalidates prior validation evidence |
-| 7 (implemented) | GitHub CI and CodeRabbit review | Shared contract tests plus real Docker and Podman Linux jobs; macOS VM checks documented separately; findings resolved before integration |
+- Container-engine configuration is separate from agent runtime, behind a shared engine interface with Docker and Podman adapters. The engine choice is explicit, unsupported capabilities return errors, the identity persists, and there is no silent fallback.
+- Both engines build the same test Containerfile from a common build input with engine-specific options. Immutable image identity, source/recipe identity, engine version and platform are recorded.
+- Managed container lifecycle and crash recovery act on the recorded container. A lost client or a daemon restart never means a still-running container has exited.
+- The endpoint and checkout mapping are authenticated. A missing token, wrong identity, expiry, revocation, traversal and host-admin requests fail, and aliases of one physical file conflict.
+- Rootless Linux and macOS VM transports pass UID and mount checks and use a scoped bridge without mounting the host control or engine socket.
+- Validation and handoff are engine-aware. A reads, B changes, A is warned and rereads; a handoff survives restart; a changed source or image invalidates prior validation evidence.
+- GitHub CI runs the shared contract tests plus real Docker and Podman Linux jobs; macOS VM checks are documented separately.
 
-Implemented on main and included in v0.1.0: scoped authentication for externally managed containers, physical path mapping, worktree integration, image build adapters and managed launch/stop/restart recovery are implemented. Opt-in checkout/endpoint mounts, macOS Podman scoped bridges, and image-bound validation are implemented. Docker Desktop uses a private engine-volume socket relay; actual macOS Desktop evidence is tracked separately from Linux Docker. Podman has been installed on the development host for real integration testing. Engine-specific results must be reported individually; Docker compatibility must not be inferred solely from a Podman pass.
+Docker Desktop uses a private engine-volume socket relay. Engine-specific results are reported individually; Docker compatibility is not inferred from a Podman pass.
 
 Podman-specific capabilities include rootless user mappings and `podman machine` connectivity. Docker-specific Buildx features and Podman-only options remain capability-gated extensions rather than assumptions in the common interface. We consume engine commands and OCI-compatible images; embedding engine internals or maintaining a fork is outside this workstream.
 
@@ -27,9 +25,9 @@ References: [Podman build](https://docs.podman.io/en/latest/markdown/podman-buil
 
 Each build captures a private input tree before invoking the engine: at most 20,000 entries and 256 MiB, excluding `.git`, including Git-ignored files. Engine-specific ignore files remain in the captured tree and are interpreted by that engine. Choose a small context when ignored build outputs would exceed these conservative capture limits. Special files, escaping symlinks and recipes outside the context are rejected. Directory permissions are normalized to 0755 and modification times to the Unix epoch; file rwx permissions and relative symlink targets are preserved; special permission bits are stripped. The source tree remains untouched.
 
-Evidence includes the canonical context path, recipe path and hash, complete captured-context hash, engine selection, client/server versions when reported, inspected OS/architecture/variant, timestamps and immutable image configuration ID. Docker requires an available Buildx builder (checked before building) and explicitly loads the build result into its image store; both engines write an image ID file which must match image inspection. Builds consume the captured tree even if the working checkout changes during execution. This records the inputs actually built; it does not claim the live checkout still matches them or that network-dependent builds are reproducible.
+The recorded evidence is the canonical context path, recipe path and hash, complete captured-context hash, engine selection, client/server versions when reported, inspected OS/architecture/variant, timestamps and immutable image configuration ID. Docker requires an available Buildx builder (checked before building) and explicitly loads the build result into its image store; both engines write an image ID file which must match image inspection. Builds consume the captured tree even if the working checkout changes during execution. This records the inputs actually built; it does not claim the live checkout still matches them or that network-dependent builds are reproducible.
 
-The record and `image_built` replay event commit together before success or publication. If persistence fails, the resulting engine image may remain unrecorded, and coordination fails closed; no image is silently removed. A build timeout terminates the local engine client process group and records no successful evidence. Remote engine build cancellation is engine-dependent; this is not yet managed agent lifecycle supervision.
+The record and `image_built` replay event commit together before success or publication. If persistence fails, the resulting engine image may remain unrecorded, and coordination fails closed; no image is silently removed. A build timeout terminates the local engine client process group and records no successful evidence. Remote engine build cancellation is engine-dependent.
 
 Invalid context/recipe/size inputs return `invalid`. Host temporary-storage and filesystem faults return `storage_unavailable`; missing or inconsistent engine image evidence returns `build_failed`. Timeout and output-limit failures have distinct messages.
 
@@ -51,9 +49,9 @@ Before create, the daemon persists a unique engine name, random ownership label,
 
 Start, stop, kill, cleanup and log reads verify the ownership labels, full container ID, immutable image and disabled engine restart/removal policy. Stop intent commits before signaling and survives daemon crashes. An owned, never-started container is removed without force when stopped, so a delayed start cannot resurrect it; finished containers otherwise remain available for inspection/logs. `rm` forgets an AgentDocker record and does not delete its engine container. `restart` waits for confirmed exit, then creates a new agent/container identity; it returns `conflict` if exit is still uncertain. It never transfers old leases or validation evidence.
 
-Container state changes emit `container_updated`. Confirmed exit, lease deletion, journal entries and replay events commit atomically before publication. Host PID liveness never applies to container agents. Schema 7 prevents older daemons from interpreting a container with no host PID as exited. Graceful daemon shutdown requests stop and waits up to eight seconds; uncertain container protection remains durable. Engine commands are bounded to 15 seconds and eight concurrent workers; terminating a client does not establish remote exit.
+Container state changes emit `container_updated`. Confirmed exit, lease deletion, journal entries and replay events commit atomically before publication. Host PID liveness never applies to container agents. The schema version gate prevents older daemons from interpreting a container with no host PID as exited. Graceful daemon shutdown requests stop and waits up to eight seconds; uncertain container protection remains durable. Engine commands are bounded to 15 seconds and eight concurrent workers; terminating a client does not establish remote exit.
 
-`logs` reads a verified engine snapshot (at most 10,000 lines and 4 MiB); `--follow` is currently unsupported for managed containers. Engine-side logs and stopped containers remain under the selected engine's retention policy. Do not externally restart or change the restart policy of AgentDocker-owned containers after exit has been recorded.
+`logs` reads a verified engine snapshot (at most 10,000 lines and 4 MiB); `--follow` is unsupported for managed containers. Engine-side logs and stopped containers remain under the selected engine's retention policy. Do not externally restart or change the restart policy of AgentDocker-owned containers after exit has been recorded.
 
 `tests/containers/lifecycle.py` exercises real engines separately: a deliberately lost create response, crashes with a live container, engine outage, durable kill intent, lease retention and release, replacement identity, logs, stop escalation, and natural exit through the CLI. It owns and cleans up only its fixture daemons/containers. Linux CI runs it for Docker and Podman; macOS Podman uses the same fixture without a socket bridge.
 
@@ -78,7 +76,7 @@ Local rootless Podman uses `keep-id`; rootful Docker uses the daemon user's UID/
 
 An incomplete validation commits before launch. Its runner has a durable kill deadline; reconciliation enforces that deadline even after the validating client or daemon disappears. Only positively inspected container exit and matching before/after checkout fingerprints can produce passing evidence. Lost engine responses or interrupted daemons leave non-passing evidence and a retained runner for reconciliation. Engine logs remain bounded; validation containers remain inspectable under the engine's retention policy.
 
-Validation and checkpoint records bind immutable image and build input evidence, engine, network, UID and explicit environment; local build IDs and engine connection names remain audit metadata. Recovery reports `environment_matches`, refuses acknowledgement after an environment change, and shows passing validation only while both checkout and environment match. Integration requires validation from the target's environment as well. Native evidence remains distinct from container evidence. Schema 7 stops older daemons from ignoring these bindings or validation deadlines. The existing ignore-aware content scope and point-in-time limitations still apply.
+Validation and checkpoint records bind immutable image and build input evidence, engine, network, UID and explicit environment; local build IDs and engine connection names remain audit metadata. Recovery reports `environment_matches`, refuses acknowledgement after an environment change, and shows passing validation only while both checkout and environment match. Integration requires validation from the target's environment as well. Native evidence remains distinct from container evidence. The schema version gate stops older daemons from ignoring these bindings or validation deadlines. The ignore-aware content scope and point-in-time limitations apply.
 
 `tests/containers/workspace.py` exercises real scoped requests from inside the managed image, physical alias conflicts, stale rereads, daemon-crash socket recovery, read-only image validation, timeout exit, source/image invalidation and credential revocation. Linux CI reports Docker and Podman independently; macOS uses the same fixture with `--machine`.
 
@@ -86,7 +84,7 @@ Validation and checkpoint records bind immutable image and build input evidence,
 
 Handoff schema 2 preserves image environment evidence across export/import. Compatibility uses the immutable image, build input fingerprints, platform, engine, UID, network and explicit environment. Local build IDs and connection names can differ when portable input evidence matches; legacy evidence still requires exact equality. Changed source or environment blocks acknowledgement before any lease transfer. Cross-host imports carry notes/evidence but do not transfer host-local leases or import passing validation records.
 
-Mounted runs currently reject image-declared volumes as well as any unexpected engine mount. Supporting image volumes requires retaining and checking their destinations and lifetime semantics; filtering out all volume mounts would hide unauthorized extras.
+Mounted runs reject image-declared volumes as well as any unexpected engine mount. Supporting image volumes requires retaining and checking their destinations and lifetime semantics; filtering out all volume mounts would hide unauthorized extras.
 
 ### Engine-volume socket relay
 
@@ -96,4 +94,4 @@ The helper image is built from an embedded relay and a digest-pinned Python base
 
 Confirmed writer exit retires the helper, including after daemon recovery. Exited agent containers and their small socket volumes are retained for inspection until explicit engine cleanup; volume removal must never be forced while a container still references it. The real fixture removes only its label-verified helpers and volumes. Image-declared volumes remain unsupported: only the recorded socket volume is allowed in addition to the authorized bind mounts.
 
-Desktop setup requires the user's first-run agreement and a running local Desktop context. See [Docker's macOS installation instructions](https://docs.docker.com/desktop/setup/install/mac-install/). The relay's Linux Docker, Linux Podman and macOS Podman results are separate from actual Docker Desktop validation.
+Desktop setup requires the user's first-run agreement and a running local Desktop context. See [Docker's macOS installation instructions](https://docs.docker.com/desktop/setup/install/mac-install/). Relay results on Linux Docker, Linux Podman and macOS Podman are reported separately from Docker Desktop.

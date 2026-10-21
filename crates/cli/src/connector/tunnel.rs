@@ -587,7 +587,7 @@ exit 0
         let home = tempfile::tempdir().unwrap();
         let fake = stateful_tailscale(dir.path(), Behaviour::default());
         let calls = || std::fs::read_to_string(dir.path().join("calls.log")).unwrap();
-        let mut tunnel = funnel_tailscale(&fake, 62800, 443, home.path())
+        let mut tunnel = funnel_tailscale(&fake, 8765, 443, home.path())
             .await
             .unwrap();
         assert_eq!(tunnel.public_url, "https://mac.tail1.ts.net");
@@ -595,26 +595,26 @@ exit 0
         assert!(tunnel.pid().is_none() && tunnel.exited().is_none());
         assert_eq!(
             agentdocker_host::connector::read_funnel(home.path()).map(|r| r.target),
-            Some("127.0.0.1:62800".to_owned()),
+            Some("127.0.0.1:8765".to_owned()),
             "recorded while it is set"
         );
         tunnel.stop().await.unwrap();
         assert!(
-            calls().contains("funnel --bg --https=443 http://127.0.0.1:62800"),
+            calls().contains("funnel --bg --https=443 http://127.0.0.1:8765"),
             "{}",
             calls()
         );
         assert!(calls().contains("funnel --https=443 off"), "{}", calls());
         assert!(agentdocker_host::connector::read_funnel(home.path()).is_none());
         drop(tunnel);
-        let other = funnel_tailscale(&fake, 62800, 8443, home.path())
+        let other = funnel_tailscale(&fake, 8765, 8443, home.path())
             .await
             .unwrap();
         assert_eq!(other.public_url, "https://mac.tail1.ts.net:8443");
         drop(other);
         assert!(agentdocker_host::connector::read_funnel(home.path()).is_none());
         assert!(
-            funnel_tailscale(&fake, 62800, 8080, home.path())
+            funnel_tailscale(&fake, 8765, 8080, home.path())
                 .await
                 .is_err()
         );
@@ -642,7 +642,7 @@ exit 0
         )
         .unwrap();
         std::fs::set_permissions(&unable, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let error = funnel_tailscale(&unable, 62800, 443, home)
+        let error = funnel_tailscale(&unable, 8765, 443, home)
             .await
             .unwrap_err()
             .to_string();
@@ -664,7 +664,7 @@ exit 0
                 ..Behaviour::default()
             },
         );
-        let error = funnel_tailscale(&fake, 62800, 443, home.path())
+        let error = funnel_tailscale(&fake, 8765, 443, home.path())
             .await
             .unwrap_err()
             .to_string();
@@ -683,7 +683,7 @@ exit 0
             let dir = tempfile::tempdir().unwrap();
             let home = tempfile::tempdir().unwrap();
             let fake = stateful_tailscale(dir.path(), behaviour);
-            let error = funnel_tailscale(&fake, 62800, 443, home.path())
+            let error = funnel_tailscale(&fake, 8765, 443, home.path())
                 .await
                 .unwrap_err()
                 .to_string();
@@ -739,7 +739,7 @@ exit 0
                 ..Behaviour::default()
             },
         );
-        let mut tunnel = funnel_tailscale(&fake, 62800, 443, home.path())
+        let mut tunnel = funnel_tailscale(&fake, 8765, 443, home.path())
             .await
             .unwrap();
         let error = tunnel.stop().await.unwrap_err();
@@ -750,12 +750,12 @@ exit 0
     #[test]
     fn a_funnel_is_a_connectors_only_while_it_serves_its_address() {
         let config: serde_json::Value = serde_json::from_str(
-            r#"{"TCP":{"443":{"HTTPS":true}},"Web":{"mac.tail1.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:62800"}}}},"AllowFunnel":{"mac.tail1.ts.net:443":true}}"#,
+            r#"{"TCP":{"443":{"HTTPS":true}},"Web":{"mac.tail1.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8765"}}}},"AllowFunnel":{"mac.tail1.ts.net:443":true}}"#,
         )
         .unwrap();
         assert_eq!(
             funnel_target(&config, 443).as_deref(),
-            Some("127.0.0.1:62800")
+            Some("127.0.0.1:8765")
         );
         assert_eq!(
             funnel_target(&config, 8443),

@@ -1147,7 +1147,7 @@ async fn session_agent<B: Backend>(backend: &B, input: &HookInput) -> Result<Opt
 /// what its MCP server inherited and registered, and what discovery reads.
 /// The hook's `cwd` is not that. Claude Code reports there wherever the
 /// session's Bash tool last changed directory, so it moves while the session
-/// lives — into `artifacts/21st`, into a smoke test's scratch directory — and
+/// lives — into `artifacts/out`, into a smoke test's scratch directory — and
 /// a hook that registered from there, and was compared by it, made one
 /// session two agents. A registration names the process's directory; a
 /// record in either directory, or one naming this session, is this session.
@@ -3087,7 +3087,7 @@ mod tests {
     /// the session from where the process was launched. Comparing the
     /// record's directory with the hook's `cwd` found nothing, so the hook
     /// registered a second agent for the same process from the
-    /// subdirectory (`claude-c960824c` beside `claude-code-2923`), and
+    /// subdirectory (`claude-c960824c` beside `claude-code-4321`), and
     /// thereafter found whichever record matched where the shell happened
     /// to be. The process's own directory is where its records are.
     /// An opencode server serves several directories and its plugin reports
@@ -3117,7 +3117,7 @@ mod tests {
     async fn a_session_whose_shell_moved_is_found_in_its_own_checkout() {
         let me = fixture_pid();
         let launched = tempfile::tempdir().unwrap();
-        let moved = launched.path().join("artifacts").join("21st");
+        let moved = launched.path().join("artifacts").join("out");
         std::fs::create_dir_all(&moved).unwrap();
         let mut input = input("Stop");
         input.cwd = Some(moved.clone());
@@ -3136,7 +3136,7 @@ mod tests {
                 .insert("session_id".into(), input.session_id.clone());
             record
         };
-        let mcp = in_dir("claude-code-2923", launched.path());
+        let mcp = in_dir("claude-code-4321", launched.path());
         let drifted = in_dir("claude-c960824c", &moved);
         let listed = |agents: Vec<AgentRecord>| {
             Mock::with(vec![
@@ -3224,7 +3224,7 @@ mod tests {
             .and_then(|dir| dir.canonicalize().ok())
             .expect("the hook's own provider process directory is readable");
         let shell = tempfile::tempdir().unwrap();
-        let moved = shell.path().join("artifacts").join("21st");
+        let moved = shell.path().join("artifacts").join("out");
         std::fs::create_dir_all(&moved).unwrap();
         let mut event = input("PostToolUse");
         event.cwd = Some(moved.clone());

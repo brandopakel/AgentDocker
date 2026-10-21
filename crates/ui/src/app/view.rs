@@ -4320,7 +4320,7 @@ fn parent_folder(path: &std::path::Path) -> String {
         return path.display().to_string();
     };
     // The part that tells two folders of one name apart comes first, so a
-    // clipped line still carries it: `agentdocker-delivery · /private/tmp`,
+    // clipped line still carries it: `agentdocker-fixture · /private/tmp`,
     // not `/private/tmp/agentd…`.
     let Some(name) = parent.file_name() else {
         return shorten_home(parent);
@@ -4605,9 +4605,9 @@ mod tests {
     fn a_shared_folder_name_is_told_apart_by_its_parent_first() {
         assert_eq!(
             super::parent_folder(std::path::Path::new(
-                "/private/tmp/agentdocker-delivery/workspace"
+                "/private/tmp/agentdocker-fixture/workspace"
             )),
-            "agentdocker-delivery · /private/tmp"
+            "agentdocker-fixture · /private/tmp"
         );
         assert_eq!(
             super::parent_folder(std::path::Path::new("/srv/workspace")),

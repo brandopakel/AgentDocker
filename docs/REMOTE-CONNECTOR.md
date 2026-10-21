@@ -1,22 +1,12 @@
 # The remote connector: agents that work inside a browser
 
-Status: September 18, 2026. Delivered in source as `agentdocker connector`
-(`crates/cli/src/connector/`), with unit tests, a real-binary trial on loopback,
-and acceptances against real Claude and ChatGPT accounts: through a cloudflared
-tunnel to an installed daemon, each vendor registered its client by DCR, the
-person consented with the pairing code, and each browser agent delivered a
-message to the project's terminal sessions — first from a terminal-run connector, then
-from the connector installed as a login service with a vendor-egress allowlist
-([record](verification/INDEX.md), `remote_connector_2026_09_17`, `vendor_acceptance`
-and `service_acceptance`). A connector on `--tunnel
-tailscale`, the machine's own `*.ts.net` name, has been accepted with both vendors
-(`stable_host_acceptance`); a quick cloudflared tunnel's hostname is ephemeral
-and both vendors' saved connectors must be re-added when it changes. Since
-then one connector serves every project on the machine (the consent page
-chooses), a vendor may identify itself by its Client ID Metadata Document
-instead of registering, and the desktop's Tools screen shows the connector's
-state — in source with unit tests; the vendors' CIMD path is not yet exercised
-against a real account (`any_project_and_cimd`).
+The connector is `agentdocker connector` (`crates/cli/src/connector/`). A
+connector on `--tunnel tailscale` serves from the machine's own `*.ts.net` name,
+which stays the same; a quick cloudflared tunnel's hostname is ephemeral and
+both vendors' saved connectors must be re-added when it changes. One connector
+serves every project on the machine (the consent page chooses), a vendor may
+identify itself by its Client ID Metadata Document instead of registering, and
+the desktop's Tools screen shows the connector's state.
 
 ## Why it exists
 
@@ -142,8 +132,7 @@ therefore use public PKCE even if it prefers the latter. A singular declaration
 alone must be `none`; legacy documents omitting both fields retain the existing
 public-client default. An incompatible refresh leaves prior client/grant state
 unchanged. This follows the [OpenAI method-intersection contract](https://developers.openai.com/plugins/build/auth).
-It does not implement JWT client assertions or establish real-account CIMD
-consent and messaging acceptance.
+It does not implement JWT client assertions.
 
 ## Tools
 
@@ -162,7 +151,7 @@ what it reads on web pages.
 | --- | --- |
 | `connector serve [--public-url <https://…>] [--tunnel tailscale [--tunnel-port 443\|8443\|10000] [--tailscale <path>] \| --tunnel cloudflared [--tunnel-name <name>] [--cloudflared <path>]] [--bind 127.0.0.1:0] [--project <path>] [--allow-callback <url>]… [--allow-from <cidr>\|anthropic\|openai\|@<file>]… [--client-ip-header <name>]` | Serve every project on this machine; `--project` is the one proposed first at consent. Prints the MCP URL, the admitted addresses and the vendors' setup steps, and the pairing code only to a terminal (a service's stderr is its log, which never gets it), and writes `$AGENTDOCKER_HOME/connector/serve.json` (created 0600; `agentdocker_host::connector::Serving`, which the desktop reads too) with the same for `status`, rewritten whenever the code is replaced. Plain `http://` is accepted only for a loopback host, for a trial without a tunnel. |
 | `connector status` | Whether a connector is serving here: its address, listening socket, pairing code, proposed project, tunnel, admitted prefixes, and how many browser agents the daemon holds live. |
-| `connector install <serve arguments> [--dry-run]` | Run the connector as a login service — a launchd agent (`dev.agentdocker.connector`) or a systemd user unit (Windows login-task candidate described below) — with those arguments, `AGENTDOCKER_HOME` and a PATH that includes where cloudflared was found; its log is `$AGENTDOCKER_HOME/connector/serve.log`. A quick tunnel gets a new hostname at every start and says so. |
+| `connector install <serve arguments> [--dry-run]` | Run the connector as a login service — a launchd agent (`dev.agentdocker.connector`) or a systemd user unit (on Windows, a login task, described below) — with those arguments, `AGENTDOCKER_HOME` and a PATH that includes where cloudflared was found; its log is `$AGENTDOCKER_HOME/connector/serve.log`. A quick tunnel gets a new hostname at every start and says so. |
 | `connector enable <serve arguments> [--dry-run]` | Install/start a new login service or start its byte-identical definition. A synced temporary file is published atomically without replacement; exact comparison refuses symlinks or different existing settings. Failed staging leaves no partial definition to block retry. The desktop uses this conservative entry point; `install` remains the explicit replacement command. |
 | `connector uninstall [--dry-run]` | Stop and remove the service. On Linux, stop/disable runs while the definition exists; a stop or disable failure preserves the installed definition for diagnosis and retry. Those failures are tolerated when the definition was already missing. Systemd reload runs after removal. |
 | `connector grants` | Every consent: agent, runtime, vendor, project, when connected and last used, whether active, and whether the daemon still holds the agent live. |
@@ -213,9 +202,8 @@ trigger network refreshes or change their existing configuration.
 - The tool surface cannot touch files, leases, worktrees or commits, whatever
   the hosted model is told by a page it read.
 - `project` as a recipient is the project the consent chose, wherever the
-  connector's process runs; a service starts in no project at all, and a
-  broadcast resolved from its working directory once went to a project nobody
-  was in. `project:<path>` reaches any other project, as for every agent.
+  connector's process runs; a service starts in no project at all, so a
+  broadcast is never resolved from its working directory. `project:<path>` reaches any other project, as for every agent.
 - Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`,
   `idempotentHint`, `openWorldHint`), so a host that asks before destructive or
   open-world calls — ChatGPT's *Allow low-risk actions* default — lets the
@@ -232,20 +220,14 @@ trigger network refreshes or change their existing configuration.
   Setup marks only the selected tunnel as starting and disables both setup
   actions until it finishes. It has its own bounded worker; failure remains on the card, while ordinary
   message delivery and refresh continue. Service installation is not successful
-  browser consent or a provider receipt. Final-package graphical/service
-  acceptance remains a separate gate; Windows isolated login-service lifecycle
-  acceptance passed as described below.
-- Not yet exercised against a real account: the vendors' Client ID Metadata
-  Document path (both vendors used DCR when they connected; the next connection
-  a vendor makes after this metadata is served is the trial).
+  browser consent or a provider receipt.
 
 ## What a browser agent cannot get
 
 It is not woken. A message to a browser agent waits in its inbox until the
 hosted model calls `read_inbox` — which it does only when the person's prompt
 leads it to. Nothing in the vendors' connector model lets a server start a
-turn. Terminal agents, by contrast, can be woken through their own adapters
-(MESSAGE-DELIVERY-AUDIT.md in git history).
+turn. Terminal agents, by contrast, can be woken through their own adapters.
 
 One more thing to know: a connector added to a Claude account appears in every
 Claude surface of that account, Claude Code sessions on any machine and about
@@ -258,19 +240,13 @@ person asks about it; a terminal session with its own AgentDocker tools uses
 those. To keep it out of a session, turn it off in that session's `/mcp`, or
 remove it under the account's Settings › Connectors.
 
-The Windows login-service candidate requires an owned daemon login task for the
+The Windows login service requires an owned daemon login task for the
 same state home: install that prerequisite explicitly with `agentdocker daemon
 install`, then review `connector install ... --dry-run` or use conservative
 `connector enable`. The connector starts the daemon through its separate task,
 retains the selected endpoint and never starts a daemon as its own child.
 Uninstall requests an exact connector generation's graceful exit, preserving
 the daemon and saved browser grants. A changed or foreign task is refused.
-Native isolated lifecycle acceptance passed on reviewed-correction source `30e78859`: 17 portable and
-21 installed connector checks, including exact generation cleanup and preserved
-daemon/grants. Published beta.5 subsequently passed 24 installed connector
-checks using its actual hosted binaries, including preserved daemon/grants and
-clean owned task/process/scratch removal. Reboot, public tunnels and actual-account
-acceptance remain open.
 
 Windows login-service setup resolves configured project, egress-feed and tunnel
 executable paths at installation time, so a relative shell path does not become
@@ -278,21 +254,12 @@ a different path under Task Scheduler's working directory. `tailscale.exe` and
 `cloudflared.exe` are discovered through the executable PATH lookup on Windows;
 an explicit executable path remains supported. Discovered tunnel paths are
 captured before argument serialization, so the installed task and its reparsed
-service-run command keep the same order with vendor allowlists. The accepted
-native fixture includes a relative project and feed. The corrected source
-repeated all 17 portable and 21 installed lifecycle checks; a real Clap
-round-trip regression covers discovered binaries with vendor allowlists.
+service-run command keep the same order with vendor allowlists.
 
-Startup now holds the service mutation lock from ownership validation through
+Startup holds the service mutation lock from ownership validation through
 publication of its exact process generation. It waits up to 30 seconds for an
 in-progress install/remove operation, then rechecks the receipt; removal holds
 the same lock while stopping the published generation. The runtime releases
 this lock before serving, so graceful shutdown does not wait on the remover.
-Source `a64fd575` passed the full local gate (1,511 Rust and 169 Python tests
-run, zero retries). Independent follow-up review requested status-output and
-help/documentation corrections, now applied. The native delayed-start fixture passed on `a64fd575`: 20 portable and
-24 installed connector checks, including refusal to publish or serve after
-ownership revocation under the held mutation lock. Owned cleanup was unforced
-and error-free. The review corrections passed the full local gate on `f87fc48f`;
-final CI and follow-up review remain pending. Service confirmations go to stderr, as on
+Service confirmations go to stderr, as on
 Unix; dry-run plans remain on stdout.

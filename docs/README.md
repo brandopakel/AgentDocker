@@ -1,11 +1,11 @@
 # Documentation
 
-What each document is for. Status lives in [remaining work](REMAINING-WORK.md), not here.
+What each document is for.
 
 ## Using it
 
 - [Root README](../README.md) — what it is, install, quick start, known limitations, how to report.
-- [Guide](GUIDE.md) — every command, tool and screen, with recipes and the changelog.
+- [Guide](GUIDE.md) — every command, tool and screen, with recipes.
 - [Desktop UX](DESKTOP-UX.md) — the app screen by screen: what every control does and will not claim.
 - [Guided setup](GUIDED-SETUP.md) — `agentdocker setup`: preview, apply, undo, health, the coordination skill.
 - [Local build](LOCAL-BUILD.md) — build and install the desktop from source; update, rollback, retention.
@@ -13,21 +13,19 @@ What each document is for. Status lives in [remaining work](REMAINING-WORK.md), 
 
 ## How it works
 
-- [Architecture](ARCHITECTURE.md) — the model, the wire protocol, events, storage, semantics, the roadmap table.
+- [Architecture](ARCHITECTURE.md) — the model, the wire protocol, events, storage and semantics.
 - [Claude channel input](CLAUDE-CHANNEL-INPUT.md) — live messages into a Claude Code session; consent, receipts, reconnect.
 - [Codex input](CODEX-INPUT.md) — the native Codex queue and receiver; hooks, receipts, recovery.
 - [Remote connector](REMOTE-CONNECTOR.md) — agents that work inside a browser, through the opt-in MCP connector.
 - [Iced design](ICED-DESIGN.md) — the desktop's interaction contracts and how they are validated.
-- [Container engines](CONTAINER-ENGINES.md) — the optional Docker/Podman addition and its acceptance.
-- [Windows port](WINDOWS-PORT.md) — what runs on Windows, what does not yet, and the evidence.
+- [Container engines](CONTAINER-ENGINES.md) — the optional Docker/Podman addition and how it is verified.
+- [Windows port](WINDOWS-PORT.md) — what runs on Windows and what does not.
 - [Coding instructions](../CLAUDE.md) — layout, conventions, the verification workflow, this documentation contract.
 - [Portable coordination skill](../crates/cli/skills/agentdocker/SKILL.md) — the one instruction asset agents load.
 
-## Where it stands
+## Testing and release
 
-- [Remaining work](REMAINING-WORK.md) — the road to v1 and every open item, with its evidence.
 - [Testing and benchmarks](TESTING-AND-BENCHMARKS.md) — the standard gate, coverage, fuzzing, benchmarks, and how results are reported.
 - [Trying a candidate](LOCAL-TRIAL.md) — how to try a build on a real machine, stage by stage.
 - [Distribution setup](DISTRIBUTION-SETUP.md) — the tap, the release workflow, what a Developer ID is for.
-- [Verification history](verification/INDEX.md) — where the evidence from trials on real binaries is kept.
-- [Real-engine verification](../tests/containers/README.md) — the separate Docker/Podman evidence.
+- [Real-engine verification](../tests/containers/README.md) — how the Docker and Podman adapters are checked against real engines.

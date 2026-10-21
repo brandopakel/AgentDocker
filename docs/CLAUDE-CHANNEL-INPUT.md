@@ -11,24 +11,24 @@ consent and organization policy. Merely configuring MCP does not enable input.
 See the [official channel contract](https://code.claude.com/docs/en/channels-reference).
 
 After initialization and any session verification, the adapter waits one second
-before its first queue offer. A September 18 real-provider trace found an offer
-written just before Claude registered its channel handler; an uninstrumented
-run lost that offer. The settling interval narrows that race and the first
+before its first queue offer. An offer written just before Claude registers its
+channel handler can be lost. The settling interval narrows that race and the first
 offer's repeat closes it: while no receipt has yet been seen on the channel,
 an offer that has none after thirty seconds is written a second time, once,
-under the same message id with `repeat: "true"` (a string: Claude Code drops a notification whose meta values are not all strings) in its metadata, and the
+under the same message id with `repeat: "true"` (a string: Claude Code drops a
+notification whose meta values are not all strings) in its metadata, and the
 delivery rule tells the model a repeat is the same message, acknowledged
 once. From the first receipt on, the channel offers nothing twice: a missing
 receipt pauses its queue visibly, and the session's lifecycle hooks then take
 that queue over. At the next prompt or tool use, once receipt recovery has
 looked for the message in the transcript and not found it, they deliver it as
 hook context and acknowledge it when written, and every message behind it the
-same way. The case this covers is a channel Claude never loaded — a session
-restarted in place, which re-executes `claude` without the flag — where every
+same way. The case this covers is a channel Claude never loaded, such as a session
+restarted in place, which re-executes `claude` without the flag: every
 offer is dropped without a word. A duplicate is possible only where the
 transcript hides a message the model did see, and is preferred to silence.
-Control and receipt requests remain responsive throughout. Neither the wait nor the repeat is a readiness guarantee or a
-receipt.
+Control and receipt requests remain responsive throughout. Neither the wait nor
+the repeat is a readiness guarantee or a receipt.
 
 ## Launch from AgentDocker
 
@@ -71,37 +71,28 @@ lock; the hooks adapter and the tools deliver the inbox as usual) and says so
 on stderr, so the same entry fits a session started plainly and one started
 for channel input. Only the launch decides.
 
-## Resuming a session
-
-The installed September 18 preview (`6bd97894`, source `705f924`) provides
-**Reconnect here** in a Claude session's **Details**. Exit that session normally
-with `/exit`, select it under **Earlier sessions**, and press the button. The
-app resumes the same conversation under its existing agent record, retaining
-its queue, aliases, questions and cards. Its terminal opens in the app for
-Claude's own channel consent. The matching inline MCP entry and launch flags
-are supplied by the app; no handwritten environment command is needed.
-Reconnect preserves the recorded executable, supported launch options (including
-permission mode, tool allow/deny lists, strict MCP settings, model and system
-prompt) and explicit launch environment. It replaces the session selector with
-the recorded conversation and never resubmits the initial positional prompt. The stored conversation ID must pass the same plain-ID validation as the daemon before either client constructs its command.
-The owned AgentDocker channel entry is rebuilt using the current CLI. Ambiguous
-or unsupported options and altered MCP entries refuse before a launch; resume
-such a session explicitly with its original configuration. External sessions
-registered without a command have no launch options to recover and use provider
-configuration. The CLI's `--claude <path>` explicitly replaces the executable.
+**Reconnect here** in a Claude session's **Details** resumes an ended session.
+Exit that session normally with `/exit`, select it under **Earlier sessions**,
+and press the button. The app resumes the same conversation under its existing
+agent record, retaining its queue, aliases, questions and cards. Its terminal
+opens in the app for Claude's own channel consent. The matching inline MCP entry
+and launch flags are supplied by the app; no handwritten environment command is
+needed. Reconnect preserves the recorded executable, supported launch options
+(including permission mode, tool allow/deny lists, strict MCP settings, model and
+system prompt) and explicit launch environment. It replaces the session selector
+with the recorded conversation and never resubmits the initial positional prompt.
+The stored conversation ID must pass the same plain-ID validation as the daemon
+before either client constructs its command. The owned AgentDocker channel entry
+is rebuilt using the current CLI. Ambiguous or unsupported options and altered MCP
+entries refuse before a launch; resume such a session explicitly with its
+original configuration. External sessions registered without a command have no
+launch options to recover and use provider configuration. The CLI's
+`--claude <path>` explicitly replaces the executable.
 
 The CLI alternative is `agentdocker reconnect <agent>`. A still-live process,
-conflicting subscriber or uncertain persistence refuses the relaunch.
-
-Three sequential actual-Claude trials and one additional final-package trial
-preserved the ended identity, delivered its retained message, and answered an
-idle project pause in the same chat with verified receipts and no explicit ACK.
-The final package passed thirteen installation/rollback checks and is installed
-with all six external provider processes unchanged. These bounded private
-trials do not certify the user's still-plain sessions: each needs reconnect and
-provider consent before its own idle-pause acceptance. Exact sources, receipts,
-earlier failed trials and activation are in the
-[existing delivery record](verification/INDEX.md).
+conflicting subscriber or uncertain persistence refuses the relaunch. A session
+that was not launched with the channel needs reconnect and provider consent before
+it receives idle input.
 
 For an external relaunch outside the app, the registration path below applies.
 A session that comes back as a new process takes up the record it ended
@@ -111,7 +102,7 @@ their processes are gone. The record that ended last stays, with its id, its
 direct conversation and its journal cursor; whatever was still queued for it,
 for any earlier ended life of the session and for the new process's own
 registration is one queue in durable sequence order with each message once, a
-question an earlier life asked is now its own, and every other id becomes an
+question an earlier life asked becomes its own, and every other id becomes an
 alias. This applies only when the register/session-resumption eligibility rule
 in [ARCHITECTURE.md](ARCHITECTURE.md#wire-protocol) is satisfied. A record whose
 process still runs, or one that holds leases or has pending stale notices, is
@@ -123,8 +114,7 @@ captures at the same time refuse the fold. The joined working set is bounded to
 and event, so a failed write leaves them all unchanged. Unreadable observations
 still disable coordination. An initialized fresh input receiver
 also stays separate: it may already have offered its queue head, so folding old
-backlog in front would change delivery order. Its old queue remains retained;
-this ordering does not establish successful existing-session handover.
+backlog in front would change delivery order. Its old queue remains retained.
 
 So that the hooks get there first, the channel waits for them when the
 session asked to resume: the MCP server reads its parent Claude command line
@@ -158,9 +148,9 @@ supervised process is its supervisor's to bring back, and the daemon does
 not fold a managed record into an unmanaged one or the reverse. A running
 session cannot be given a channel; the relaunch is the whole of it.
 
-## Manual local trial
+## Manual local setup
 
-Use the rebuilt CLI; older installed binaries do not have this option. In a
+Use a CLI that has the `--claude-channel` option. In a
 disposable project, write a private MCP configuration using that CLI's absolute
 path:
 
@@ -189,16 +179,15 @@ development flag bypasses its channel allowlist for this entry; it does not
 bypass organization policy or general tool permissions. The `--strict-mcp-config`
 option limits which MCP entries load; it does not isolate the provider profile.
 Existing sessions must be relaunched normally to load another configuration.
-Plain reconfiguration alone does not prove an old AgentDocker record's queue
-was transferred. The **Reconnect here** flow described above resumes an eligible
-ended record with its conversation and queue; it refuses live or unsafe cases.
-Installed consent and idle receipt passed for the recorded managed session.
+Plain reconfiguration alone does not transfer an old AgentDocker record's
+queue. The **Reconnect here** flow described above resumes an eligible ended
+record with its conversation and queue; it refuses live or unsafe cases.
 Do not restart a working session merely to make the indicator green.
 
-Actual-provider acceptance uses an owned `CLAUDE_CONFIG_DIR` and private daemon
-home/socket, monitors existing provider configuration for changes, and reuses
-existing authentication only in the child environment. It must not edit the
-user's existing provider profile or restart their working sessions.
+A trial against the provider uses an owned `CLAUDE_CONFIG_DIR` and a private daemon
+home and socket, and reuses existing authentication only in the child environment.
+It does not edit the user's existing provider profile or restart their working
+sessions.
 
 From a separate client targeting the same daemon, send to the registered agent:
 
@@ -207,9 +196,8 @@ agentdocker send --from user --to <agent-name-or-id> "Your message"
 ```
 
 Peer `send_message` calls and these user sends enter the same durable inbox and
-channel path. Direct typing into Claude's terminal still belongs to Claude's
-own input handling. The September 11 trial exercised both paths during a blocked
-tool call; broader ordering, approval, cancellation and starvation cases remain.
+channel path. Direct typing into Claude's terminal belongs to Claude's own input
+handling.
 
 ## Delivery and recovery
 
@@ -219,18 +207,17 @@ its complete JSON payload and stable `message_id`, `from_agent`, `kind`,
 received IDs using `acknowledge_messages`. Lifecycle hooks also recover a forgotten
 ACK when the current session's provider transcript records the exact complete
 channel body and metadata followed by a real assistant response: in its parent
-chain, or — since Claude Code 2.1.299, whose responses name the turn's prompt
-snapshot, written before a channel input that arrived for that turn, as their
-parent — any later main-chain response in the same session, which was made with
-the input in its context. This accepts both idle channel input and a busy
+chain, or, with Claude Code 2.1.299 or later (whose responses name the turn's
+prompt snapshot, written before a channel input that arrived for that turn, as
+their parent), any later main-chain response in the same session, which was made
+with the input in its context. This accepts both idle channel input and a busy
 `queued_command` attachment; an input without a later response is insufficient. The receipt commits
 before removing the queue head. It confirms input receipt, not task completion.
 Replies use `send_message` to the envelope's `reply_destination` with
 `reply_to=message_id`, so project/channel responses appear in their original chat.
 A terminal-only response is not an app reply.
 The legacy lifecycle-hook path carries the same complete envelope and reply
-destination; it no longer strips IDs and routing down to a display-name/text
-summary. Hooks alone still require a provider prompt/tool boundary and cannot
+destination, with IDs and routing intact. Hooks alone still require a provider prompt/tool boundary and cannot
 wake a plain idle session.
 
 Automatic recovery first reads a 2 MiB suffix, then at most one additional
@@ -254,8 +241,6 @@ lifetime and three delayed proof attempts. Each attempt rechecks the actual PID
 birth time, registered generation, session and channel ownership. It uses the
 same exact-body proof and receipt-before-ACK ordering; it neither submits a prompt
 nor fabricates a hook/contact/activity event. Unknown or absent proof stays queued.
-This closes the deferred-flush path; installed text-only acceptance is tracked
-separately from the earlier tool-call trials.
 
 A stdout write never removes an inbox message. Until a verified receipt,
 delivery is unconfirmed. Claude may silently ignore a channel that was not
@@ -301,7 +286,7 @@ two-second deadline and output has a five-second write deadline. Bounded
 dedicated stdio workers keep blocked pipes out of Tokio's runtime shutdown.
 Addressed inboxes retain the daemon's 1,000-message/4 MiB admission limits.
 
-## Acceptance
+## Transport checks
 
 `scripts/claude_channel_smoke.py` exercises actual daemon and MCP processes:
 initialization gating, single-owner detection, retained offers, request pressure,
@@ -309,123 +294,30 @@ receipts during waiting calls, daemon/MCP restart, idle transport offers, and
 broken or unread stdout. It speaks MCP itself; passing it does not prove that a
 Claude model received or acted on a message.
 
-The [September 11 source-pinned trial](verification/INDEX.md)
-used actual Claude Code 2.1.268 with the AgentDocker adapter. Idle peer input
-started a turn without another prompt; peer and canonical-user messages queued
-during a 45-second tool call, then received ordered explicit receipts and
-correlated replies. A terminal prompt submitted during the wait also completed.
-A second idle delivery preserved an unsubmitted terminal draft. Four model
-receipts/replies and six release-transport scenarios passed.
+## Durable delivery status
 
-The first isolated profile had nonessential traffic disabled and reported
-channels unavailable. A fresh trial with normal traffic enabled channel consent
-and registration. A failed whole-file configuration guard is retained: backup
-comparison found only three global Claude usage counters changed during the
-concurrent-session trial, despite the private profile. Authentication, MCP
-entries, provider settings and the other monitored files were unchanged.
-Attribution of those counter changes is unproven; no user files were restored.
+Explicit channel acknowledgements persist a receipt before removing input from
+the queue. Iced shows the actual queue count and last receipt; a failed channel
+retains a bounded pause reason. **Review delivery** shows that reason and recent
+saved logs without changing the queue or current draft. Paused sessions remain
+in **Needs input** after exit. An unavailable count is not shown as zero; a
+disconnected window labels cached status. A receipt is not permission to act.
 
-The [managed-launch trial](verification/INDEX.md)
-at `78fc835` used `run --claude-channel`, the daemon's managed PTY and normal
-`attach`. Its first model turn came from a queued peer message, without a typed
-model prompt. A second canonical-user message preserved an unsubmitted draft.
-Both received explicit receipts and correlated replies under the original managed
-identity; no duplicate Claude registration appeared. The private launch spec
-contained no authentication token. The monitored user configuration hashes were
-unchanged and the owned processes exited. The UI's separate 26-step rendering
-trial covers the checkbox; it does not replace this actual-provider evidence.
+## Channel ownership
 
-The [owned Codex input adapter](CODEX-INPUT.md) and durable desktop receipt
-status are implemented. Actual-provider reconnect/ambiguous receipt,
-additional versions/policies and sustained-use acceptance remain in the
-message delivery audit (MESSAGE-DELIVERY-AUDIT.md in git history).
-
-
-### September 12: Claude questions use the normal channel queue
-
-PR #105 merged as `7110670` and PR #106 as `90c9e24` after final CI and actual
-source inspections. The [Claude question checkpoint](verification/INDEX.md)
-then reproduced a human answer appearing both in the blocking MCP result and
-a channel input without its reply ID. Channel questions now return the posted
-question ID immediately; their answers arrive once through the normal queue
-with `reply_to`. Explicit model acknowledgements still release accepted input.
-The channel MCP also hides/refuses competing inbox-read tools.
-
-At `5819975`, actual Claude 2.1.269 processed peer, human, answer and peer inputs
-with four ordered receipts/replies and one provider record. Provider history
-shows one answer in the native busy-input attachment and a posted-ID-only tool
-result. The local gate passed 815 Rust tests, 65 Python checks, 137 native steps
-and seven transport scenarios. The raw-response driver failure and provider
-history parser correction remain recorded. User configuration hashes were
-unchanged, and all owned fixture processes exited. PR #107 merged as `645e1d5`
-after final CI and actual source review of `fb73bb6`; broader sustained/recovery
-acceptance remains. The delivery-status follow-up is recorded below.
-
-
-### Durable delivery status
-
-With schema 13, explicit channel acknowledgements persist a receipt before
-removing input from the queue. Iced shows the actual queue count and last receipt;
-a failed channel retains a bounded pause reason. **Review delivery** shows that
-reason and recent saved logs without changing the queue or current draft.
-Paused sessions remain in **Needs input** after exit. An unavailable count from
-an older daemon is not shown as zero; a disconnected window labels cached status.
-
-The [status evidence](verification/INDEX.md) includes
-seven transport scenarios and an actual Claude 2.1.269 trial with three ordered
-receipts/replies under one identity. That bounded trial used one initial typed
-authorization turn. An earlier unprimed trial requested further authorization;
-receipt is not permission to act. The retained report explains a controller
-replay mistake and the separate read-only audit of saved events/tool calls.
-Final CI/source review of this follow-up and broader recovery acceptance remain.
-
-Channel ownership now uses both the agent ID and provider process generation.
+Channel ownership uses both the agent ID and the provider process generation.
 If SessionStart folds an uninitialized registration before its channel starts
 input, a second MCP entry still cannot acquire another channel under the new
-canonical ID. Hooks check the process lock too. `claude_channel_smoke.py --resume`
-checks this boundary and the initialized-receiver refusal using real daemon/MCP
-processes with fixture provider processes. It does not prove model idle wake or
-actual Claude startup ordering. The following dated gates record the subsequent
-transport verification; September 18 actual reconnect/idle evidence is separate.
+canonical ID. Hooks check the process lock too. A channel that has already
+initialized is not folded behind its offered head.
+`claude_channel_smoke.py --resume` checks this boundary and the
+initialized-receiver refusal using real daemon/MCP processes with fixture
+provider processes. It does not prove model idle wake or actual Claude startup
+ordering.
 
-September 17 reconnect review: a provider-generation owner lock supplements the
-agent-ID lock when SessionStart folds an MCP-first registration. A channel that
-has already initialized is not folded behind its offered head. Source `b5ea76c`
-passes the full 1,094-Rust/84-Python gate (seven skipped) and the actual daemon/MCP
-transport regression; the older binary admits a second channel and fails. See
-[existing channel evidence](verification/INDEX.md).
-At this September 17 checkpoint actual Claude relaunch/model idle wake was
-not tested. The September 18 **Reconnect here** evidence above later covers
-those cases for its named provider session and candidate.
+## Board cards on resumption
 
-September 17 startup validation: runtime `a45f831` passed the full gate with
-1,149 Rust tests (seven skipped), 94 Python checks (one skipped), formatting,
-strict Clippy, doctests, packaging and release build. The parser regression
-includes resume-like prompt text after `--`. Local backend fixtures cover both
-startup orders, wrong/missing generations, a silent daemon, timeout, and control
-and explicit receipts before readiness. These do not establish actual provider
-startup/consent or an idle model reply; those remain open in the
-[existing channel record](verification/INDEX.md).
-
-September 17 resumption follow-up: PR #179 keeps the latest capture per path
-and eligible open channel memberships in the same transaction as the queue and
-aliases. Runtime `3b21d64` passed the full gate (1,149 Rust tests, seven skipped;
-94 Python checks, one skipped). The real MCP transport fixture passed with
-observations in both lives, preserved room membership, ordered older backlog
-and a new room message delivered once through the canonical alias; no fixture
-processes survived. Daemon tests also cover storage reopen, newly created
-self-review refusal and transaction rollback. The earlier observation-only
-fixture failed against the preceding runtime and passed with that fix.
-This is source/transport evidence, not installed Claude model acceptance.
-The startup ordering guard above remains. Results are in the
-[existing channel record](verification/INDEX.md).
-
-The board integration also migrates a card's typed assignee and creator when
-an eligible identity folds. Card text, column, timestamps and archive state stay
-unchanged; resumption never grants or renews a task lease. A still-held lease
-continues to refuse the fold, and a lapsed hold requires explicit recovery.
-Runtime `197bca4` passed the full 1,165-Rust/94-Python gate (seven/one skipped).
-The real MCP fixture preserved a completed card through resumption; a separate
-private daemon trial reproduced the old task-document refusal and passed on the
-fixed binary with its queue and card intact. No fixture processes survived.
-Source and driver pins are retained in the existing channel record.
+When an eligible identity folds, a card's typed assignee and creator migrate with
+it. Card text, column, timestamps and archive state stay unchanged; resumption
+never grants or renews a task lease. A still-held lease continues to refuse the
+fold, and a lapsed hold requires explicit recovery.

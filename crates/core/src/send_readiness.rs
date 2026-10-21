@@ -331,14 +331,14 @@ mod tests {
         agent
             .spec
             .labels
-            .insert("session_id".into(), "3ebbfa91-6e52-4cea".into());
+            .insert("session_id".into(), "1a2b3c4d-5e6f-4a7b".into());
         assert_eq!(
             claude_resume_command(&agent, false).unwrap(),
-            "cd '/work/it'\\''s here' && AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 claude --resume 3ebbfa91-6e52-4cea --dangerously-load-development-channels server:agentdocker"
+            "cd '/work/it'\\''s here' && AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 claude --resume 1a2b3c4d-5e6f-4a7b --dangerously-load-development-channels server:agentdocker"
         );
         assert_eq!(
             claude_resume_command(&agent, true).unwrap(),
-            "if (Set-Location -LiteralPath '/work/it''s here' -PassThru -ErrorAction SilentlyContinue) { $env:AGENTDOCKER_CLAUDE_CHANNEL_INPUT='1'; claude --resume 3ebbfa91-6e52-4cea --dangerously-load-development-channels server:agentdocker }"
+            "if (Set-Location -LiteralPath '/work/it''s here' -PassThru -ErrorAction SilentlyContinue) { $env:AGENTDOCKER_CLAUDE_CHANNEL_INPUT='1'; claude --resume 1a2b3c4d-5e6f-4a7b --dangerously-load-development-channels server:agentdocker }"
         );
         // Curly quotes are quotes to PowerShell: doubled, so a folder's
         // name cannot end the literal and start a statement.
@@ -405,7 +405,7 @@ mod tests {
         let birth = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         let mut agent = AgentRecord::new(
             crate::AgentSpec {
-                name: "codex-release".into(),
+                name: "codex-sample".into(),
                 runtime: "codex".into(),
                 ..Default::default()
             },
