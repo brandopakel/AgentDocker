@@ -41,7 +41,22 @@ its project when it consents.
   reach for: Tailscale Funnel on this machine's own `*.ts.net` name, which is
   the same after every restart and needs no domain — the connector reads the
   name from `tailscale status`, sets `tailscale funnel --bg --https=<443|8443|10000>
-  http://127.0.0.1:<port>` on the way in and clears it on the way out; Funnel
+  http://127.0.0.1:<port>` on the way in and clears it on the way out, on an
+  error or a panic too (waiting at most three seconds for `tailscale`, then
+  killing it). A port that already serves something else is refused, never
+  taken over. The Funnel is recorded in `connector/funnel.json` (its pid,
+  port and loopback address) before it is set, and the record goes only once
+  the Funnel is confirmed undone, so it is never open unrecorded. A set that
+  fails is undone only if the port then points at this connector's own
+  address; one it cannot confirm stays recorded. A Funnel a killed connector
+  left is cleared by the next start before anything else, but only while
+  `tailscale serve status` still points it at the recorded address: one
+  pointed elsewhere since is somebody else's and is left alone, and one that
+  cannot be read or cleared stops the start, keeping its record, with the
+  commands to check and clear it. One connector serves from a home at a
+  time (`connector/serve.lock`, held while it runs), so no second one writes
+  over its state, status or record. Every `tailscale` command the connector
+  runs has 15 s, after which it is killed. Funnel
   must be enabled for the tailnet (the error says how). `--tunnel cloudflared`
   starts cloudflared as a child: a quick tunnel, whose random
   `*.trycloudflare.com` hostname it reads from cloudflared's output and which
@@ -192,8 +207,9 @@ trigger network refreshes or change their existing configuration.
   choosing. The optional `openai` admission preset makes a separate periodic
   request only to the fixed vendor feed above.
 - Every request is bounded: 8 KiB request line, 32 KiB of headers, 1 MiB body,
-  15 s to arrive, 64 connections, one request per connection, chunked bodies
-  refused. TLS, keep-alive and any client-IP allowlisting are the tunnel's.
+  15 s to arrive and 15 s for its reply to be taken, 64 connections (one
+  more is closed at once, never waited on), one request per connection,
+  chunked bodies refused. TLS, keep-alive and any client-IP allowlisting are the tunnel's.
 - The tool surface cannot touch files, leases, worktrees or commits, whatever
   the hosted model is told by a page it read.
 - `project` as a recipient is the project the consent chose, wherever the

@@ -844,11 +844,9 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
-- **Your own terminal's Codex can be the reviewer.** `agentdocker codex`
-  starts Codex in the terminal you are in, through AgentDocker's launcher:
-  messages wake it even while it is idle, and you can give it a role, such
-  as reviewer, like any agent. Codex's own options go after `--`. A plain
-  `codex` still works, but reads its messages only at its next prompt.
+- **Choose the model and effort.** Launching Claude or Codex from the app
+  offers **Model** and **Effort**, starting at the provider's own defaults,
+  and a session's panel says which it runs (`gpt-6-astra · xhigh`).
 
 - **A pairing code works once.** The connector's consent page now asks for the
   pairing code first and shows the projects to choose from only after it.
@@ -856,7 +854,8 @@ Newest first. Only what changes how the product is used.
   the new code from `agentdocker connector status` or the Tools screen. Wrong
   codes no longer close consent until a restart: a source that types five
   waits a quarter of an hour, and a code guessed at twenty times is replaced.
-  A service's log no longer records the code.
+  A service's log no longer records the code. A connector that crashes no
+  longer leaves its Tailscale Funnel open: the next start clears it.
 
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   used to be unbound: its AgentDocker tools refused, so its model could reach
@@ -864,6 +863,12 @@ Newest first. Only what changes how the product is used.
   conversation is now its own record, by its thread: its tools work as it,
   and its messages reach it at its next prompt. It cannot be woken while
   idle; a Codex launched from AgentDocker can.
+
+- **Your own terminal's Codex can be the reviewer.** `agentdocker codex`
+  starts Codex in the terminal you are in, through AgentDocker's launcher:
+  messages wake it even while it is idle, and you can give it a role, such
+  as reviewer, like any agent. Codex's own options go after `--`. A plain
+  `codex` still works, but reads its messages only at its next prompt.
 
 - **Roles in the app.** In a session's panel, **Roles** gives an agent roles
   from its project's palette, several to an agent and one role to several

@@ -41,6 +41,7 @@ pub mod editor;
 // that is built, so the module is too.
 #[cfg(unix)]
 pub mod handoff;
+pub mod models;
 pub mod multiplexer;
 pub mod notify;
 #[cfg_attr(windows, path = "pty/windows.rs")]
