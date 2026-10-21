@@ -3963,7 +3963,7 @@ impl App {
                 self.shell.launch_effort.as_deref(),
                 choices.default_effort.as_deref(),
                 choices
-                    .efforts_for(self.launch_model_now())
+                    .efforts_for(self.launch_model_now().as_deref())
                     .iter()
                     .map(|e| (e.clone(), e.clone()))
                     .collect(),
@@ -3975,14 +3975,25 @@ impl App {
                 .find(|(option, _)| option == id)
                 .map_or_else(|| id.to_owned(), |(_, name)| name.clone())
         };
-        let shown = chosen
+        // An argument that sets it is in force: the chip says so and gives
+        // way to it.
+        let (given_model, given_effort) = self.launch_given();
+        let given = match which {
+            super::shell::ChoiceMenu::Model => given_model,
+            super::shell::ChoiceMenu::Effort => given_effort,
+        };
+        let shown = given
+            .as_deref()
+            .or(chosen)
             .or(default)
             .map_or_else(|| "Default".to_owned(), name_of);
+        let open = open && given.is_none();
         let trigger = action(
             format!("launch-{key}"),
             format!("{word}: {shown}"),
-            (!self.shell.launching).then_some(Message::LaunchChoiceMenu((!open).then_some(which))),
-            chosen.is_some(),
+            (!self.shell.launching && given.is_none())
+                .then_some(Message::LaunchChoiceMenu((!open).then_some(which))),
+            chosen.is_some() || given.is_some(),
         );
         let pick = move |value: Option<String>| match which {
             super::shell::ChoiceMenu::Model => Message::LaunchModel(value),

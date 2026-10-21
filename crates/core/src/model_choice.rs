@@ -63,6 +63,65 @@ pub fn plain_choice(value: &str) -> bool {
         })
 }
 
+/// A model or effort the person's own arguments set, in the order given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Setting {
+    Model,
+    Effort,
+}
+
+/// Every model and effort `given` sets for `runtime`, in argument order, in
+/// each spelling the CLI takes: `-m X`, `-mX`, `-m=X`, `--model X`,
+/// `--model=X`; for Codex also `-c`/`--config` with `model=` or
+/// `model_reasoning_effort=` (spaces around `=` allowed, quotes taken off);
+/// for Claude `--effort X` and `--effort=X`. The last of each is the one in
+/// force.
+fn settings(runtime: &str, given: &[String]) -> Vec<(Setting, String)> {
+    let mut found = Vec::new();
+    let mut args = given.iter();
+    // The value an option takes: after `=`, attached, or the next argument.
+    let value =
+        |arg: &str, long: &str, short: Option<&str>, args: &mut std::slice::Iter<'_, String>| {
+            if arg == long || short == Some(arg) {
+                return args.next().cloned();
+            }
+            if let Some(rest) = arg.strip_prefix(long).and_then(|r| r.strip_prefix('=')) {
+                return Some(rest.to_owned());
+            }
+            let short = short?;
+            arg.strip_prefix(short)
+                .filter(|rest| !rest.is_empty())
+                .map(|rest| rest.strip_prefix('=').unwrap_or(rest).to_owned())
+        };
+    while let Some(arg) = args.next() {
+        match runtime {
+            "codex" => {
+                if let Some(model) = value(arg, "--model", Some("-m"), &mut args) {
+                    found.push((Setting::Model, model));
+                } else if let Some(setting) = value(arg, "--config", Some("-c"), &mut args)
+                    && let Some((key, raw)) = setting.split_once('=')
+                {
+                    let raw = raw.trim().trim_matches('"').trim_matches('\'').to_owned();
+                    match key.trim() {
+                        "model" => found.push((Setting::Model, raw)),
+                        "model_reasoning_effort" => found.push((Setting::Effort, raw)),
+                        _ => {}
+                    }
+                }
+            }
+            "claude-code" => {
+                if let Some(model) = value(arg, "--model", None, &mut args) {
+                    found.push((Setting::Model, model));
+                } else if let Some(effort) = value(arg, "--effort", None, &mut args) {
+                    found.push((Setting::Effort, effort));
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
 /// The arguments that make `runtime`'s CLI use `model` and `effort`, to go
 /// before the person's own `given` ones. A choice the person's arguments
 /// already make is left to them, so nothing is said twice. A runtime with
@@ -78,34 +137,17 @@ pub fn choice_args(
             return Err("A model or effort is one word");
         }
     }
-    let has = |flags: &[&str]| {
-        given.iter().any(|arg| {
-            flags
-                .iter()
-                .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
-        })
-    };
-    // `-c key=value` and `--config key=value` set Codex configuration.
-    let configures = |key: &str| {
-        given.windows(2).any(|pair| {
-            matches!(pair[0].as_str(), "-c" | "--config")
-                && pair[1].trim_start().starts_with(&format!("{key}="))
-        }) || given
-            .iter()
-            .any(|arg| arg.starts_with(&format!("--config={key}=")))
-    };
+    let set = settings(runtime, given);
+    let says = |which: Setting| set.iter().any(|(setting, _)| *setting == which);
+    let model = model.filter(|_| !says(Setting::Model));
+    let effort = effort.filter(|_| !says(Setting::Effort));
     let mut args = Vec::new();
     match runtime {
         "codex" => {
-            if let Some(model) = model
-                && !has(&["-m", "--model"])
-                && !configures("model")
-            {
+            if let Some(model) = model {
                 args.extend(["--model".to_owned(), model.to_owned()]);
             }
-            if let Some(effort) = effort
-                && !configures("model_reasoning_effort")
-            {
+            if let Some(effort) = effort {
                 args.extend([
                     "-c".to_owned(),
                     format!("model_reasoning_effort=\"{effort}\""),
@@ -113,14 +155,10 @@ pub fn choice_args(
             }
         }
         "claude-code" => {
-            if let Some(model) = model
-                && !has(&["--model"])
-            {
+            if let Some(model) = model {
                 args.extend(["--model".to_owned(), model.to_owned()]);
             }
-            if let Some(effort) = effort
-                && !has(&["--effort"])
-            {
+            if let Some(effort) = effort {
                 args.extend(["--effort".to_owned(), effort.to_owned()]);
             }
         }
@@ -129,42 +167,18 @@ pub fn choice_args(
     Ok(args)
 }
 
-/// The model and effort the person's own arguments `given` set for
-/// `runtime`, where they set one.
+/// The model and effort the person's own arguments `given` put in force
+/// for `runtime`: the last of each, where they set one.
 pub fn given_choices(runtime: &str, given: &[String]) -> (Option<String>, Option<String>) {
-    let value_of = |flags: &[&str]| {
-        given.iter().enumerate().find_map(|(at, arg)| {
-            flags.iter().find_map(|flag| {
-                if arg == flag {
-                    given.get(at + 1).cloned()
-                } else {
-                    arg.strip_prefix(&format!("{flag}=")).map(str::to_owned)
-                }
-            })
-        })
+    let set = settings(runtime, given);
+    let last = |which: Setting| {
+        set.iter()
+            .rev()
+            .find(|(setting, _)| *setting == which)
+            .map(|(_, value)| value.clone())
+            .filter(|value| plain_choice(value))
     };
-    let configured = |key: &str| {
-        let prefix = format!("{key}=");
-        given
-            .windows(2)
-            .filter(|pair| matches!(pair[0].as_str(), "-c" | "--config"))
-            .map(|pair| pair[1].as_str())
-            .chain(given.iter().filter_map(|arg| arg.strip_prefix("--config=")))
-            .find_map(|setting| setting.trim().strip_prefix(&prefix))
-            .map(|value| value.trim().trim_matches('"').to_owned())
-    };
-    let plain = |value: Option<String>| value.filter(|v| plain_choice(v));
-    match runtime {
-        "codex" => (
-            plain(value_of(&["-m", "--model"]).or_else(|| configured("model"))),
-            plain(configured("model_reasoning_effort")),
-        ),
-        "claude-code" => (
-            plain(value_of(&["--model"])),
-            plain(value_of(&["--effort"])),
-        ),
-        _ => (None, None),
-    }
+    (last(Setting::Model), last(Setting::Effort))
 }
 
 #[cfg(test)]
@@ -234,6 +248,48 @@ mod tests {
             (Some("opus".into()), Some("max".into()))
         );
         assert_eq!(given_choices("claude-code", &[]), (None, None));
+    }
+
+    #[test]
+    fn every_spelling_of_a_setting_counts_and_the_last_is_in_force() {
+        let codex = |args: &[&str]| given_choices("codex", &words(args));
+        assert_eq!(
+            codex(&["-c=model_reasoning_effort=low"]),
+            (None, Some("low".into()))
+        );
+        assert_eq!(
+            codex(&["-c", "model_reasoning_effort = \"high\""]),
+            (None, Some("high".into()))
+        );
+        assert_eq!(codex(&["-mo9"]), (Some("o9".into()), None));
+        assert_eq!(codex(&["-m=o9"]), (Some("o9".into()), None));
+        assert_eq!(
+            codex(&[
+                "--config=model_reasoning_effort=low",
+                "-c",
+                "model_reasoning_effort=max",
+                "-m",
+                "a",
+                "--model=b"
+            ]),
+            (Some("b".into()), Some("max".into())),
+            "argument order, the last in force"
+        );
+        assert!(
+            choice_args(
+                "codex",
+                None,
+                Some("high"),
+                &words(&["-c=model_reasoning_effort=low"])
+            )
+            .unwrap()
+            .is_empty(),
+            "the inline short form already says it"
+        );
+        assert_eq!(
+            given_choices("claude-code", &words(&["--effort=low", "--effort", "max"])),
+            (None, Some("max".into()))
+        );
     }
 
     #[test]

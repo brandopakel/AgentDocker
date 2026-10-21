@@ -237,6 +237,8 @@ pub(super) struct State {
     pub launch_choices: Option<(String, agentdocker_core::model_choice::ModelChoices)>,
     /// The model or effort menu that is open.
     pub launch_choice_menu: Option<ChoiceMenu>,
+    /// Invalidates choice reads made for an earlier tool.
+    launch_choices_generation: u64,
     /// Provider input is on for supported new sessions by default. The launch
     /// control can turn it off; provider consent and policy still apply.
     pub launch_channel: bool,
@@ -1160,7 +1162,7 @@ pub enum Message {
     LaunchName(String),
     LaunchArguments(String),
     /// What a tool offers for its model and effort, read for the form.
-    LaunchChoices(String, agentdocker_core::model_choice::ModelChoices),
+    LaunchChoices(u64, String, agentdocker_core::model_choice::ModelChoices),
     LaunchChoiceMenu(Option<ChoiceMenu>),
     /// A model for the new session; `None` is the provider's default.
     LaunchModel(Option<String>),
@@ -3456,6 +3458,10 @@ impl App {
                 }
                 self.shell.launch_runtime = Some(runtime.clone());
                 tasks.push(self.refresh_codex_trust());
+                // Only the read made for the tool chosen last applies: one
+                // for an earlier choice may finish after it.
+                self.shell.launch_choices_generation += 1;
+                let generation = self.shell.launch_choices_generation;
                 tasks.push(Task::perform(
                     {
                         let runtime = runtime.clone();
@@ -3467,7 +3473,7 @@ impl App {
                             .unwrap_or_default()
                         }
                     },
-                    move |choices| Message::LaunchChoices(runtime.clone(), choices),
+                    move |choices| Message::LaunchChoices(generation, runtime.clone(), choices),
                 ));
             }
             Message::CodexTrustLoaded(generation, root, trusted) => {
@@ -3520,30 +3526,24 @@ impl App {
             Message::LaunchMore => self.shell.launch_more = !self.shell.launch_more,
             Message::LaunchName(name) => self.shell.launch_name = name.chars().take(120).collect(),
             Message::LaunchArguments(args) => {
-                self.shell.launch_arguments = args.chars().take(8192).collect()
+                self.shell.launch_arguments = args.chars().take(8192).collect();
+                // Arguments may name another model, one the chosen effort
+                // does not fit.
+                self.settle_effort();
             }
-            Message::LaunchChoices(runtime, choices) => {
-                if self.shell.launch_runtime.as_deref() == Some(runtime.as_str()) {
+            Message::LaunchChoices(generation, runtime, choices) => {
+                if generation == self.shell.launch_choices_generation
+                    && self.shell.launch_runtime.as_deref() == Some(runtime.as_str())
+                {
                     self.shell.launch_choices = Some((runtime, choices));
+                    self.settle_effort();
                 }
             }
             Message::LaunchChoiceMenu(menu) => self.shell.launch_choice_menu = menu,
             Message::LaunchModel(model) => {
                 self.shell.launch_model = model;
                 self.shell.launch_choice_menu = None;
-                // An effort the new model does not take goes back to its default.
-                let takes = self
-                    .launch_choices()
-                    .map(|c| c.efforts_for(self.launch_model_now()).to_vec())
-                    .unwrap_or_default();
-                if self
-                    .shell
-                    .launch_effort
-                    .as_ref()
-                    .is_some_and(|effort| !takes.is_empty() && !takes.contains(effort))
-                {
-                    self.shell.launch_effort = None;
-                }
+                self.settle_effort();
             }
             Message::LaunchEffort(effort) => {
                 self.shell.launch_effort = effort;
@@ -4926,13 +4926,45 @@ impl App {
             .map(|(_, choices)| choices)
     }
 
-    /// The model the new session will use: the one chosen, else the
-    /// provider's default.
-    pub(super) fn launch_model_now(&self) -> Option<&str> {
-        self.shell.launch_model.as_deref().or_else(|| {
-            self.launch_choices()
-                .and_then(|c| c.default_model.as_deref())
-        })
+    /// The model and effort the form's own arguments put in force, which
+    /// win over the chips.
+    pub(super) fn launch_given(&self) -> (Option<String>, Option<String>) {
+        match (
+            self.shell.launch_runtime.as_deref(),
+            shell_words(&self.shell.launch_arguments),
+        ) {
+            (Some(runtime), Some(args)) => {
+                agentdocker_core::model_choice::given_choices(runtime, &args)
+            }
+            _ => (None, None),
+        }
+    }
+
+    /// The model the new session will use, as `launch_spec` decides it:
+    /// the arguments', else the one chosen, else the provider's default.
+    pub(super) fn launch_model_now(&self) -> Option<String> {
+        self.launch_given()
+            .0
+            .or_else(|| self.shell.launch_model.clone())
+            .or_else(|| self.launch_choices().and_then(|c| c.default_model.clone()))
+    }
+
+    /// An effort chosen that the model now in force does not take goes back
+    /// to the default, so none is ever passed to a model without it.
+    fn settle_effort(&mut self) {
+        let model = self.launch_model_now();
+        let takes = self
+            .launch_choices()
+            .map(|c| c.efforts_for(model.as_deref()).to_vec())
+            .unwrap_or_default();
+        if self
+            .shell
+            .launch_effort
+            .as_ref()
+            .is_some_and(|effort| !takes.is_empty() && !takes.contains(effort))
+        {
+            self.shell.launch_effort = None;
+        }
     }
 
     fn launch_spec(&self) -> Result<agentdocker_core::AgentSpec, String> {
@@ -5527,6 +5559,68 @@ mod tests {
 
     /// In a git project the launch form starts a session in its own
     /// worktree unless told otherwise; a plain folder has no branches to
+    /// Only the read made for the tool chosen last applies, whatever order
+    /// the reads finish in; and an argument naming another model takes the
+    /// chips' effort away where that model lacks it.
+    #[test]
+    fn choices_follow_the_last_tool_and_the_model_in_force() {
+        use agentdocker_core::model_choice::{ModelChoices, ModelOption};
+        let (mut app, _, _) = app();
+        let read = |default: &str| ModelChoices {
+            default_model: Some(default.into()),
+            default_effort: None,
+            models: vec![
+                ModelOption {
+                    id: "a".into(),
+                    name: "A".into(),
+                    efforts: vec!["low".into(), "xhigh".into()],
+                },
+                ModelOption {
+                    id: "b".into(),
+                    name: "B".into(),
+                    efforts: vec!["low".into(), "medium".into()],
+                },
+            ],
+            efforts: vec![],
+        };
+        let _ = app.update(Message::LaunchRuntime("codex".into()));
+        let first = app.shell.launch_choices_generation;
+        let _ = app.update(Message::LaunchRuntime("claude-code".into()));
+        let claude = app.shell.launch_choices_generation;
+        let _ = app.update(Message::LaunchRuntime("codex".into()));
+        let last = app.shell.launch_choices_generation;
+        let _ = app.update(Message::LaunchChoices(last, "codex".into(), read("fresh")));
+        let _ = app.update(Message::LaunchChoices(first, "codex".into(), read("stale")));
+        let _ = app.update(Message::LaunchChoices(
+            claude,
+            "claude-code".into(),
+            read("other"),
+        ));
+        assert_eq!(
+            app.launch_choices()
+                .and_then(|c| c.default_model.as_deref()),
+            Some("fresh"),
+            "an earlier read finishing later changes nothing"
+        );
+
+        let _ = app.update(Message::LaunchModel(Some("a".into())));
+        let _ = app.update(Message::LaunchEffort(Some("xhigh".into())));
+        let _ = app.update(Message::LaunchArguments("-m b".into()));
+        assert_eq!(
+            app.launch_model_now().as_deref(),
+            Some("b"),
+            "the argument's model"
+        );
+        assert_eq!(
+            app.shell.launch_effort, None,
+            "an effort b does not take is never passed to it"
+        );
+        let _ = app.update(Message::LaunchArguments(
+            "-c=model_reasoning_effort=low".into(),
+        ));
+        assert_eq!(app.launch_given().1.as_deref(), Some("low"));
+    }
+
     /// The model and effort chosen in the form reach the command in the
     /// tool's own options and the record says them; nothing chosen, the
     /// provider's default is said and the command is left alone; the
@@ -5556,8 +5650,10 @@ mod tests {
             .catalog
             .pin(ProjectRef::directory("/plain"))
             .unwrap();
-        app.shell.launch_runtime = Some("codex".into());
+        let _ = app.update(Message::LaunchRuntime("codex".into()));
+        let generation = app.shell.launch_choices_generation;
         let _ = app.update(Message::LaunchChoices(
+            generation,
             "codex".into(),
             ModelChoices {
                 default_model: Some("gpt-6-astra".into()),
