@@ -653,6 +653,32 @@ fn default_name(id: &AgentId) -> String {
     format!("agent-{}", &id.as_str()[..6])
 }
 
+/// Once the stopped terminal program `pid` has gone, give its terminal
+/// back clean: the modes it set (mouse reporting above all) are turned off,
+/// but only while the shell that ran it still holds that terminal, so a
+/// device that has since gone to another window is never written to. Off
+/// the caller's thread; a program that outlives the wait is left alone.
+#[cfg(unix)]
+fn restore_terminal_after(pid: u32, started: DateTime<Utc>, tty: String, shell: u32) {
+    let _ = std::thread::Builder::new()
+        .name("restore-terminal".into())
+        .spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while process_exists(pid) && same_process(pid, Some(started)) {
+                if std::time::Instant::now() >= deadline {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            if process_exists(shell)
+                && agentdocker_host::terminal::device_of(shell).as_deref() == Some(tty.as_str())
+                && let Err(error) = agentdocker_host::terminal::restore_modes(&tty)
+            {
+                debug!(%error, tty, "could not restore the stopped program's terminal");
+            }
+        });
+}
+
 /// Is there a process with this pid? `EPERM` means it exists but belongs to
 /// someone else, which still counts as alive. Zero and out-of-range values
 /// would address process groups, so they are never alive.
@@ -1308,6 +1334,19 @@ impl Daemon {
             // never ended by mistake.
             #[cfg(unix)]
             {
+                // A terminal program AgentDocker did not start ends without
+                // undoing its terminal modes; read where it runs first.
+                let restore = (!record.managed)
+                    .then(|| {
+                        let tty = record
+                            .terminal
+                            .as_ref()
+                            .and_then(|host| host.tty.clone())
+                            .or_else(|| agentdocker_host::terminal::device_of(pid))?;
+                        let shell = procinfo::inspect(pid)?.ppid;
+                        Some((tty, shell))
+                    })
+                    .flatten();
                 let target = if record.managed && record.process_group == Some(pid) {
                     Pid::from_raw(-target.as_raw())
                 } else {
@@ -1327,6 +1366,9 @@ impl Daemon {
                             format!("cannot signal pid {pid}: {err}"),
                         );
                     }
+                }
+                if let Some((tty, shell)) = restore {
+                    restore_terminal_after(pid, started, tty, shell);
                 }
             }
             #[cfg(windows)]

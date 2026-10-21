@@ -67,9 +67,46 @@ pub fn device_of(pid: u32) -> Option<String> {
     device(&output.stdout)
 }
 
+/// What a full-screen program turns on in its terminal and undoes on a
+/// clean exit: mouse reporting (every mode, every encoding), focus and
+/// bracketed-paste reports, application cursor keys and keypad, the
+/// keyboard protocol it pushed, the alternate screen, a hidden cursor and
+/// its colours.
+const RESTORE_MODES: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b>\x1b[<u\x1b[?1049l\x1b[?25h\x1b[0m";
+
+/// Undo, on `tty`, what a full-screen program ended by a signal had no
+/// chance to: without it a shell gets its terminal back still reporting
+/// every mouse move as typed text. Written as output to the device, never
+/// as input, so the shell reading it sees nothing. `tty` is a device path.
+#[cfg(unix)]
+pub fn restore_modes(tty: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    if !tty.starts_with("/dev/") || tty.contains("..") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a terminal device",
+        ));
+    }
+    let mut device = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
+        .open(tty)?;
+    device.write_all(RESTORE_MODES)
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_device_has_its_modes_restored() {
+        for path in ["", "relative", "/etc/passwd/../dev/x", "/tmp/not-a-device"] {
+            assert!(restore_modes(path).is_err(), "{path}");
+        }
+        // Writing to the null device stands in for a terminal.
+        restore_modes("/dev/null").unwrap();
+    }
 
     #[test]
     fn a_missing_process_has_no_host_and_a_device_is_a_path() {

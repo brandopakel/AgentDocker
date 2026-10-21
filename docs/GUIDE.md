@@ -842,6 +842,12 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **Stopping a terminal agent leaves its terminal clean.** Stopping a Codex
+  or Claude you started in your own terminal used to leave that tab
+  reporting every mouse move as typed text (`35;113;27M…`). AgentDocker now
+  turns those modes off once the program has exited. In a tab already left
+  like that, type `reset`.
+
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   used to be unbound: its AgentDocker tools refused, so its model could reach
   for other tools (a ChatGPT connector) and become a second agent. Its
