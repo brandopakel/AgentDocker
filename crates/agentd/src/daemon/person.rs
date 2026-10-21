@@ -744,6 +744,41 @@ mod tests {
         assert!(admit_controller_launch_beside(&mut ordinary, Some(cli)).is_none());
     }
 
+    /// A handover's successor reaches session owners by its pid and birth,
+    /// and not at all once the attempt is given up.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_successor_is_named_with_its_birth_and_dropped_on_abort() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("s")).unwrap());
+        let mut successor = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let transfer = daemon.offer_transfer(std::process::id()).unwrap();
+        assert!(lock(&daemon.state).readdress_offer(&transfer.id, successor.id()));
+        let Response::DaemonProcess {
+            successor: named,
+            successor_started_at,
+            ..
+        } = daemon.handle(Request::DaemonProcess).await
+        else {
+            panic!("no answer");
+        };
+        assert_eq!(named, Some(successor.id()));
+        assert_eq!(successor_started_at, procinfo::start_time(successor.id()));
+        daemon.abort_transfer("the successor failed");
+        let Response::DaemonProcess {
+            successor: named, ..
+        } = daemon.handle(Request::DaemonProcess).await
+        else {
+            panic!("no answer");
+        };
+        assert_eq!(named, None);
+        let _ = successor.kill();
+        let _ = successor.wait();
+    }
+
     /// On Windows, where the table holds only this user's readable
     /// processes, a test run's own ancestry reaches a boundary rather than
     /// a refusal.

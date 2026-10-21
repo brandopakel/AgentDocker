@@ -399,6 +399,11 @@ struct State {
     /// A process that opened the database while an offer was pending
     /// starts fenced and may write only after accepting as the successor.
     coordination: Coordination,
+    /// The successor a handover in flight may let reach session owners, by
+    /// pid and birth as read when it was named: held in memory only, and
+    /// taken away the moment the attempt is given up, whatever the store
+    /// manages to record.
+    owner_successor: Option<(u32, DateTime<Utc>)>,
     /// Startup recovery writes held back by a fenced open; the successor
     /// runs them immediately after accepting, before serving anything.
     deferred_recovery: Vec<DeferredWrite>,
@@ -1675,6 +1680,7 @@ impl Daemon {
                     },
                     None => Coordination::Serving,
                 },
+                owner_successor: None,
                 deferred_recovery: deferred,
                 in_flight: 0,
                 skipped_write: false,
@@ -2119,20 +2125,16 @@ impl Daemon {
             Request::DaemonProcess => {
                 let state = lock(&self.state);
                 let successor = match &state.coordination {
-                    Coordination::Quiescing { transfer }
-                    | Coordination::Transferred { transfer } => state
-                        .store
-                        .transfer()
-                        .ok()
-                        .flatten()
-                        .filter(|t| &t.id == transfer)
-                        .and_then(|t| t.successor_pid),
+                    Coordination::Quiescing { .. } | Coordination::Transferred { .. } => {
+                        state.owner_successor
+                    }
                     Coordination::Serving => None,
                 };
                 Response::DaemonProcess {
                     pid: std::process::id(),
                     started_at: agentdocker_host::procinfo::start_time(std::process::id()),
-                    successor,
+                    successor: successor.map(|(pid, _)| pid),
+                    successor_started_at: successor.map(|(_, born)| born),
                 }
             }
             Request::Run { spec } => self.run(spec).await,
@@ -5868,6 +5870,8 @@ impl State {
             Ok(true) => {
                 self.next_seq += 1;
                 let _ = self.events.send(event);
+                self.owner_successor = agentdocker_host::procinfo::start_time(successor_pid)
+                    .map(|born| (successor_pid, born));
                 true
             }
             Ok(false) => false,
@@ -5882,6 +5886,9 @@ impl State {
     /// Returns whether writing resumed. If the successor accepted first,
     /// this process must leave: it says so and stays fenced.
     fn abort_transfer(&mut self, reason: &str) -> bool {
+        // The successor reaches no owner from here on, whether or not the
+        // abort below is recorded.
+        self.owner_successor = None;
         let Coordination::Quiescing { transfer } = self.coordination.clone() else {
             return !self.fenced();
         };
