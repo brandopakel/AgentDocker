@@ -5443,6 +5443,8 @@ mod tests {
             links: vec![],
             supersedes: None,
             created_at: Utc::now(),
+            standing: false,
+            forget_after: None,
         };
         let drain = |commands: &CommandReceiver| commands.try_iter().collect::<Vec<_>>();
         app.shell

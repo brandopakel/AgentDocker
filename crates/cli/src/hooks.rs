@@ -2690,6 +2690,8 @@ mod tests {
             links: vec![],
             supersedes: None,
             created_at: chrono::Utc::now(),
+            standing: false,
+            forget_after: None,
         };
         let line = memory_line(&memory);
         assert!(

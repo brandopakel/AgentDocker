@@ -2501,9 +2501,19 @@ impl Daemon {
                 text,
                 links,
                 supersedes,
+                standing,
+                forget_after,
             } => {
-                self.memory_add(&from, project, &text, links, supersedes)
-                    .await
+                self.memory_add(
+                    &from,
+                    project,
+                    &text,
+                    links,
+                    supersedes,
+                    standing,
+                    forget_after,
+                )
+                .await
             }
             Request::MemorySearch {
                 from,
