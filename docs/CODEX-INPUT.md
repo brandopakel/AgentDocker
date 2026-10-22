@@ -359,11 +359,15 @@ happens and the paths above stay exactly as they are.
 elsewhere. The directory holding the name and the one holding the socket must be
 this user's (or root's) and must not let another user replace an entry (writable
 by the owner alone, or sticky); the socket must be this user's. A link to a socket
-that is gone means no shared server. A socket that fails these checks is refused,
-and refusal changes nothing either. The server must say in `initialize` that it
-serves the same profile (`codexHome`, canonically). The socket's permissions are
-its authentication, as for Codex's own terminal; this is the owning-user trust
-boundary of every local endpoint here.
+that is gone means no shared server. These checks only name the socket: a
+directory further up that another user can rename would let them put their own
+socket at the same path afterwards. What keeps another user out is the connection
+itself: every connection, the daemon's and the receiver's, is refused before a
+byte is sent unless the kernel's peer credentials say the process serving it runs
+as this user. A socket that fails any of these checks is refused, and refusal
+changes nothing either. The server must then say in `initialize` that it serves
+the same profile (`codexHome`, canonically). This is the owning-user trust
+boundary of every local endpoint here: a process of the same user is trusted.
 
 **Status.** For every live Codex record keyed by a profile (its verified
 `provider_profile` and root thread) the daemon keeps one read-only connection to
@@ -394,8 +398,14 @@ profile has the socket, it starts the native receiver above for that record with
 instead of a private app-server. The socket is found and checked again at every
 connection (a restarted server may have moved it), the server must say it serves
 the binding's profile, and the conversation must be in its `thread/loaded/list`
-before the receiver binds or delivers; otherwise the receiver does not bind and
-the hooks keep delivering. Everything else is the receiver above, unchanged: the
+before the receiver binds; otherwise the receiver does not bind and the hooks
+keep delivering. The terminal can unload the conversation while it and the
+connection stay, so the receiver asks `thread/loaded/list` again immediately
+before each new offer: while the conversation is not loaded nothing is prepared
+or added, delivery reads as paused (*The shared Codex server has not loaded this
+conversation; new messages wait until it is open again.*), and it resumes, with
+each message added once, when it is loaded again. An input already offered keeps
+its reconciliation. Everything else is the receiver above, unchanged: the
 same daemon binding and token, the private ledger that records each input before
 offering it, one outstanding `thread/queue/add` carrying the AgentDocker message
 id as `clientUserMessageId`, acknowledgement only on the exact provider receipt

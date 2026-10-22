@@ -857,6 +857,8 @@ mod shared {
     #[derive(Default)]
     pub struct Server {
         pub frames: Vec<(usize, Value)>,
+        /// The terminal has the conversation unloaded, every connection kept.
+        pub unloaded: bool,
         queued: Vec<Value>,
         /// A dropped connection had added the queued entries: the next
         /// queue read lets the terminal take them.
@@ -885,6 +887,7 @@ mod shared {
                     "userAgent": "codex_cli_rs/0.163.0 (Mock 1.0.0; test) shared-app-server",
                     "platformFamily": "unix", "platformOs": "test"}),
                 "config/read" => json!({"config": {"mcp_servers": {}}}),
+                "thread/loaded/list" if self.unloaded => json!({"data": [], "nextCursor": null}),
                 "thread/loaded/list" => json!({"data": ["thread-1"], "nextCursor": null}),
                 "thread/read" => json!({"thread": {"id": params["threadId"], "cwd": cwd,
                     "parentThreadId": null, "status": {"type": "idle"}}}),
@@ -910,8 +913,10 @@ mod shared {
                         "clientUserMessageId": params["clientUserMessageId"],
                         "input": params["input"]});
                     self.queued.push(submission.clone());
+                    // Only the first add loses its connection.
+                    let drop = !self.dropped;
                     self.dropped = true;
-                    return (json!({"queuedSubmission": submission}), true);
+                    return (json!({"queuedSubmission": submission}), drop);
                 }
                 other => {
                     return (
@@ -971,7 +976,9 @@ mod shared {
 /// the queue, adds the message once with `thread/queue/add`, and when that
 /// connection drops after the server's success it reconnects and proves the
 /// receipt from the turn's own user item, never adding it again. The
-/// daemon reads the same server for the conversation's status.
+/// daemon reads the same server for the conversation's status. When the
+/// terminal unloads the conversation, connections kept, the next message is
+/// not offered (delivery pauses) until it is loaded again, then once.
 #[cfg(unix)]
 fn a_shared_server_conversation_is_fed_through_its_control_socket_once() {
     use std::os::unix::fs::PermissionsExt;
@@ -1136,6 +1143,59 @@ fn a_shared_server_conversation_is_fed_through_its_control_socket_once() {
         reconnected,
         "the receipt was read on a later connection: {frames:?}"
     );
+    let adds = || -> Vec<(usize, Value)> {
+        server
+            .lock()
+            .unwrap()
+            .frames
+            .iter()
+            .filter(|(_, frame)| frame["method"] == "thread/queue/add")
+            .cloned()
+            .collect()
+    };
+    // The terminal unloads the conversation; every connection stays.
+    server.lock().unwrap().unloaded = true;
+    let sent = fixture::rpc(
+        &socket,
+        json!({"op": "send", "from": "user", "to": agent, "kind": "chat",
+            "payload": {"text": "while it is unloaded"}}),
+    )
+    .unwrap();
+    assert_eq!(sent["type"], "sent", "{sent}");
+    let second = sent["message"].as_str().unwrap().to_owned();
+    fixture::wait_for(
+        &socket,
+        inspect.clone(),
+        Duration::from_secs(20),
+        "delivery pausing on the unloaded conversation",
+        |response| {
+            response["agent"]["input_delivery"]["paused"] == true
+                && response["agent"]["input_delivery"]["pause_reason"]
+                    .as_str()
+                    .is_some_and(|reason| reason.contains("has not loaded"))
+        },
+    );
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(
+        adds().len(),
+        1,
+        "nothing is offered to an unloaded conversation"
+    );
+    server.lock().unwrap().unloaded = false;
+    fixture::wait_for(
+        &socket,
+        inspect.clone(),
+        Duration::from_secs(30),
+        "the second message's receipt once it is loaded again",
+        |response| {
+            response["agent"]["input_delivery"]["received"]["messages"][0] == second.as_str()
+                && response["agent"]["input_delivery"]["paused"] == false
+        },
+    );
+    let added = adds();
+    assert_eq!(added.len(), 2, "the second message added once: {added:?}");
+    assert_eq!(added[1].1["params"]["clientUserMessageId"], second.as_str());
+    let frames = server.lock().unwrap().frames.clone();
     assert!(
         !frames.iter().any(|(_, frame)| matches!(
             frame["method"].as_str(),

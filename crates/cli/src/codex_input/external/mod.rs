@@ -302,6 +302,8 @@ async fn service(
     let mut unseen_since: Option<tokio::time::Instant> = None;
     let mut answer_wait: Option<tokio::time::Instant> = None;
     let mut last_refresh: Option<tokio::time::Instant> = None;
+    // The shared server's unloaded conversation, already reported paused.
+    let mut unloaded = false;
     loop {
         let agent = identity(client, &ledger.record().binding).await?;
         let mut healthy = true;
@@ -395,6 +397,27 @@ async fn service(
                 } else {
                     receipts::latest_item(provider, &thread).await?
                 };
+                // Through the shared server, a conversation it has unloaded
+                // has nobody to take an offer, though the terminal and this
+                // connection stay. Asked as late as possible before each new
+                // offer; nothing is prepared, so nothing waits on a receipt.
+                if ledger.record().binding.control && !control::loaded(provider, &thread).await? {
+                    if !unloaded {
+                        report(
+                            client,
+                            ledger,
+                            InputReport::Paused {
+                                reason: control::UNLOADED.into(),
+                            },
+                        )
+                        .await?;
+                        unloaded = true;
+                    }
+                    // Ready again as soon as it is loaded and healthy.
+                    last_refresh = None;
+                    wait_for_hook(hooks, resolve, client, provider, ledger, &origin).await?;
+                    continue;
+                }
                 ledger.prepare(envelope, anchor)?;
                 let attempt = ledger.record().attempt.as_ref().expect("prepared input");
                 let value = provider.request("thread/queue/add", json!({"threadId":thread,
@@ -411,6 +434,7 @@ async fn service(
         // Readiness is refreshed only after the outstanding attempt is proven
         // present, or after the next queue head has passed its ownership checks.
         if healthy {
+            unloaded = false;
             refresh(client, ledger, &mut last_refresh).await?;
         }
         wait_for_hook(hooks, resolve, client, provider, ledger, &origin).await?;

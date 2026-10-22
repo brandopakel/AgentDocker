@@ -60,10 +60,16 @@ fn refused(path: &Path, why: &str) -> io::Error {
 
 /// The shared server's socket for `profile`, resolved, when the profile has
 /// one: `Ok(None)` when it has none (or names one that is gone), an error when
-/// it has one this user cannot trust. The name may be a link, as Codex makes
-/// it, into a private directory elsewhere. Both the directory holding the name
-/// and the one holding the socket must be this user's (or root's) and refuse
-/// other users' replacements; the socket itself must be this user's.
+/// it has one this user plainly cannot trust. The name may be a link, as Codex
+/// makes it, into a private directory elsewhere. Both the directory holding the
+/// name and the one holding the socket must be this user's (or root's) and
+/// refuse other users' replacements; the socket itself must be this user's.
+///
+/// These checks name the socket; they do not prove whose process answers on
+/// it. An ancestor another user can rename would let them put their own socket
+/// at the same path after this lookup. [`connect_stream`] closes that: the
+/// connected peer must be this user's process, by the kernel's credentials,
+/// before a byte is sent.
 #[cfg(unix)]
 pub fn locate(profile: &Path) -> io::Result<Option<PathBuf>> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -238,7 +244,7 @@ pub struct Thread {
 }
 
 #[cfg(unix)]
-pub use unix::{Session, connect};
+pub use unix::{Session, connect, connect_stream};
 
 /// Windows has no shared server's socket: a session never opens there.
 #[cfg(not(unix))]
@@ -316,6 +322,24 @@ mod unix {
         io::Error::new(io::ErrorKind::TimedOut, what.to_owned())
     }
 
+    /// Connect to a socket [`locate`] returned and refuse it, before anything
+    /// is sent, unless the kernel says the process on the other end runs as
+    /// this user. Every connection to a shared server is made here.
+    pub async fn connect_stream(socket: &Path) -> io::Result<UnixStream> {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        connect_stream_as(socket, unsafe { libc::geteuid() }).await
+    }
+
+    /// [`connect_stream`] for a given user, so a test can stand for another.
+    pub(super) async fn connect_stream_as(socket: &Path, uid: u32) -> io::Result<UnixStream> {
+        let stream = timeout(TIMEOUT, UnixStream::connect(socket))
+            .await
+            .map_err(|_| timed_out("Codex control socket timed out"))??;
+        crate::ipc::require_peer_uid(&stream, uid)
+            .map_err(|_| refused(socket, "the process serving it is another user's"))?;
+        Ok(stream)
+    }
+
     /// Open the WebSocket on a socket [`locate`] returned, bounded like every
     /// other provider connection: no proxy, no redirect, no body echoed.
     pub async fn connect(socket: &Path) -> io::Result<WebSocketStream<UnixStream>> {
@@ -328,8 +352,8 @@ mod unix {
             .max_write_buffer_size(MAX_FRAME + 8192)
             .max_message_size(Some(MAX_FRAME))
             .max_frame_size(Some(MAX_FRAME));
+        let stream = connect_stream(socket).await?;
         timeout(TIMEOUT, async {
-            let stream = UnixStream::connect(socket).await?;
             let (socket, _) = client_async_with_config(request, stream, Some(config))
                 .await
                 .map_err(|_| io::Error::other("Codex control socket handshake failed"))?;
@@ -723,6 +747,38 @@ mod tests {
                 .await
                 .unwrap();
         }
+    }
+
+    /// The process on the other end must be this user's: one the kernel says
+    /// runs as another user is refused before a single byte is sent to it.
+    /// (A test cannot run a server as another user, so it asks for one.)
+    #[tokio::test]
+    async fn a_server_run_by_another_user_is_refused_before_anything_is_sent() {
+        use tokio::io::AsyncReadExt;
+        let root = root();
+        let path = root.path().join("control.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received).await.unwrap();
+            received
+        });
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        let other = me.wrapping_add(1);
+        let error = unix::connect_stream_as(&path, other).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("another user"), "{error}");
+        assert!(server.await.unwrap().is_empty(), "nothing was sent");
+        // The same server, run by this user, is let through.
+        let listener = {
+            std::fs::remove_file(&path).unwrap();
+            UnixListener::bind(&path).unwrap()
+        };
+        let accepted = tokio::spawn(async move { listener.accept().await.map(|_| ()) });
+        unix::connect_stream_as(&path, me).await.unwrap();
+        accepted.await.unwrap().unwrap();
     }
 
     #[tokio::test]

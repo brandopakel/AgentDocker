@@ -71,14 +71,15 @@ impl Remote {
         .context("native server connection timed out")?
     }
 
-    /// The shared server's control socket, found and checked by
-    /// [`agentdocker_host::codex_control::locate`]. Its directory's
-    /// permissions are its authentication, as for Codex's own terminal.
+    /// The shared server's control socket, found by
+    /// [`agentdocker_host::codex_control::locate`]. The process serving it
+    /// must be this user's, by the kernel's peer credentials, before any
+    /// byte is sent ([`agentdocker_host::codex_control::connect_stream`]).
     #[cfg(unix)]
     pub async fn connect_control(path: &std::path::Path) -> Result<Self> {
         let request = agentdocker_host::codex_control::REQUEST_URI.into_client_request()?;
         timeout(Duration::from_secs(5), async {
-            let stream = tokio::net::UnixStream::connect(path)
+            let stream = agentdocker_host::codex_control::connect_stream(path)
                 .await
                 .context("Codex control socket connection failed")?;
             let stream: Box<dyn Io> = Box::new(stream);

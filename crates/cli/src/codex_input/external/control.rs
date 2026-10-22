@@ -33,10 +33,23 @@ pub(super) fn available(profile: &Path) -> bool {
     )
 }
 
+/// Why new input waits while the shared server has unloaded the conversation.
+pub(super) const UNLOADED: &str = "The shared Codex server has not loaded this conversation; new messages wait until it is open again.";
+
 /// The shared server has the conversation loaded: the one place its turns
 /// run, so the one place its native queue is read. A conversation it does
 /// not host is never delivered to through it.
 pub(super) async fn hosts(provider: &mut Provider, thread: &str) -> Result<()> {
+    ensure!(
+        loaded(provider, thread).await?,
+        "the shared Codex server has not loaded this conversation"
+    );
+    Ok(())
+}
+
+/// Whether the shared server has the conversation loaded now, from every
+/// page of `thread/loaded/list`.
+pub(super) async fn loaded(provider: &mut Provider, thread: &str) -> Result<bool> {
     let mut cursor: Option<String> = None;
     let mut cursors = HashSet::new();
     for _ in 0..MAX_PAGES {
@@ -54,12 +67,10 @@ pub(super) async fn hosts(provider: &mut Provider, thread: &str) -> Result<()> {
             "thread/loaded/list exceeded its page size"
         );
         if data.iter().any(|id| id.as_str() == Some(thread)) {
-            return Ok(());
+            return Ok(true);
         }
         cursor = match page.get("nextCursor") {
-            None | Some(Value::Null) => {
-                bail!("the shared Codex server has not loaded this conversation")
-            }
+            None | Some(Value::Null) => return Ok(false),
             Some(Value::String(next))
                 if !next.is_empty() && next.len() <= 4096 && cursors.insert(next.clone()) =>
             {
