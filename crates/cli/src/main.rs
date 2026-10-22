@@ -115,7 +115,8 @@ enum Command {
         from: Option<String>,
         /// A directory of this checkout to seed the new one with, such as
         /// `target` or `node_modules` (repeatable): cloned copy-on-write
-        /// where the filesystem can (APFS, reflink), else copied.
+        /// where the filesystem can (APFS, reflink), else copied; not on
+        /// Windows yet.
         #[arg(long = "seed-build", value_name = "DIR")]
         seed_build: Vec<String>,
     },

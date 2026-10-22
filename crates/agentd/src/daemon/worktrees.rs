@@ -1537,11 +1537,21 @@ mod lifecycle_tests {
         };
         assert_eq!(seeded.len(), 2, "{seeded:?}");
         assert_eq!(seeded[0].dir, "target");
-        assert!(seeded[0].outcome.seeded(), "{seeded:?}");
-        assert_eq!(
-            std::fs::read_to_string(path.join("target/debug/deps/libdep.rlib")).unwrap(),
-            "built"
-        );
+        if cfg!(unix) {
+            assert!(seeded[0].outcome.seeded(), "{seeded:?}");
+            assert_eq!(
+                std::fs::read_to_string(path.join("target/debug/deps/libdep.rlib")).unwrap(),
+                "built"
+            );
+        } else {
+            // Nothing is seeded on Windows yet, and the answer says so.
+            assert_eq!(
+                seeded[0].outcome,
+                agentdocker_core::seed::Outcome::Refused,
+                "{seeded:?}"
+            );
+            assert!(!path.join("target").exists());
+        }
         assert_eq!(
             seeded[1].outcome,
             agentdocker_core::seed::Outcome::Skipped,

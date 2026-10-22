@@ -25,10 +25,14 @@ pub enum Outcome {
     Copied,
     /// The source checkout has no such directory; nothing was done.
     Skipped,
-    /// Not seeded: it leads outside the source checkout or is not a
-    /// directory, or the new worktree already has something there.
+    /// Not seeded: in the source it is not a directory or has a symlink
+    /// on its way (none is followed); the new worktree has something
+    /// there already, or a symlink or file on the way, or another writer
+    /// made it while the seed was being built (theirs is left as it was);
+    /// or this platform does not seed yet.
     Refused,
-    /// The copy failed or ran out of time, and what it made was removed.
+    /// The copy failed, ran out of time or would have taken too much
+    /// space, and what it made was removed.
     Failed,
 }
 
