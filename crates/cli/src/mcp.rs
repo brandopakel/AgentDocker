@@ -1209,11 +1209,11 @@ impl<B: Backend> McpServer<B> {
                 let Response::Agent { agent } = response else {
                     return Ok(render(response, verbose));
                 };
-                let sources = std::slice::from_ref(&agent);
+                let sources = self.decision_sources(&agent).await;
                 let mut record = if verbose {
-                    whole_agent(&agent, sources)
+                    whole_agent(&agent, &sources)
                 } else {
-                    brief_agent(&agent, sources)
+                    brief_agent(&agent, &sources)
                 };
                 // Whether its project is paused, so an agent checking a
                 // lifecycle notice needs no shell: a sandboxed provider
@@ -1290,8 +1290,21 @@ impl<B: Backend> McpServer<B> {
             }
             "inspect_agent" => {
                 let args: InspectAgentArgs = parse(arguments)?;
-                self.forward_as(Request::Inspect { agent: args.agent }, verbose)
+                let response = self
+                    .backend
+                    .call(Request::Inspect { agent: args.agent })
                     .await
+                    .map_err(transport)?;
+                let Response::Agent { agent } = response else {
+                    return Ok(render(response, verbose));
+                };
+                let sources = self.decision_sources(&agent).await;
+                let record = if verbose {
+                    whole_agent(&agent, &sources)
+                } else {
+                    brief_agent(&agent, &sources)
+                };
+                Ok(text_result(&record, false))
             }
             "send_message" => {
                 let args: SendMessageArgs = parse(arguments)?;
@@ -1723,6 +1736,33 @@ impl<B: Backend> McpServer<B> {
 
     /// `verbose` returns whole records; the default is a projection of
     /// what an agent actually reads.
+    /// Every record, the sources one agent's readiness fix is decided
+    /// among, as `list_agents`, `send` and `ps` decide it: a provider block
+    /// that holds it can come from another record, an ended session sharing
+    /// its quota. A daemon that cannot list leaves the agent's own record.
+    async fn decision_sources(
+        &self,
+        agent: &agentdocker_core::AgentRecord,
+    ) -> Vec<agentdocker_core::AgentRecord> {
+        let listed = self
+            .backend
+            .call(Request::List {
+                all: true,
+                project: None,
+                labels: Default::default(),
+            })
+            .await;
+        match listed {
+            Ok(Response::Agents { mut agents, .. }) => {
+                if !agents.iter().any(|a| a.id == agent.id) {
+                    agents.push(agent.clone());
+                }
+                agents
+            }
+            _ => vec![agent.clone()],
+        }
+    }
+
     async fn forward_as(&self, request: Request, verbose: bool) -> Result<Value, (i64, String)> {
         let response = self.backend.call(request).await.map_err(transport)?;
         Ok(render(response, verbose))
@@ -3169,6 +3209,11 @@ mod tests {
         let whoami = |pauses: Vec<agentdocker_core::Pause>| {
             let s = server(vec![
                 Response::Agent { agent: me.clone() },
+                // Every record, which its readiness fix is decided among.
+                Response::Agents {
+                    agents: vec![me.clone()],
+                    aliases: Default::default(),
+                },
                 Response::Pauses { pauses },
             ]);
             async move {

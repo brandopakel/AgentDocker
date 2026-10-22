@@ -150,7 +150,7 @@ pub fn observe(seen: &mut Vec<Seen>, fingerprint: Fingerprint, now: DateTime<Utc
 fn bounded(text: &str, max: usize) -> Option<String> {
     let kept: String = text
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && !invisible(*c))
         .collect::<String>()
         .trim()
         .chars()
@@ -159,10 +159,35 @@ fn bounded(text: &str, max: usize) -> Option<String> {
     (!kept.is_empty()).then_some(kept)
 }
 
+/// Unicode format characters that change how text around them reads
+/// without showing themselves: bidirectional controls, zero-width marks
+/// and joiners, the byte-order mark. A stored client string keeps none.
+fn invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_stored_client_string_keeps_no_invisible_formatting() {
+        assert_eq!(
+            bounded("Claude\u{202E}lmth.exe\u{200B} \u{FEFF}1.0\u{2066}", 64).as_deref(),
+            Some("Claudelmth.exe 1.0")
+        );
+        assert_eq!(bounded("\u{200B}\u{202E}", 64), None);
+    }
 
     fn at(minutes: i64) -> DateTime<Utc> {
         "2026-09-17T22:00:00Z".parse::<DateTime<Utc>>().unwrap()
