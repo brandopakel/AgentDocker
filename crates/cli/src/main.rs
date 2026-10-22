@@ -814,6 +814,10 @@ enum Command {
     /// Review retained Codex input and explicitly confirm readback or start its queued entry.
     #[command(hide = true)]
     CodexQueueResolve(codex_input::external::resolve::Args),
+    /// The conversations Codex's shared app-server has loaded, read through
+    /// its control socket, with each one's status and AgentDocker record.
+    #[command(hide = true)]
+    CodexThreads(codex_input::threads::Args),
     /// Start the agents in an Agentfile.toml that are not already running.
     Up {
         /// Agentfile to read (default: ./Agentfile.toml).
@@ -4803,6 +4807,7 @@ async fn run() -> Result<()> {
         Command::CodexQueueResolve(args) => {
             codex_input::external::resolve::run(client, args).await?
         }
+        Command::CodexThreads(args) => codex_input::threads::run(&client, args).await?,
         Command::Up { file, names } => teams::up(&client, file.as_deref(), &names).await?,
         Command::Down { file, names, force } => {
             teams::down(&client, file.as_deref(), &names, force).await?;

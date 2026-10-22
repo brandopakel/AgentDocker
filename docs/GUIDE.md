@@ -1029,6 +1029,17 @@ Current behaviour that the sections above do not already state, by area.
   its messages reach it at its next prompt. It cannot be woken while idle; a
   Codex launched from AgentDocker can.
 
+- **Codex's shared app-server says where a terminal Codex stands.** Where
+  Codex runs its terminals' conversations in its shared app-server (0.162 and
+  later, `$CODEX_HOME/app-server-control/app-server-control.sock`), the daemon
+  reads each conversation's status there: one stopped for an approval or a
+  question shows as waiting for you, one running a turn as working, a quiet
+  one as idle. A terminal resumed with `codex resume <thread>` is also fed at
+  idle through that server's own queue, with the same exact receipts as any
+  Codex receiver. Without the socket nothing changes. `agentdocker
+  codex-threads` lists what that server has loaded, read-only
+  ([Codex input](CODEX-INPUT.md#terminals-in-codexs-shared-app-server)).
+
 
 - **Your own terminal's Codex can be the reviewer.** `agentdocker codex`
   starts Codex in the terminal you are in, through AgentDocker's launcher:

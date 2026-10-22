@@ -343,6 +343,85 @@ count as a match.
 The schema version prevents an older daemon from opening a retained replacement
 intent it cannot understand.
 
+## Terminals in Codex's shared app-server
+
+From Codex 0.162 a terminal's conversations run in one shared app-server per
+profile (`codex app-server --listen unix:// --managed-daemon`), which its
+terminals reach at `$CODEX_HOME/app-server-control/app-server-control.sock`:
+JSON-RPC over a WebSocket on that Unix socket. Hooks and MCP servers run in that
+server, not under the terminal, so the receiver above has no terminal process to
+descend from and its private app-server would not reach the conversation's live
+queue. Where the socket exists, AgentDocker uses it in two ways. Where it does
+not (Windows, an older Codex, the shared server not running), nothing here
+happens and the paths above stay exactly as they are.
+
+**Trust.** The name may be a link, as Codex makes it, into a private directory
+elsewhere. The directory holding the name and the one holding the socket must be
+this user's (or root's) and must not let another user replace an entry (writable
+by the owner alone, or sticky); the socket must be this user's. A link to a socket
+that is gone means no shared server. A socket that fails these checks is refused,
+and refusal changes nothing either. The server must say in `initialize` that it
+serves the same profile (`codexHome`, canonically). The socket's permissions are
+its authentication, as for Codex's own terminal; this is the owning-user trust
+boundary of every local endpoint here.
+
+**Status.** For every live Codex record keyed by a profile (its verified
+`provider_profile` and root thread) the daemon keeps one read-only connection to
+that profile's shared server. Every five seconds it reads `thread/loaded/list`
+(every page) and, for each watched conversation the server has loaded,
+`thread/read` without turns; between reads, the server's own
+`thread/status/changed` for a watched conversation has it read again at once (the
+announcement says when, the read says what, so an announcement older than an
+answer already applied never undoes it). The status is reported as the
+record's activity, as an adapter's report would be (`agent_activity_reported`):
+`active` with `waitingOnApproval` is *waiting* for a permission, with
+`waitingOnUserInput` *waiting* for a question (an approval first when both are
+set), so the session *needs you*; `active` without either is *working*; `idle` is
+*idle*; `notLoaded` and `systemError` say nothing. An unchanged status is renewed
+after four minutes, inside an observation's lifetime. A stop for the person this
+watch reported ends (reported idle) when the conversation is no longer loaded,
+fails, or the connection ends, unless something else has reported since. A child
+(sub-agent) conversation is never a record's own. The connection opts out of
+streamed output notifications, never answers a server request (one asked of it
+ends the connection), and asks nothing but `initialize`, `thread/loaded/list` and
+`thread/read`. The watch ends when no live record names the profile.
+
+**Delivery.** A terminal proven to run the conversation (`codex resume <thread>`
+in its checkout, see [Architecture](ARCHITECTURE.md)) has a record with that
+terminal's process. When such a terminal's hook runs in a shared server whose
+profile has the socket, it starts the native receiver above for that record with
+`--control`: the receiver reaches the conversation through the control socket
+instead of a private app-server. The socket is found and checked again at every
+connection (a restarted server may have moved it), the server must say it serves
+the binding's profile, and the conversation must be in its `thread/loaded/list`
+before the receiver binds or delivers; otherwise the receiver does not bind and
+the hooks keep delivering. Everything else is the receiver above, unchanged: the
+same daemon binding and token, the private ledger that records each input before
+offering it, one outstanding `thread/queue/add` carrying the AgentDocker message
+id as `clientUserMessageId`, acknowledgement only on the exact provider receipt
+(the turn's own `userMessage` item for the exact input, read from
+`thread/items/list`), and reconciliation after a lost connection that reads the
+queue and history and never adds the input again. A queue add the server
+answered is an offer, not a receipt: the message is acknowledged when a turn
+carries it. The launch descriptor keeps `--control`, so a receiver the daemon
+restarts reaches the same shared server. Until the receiver binds, and without
+the socket, the conversation's hooks deliver at its next prompt as before. The
+receiver's private hook endpoint does not serve these hooks (they do not descend
+from the terminal), so messages arriving during a turn wait for the native queue
+at idle. The binding records `control` in the receiver's ledger; a ledger written
+without it reads back unchanged, and a receiver that does not know it refuses a
+ledger that has it.
+
+A conversation started as plain `codex` has no terminal process to bind, so it
+still takes messages at its next prompt; its status is read as above.
+`turn/steer` (with the `expectedTurnId` read from the server) is not used on this
+path.
+
+`agentdocker codex-threads [--profile <dir>] [--json]` lists what the shared
+server has loaded, through the same kind of read-only connection: each
+conversation, its status, its checkout, and the AgentDocker record keyed by it.
+Without the socket it says so and lists nothing.
+
 ## New managed conversations
 
 New Codex sessions can receive human and peer messages while idle. In New session,

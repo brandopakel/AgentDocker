@@ -1,4 +1,6 @@
-//! Strict loopback WebSocket framing. Capability bytes never enter diagnostics.
+//! Strict WebSocket framing for a provider's app-server: an authenticated
+//! loopback port, or the shared server's control socket. Capability bytes
+//! never enter diagnostics.
 use super::MAX_FRAME;
 use anyhow::{Context, Result, bail, ensure};
 use futures_util::{SinkExt, StreamExt};
@@ -7,7 +9,11 @@ use std::{
     net::{Ipv4Addr, SocketAddrV4},
     time::Duration,
 };
-use tokio::{net::TcpStream, time::timeout};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpStream,
+    time::timeout,
+};
 use tokio_tungstenite::{
     WebSocketStream, client_async_with_config,
     tungstenite::{
@@ -18,8 +24,21 @@ use tokio_tungstenite::{
     },
 };
 
+/// Either byte stream a provider connection runs on.
+pub(super) trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
+
 pub(super) struct Remote {
-    socket: WebSocketStream<TcpStream>,
+    socket: WebSocketStream<Box<dyn Io>>,
+}
+
+fn config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .read_buffer_size(8192)
+        .write_buffer_size(0)
+        .max_write_buffer_size(MAX_FRAME + 8192)
+        .max_message_size(Some(MAX_FRAME))
+        .max_frame_size(Some(MAX_FRAME))
 }
 
 impl Remote {
@@ -37,24 +56,39 @@ impl Remote {
             .map_err(|_| anyhow::anyhow!("invalid native server capability header"))?;
         header.set_sensitive(true);
         request.headers_mut().insert(AUTHORIZATION, header);
-        let config = WebSocketConfig::default()
-            .read_buffer_size(8192)
-            .write_buffer_size(0)
-            .max_write_buffer_size(MAX_FRAME + 8192)
-            .max_message_size(Some(MAX_FRAME))
-            .max_frame_size(Some(MAX_FRAME));
         timeout(Duration::from_secs(5), async {
             let stream = TcpStream::connect(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
                 .await
                 .context("native server connection failed")?;
+            let stream: Box<dyn Io> = Box::new(stream);
             // No URI lookup, redirect, proxy, TLS downgrade or body/error echo.
-            let (socket, _) = client_async_with_config(request, stream, Some(config))
+            let (socket, _) = client_async_with_config(request, stream, Some(config()))
                 .await
                 .map_err(|_| anyhow::anyhow!("native server authentication/handshake failed"))?;
             Ok(Self { socket })
         })
         .await
         .context("native server connection timed out")?
+    }
+
+    /// The shared server's control socket, found and checked by
+    /// [`agentdocker_host::codex_control::locate`]. Its directory's
+    /// permissions are its authentication, as for Codex's own terminal.
+    #[cfg(unix)]
+    pub async fn connect_control(path: &std::path::Path) -> Result<Self> {
+        let request = agentdocker_host::codex_control::REQUEST_URI.into_client_request()?;
+        timeout(Duration::from_secs(5), async {
+            let stream = tokio::net::UnixStream::connect(path)
+                .await
+                .context("Codex control socket connection failed")?;
+            let stream: Box<dyn Io> = Box::new(stream);
+            let (socket, _) = client_async_with_config(request, stream, Some(config()))
+                .await
+                .map_err(|_| anyhow::anyhow!("Codex control socket handshake failed"))?;
+            Ok(Self { socket })
+        })
+        .await
+        .context("Codex control socket connection timed out")?
     }
 
     pub async fn send(&mut self, data: Vec<u8>) -> Result<()> {
@@ -130,7 +164,7 @@ mod tests {
         }
     }
 
-    async fn read(socket: &mut WebSocketStream<TcpStream>) -> Value {
+    async fn read(socket: &mut tokio_tungstenite::WebSocketStream<TcpStream>) -> Value {
         let message = timeout(Duration::from_secs(3), socket.next())
             .await
             .unwrap()

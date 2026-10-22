@@ -50,6 +50,10 @@ fn main() {
             "an_existing_codex_session_is_fed_through_its_native_queue_with_a_proved_receipt",
             an_existing_codex_session_is_fed_through_its_native_queue_with_a_proved_receipt,
         ),
+        (
+            "a_shared_server_conversation_is_fed_through_its_control_socket_once",
+            a_shared_server_conversation_is_fed_through_its_control_socket_once,
+        ),
     ];
     // The libtest command line that `cargo test` and nextest speak:
     // `--list --format terse` wants one `name: test` line per test and
@@ -834,6 +838,330 @@ fn an_existing_codex_session_is_fed_through_its_native_queue_with_a_proved_recei
     drop(daemon);
 }
 
+/// Codex's shared app-server as a terminal's conversation sees it: JSON-RPC
+/// over a WebSocket on `<profile>/app-server-control/app-server-control.sock`,
+/// several clients at once. A `thread/queue/add` is answered with success
+/// and then that connection is dropped, as a restarted or overloaded server
+/// may; the entry stays queued until a later client looks at the queue, and
+/// the terminal's next turn then carries it. Every frame received is kept,
+/// with the connection it came on.
+#[cfg(unix)]
+mod shared {
+    use futures_util::{SinkExt, StreamExt};
+    use serde_json::{Value, json};
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use tokio::net::UnixListener;
+    use tokio_tungstenite::tungstenite::Message;
+
+    #[derive(Default)]
+    pub struct Server {
+        pub frames: Vec<(usize, Value)>,
+        queued: Vec<Value>,
+        /// A dropped connection had added the queued entries: the next
+        /// queue read lets the terminal take them.
+        dropped: bool,
+        run: bool,
+        turns: Vec<String>,
+        items: Vec<Value>,
+    }
+
+    impl Server {
+        fn take_queue(&mut self) {
+            for submission in std::mem::take(&mut self.queued) {
+                let turn = format!("turn-{}", self.turns.len() + 1);
+                let item = format!("item-{}", self.turns.len() + 1);
+                self.turns.push(turn.clone());
+                self.items
+                    .push(json!({"turnId": turn, "item": {"type": "userMessage",
+                    "id": item, "content": submission["input"]}}));
+            }
+        }
+
+        /// The answer to one request, and whether to drop the connection.
+        fn answer(&mut self, home: &str, cwd: &str, method: &str, params: &Value) -> (Value, bool) {
+            let result = match method {
+                "initialize" => json!({"codexHome": home,
+                    "userAgent": "codex_cli_rs/0.163.0 (Mock 1.0.0; test) shared-app-server",
+                    "platformFamily": "unix", "platformOs": "test"}),
+                "config/read" => json!({"config": {"mcp_servers": {}}}),
+                "thread/loaded/list" => json!({"data": ["thread-1"], "nextCursor": null}),
+                "thread/read" => json!({"thread": {"id": params["threadId"], "cwd": cwd,
+                    "parentThreadId": null, "status": {"type": "idle"}}}),
+                "thread/queue/list" => {
+                    if self.dropped {
+                        self.run = true;
+                    }
+                    json!({"data": self.queued, "nextCursor": null})
+                }
+                "thread/items/list" => {
+                    if self.run {
+                        self.take_queue();
+                        self.run = false;
+                    }
+                    let limit = params["limit"].as_u64().unwrap_or(50) as usize;
+                    json!({"data": self.items.iter().rev().take(limit).cloned().collect::<Vec<_>>(),
+                        "nextCursor": null})
+                }
+                "thread/turns/list" => json!({"data": self.turns.iter().rev()
+                    .map(|turn| json!({"id": turn, "status": "completed"})).collect::<Vec<_>>()}),
+                "thread/queue/add" => {
+                    let submission = json!({"id": format!("queued-{}", self.frames.len()),
+                        "clientUserMessageId": params["clientUserMessageId"],
+                        "input": params["input"]});
+                    self.queued.push(submission.clone());
+                    self.dropped = true;
+                    return (json!({"queuedSubmission": submission}), true);
+                }
+                other => {
+                    return (
+                        json!({"error": format!("{other} is not served here")}),
+                        false,
+                    );
+                }
+            };
+            (result, false)
+        }
+    }
+
+    pub async fn serve(
+        listener: UnixListener,
+        home: PathBuf,
+        cwd: PathBuf,
+        server: Arc<Mutex<Server>>,
+    ) {
+        let home = home.display().to_string();
+        let cwd = cwd.display().to_string();
+        let mut connection = 0;
+        while let Ok((stream, _)) = listener.accept().await {
+            connection += 1;
+            let (server, home, cwd) = (server.clone(), home.clone(), cwd.clone());
+            tokio::spawn(async move {
+                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                while let Some(Ok(Message::Text(text))) = socket.next().await {
+                    let request: Value = serde_json::from_str(&text).unwrap();
+                    let Some(id) = request.get("id").cloned() else {
+                        continue;
+                    };
+                    let method = request["method"].as_str().unwrap_or_default().to_owned();
+                    let (result, drop) = {
+                        let mut server = server.lock().unwrap();
+                        server.frames.push((connection, request.clone()));
+                        server.answer(&home, &cwd, &method, &request["params"])
+                    };
+                    let reply = match result.get("error") {
+                        Some(error) => {
+                            json!({"id": id, "error": {"code": -32601, "message": error}})
+                        }
+                        None => json!({"id": id, "result": result}),
+                    };
+                    if socket.send(Message::text(reply.to_string())).await.is_err() || drop {
+                        return;
+                    }
+                }
+            });
+        }
+    }
+}
+
+/// A terminal's conversation that runs in Codex's shared app-server, end to
+/// end: the receiver reaches it through the profile's control socket, binds
+/// the queue, adds the message once with `thread/queue/add`, and when that
+/// connection drops after the server's success it reconnects and proves the
+/// receipt from the turn's own user item, never adding it again. The
+/// daemon reads the same server for the conversation's status.
+#[cfg(unix)]
+fn a_shared_server_conversation_is_fed_through_its_control_socket_once() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Command, Stdio};
+    use std::sync::{Arc, Mutex};
+    let root = fixture::root();
+    let home = root.path().join("home");
+    let socket = root.path().join("agentd.sock");
+    let checkout = root.path().join("checkout");
+    let codex_home = root.path().join("codex-home");
+    let control = codex_home.join("app-server-control");
+    std::fs::create_dir_all(&checkout).unwrap();
+    std::fs::create_dir_all(&control).unwrap();
+    std::fs::set_permissions(&control, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let checkout = checkout.canonicalize().unwrap();
+    let codex_home = codex_home.canonicalize().unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let server = Arc::new(Mutex::new(shared::Server::default()));
+    let listener = {
+        let _entered = runtime.enter();
+        tokio::net::UnixListener::bind(control.join("app-server-control.sock")).unwrap()
+    };
+    runtime.spawn(shared::serve(
+        listener,
+        codex_home.clone(),
+        checkout.clone(),
+        server.clone(),
+    ));
+    let daemon = fixture::RunningDaemon::start(&home, &socket);
+    let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+    let mut session = Command::new(&exe)
+        .arg("idle-codex")
+        .current_dir(&checkout)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = session.id();
+    let born = agentdocker_host::procinfo::start_time(pid).expect("the terminal's birth");
+    let mut spec = agentdocker_core::AgentSpec {
+        name: "terminal".into(),
+        runtime: "codex".into(),
+        workdir: Some(checkout.clone()),
+        ..Default::default()
+    };
+    spec.labels.insert("session_id".into(), "thread-1".into());
+    spec.labels.insert(
+        agentdocker_core::agent::PROFILE_LABEL.into(),
+        codex_home.display().to_string(),
+    );
+    let registered =
+        fixture::rpc(&socket, json!({"op": "register", "spec": spec, "pid": pid})).unwrap();
+    assert_eq!(registered["type"], "agent", "{registered}");
+    let agent = registered["agent"]["id"].as_str().unwrap().to_owned();
+    let log = agentdocker_host::dirs::private_file(&root.path().join("receiver.log"), true, true)
+        .unwrap();
+    let mut receiver = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
+        .arg("--socket")
+        .arg(&socket)
+        .arg("codex-queue")
+        .args(["--agent", &agent, "--pid", &pid.to_string()])
+        .args(["--started-at", &born.to_rfc3339(), "--thread", "thread-1"])
+        .arg("--profile")
+        .arg(&codex_home)
+        .arg("--cwd")
+        .arg(&checkout)
+        .arg("--program")
+        .arg(&exe)
+        .arg("--control")
+        .env("AGENTDOCKER_HOME", &home)
+        .env("AGENTDOCKER_SOCKET", &socket)
+        .env("AGENTDOCKER_NO_AUTOSTART", "1")
+        .env_remove("AGENTDOCKER_AGENT_ID")
+        .env_remove("AGENTDOCKER_AGENT_NAME")
+        .env_remove(TRANSCRIPT)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone().unwrap()))
+        .stderr(Stdio::from(log))
+        .spawn()
+        .unwrap();
+    let inspect = json!({"op": "inspect", "agent": agent});
+    let bound = fixture::wait_for(
+        &socket,
+        inspect.clone(),
+        Duration::from_secs(30),
+        "the receiver binding the queue through the control socket",
+        |response| {
+            response["type"] == "agent"
+                && response["agent"]["input_binding"].is_object()
+                && response["agent"]["input_delivery"]["paused"] == false
+        },
+    );
+    let launch = bound["agent"]["input_binding"]["launch"]["args"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        launch.iter().any(|a| a == "--control"),
+        "a restarted receiver reaches the same shared server: {launch:?}"
+    );
+    let sent = fixture::rpc(
+        &socket,
+        json!({"op": "send", "from": "user", "to": agent, "kind": "chat",
+            "payload": {"text": "through the shared server"}}),
+    )
+    .unwrap();
+    assert_eq!(sent["type"], "sent", "{sent}");
+    let message = sent["message"].as_str().unwrap().to_owned();
+    // The dropped connection pauses delivery; the receiver comes back
+    // after its reconnect delay and finds the turn that took the entry.
+    let received = fixture::wait_for(
+        &socket,
+        inspect.clone(),
+        Duration::from_secs(75),
+        "the receipt after the reconnect",
+        |response| {
+            response["agent"]["input_delivery"]["received"]["messages"][0] == message.as_str()
+        },
+    );
+    let receipt = &received["agent"]["input_delivery"]["received"]["receipt"];
+    assert_eq!(receipt["thread"], "thread-1", "{receipt}");
+    assert_eq!(receipt["turn"], "turn-1", "{receipt}");
+    assert_eq!(receipt["item"], "item-1", "{receipt}");
+    fixture::wait_for(
+        &socket,
+        json!({"op": "peek_input", "agent": agent}),
+        Duration::from_secs(10),
+        "the received message leaving the queue",
+        |response| {
+            response["type"] == "messages"
+                && response["messages"].as_array().is_some_and(Vec::is_empty)
+        },
+    );
+    // The daemon reads the same server: the quiet conversation is idle.
+    fixture::wait_for(
+        &socket,
+        inspect.clone(),
+        Duration::from_secs(20),
+        "the conversation's status from the shared server",
+        |response| response["agent"]["reported_activity"]["activity"] == "idle",
+    );
+    let frames = server.lock().unwrap().frames.clone();
+    let added: Vec<&(usize, Value)> = frames
+        .iter()
+        .filter(|(_, frame)| frame["method"] == "thread/queue/add")
+        .collect();
+    assert_eq!(
+        added.len(),
+        1,
+        "added once, across the reconnect: {frames:?}"
+    );
+    assert_eq!(
+        added[0].1["params"]["clientUserMessageId"],
+        message.as_str()
+    );
+    assert_eq!(added[0].1["params"]["threadId"], "thread-1");
+    let reconnected = frames.iter().any(|(connection, frame)| {
+        *connection > added[0].0 && frame["method"] == "thread/items/list"
+    });
+    assert!(
+        reconnected,
+        "the receipt was read on a later connection: {frames:?}"
+    );
+    assert!(
+        !frames.iter().any(|(_, frame)| matches!(
+            frame["method"].as_str(),
+            Some("turn/start" | "turn/steer" | "thread/resume" | "thread/start")
+        )),
+        "the shared server's turns are its terminal's: {frames:?}"
+    );
+    drop(session.stdin.take());
+    let _ = session.kill();
+    let _ = session.wait();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while receiver.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            let _ = receiver.kill();
+            let _ = receiver.wait();
+            panic!("the receiver did not end with its terminal");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(daemon);
+    runtime.shutdown_background();
+}
+
+#[cfg(not(unix))]
+#[allow(dead_code)]
+fn a_shared_server_conversation_is_fed_through_its_control_socket_once() {}
 #[cfg(not(unix))]
 #[allow(dead_code)]
 fn a_queued_message_becomes_a_turn_with_a_receipt_proved_from_the_providers_item() {}

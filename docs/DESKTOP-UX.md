@@ -29,7 +29,10 @@ without setup the resume command would fail. A Codex session in a terminal
 takes messages at its next prompt and nothing can wake it there, so its panel
 says so and offers **Start a live Codex** (the launch form, for Codex in this
 project); one that never reached AgentDocker shows `codex resume` with its
-conversation when it is known. Any other session gets one line.
+conversation when it is known. A `codex resume` terminal whose conversation runs
+in Codex's shared app-server gets a receiver through that server's control socket
+and then reads as any bound Codex session; a terminal Codex stopped there for an
+approval or a question shows **waiting for you**. Any other session gets one line.
 The details stay with that conversation or thread even if you switch while
 sending. In a small pane the feedback scrolls below the input, keeping typing
 and Send visible while every delivery action remains reachable.
