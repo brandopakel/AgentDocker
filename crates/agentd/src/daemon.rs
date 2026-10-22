@@ -255,6 +255,7 @@ fn mutates(request: &Request) -> bool {
             | Request::Thread { .. }
             | Request::SearchMessages { .. }
             | Request::Leases { .. }
+            | Request::WebhookDeliveries { .. }
             | Request::Tasks { .. }
             | Request::TaskGet { .. }
             | Request::Boards { .. }
@@ -2934,6 +2935,9 @@ impl Daemon {
             } => self.checkpoint_prune(agent.as_deref(), older_than_secs),
             Request::Vacuum { force } => self.vacuum(force),
             Request::Leases { agent, resource } => self.leases(agent.as_deref(), resource).await,
+            Request::WebhookDeliveries { webhook, limit } => {
+                self.webhook_deliveries(&webhook, limit)
+            }
             Request::Subscribe { .. }
             | Request::Events { .. }
             | Request::ResumeEvents { .. }

@@ -435,6 +435,8 @@ enum Command {
     Memory(MemoryArgs),
     /// A project's files, kept beside the work and linked to cards.
     File(FileArgs),
+    /// The webhook sinks in agentd.toml: what each attempt to post came to.
+    Webhook(WebhookArgs),
     /// Ask the other members of a channel to review this agent's work.
     ReviewRequest {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -1046,6 +1048,29 @@ enum MemoryAction {
         memory: String,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         from: Option<String>,
+    },
+}
+
+#[derive(clap::Args)]
+struct WebhookArgs {
+    #[command(subcommand)]
+    action: WebhookAction,
+}
+
+#[derive(Subcommand)]
+enum WebhookAction {
+    /// A sink's newest delivery attempts, oldest first: the event, which
+    /// attempt, what came of it, the status code or why there was none,
+    /// how long it took and when the next is due.
+    Deliveries {
+        /// The sink's `name` in agentd.toml.
+        webhook: String,
+        /// How many attempts, at most (1–200).
+        #[arg(long, default_value_t = agentdocker_core::webhook::LOG_LIMIT)]
+        limit: usize,
+        /// The attempts as JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -2728,6 +2753,32 @@ async fn run() -> Result<()> {
                 }
             }
         }
+        Command::Webhook(args) => match args.action {
+            WebhookAction::Deliveries {
+                webhook,
+                limit,
+                json,
+            } => {
+                let response = client
+                    .call(&Request::WebhookDeliveries {
+                        webhook: webhook.clone(),
+                        limit: Some(limit),
+                    })
+                    .await?;
+                let Response::WebhookDeliveries { attempts, .. } = response else {
+                    bail!("unexpected response");
+                };
+                if json {
+                    print_json(&attempts)?;
+                } else if attempts.is_empty() {
+                    println!("no delivery to {webhook} has been attempted yet");
+                } else {
+                    let rows: Vec<Vec<String>> =
+                        attempts.iter().map(format::webhook_attempt_row).collect();
+                    format::table(format::WEBHOOK_ATTEMPT_HEADERS, &rows);
+                }
+            }
+        },
         Command::Memory(args) => {
             let here = || -> Result<String> { Ok(std::env::current_dir()?.display().to_string()) };
             let list = |memories: &[agentdocker_core::memory::Memory]| {
