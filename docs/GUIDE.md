@@ -526,8 +526,10 @@ one AgentDocker started, which a plain resume could not bring back under its
 record), `agentdocker setup <runtime>`
 first for a session nothing of which ever reached AgentDocker, `codex resume`
 with its conversation (only for a Codex started in a terminal), a live Codex from Launch agent, waiting out a provider
-limit, reviewing a paused delivery, or the agent's own read of its inbox. None
-of them restarts anything. Provider limits remain separate from receiver
+limit, reviewing a paused delivery, or the agent's own read of its inbox. `agentdocker reconnect` and
+**Reconnect here** start an ended session again; no fix resubmits the
+session's initial prompt, and once its receiver is back, queued delivery offers
+the same unacknowledged message again. Provider limits remain separate from receiver
 health. When the daemon does not report readiness, `send` prints `recipient input readiness unavailable from this daemon` rather than imply that every recipient can wake.
 
 For an existing Claude session with no channel, save the current work, exit that

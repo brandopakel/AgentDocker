@@ -125,9 +125,21 @@ fn checkout_root() -> Result<PathBuf> {
 
 /// The project to send: the one named, else none when an agent asks (the
 /// daemon takes its own), else this checkout's.
-fn project(named: Option<String>, agent: &str) -> Result<Option<String>> {
-    if named.is_some() || agent != HUMAN {
+/// The project a verdict or a gate names: the one given, else for the
+/// person (by the `user` name or by their record's id, as
+/// `AGENTDOCKER_AGENT_ID=$(agentdocker me)` sets it) this checkout's;
+/// an agent's own the daemon knows.
+async fn project(client: &Client, named: Option<String>, agent: &str) -> Result<Option<String>> {
+    if named.is_some() {
         return Ok(named);
+    }
+    let person = agent == HUMAN
+        || matches!(
+            client.call(&Request::Inspect { agent: agent.to_owned() }).await,
+            Ok(Response::Agent { agent }) if agent.spec.runtime == agentdocker_core::HUMAN_RUNTIME
+        );
+    if !person {
+        return Ok(None);
     }
     Ok(Some(checkout_root()?.display().to_string()))
 }
@@ -279,7 +291,7 @@ pub async fn verdict(client: &Client, args: VerdictArgs) -> Result<()> {
         "comment"
     };
     let request = Request::CodeVerdict {
-        project: project(args.project, &agent)?,
+        project: project(client, args.project, &agent).await?,
         agent,
         branch: args.branch,
         head: commit(&args.head)?,
@@ -308,7 +320,7 @@ pub async fn gate(client: &Client, args: GateArgs) -> Result<bool> {
     let agent = sender::resolve(client, args.agent).await?;
     let (branch, head) = branch_and_head(&args.target, args.head.as_deref())?;
     let request = Request::ReviewGate {
-        project: project(args.project, agent.as_deref().unwrap_or(HUMAN))?,
+        project: project(client, args.project, agent.as_deref().unwrap_or(HUMAN)).await?,
         agent,
         branch: branch.clone(),
         head: head.clone(),
