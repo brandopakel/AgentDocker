@@ -480,8 +480,9 @@ fn plain_codex_host(table: &[agentdocker_host::procinfo::Process], pid: u32) -> 
 
 /// Whether `agent` is this hook's plain terminal session: the record its
 /// hooks keep for this very process (pid, birth, checkout, conversation),
-/// launched by nobody, known by more than its key, and with no input
-/// receiver that has reported for this process. Those others keep their
+/// launched by nobody, known by more than its key, with no input receiver
+/// bound to it — a binding is made before the receiver's first report —
+/// and none that has reported for this process. Those others keep their
 /// own lifecycle.
 fn plain_session(
     agent: &AgentRecord,
@@ -494,6 +495,7 @@ fn plain_session(
         && !agent.managed
         && !agent.keyed_only()
         && !agentdocker_host::provider_input::is_codex_input(agent)
+        && agent.input_binding.is_none()
         && agent.pid == Some(pid)
         && agent.process_started_at == Some(process_started_at)
         && agent.spec.runtime == "codex"
@@ -1417,7 +1419,39 @@ mod tests {
         other_process.process_started_at = Some(now - chrono::Duration::hours(1));
         let mut finished = record.clone();
         finished.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
-        for kept in [managed, received, other_session, other_process, finished] {
+        // A receiver binds before it first reports: bound, with no
+        // delivery report yet, is still a receiver's session.
+        let mut bound = record.clone();
+        bound.input_binding = Some(agentdocker_core::InputBinding {
+            provider: agentdocker_core::ProviderGeneration {
+                process: agentdocker_core::ProcessIdentity {
+                    pid: 42,
+                    started_at: now,
+                },
+                session: "fixture".into(),
+                profile: "/profile".into(),
+            },
+            controller: agentdocker_core::ProcessIdentity {
+                pid: 43,
+                started_at: now,
+            },
+            controller_since: now,
+            token_sha256: "fixture".into(),
+            bound_at: now,
+            controller_generations: 1,
+            uncertain: vec![],
+            launch: None,
+            restart: Default::default(),
+        });
+        assert!(bound.input_delivery.is_none());
+        for kept in [
+            managed,
+            received,
+            bound,
+            other_session,
+            other_process,
+            finished,
+        ] {
             let backend = Mock::with(vec![Response::Agent { agent: kept }]);
             assert!(!end_session(&backend, &end, 42, now).await.unwrap());
             assert_eq!(backend.requests().len(), 1, "only the lookup");

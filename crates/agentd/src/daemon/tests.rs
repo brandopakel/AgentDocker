@@ -4062,6 +4062,72 @@ async fn a_wait_keeps_what_it_is_for_through_the_store() {
     );
 }
 
+/// A password in an ordinary command never reaches the record or its
+/// event: not from the hooks adapter, which sends only what
+/// `command_detail` keeps, nor from any other client sending the command
+/// whole, whose detail ends before the flag or `user:password@` that
+/// carries it.
+#[tokio::test]
+async fn a_password_in_a_wait_detail_is_never_kept_or_announced() {
+    use agentdocker_core::wait::command_detail;
+    use agentdocker_core::{ActivityObservation, ReportedActivity, WaitReason};
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let agent = register(&daemon, "secret-detail-fixture", None).await;
+    let mut events = daemon.subscribe_events();
+    let start = Utc::now() - Duration::seconds(60);
+    let commands = [
+        "curl -u alice:hunter2 https://example.invalid",
+        "curl https://alice:hunter2@example.invalid/data",
+        "mysql -phunter2 -e SELECT",
+        "curl --user=alice:hunter2 https://example.invalid",
+        "mysql -uroot -phunter2",
+    ];
+    let details = commands.iter().flat_map(|command| {
+        [
+            format!("Bash: {command}"),
+            format!("Bash: {}", command_detail(command).unwrap()),
+        ]
+    });
+    for (step, detail) in details.enumerate() {
+        let at = start + Duration::seconds(step as i64);
+        let mut state = lock(&daemon.state);
+        assert!(matches!(
+            state.report_activity(
+                agent.id.as_str(),
+                ActivityObservation {
+                    activity: ReportedActivity::Waiting,
+                    observed_at: at,
+                    reason: Some(WaitReason::Permission),
+                    detail: Some(detail.clone()),
+                },
+                at,
+            ),
+            Response::Ok
+        ));
+        let stored = serde_json::to_string(&state.store.load_agents().unwrap()).unwrap();
+        let kept = state
+            .registry
+            .get(&agent.id)
+            .unwrap()
+            .reported_activity
+            .clone();
+        drop(state);
+        let event = serde_json::to_string(&events.try_recv().unwrap().kind).unwrap();
+        for text in [&stored, &event] {
+            assert!(
+                !text.contains("hunter2") && !text.contains("alice:"),
+                "{detail}: {text}"
+            );
+        }
+        assert!(
+            kept.and_then(|o| o.detail)
+                .is_some_and(|line| line.starts_with("Bash: ")),
+            "{detail}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn provider_activity_is_ordered_expires_and_commits_with_its_event() {
     use agentdocker_core::{ActivityObservation, ReportedActivity};

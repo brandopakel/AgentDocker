@@ -529,33 +529,20 @@ fn observation(input: &HookInput, output: Option<&Value>) -> Option<Observed> {
     Some(activity.into())
 }
 
-/// Words that, in a command, say a credential is in it or near it.
-const CREDENTIAL_WORDS: &[&str] = &[
-    "password",
-    "passwd",
-    "passphrase",
-    "secret",
-    "token",
-    "apikey",
-    "api_key",
-    "api-key",
-    "authorization",
-    "bearer",
-    "credential",
-    "private_key",
-    "private-key",
-];
-
 /// The one line a permission prompt's wait carries: the tool, and what it
-/// is for when the tool's input says so in a word — a shell command's
-/// first line, the file an edit or a read names (from the session's
-/// directory when it is under it), the address a fetch goes to without its
-/// credentials, query or fragment, a search's query or pattern. Bounded
-/// and made printable by [`agentdocker_core::wait::wait_detail`]; what
-/// reads like a credential, and a command or query that names one, is
-/// left out and the tool alone kept. None without a tool name.
+/// is for when the tool's input says so in a word — a shell command as
+/// [`agentdocker_core::wait::command_detail`] reduces it (the program and
+/// only the arguments safe to show), the file an edit or a read names
+/// (from the session's directory when it is under it), the address a fetch
+/// goes to without its credentials, query or fragment, a search's query or
+/// pattern. Whatever reads like a secret is judged on the whole of what the
+/// tool was given, before anything is shortened for display, and leaves
+/// the tool alone; so does a query or pattern that names a credential
+/// word. Bounded and made printable by
+/// [`agentdocker_core::wait::wait_detail`]. None without a tool name.
 fn permission_detail(input: &HookInput) -> Option<String> {
-    use agentdocker_core::wait::wait_detail;
+    use agentdocker_core::memory::secret_like;
+    use agentdocker_core::wait::{CREDENTIAL_WORDS, address, command_detail, wait_detail};
     let tool: String = wait_detail(input.tool_name.as_deref()?)?
         .chars()
         .take(48)
@@ -566,16 +553,17 @@ fn permission_detail(input: &HookInput) -> Option<String> {
             .as_ref()
             .and_then(|value| value.get(name))
             .and_then(Value::as_str)
+            .filter(|text| !secret_like(text))
     };
-    let plain = |text: &str| {
+    let plain = |text: &&str| {
         let lower = text.to_ascii_lowercase();
         !CREDENTIAL_WORDS.iter().any(|word| lower.contains(word))
     };
     let about: Option<String> = match tool.as_str() {
-        "Bash" | "PowerShell" | "WebSearch" | "Glob" | "Grep" => field("command")
-            .or_else(|| field("query"))
+        "Bash" | "PowerShell" => field("command").and_then(command_detail),
+        "WebSearch" | "Glob" | "Grep" => field("query")
             .or_else(|| field("pattern"))
-            .filter(|text| plain(text))
+            .filter(plain)
             .map(str::to_owned),
         "Edit" | "Write" | "MultiEdit" | "Read" | "NotebookEdit" => field("file_path")
             .or_else(|| field("notebook_path"))
@@ -591,7 +579,9 @@ fn permission_detail(input: &HookInput) -> Option<String> {
 }
 
 /// A path as a permission line shows it: from `cwd` when it is under it,
-/// and its end, where the file's name is, when it is long.
+/// and its end, where the file's name is, when it is long. Only for a path
+/// already judged whole: shortening can cut a secret down to something
+/// that no longer reads like one.
 fn shown_path(path: &str, cwd: Option<&Path>) -> String {
     let relative = cwd
         .and_then(|cwd| Path::new(path).strip_prefix(cwd).ok())
@@ -606,18 +596,6 @@ fn shown_path(path: &str, cwd: Option<&Path>) -> String {
         let tail: String = relative.chars().skip(count - (KEEP - 1)).collect();
         format!("…{tail}")
     }
-}
-
-/// An address without what may carry a credential: the user and password
-/// before the host, the query and the fragment.
-fn address(url: &str) -> String {
-    let url = url.split(['?', '#']).next().unwrap_or_default();
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return url.to_owned();
-    };
-    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-    let host = authority.rsplit('@').next().unwrap_or(authority);
-    format!("{scheme}://{host}{path}")
 }
 
 async fn report_hook_completion<B: Backend>(
@@ -2775,7 +2753,7 @@ mod tests {
             Some(Observed {
                 activity: Waiting,
                 reason: Some(WaitReason::Permission),
-                detail: Some("Bash: cargo test -p core".into()),
+                detail: Some("Bash: cargo test".into()),
             })
         );
         // Inside a subagent the dialog is still the session's to answer.
@@ -2878,12 +2856,93 @@ mod tests {
             Some("mcp__agentdocker__claim")
         );
         assert_eq!(
-            ask("Bash\u{202E}\n", json!({"command": "ls\u{0007}"})).as_deref(),
-            Some("Bash: ls")
+            ask("Bash\u{202E}\n", json!({"command": "ls -la"})).as_deref(),
+            Some("Bash: ls -la")
+        );
+        // A program a shell could not read plainly is not shown at all.
+        assert_eq!(
+            ask("Bash", json!({"command": "ls\u{0007} -la"})).as_deref(),
+            Some("Bash")
         );
         let mut nothing = input("PermissionRequest");
         nothing.tool_input = Some(json!({"command": "ls"}));
         assert_eq!(permission_detail(&nothing), None);
+    }
+
+    /// A password in an ordinary command — after `-u`, attached to `-p`,
+    /// before an address's host — never reaches the line, and so never the
+    /// report the hook sends, which is what the daemon keeps on the record
+    /// and announces in its event.
+    #[tokio::test]
+    async fn a_password_in_a_command_never_leaves_the_hook() {
+        for (command, shown) in [
+            (
+                "curl -u alice:hunter2 https://example.invalid",
+                "Bash: curl",
+            ),
+            (
+                "curl https://alice:hunter2@example.invalid/data",
+                "Bash: curl https://example.invalid/data",
+            ),
+            ("mysql -phunter2 -e SELECT", "Bash: mysql"),
+            (
+                "curl --user alice:hunter2 https://example.invalid",
+                "Bash: curl",
+            ),
+            ("mysql -uroot -phunter2", "Bash: mysql"),
+            ("redis-cli -a hunter2 ping", "Bash: redis-cli -a"),
+            ("tool 'alice:hunter2'", "Bash: tool"),
+            ("PGPASSWORD=hunter2 psql", "Bash"),
+        ] {
+            let mut event = input("PermissionRequest");
+            event.tool_name = Some("Bash".into());
+            event.tool_input = Some(json!({"command": command}));
+            let observed = observation(&event, None);
+            assert_eq!(
+                observed.as_ref().and_then(|o| o.detail.as_deref()),
+                Some(shown),
+                "{command}"
+            );
+            let backend = Mock::with(vec![Response::Ok, Response::Ok]);
+            let session = agent("claude-fixture", true);
+            report_hook_completion(&backend, &session, observed, Utc::now(), 0)
+                .await
+                .unwrap();
+            let sent = serde_json::to_string(&backend.requests()).unwrap();
+            assert!(sent.contains("report_activity"), "{sent}");
+            assert!(
+                !sent.contains("hunter2") && !sent.contains("alice:"),
+                "{command}: {sent}"
+            );
+        }
+    }
+
+    /// A secret early in a long path is judged on the whole path, before
+    /// the line keeps only the path's end, which would cut it down to
+    /// something that no longer reads like one.
+    #[test]
+    fn a_secret_in_a_long_path_is_judged_before_the_path_is_shortened() {
+        let path = format!(
+            "ghp_abcdefghijklmnopqrstuvwxyz0123456789/{}f",
+            "segment/".repeat(6)
+        );
+        let shortened = shown_path(&path, None);
+        assert!(
+            !agentdocker_core::memory::secret_like(&shortened),
+            "{shortened}"
+        );
+        for tool in ["Read", "Edit", "Write"] {
+            let mut event = input("PermissionRequest");
+            event.tool_name = Some(tool.into());
+            event.tool_input = Some(json!({"file_path": path}));
+            assert_eq!(permission_detail(&event).as_deref(), Some(tool));
+        }
+        let mut fetch = input("PermissionRequest");
+        fetch.tool_name = Some("WebFetch".into());
+        fetch.tool_input = Some(json!({
+            "url": "https://example.invalid/a?t=ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+        }));
+        assert_eq!(permission_detail(&fetch).as_deref(), Some("WebFetch"));
     }
 
     /// The events that only report never answer, never register anything

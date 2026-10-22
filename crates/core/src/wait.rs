@@ -327,12 +327,15 @@ pub const WAIT_DETAIL_CARRY_SECS: i64 = 60;
 
 /// `text` as a wait's detail may show it: its first line, without control
 /// or invisible formatting characters, runs of spaces as one, cut to
-/// [`WAIT_DETAIL_CHARS`] with an ellipsis. None when nothing is left or it
-/// reads like a credential ([`crate::memory::secret_like`]): a detail is
-/// shown to the person and kept with the agent's record, and is never
-/// worth a secret.
+/// [`WAIT_DETAIL_CHARS`] with an ellipsis. A detail is shown to the person
+/// and kept with the agent's record, and is never worth a secret: none
+/// when the whole line reads like a credential
+/// ([`crate::memory::secret_like`]), checked before anything is cut, and
+/// whatever the sender, the line ends before the first word that may carry
+/// one ([`scrubbed`]) — an address loses its user, password, query and
+/// fragment.
 pub fn wait_detail(text: &str) -> Option<String> {
-    let mut kept = text
+    let line = text
         .split(['\n', '\r'])
         .map(|line| {
             line.chars()
@@ -344,7 +347,11 @@ pub fn wait_detail(text: &str) -> Option<String> {
                 .join(" ")
         })
         .find(|line| !line.is_empty())?;
-    if crate::memory::secret_like(&kept) {
+    if crate::memory::secret_like(&line) {
+        return None;
+    }
+    let mut kept = scrubbed(&line);
+    if kept.is_empty() {
         return None;
     }
     if kept.chars().count() > WAIT_DETAIL_CHARS {
@@ -353,6 +360,221 @@ pub fn wait_detail(text: &str) -> Option<String> {
         kept.push('…');
     }
     Some(kept)
+}
+
+/// The words of `line` before the first that may carry a credential: a
+/// flag that takes one ([`credential_flag`]) or a `user:password@host`
+/// outside an address. An address keeps only its scheme, host and path
+/// ([`address`]).
+fn scrubbed(line: &str) -> String {
+    let mut kept: Vec<String> = Vec::new();
+    for word in line.split(' ') {
+        if credential_flag(word) || userinfo(word) {
+            break;
+        }
+        kept.push(if word.contains("://") {
+            address(word)
+        } else {
+            word.to_owned()
+        });
+    }
+    kept.join(" ")
+}
+
+/// Words that, anywhere in a command or a search, say a credential is in
+/// it or near it: such a line is never shown.
+pub const CREDENTIAL_WORDS: &[&str] = &[
+    "password",
+    "passwd",
+    "passphrase",
+    "secret",
+    "token",
+    "apikey",
+    "api_key",
+    "api-key",
+    "authorization",
+    "bearer",
+    "credential",
+    "private_key",
+    "private-key",
+];
+
+/// Parts of a flag's name that say its value is a credential, or names
+/// whose it is: `--user`, `--password`, `--header`, `--token`, `--key`,
+/// `-Credential`…
+const CREDENTIAL_FLAG_PARTS: &[&str] = &[
+    "user", "pass", "pwd", "token", "key", "auth", "header", "cookie", "secret", "cred", "bearer",
+    "login", "session", "cert", "identity",
+];
+
+/// Single-letter flags that commonly take a credential or its holder:
+/// `-u user:password`, `-p<password>`, `-P`, `-H 'Authorization: …'`,
+/// `-k`/`-K` keys. In a cluster or with a value attached, any of them.
+const CREDENTIAL_FLAG_LETTERS: &[char] = &['u', 'p', 'P', 'H', 'k', 'K'];
+
+/// Words that, as an argument, begin a credential's part of a command:
+/// `docker login`, `gh auth`, a key or password manager's entry.
+const CREDENTIAL_ARGUMENT_PARTS: &[&str] = &[
+    "login", "logon", "signin", "auth", "pass", "pwd", "cookie", "key", "cred",
+];
+
+/// Programs whose arguments are data — what they print, export or
+/// evaluate — rather than what they act on: shown alone.
+const DATA_PROGRAMS: &[&str] = &[
+    "echo",
+    "printf",
+    "print",
+    "export",
+    "set",
+    "env",
+    "eval",
+    "read",
+    "write-host",
+    "write-output",
+    "convertto-securestring",
+];
+
+/// Whether `word` is a flag that takes, or is, a credential: a long name
+/// with a [`CREDENTIAL_FLAG_PARTS`] part (`--password=…` by its name), or
+/// a single-dash flag with a [`CREDENTIAL_FLAG_LETTERS`] letter
+/// (`-phunter2`, `-uroot`).
+fn credential_flag(word: &str) -> bool {
+    let Some(flag) = word.strip_prefix('-') else {
+        return false;
+    };
+    let name = flag.split('=').next().unwrap_or_default();
+    let long = name.strip_prefix('-');
+    let bare = long.unwrap_or(name);
+    if bare.is_empty() {
+        return false;
+    }
+    let lower = bare.to_ascii_lowercase();
+    CREDENTIAL_FLAG_PARTS
+        .iter()
+        .any(|part| lower.contains(part))
+        || (long.is_none() && bare.chars().any(|c| CREDENTIAL_FLAG_LETTERS.contains(&c)))
+}
+
+/// Whether `word`, outside an address, has a user and password before an
+/// `@`: `alice:hunter2@host`.
+fn userinfo(word: &str) -> bool {
+    !word.contains("://")
+        && word
+            .rsplit_once('@')
+            .is_some_and(|(before, _)| before.contains(':'))
+}
+
+/// An address without what may carry a credential: the user and password
+/// before the host, the query and the fragment.
+pub fn address(url: &str) -> String {
+    let url = url.split(['?', '#']).next().unwrap_or_default();
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_owned();
+    };
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    format!("{scheme}://{host}{path}")
+}
+
+/// Whether `word` is plain enough to show as it is: letters, digits and
+/// the punctuation of paths, versions and addresses, nothing a shell
+/// would expand, quote or split on.
+fn plain_word(word: &str) -> bool {
+    !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._/~+,:%@-".contains(c))
+}
+
+/// A shell command as a wait's detail may show it, conservatively: the
+/// program and the arguments that are safe to show, never a credential.
+///
+/// Nothing at all when the command, any line of it, reads like a secret
+/// or names a [`CREDENTIAL_WORDS`] word. Otherwise its first line, word by
+/// word: `NAME=value` assignments before the program are skipped, values
+/// unseen; a program whose arguments are data (`echo`, `export`…) is shown
+/// alone. Then, in order:
+/// - a flag that takes a credential ([`credential_flag`]) ends the line
+///   there, and so does a word naming one (`login`, `auth`, a key…);
+/// - a plain flag (`-rf`, `--release`) is kept, and the first word after
+///   any flag ends the line, since it may be that flag's value;
+/// - an address keeps only its scheme, host and path;
+/// - an argument that cannot be read plainly — quoted, expanded, an
+///   assignment, `user:password@host`, a pipe — leaves the program alone.
+pub fn command_detail(command: &str) -> Option<String> {
+    let lower = command.to_ascii_lowercase();
+    if crate::memory::secret_like(command) || CREDENTIAL_WORDS.iter().any(|w| lower.contains(w)) {
+        return None;
+    }
+    let line = command
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    let mut words = line.split_whitespace().skip_while(|word| assignment(word));
+    let program = words
+        .next()
+        .filter(|word| plain_word(word) && !userinfo(word))?;
+    let name = program
+        .rsplit('/')
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    if DATA_PROGRAMS.contains(&name.as_str()) {
+        return Some(program.to_owned());
+    }
+    let alone = || Some(program.to_owned());
+    let mut kept = vec![program.to_owned()];
+    let mut flagged = false;
+    for word in words {
+        if word.starts_with('-') {
+            if credential_flag(word) {
+                break;
+            }
+            if !flag_shape(word) {
+                return alone();
+            }
+            flagged = true;
+            kept.push(word.to_owned());
+            continue;
+        }
+        let word = if word.contains("://") {
+            address(word)
+        } else {
+            word.to_owned()
+        };
+        if !plain_word(&word) || userinfo(&word) {
+            return alone();
+        }
+        let lower = word.to_ascii_lowercase();
+        if flagged
+            || CREDENTIAL_ARGUMENT_PARTS
+                .iter()
+                .any(|part| lower.contains(part))
+        {
+            break;
+        }
+        kept.push(word);
+    }
+    Some(kept.join(" "))
+}
+
+/// `NAME=value` before a program: an environment assignment.
+fn assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        name.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// A flag with nothing attached a shell would read: `-`, `--`, `-rf`,
+/// `--release`, `-Recurse`.
+fn flag_shape(word: &str) -> bool {
+    let name = word.trim_start_matches('-');
+    word.len() - name.len() <= 2
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !name.starts_with('-')
 }
 
 /// Characters that change how the text around them reads without showing
@@ -568,6 +790,103 @@ mod tests {
             "Bash: export KEY=x9Fk2LmQ7vR3tY8wZ1aB4cD6eG0hJ5nP",
         ] {
             assert_eq!(wait_detail(secret), None, "{secret}");
+        }
+    }
+
+    /// A password in an ordinary command never reaches a detail: a flag
+    /// that takes one ends the line, an address loses its user and
+    /// password, and anything that cannot be read plainly leaves the
+    /// program alone. What is safe to show still is.
+    #[test]
+    fn a_command_shows_its_program_and_only_what_is_safe() {
+        for (command, shown) in [
+            ("curl -u alice:hunter2 https://example.invalid", "curl"),
+            ("curl --user alice:hunter2 https://example.invalid", "curl"),
+            ("curl --user=alice:hunter2 https://example.invalid", "curl"),
+            ("curl -sSu alice:hunter2 https://example.invalid", "curl"),
+            (
+                "curl https://alice:hunter2@example.invalid/data",
+                "curl https://example.invalid/data",
+            ),
+            (
+                "git clone https://alice:hunter2@example.invalid/o/r.git dir",
+                "git clone https://example.invalid/o/r.git dir",
+            ),
+            (
+                "curl https://example.invalid/data?pw=hunter2#frag",
+                "curl https://example.invalid/data",
+            ),
+            ("mysql -phunter2 -e SELECT", "mysql"),
+            ("mysql -uroot -phunter2", "mysql"),
+            ("mysql -e SELECT -phunter2", "mysql -e"),
+            ("redis-cli -a hunter2 ping", "redis-cli -a"),
+            ("sshpass -p hunter2 ssh host", "sshpass"),
+            ("scp alice:hunter2@host:/f .", "scp"),
+            (
+                "psql postgresql://alice:hunter2@db/app",
+                "psql postgresql://db/app",
+            ),
+            ("DB_PASS=hunter2 psql -h db", "psql -h"),
+            ("curl -H 'X-Api: hunter2' https://example.invalid", "curl"),
+            (
+                "curl -d user=alice&pw=hunter2 https://example.invalid",
+                "curl",
+            ),
+            ("tool --data=alice:hunter2", "tool"),
+            ("tool 'alice:hunter2'", "tool"),
+            ("echo hunter2 | sudo -S true", "echo"),
+            ("docker login -u alice hunter2", "docker"),
+            ("Get-Item -Path C:/hunter2", "Get-Item"),
+            // What is safe to show still is.
+            ("git push origin main", "git push origin main"),
+            ("rm -rf target", "rm -rf"),
+            ("ls -la", "ls -la"),
+            ("cargo test -p core", "cargo test"),
+            ("./scripts/verify.sh check", "./scripts/verify.sh check"),
+        ] {
+            assert_eq!(command_detail(command).as_deref(), Some(shown), "{command}");
+            let line = format!("Bash: {}", command_detail(command).unwrap());
+            assert!(
+                !line.contains("hunter2") && !line.contains("alice:"),
+                "{line}"
+            );
+        }
+        for command in [
+            "PGPASSWORD=hunter2 psql",
+            "curl -H 'Authorization: Bearer abc' https://example.invalid",
+            "export GITHUB_TOKEN=abc",
+            "echo ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            "ls\nexport KEY=x9Fk2LmQ7vR3tY8wZ1aB4cD6eG0hJ5nP",
+            "'quoted program' arg",
+            "   \n  ",
+        ] {
+            assert_eq!(command_detail(command), None, "{command}");
+        }
+    }
+
+    /// Whoever sends a detail, the daemon keeps none of a credential an
+    /// ordinary command carries: the line ends before a flag that takes
+    /// one or a `user:password@host`, and an address loses its user,
+    /// password, query and fragment.
+    #[test]
+    fn any_detail_loses_what_carries_a_credential() {
+        for (sent, kept) in [
+            (
+                "Bash: curl -u alice:hunter2 https://example.invalid",
+                Some("Bash: curl"),
+            ),
+            (
+                "Bash: curl https://alice:hunter2@example.invalid/data?k=v",
+                Some("Bash: curl https://example.invalid/data"),
+            ),
+            ("Bash: mysql -phunter2 -e SELECT", Some("Bash: mysql")),
+            ("Bash: mysql --password=hunter2", Some("Bash: mysql")),
+            ("Bash: scp alice:hunter2@host:/f .", Some("Bash: scp")),
+            ("Bash: rm -rf target", Some("Bash: rm -rf target")),
+            ("Edit: src/lib.rs", Some("Edit: src/lib.rs")),
+            ("-u alice:hunter2", None),
+        ] {
+            assert_eq!(wait_detail(sent).as_deref(), kept, "{sent}");
         }
     }
 

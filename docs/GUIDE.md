@@ -733,9 +733,10 @@ For Claude Code, `agentdocker setup claude-code` installs handlers for
 `SessionEnd`, `Notification`, `PermissionRequest`, `SubagentStart`, `SubagentStop`
 and `CwdChanged`. A permission prompt or question dialog marks the session
 *waiting* for you; `PermissionRequest` adds what the prompt is for in one line —
-the tool and, for a shell command, its first line, for a file, its path — and
-never answers it: the dialog stays yours, and nothing that reads like a secret
-is kept. A subagent starting keeps its session *working*, and is never an agent
+the tool and, for a shell command, the program and only the arguments safe to
+show (never what follows `-u`, `-p`, `--password` and the like, nor the user and
+password in an address), for a file, its path — and never answers it: the
+dialog stays yours, and nothing that reads like a secret is kept. A subagent starting keeps its session *working*, and is never an agent
 of its own. `Stop` marks the session idle unless it leaves background work
 running (a shell, a subagent, a monitor or a workflow it started), which keeps
 it working, as a subagent finishing with background work still running does. When
