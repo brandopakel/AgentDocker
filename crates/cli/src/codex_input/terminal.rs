@@ -100,6 +100,89 @@ impl Input {
     }
 }
 
+/// The person's terminal while the bridge runs: its line reader, the lines
+/// it has completed and not yet queued, and whether it is open or suspended
+/// by a secret review. The bridge keeps reading it while it waits on other
+/// calls ([`Self::during`]) so that the keystroke clock the typing guard
+/// reads is never stale, and reads what has arrived before every decision
+/// ([`Self::drain`]).
+pub(super) struct Keyboard<R> {
+    reader: R,
+    input: Input,
+    pub open: bool,
+    pub suspended: bool,
+    lines: std::collections::VecDeque<String>,
+}
+
+impl<R: AsyncBufRead + Unpin> Keyboard<R> {
+    pub fn new(reader: R, editing: bool, open: bool) -> Self {
+        Self {
+            reader,
+            input: Input::new(editing),
+            open,
+            suspended: false,
+            lines: Default::default(),
+        }
+    }
+
+    /// The last keystroke of the line the person is typing, among the bytes
+    /// read so far.
+    pub fn typed_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.input.typed_at()
+    }
+
+    /// The next line the person ended, oldest first, to be queued.
+    pub fn next_line(&mut self) -> Option<String> {
+        self.lines.pop_front()
+    }
+
+    /// One read for the bridge's own select: a line, nothing, or the end of
+    /// the terminal. While suspended, the line is discarded unseen. Safe to
+    /// cancel, like the reads it makes.
+    pub async fn read(&mut self) -> Result<Option<String>> {
+        if self.suspended {
+            discard(&mut self.reader).await.map(|()| None)
+        } else {
+            self.input.read(&mut self.reader).await
+        }
+    }
+
+    /// What a read outside a suspension gave: a line is kept to be queued,
+    /// an error closes the terminal.
+    pub fn take(&mut self, line: Result<Option<String>>) {
+        match line {
+            Ok(Some(text)) => self.lines.push_back(text),
+            Ok(None) => (),
+            Err(error) => {
+                self.open = false;
+                eprintln!("Terminal input closed: {error}");
+            }
+        }
+    }
+
+    /// Await `call` while the person's typing keeps being read: every byte
+    /// already available is read before `call` is looked at, so when it
+    /// returns, nothing that arrived meanwhile is unread. A suspended or
+    /// closed terminal is left alone.
+    pub async fn during<F: std::future::Future>(&mut self, call: F) -> F::Output {
+        tokio::pin!(call);
+        loop {
+            tokio::select! {
+                biased;
+                line = self.input.read(&mut self.reader), if self.open && !self.suspended => {
+                    self.take(line);
+                }
+                output = &mut call => return output,
+            }
+        }
+    }
+
+    /// Read every byte that has arrived, without waiting for more.
+    pub async fn drain(&mut self) {
+        self.during(std::future::ready(())).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
