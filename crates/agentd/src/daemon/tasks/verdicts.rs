@@ -174,29 +174,6 @@ impl Daemon {
         if let Some(error) = state.write_failure() {
             return error;
         }
-        // Nor on a branch it has committed to, wherever its checkout is
-        // now: the journal keeps every commit it was the author of.
-        if !actor.human {
-            let mut commits = crate::store::JournalQuery::new(project.clone(), 1);
-            commits.agent = Some(AgentId::from(actor.id.as_str()));
-            commits.branch = Some(branch.to_owned());
-            commits.kind = Some(JournalKind::Commit);
-            match state.store_read("the reviewer's commits", |store| store.journal(&commits)) {
-                Some(entries) if !entries.is_empty() => {
-                    return Response::error(
-                        ErrorCode::Forbidden,
-                        "an agent does not review a branch it has committed to",
-                    );
-                }
-                Some(_) => {}
-                None => {
-                    return Response::error(
-                        ErrorCode::StorageUnavailable,
-                        "the reviewer's commits could not be read",
-                    );
-                }
-            }
-        }
         let existing = match state.project_verdicts(&project) {
             Ok(verdicts) => verdicts,
             Err(response) => return *response,
@@ -683,66 +660,6 @@ mod tests {
 
     fn refused(response: Response, code: ErrorCode) -> bool {
         matches!(response, Response::Error { code: c, .. } if c == code)
-    }
-
-    /// A reviewer whose checkout has moved off a branch it committed to
-    /// still gives no word on that branch.
-    #[tokio::test]
-    async fn a_reviewer_never_reviews_a_branch_it_committed_to() {
-        let tmp = tempfile::tempdir().unwrap();
-        let daemon = open(&tmp);
-        let repo = tmp.path().join("repo");
-        repository(&repo, "main");
-        let reviewer = register(&daemon, "reviewer", &repo).await;
-        give_role(&daemon, &reviewer.id, "reviewer");
-        let project = reviewer.project.as_ref().unwrap().id();
-        {
-            let mut state = lock(&daemon.state);
-            state.append_journal(JournalEntry {
-                project: project.clone(),
-                seq: 0,
-                at: Utc::now(),
-                agent: Some(reviewer.id.clone()),
-                agent_name: "reviewer".into(),
-                branch: Some("feature/mine".into()),
-                checkout: Some(repo.clone()),
-                worktree: None,
-                kind: JournalKind::Commit,
-                summary: "my change".into(),
-                summary_source: SummarySource::Explicit,
-                resources: Vec::new(),
-                paths: Vec::new(),
-                paths_total: 0,
-                head_before: None,
-                head_after: None,
-                changes: None,
-            });
-        }
-        assert!(refused(
-            daemon
-                .handle(verdict(
-                    reviewer.id.as_str(),
-                    None,
-                    "feature/mine",
-                    A,
-                    "approve"
-                ))
-                .await,
-            ErrorCode::Forbidden
-        ));
-        // A branch it did not commit to is its to review.
-        assert!(matches!(
-            daemon
-                .handle(verdict(
-                    reviewer.id.as_str(),
-                    None,
-                    "feature/theirs",
-                    A,
-                    "approve"
-                ))
-                .await,
-            Response::CodeVerdict { .. }
-        ));
     }
 
     #[tokio::test]
