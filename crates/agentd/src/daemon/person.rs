@@ -187,16 +187,17 @@ fn agent_session(
 /// Who started a session that registered itself, as its parents say.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Starter {
-    /// Its parents reach the person's session root — a terminal
-    /// application or another application bundle, a login or SSH session
-    /// leader, another user's process — without meeting an agent's session.
+    /// Its parents reach the top — the first process, or another user's —
+    /// through one of the person's session roots ([`session_root`]) and
+    /// with no agent's session anywhere among them.
     Person,
-    /// An agent's session ([`agent_session`]) stands among its parents.
+    /// An agent's session ([`agent_session`]) stands among its parents,
+    /// below a root or above one.
     Agent,
-    /// Its parents can no longer say: the first process reached with no
-    /// root on the way (an orphan, or something the system started), a
-    /// parent that has ended, or a "parent" born after its child (a reused
-    /// pid).
+    /// Its parents cannot say: they reach the top through no root (an
+    /// orphan, a shell whose agent exited, a multiplexer server), or the
+    /// chain breaks first, at a parent that has ended or a "parent" born
+    /// after its child (a reused pid).
     Unknown,
 }
 
@@ -211,14 +212,16 @@ impl Starter {
     }
 }
 
-/// Who started the session whose process is `pid`, born `birth`: up from
-/// its parent, each process is an agent's session ([`Starter::Agent`]), the
-/// person's session root (`root`, and another user's process: the person),
-/// or passed on to its own parent; a chain that breaks before either is
+/// Who started the session whose process is `pid`, born `birth`, walking
+/// every parent from its own up to the top: an agent's session anywhere on
+/// the way makes it [`Starter::Agent`]; a root on the way (`root`) is
+/// evidence for the person and never the end of the walk, so an agent or
+/// the daemon above a terminal still counts; the top reached with a root
+/// below it is [`Starter::Person`], without one or past a break in the chain
 /// [`Starter::Unknown`]. `None` when it cannot be read now (the process is
-/// not that one any more, or a row this user owns is unreadable) and for
-/// the daemon's own process and what it started, whose launches are said
-/// at launch: nothing is decided.
+/// not that one any more, or a row this user owns is unreadable) and when
+/// the daemon's own process is the session or among its parents, whose
+/// launches are said at launch: nothing is decided.
 #[allow(clippy::too_many_arguments)]
 fn starter(
     pid: u32,
@@ -234,19 +237,26 @@ fn starter(
         return None;
     }
     let session = table.iter().find(|p| p.pid == pid)?;
+    let mut rooted = false;
+    let top = |rooted: bool| {
+        Some(if rooted {
+            Starter::Person
+        } else {
+            Starter::Unknown
+        })
+    };
     let mut child = birth;
     let mut current = session.ppid;
     for _ in 0..ANCESTRY {
-        // What the daemon starts it says of at launch.
         if current == own {
             return None;
         }
         if current <= 1 {
-            return Some(Starter::Unknown);
+            return top(rooted);
         }
         let missing = |pid: u32| match unseen(pid) {
             Unseen::Ended => Some(Starter::Unknown),
-            Unseen::OtherUser => Some(Starter::Person),
+            Unseen::OtherUser => top(rooted),
             Unseen::Unreadable => None,
         };
         let Some(process) = table.iter().find(|p| p.pid == current) else {
@@ -261,11 +271,9 @@ fn starter(
         if agent_session(process, birth, agents).is_some() {
             return Some(Starter::Agent);
         }
-        if root(process) {
-            return Some(Starter::Person);
-        }
+        rooted = rooted || root(process);
         if process.ppid == current {
-            return Some(Starter::Unknown);
+            return top(rooted);
         }
         child = birth;
         current = process.ppid;
@@ -273,17 +281,96 @@ fn starter(
     Some(Starter::Unknown)
 }
 
-/// The person's session root, by the executable the kernel names: a
-/// terminal application or another application bundle (what a record's
-/// `terminal` is read from), or a login or SSH session leader.
+/// `login` and the SSH session leaders at the system's own paths.
+const ROOT_PROGRAMS: &[&str] = &[
+    "/usr/bin/login",
+    "/bin/login",
+    "/usr/sbin/sshd",
+    "/usr/sbin/sshd-session",
+    "/usr/libexec/sshd-session",
+    "/usr/lib/openssh/sshd-session",
+    "/usr/libexec/openssh/sshd-session",
+];
+
+/// Where a person's terminal and editor applications are installed on
+/// macOS: the sealed system's own folders and the Applications folders.
+const APPLICATION_FOLDERS: &[&str] = &[
+    "/System/Applications",
+    "/System/Applications/Utilities",
+    "/Applications",
+    "/Applications/Utilities",
+];
+
+/// One of the person's session roots, by the executable the kernel names
+/// for `process` ([`root_program`]).
 fn session_root(process: &procinfo::Process) -> bool {
-    procinfo::executable_path_of(process.pid).is_ok_and(|executable| {
-        agentdocker_core::terminal::classify(&executable).is_some()
-            || executable
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| matches!(name, "login" | "sshd" | "sshd-session"))
-    })
+    procinfo::executable_path_of(process.pid).is_ok_and(|executable| root_program(&executable))
+}
+
+/// Whether `executable` is a program the person's sessions start under,
+/// where nothing an agent can write could stand in for it: `login`, `sshd`
+/// or `sshd-session` at the system's own paths ([`ROOT_PROGRAMS`]); on
+/// macOS, a known terminal or editor application (by its bundle's name,
+/// never any bundle) installed directly in a system or user Applications
+/// folder; elsewhere on Unix, a known terminal emulator under `/usr`,
+/// `/bin` or `/sbin` whose file root owns and nobody else may write.
+/// Anything else, a copy of one of these elsewhere included, is no root.
+fn root_program(executable: &std::path::Path) -> bool {
+    let Ok(executable) = std::fs::canonicalize(executable) else {
+        return false;
+    };
+    let home = std::env::home_dir().and_then(|home| std::fs::canonicalize(home).ok());
+    root_at(&executable, home.as_deref(), root_owned)
+}
+
+/// [`root_program`]'s rule for a resolved `executable`, `home` the
+/// person's home folder and `owned` whether root alone owns and may write
+/// a file.
+fn root_at(
+    executable: &std::path::Path,
+    home: Option<&std::path::Path>,
+    owned: impl Fn(&std::path::Path) -> bool,
+) -> bool {
+    let system = ROOT_PROGRAMS
+        .iter()
+        .any(|program| executable == std::path::Path::new(program));
+    let host = agentdocker_core::terminal::classify(executable).filter(|host| host.kind != "app");
+    if cfg!(target_os = "macos") {
+        if system {
+            return true;
+        }
+        let Some(folder) = host
+            .and_then(|host| host.app)
+            .and_then(|bundle| bundle.parent().map(std::path::Path::to_path_buf))
+        else {
+            return false;
+        };
+        APPLICATION_FOLDERS
+            .iter()
+            .any(|known| folder == std::path::Path::new(known))
+            || home.is_some_and(|home| folder == home.join("Applications"))
+    } else if cfg!(unix) {
+        let emulator = host.is_some_and(|host| host.app.is_none());
+        (system || emulator)
+            && ["/usr/", "/bin/", "/sbin/"]
+                .iter()
+                .any(|dir| executable.starts_with(dir))
+            && owned(executable)
+    } else {
+        false
+    }
+}
+
+/// Whether root owns `path` and nobody else may write it.
+#[cfg(unix)]
+fn root_owned(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).is_ok_and(|meta| meta.uid() == 0 && meta.mode() & 0o022 == 0)
+}
+
+#[cfg(not(unix))]
+fn root_owned(_: &std::path::Path) -> bool {
+    false
 }
 
 fn refusal(reason: &str) -> Response {
@@ -761,14 +848,15 @@ mod tests {
         assert_eq!(acting(&human), ["user"], "registering a person");
     }
 
-    /// Who started a registered session, from its parents: the person only
-    /// when they reach the person's session root with no agent's session on
-    /// the way; an agent when one stands among them; unknown when the chain
-    /// breaks first — an orphan, a parent reparented to the first process
-    /// after the agent that started it exited, an ended or reused
-    /// grandparent, a chain with no root at all — and nothing at all when a
-    /// row cannot be read now, the process is not the one recorded, or the
-    /// daemon started it or is it.
+    /// Who started a registered session, from all of its parents: the
+    /// person only when they reach the top through one of the person's
+    /// roots with no agent's session anywhere on the way, a terminal an
+    /// agent or the daemon started included; an agent when one stands among
+    /// them; unknown when no root is passed or the chain breaks — an orphan,
+    /// a shell orphaned when its agent exited, an ended or reused
+    /// grandparent, a multiplexer server, an ended parent above a root —
+    /// and nothing at all when a row cannot be read now, the process is not
+    /// the one recorded, or the daemon is it or among its parents.
     #[test]
     fn a_session_is_the_persons_only_when_its_parents_reach_the_persons_root() {
         let table = [
@@ -792,9 +880,17 @@ mod tests {
             ),
             process(21, 20, &["/bin/zsh", "-c", "claude -p go"]),
             process(22, 21, &["claude", "-p", "go"]),
-            // Under a program that is an agent only by its record.
+            // In a terminal that session opened.
+            process(23, 21, &["xterm"]),
+            process(24, 23, &["/bin/zsh"]),
+            process(25, 24, &["claude"]),
+            // Under a program that is an agent only by its record, directly
+            // and through a terminal it opened.
             process(30, 11, &["/opt/tools/some-agent"]),
             process(31, 30, &["codex"]),
+            process(32, 30, &["xterm"]),
+            process(33, 32, &["/bin/zsh"]),
+            process(34, 33, &["claude"]),
             // Orphaned.
             process(40, 1, &["claude"]),
             // The agent that started its shell exited: the shell is now the
@@ -806,13 +902,21 @@ mod tests {
             process(81, 80, &["/bin/zsh"]),
             process(82, 81, &["claude"]),
             // Its grandparent has ended (90), cannot be read (100), or is
-            // another user's (110).
+            // another user's (110); another user's above a terminal (140).
             process(91, 90, &["/bin/zsh"]),
             process(92, 91, &["claude"]),
             process(101, 100, &["/bin/zsh"]),
             process(102, 101, &["claude"]),
             process(111, 110, &["/bin/zsh"]),
             process(112, 111, &["claude"]),
+            process(141, 140, &["xterm"]),
+            process(142, 141, &["/bin/zsh"]),
+            process(143, 142, &["claude"]),
+            // A terminal whose own parent has ended: what was above it
+            // cannot be seen.
+            process(131, 130, &["xterm"]),
+            process(132, 131, &["/bin/zsh"]),
+            process(133, 132, &["claude"]),
             // A multiplexer server: the first process's, no root above.
             process(120, 1, &["tmux"]),
             process(121, 120, &["/bin/zsh"]),
@@ -820,9 +924,12 @@ mod tests {
             // Its parent's pid was reused.
             process(60, 11, &["/opt/tools/other"]),
             process(61, 60, &["claude"]),
-            // The daemon, and a process it started.
+            // The daemon, a process it started, and a terminal it opened.
             process(50, 11, &["agentd"]),
             process(51, 50, &["claude"]),
+            process(52, 50, &["xterm"]),
+            process(53, 52, &["/bin/zsh"]),
+            process(54, 53, &["claude"]),
         ];
         let born = |pid: u32| match pid {
             61 => Some(at(5)),
@@ -831,16 +938,16 @@ mod tests {
         };
         let unseen = |pid: u32| match pid {
             100 => Unseen::Unreadable,
-            110 => Unseen::OtherUser,
+            110 | 140 => Unseen::OtherUser,
             _ => Unseen::Ended,
         };
         let root = |process: &procinfo::Process| {
-            process
-                .argv
-                .first()
-                .is_some_and(|program| program.contains(".app/") || program == "login")
+            process.argv.first().is_some_and(|program| {
+                program.contains(".app/") || program == "login" || program == "xterm"
+            })
         };
-        let started = |pid: u32, birth: DateTime<Utc>, agents: &HashMap<u32, DateTime<Utc>>| {
+        let started = |pid: u32, agents: &HashMap<u32, DateTime<Utc>>| {
+            let birth = if pid == 61 { at(5) } else { at(i64::from(pid)) };
             starter(pid, birth, 50, &table, agents, born, unseen, root)
         };
         let none = HashMap::new();
@@ -850,7 +957,14 @@ mod tests {
             (12, &none, Some(Person), "the person's terminal"),
             (12, &agent, Some(Person), "an agent elsewhere"),
             (22, &none, Some(Agent), "a provider session's tool"),
+            (
+                25,
+                &none,
+                Some(Agent),
+                "a terminal a provider session opened",
+            ),
             (31, &agent, Some(Agent), "a live agent's process"),
+            (34, &agent, Some(Agent), "a terminal a live agent opened"),
             (40, &none, Some(Unknown), "an orphan"),
             (
                 71,
@@ -861,7 +975,19 @@ mod tests {
             (82, &none, Some(Unknown), "a reused grandparent"),
             (92, &none, Some(Unknown), "an ended grandparent"),
             (102, &none, None, "an unreadable grandparent"),
-            (112, &none, Some(Person), "another user's session leader"),
+            (
+                112,
+                &none,
+                Some(Unknown),
+                "another user's, with no root below",
+            ),
+            (143, &none, Some(Person), "another user's, above a terminal"),
+            (
+                133,
+                &none,
+                Some(Unknown),
+                "an ended parent above a terminal",
+            ),
             (
                 122,
                 &none,
@@ -870,17 +996,81 @@ mod tests {
             ),
             (61, &none, Some(Unknown), "a reused parent"),
             (51, &none, None, "the daemon's own launch"),
+            (54, &none, None, "a terminal the daemon opened"),
             (50, &none, None, "the daemon itself"),
         ] {
-            let birth = if pid == 61 { at(5) } else { at(i64::from(pid)) };
-            assert_eq!(started(pid, birth, agents), expected, "{why}");
+            assert_eq!(started(pid, agents), expected, "{why}");
         }
         assert_eq!(
-            started(31, at(31), &HashMap::from([(30, at(999))])),
+            started(31, &HashMap::from([(30, at(999))])),
             Some(Person),
             "a reused pid is not the agent"
         );
-        assert_eq!(started(12, at(99), &none), None, "another process now");
+        assert_eq!(
+            starter(12, at(99), 50, &table, &none, born, unseen, root),
+            None,
+            "another process now"
+        );
+    }
+
+    /// A root is a program at a place an agent cannot write: never any
+    /// bundle, a known terminal's name in a scratch folder, or a copy of
+    /// `login`, however they are named.
+    #[cfg(unix)]
+    #[test]
+    fn a_root_is_a_known_program_where_no_agent_can_put_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = |relative: &str| {
+            let path = tmp.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "x").unwrap();
+            path
+        };
+        let helper = file("Helper.app/Contents/MacOS/helper");
+        let terminal = file("Terminal.app/Contents/MacOS/Terminal");
+        let applications = file("Applications/Ghostty.app/Contents/MacOS/ghostty");
+        let copied = tmp.path().join("login");
+        if std::fs::copy("/usr/bin/login", &copied).is_err() {
+            std::fs::write(&copied, "x").unwrap();
+        }
+        let xterm = file("usr/bin/xterm");
+        for path in [&helper, &terminal, &applications, &copied, &xterm] {
+            assert!(!root_program(path), "{}", path.display());
+        }
+        let applications = std::fs::canonicalize(applications).unwrap();
+        let home = std::fs::canonicalize(tmp.path()).unwrap();
+        // A user Applications folder counts where the person's home is,
+        // and on macOS only.
+        assert_eq!(
+            root_at(&applications, Some(&home), |_| true),
+            cfg!(target_os = "macos")
+        );
+        assert!(
+            !root_at(&applications, None, |_| true),
+            "with no home, nowhere"
+        );
+        if cfg!(target_os = "macos") {
+            for system in [
+                "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+                "/usr/bin/login",
+            ] {
+                assert!(root_program(std::path::Path::new(system)), "{system}");
+            }
+            assert!(
+                !root_at(
+                    std::path::Path::new("/Applications/Claude.app/Contents/MacOS/Claude"),
+                    None,
+                    |_| true
+                ),
+                "an application that is no terminal or editor"
+            );
+        } else {
+            // Only a file root owns, in a system directory, counts.
+            let login = std::path::Path::new("/usr/bin/login");
+            assert!(root_at(login, None, |_| true));
+            assert!(!root_at(login, None, |_| false));
+            assert!(!root_at(&copied, None, |_| true));
+        }
     }
 
     /// What is said of a session's starter is the daemon's, written once
