@@ -295,6 +295,19 @@ pub enum WaitReason {
     Other,
 }
 
+/// Who made an observation, when it was not the agent's own adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivitySource {
+    /// The daemon, reading the herdr pane that holds the agent's provider
+    /// session: herdr watches the terminal, so its word on whether the
+    /// agent is working, waiting or idle outranks contact.
+    Herdr,
+    /// A source this build does not know, from a newer daemon.
+    #[serde(other)]
+    Other,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActivityObservation {
     pub activity: ReportedActivity,
@@ -303,6 +316,11 @@ pub struct ActivityObservation {
     /// predating it ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<WaitReason>,
+    /// Who observed it, when not the agent's own adapter; `None` for a
+    /// report the agent's hooks, MCP server or CLI made. Only the daemon
+    /// sets it. A daemon predating it ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ActivitySource>,
 }
 
 impl ActivityObservation {
@@ -310,11 +328,13 @@ impl ActivityObservation {
     /// silent turns become unknown until another provider event arrives.
     /// A wait for the person is silent by nature and may last as long as
     /// they are away, so it holds for twelve hours unless the next event
-    /// replaces it.
+    /// replaces it. An observation a source renews while it still holds
+    /// (herdr's) lasts five minutes whatever it says, so a wait it stopped
+    /// renewing — the pane released, herdr gone — does not stand for hours.
     pub fn current(&self, now: DateTime<Utc>) -> Option<Activity> {
         let age = now - self.observed_at;
-        let lasts = match self.activity {
-            ReportedActivity::Waiting => chrono::Duration::hours(12),
+        let lasts = match (self.activity, self.source) {
+            (ReportedActivity::Waiting, None) => chrono::Duration::hours(12),
             _ => chrono::Duration::minutes(5),
         };
         if age < chrono::Duration::zero() || age >= lasts {
@@ -364,6 +384,7 @@ mod tests {
                 activity,
                 observed_at: now,
                 reason: None,
+                source: None,
             };
             assert!(observation.current(now).is_some());
             assert!(
@@ -389,6 +410,7 @@ mod tests {
             activity: ReportedActivity::Waiting,
             observed_at: now,
             reason: Some(WaitReason::Permission),
+            source: None,
         };
         assert_eq!(
             observation.current(now + chrono::Duration::hours(2)),
@@ -440,6 +462,38 @@ mod tests {
                 reason: Some(WaitReason::Other)
             })
         );
+    }
+
+    /// A wait herdr reported holds only while herdr keeps renewing it, so
+    /// one it stopped renewing does not stand for hours; a source a newer
+    /// daemon names reads as another source, not a refused record.
+    #[test]
+    fn a_herdr_observation_lasts_only_as_long_as_herdr_renews_it() {
+        let now = now();
+        let waiting = ActivityObservation {
+            activity: ReportedActivity::Waiting,
+            observed_at: now,
+            reason: Some(WaitReason::Other),
+            source: Some(ActivitySource::Herdr),
+        };
+        assert!(
+            waiting
+                .current(now + chrono::Duration::seconds(299))
+                .is_some()
+        );
+        assert_eq!(waiting.current(now + chrono::Duration::minutes(5)), None);
+
+        let plain = serde_json::json!({"activity": "idle", "observed_at": now});
+        let read: ActivityObservation = serde_json::from_value(plain.clone()).unwrap();
+        assert_eq!(read.source, None);
+        assert_eq!(serde_json::to_value(&read).unwrap(), plain);
+        let herdr = serde_json::json!({"activity": "idle", "observed_at": now, "source": "herdr"});
+        let read: ActivityObservation = serde_json::from_value(herdr.clone()).unwrap();
+        assert_eq!(read.source, Some(ActivitySource::Herdr));
+        assert_eq!(serde_json::to_value(&read).unwrap(), herdr);
+        let newer = serde_json::json!({"activity": "idle", "observed_at": now, "source": "zellij"});
+        let read: ActivityObservation = serde_json::from_value(newer).unwrap();
+        assert_eq!(read.source, Some(ActivitySource::Other));
     }
 
     fn agent(name: &str) -> AgentId {

@@ -3988,6 +3988,7 @@ async fn a_wait_keeps_what_it_is_for_through_the_store() {
         activity: ReportedActivity::Waiting,
         observed_at: now,
         reason: Some(WaitReason::Permission),
+        source: None,
     };
     let mut state = lock(&daemon.state);
     assert!(matches!(
@@ -4019,11 +4020,13 @@ async fn provider_activity_is_ordered_expires_and_commits_with_its_event() {
         activity: ReportedActivity::Working,
         observed_at: now - Duration::seconds(2),
         reason: None,
+        source: None,
     };
     let idle = ActivityObservation {
         activity: ReportedActivity::Idle,
         observed_at: now - Duration::seconds(1),
         reason: None,
+        source: None,
     };
     let mut events = daemon.subscribe_events();
     {
@@ -4557,6 +4560,7 @@ async fn failed_activity_write_publishes_no_state_or_event() {
                 activity: agentdocker_core::ReportedActivity::Working,
                 observed_at: Utc::now(),
                 reason: None,
+                source: None,
             },
         })
         .await;
@@ -4591,6 +4595,7 @@ async fn delayed_idle_report_cannot_become_work_when_it_expires() {
             activity: agentdocker_core::ReportedActivity::Idle,
             observed_at: now - Duration::seconds(299),
             reason: None,
+            source: None,
         },
         now,
     );
@@ -4637,6 +4642,7 @@ async fn polling_does_not_turn_a_hooked_agents_idle_report_into_work() {
             activity: agentdocker_core::ReportedActivity::Idle,
             observed_at: now - Duration::seconds(20),
             reason: None,
+            source: None,
         },
         now,
     );

@@ -359,6 +359,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     startup_checkpoint("listener_bound");
     daemon.expect_watcher();
     watcher::spawn(daemon.clone());
+    daemon::herdr::spawn(daemon.clone());
     daemon.notify_desktop();
     daemon.reload_webhooks().await;
     daemon.collect_usage();
