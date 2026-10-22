@@ -15,6 +15,7 @@ pub mod launch;
 pub mod lock;
 pub mod policy_file;
 pub mod procinfo;
+pub mod program;
 pub mod project;
 pub mod provider_input;
 pub mod usage;

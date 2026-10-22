@@ -20,13 +20,41 @@ use chrono::{DateTime, Utc};
 /// The executable loaded by this process, independent of a mutable launch link.
 /// macOS `current_exe` can return the original symlink spelling. Resolving that
 /// spelling after activation could select another release, so ask the kernel.
+/// Spelled by the name this process was invoked as ([`crate::program`]): the
+/// CLI's `agentdocker`, or the daemon's `agentd` beside it when the two are one
+/// file, whichever name the kernel happens to report.
 pub fn executable_path() -> std::io::Result<PathBuf> {
-    executable_path_of(std::process::id())
+    Ok(crate::program::spelled_as(
+        &kernel_executable_path_of(std::process::id())?,
+        crate::program::invoked(),
+    ))
 }
 
 /// Kernel executable identity of another live process. Combine with its birth
-/// time before and after lookup to reject PID reuse.
+/// time before and after lookup to reject PID reuse. When the file is the one
+/// both `agentdocker` and `agentd` name, it is spelled by the name the process
+/// was invoked as (its `argv[0]`): macOS reports a hard-linked file under
+/// whichever of its names was looked up last, for every process running it.
 pub fn executable_path_of(pid: u32) -> std::io::Result<PathBuf> {
+    let executable = kernel_executable_path_of(pid)?;
+    if crate::program::file_role(&executable).is_none() {
+        return Ok(executable);
+    }
+    let invoked = if pid == std::process::id() {
+        Some(crate::program::invoked())
+    } else {
+        arguments(pid)
+            .and_then(|argv| argv.into_iter().next())
+            .map(|argv0| crate::program::Role::invoked_as(std::ffi::OsStr::new(&argv0)))
+    };
+    Ok(match invoked {
+        Some(role) => crate::program::spelled_as(&executable, role),
+        None => executable,
+    })
+}
+
+/// The executable file the kernel names for `pid`, as it names it.
+fn kernel_executable_path_of(pid: u32) -> std::io::Result<PathBuf> {
     if pid == 0 || pid > i32::MAX as u32 {
         return Err(std::io::Error::other("invalid process ID"));
     }

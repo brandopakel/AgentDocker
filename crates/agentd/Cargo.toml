@@ -1,6 +1,6 @@
 [package]
 name = "agentd"
-description = "AgentDocker daemon library: supervises agents, routes messages, arbitrates leases. The `agentd` binary ships with the `agentdocker` package."
+description = "AgentDocker daemon library: supervises agents, routes messages, arbitrates leases. The `agentdocker` executable runs it when invoked as `agentd`."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

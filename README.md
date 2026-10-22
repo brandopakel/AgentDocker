@@ -78,8 +78,8 @@ payload and 40 MiB download ceiling per architecture; see
 [size and build-storage checks](docs/TESTING-AND-BENCHMARKS.md#download-size-gates).
 
 ```sh
-cargo install --git https://github.com/brandopakel/AgentDocker --tag <release-tag> agentdocker --locked   # a released CLI + daemon, from source on macOS/Linux
-cargo install --path crates/cli --locked                                                       # checked-out source: CLI + daemon
+cargo install --git https://github.com/brandopakel/AgentDocker --tag <release-tag> agentdocker --locked   # a released CLI + daemon (one executable), from source on macOS/Linux
+cargo install --path crates/cli --locked                                                       # checked-out source: CLI + daemon (one executable)
 curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/install.sh | sh         # the desktop and its commands (macOS default); AGENTDOCKER_INSTALL=cli for the two commands only
 agentdocker daemon install    # optional: run agentd as a login service (launchd / systemd)
 ```
@@ -422,7 +422,7 @@ An agent can optionally run in an image with no networking or host mounts by def
 Five crates:
 
 - `crates/core` — `agentdocker-core`: the data model, the wire protocol, and the pure coordination logic (`LeaseTable`, `Registry`, topic matching, the journal, handoff bundles, the runtime table). Coordination operations are pure and take `now`; host environment defaults live in `agentdocker_host::dirs`.
-- `crates/host` — host filesystem, process, Git, runtime-inventory and container-engine inspection shared by the binaries.
+- `crates/host` — host filesystem, process, Git, runtime-inventory and container-engine inspection shared by the executables.
 - `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, project watcher, agent discovery, event stream, SQLite write-through store so state survives restarts.
 - `crates/cli` — `agentdocker`: a thin client over the same protocol, plus the adapters: `agentdocker mcp` (stdio MCP server) and `agentdocker hook` (Claude Code hooks).
 - `crates/ui` — `agentdocker-ui`: the native Iced desktop over the same socket. Projects combine discovered sessions with pinned folders and restore the last selection. Messages keeps archived conversations, questions, threads and separate drafts (Inbox when the daemon does not report conversations). Tools reviews integration setup; Settings holds appearance and installation. Each project includes sessions, channels, activity, coordination, a working VT terminal, and bundled CLI commands. `agentdocker ui` opens it.

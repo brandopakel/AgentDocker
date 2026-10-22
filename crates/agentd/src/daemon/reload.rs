@@ -459,7 +459,13 @@ impl Daemon {
         let transfer_id = transfer.id.clone();
         // The successor's pid is not known until spawn; the offer named
         // ours as a placeholder and is corrected under the same fence.
-        let mut command = std::process::Command::new(&candidate);
+        // Started as the daemon whatever its file is called: through an
+        // `agentd` name, or as `agentdocker daemon run`.
+        let mut command = agentdocker_host::program::invocation(
+            &candidate,
+            agentdocker_host::program::Role::Daemon,
+        )
+        .command();
         command
             .arg("--take-over")
             .arg("3")
@@ -717,7 +723,10 @@ fn build_info(candidate: &std::path::Path, within: Duration) -> Result<BuildInfo
         .filter(|parent| !parent.as_os_str().is_empty())
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(std::env::temp_dir);
-    let argv = [candidate.display().to_string(), "--build-info".to_owned()];
+    let mut argv =
+        agentdocker_host::program::invocation(candidate, agentdocker_host::program::Role::Daemon)
+            .argv();
+    argv.push("--build-info".to_owned());
     let output = agentdocker_host::command::run(&root, &argv, within)
         .map_err(|e| format!("cannot run the candidate for --build-info: {e}"))?;
     if !output.success {

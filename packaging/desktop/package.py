@@ -7,6 +7,7 @@ Credentials are referenced through local signing identities/keychain profiles.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import plistlib
 import re
@@ -20,11 +21,44 @@ import time
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
-BINARIES = ("agentdocker", "agentd", "agentdocker-ui")
+# Cargo builds two executables. The daemon is the first under another name:
+# invoked as agentd, agentdocker runs the daemon. A payload ships all three
+# names, agentd a hard link to agentdocker wherever the format keeps one.
+BUILT = ("agentdocker", "agentdocker-ui")
+CLI, DAEMON = "agentdocker", "agentd"
+BINARIES = (CLI, DAEMON, "agentdocker-ui")
+
+
+def suffix(target):
+    return ".exe" if "windows" in target else ""
 
 
 def binary_names(target):
-    return tuple(name + (".exe" if "windows" in target else "") for name in BINARIES)
+    """The executables a payload ships, by name."""
+    return tuple(name + suffix(target) for name in BINARIES)
+
+
+def built_names(target):
+    """The executables the native build produces."""
+    return tuple(name + suffix(target) for name in BUILT)
+
+
+def link_daemon(directory, target):
+    """Name agentdocker agentd beside it: a hard link, so the payload holds the
+    executable once; a copy where the filesystem cannot link."""
+    cli, daemon = directory / (CLI + suffix(target)), directory / (DAEMON + suffix(target))
+    daemon.unlink(missing_ok=True)
+    try:
+        os.link(cli, daemon)
+    except OSError:
+        shutil.copy2(cli, daemon)
+
+
+def shipped_hashes(target, built):
+    """Every shipped name's checksum: agentd's is agentdocker's own."""
+    hashes = {name: built[name] for name in built_names(target)}
+    hashes[DAEMON + suffix(target)] = built[CLI + suffix(target)]
+    return {name: hashes[name] for name in binary_names(target)}
 
 
 def run(*args, **kwargs):
@@ -212,13 +246,17 @@ def validate_inputs(args):
         if manifest.get("target") != expected_target:
             raise ValueError("build provenance target does not match the package")
         manifests.append(manifest)
-        for name in binary_names(args.target):
+        recorded = manifest.get("binary_sha256", {})
+        for name in built_names(args.target):
             path = directory / name
             if (not path.is_file() or path.is_symlink()
                     or ("windows" not in args.target and not path.stat().st_mode & 0o111)):
                 raise ValueError(f"missing executable regular binary: {path}")
-            if sha256(path) != manifest.get("binary_sha256", {}).get(name):
+            if sha256(path) != recorded.get(name):
                 raise ValueError(f"binary changed after its verified build: {name}")
+        daemon = recorded.get(DAEMON + suffix(args.target))
+        if daemon is not None and daemon != recorded.get(CLI + suffix(args.target)):
+            raise ValueError("build provenance names a separate daemon binary; agentd is agentdocker under another name")
     if len({m.get("source_input_sha256") for m in manifests}) != 1:
         raise ValueError("universal binaries were built from different source inputs")
     if len({m["state_schema"] for m in manifests}) != 1:
@@ -242,7 +280,7 @@ def metadata(args):
 
 def copy_binaries(args, destination):
     destination.mkdir(parents=True)
-    for name in binary_names(args.target):
+    for name in built_names(args.target):
         source = args.binary_dir / name
         target = destination / name
         if args.second_binary_dir:
@@ -264,6 +302,7 @@ def copy_binaries(args, destination):
                 "arm64" if args.target.startswith("aarch64-") else "x86_64"}
             if actual != expected:
                 raise ValueError(f"{name} has unexpected architectures: {actual}")
+    link_daemon(destination, args.target)
 
 
 def validate_windows_binary(path):
@@ -346,8 +385,10 @@ def macos(args, stage, info):
     if identity != "-":
         flags += ["--options", "runtime", "--timestamp"]
     # Sign known nested code explicitly; --deep is reserved for verification.
-    for name in ("agentdocker", "agentd"):
-        run("/usr/bin/codesign", *flags, contents / "MacOS" / name)
+    # Signing writes a new file, so agentd is linked again to the signed one:
+    # the bundle seals one executable under both names.
+    run("/usr/bin/codesign", *flags, contents / "MacOS" / CLI)
+    link_daemon(contents / "MacOS", args.target)
     with tempfile.TemporaryDirectory(prefix="ad-entitlements-") as signing:
         app_flags = list(flags)
         if identity != "-":
@@ -407,8 +448,24 @@ def linux(args, stage, info):
     (app / "build.json").write_text(json.dumps(info, indent=2) + "\n")
     archive = stage / f"agentdocker-desktop-{args.target}.tar.gz"
     with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as target:
-        target.add(app, arcname=app.name)
+        target.add(app, arcname=app.name, filter=regular_entries())
     return app, archive, app / "bin"
+
+
+def regular_entries():
+    """A tar filter that stores a hard-linked file whole. Installers refuse an
+    archive with link entries, earlier releases' included, and they are the
+    ones that update to this archive; an installer links agentd to agentdocker
+    again once it is installed."""
+    sizes = {}
+
+    def entry(member):
+        if member.islnk():
+            member.type, member.size, member.linkname = tarfile.REGTYPE, sizes[member.linkname], ""
+        elif member.isreg():
+            sizes[member.name] = member.size
+        return member
+    return entry
 
 
 def windows(args, stage, info):
@@ -418,7 +475,7 @@ def windows(args, stage, info):
     app = stage / "AgentDocker"
     copy_binaries(args, app)
     actual_hashes = {name: sha256(app / name) for name in binary_names(args.target)}
-    if actual_hashes != info["binary_sha256"]:
+    if actual_hashes != shipped_hashes(args.target, info["binary_sha256"]):
         raise ValueError("Windows binary changed between build verification and packaging")
     copy_licenses(app / "licenses")
     shutil.copyfile(ROOT / "LICENSE", app / "licenses/LICENSE-AgentDocker.txt")
@@ -495,8 +552,14 @@ def package(args, expected_build=None):
 
 
 def measure_sizes(payload, archives, architectures=1):
-    """Refuse oversized downloads before publishing a completed artifact directory."""
-    payload_bytes = sum(path.stat().st_size for path in payload.rglob("*") if path.is_file() and not path.is_symlink())
+    """Refuse oversized downloads before publishing a completed artifact directory.
+    A hard-linked file is counted once: agentd and agentdocker are one."""
+    files = {}
+    for path in payload.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            status = path.stat()
+            files[(status.st_dev, status.st_ino)] = status.st_size
+    payload_bytes = sum(files.values())
     archive_bytes = {path.name: path.stat().st_size for path in archives}
     limits = {"payload_bytes": 100 * 1024 ** 2 * architectures,
               "archive_bytes": 40 * 1024 ** 2 * architectures}

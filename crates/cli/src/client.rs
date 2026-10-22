@@ -6,7 +6,7 @@
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use agentdocker_core::{Request, Response, paths};
@@ -484,20 +484,22 @@ fn absent(err: &std::io::Error) -> bool {
     )
 }
 
-/// Launch `agentd` detached: its own process group, stdio on the daemon
-/// log, the same home as this client. The binary beside ours is preferred
-/// so a build in `target/` starts the matching daemon; else `PATH`.
+/// Launch the daemon detached: its own process group, stdio on the daemon
+/// log, the same home as this client. This executable's own daemon is
+/// preferred, so a build in `target/` starts the matching one — through its
+/// `agentd` link, or as `agentdocker daemon run` — else `agentd` on `PATH`.
 fn spawn_agentd(socket: &Path, home: &Path) -> Result<std::process::Child> {
-    let exe = agentdocker_host::installation::daemon_to_start(
+    let daemon = agentdocker_host::installation::daemon_to_start(
         agentdocker_host::procinfo::executable_path()
             .ok()
             .as_deref(),
     );
+    let exe = &daemon.program;
     agentdocker_host::dirs::secure_state_dir(home)?;
     let log_path = paths::daemon_log(home);
     let log = agentdocker_host::dirs::private_file(&log_path, true, true)
         .with_context(|| format!("cannot open {}", log_path.display()))?;
-    let mut command = Command::new(&exe);
+    let mut command = daemon.command();
     agentdocker_host::command::detach(&mut command);
     // The daemon outlives whichever session's command started it.
     agentdocker_host::command::without_session(&mut command);
@@ -1052,7 +1054,10 @@ mod stream_tests {
         let tmp = tempfile::tempdir().unwrap();
         let socket = tmp.path().join("sock");
         let log = tmp.path().join("log");
-        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
         let pid = child.id();
         assert!(
             wait_for_start(&socket, &log, Duration::from_millis(30), Some(child))
@@ -1065,7 +1070,10 @@ mod stream_tests {
             "timed-out child was reaped"
         );
         let listener = UnixListener::bind(&socket).unwrap();
-        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
         let pid = child.id();
         let stream = wait_for_start(&socket, &log, Duration::from_secs(1), Some(child))
             .await

@@ -482,22 +482,22 @@ impl Running {
     }
 }
 
+/// Whether `a` and `b` are one file, by its identity rather than a name:
+/// `agentd` and `agentdocker` are one file, and macOS may name a process
+/// running it by either.
 fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
-    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
+    agentdocker_host::program::same_file(a, b)
 }
 
 /// The CLI shipped beside this daemon: the only program a client may
-/// launch as a supervised Codex terminal's controller.
+/// launch as a supervised Codex terminal's controller. The daemon is the
+/// CLI's own file under the name `agentd` (or the CLI itself, run as
+/// `agentdocker daemon run`), so this is the `agentdocker` name in the
+/// daemon's directory: a path, not just a file, because a process started
+/// by it must start as the CLI, and the name it is started by decides that.
 pub(crate) fn companion_cli() -> Option<std::path::PathBuf> {
     let daemon = procinfo::executable_path().ok()?;
-    Some(daemon.with_file_name(if cfg!(windows) {
-        "agentdocker.exe"
-    } else {
-        "agentdocker"
-    }))
+    Some(daemon.with_file_name(agentdocker_host::program::Role::Cli.file_name()))
 }
 
 /// Environment a client may not give a supervised Codex terminal's
@@ -511,7 +511,9 @@ fn loads_code(key: &str) -> bool {
 /// what the person typed, so it is never a program of the client's choosing.
 /// The command is resolved to the real file here, once, and launched as
 /// that, so a link changed afterwards changes nothing; and nothing that
-/// loads code into it may come with it.
+/// loads code into it may come with it. It is compared by resolved path,
+/// not by file: `agentd` is the same file, and launched by that name it
+/// would be the daemon, not the CLI.
 pub(crate) fn admit_controller_launch(request: &mut Request) -> Option<Response> {
     admit_controller_launch_beside(request, companion_cli())
 }
@@ -564,7 +566,7 @@ impl State {
     /// controller is the agent's own registered process, exactly (never
     /// anything under it), running the program it was launched as — the
     /// daemon's companion `agentdocker codex-input`, checked at launch —
-    /// as the kernel reports it.
+    /// as the kernel reports it: that file, invoked as the CLI.
     fn controller_typing(&self, peer: Peer, request: &Request, running: &Running) -> bool {
         let Request::Send { from, to, .. } = request else {
             return false;
@@ -588,6 +590,14 @@ impl State {
                     .and_then(|argv| argv.get(1))
                     .map(String::as_str)
                     == Some("codex-input")
+                && running
+                    .argv
+                    .as_ref()
+                    .and_then(|argv| argv.first())
+                    .is_some_and(|argv0| {
+                        agentdocker_host::program::Role::invoked_as(std::ffi::OsStr::new(argv0))
+                            == agentdocker_host::program::Role::Cli
+                    })
                 && running.executable.as_ref().is_some_and(|exe| {
                     record
                         .spec
@@ -1752,6 +1762,28 @@ mod tests {
             !state.controller_typing((4243, Some(at(1))), &send, &running(&cli, "codex-input")),
             "another process"
         );
+        // The daemon's link is the CLI's own file, and the kernel may name a
+        // process running it by either name: the file decides, as long as
+        // it was invoked as the CLI.
+        let link = tmp.path().join("agentd");
+        std::fs::hard_link(&cli, &link).unwrap();
+        let named = |exe: &std::path::Path, argv0: &std::path::Path| Running {
+            executable: Some(exe.to_owned()),
+            argv: Some(vec![argv0.display().to_string(), "codex-input".into()]),
+        };
+        assert!(state.controller_typing(peer, &send, &named(&link, &cli)));
+        assert!(
+            !state.controller_typing(peer, &send, &named(&cli, &link)),
+            "invoked as the daemon"
+        );
+        // A copy of the same bytes is another file.
+        let copy = tmp.path().join("copy").join("agentdocker");
+        std::fs::create_dir(copy.parent().unwrap()).unwrap();
+        std::fs::copy(&cli, &copy).unwrap();
+        assert!(
+            !state.controller_typing(peer, &send, &running(&copy, "codex-input")),
+            "an impostor of the same name and bytes"
+        );
     }
 
     /// A controller launch runs the companion CLI's real file, resolved
@@ -1815,6 +1847,36 @@ mod tests {
         std::fs::write(&other, "x").unwrap();
         assert!(
             admit_controller_launch_beside(&mut launch(&other, &[]), Some(cli.clone())).is_some()
+        );
+        // The daemon's hard link is the CLI's own file, but started by that
+        // name it would be the daemon: only the CLI's name is admitted. A
+        // symbolic `agentd` resolves to the CLI's file and is launched as
+        // that, as the CLI.
+        let daemon = tmp.path().join("agentd");
+        std::fs::hard_link(&cli, &daemon).unwrap();
+        assert!(
+            admit_controller_launch_beside(&mut launch(&daemon, &[]), Some(cli.clone())).is_some()
+        );
+        let symbolic = tmp.path().join("bin").join("agentd");
+        std::fs::create_dir(symbolic.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&cli, &symbolic).unwrap();
+        let mut request = launch(&symbolic, &[]);
+        assert!(admit_controller_launch_beside(&mut request, Some(cli.clone())).is_none());
+        let Request::Run { spec } = &request else {
+            unreachable!()
+        };
+        assert_eq!(
+            std::path::Path::new(&spec.command[0]),
+            std::fs::canonicalize(&cli).unwrap()
+        );
+        // A program named `agentdocker` that is not the companion's file is
+        // an impostor, its bytes the same or not.
+        let impostor = tmp.path().join("copy").join("agentdocker");
+        std::fs::create_dir(impostor.parent().unwrap()).unwrap();
+        std::fs::copy(&cli, &impostor).unwrap();
+        assert!(
+            admit_controller_launch_beside(&mut launch(&impostor, &[]), Some(cli.clone()))
+                .is_some()
         );
         // An ordinary launch is not this check's to judge.
         let mut ordinary = Request::Run {
