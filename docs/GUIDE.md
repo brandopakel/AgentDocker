@@ -716,7 +716,8 @@ Pass `verbose: true` for the whole record.
 For Claude Code, `agentdocker setup claude-code` installs handlers for
 `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `StopFailure`,
 `SessionEnd` and `Notification` (its permission prompts and question dialogs mark
-the session *waiting* for you; run setup again to add it to an existing install). They are what let the daemon see an agent's session
+the session *waiting* for you; run setup again to add it to an existing install). `Stop` marks the session idle unless
+it leaves background work running (a shell, a subagent, a monitor or a workflow it started), which keeps it working. They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
 should be told before it starts — the journal since it last looked, and
 anything it read that has gone stale. Before an edit, `PreToolUse` refuses

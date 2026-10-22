@@ -129,6 +129,33 @@ fn wait_for_person(input: &HookInput) -> Option<agentdocker_core::WaitReason> {
     }
 }
 
+/// One of the background tasks a Claude Code `Stop` lists.
+#[derive(Deserialize, Debug, Default, Clone)]
+pub struct BackgroundTask {
+    #[serde(default)]
+    pub status: String,
+}
+
+/// Whether a `Stop` leaves background work running, so the session is
+/// still working rather than idle: any task not in a finished state.
+fn background_work(input: &HookInput) -> bool {
+    input.background_tasks.iter().flatten().any(|task| {
+        !matches!(
+            task.status.to_ascii_lowercase().as_str(),
+            "completed"
+                | "done"
+                | "finished"
+                | "failed"
+                | "error"
+                | "errored"
+                | "killed"
+                | "stopped"
+                | "cancelled"
+                | "canceled"
+        )
+    })
+}
+
 /// The fields of a Claude Code hook event this adapter looks at.
 #[derive(Deserialize, Debug, Default, Clone)]
 pub struct HookInput {
@@ -161,6 +188,11 @@ pub struct HookInput {
     /// The session's JSONL transcript; its tail is the `Stop` summary.
     #[serde(default)]
     pub transcript_path: Option<PathBuf>,
+    /// Work a `Stop` leaves running: a shell, a subagent, a monitor or a
+    /// workflow the session started in the background. Only each task's
+    /// status is read.
+    #[serde(default)]
+    pub background_tasks: Option<Vec<BackgroundTask>>,
     /// The runtime the event comes from, set by the subcommand that read
     /// it: Claude Code unless the OpenCode plugin sent it.
     #[serde(skip)]
@@ -399,6 +431,10 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                     Some(agentdocker_core::ReportedActivity::Working)
                 }
                 "Stop" if output.as_ref().is_some_and(|v| v["decision"] == "block") => {
+                    Some(agentdocker_core::ReportedActivity::Working)
+                }
+                // Background work it started keeps a session working.
+                "Stop" if background_work(&input) => {
                     Some(agentdocker_core::ReportedActivity::Working)
                 }
                 "Stop" => Some(agentdocker_core::ReportedActivity::Idle),
@@ -2122,6 +2158,33 @@ mod tests {
             None
         );
         assert_eq!(wait_for_person(&event(None, None)), None);
+    }
+
+    #[test]
+    fn a_stop_with_background_work_running_is_not_idle() {
+        let stop = |json: &str| -> HookInput {
+            serde_json::from_str(&format!(
+                r#"{{"hook_event_name":"Stop","session_id":"s"{json}}}"#
+            ))
+            .unwrap()
+        };
+        assert!(!background_work(&stop("")), "no list, nothing running");
+        assert!(!background_work(&stop(r#","background_tasks":[]"#)));
+        assert!(background_work(&stop(
+            r#","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"cargo test","command":"cargo test"}]"#
+        )));
+        assert!(background_work(&stop(
+            r#","background_tasks":[{"id":"b1","type":"subagent","status":"pending","description":"review"}]"#
+        )));
+        assert!(!background_work(&stop(
+            r#","background_tasks":[{"id":"b1","type":"shell","status":"completed","description":"ls"},{"id":"b2","type":"monitor","status":"Killed","description":"tail"}]"#
+        )));
+        assert!(
+            !background_work(&stop(
+                r#","session_crons":[{"id":"c1","schedule":"0 9 * * 1-5","recurring":true}]"#
+            )),
+            "a scheduled wakeup alone leaves the session idle until then"
+        );
     }
     use crate::client::mock::Mock;
 
