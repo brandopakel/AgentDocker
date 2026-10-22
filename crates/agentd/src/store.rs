@@ -25,6 +25,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 pub(crate) mod event_replay;
 pub(crate) mod reconcile;
 pub(crate) mod usage;
+pub(crate) mod webhooks;
 pub(crate) use event_replay::EventReplay;
 
 // v9 retains pending questions. v10 retains addressed messages while subscribed
@@ -247,6 +248,12 @@ CREATE TABLE IF NOT EXISTS read_cursors (
     updated_at   TEXT NOT NULL,
     PRIMARY KEY (reader, conversation)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    seq     INTEGER PRIMARY KEY AUTOINCREMENT,
+    webhook TEXT NOT NULL,
+    json    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS webhook_deliveries_webhook ON webhook_deliveries (webhook, seq);
 ";
 
 /// Full-text search over journal summaries. Contentless: the text lives in

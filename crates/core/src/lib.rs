@@ -116,6 +116,8 @@ pub use handoff::{HandoffBundle, HandoffDiff};
 pub mod runtime;
 pub mod usage;
 pub use runtime::{RuntimeInfo, Wiring};
+pub mod webhook;
+pub use webhook::{AttemptResult, WebhookAttempt};
 
 pub mod channel;
 pub use channel::{Channel, ChannelId, ChannelSubject, Decision, Review, Verdict};
