@@ -1299,6 +1299,17 @@ Current behaviour that the sections above do not already state, by area.
   name the projects and a key file under `[memory.supermemory]` in
   `agentd.toml` (off unless you turn it on; the hosted service is
   Supermemory's, on its terms).
+- **How Supermemory forms memories from the copy.** Two optional lines
+  under `[memory.supermemory]`, neither sent unless you write it:
+  `dreaming = "dynamic"` (related memories are grouped before Supermemory
+  learns from them) or `dreaming = "instant"` (each is learned from at
+  once, which Supermemory bills as one more operation per memory), and
+  `supporting_context = "…"`, up to 1500 characters of background that
+  guides what it learns. With `dreaming` set, a memory counts as copied
+  only once Supermemory says its memories are formed. A longer context or
+  another `dreaming` word stops the mirror with a notice naming the limit
+  or the two words. Leave both out for a server of your own that does not
+  take them.
 
 
 ### Remote connector

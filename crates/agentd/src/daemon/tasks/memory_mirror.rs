@@ -19,6 +19,12 @@
 //! a restart can never leave a forgotten memory behind unrecorded; then
 //! sends them, reading each answer's status. Only memories go: kept on
 //! purpose, refused when they read like a secret.
+//!
+//! A `dreaming` mode, when the person chose one, goes with every addition,
+//! and then a document is confirmed only once its memories are formed
+//! (`system.dreamingStatus` is `done`, or the server does not say); a
+//! `supporting_context` goes with every addition too. Neither is sent
+//! unless written.
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 
@@ -124,15 +130,34 @@ fn status(word: Option<&str>) -> Option<Status> {
     }
 }
 
+/// What a check says of a document whose text is in (`system.status` is
+/// `done`) when the mirror waits for its memories: still processing while
+/// `system.dreamingStatus` is `dreaming`, done once it is `done` or when the
+/// server does not say (one older than the field, or a server of one's
+/// own), and not an answer to act on otherwise.
+fn formed(dreaming: &Value) -> Option<Status> {
+    match dreaming {
+        Value::Null => Some(Status::Done),
+        Value::String(word) if word == "done" => Some(Status::Done),
+        Value::String(word) if word == "dreaming" => Some(Status::Processing),
+        _ => None,
+    }
+}
+
 /// The calls one destination is reached by.
 struct Server {
     agent: ureq::Agent,
     auth: String,
     documents: String,
+    /// The `dreaming` mode sent with each addition; while one is chosen, a
+    /// document is done only once its memories are formed.
+    dreaming: Option<String>,
+    /// The `supportingContext` sent with each addition.
+    supporting_context: Option<String>,
 }
 
 impl Server {
-    fn new(base: &str, namespace: &str, key: &str) -> Self {
+    fn new(mirror: &SupermemoryConfig, namespace: &str, key: &str) -> Self {
         Self {
             agent: ureq::Agent::config_builder()
                 .timeout_global(Some(REQUEST_DEADLINE))
@@ -141,8 +166,33 @@ impl Server {
                 .build()
                 .into(),
             auth: format!("Bearer {key}"),
-            documents: format!("{base}/ns/{namespace}/document"),
+            documents: format!("{}/ns/{namespace}/document", mirror.base_url()),
+            dreaming: mirror.dreaming.clone(),
+            supporting_context: mirror.supporting_context.clone(),
         }
+    }
+
+    /// What an addition sends: the memory under its own id, with the
+    /// person's `dreaming` mode and `supportingContext` when written.
+    fn addition(&self, memory: &Memory) -> Value {
+        let mut body = json!({
+            "content": memory.text,
+            "id": memory.id,
+            "taskType": "memory",
+            "metadata": {
+                "agentdocker_memory": memory.id,
+                "project": memory.project,
+                "author": memory.author,
+                "kept_at": memory.created_at,
+            },
+        });
+        if let Some(mode) = &self.dreaming {
+            body["dreaming"] = json!(mode);
+        }
+        if let Some(context) = &self.supporting_context {
+            body["supportingContext"] = json!(context);
+        }
+        body
     }
 
     /// Delete `ids`: those the server says it deleted, or never had.
@@ -196,18 +246,11 @@ impl Server {
     }
 
     /// Add one memory under its id; the status the server answers with.
+    /// While a `dreaming` mode is chosen, `done` here says only that the
+    /// text is in: the answer carries no `dreamingStatus`, so the document
+    /// is held as processing until a check reads it.
     fn add(&self, memory: &Memory) -> Result<Status, String> {
-        let body = json!({
-            "content": memory.text,
-            "id": memory.id,
-            "taskType": "memory",
-            "metadata": {
-                "agentdocker_memory": memory.id,
-                "project": memory.project,
-                "author": memory.author,
-                "kept_at": memory.created_at,
-            },
-        });
+        let body = self.addition(memory);
         let mut response = self
             .agent
             .post(&self.documents)
@@ -227,8 +270,11 @@ impl Server {
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             .ok_or(())
             .map_err(|_| "adding a memory gave an answer that is not JSON".to_owned())?;
-        status(answer["status"].as_str())
-            .ok_or_else(|| "adding a memory gave no status the contract names".to_owned())
+        match status(answer["status"].as_str()) {
+            Some(Status::Done) if self.dreaming.is_some() => Ok(Status::Processing),
+            Some(status) => Ok(status),
+            None => Err("adding a memory gave no status the contract names".to_owned()),
+        }
     }
 
     /// One document's status now; `None` when the server has no such one.
@@ -250,7 +296,13 @@ impl Server {
                     .and_then(|text| serde_json::from_str::<Value>(&text).ok())
                     .ok_or(())
                     .map_err(|_| "checking a memory gave an answer that is not JSON".to_owned())?;
-                status(answer["system"]["status"].as_str())
+                let found = match status(answer["system"]["status"].as_str()) {
+                    Some(Status::Done) if self.dreaming.is_some() => {
+                        formed(&answer["system"]["dreamingStatus"])
+                    }
+                    found => found,
+                };
+                found
                     .map(Some)
                     .ok_or_else(|| "checking a memory gave no status the contract names".to_owned())
             }
@@ -361,7 +413,7 @@ impl Daemon {
         };
         let mut held = self.mirror_state(&project, &destination);
         let server = Arc::new(Server::new(
-            mirror.base_url(),
+            mirror,
             &SupermemoryConfig::namespace(&project),
             key,
         ));
@@ -478,6 +530,9 @@ mod tests {
         get_one: std::collections::HashMap<String, &'static str>,
         /// A document whose check the server refuses.
         get_refused: Option<String>,
+        /// The `system.dreamingStatus` every check answers with; null
+        /// leaves it out, as a server older than the field does.
+        get_dreaming: Value,
         seen: Vec<(String, String, String)>,
         /// The `x-sm-source` of every request, in order.
         sources: Vec<String>,
@@ -550,7 +605,11 @@ mod tests {
                             (500, json!({"error": "x", "details": "y"}).to_string())
                         } else {
                             let status = fake.get_one.get(&id).copied().unwrap_or(fake.get);
-                            (200, json!({"system": {"status": status}}).to_string())
+                            let mut system = json!({"status": status});
+                            if !fake.get_dreaming.is_null() {
+                                system["dreamingStatus"] = fake.get_dreaming.clone();
+                            }
+                            (200, json!({"system": system}).to_string())
                         }
                     }
                 };
@@ -592,6 +651,18 @@ mod tests {
     }
 
     fn configure(dir: &TempDir, url: &str, project: &str, enabled: bool, key: &str) {
+        configure_with(dir, url, project, enabled, key, "");
+    }
+
+    /// As [`configure`], with more of `[memory.supermemory]` after it.
+    fn configure_with(
+        dir: &TempDir,
+        url: &str,
+        project: &str,
+        enabled: bool,
+        key: &str,
+        extra: &str,
+    ) {
         let file = dir.path().join("supermemory.key");
         std::fs::write(&file, format!("{key}\n")).unwrap();
         #[cfg(unix)]
@@ -602,7 +673,7 @@ mod tests {
         std::fs::write(
             dir.path().join(agentdocker_core::config::FILE_NAME),
             format!(
-                "[memory.supermemory]\nenabled = {enabled}\nkey_file = {:?}\nprojects = [{project:?}]\nbase_url = {url:?}\n",
+                "[memory.supermemory]\nenabled = {enabled}\nkey_file = {:?}\nprojects = [{project:?}]\nbase_url = {url:?}\n{extra}",
                 file.display().to_string()
             ),
         )
@@ -657,6 +728,118 @@ mod tests {
 
     fn held(daemon: &Arc<Daemon>, project: &ProjectId, url: &str, key: &str) -> Mirrored {
         daemon.mirror_state(project, &destination(url, key))
+    }
+
+    /// The body of the last addition sent.
+    fn last_addition(fake: &Shared) -> Value {
+        let fake = fake.lock().unwrap();
+        let (_, _, body) = fake
+            .seen
+            .iter()
+            .rfind(|(line, _, _)| line.starts_with("POST"))
+            .unwrap();
+        serde_json::from_str(body).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_addition_carries_dreaming_and_context_only_when_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, agent, project) = project(&tmp).await;
+        let (url, fake) = server((200, "done"));
+        configure(&tmp, &url, project.as_str(), true, "sm-test-key-0123456789");
+        keep(&daemon, &agent, "tests run with nextest").await;
+        daemon.mirror_once().await;
+        let plain = last_addition(&fake);
+        let fields = plain.as_object().unwrap();
+        assert!(
+            !fields.contains_key("dreaming") && !fields.contains_key("supportingContext"),
+            "nothing unwritten is sent: {plain}"
+        );
+
+        configure_with(
+            &tmp,
+            &url,
+            project.as_str(),
+            true,
+            "sm-test-key-0123456789",
+            "dreaming = \"instant\"\nsupporting_context = \"Decisions about the build, with owners.\"\n",
+        );
+        keep(&daemon, &agent, "the reviewer gives verdicts").await;
+        daemon.mirror_once().await;
+        let chosen = last_addition(&fake);
+        assert_eq!(chosen["content"], "the reviewer gives verdicts");
+        assert_eq!(chosen["dreaming"], "instant");
+        assert_eq!(
+            chosen["supportingContext"],
+            "Decisions about the build, with owners."
+        );
+        assert_eq!(chosen["taskType"], "memory");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn with_a_dreaming_mode_a_document_is_done_once_its_memories_are_formed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, agent, project) = project(&tmp).await;
+        let (url, fake) = server((200, "done"));
+        configure_with(
+            &tmp,
+            &url,
+            project.as_str(),
+            true,
+            "sm-test-key-0123456789",
+            "dreaming = \"dynamic\"\n",
+        );
+        let now = |daemon: &Arc<Daemon>| held(daemon, &project, &url, "sm-test-key-0123456789");
+
+        // The addition's `done` says the text is in, not its memories.
+        let id = keep(&daemon, &agent, "deploys go out on Mondays").await;
+        daemon.mirror_once().await;
+        assert!(now(&daemon).processing.contains(&id));
+
+        // Text in, memories still dreaming: still processing.
+        fake.lock().unwrap().get_dreaming = json!("dreaming");
+        daemon.mirror_once().await;
+        assert_eq!(methods(&fake), ["POST", "GET"]);
+        assert!(now(&daemon).processing.contains(&id));
+
+        // Memories formed: confirmed.
+        fake.lock().unwrap().get_dreaming = json!("done");
+        daemon.mirror_once().await;
+        let state = now(&daemon);
+        assert!(state.ids.contains(&id) && !state.processing.contains(&id));
+
+        // A dreaming status the contract does not name settles nothing; a
+        // server that does not say (older, or one's own) is taken at its
+        // `system.status`, as before.
+        let other = keep(&daemon, &agent, "the board has a review lane").await;
+        daemon.mirror_once().await;
+        fake.lock().unwrap().get_dreaming = json!("someday");
+        daemon.mirror_once().await;
+        assert!(now(&daemon).processing.contains(&other));
+        fake.lock().unwrap().get_dreaming = Value::Null;
+        daemon.mirror_once().await;
+        assert!(now(&daemon).ids.contains(&other));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn without_a_dreaming_mode_the_text_being_in_is_enough() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, agent, project) = project(&tmp).await;
+        let (url, fake) = server((200, "queued"));
+        configure(&tmp, &url, project.as_str(), true, "sm-test-key-0123456789");
+        let id = keep(&daemon, &agent, "deploys go out on Mondays").await;
+        daemon.mirror_once().await;
+        fake.lock().unwrap().get_dreaming = json!("dreaming");
+        daemon.mirror_once().await;
+        assert!(
+            held(&daemon, &project, &url, "sm-test-key-0123456789")
+                .ids
+                .contains(&id),
+            "off unless chosen: `system.status` alone decides"
+        );
     }
 
     #[cfg(unix)]
