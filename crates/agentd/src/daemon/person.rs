@@ -293,15 +293,40 @@ const ROOT_PROGRAMS: &[&str] = &[
 ];
 
 /// Where a person's terminal and editor applications are installed on
-/// macOS: the sealed system's own folders and the shared Applications
-/// folder. Never the person's own `~/Applications`, which any process of
-/// theirs can write.
+/// macOS, root's: the sealed system's own folders and the shared
+/// Applications folder.
 const APPLICATION_FOLDERS: &[&str] = &[
     "/System/Applications",
     "/System/Applications/Utilities",
     "/Applications",
     "/Applications/Utilities",
 ];
+
+/// Where the person's own installs of them are, on macOS: the shared
+/// Applications folder and their own `~/Applications` (`HOME` taken in
+/// [`root_program`]). A bundle here that root does not own counts only
+/// when its code signature verifies ([`signed`]).
+const OWN_APPLICATION_FOLDERS: &[&str] = &["/Applications", "/Applications/Utilities"];
+
+/// How long a signature check may take: a large application's sealed
+/// resources take a second or two to hash.
+const SIGNATURE_CHECK: StdDuration = StdDuration::from_secs(5);
+
+/// The signature check's requirement: a certificate chain to Apple's root
+/// (an Apple, App Store or Developer ID signature), which a process of the
+/// person's cannot make. A signature it makes for itself (ad hoc, or its
+/// own certificate) verifies without it.
+const SIGNATURE_REQUIREMENT: &str = "anchor apple generic";
+
+/// A bundle's signature verdict is for one install of it: the bundle and
+/// the running executable's file (device, inode, modification time).
+type SignatureKey = (std::path::PathBuf, u64, u64, i64, i64);
+
+/// The verdicts so far, each said at most once per install. Cleared once
+/// it holds [`SIGNATURES_KEPT`].
+static SIGNATURES: std::sync::LazyLock<Mutex<HashMap<SignatureKey, bool>>> =
+    std::sync::LazyLock::new(Mutex::default);
+const SIGNATURES_KEPT: usize = 256;
 
 /// One of the person's session roots, by the executable the kernel names
 /// for `process` ([`root_program`]).
@@ -315,22 +340,38 @@ fn session_root(process: &procinfo::Process) -> bool {
 /// macOS, a known terminal or editor application (by its bundle's name,
 /// never any bundle) installed directly in a system or the shared
 /// Applications folder; elsewhere on Unix, a known terminal emulator under
-/// `/usr`, `/bin` or `/sbin`. In every case the file, and every folder
-/// from its bundle (or its own folder) down to it, is root's and nobody
-/// else may write it ([`root_owned`]), as the system's own programs and an
-/// App Store or administrator's install are: a copy, a bundle the person's
-/// processes could have put or changed, or one in `~/Applications` is no
-/// root.
+/// `/usr`, `/bin` or `/sbin`. The file, and every folder from its bundle
+/// (or its own folder) down to it, is root's and nobody else may write it
+/// ([`root_owned`]), as the system's own programs and an App Store or
+/// administrator's install are. On macOS a known application of the
+/// person's own — in the shared or their own Applications folder, not
+/// root's — counts too when the program running is the bundle's own (in
+/// its `Contents/MacOS`) and the bundle's signature verifies ([`signed`]).
+/// A copy, an unsigned or self-signed bundle, or one with anything added
+/// inside is no root.
 fn root_program(executable: &std::path::Path) -> bool {
     let Ok(executable) = std::fs::canonicalize(executable) else {
         return false;
     };
-    root_at(&executable, root_owned)
+    let home = std::env::home_dir().and_then(|home| std::fs::canonicalize(home).ok());
+    root_at(
+        &executable,
+        home.as_deref(),
+        root_owned,
+        |bundle, running| signed(bundle, running, &SIGNATURES, codesign_verifies),
+    )
 }
 
-/// [`root_program`]'s rule for a resolved `executable`, `owned` saying
-/// whether root alone owns and may write a file or folder.
-fn root_at(executable: &std::path::Path, owned: impl Fn(&std::path::Path) -> bool) -> bool {
+/// [`root_program`]'s rule for a resolved `executable`, with `home` the
+/// person's home folder, `owned` saying whether root alone owns and may
+/// write a file or folder, and `signed` whether a bundle's signature
+/// verifies for the program running from it.
+fn root_at(
+    executable: &std::path::Path,
+    home: Option<&std::path::Path>,
+    owned: impl Fn(&std::path::Path) -> bool,
+    signed: impl Fn(&std::path::Path, &std::path::Path) -> bool,
+) -> bool {
     let path = std::path::Path::new;
     let system = ROOT_PROGRAMS
         .iter()
@@ -354,11 +395,20 @@ fn root_at(executable: &std::path::Path, owned: impl Fn(&std::path::Path) -> boo
         let Some(bundle) = host.and_then(|host| host.app) else {
             return false;
         };
-        bundle.parent().is_some_and(|installed| {
-            APPLICATION_FOLDERS
+        let Some(installed) = bundle.parent() else {
+            return false;
+        };
+        let in_folder = |folders: &[&str]| {
+            folders
                 .iter()
-                .any(|known| installed == path(known))
-        }) && owned_from(&bundle)
+                .any(|known| installed == std::path::Path::new(known))
+        };
+        if in_folder(APPLICATION_FOLDERS) && owned_from(&bundle) {
+            return true;
+        }
+        let own_folder = in_folder(OWN_APPLICATION_FOLDERS)
+            || home.is_some_and(|home| installed == home.join("Applications"));
+        own_folder && folder == bundle.join("Contents").join("MacOS") && signed(&bundle, executable)
     } else if cfg!(unix) {
         host.is_some_and(|host| host.app.is_none())
             && ["/usr/", "/bin/", "/sbin/"]
@@ -368,6 +418,75 @@ fn root_at(executable: &std::path::Path, owned: impl Fn(&std::path::Path) -> boo
     } else {
         false
     }
+}
+
+/// Whether `bundle`'s signature verifies, for the program `running` from
+/// it: what `verify` says, asked at most once for this install of it (the
+/// bundle and the running file's identity) and remembered in `verdicts`.
+/// `verify` saying nothing (a timeout, a check that could not run) is no
+/// root, and is asked again next time.
+fn signed(
+    bundle: &std::path::Path,
+    running: &std::path::Path,
+    verdicts: &Mutex<HashMap<SignatureKey, bool>>,
+    verify: impl FnOnce(&std::path::Path) -> Option<bool>,
+) -> bool {
+    let Some(key) = install_of(bundle, running) else {
+        return false;
+    };
+    let known = verdicts
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key)
+        .copied();
+    if let Some(verdict) = known {
+        return verdict;
+    }
+    let Some(verdict) = verify(bundle) else {
+        return false;
+    };
+    let mut verdicts = verdicts.lock().unwrap_or_else(PoisonError::into_inner);
+    if verdicts.len() >= SIGNATURES_KEPT {
+        verdicts.clear();
+    }
+    verdicts.insert(key, verdict);
+    verdict
+}
+
+/// This install of `bundle`, by the running file's identity.
+#[cfg(unix)]
+fn install_of(bundle: &std::path::Path, running: &std::path::Path) -> Option<SignatureKey> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(running).ok()?;
+    Some((
+        bundle.to_path_buf(),
+        meta.dev(),
+        meta.ino(),
+        meta.mtime(),
+        meta.mtime_nsec(),
+    ))
+}
+
+#[cfg(not(unix))]
+fn install_of(_: &std::path::Path, _: &std::path::Path) -> Option<SignatureKey> {
+    None
+}
+
+/// `codesign --verify --strict` of `bundle` against
+/// [`SIGNATURE_REQUIREMENT`], within [`SIGNATURE_CHECK`]: whether it
+/// verifies — its code and every sealed resource intact, so a program
+/// added inside breaks it — or `None` when the check could not say.
+fn codesign_verifies(bundle: &std::path::Path) -> Option<bool> {
+    let argv = [
+        "/usr/bin/codesign".to_owned(),
+        "--verify".to_owned(),
+        "--strict".to_owned(),
+        format!("-R={SIGNATURE_REQUIREMENT}"),
+        bundle.to_string_lossy().into_owned(),
+    ];
+    agentdocker_host::command::run(std::path::Path::new("/"), &argv, SIGNATURE_CHECK)
+        .ok()
+        .map(|output| output.success)
 }
 
 /// Whether root owns `path` and nobody else may write it: what a process
@@ -1025,9 +1144,9 @@ mod tests {
 
     /// A root is a known program where no process of the person's could
     /// have put or changed it: never any bundle, a known terminal's bundle
-    /// or a copy of `login` in a folder of theirs, a bundle in their own
-    /// `~/Applications`, or one in the shared Applications folder that is
-    /// theirs rather than root's, down to any folder of it.
+    /// or a copy of `login` in a folder of theirs, or a bundle the person
+    /// owns, down to any folder of it, whose signature does not verify for
+    /// the program running from its own `Contents/MacOS`.
     #[cfg(unix)]
     #[test]
     fn a_root_is_a_known_program_no_process_of_the_persons_could_change() {
@@ -1056,43 +1175,175 @@ mod tests {
             assert_eq!(root_owned(path), as_root, "the person's own file");
         }
         let path = std::path::Path::new;
-        // In the person's own Applications folder, nothing counts, whoever
-        // the file says owns it.
-        if let Some(home) = std::env::home_dir() {
-            let mine = home.join("Applications/Ghostty.app/Contents/MacOS/ghostty");
-            assert!(!root_at(&mine, |_| true), "{}", mine.display());
-        }
+        let never = |_: &std::path::Path, _: &std::path::Path| false;
+        let verifies = |_: &std::path::Path, _: &std::path::Path| true;
+        let macos = cfg!(target_os = "macos");
         let installed = path("/Applications/Ghostty.app/Contents/MacOS/ghostty");
         assert!(
-            !root_at(installed, |_| false),
-            "a bundle the person owns in the shared Applications folder"
-        );
-        assert!(
-            !root_at(installed, |p| p != path("/Applications/Ghostty.app")),
-            "root's file in a bundle folder the person owns"
-        );
-        assert_eq!(
-            root_at(installed, |_| true),
-            cfg!(target_os = "macos"),
-            "an administrator's install, on macOS"
+            !root_at(installed, None, |_| false, never),
+            "a bundle the person owns, unsigned"
         );
         assert!(
             !root_at(
+                installed,
+                None,
+                |p| p != path("/Applications/Ghostty.app"),
+                never
+            ),
+            "root's file in a bundle folder the person owns, unsigned"
+        );
+        assert_eq!(
+            root_at(installed, None, |_| true, never),
+            macos,
+            "an administrator's install, on macOS"
+        );
+        assert_eq!(
+            root_at(installed, None, |_| false, verifies),
+            macos,
+            "the person's own install, signed"
+        );
+        assert!(
+            !root_at(
+                path("/Applications/Ghostty.app/Contents/Resources/helper"),
+                None,
+                |_| false,
+                verifies
+            ),
+            "a program of the bundle's that is not its own"
+        );
+        // In the person's own Applications folder only a signed install
+        // counts, whoever the file says owns it.
+        if let Some(home) = std::env::home_dir() {
+            let mine = home.join("Applications/Ghostty.app/Contents/MacOS/ghostty");
+            assert!(!root_at(&mine, Some(&home), |_| true, never));
+            assert_eq!(root_at(&mine, Some(&home), |_| false, verifies), macos);
+            assert!(
+                !root_at(&mine, None, |_| true, verifies),
+                "with no home, not there"
+            );
+        }
+        assert!(
+            !root_at(
                 path("/Applications/Claude.app/Contents/MacOS/Claude"),
-                |_| true
+                None,
+                |_| true,
+                verifies
             ),
             "an application that is no terminal or editor"
         );
-        assert!(!root_at(&copied, |_| true), "a copy of login");
+        assert!(
+            !root_at(&copied, None, |_| true, verifies),
+            "a copy of login"
+        );
         let login = path("/usr/bin/login");
-        assert!(!root_at(login, |_| false), "login the person could change");
-        assert!(root_at(login, |_| true));
-        if cfg!(target_os = "macos") {
+        assert!(
+            !root_at(login, None, |_| false, verifies),
+            "login the person could change"
+        );
+        assert!(root_at(login, None, |_| true, never));
+        if macos {
             for system in [
                 "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
                 "/usr/bin/login",
             ] {
                 assert!(root_program(path(system)), "{system}");
+            }
+        }
+    }
+
+    /// A bundle's signature is checked once per install of it: the same
+    /// running file asks nothing more, a changed one asks again, and a check
+    /// that could not say is no root and asked again.
+    #[cfg(unix)]
+    #[test]
+    fn a_signature_is_checked_once_per_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = tmp.path().join("Ghostty.app");
+        let running = bundle.join("Contents/MacOS/ghostty");
+        std::fs::create_dir_all(running.parent().unwrap()).unwrap();
+        std::fs::write(&running, "one").unwrap();
+        let verdicts = Mutex::default();
+        let asked = std::cell::Cell::new(0);
+        let check = |says: Option<bool>| {
+            signed(&bundle, &running, &verdicts, |_| {
+                asked.set(asked.get() + 1);
+                says
+            })
+        };
+        assert!(!check(None), "a timeout is no root");
+        assert!(check(Some(true)), "asked again, and it verifies");
+        assert!(check(Some(false)), "the same install: remembered");
+        assert_eq!(asked.get(), 2);
+        // Updated in place: another file, or the same one changed.
+        std::fs::write(&running, "two").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&running)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert!(!check(Some(false)), "a changed install is asked again");
+        assert_eq!(asked.get(), 3);
+        assert!(!check(Some(true)), "and remembered as it was found");
+    }
+
+    /// The real check: an unsigned bundle and one signed by nobody Apple
+    /// vouches for (ad hoc) do not verify, even in the person's own
+    /// Applications folder; the system's own Terminal does, and so does a
+    /// user-owned signed terminal in `/Applications`, where this machine has
+    /// one.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_bundle_counts_only_when_its_signature_verifies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(tmp.path()).unwrap();
+        let bundle = home.join("Applications/Ghostty.app");
+        let running = bundle.join("Contents/MacOS/ghostty");
+        std::fs::create_dir_all(running.parent().unwrap()).unwrap();
+        std::fs::write(&running, "#!/bin/sh\nexit 0\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&running, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(
+            bundle.join("Contents/Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleExecutable</key><string>ghostty</string><key>CFBundleIdentifier</key><string>test.not.ghostty</string></dict></plist>
+"#,
+        )
+        .unwrap();
+        let real = |verdicts: &Mutex<HashMap<SignatureKey, bool>>| {
+            root_at(
+                &running,
+                Some(&home),
+                |_| false,
+                |bundle, running| signed(bundle, running, verdicts, codesign_verifies),
+            )
+        };
+        assert_eq!(codesign_verifies(&bundle), Some(false), "unsigned");
+        assert!(!real(&Mutex::default()));
+        let adhoc = std::process::Command::new("/usr/bin/codesign")
+            .args(["-s", "-", "--force"])
+            .arg(&bundle)
+            .output()
+            .unwrap();
+        assert!(adhoc.status.success(), "{adhoc:?}");
+        assert_eq!(codesign_verifies(&bundle), Some(false), "ad hoc");
+        assert!(!real(&Mutex::default()));
+        assert_eq!(
+            codesign_verifies(std::path::Path::new(
+                "/System/Applications/Utilities/Terminal.app"
+            )),
+            Some(true)
+        );
+        for (bundle, program) in [
+            ("/Applications/Ghostty.app", "Contents/MacOS/ghostty"),
+            ("/Applications/iTerm.app", "Contents/MacOS/iTerm2"),
+        ] {
+            let program = std::path::Path::new(bundle).join(program);
+            if program.exists() && !root_owned(&program) {
+                assert!(root_program(&program), "{}", program.display());
             }
         }
     }

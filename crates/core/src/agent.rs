@@ -480,6 +480,11 @@ pub const CHOSEN_NAME: &str = "chosen";
 /// stays: a client's spec never brings it in, and a record without it (a
 /// launch from inside an agent's session, a connector agent, a session
 /// known by its key alone, a record from before) is nobody's in particular.
+///
+/// It is attribution, for showing and filtering (`mine`), never
+/// authorization: a terminal window an agent opens through the system's
+/// app launcher (`open`, `osascript`) has the same parents as the person's
+/// own and is not told apart from it, so nothing may grant rights from it.
 pub const LAUNCHED_BY_LABEL: &str = "launched_by";
 /// [`LAUNCHED_BY_LABEL`] for a registered session an agent's session stands
 /// above.
