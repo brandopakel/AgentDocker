@@ -166,6 +166,35 @@ use iced::advanced::{
 };
 use iced::{Border, Element, Event, Length, Rectangle, Size, keyboard, mouse};
 
+/// Whether a key press moves or uses the focus: Tab, the arrows, Home,
+/// End, the page keys, Enter, Space or a plain character. A modifier on its
+/// own, a Command or Control shortcut, and Escape do not.
+fn navigates(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> bool {
+    use keyboard::key::Named;
+    if modifiers.command() || modifiers.control() {
+        return false;
+    }
+    match key {
+        keyboard::Key::Named(named) => matches!(
+            named,
+            Named::Tab
+                | Named::F6
+                | Named::ArrowUp
+                | Named::ArrowDown
+                | Named::ArrowLeft
+                | Named::ArrowRight
+                | Named::Home
+                | Named::End
+                | Named::PageUp
+                | Named::PageDown
+                | Named::Enter
+                | Named::Space
+        ),
+        keyboard::Key::Character(_) => true,
+        keyboard::Key::Unidentified => false,
+    }
+}
+
 #[derive(Default)]
 pub struct Focus {
     pub focused: bool,
@@ -269,9 +298,26 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
         viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_mut::<Focus>();
-        // A key press is the keyboard asking where it is: whichever
-        // control is focused shows its ring from here on.
-        if matches!(event, Event::Keyboard(keyboard::Event::KeyPressed { .. })) {
+        // A key that moves or uses the focus is the keyboard asking where it
+        // is: whichever control is focused shows its ring from here on. A
+        // modifier, a shortcut or Escape is not, so a screenshot's Cmd-Shift
+        // or closing a menu leaves a clicked control without one.
+        if let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event
+            && navigates(key, *modifiers)
+        {
+            state.by_pointer = false;
+        }
+        // A click anywhere else takes the focus away, as a click on the
+        // page does in a browser: nothing stays focused, or ringed, after
+        // the pointer has moved on.
+        if state.focused
+            && matches!(
+                event,
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            )
+            && !cursor.is_over(layout.bounds())
+        {
+            state.focused = false;
             state.by_pointer = false;
         }
         if self.semantic.role != accesskit::Role::Button || self.semantic.action.is_some() {
@@ -1063,6 +1109,60 @@ mod tests {
         update(&mut element, &mut tree, &click);
         tree.state.downcast_mut::<Focus>().focus();
         assert!(!tree.state.downcast_ref::<Focus>().ringed());
+
+        // A modifier, a shortcut or Escape after a click shows no ring.
+        for (key, modifiers) in [
+            (
+                keyboard::Key::Named(keyboard::key::Named::Shift),
+                keyboard::Modifiers::SHIFT,
+            ),
+            (
+                keyboard::Key::Character("4".into()),
+                keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT,
+            ),
+            (
+                keyboard::Key::Named(keyboard::key::Named::Escape),
+                keyboard::Modifiers::empty(),
+            ),
+        ] {
+            update(
+                &mut element,
+                &mut tree,
+                &Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: key.clone(),
+                    modified_key: key.clone(),
+                    physical_key: keyboard::key::Physical::Unidentified(
+                        keyboard::key::NativeCode::Unidentified,
+                    ),
+                    location: keyboard::Location::Standard,
+                    modifiers,
+                    text: None,
+                    repeat: false,
+                }),
+            );
+            assert!(
+                !tree.state.downcast_ref::<Focus>().ringed(),
+                "{key:?} is not the keyboard asking"
+            );
+        }
+
+        // A click elsewhere takes the focus away.
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        element.as_widget_mut().update(
+            &mut tree,
+            &click,
+            Layout::new(&node),
+            mouse::Cursor::Available(iced::Point::new(390.0, 90.0)),
+            &renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &viewport,
+        );
+        assert!(
+            !tree.state.downcast_ref::<Focus>().focused,
+            "a click elsewhere blurs it"
+        );
     }
     #[test]
     fn reordering_session_controls_does_not_transfer_keyboard_focus_to_another_agent() {

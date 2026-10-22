@@ -4026,6 +4026,8 @@ impl App {
                     Key::Named(Named::Escape) => {
                         self.shell.pending_notification = None;
                         self.shell.notification_message = None;
+                        self.shell.project_menu = None;
+                        self.shell.project_rename = None;
                         self.shell.selected = None;
                         self.shell.launch = false;
                         self.shell.adding = false;
