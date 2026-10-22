@@ -21,9 +21,13 @@
 //! word for why there was none, how long it took and when the next is
 //! due — bounded per sink and in all. The log has no event of its own:
 //! one per attempt would let a failing sink fill the event log the
-//! throttle on `webhook_failed` is there to protect.
+//! throttle on `webhook_failed` is there to protect. An attempt is made
+//! and logged as one piece off the runtime, so one already on its way
+//! when a reload stops its sink is still logged when it ends, and is
+//! never tried again.
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -63,17 +67,29 @@ pub const SECRET_MIN_BYTES: usize = 16;
 #[derive(Default)]
 pub(super) struct Sinks {
     generation: u64,
+    /// Set when this generation's sinks stop, for the attempts already on
+    /// their way, which aborting their tasks does not stop.
+    stopped: Arc<AtomicBool>,
     started_from: Vec<Started>,
     workers: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Sinks {
     fn stop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
         for worker in self.workers.drain(..) {
             worker.abort();
         }
         self.started_from.clear();
     }
+}
+
+/// A generation of sinks as their senders see it: its number, and
+/// whether it has been stopped.
+#[derive(Clone)]
+struct Generation {
+    number: u64,
+    stopped: Arc<AtomicBool>,
 }
 
 impl Drop for Sinks {
@@ -373,6 +389,70 @@ fn retry_after(response: &ureq::http::Response<ureq::Body>) -> Option<Duration> 
         .map(|secs| Duration::from_secs(secs).min(RETRY_AFTER_CAP))
 }
 
+/// One attempt, made and logged off the runtime as one piece. A reload
+/// aborts the sender's task while it waits, but not the request that task
+/// started, so whatever comes of the request is logged here rather than
+/// by the task. Nothing starts once the sink's generation has stopped,
+/// and an attempt that ends after the stop is never tried again: a
+/// failure then is `gave_up`.
+struct Attempting {
+    daemon: Weak<Daemon>,
+    stopped: Arc<AtomicBool>,
+    agent: Arc<ureq::Agent>,
+    url: String,
+    headers: Vec<(&'static str, String)>,
+    body: Vec<u8>,
+    webhook: String,
+    delivery: String,
+    seq: u64,
+    event: String,
+    /// Which attempt, from 0.
+    index: usize,
+}
+
+impl Attempting {
+    /// The outcome, and how long to wait before the next attempt while
+    /// one is due; `None` when the sink had stopped before it began.
+    fn run(self) -> Option<(Attempt, Option<Duration>)> {
+        if self.stopped.load(Ordering::SeqCst) {
+            return None;
+        }
+        let at = chrono::Utc::now();
+        let started = std::time::Instant::now();
+        let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            post(&self.agent, &self.url, &self.headers, &self.body)
+        }))
+        .unwrap_or_else(|_| Answer::failed("other"));
+        let took = started.elapsed();
+        let (mut result, mut wait) = settle(&answer.outcome, self.index, &RETRY_DELAYS);
+        if self.stopped.load(Ordering::SeqCst) {
+            // The sink stopped meanwhile: nothing will try this again.
+            if result == AttemptResult::Retrying {
+                result = AttemptResult::GaveUp;
+            }
+            wait = None;
+        }
+        if let Some(daemon) = self.daemon.upgrade() {
+            daemon.log_webhook_attempt(&WebhookAttempt {
+                webhook: self.webhook,
+                delivery: self.delivery,
+                seq: self.seq,
+                event: self.event,
+                attempt: u32::try_from(self.index + 1).unwrap_or(u32::MAX),
+                at,
+                duration_ms: u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
+                result,
+                status: answer.status,
+                error: answer.error.map(str::to_owned),
+                next_retry: wait.map(|wait| {
+                    chrono::Utc::now() + chrono::Duration::from_std(wait).unwrap_or_default()
+                }),
+            });
+        }
+        Some((answer.outcome, wait))
+    }
+}
+
 /// A sink's queue between intake and delivery: bounded by events and
 /// bytes, the oldest dropped and counted when full, so a receiver that
 /// stalls can never make the daemon hold more than this.
@@ -482,7 +562,7 @@ fn lock_queue(queue: &std::sync::Mutex<Queue>) -> std::sync::MutexGuard<'_, Queu
 /// must not keep it alive.
 async fn deliver(
     daemon: Weak<Daemon>,
-    generation: u64,
+    generation: Generation,
     sink: WebhookConfig,
     secret: Vec<u8>,
     queue: Arc<std::sync::Mutex<Queue>>,
@@ -515,7 +595,7 @@ async fn deliver(
                 "",
                 &last_reason,
                 &mut last_notice,
-                generation,
+                generation.number,
                 notice_every,
             );
             drop(daemon);
@@ -534,7 +614,7 @@ async fn deliver(
         let mut reason = None;
         for index in 0..=RETRY_DELAYS.len() {
             let timestamp = chrono::Utc::now().timestamp().to_string();
-            let headers = [
+            let headers = vec![
                 ("content-type", "application/json".to_owned()),
                 ("x-agentdocker-event", projection.event.clone()),
                 ("x-agentdocker-delivery", projection.delivery.clone()),
@@ -544,40 +624,27 @@ async fn deliver(
                     signature(&secret, &timestamp, &bytes),
                 ),
             ];
-            let agent = agent.clone();
-            let url = sink.url.clone();
-            let body = bytes.clone();
-            let at = chrono::Utc::now();
-            let started = tokio::time::Instant::now();
-            let answer = tokio::task::spawn_blocking(move || {
-                let headers: Vec<(&str, String)> =
-                    headers.iter().map(|(n, v)| (*n, v.clone())).collect();
-                post(&agent, &url, &headers, &body)
-            })
-            .await
-            .unwrap_or(Answer::failed("other"));
-            let took = started.elapsed();
-            let (result, wait) = settle(&answer.outcome, index, &RETRY_DELAYS);
-            let Some(owner) = daemon.upgrade() else {
-                return;
-            };
-            owner.log_webhook_attempt(&WebhookAttempt {
+            let attempt = Attempting {
+                daemon: daemon.clone(),
+                stopped: generation.stopped.clone(),
+                agent: agent.clone(),
+                url: sink.url.clone(),
+                headers,
+                body: bytes.clone(),
                 webhook: name.clone(),
                 delivery: projection.delivery.clone(),
                 seq: projection.seq,
                 event: projection.event.clone(),
-                attempt: u32::try_from(index + 1).unwrap_or(u32::MAX),
-                at,
-                duration_ms: u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
-                result,
-                status: answer.status,
-                error: answer.error.map(str::to_owned),
-                next_retry: wait.map(|wait| {
-                    chrono::Utc::now() + chrono::Duration::from_std(wait).unwrap_or_default()
-                }),
-            });
-            drop(owner);
-            match answer.outcome {
+                index,
+            };
+            let Ok(Some((outcome, wait))) =
+                tokio::task::spawn_blocking(move || attempt.run()).await
+            else {
+                // The sink stopped before the attempt began, or the
+                // runtime is going away.
+                return;
+            };
+            match outcome {
                 Attempt::Delivered => {
                     reason = None;
                     break;
@@ -608,7 +675,7 @@ async fn deliver(
             &projection.event,
             &last_reason,
             &mut last_notice,
-            generation,
+            generation.number,
             notice_every,
         );
     }
@@ -724,13 +791,17 @@ impl Daemon {
         }
         sinks.stop();
         sinks.generation += 1;
-        let generation = sinks.generation;
+        sinks.stopped = Arc::new(AtomicBool::new(false));
+        let generation = Generation {
+            number: sinks.generation,
+            stopped: sinks.stopped.clone(),
+        };
         sinks.started_from = started;
         for (sink, project, secret) in prepared {
             let events = self.subscribe_events();
             let queue = Arc::new(std::sync::Mutex::new(Queue::default()));
             let wake = Arc::new(tokio::sync::Notify::new());
-            info!(sink = %sink.name, generation, events = sink.events.len(), "webhook sink started");
+            info!(sink = %sink.name, generation = generation.number, events = sink.events.len(), "webhook sink started");
             sinks.workers.push(tokio::spawn(intake(
                 sink.clone(),
                 project,
@@ -740,7 +811,7 @@ impl Daemon {
             )));
             sinks.workers.push(tokio::spawn(deliver(
                 Arc::downgrade(self),
-                generation,
+                generation.clone(),
                 sink,
                 secret,
                 queue,
@@ -748,8 +819,11 @@ impl Daemon {
                 FAILURE_NOTICE_EVERY,
             )));
         }
-        if sinks.started_from.is_empty() && generation > 1 {
-            info!(generation, "webhook sinks stopped: none configured");
+        if sinks.started_from.is_empty() && generation.number > 1 {
+            info!(
+                generation = generation.number,
+                "webhook sinks stopped: none configured"
+            );
         }
     }
 
@@ -836,44 +910,90 @@ mod tests {
                 } else {
                     status
                 };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                let mut headers = BTreeMap::new();
-                loop {
-                    let mut header = String::new();
-                    reader.read_line(&mut header).unwrap();
-                    let header = header.trim_end();
-                    if header.is_empty() {
-                        break;
-                    }
-                    if let Some((name, value)) = header.split_once(':') {
-                        headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
-                    }
-                }
-                let length: usize = headers
-                    .get("content-length")
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0);
-                let mut body = vec![0; length];
-                reader.read_exact(&mut body).unwrap();
-                log.lock().unwrap().push((headers, body));
-                let mut stream = stream;
-                let reply = format!(
-                    "HTTP/1.1 {status} X\r\ncontent-length: 0\r\nconnection: close\r\n{}\r\n",
-                    if status == 429 {
-                        "retry-after: 1\r\n"
-                    } else {
-                        ""
-                    }
-                );
-                stream.write_all(reply.as_bytes()).unwrap();
+                log.lock().unwrap().push(read_request(&stream));
+                reply(stream, status);
             }
         });
         (url, seen)
+    }
+
+    /// A receiver that holds its first request open, once read, until it
+    /// is told what to answer, and answers every later one 200 at once;
+    /// it records each request's delivery id.
+    fn held_receiver() -> (
+        String,
+        Arc<Mutex<Vec<String>>>,
+        std::sync::mpsc::Sender<u16>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/hook",
+            listener.local_addr().unwrap().port()
+        );
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let (release, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut first = true;
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else {
+                    return;
+                };
+                let (headers, _) = read_request(&stream);
+                log.lock()
+                    .unwrap()
+                    .push(headers["x-agentdocker-delivery"].clone());
+                let status = if std::mem::take(&mut first) {
+                    answer.recv().unwrap_or(200)
+                } else {
+                    200
+                };
+                reply(stream, status);
+            }
+        });
+        (url, seen, release)
+    }
+
+    /// One request's headers, by lowercase name, and its body.
+    fn read_request(stream: &std::net::TcpStream) -> (BTreeMap<String, String>, Vec<u8>) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let mut headers = BTreeMap::new();
+        loop {
+            let mut header = String::new();
+            reader.read_line(&mut header).unwrap();
+            let header = header.trim_end();
+            if header.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = header.split_once(':') {
+                headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
+            }
+        }
+        let length: usize = headers
+            .get("content-length")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        (headers, body)
+    }
+
+    /// Answer with a status and no body; a 429 asks for a second's wait.
+    fn reply(mut stream: std::net::TcpStream, status: u16) {
+        let reply = format!(
+            "HTTP/1.1 {status} X\r\ncontent-length: 0\r\nconnection: close\r\n{}\r\n",
+            if status == 429 {
+                "retry-after: 1\r\n"
+            } else {
+                ""
+            }
+        );
+        stream.write_all(reply.as_bytes()).unwrap();
     }
 
     fn secret_file(dir: &Path) -> std::path::PathBuf {
@@ -1212,6 +1332,106 @@ mod tests {
         ));
     }
 
+    /// A sink's delivery log as the daemon answers it, or `None` when it
+    /// answers otherwise.
+    async fn logged(daemon: &Arc<Daemon>, webhook: &str) -> Option<Vec<WebhookAttempt>> {
+        match daemon
+            .handle(Request::WebhookDeliveries {
+                webhook: webhook.into(),
+                limit: None,
+            })
+            .await
+        {
+            Response::WebhookDeliveries { attempts, .. } => Some(attempts),
+            _ => None,
+        }
+    }
+
+    /// An attempt on its way when its sink stops — the sink removed, or
+    /// its secret rotated — is logged once when it ends and never tried
+    /// again: a reload aborts the sender's task, not the request it
+    /// started, and nothing of an old generation posts after the reload.
+    #[tokio::test]
+    async fn an_attempt_on_its_way_when_its_sink_stops_is_logged_once_and_never_retried() {
+        // A 200 after the sink is removed; a 503 after its secret rotates.
+        for (status, removed) in [(200, true), (503, false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().to_path_buf();
+            let daemon = Arc::new(Daemon::open(home.clone(), home.join("sock")).unwrap());
+            let secret = secret_file(&home);
+            let (url, seen, release) = held_receiver();
+            std::fs::write(
+                home.join("agentd.toml"),
+                format!(
+                    "[[webhooks]]\nname = \"local\"\nurl = \"{url}\"\nsecret_file = \"{}\"\nevents = [\"policy_updated\"]\n",
+                    secret.display()
+                ),
+            )
+            .unwrap();
+            daemon.reload_webhooks().await;
+            daemon.emit(EventKind::PolicyUpdated {
+                project: None,
+                rules: 0,
+                quotas: 0,
+                error: None,
+                using_last_good: false,
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while seen.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let delivery = seen
+                .lock()
+                .unwrap()
+                .first()
+                .cloned()
+                .expect("the POST is held open");
+            if removed {
+                std::fs::remove_file(home.join("agentd.toml")).unwrap();
+            } else {
+                std::fs::write(&secret, "fedcba9876543210fedcba9876543210\n").unwrap();
+            }
+            daemon.reload_webhooks().await;
+            assert_eq!(daemon.webhook_sinks(), usize::from(!removed));
+            release.send(status).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while logged(&daemon, "local")
+                .await
+                .unwrap_or_default()
+                .is_empty()
+                && std::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            // Past the first retry's delay: still one line, one request.
+            tokio::time::sleep(RETRY_DELAYS[0] + Duration::from_secs(1)).await;
+            let attempts = logged(&daemon, "local").await.expect("a delivery log");
+            assert_eq!(attempts.len(), 1, "{status}: logged once: {attempts:?}");
+            let attempt = &attempts[0];
+            assert_eq!(attempt.delivery, delivery, "{status}");
+            let settled = if status == 200 {
+                AttemptResult::Delivered
+            } else {
+                AttemptResult::GaveUp
+            };
+            assert_eq!(
+                (
+                    attempt.attempt,
+                    attempt.status,
+                    attempt.result,
+                    attempt.next_retry
+                ),
+                (1, Some(status), settled, None),
+                "{status}"
+            );
+            assert_eq!(
+                seen.lock().unwrap().len(),
+                1,
+                "{status}: no retry after the reload"
+            );
+        }
+    }
+
     /// An outcome settles a delivery: delivered and refused end it; a
     /// failure is retried after its delay, or a longer `Retry-After`,
     /// until the delays run out, and then it gives up.
@@ -1378,7 +1598,10 @@ mod tests {
         let notice_every = Duration::from_secs(2);
         let worker = tokio::spawn(deliver(
             Arc::downgrade(&daemon),
-            1,
+            Generation {
+                number: 1,
+                stopped: Arc::default(),
+            },
             sink.clone(),
             b"0123456789abcdef0123456789abcdef".to_vec(),
             queue.clone(),
