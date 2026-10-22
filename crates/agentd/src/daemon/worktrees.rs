@@ -688,19 +688,23 @@ impl Daemon {
             Ok(head) => head,
             Err(reason) => return failure(reason),
         };
+        // The full ref, never `--short`: git lengthens a short name it finds
+        // ambiguous (`heads/feature/mine` once a tag `feature/mine` exists),
+        // and this name is the branch the agent is recorded as writing.
         let branch = match git(
             root.clone(),
-            vec![
-                "symbolic-ref".into(),
-                "--short".into(),
-                "--quiet".into(),
-                "HEAD".into(),
-            ],
+            vec!["symbolic-ref".into(), "--quiet".into(), "HEAD".into()],
         )
         .await
         {
-            // A detached HEAD is not an error here; it is just no branch.
-            Ok(output) if output.success => Some(output.text.trim().to_owned()),
+            // A detached HEAD is not an error here; it is just no branch,
+            // and so is a HEAD that names anything but a branch.
+            Ok(output) if output.success => output
+                .stdout
+                .trim()
+                .strip_prefix("refs/heads/")
+                .filter(|b| !b.is_empty())
+                .map(str::to_owned),
             _ => None,
         };
 
@@ -732,7 +736,9 @@ impl Daemon {
                 entry.head_before = parent.clone();
                 entry.head_after = Some(head.clone());
                 entry.paths_total = files;
-                state.append_journal(entry);
+                // The daemon made this commit for this agent: it wrote the
+                // branch, whatever the journal later keeps.
+                state.append_commit(entry, true);
             }
             state.last_head.insert(root.clone(), head.clone());
             state.emit(EventKind::Committed {

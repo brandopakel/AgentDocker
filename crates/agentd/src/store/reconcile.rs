@@ -801,9 +801,11 @@ fn rewrite_document(doc: &Document, kept: &AgentId, old: &AgentId) -> Result<Val
     }
     // Historical archives are deliberately immutable. Current aliases are
     // retargeted as typed records by write_repair, never by recursive text edits.
+    // An authorship names the id that committed and is keyed by it; the
+    // alias this writes is what makes it count for the record that stays.
     if matches!(
         doc.kind.as_str(),
-        "identity_reconciliation" | "identity_alias"
+        "identity_reconciliation" | "identity_alias" | "authorship"
     ) {
         return Ok(doc.value.clone());
     }

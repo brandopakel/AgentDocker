@@ -777,6 +777,14 @@ pub enum EventKind {
         by: AgentId,
         verdict: crate::Verdict,
     },
+    /// The daemon recorded that an agent made a commit on a branch, apart
+    /// from the journal, so that its word is not taken on that branch.
+    AuthorshipRecorded {
+        project: ProjectId,
+        agent: AgentId,
+        branch: String,
+        commit: String,
+    },
     /// A journal entry was appended to a project.
     JournalAppended {
         entry: JournalEntry,

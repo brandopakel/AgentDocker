@@ -693,6 +693,16 @@ pub fn event_line(event: &Event) -> String {
             by.short(),
             head.chars().take(8).collect::<String>()
         ),
+        EventKind::AuthorshipRecorded {
+            agent,
+            branch,
+            commit,
+            ..
+        } => format!(
+            "authorship       {} committed to {branch} at {}",
+            agent.short(),
+            commit.chars().take(8).collect::<String>()
+        ),
         EventKind::WatcherStarting => "watcher starting".to_owned(),
         EventKind::WatcherStarted => "watcher started".to_owned(),
         EventKind::WatcherUnavailable { reason } => format!("watcher unavailable ({reason})"),

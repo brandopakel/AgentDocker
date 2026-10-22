@@ -892,7 +892,11 @@ Current behaviour that the sections above do not already state, by area.
   a merge of main included, makes the approval stale until the reviewer
   reads what came after. Whose word counts is a role you give
   (`reviewer` by default); `--publish` also sets it as a GitHub commit
-  status that branch protection can require.
+  status that branch protection can require. An agent's verdict is refused
+  on the branch its checkout is on and on any branch it has committed to,
+  through `commit` or with `git commit` in its own checkout, wherever its
+  checkout is now; checking a branch out or pulling it is not committing to
+  it, and your own verdict is never refused this way.
 
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or

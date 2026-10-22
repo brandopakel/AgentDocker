@@ -146,6 +146,30 @@ const OVERLAP_SCAN: usize = 50_000;
 /// Rows an overlap query reads per hold of the state lock.
 const OVERLAP_PAGE: usize = 2_000;
 
+/// What git says of a checkout's HEAD move, read off the lock: the new
+/// commit's subject, and whether the checkout's own reflog shows a commit
+/// made there, on its branch, since the head last seen
+/// (`vcs::committed_here`).
+#[derive(Debug, Default)]
+struct HeadMove {
+    subject: Option<String>,
+    committed_here: bool,
+}
+
+impl HeadMove {
+    /// Read in `dir`, when HEAD moved from `before` to `after`.
+    fn read(dir: &Path, before: Option<&str>, after: Option<&str>) -> Self {
+        let Some(after) = after.filter(|after| Some(*after) != before) else {
+            return Self::default();
+        };
+        Self {
+            subject: vcs::subject(dir, after, SUBJECT_TIMEOUT),
+            committed_here: before
+                .is_some_and(|before| vcs::committed_here(dir, before, after, SUBJECT_TIMEOUT)),
+        }
+    }
+}
+
 /// Maximum foreground wait while failed-launch supervision stops its owned group.
 const SUPERVISION_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -4507,6 +4531,36 @@ impl State {
         entry
     }
 
+    /// A commit's entry. When `made` — the daemon knows the agent the entry
+    /// names made this commit on its branch — the authorship it proves goes
+    /// in the same transaction, announced as `authorship_recorded`: the
+    /// entry may be pruned, the authorship stays.
+    fn append_commit(&mut self, mut entry: JournalEntry, made: bool) -> JournalEntry {
+        let Some((document, authored)) = made.then(|| self.authorship_of(&entry)).flatten() else {
+            return self.append_journal(entry);
+        };
+        entry.seq = self.next_journal_seq(&entry.project);
+        let now = Utc::now();
+        let events = vec![
+            Event::new(
+                EventKind::JournalAppended {
+                    entry: entry.clone(),
+                },
+                now,
+            ),
+            Event::new(authored, now),
+        ];
+        let _ = self.commit(
+            "journal",
+            events,
+            |store, events| {
+                store.append_journal_with_documents(&entry, std::slice::from_ref(&document), events)
+            },
+            |state, _, ()| state.cache_journal(entry.clone()),
+        );
+        entry
+    }
+
     /// Cache an entry only after its journal row and event have committed.
     fn cache_journal(&mut self, entry: JournalEntry) {
         if let Some(ring) = self.journal_rings.get_mut(&entry.project) {
@@ -4554,7 +4608,7 @@ impl State {
         id: &AgentId,
         old: Option<&VcsState>,
         new: &VcsState,
-        subject: Option<String>,
+        seen: HeadMove,
     ) {
         let Some(record) = self.registry.get(id) else {
             return;
@@ -4568,7 +4622,7 @@ impl State {
             project.worktree.clone(),
             old,
             new,
-            subject,
+            seen,
         );
     }
 
@@ -4582,6 +4636,11 @@ impl State {
     /// of a project have no agent registered in them — a `--isolate`
     /// worktree, or one a person made by hand — and a commit there is
     /// still a commit in this project.
+    ///
+    /// The agent it names is recorded as an author of the branch only for
+    /// a move on the branch it was on that the checkout's reflog shows to
+    /// be a commit made there (`seen.committed_here`); a switch, a
+    /// detach, a pull or a reset authors nothing.
     fn note_checkout_move(
         &mut self,
         project_id: ProjectId,
@@ -4589,7 +4648,7 @@ impl State {
         worktree: Option<PathBuf>,
         old: Option<&VcsState>,
         new: &VcsState,
-        subject: Option<String>,
+        seen: HeadMove,
     ) {
         let Some(head) = new.head.clone() else {
             return;
@@ -4618,14 +4677,14 @@ impl State {
         }
         let short: String = head.chars().take(7).collect();
         let before_branch = old.and_then(|o| o.branch.clone()).or(was_on);
-        let summary = match (&before_branch, &new.branch) {
+        let (summary, on_branch) = match (&before_branch, &new.branch) {
             (before, Some(branch)) if before.as_deref() != Some(branch) => {
-                format!("switched to {branch} at {short}")
+                (format!("switched to {branch} at {short}"), false)
             }
-            (_, None) => format!("detached at {short}"),
-            _ => match subject {
-                Some(subject) => format!("committed {short}: {subject}"),
-                None => format!("committed {short}"),
+            (_, None) => (format!("detached at {short}"), false),
+            _ => match seen.subject {
+                Some(subject) => (format!("committed {short}: {subject}"), true),
+                None => (format!("committed {short}"), true),
             },
         };
         let in_checkout: Vec<AgentRecord> = self
@@ -4690,7 +4749,7 @@ impl State {
         entry.branch = new.branch.clone();
         entry.head_before = old.and_then(|o| o.head.clone());
         entry.head_after = Some(head);
-        self.append_journal(entry);
+        self.append_commit(entry, on_branch && seen.committed_here);
     }
 
     /// Serve a query, from the ring when it can be.

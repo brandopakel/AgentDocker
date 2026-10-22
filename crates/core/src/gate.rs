@@ -191,6 +191,61 @@ pub fn to_forget(existing: &[CodeVerdict], given: &CodeVerdict, cap: usize) -> O
     })
 }
 
+/// That an agent made commits on a branch: a commit the daemon made for it,
+/// or one git recorded as made in a checkout the journal gives it. Kept
+/// apart from the journal, which pruning and retention may empty, so a
+/// reviewer's word is refused on a branch it wrote, wherever its checkout
+/// stands now. One per project, agent and branch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Authorship {
+    pub project: ProjectId,
+    pub agent: AgentId,
+    pub branch: String,
+    /// When its first commit there was recorded.
+    pub first_seen: DateTime<Utc>,
+    /// When its latest commit there was recorded.
+    pub last_seen: DateTime<Utc>,
+    /// The full id of its latest commit there.
+    pub last_commit: String,
+}
+
+impl Authorship {
+    /// The record once `commit` is added to `previous`: what was first
+    /// stays first.
+    pub fn after(
+        previous: Option<&Authorship>,
+        project: &ProjectId,
+        agent: &AgentId,
+        branch: &str,
+        commit: &str,
+        at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            project: project.clone(),
+            agent: agent.clone(),
+            branch: branch.to_owned(),
+            first_seen: previous.map_or(at, |p| p.first_seen.min(at)),
+            last_seen: previous.map_or(at, |p| p.last_seen.max(at)),
+            last_commit: commit.to_owned(),
+        }
+    }
+
+    /// Whether it says `agent` committed to `branch` in `project`.
+    pub fn names(&self, project: &ProjectId, agent: &AgentId, branch: &str) -> bool {
+        &self.project == project && &self.agent == agent && self.branch == branch
+    }
+}
+
+/// The id of the authorship of `agent` on `branch` in `project`: the same
+/// for the same three, and opaque, since a branch name may hold any
+/// separator a readable id would use.
+pub fn authorship_id(project: &ProjectId, agent: &AgentId, branch: &str) -> String {
+    let key = format!("{project}\0{}\0{branch}", agent.as_str());
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, key.as_bytes())
+        .simple()
+        .to_string()
+}
+
 /// What the gate says about a branch at a commit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -450,5 +505,31 @@ mod tests {
         let late = verdict_id(DateTime::from_timestamp(1_700_000_001, 0).unwrap());
         assert!(early < late);
         assert_eq!(early.len(), 24);
+    }
+
+    #[test]
+    fn an_authorship_is_one_per_project_agent_and_branch_and_keeps_its_first_commit() {
+        let (p, q) = (ProjectId::from("p"), ProjectId::from("q"));
+        let (a, b) = (AgentId::from("a"), AgentId::from("b"));
+        let id = authorship_id(&p, &a, "feature/x");
+        assert_eq!(id, authorship_id(&p, &a, "feature/x"), "stable");
+        for other in [
+            authorship_id(&q, &a, "feature/x"),
+            authorship_id(&p, &b, "feature/x"),
+            authorship_id(&p, &a, "feature/y"),
+            // A separator inside a name moves no field into another.
+            authorship_id(&ProjectId::from("p\0a"), &a, "feature/x"),
+        ] {
+            assert_ne!(id, other);
+        }
+        let first = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let later = first + Duration::minutes(5);
+        let one = Authorship::after(None, &p, &a, "feature/x", A, first);
+        assert_eq!((one.first_seen, one.last_seen), (first, first));
+        let two = Authorship::after(Some(&one), &p, &a, "feature/x", B, later);
+        assert_eq!((two.first_seen, two.last_seen), (first, later));
+        assert_eq!(two.last_commit, B);
+        assert!(two.names(&p, &a, "feature/x"));
+        assert!(!two.names(&p, &a, "feature/y") && !two.names(&p, &b, "feature/x"));
     }
 }

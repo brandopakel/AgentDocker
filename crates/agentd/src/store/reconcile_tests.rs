@@ -1366,3 +1366,108 @@ fn conflicting_or_excessive_resumed_observations_leave_every_record_untouched() 
     );
     assert_eq!(snapshot(&store), before);
 }
+
+/// What a retired record committed to stays as it was written, by the id
+/// that committed: neither a session's fold nor the offline repair rewrites
+/// or refuses it, and the alias each writes is what makes it the canonical
+/// record's. Removing the canonical record removes what it and its old ids
+/// committed to, and nobody else's.
+#[test]
+fn authorship_is_kept_through_a_fold_and_goes_with_the_record() {
+    use agentdocker_core::gate::{Authorship, authorship_id};
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("state.db")).unwrap();
+    let (last, fresh, other) = (record("last"), record("fresh"), record("other"));
+    for r in [&last, &fresh, &other] {
+        store.upsert_agent(r).unwrap();
+    }
+    let project = last.project.as_ref().unwrap().id();
+    let commit = "c".repeat(40);
+    let authored = |agent: &AgentId, branch: &str| {
+        Authorship::after(None, &project, agent, branch, &commit, now())
+    };
+    let written = [
+        (&fresh.id, "feature/fresh"),
+        (&last.id, "feature/last"),
+        (&other.id, "feature/other"),
+    ];
+    for (agent, branch) in written {
+        store
+            .put_document(
+                "authorship",
+                &authorship_id(&project, agent, branch),
+                &authored(agent, branch),
+            )
+            .unwrap();
+    }
+    // The offline repair takes it as it is, too.
+    let repaired = Store::in_memory().unwrap();
+    let (a, b) = seed(&repaired);
+    repaired
+        .put_document(
+            "authorship",
+            &authorship_id(&project, &b, "feature/b"),
+            &authored(&b, "feature/b"),
+        )
+        .unwrap();
+    assert!(
+        !preview(&repaired, &a, &b).moved.contains_key("authorship"),
+        "nothing to move"
+    );
+
+    let mut canonical = last.clone();
+    canonical.pid = Some(456);
+    canonical.status = AgentStatus::Running;
+    canonical.finished_at = None;
+    let retired = vec![fresh.id.clone()];
+    let plan = store.plan_fold(&canonical, &retired).unwrap();
+    assert!(
+        plan.documents.iter().all(|d| d.kind != "authorship"),
+        "nothing to rewrite"
+    );
+    let mut event = Event::new(
+        EventKind::SessionResumed {
+            agent: last.id.clone(),
+            retired: retired.clone(),
+            session: "same-session".into(),
+            pid: 456,
+        },
+        now(),
+    );
+    event.seq = 1;
+    store.write_resume(&plan, &event).unwrap();
+    assert_eq!(
+        store
+            .document::<Authorship>(
+                "authorship",
+                &authorship_id(&project, &fresh.id, "feature/fresh")
+            )
+            .unwrap(),
+        Some(authored(&fresh.id, "feature/fresh")),
+        "kept by the id that committed"
+    );
+    assert!(
+        store
+            .identity_aliases()
+            .unwrap()
+            .iter()
+            .any(|a| a.retired == fresh.id && a.canonical == last.id),
+        "and that id is the record that stayed"
+    );
+
+    let mut event = Event::new(
+        EventKind::AgentRemoved {
+            agent: last.id.clone(),
+        },
+        now(),
+    );
+    event.seq = 2;
+    store.delete_agent(&last.id, &event).unwrap();
+    for (agent, branch) in written {
+        let left = store
+            .document::<Authorship>("authorship", &authorship_id(&project, agent, branch))
+            .unwrap()
+            .is_some();
+        assert_eq!(left, agent == &other.id, "{branch}");
+    }
+}

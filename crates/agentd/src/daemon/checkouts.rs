@@ -35,24 +35,25 @@ impl Daemon {
                     let state = vcs::state(&dir)?;
                     let moved = state.head.is_some()
                         && old.as_ref().and_then(|o| o.head.clone()) != state.head;
-                    let subject = if moved {
-                        state
-                            .head
-                            .as_deref()
-                            .and_then(|sha| vcs::subject(&dir, sha, SUBJECT_TIMEOUT))
+                    let seen = if moved {
+                        HeadMove::read(
+                            &dir,
+                            old.as_ref().and_then(|o| o.head.as_deref()),
+                            state.head.as_deref(),
+                        )
                     } else {
-                        None
+                        HeadMove::default()
                     };
-                    Some((id, state, old, moved, subject))
+                    Some((id, state, old, moved, seen))
                 })
                 .collect::<Vec<_>>()
         })
         .await
         .unwrap_or_default();
-        for (id, state, old, moved, subject) in observed {
+        for (id, state, old, moved, seen) in observed {
             self.apply_vcs(&id, state.clone());
             if moved {
-                lock(&self.state).note_head_move(&id, old.as_ref(), &state, subject);
+                lock(&self.state).note_head_move(&id, old.as_ref(), &state, seen);
             }
         }
     }
@@ -150,21 +151,21 @@ impl Daemon {
         let known_for_read = known.clone();
         let observed = tokio::task::spawn_blocking(move || {
             let state = vcs::state(&dir_for_read)?;
-            // Naming the commit runs `git log`, so it is only done when
-            // there is something new to name. This is called for every
-            // checkout of every project on every sweep.
-            let subject = match &state.head {
-                Some(head) if Some(head) != known_for_read.as_ref() => {
-                    vcs::subject(&dir_for_read, head, SUBJECT_TIMEOUT)
-                }
-                _ => None,
-            };
-            Some((state, subject))
+            // Naming the commit and reading how HEAD got there run `git`,
+            // so they are only done when there is something new to name.
+            // This is called for every checkout of every project on every
+            // sweep.
+            let seen = HeadMove::read(
+                &dir_for_read,
+                known_for_read.as_deref(),
+                state.head.as_deref(),
+            );
+            Some((state, seen))
         })
         .await
         .ok()
         .flatten();
-        let Some((state, subject)) = observed else {
+        let Some((state, seen)) = observed else {
             return;
         };
         // A checkout seen for the first time is recorded, not announced:
@@ -196,7 +197,7 @@ impl Daemon {
             checkout.worktree.clone(),
             Some(&old),
             &state,
-            subject,
+            seen,
         );
     }
 
