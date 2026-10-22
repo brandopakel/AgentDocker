@@ -293,7 +293,9 @@ const ROOT_PROGRAMS: &[&str] = &[
 ];
 
 /// Where a person's terminal and editor applications are installed on
-/// macOS: the sealed system's own folders and the Applications folders.
+/// macOS: the sealed system's own folders and the shared Applications
+/// folder. Never the person's own `~/Applications`, which any process of
+/// theirs can write.
 const APPLICATION_FOLDERS: &[&str] = &[
     "/System/Applications",
     "/System/Applications/Utilities",
@@ -311,61 +313,69 @@ fn session_root(process: &procinfo::Process) -> bool {
 /// where nothing an agent can write could stand in for it: `login`, `sshd`
 /// or `sshd-session` at the system's own paths ([`ROOT_PROGRAMS`]); on
 /// macOS, a known terminal or editor application (by its bundle's name,
-/// never any bundle) installed directly in a system or user Applications
-/// folder; elsewhere on Unix, a known terminal emulator under `/usr`,
-/// `/bin` or `/sbin` whose file root owns and nobody else may write.
-/// Anything else, a copy of one of these elsewhere included, is no root.
+/// never any bundle) installed directly in a system or the shared
+/// Applications folder; elsewhere on Unix, a known terminal emulator under
+/// `/usr`, `/bin` or `/sbin`. In every case the file, and every folder
+/// from its bundle (or its own folder) down to it, is root's and nobody
+/// else may write it ([`root_owned`]), as the system's own programs and an
+/// App Store or administrator's install are: a copy, a bundle the person's
+/// processes could have put or changed, or one in `~/Applications` is no
+/// root.
 fn root_program(executable: &std::path::Path) -> bool {
     let Ok(executable) = std::fs::canonicalize(executable) else {
         return false;
     };
-    let home = std::env::home_dir().and_then(|home| std::fs::canonicalize(home).ok());
-    root_at(&executable, home.as_deref(), root_owned)
+    root_at(&executable, root_owned)
 }
 
-/// [`root_program`]'s rule for a resolved `executable`, `home` the
-/// person's home folder and `owned` whether root alone owns and may write
-/// a file.
-fn root_at(
-    executable: &std::path::Path,
-    home: Option<&std::path::Path>,
-    owned: impl Fn(&std::path::Path) -> bool,
-) -> bool {
+/// [`root_program`]'s rule for a resolved `executable`, `owned` saying
+/// whether root alone owns and may write a file or folder.
+fn root_at(executable: &std::path::Path, owned: impl Fn(&std::path::Path) -> bool) -> bool {
+    let path = std::path::Path::new;
     let system = ROOT_PROGRAMS
         .iter()
-        .any(|program| executable == std::path::Path::new(program));
+        .any(|program| executable == path(program));
     let host = agentdocker_core::terminal::classify(executable).filter(|host| host.kind != "app");
+    // The file, and each folder from `top` down to it.
+    let owned_from = |top: &std::path::Path| {
+        executable.starts_with(top)
+            && executable
+                .ancestors()
+                .take_while(|folder| folder.starts_with(top))
+                .all(&owned)
+    };
+    let Some(folder) = executable.parent() else {
+        return false;
+    };
+    if system {
+        return owned_from(folder);
+    }
     if cfg!(target_os = "macos") {
-        if system {
-            return true;
-        }
-        let Some(folder) = host
-            .and_then(|host| host.app)
-            .and_then(|bundle| bundle.parent().map(std::path::Path::to_path_buf))
-        else {
+        let Some(bundle) = host.and_then(|host| host.app) else {
             return false;
         };
-        APPLICATION_FOLDERS
-            .iter()
-            .any(|known| folder == std::path::Path::new(known))
-            || home.is_some_and(|home| folder == home.join("Applications"))
+        bundle.parent().is_some_and(|installed| {
+            APPLICATION_FOLDERS
+                .iter()
+                .any(|known| installed == path(known))
+        }) && owned_from(&bundle)
     } else if cfg!(unix) {
-        let emulator = host.is_some_and(|host| host.app.is_none());
-        (system || emulator)
+        host.is_some_and(|host| host.app.is_none())
             && ["/usr/", "/bin/", "/sbin/"]
                 .iter()
                 .any(|dir| executable.starts_with(dir))
-            && owned(executable)
+            && owned_from(folder)
     } else {
         false
     }
 }
 
-/// Whether root owns `path` and nobody else may write it.
+/// Whether root owns `path` and nobody else may write it: what a process
+/// of the person's cannot make or change.
 #[cfg(unix)]
 fn root_owned(path: &std::path::Path) -> bool {
     use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(path).is_ok_and(|meta| meta.uid() == 0 && meta.mode() & 0o022 == 0)
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.uid() == 0 && meta.mode() & 0o022 == 0)
 }
 
 #[cfg(not(unix))]
@@ -1013,12 +1023,14 @@ mod tests {
         );
     }
 
-    /// A root is a program at a place an agent cannot write: never any
-    /// bundle, a known terminal's name in a scratch folder, or a copy of
-    /// `login`, however they are named.
+    /// A root is a known program where no process of the person's could
+    /// have put or changed it: never any bundle, a known terminal's bundle
+    /// or a copy of `login` in a folder of theirs, a bundle in their own
+    /// `~/Applications`, or one in the shared Applications folder that is
+    /// theirs rather than root's, down to any folder of it.
     #[cfg(unix)]
     #[test]
-    fn a_root_is_a_known_program_where_no_agent_can_put_one() {
+    fn a_root_is_a_known_program_no_process_of_the_persons_could_change() {
         let tmp = tempfile::tempdir().unwrap();
         let file = |relative: &str| {
             let path = tmp.path().join(relative);
@@ -1034,42 +1046,54 @@ mod tests {
             std::fs::write(&copied, "x").unwrap();
         }
         let xterm = file("usr/bin/xterm");
+        // Run as root, every file here is root's: only the places refuse.
+        let as_root = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(tmp.path()).unwrap().uid() == 0
+        };
         for path in [&helper, &terminal, &applications, &copied, &xterm] {
             assert!(!root_program(path), "{}", path.display());
+            assert_eq!(root_owned(path), as_root, "the person's own file");
         }
-        let applications = std::fs::canonicalize(applications).unwrap();
-        let home = std::fs::canonicalize(tmp.path()).unwrap();
-        // A user Applications folder counts where the person's home is,
-        // and on macOS only.
-        assert_eq!(
-            root_at(&applications, Some(&home), |_| true),
-            cfg!(target_os = "macos")
+        let path = std::path::Path::new;
+        // In the person's own Applications folder, nothing counts, whoever
+        // the file says owns it.
+        if let Some(home) = std::env::home_dir() {
+            let mine = home.join("Applications/Ghostty.app/Contents/MacOS/ghostty");
+            assert!(!root_at(&mine, |_| true), "{}", mine.display());
+        }
+        let installed = path("/Applications/Ghostty.app/Contents/MacOS/ghostty");
+        assert!(
+            !root_at(installed, |_| false),
+            "a bundle the person owns in the shared Applications folder"
         );
         assert!(
-            !root_at(&applications, None, |_| true),
-            "with no home, nowhere"
+            !root_at(installed, |p| p != path("/Applications/Ghostty.app")),
+            "root's file in a bundle folder the person owns"
         );
+        assert_eq!(
+            root_at(installed, |_| true),
+            cfg!(target_os = "macos"),
+            "an administrator's install, on macOS"
+        );
+        assert!(
+            !root_at(
+                path("/Applications/Claude.app/Contents/MacOS/Claude"),
+                |_| true
+            ),
+            "an application that is no terminal or editor"
+        );
+        assert!(!root_at(&copied, |_| true), "a copy of login");
+        let login = path("/usr/bin/login");
+        assert!(!root_at(login, |_| false), "login the person could change");
+        assert!(root_at(login, |_| true));
         if cfg!(target_os = "macos") {
             for system in [
                 "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
                 "/usr/bin/login",
             ] {
-                assert!(root_program(std::path::Path::new(system)), "{system}");
+                assert!(root_program(path(system)), "{system}");
             }
-            assert!(
-                !root_at(
-                    std::path::Path::new("/Applications/Claude.app/Contents/MacOS/Claude"),
-                    None,
-                    |_| true
-                ),
-                "an application that is no terminal or editor"
-            );
-        } else {
-            // Only a file root owns, in a system directory, counts.
-            let login = std::path::Path::new("/usr/bin/login");
-            assert!(root_at(login, None, |_| true));
-            assert!(!root_at(login, None, |_| false));
-            assert!(!root_at(&copied, None, |_| true));
         }
     }
 

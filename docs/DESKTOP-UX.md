@@ -381,8 +381,9 @@ Review lane that is the person's), nobody holds it, an agent holds it, and
 yours and your agents' (held by the person or by an agent whose record says
 the person started it — launched from the app, their own terminal, or on a
 card by hand or by a rule, or a session they started themselves in a
-terminal app, an IDE or over SSH with no agent's session anywhere above
-it — as `list_tasks` counts `mine`; each card still shows its holder) — and
+terminal app or IDE that root installed, or over SSH, with no agent's
+session anywhere above it — as `list_tasks` counts `mine`; each card still
+shows its holder) — and
 **Tags**, a row of the project's tags to show only cards that carry them all.
 **Table** lays every card of the project out as a row (key, lane mark,
 title, priority, due day, tags, holder; a row opens its card under it), and

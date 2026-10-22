@@ -473,11 +473,12 @@ pub const CHOSEN_NAME: &str = "chosen";
 /// agent started on a card by the person or by one of their board's rules;
 /// or a session that registered itself (hooks, MCP, `adopt`) whose
 /// process's parents reach the top through one of the person's session
-/// roots (their terminal or editor application, `login`, `sshd`) with no
-/// agent's session anywhere among them. [`LAUNCHED_BY_AGENT`] or
-/// [`LAUNCHED_BY_UNKNOWN`] for such a session whose parents say otherwise. Only the daemon sets it, and once
-/// set it stays: a client's spec never brings it in, and a record without it
-/// (a launch from inside an agent's session, a connector agent, a session
+/// roots (a terminal or editor application root installed, `login`,
+/// `sshd`) with no agent's session anywhere among them.
+/// [`LAUNCHED_BY_AGENT`] or [`LAUNCHED_BY_UNKNOWN`] for such a session
+/// whose parents say otherwise. Only the daemon sets it, and once set it
+/// stays: a client's spec never brings it in, and a record without it (a
+/// launch from inside an agent's session, a connector agent, a session
 /// known by its key alone, a record from before) is nobody's in particular.
 pub const LAUNCHED_BY_LABEL: &str = "launched_by";
 /// [`LAUNCHED_BY_LABEL`] for a registered session an agent's session stands
