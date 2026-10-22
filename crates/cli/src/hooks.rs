@@ -4249,6 +4249,7 @@ mod tests {
             reported_at: Utc::now(),
             received: None,
             received_at: None,
+            typing_until: None,
         });
         let backend = Observed(RefCell::new(Vec::new()), record);
         let delivery = HookDelivery {

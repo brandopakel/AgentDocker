@@ -44,6 +44,13 @@ impl Input {
         }
     }
 
+    /// The last keystroke of the line the person is typing, when the
+    /// bridge's editor reads them one by one. Without it the terminal's own
+    /// line discipline keeps the line until Enter, and nothing is seen.
+    pub fn typed_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.editor.as_ref().and_then(editor::Editor::typed_at)
+    }
+
     // State lives outside the future: a provider event can cancel this read
     // after any chunk, including while an oversized line is being discarded.
     pub async fn read<R: AsyncBufRead + Unpin>(

@@ -15,6 +15,7 @@ mod secret_requests;
 mod session_identity;
 mod terminal;
 mod transport;
+mod typing_hold;
 
 use crate::client::Client;
 use agentdocker_core::{
@@ -30,6 +31,9 @@ use tokio::{
     time::{interval, timeout},
 };
 use transport::Provider;
+
+/// How often the idle bridge looks at its queue.
+const POLL: Duration = Duration::from_millis(500);
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -375,7 +379,7 @@ async fn session(
     )
     .await?;
     println!("Codex ready. Send a message here or from AgentDocker.");
-    let mut poll = interval(Duration::from_millis(500));
+    let mut poll = interval(POLL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut heartbeat = interval(Duration::from_secs(30));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -389,6 +393,8 @@ async fn session(
     let mut request_ids = std::collections::HashSet::new();
     let mut file_reviews = file_changes::Reviews::default();
     let mut secrets = secret_requests::Session::new(agent)?;
+    let mut typing = typing_hold::Guard::default();
+    let poll_every = chrono::Duration::from_std(POLL).expect("a half second");
     // Interactive routes require the bounded editor to own terminal echo.
     // Non-terminal or unsupported interactive handles keep refusing.
     let secret_input = experimental(client).await.secret_input && (!input_open || terminal_editing);
@@ -530,6 +536,11 @@ async fn session(
                             || !ledger.record().attempt.as_ref().is_some_and(|a| a.acknowledged) {
                             continue;
                         }
+                        // Anyone else's words wait while the person types
+                        // here, at the head of the queue, and go once they stop.
+                        if typing.holds(client, agent, &human, message, input.typed_at(), chrono::Utc::now(), poll_every).await {
+                            continue;
+                        }
                         let input = ledger.prepare_steering(message, active)?;
                         let result = provider.request("turn/steer", json!({"threadId":thread,
                             "expectedTurnId":active, "clientUserMessageId":message.id,
@@ -565,6 +576,11 @@ async fn session(
                         }
                         // Re-read the queue after receipt reconciliation; a
                         // stale queue head may just have been acknowledged.
+                        continue;
+                    }
+                    // A turn started now would print into the person's
+                    // unfinished line: anyone else's words wait for them to stop.
+                    if typing.holds(client, agent, &human, message, input.typed_at(), chrono::Utc::now(), poll_every).await {
                         continue;
                     }
                     preflight(provider, &ledger.record().binding.cwd).await?;

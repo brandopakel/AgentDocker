@@ -426,6 +426,7 @@ mod tests {
             reported_at: born,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         let agents = vec![kept.clone(), receiving.clone()];
         let names = Naming::new(&agents, &aliases);

@@ -51,6 +51,9 @@ pub enum State {
     WaitsForCheckIn,
     /// Queued for a session whose receiver is live.
     WaitingToTake,
+    /// Queued for a session whose receiver holds its input while the person
+    /// types in its terminal ([`crate::typing`]).
+    HeldForTyping,
     Paused,
     Blocked,
     /// Queued for a session whose receiver has gone quiet.
@@ -101,6 +104,7 @@ impl State {
             Readiness::AwaitsCheckIn => Self::WaitsForCheckIn,
             Readiness::WaitsForPrompt => Self::WaitingForPrompt,
             Readiness::Ready { .. } => Self::WaitingToTake,
+            Readiness::HeldForTyping => Self::HeldForTyping,
         }
     }
 
@@ -115,6 +119,7 @@ impl State {
             Self::WaitingForPrompt => "waiting for its next prompt",
             Self::WaitsForCheckIn => "waits until it checks in",
             Self::WaitingToTake => "waiting for it to take it",
+            Self::HeldForTyping => "waiting for you to stop typing in its terminal",
             Self::Paused => "delivery paused",
             Self::Blocked => "its provider is blocked",
             Self::Silent => "its receiver has gone quiet",
@@ -228,6 +233,26 @@ mod tests {
         assert_eq!(
             crate::readiness::decide(&away, now, None).state,
             crate::readiness::State::AwaitsCheckIn
+        );
+        // Its receiver holds input while the person types in its terminal.
+        let mut held = live("codex");
+        held.process_started_at = Some(now - chrono::Duration::minutes(1));
+        held.input_delivery = Some(crate::InputDelivery {
+            process_started_at: now - chrono::Duration::minutes(1),
+            paused: false,
+            pause_reason: None,
+            reported_at: now,
+            received: None,
+            received_at: None,
+            typing_until: Some(now + crate::typing::QUIET),
+        });
+        assert_eq!(
+            State::of(Some(&held), &queued, None, now),
+            State::HeldForTyping
+        );
+        assert_eq!(
+            State::of(Some(&held), &queued, None, now + crate::typing::QUIET),
+            State::WaitingToTake
         );
         assert!(State::Shown.reached() && !State::WaitingForPrompt.reached());
         let newer: State = serde_json::from_str("\"read_by_human\"").unwrap();

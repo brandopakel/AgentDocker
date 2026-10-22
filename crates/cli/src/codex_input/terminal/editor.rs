@@ -2,6 +2,7 @@
 //! Unfinished input stays in bounded reader state across cancelled reads.
 use super::MAX_TEXT;
 use anyhow::{Result, ensure};
+use chrono::{DateTime, Utc};
 use std::io::Write;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 use unicode_segmentation::UnicodeSegmentation;
@@ -12,6 +13,11 @@ pub(super) struct Editor {
     bytes: Vec<u8>,
     oversized: bool,
     escape: u8,
+    /// The last keystroke of a line not yet ended, on the monotonic clock:
+    /// what the typing guard reads ([`agentdocker_core::typing`]). Enter, or
+    /// the end of input, clears it: a submitted line is the person's own
+    /// and holds nothing.
+    typed: Option<std::time::Instant>,
 }
 
 enum Event {
@@ -107,6 +113,14 @@ impl Editor {
         Event::Pending
     }
 
+    /// When that keystroke was, on the wall clock now: its age is measured
+    /// on the monotonic one, so a wall clock that steps back cannot stamp
+    /// it in the future and hold input for longer than a window.
+    pub fn typed_at(&self) -> Option<DateTime<Utc>> {
+        let age = chrono::Duration::from_std(self.typed?.elapsed()).ok()?;
+        Some(Utc::now() - age)
+    }
+
     pub async fn read<R: AsyncBufRead + Unpin>(
         &mut self,
         reader: &mut R,
@@ -138,6 +152,7 @@ impl Editor {
             reader.consume(consumed);
             // No await occurs between consuming bytes and retaining their
             // effect. A provider event may cancel the next read safely.
+            self.typed = matches!(event, Event::Pending).then(std::time::Instant::now);
             output.write_all(&echo)?;
             output.flush()?;
             match event {
@@ -215,6 +230,48 @@ mod tests {
                 .unwrap()
                 .contains("exceeds 16000 bytes")
         );
+    }
+
+    /// The typing guard's clock: every keystroke of an unfinished line,
+    /// arrows and erasures included, and nothing once the line is ended.
+    #[tokio::test]
+    async fn the_last_keystroke_of_an_unfinished_line_is_kept_until_it_ends() {
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let mut reader = BufReader::new(reader);
+        let mut editor = Editor::default();
+        let mut output = Vec::new();
+        assert_eq!(editor.typed_at(), None);
+        let before = Utc::now() - chrono::Duration::seconds(1);
+        writer.write_all(b"half a thou").await.unwrap();
+        assert!(
+            timeout(
+                Duration::from_millis(10),
+                editor.read_with_echo(&mut reader, &mut output)
+            )
+            .await
+            .is_err()
+        );
+        let first = editor.typed_at().expect("typing");
+        assert!(first >= before && first <= Utc::now());
+        writer.write_all(b"\x7f\x1b[A").await.unwrap();
+        assert!(
+            timeout(
+                Duration::from_millis(10),
+                editor.read_with_echo(&mut reader, &mut output)
+            )
+            .await
+            .is_err()
+        );
+        assert!(editor.typed_at().is_some_and(|at| at <= Utc::now()));
+        writer.write_all(b"ght\n").await.unwrap();
+        assert_eq!(
+            editor
+                .read_with_echo(&mut reader, &mut output)
+                .await
+                .unwrap(),
+            Some("half a thoght".into())
+        );
+        assert_eq!(editor.typed_at(), None, "a submitted line holds nothing");
     }
 
     fn supply(editor: &mut Editor, bytes: &[u8]) -> (Vec<Option<String>>, Vec<u8>) {

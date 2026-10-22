@@ -532,6 +532,14 @@ session's initial prompt, and once its receiver is back, queued delivery offers
 the same unacknowledged message again. Provider limits remain separate from receiver
 health. When the daemon does not report readiness, `send` prints `recipient input readiness unavailable from this daemon` rather than imply that every recipient can wake.
 
+While you type a line in a live Codex's terminal (one started with
+`--codex-input` or Launch agent), a message from anyone else waits until you
+have stopped for three seconds or pressed Enter, so it never starts a turn that
+prints over your line; your own messages never wait. Meanwhile its INPUT reads
+**Waiting for the person to stop typing** and `events` shows `input held`.
+AgentDocker types no message into any other terminal or multiplexer pane:
+other sessions take messages through their provider's own input.
+
 For an existing Claude session with no channel, save the current work, exit that
 Claude session, and either press **Reconnect here** on its row or in the app's
 session Details,

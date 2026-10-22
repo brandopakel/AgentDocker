@@ -2052,6 +2052,7 @@ impl App {
             | EventKind::AgentVcsChanged { .. }
             | EventKind::AdapterContactReported { .. } => self.send(Cmd::Agents),
             EventKind::InputDeliveryReported { .. }
+            | EventKind::InputHeldForTyping { .. }
             | EventKind::InputBound { .. }
             | EventKind::InputUnbound { .. }
             | EventKind::InputControllerEnded { .. }
@@ -6363,6 +6364,7 @@ pub(crate) mod tests {
             reported_at: now,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         let id = agent.id.to_string();
         app.agents.push(agent.clone());

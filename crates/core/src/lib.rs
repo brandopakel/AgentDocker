@@ -85,6 +85,7 @@ pub use policy::{Policy, Ruling};
 pub mod editor;
 pub mod multiplexer;
 pub mod terminal;
+pub mod typing;
 
 pub mod contest;
 pub use contest::{Contest, ContestId, Entry, Measure, Metric, Standing};

@@ -79,7 +79,7 @@ state, problems first, named while there are one or two in a state and counted
 beyond that; pointing at it lists each one's own line. The states are *answered*, *delivered*,
 *received by the model*, *shown to its session, not confirmed*, or why it still
 waits — *nothing connects its session to AgentDocker*, *waiting for its next
-prompt*, *waits until it checks in* (a browser agent, or a session away for hours), *delivery paused*, *session ended before taking it*. Nothing says
+prompt*, *waits until it checks in* (a browser agent, or a session away for hours), *waiting for you to stop typing in its terminal*, *delivery paused*, *session ended before taking it*. Nothing says
 *read*: the daemon cannot know it. **Agents** opens the
 session list and **Board** the project's cards. **More** opens a menu of History,
 Files in use, Usage, AgentDocker commands and the project's Pin and Forget; the tab takes the name of the screen on view and is underlined only
@@ -809,7 +809,10 @@ the inventory. Delivery, a session's readiness dot, says the same words as `ps`
 and a send's warning: **Ready for messages** (nothing taken
 yet), **Receiving messages**, **Not receiving messages**, **Not heard from
 recently**, **Messages may wait for its next prompt**, **Waits until it checks
-in** (a browser agent, or a session away for hours), **Can't receive
+in** (a browser agent, or a session away for hours), **Waiting for the person
+to stop typing** (a live Codex whose terminal you are typing a line in holds
+another sender's message until you have stopped for three seconds or pressed
+Enter; nothing is typed over your line), **Can't receive
 messages**, **Session ended** or the provider's limit, in a tone that follows
 the state; with words queued behind current delivery that no receipt names it
 reads **Sent · waiting for the agent to take it**, since an earlier receipt says nothing about them

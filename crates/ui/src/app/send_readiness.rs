@@ -39,13 +39,14 @@ impl Readiness {
     }
 
     /// Its tone, by the state, never by the words: green while it takes
-    /// messages, the accent while words wait for it, cyan while it waits
-    /// for a prompt or a check-in, amber when something stands in the way,
-    /// faint when it has ended or nothing is known.
+    /// messages, the accent while words wait for it (or for the person to
+    /// stop typing in its terminal), cyan while it waits for a prompt or a
+    /// check-in, amber when something stands in the way, faint when it has
+    /// ended or nothing is known.
     pub(super) fn tone(self, c: Colors) -> iced::Color {
         match self {
             Self::Decided(State::Ready { .. }) => c.green,
-            Self::Sending => c.accent,
+            Self::Sending | Self::Decided(State::HeldForTyping) => c.accent,
             Self::Decided(State::WaitsForPrompt | State::AwaitsCheckIn) => c.cyan,
             Self::Decided(
                 State::ProviderBlocked(_) | State::Paused | State::Silent | State::Unreachable,
