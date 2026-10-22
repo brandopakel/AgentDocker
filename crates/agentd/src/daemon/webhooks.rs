@@ -15,13 +15,21 @@
 //! may hold what the person typed. A sink's own failure event is committed
 //! through the ordinary path and never posted, so a failing sink cannot
 //! feed itself.
+//!
+//! Every attempt is written to the sink's delivery log in the store —
+//! which delivery, which attempt, what came of it, the status code or a
+//! word for why there was none, how long it took and when the next is
+//! due — bounded per sink and in all. The log has no event of its own:
+//! one per attempt would let a failing sink fill the event log the
+//! throttle on `webhook_failed` is there to protect.
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use agentdocker_core::config::{WebhookConfig, WebhookFormat};
-use agentdocker_core::{Event, EventKind, ProjectId};
+use agentdocker_core::webhook::{self, AttemptResult, WebhookAttempt};
+use agentdocker_core::{ErrorCode, Event, EventKind, ProjectId, Response};
 use hmac::{Hmac, Mac};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -29,7 +37,7 @@ use sha2::Sha256;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
-use super::Daemon;
+use super::{Daemon, lock};
 
 /// How many events one sink holds while a delivery is on its way; past
 /// that the oldest is dropped and counted.
@@ -263,17 +271,88 @@ enum Attempt {
     Refused(u16),
 }
 
+/// One attempt's outcome with what the log keeps of it: the receiver's
+/// status code, or a word for why there was none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Answer {
+    outcome: Attempt,
+    status: Option<u16>,
+    error: Option<&'static str>,
+}
+
+impl Answer {
+    fn status(status: u16, retry_after: Option<Duration>) -> Self {
+        Self {
+            outcome: classify(status, retry_after),
+            status: Some(status),
+            error: None,
+        }
+    }
+
+    fn failed(error: &'static str) -> Self {
+        Self {
+            outcome: Attempt::Again(Duration::ZERO),
+            status: None,
+            error: Some(error),
+        }
+    }
+}
+
 /// One POST, blocking, with the whole request under one deadline. The
 /// address is never in the error.
-fn post(agent: &ureq::Agent, url: &str, headers: &[(&str, String)], body: &[u8]) -> Attempt {
+fn post(agent: &ureq::Agent, url: &str, headers: &[(&str, String)], body: &[u8]) -> Answer {
     let mut request = agent.post(url);
     for (name, value) in headers {
         request = request.header(*name, value);
     }
     match request.send(body) {
-        Ok(response) => classify(response.status().as_u16(), retry_after(&response)),
-        Err(ureq::Error::StatusCode(code)) => classify(code, None),
-        Err(_) => Attempt::Again(Duration::ZERO),
+        Ok(response) => Answer::status(response.status().as_u16(), retry_after(&response)),
+        Err(ureq::Error::StatusCode(code)) => Answer::status(code, None),
+        Err(error) => Answer::failed(error_kind(&error)),
+    }
+}
+
+/// A word for why a request had no answer, never the error's own text,
+/// which can carry the address.
+fn error_kind(error: &ureq::Error) -> &'static str {
+    use std::io::ErrorKind;
+    match error {
+        ureq::Error::Timeout(_) => "timeout",
+        ureq::Error::HostNotFound => "dns",
+        ureq::Error::ConnectionFailed => "connect",
+        ureq::Error::Io(io) => match io.kind() {
+            ErrorKind::TimedOut => "timeout",
+            ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::AddrNotAvailable
+            | ErrorKind::HostUnreachable
+            | ErrorKind::NetworkUnreachable => "connect",
+            _ => "io",
+        },
+        ureq::Error::Tls(_) | ureq::Error::Pem(_) | ureq::Error::Rustls(_) => "tls",
+        ureq::Error::Protocol(_) | ureq::Error::Http(_) | ureq::Error::BadUri(_) => "protocol",
+        _ => "other",
+    }
+}
+
+/// What an attempt's outcome makes of its delivery, given which attempt
+/// it was (from 0) and the delays between attempts: the result, and how
+/// long to wait before the next attempt while one is due — the delay, or
+/// a longer `Retry-After`.
+fn settle(
+    outcome: &Attempt,
+    index: usize,
+    delays: &[Duration],
+) -> (AttemptResult, Option<Duration>) {
+    match outcome {
+        Attempt::Delivered => (AttemptResult::Delivered, None),
+        Attempt::Refused(_) => (AttemptResult::GaveUp, None),
+        Attempt::Again(after) => match delays.get(index) {
+            Some(delay) => (AttemptResult::Retrying, Some((*delay).max(*after))),
+            None => (AttemptResult::GaveUp, None),
+        },
     }
 }
 
@@ -453,7 +532,7 @@ async fn deliver(
             continue;
         };
         let mut reason = None;
-        for attempt in 0..=RETRY_DELAYS.len() {
+        for index in 0..=RETRY_DELAYS.len() {
             let timestamp = chrono::Utc::now().timestamp().to_string();
             let headers = [
                 ("content-type", "application/json".to_owned()),
@@ -468,14 +547,37 @@ async fn deliver(
             let agent = agent.clone();
             let url = sink.url.clone();
             let body = bytes.clone();
-            let outcome = tokio::task::spawn_blocking(move || {
+            let at = chrono::Utc::now();
+            let started = tokio::time::Instant::now();
+            let answer = tokio::task::spawn_blocking(move || {
                 let headers: Vec<(&str, String)> =
                     headers.iter().map(|(n, v)| (*n, v.clone())).collect();
                 post(&agent, &url, &headers, &body)
             })
             .await
-            .unwrap_or(Attempt::Again(Duration::ZERO));
-            match outcome {
+            .unwrap_or(Answer::failed("other"));
+            let took = started.elapsed();
+            let (result, wait) = settle(&answer.outcome, index, &RETRY_DELAYS);
+            let Some(owner) = daemon.upgrade() else {
+                return;
+            };
+            owner.log_webhook_attempt(&WebhookAttempt {
+                webhook: name.clone(),
+                delivery: projection.delivery.clone(),
+                seq: projection.seq,
+                event: projection.event.clone(),
+                attempt: u32::try_from(index + 1).unwrap_or(u32::MAX),
+                at,
+                duration_ms: u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
+                result,
+                status: answer.status,
+                error: answer.error.map(str::to_owned),
+                next_retry: wait.map(|wait| {
+                    chrono::Utc::now() + chrono::Duration::from_std(wait).unwrap_or_default()
+                }),
+            });
+            drop(owner);
+            match answer.outcome {
                 Attempt::Delivered => {
                     reason = None;
                     break;
@@ -484,10 +586,10 @@ async fn deliver(
                     reason = Some(format!("refused:{status}"));
                     break;
                 }
-                Attempt::Again(after) => {
+                Attempt::Again(_) => {
                     reason = Some("unreachable".to_owned());
-                    if let Some(delay) = RETRY_DELAYS.get(attempt) {
-                        tokio::time::sleep((*delay).max(after)).await;
+                    if let Some(wait) = wait {
+                        tokio::time::sleep(wait).await;
                     }
                 }
             }
@@ -655,6 +757,43 @@ impl Daemon {
     pub fn webhook_sinks(&self) -> usize {
         lock_sinks(self).started_from.len()
     }
+
+    /// Keep one attempt in its sink's delivery log, bounded per sink and
+    /// in all. A write the handover fence skips is not kept; a store that
+    /// fails is the daemon's storage failure, as for any other write.
+    fn log_webhook_attempt(&self, attempt: &WebhookAttempt) {
+        let _ = lock(&self.state).persist("webhook delivery log", |store| {
+            store.log_webhook_attempt(attempt, webhook::LOG_PER_WEBHOOK, webhook::LOG_TOTAL)
+        });
+    }
+
+    /// A sink's newest attempts, oldest first. A name that no running sink
+    /// has and no logged attempt carries is not found.
+    pub(super) fn webhook_deliveries(&self, name: &str, limit: Option<usize>) -> Response {
+        let limit = webhook::log_limit(limit);
+        let running = lock_sinks(self)
+            .started_from
+            .iter()
+            .any(|(sink, _)| sink.name == name);
+        let mut state = lock(&self.state);
+        let Some(attempts) = state.store_read("webhook delivery log", |store| {
+            store.webhook_attempts(name, limit)
+        }) else {
+            return state
+                .storage_failure()
+                .unwrap_or_else(|| Response::error(ErrorCode::Internal, "storage failed"));
+        };
+        if attempts.is_empty() && !running {
+            return Response::error(
+                ErrorCode::NotFound,
+                format!("no webhook named `{name}` runs here or has a logged delivery"),
+            );
+        }
+        Response::WebhookDeliveries {
+            webhook: name.to_owned(),
+            attempts,
+        }
+    }
 }
 
 fn lock_sinks(daemon: &Daemon) -> std::sync::MutexGuard<'_, Sinks> {
@@ -667,6 +806,7 @@ fn lock_sinks(daemon: &Daemon) -> std::sync::MutexGuard<'_, Sinks> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agentdocker_core::Request;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::Mutex;
@@ -980,10 +1120,167 @@ mod tests {
             ("local", "policy_updated", "refused:404", 1)
         );
         assert_eq!(seen.lock().unwrap().len(), 3, "no retry after a refusal");
-        // The file goes away: the sinks stop.
+        // Every attempt is in the log, oldest first: the 500 with its
+        // retry due, the 200 under the same delivery, the refusal given up.
+        let Response::WebhookDeliveries { webhook, attempts } = daemon
+            .handle(Request::WebhookDeliveries {
+                webhook: "local".into(),
+                limit: None,
+            })
+            .await
+        else {
+            panic!("a delivery log");
+        };
+        assert_eq!(webhook, "local");
+        let lines: Vec<_> = attempts
+            .iter()
+            .map(|a| (a.attempt, a.result, a.status, a.next_retry.is_some()))
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                (1, AttemptResult::Retrying, Some(500), true),
+                (2, AttemptResult::Delivered, Some(200), false),
+                (1, AttemptResult::GaveUp, Some(404), false),
+            ]
+        );
+        assert_eq!(attempts[0].delivery, attempts[1].delivery, "one delivery");
+        assert_ne!(attempts[1].delivery, attempts[2].delivery);
+        assert_eq!(
+            attempts[0].delivery, posted[0].0["x-agentdocker-delivery"],
+            "the id the receiver saw"
+        );
+        assert!(attempts.iter().all(|a| a.event == "policy_updated"
+            && a.seq > 0
+            && a.error.is_none()
+            && a.webhook == "local"));
+        let retry = attempts[0].next_retry.unwrap();
+        assert!(
+            retry >= attempts[0].at + chrono::Duration::seconds(1),
+            "{retry}"
+        );
+        // Nothing of the address, the secret or the body is kept.
+        let raw = serde_json::to_string(&attempts).unwrap();
+        let secret_text = String::from_utf8(read_secret(&secret).unwrap()).unwrap();
+        for kept_out in [
+            url.as_str(),
+            "127.0.0.1",
+            secret_text.as_str(),
+            "ids",
+            "text",
+        ] {
+            assert!(!raw.contains(kept_out), "{kept_out} in {raw}");
+        }
+        // A limit takes the newest, still oldest first.
+        let Response::WebhookDeliveries {
+            attempts: newest, ..
+        } = daemon
+            .handle(Request::WebhookDeliveries {
+                webhook: "local".into(),
+                limit: Some(1),
+            })
+            .await
+        else {
+            panic!("a delivery log");
+        };
+        assert_eq!(newest.as_slice(), &attempts[2..]);
+        // A name nobody runs and nothing logged is not found.
+        assert!(matches!(
+            daemon
+                .handle(Request::WebhookDeliveries {
+                    webhook: "nobody".into(),
+                    limit: None,
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+        // The file goes away: the sinks stop, and their log stays readable.
         std::fs::remove_file(home.join("agentd.toml")).unwrap();
         daemon.reload_webhooks().await;
         assert_eq!(daemon.webhook_sinks(), 0);
+        assert!(matches!(
+            daemon
+                .handle(Request::WebhookDeliveries {
+                    webhook: "local".into(),
+                    limit: None,
+                })
+                .await,
+            Response::WebhookDeliveries { attempts, .. } if attempts.len() == 3
+        ));
+    }
+
+    /// An outcome settles a delivery: delivered and refused end it; a
+    /// failure is retried after its delay, or a longer `Retry-After`,
+    /// until the delays run out, and then it gives up.
+    #[test]
+    fn an_outcome_settles_the_delivery_and_when_it_is_tried_again() {
+        let delays = [Duration::from_secs(1), Duration::from_secs(5)];
+        assert_eq!(
+            settle(&Attempt::Delivered, 0, &delays),
+            (AttemptResult::Delivered, None)
+        );
+        assert_eq!(
+            settle(&Attempt::Refused(404), 0, &delays),
+            (AttemptResult::GaveUp, None)
+        );
+        assert_eq!(
+            settle(&Attempt::Again(Duration::ZERO), 0, &delays),
+            (AttemptResult::Retrying, Some(Duration::from_secs(1)))
+        );
+        assert_eq!(
+            settle(&Attempt::Again(Duration::from_secs(30)), 1, &delays),
+            (AttemptResult::Retrying, Some(Duration::from_secs(30))),
+            "a longer Retry-After wins"
+        );
+        assert_eq!(
+            settle(&Attempt::Again(Duration::ZERO), 2, &delays),
+            (AttemptResult::GaveUp, None),
+            "the last attempt"
+        );
+        assert_eq!(classify(204, None), Attempt::Delivered);
+        assert_eq!(classify(429, None), Attempt::Again(Duration::ZERO));
+        assert_eq!(classify(503, None), Attempt::Again(Duration::ZERO));
+        assert_eq!(classify(410, None), Attempt::Refused(410));
+    }
+
+    /// A request with no answer is logged by a word for why, never by the
+    /// error's text: nobody listening is `connect`, a receiver that never
+    /// answers is `timeout`.
+    #[test]
+    fn an_unanswered_attempt_is_named_by_a_word() {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_millis(300)))
+            .max_redirects(0)
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let closed = {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let answer = post(
+            &agent,
+            &format!("http://127.0.0.1:{closed}/hook"),
+            &[],
+            b"{}",
+        );
+        assert_eq!(answer, Answer::failed("connect"));
+        assert_eq!(answer.outcome, Attempt::Again(Duration::ZERO));
+        let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = silent.local_addr().unwrap().port();
+        let held = std::thread::spawn(move || {
+            let (stream, _) = silent.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(1));
+            drop(stream);
+        });
+        let answer = post(&agent, &format!("http://127.0.0.1:{port}/hook"), &[], b"{}");
+        assert_eq!(answer, Answer::failed("timeout"));
+        held.join().unwrap();
+        assert_eq!(error_kind(&ureq::Error::HostNotFound), "dns");
+        assert_eq!(error_kind(&ureq::Error::Tls("handshake")), "tls");
     }
 
     /// A receiver that stalls does not stall the intake: the queue takes

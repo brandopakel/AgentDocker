@@ -1566,6 +1566,13 @@ pub enum Request {
         #[serde(default)]
         resource: Option<String>,
     },
+    /// A webhook sink's delivery log: its newest `limit` attempts (see
+    /// [`crate::webhook::log_limit`]), oldest first.
+    WebhookDeliveries {
+        webhook: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
 
     /// Replay the last `replay` stored events, then stream new ones until
     /// the connection closes.
@@ -2108,6 +2115,10 @@ pub enum Response {
     Leases {
         leases: Vec<Lease>,
     },
+    WebhookDeliveries {
+        webhook: String,
+        attempts: Vec<crate::WebhookAttempt>,
+    },
     Journal {
         project: crate::ProjectId,
         entries: Vec<JournalEntry>,
@@ -2272,6 +2283,28 @@ mod tests {
             serde_json::from_value::<Response>(serde_json::to_value(&current).unwrap()).unwrap(),
             current
         );
+    }
+
+    /// The delivery log is asked for by a sink's name, the limit left to
+    /// the daemon when absent, and answered under its own type.
+    #[test]
+    fn webhook_deliveries_decode_with_an_optional_limit() {
+        let request: Request =
+            serde_json::from_str(r#"{"op":"webhook_deliveries","webhook":"team"}"#).unwrap();
+        assert_eq!(
+            request,
+            Request::WebhookDeliveries {
+                webhook: "team".into(),
+                limit: None,
+            }
+        );
+        let response = Response::WebhookDeliveries {
+            webhook: "team".into(),
+            attempts: Vec::new(),
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["type"], "webhook_deliveries");
+        assert_eq!(serde_json::from_value::<Response>(json).unwrap(), response);
     }
 
     #[test]
