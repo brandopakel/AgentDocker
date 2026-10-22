@@ -34,7 +34,7 @@ The project may have a board of work: `list_tasks` shows its cards lane by
 lane (each lane has a category: backlog, ready, in_progress, review, blocked,
 done, cancelled), `my_tasks` the ones you hold, and `get_task` one in full —
 its fields, comments, history and the cards it waits on. A card has a key
-(`AD-12`), a title and what done means; it may carry typed `links` (path,
+(`APP-12`), a title and what done means; it may carry typed `links` (path,
 commit, pr, url, task, message, memory) — read them first. When you file a
 card, send a message or hand work over, put what the reader should open in
 `links` rather than in prose. Take work with `pull_task`: with no card named

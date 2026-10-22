@@ -498,10 +498,10 @@ mod tests {
                 .insert("session_id".into(), session.into());
             record
         };
-        let first = claude("claude-code-2923", "c960824c", 51890, 0);
-        let drifted = claude("claude-c960824c", "c960824c", 51890, 35);
-        let second = claude("claude-code-9529", "58ca8caa", 9529, 10);
-        let mut unused = record("chatgpt-browser-nsq1");
+        let first = claude("claude-code-4321", "c960824c", 4300, 0);
+        let drifted = claude("claude-c960824c", "c960824c", 4300, 35);
+        let second = claude("claude-code-4244", "58ca8caa", 4244, 10);
+        let mut unused = record("chatgpt-browser-ab12");
         unused.spec.runtime = "chatgpt-browser".into();
         unused.project = Some(project.clone());
         unused.spec.labels.insert(
@@ -511,7 +511,7 @@ mod tests {
         unused.last_seen = Utc::now() - chrono::Duration::days(9);
         let mut in_use = unused.clone();
         in_use.id = agentdocker_core::AgentId::generate();
-        in_use.spec.name = "claude-browser-9gok".into();
+        in_use.spec.name = "claude-browser-cd34".into();
         in_use.last_seen = Utc::now();
         app.agents = vec![
             first.clone(),

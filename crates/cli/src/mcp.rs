@@ -2538,7 +2538,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "list_tasks",
-            "description": "The project's board of work: cards in lanes, each with a key (AD-12), a title and what done means; each lane stands for a category (backlog, ready, in_progress, review, done, blocked, cancelled). Cards in the board's pull source are there to be pulled. Narrow it by lane, by whose it is (assignee: an agent, me or none), to open cards, by words or by tag.",
+            "description": "The project's board of work: cards in lanes, each with a key (APP-12), a title and what done means; each lane stands for a category (backlog, ready, in_progress, review, done, blocked, cancelled). Cards in the board's pull source are there to be pulled. Narrow it by lane, by whose it is (assignee: an agent, me or none), to open cards, by words or by tag.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2578,7 +2578,7 @@ fn bare_tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "task": { "type": "string", "description": "Card key (AD-12), id or unique prefix; the next ready card when absent." },
+                    "task": { "type": "string", "description": "Card key (APP-12), id or unique prefix; the next ready card when absent." },
                     "take_over_from": { "type": "string", "description": "The holder whose lapsed hold you take the card from (yourself, for your own). Refused if the card names somebody else or that hold is live." },
                     "project": { "type": "string", "description": "Where to pull the next card from; your own project when absent." },
                     "board": { "type": "string", "description": "Board slug or name; the main board when absent." }
@@ -2609,7 +2609,7 @@ fn bare_tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "task": { "type": "string", "description": "Card key (AD-12), id or unique prefix." }
+                    "task": { "type": "string", "description": "Card key (APP-12), id or unique prefix." }
                 },
                 "required": ["task"],
                 "additionalProperties": false
@@ -2709,7 +2709,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "create_task",
-            "description": "File a card on the board: a title, what done means, and where (backlog unless said; the pull source when it is for anyone to pull). It gets a key such as AD-12. Tags must be the project's (`list_tags`; `create_tag` makes one).",
+            "description": "File a card on the board: a title, what done means, and where (backlog unless said; the pull source when it is for anyone to pull). It gets a key such as APP-12. Tags must be the project's (`list_tags`; `create_tag` makes one).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2736,7 +2736,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "search_tasks",
-            "description": "Find cards by words, best first: a key (AD-12) answers exactly; otherwise every word must be somewhere on the card — title, description, acceptance, tags — and small typing slips are forgiven. Your project's cards unless you name one.",
+            "description": "Find cards by words, best first: a key (APP-12) answers exactly; otherwise every word must be somewhere on the card — title, description, acceptance, tags — and small typing slips are forgiven. Your project's cards unless you name one.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2887,6 +2887,8 @@ fn bare_tool_definitions() -> Vec<Value> {
                 "properties": {
                     "content": { "type": "string", "maxLength": 2048 },
                     "supersedes": { "type": "string", "description": "The id of the memory this one replaces." },
+                    "standing": { "type": "boolean", "description": "Said first in the profile, before the recent ones: a convention or a decision rather than news." },
+                    "forget_after": { "type": "string", "format": "date-time", "description": "An RFC 3339 time after which it is no longer said." },
                     "links": { "type": "array", "maxItems": 8, "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
                 },
                 "required": ["content"],
@@ -2895,7 +2897,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "search_memory",
-            "description": "This project's memories that answer the words, the best first; superseded ones are left out.",
+            "description": "This project's memories that answer the words, the best first: whole words, the rarer ones counting for more, a newer memory winning a tie; superseded and expired ones are left out.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2908,7 +2910,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_profile",
-            "description": "What this project's agents should know first: its current memories, newest first.",
+            "description": "What this project's agents should know first: its standing memories, the oldest first, then the others, newest first.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3452,9 +3454,9 @@ mod tests {
         );
         record.status = AgentStatus::Running;
         record.pid = Some(4321);
-        // Retain the ID that reproduced a false PID-leak assertion in CI.
-        // A hidden value can coincidentally be a substring of a visible ID.
-        record.id = "df94c3a161294321b7f982e8837c81c7".into();
+        // An ID that holds the pid as a substring: a hidden value can
+        // coincidentally be a substring of a visible ID.
+        record.id = "0123456789abcdef4321abcdef012345".into();
         record.project = Some(ProjectRef::directory("/work/alpha"));
         record.vcs = Some(VcsState {
             branch: Some("feat/x".into()),

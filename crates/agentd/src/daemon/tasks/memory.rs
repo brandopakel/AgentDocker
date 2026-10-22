@@ -83,6 +83,7 @@ impl Daemon {
         actor.ok_or_else(|| Box::new(Response::error(ErrorCode::Invalid, "name a project")))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::daemon) async fn memory_add(
         self: &Arc<Self>,
         from: &str,
@@ -90,6 +91,8 @@ impl Daemon {
         text: &str,
         links: Vec<agentdocker_core::Link>,
         supersedes: Option<String>,
+        standing: bool,
+        forget_after: Option<chrono::DateTime<Utc>>,
     ) -> Response {
         let project = match self.memory_project(Some(from), project).await {
             Ok(project) => project,
@@ -134,7 +137,9 @@ impl Daemon {
             links,
             supersedes,
             Utc::now(),
-        ) {
+        )
+        .and_then(|memory| memory.standing(standing).forget_after(forget_after))
+        {
             Ok(memory) => memory,
             Err(reason) => return Response::error(ErrorCode::Invalid, reason),
         };
@@ -165,10 +170,15 @@ impl Daemon {
             Err(response) => return *response,
         };
         Response::Memories {
-            memories: memory::search(&memories, query, limit.unwrap_or(20).clamp(1, 100))
-                .into_iter()
-                .cloned()
-                .collect(),
+            memories: memory::search(
+                &memories,
+                query,
+                limit.unwrap_or(20).clamp(1, 100),
+                Utc::now(),
+            )
+            .into_iter()
+            .cloned()
+            .collect(),
         }
     }
 
@@ -187,10 +197,14 @@ impl Daemon {
             Err(response) => return *response,
         };
         Response::Memories {
-            memories: memory::profile(&memories, max_chars.unwrap_or(4000).clamp(1, 64_000))
-                .into_iter()
-                .cloned()
-                .collect(),
+            memories: memory::profile(
+                &memories,
+                max_chars.unwrap_or(4000).clamp(1, 64_000),
+                Utc::now(),
+            )
+            .into_iter()
+            .cloned()
+            .collect(),
         }
     }
 

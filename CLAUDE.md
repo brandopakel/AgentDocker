@@ -1,6 +1,6 @@
 # AgentDocker — notes for coding agents
 
-Read `README.md` for the model, `docs/README.md` for what each document is for, `docs/ARCHITECTURE.md` for the protocol and semantics and `docs/REMAINING-WORK.md` for what is still open.
+Read `README.md` for the model, `docs/README.md` for what each document is for and `docs/ARCHITECTURE.md` for the protocol and semantics.
 
 ## Layout
 
@@ -26,15 +26,15 @@ Run an isolated daemon for manual testing: `AGENTDOCKER_HOME=/tmp/ad-test agentd
 
 ## Documentation contract
 
-The docs are the record of what the repository does and how far it is delivered — each document the current contract for one thing, and no dated plans, audits or reviews. A new document needs a reason a line in an existing one cannot serve. Every change that alters behaviour, a contract or a delivery status updates them in the same PR:
+Each document is the current contract for one thing: what the code does, how to use it, and what it will not do. The documents carry no state. No dates, versions under trial, delivery status, plans, audits, reviews or trial evidence, and nothing about a particular person, machine, host, project, agent or session. Open work lives on the project's board or issue tracker, and evidence from a trial on real binaries stays in its pull request. Examples use placeholders (`<project>`, `~/work/app`, `agent-1`), never names, paths or ids from a real run. A new document needs a reason a section in an existing one cannot serve.
 
-- `docs/ARCHITECTURE.md` for a protocol, event, error code, schema or semantic change (the request/response table, the events list, the phase rows).
-- `docs/REMAINING-WORK.md` for what an open item now has in source and what is still open.
-- `docs/README.md` (the docs index): a new document is linked there.
+Every change that alters behaviour or a contract updates the document that states it, in the same PR:
+
+- `docs/ARCHITECTURE.md` for a protocol, event, error code, schema or semantic change (the request/response table, the events list).
 - `docs/GUIDE.md`, `docs/DESKTOP-UX.md` or the root `README.md` when a command, tool or screen changes for the person using it.
-- Evidence from a trial on real binaries goes in the pull request, never in the repository.
+- `docs/README.md` (the docs index): a new document is linked there.
 
-`python3 scripts/docs_check.py` runs in `scripts/verify.sh check` and in CI: the docs index must list every document, every relative link must resolve, and a change under `crates/`, `scripts/`, `packaging/`, `.github/`, `install.sh` or `Makefile` must come with a documentation change or with a commit whose message has a line starting `Docs:` saying why none is due (`Docs: unchanged, a rename with no behaviour change`).
+`python3 scripts/docs_check.py` runs in `scripts/verify.sh check` and in CI. The docs index must list every document and every relative link must resolve. A change under `crates/`, `scripts/`, `packaging/`, `.github/`, `install.sh` or `Makefile` must come with a documentation change or with a commit whose message has a line starting `Docs:` saying why none is due (`Docs: unchanged, a rename with no behaviour change`). No document may carry a specific: a date, a pull request, issue or CI run number, a commit, a home directory or a real agent's name. Names private to one setup (a machine, a host, a project) are listed one per line in a file named by `AGENTDOCKER_SPECIFICS_DENYLIST`, kept outside the repository.
 
 ## Verification
 

@@ -445,7 +445,7 @@ mod tests {
     fn scratch_is_the_shared_temporary_roots_and_the_private_ones() {
         for scratch in [
             "/tmp/agentdocker-newcomer",
-            "/private/tmp/agentdocker-channel-live-receipt-20260918/workspace",
+            "/private/tmp/agentdocker-fixture/workspace",
             "/var/tmp/x",
             "/private/var/tmp/x",
             "/private/var/folders/t1/abc/T/fixture",

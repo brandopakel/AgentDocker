@@ -2564,7 +2564,7 @@ mod tests {
             // Well above any live pid on a test machine.
             pid: u32::MAX - 7,
             https_port: 443,
-            target: "127.0.0.1:62800".into(),
+            target: "127.0.0.1:8765".into(),
         };
         let calls = |dir: &Path| std::fs::read_to_string(dir.join("calls.log")).unwrap_or_default();
 
@@ -2572,7 +2572,7 @@ mod tests {
         let home = tempfile::TempDir::new().unwrap();
         let tools = tempfile::TempDir::new().unwrap();
         agentdocker_host::connector::write_funnel(home.path(), &record).unwrap();
-        let fake = fake_tailscale(tools.path(), 443, "http://127.0.0.1:62800", false);
+        let fake = fake_tailscale(tools.path(), 443, "http://127.0.0.1:8765", false);
         clear_stale_funnel(home.path(), Some(&fake)).await.unwrap();
         assert!(calls(tools.path()).contains("funnel --https=443 off"));
         assert!(agentdocker_host::connector::read_funnel(home.path()).is_none());
@@ -2631,7 +2631,7 @@ mod tests {
         let record = |pid: u32| agentdocker_host::connector::FunnelRecord {
             pid,
             https_port: 8443,
-            target: "127.0.0.1:62800".into(),
+            target: "127.0.0.1:8765".into(),
         };
         assert_eq!(
             stale_funnel(home.path()),

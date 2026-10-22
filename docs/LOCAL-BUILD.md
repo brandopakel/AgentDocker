@@ -1,15 +1,14 @@
 # Build and install AgentDocker from source
 
-One command builds the release binaries, packages the native app for this
-machine and installs it for your user, so the next launch runs what you just
+One command builds the release binaries, packages the native app for the
+current platform and installs it for your user, so the next launch runs what you just
 built:
 
 ```sh
 make install
 ```
 
-Run this from your AgentDocker source checkout. Private temporary directories
-used by engineering tests are not installation prerequisites. The installed Mac
+Run this from your AgentDocker source checkout. The installed Mac
 app prefers `/Applications/AgentDocker.app` when that folder is writable and the
 name is available or already managed by this installation. Otherwise it uses
 `~/Applications/AgentDocker.app`. The chosen destination persists; when the app
@@ -20,7 +19,7 @@ Then quit AgentDocker and open it again. The Dock, Spotlight, the `agentdocker`
 and `agentd` commands in `~/.local/bin`, and the MCP entry your agent tools use
 all follow one managed pointer, so they switch together.
 The real launcher bundle retains `Contents/MacOS/agentdocker`, `agentd` and
-`agentdocker-ui` executables for older integrations. The installer copies the
+`agentdocker-ui` executables for integrations that call them by those names. The installer copies the
 signed payload intact; each entry point redirects to the active immutable release
 using installation metadata outside the app bundle. Its launch executable is
 `agentdocker-ui`: an executable named only `AgentDocker` would collide with the
@@ -50,13 +49,12 @@ agent work and run `make restart-daemon` (or `agentdocker daemon restart`).
 If the reload reply is lost or unexpected, the installer probes the serving
 daemon again without replaying the reload. Its report sets `reloaded` to `null`
 (unknown), preserves `before`, and shows the newly observed `serving` daemon
-or `null` if none answers. What the gate still waits for is in
-[REMAINING-WORK.md](REMAINING-WORK.md), safe live daemon replacement.
+or `null` if none answers.
 
 ## First install over a hand-copied app
 
-Installations before this command copied files by hand (`install.sh`, or the
-bundle script). The installer keeps unrelated files safe by refusing to
+A hand-copied installation (`install.sh` or the bundle script) predates the
+managed one. The installer keeps unrelated files safe by refusing to
 overwrite an app or command it did not install, and `install.sh` refuses in
 the other direction: it will not copy over the links a managed installation
 owns, and when it does replace a hand-copied bundle it stages the new one
@@ -73,9 +71,9 @@ agentdocker daemon stop
 ```
 
 Then move the hand-copied files into a fresh backup directory (the name
-carries a timestamp so an earlier backup is never overwritten) and install:
+carries a timestamp so an existing backup is never overwritten) and install:
 
-One command per line; a pasted line continuation has broken this before.
+Run one command per line; a pasted line continuation breaks the sequence.
 
 ```sh
 backup=~/AgentDocker-old-$(date +%Y%m%d-%H%M%S)
@@ -91,7 +89,7 @@ The `lsregister -u` line matters: Launch Services otherwise keeps the moved
 bundle registered and the Dock or Spotlight reopens the old app from the
 backup folder. Quit any old window that is still open, then restart agent
 sessions (Claude Code, Codex) so their helper processes run the new build,
-and run `agentdocker setup <tool>` for integrations the old build lacked.
+and run `agentdocker setup <tool>` for integrations the old build lacks.
 The state database upgrades one way on the first start of the new daemon;
 the copy in the backup folder is the rollback for it.
 
@@ -127,4 +125,4 @@ reads the artifact directory the build reports.
 Requirements: Rust (see `rust-version` in `crates/ui/Cargo.toml`), Python 3.11+,
 and on macOS the Xcode command-line tools. End users of a packaged app need
 none of these. Public, signed builds are described in
-Desktop distribution (in git history).
+[DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md).

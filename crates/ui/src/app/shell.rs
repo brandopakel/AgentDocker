@@ -5413,6 +5413,8 @@ mod tests {
             links: vec![],
             supersedes: None,
             created_at: Utc::now(),
+            standing: false,
+            forget_after: None,
         };
         let drain = |commands: &CommandReceiver| commands.try_iter().collect::<Vec<_>>();
         app.shell
@@ -8831,7 +8833,7 @@ mod tests {
         let now = Utc::now();
         let mut paused = AgentRecord::new(
             agentdocker_core::AgentSpec {
-                name: "claude-code-0180".into(),
+                name: "claude-code-4245".into(),
                 runtime: "claude-code".into(),
                 workdir: Some("/work/repo".into()),
                 ..Default::default()

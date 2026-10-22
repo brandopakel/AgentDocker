@@ -8,136 +8,109 @@ sign-in or limit message without replaying input or declaring recovery.
 
 ## Existing Codex terminals: native queue
 
-The current implementation connects an existing Codex CLI conversation to
-AgentDocker's ordinary human/peer queue. A verified Codex hook starts one detached
-receiver automatically. It binds the provider PID and birth, thread, profile,
-checkout and daemon endpoint; it neither types into the terminal nor starts or
-resumes a conversation. Codex's native `thread/queue/add` route schedules the next
+AgentDocker connects an existing Codex CLI conversation to its ordinary
+human/peer queue. A verified Codex hook starts one detached receiver
+automatically. It binds the provider PID and birth, thread, profile, checkout and
+daemon endpoint; it neither types into the terminal nor starts or resumes a
+conversation. Codex's native `thread/queue/add` route schedules the next
 ordinary input and preserves the terminal's unfinished draft and permission UI.
 
-The receiver requires the schema-20 controller binding and answer migration and
-Codex's experimental native queue API (tested with CLI 0.154.0). The September 17
-installed `f5e298f4` package (source `418fbc9`, schema 23) includes the reviewed
-active-hook and receiver-upgrade fixes; its September 17 receiver upgrade kept
-every retained receipt in order, and one CLI-origin message then started a new
-Codex turn while idle, with a correlated reply. Broader lifecycle acceptance remains.
-At the earlier September 15 `cf64ca3` installation (schema20),
-the existing Codex session auto-started its receiver and offered a queued peer
-message. That message automatically started the next ordinary turn without
-another human prompt, with its exact provider receipt and queue acknowledgement.
-This is one installed existing-session acceptance, recorded in the
-[native queue evidence](verification/INDEX.md). An accepted hook
-configuration is needed to start a receiver for an existing terminal. Setup now
+The receiver requires a daemon whose schema includes the controller binding and
+answer routing, and Codex's experimental native queue API. An accepted hook
+configuration is needed to start a receiver for an existing terminal. Setup
 includes `SessionStart`, which verifies identity and starts the receiver without
-asserting working/idle activity or consuming hook context. Actual CLI 0.154.0
-delays this hook until a turn starts, even after reopening an existing thread.
-The initial-turn hook bootstrap passes; **startup/reopen with no prompt remains
-an observed gap**. MCP startup supplies no thread/profile identity in its
-environment, so it cannot safely infer that binding. The provider still requires review/trust
-of new hook definitions through `/hooks`. Merely
-installing MCP or receiving a hook event does not prove idle wake.
-Codex 0.160.0 can host MCP in a detached app-server instead of the TUI process.
-A local loopback trial exposed questions attributed to that server's separate
-agent, leaving the native conversation without asynchronous answer delivery.
-The candidate resolves each detached-host tool call using Codex's `threadId`
-and `sessionId` metadata against one existing live native binding in the same
-canonical provider profile and checkout. Codex 0.155.1 instead supplies the root
-session as `x-codex-turn-metadata.session_id`; when top-level `sessionId` is
-absent, both nested `session_id` and `thread_id` must exactly match `threadId`.
-All supplied identity fields must agree; null, malformed or conflicting newer
-fields cannot fall back to the older representation. It verifies the app-server process
-birth and executable. The canonical package-cache path supplies the host profile
-when Codex filters `CODEX_HOME` from the MCP environment; an explicitly supplied
-profile must agree. It requires the root thread/session to agree and refuses
-missing, ambiguous, stale or child bindings. Identity-resolution errors now say
-`cannot resolve native Codex identity` and retain their underlying cause. A
+asserting working/idle activity or consuming hook context. Codex delays this
+hook until a turn starts, even after reopening an existing thread, so the
+receiver binds at the first turn. A session that starts or reopens with no
+prompt emits no hook and stays unbound until its first turn; the owned
+`codex-native` launcher (below) binds before the first prompt. MCP startup
+supplies no thread/profile identity in its environment, so it cannot safely
+infer that binding. The provider requires review and trust of new hook
+definitions through `/hooks`. Merely installing MCP or receiving a hook event
+does not prove idle wake. An explicit bootstrap-prompt resume binds with the same
+logical identity and drains the retained queue.
+
+Codex can host MCP in a detached app-server instead of the TUI process. Each
+detached-host tool call is resolved using Codex's `threadId` and `sessionId`
+metadata against one existing live native binding in the same canonical provider
+profile and checkout. Older Codex versions supply the root session as
+`x-codex-turn-metadata.session_id`; when top-level `sessionId` is absent, both
+nested `session_id` and `thread_id` must exactly match `threadId`. All supplied
+identity fields must agree; null, malformed or conflicting newer fields cannot
+fall back to the older representation. Resolution verifies the app-server
+process birth and executable. The canonical package-cache path supplies the host
+profile when Codex filters `CODEX_HOME` from the MCP environment; an explicitly
+supplied profile must agree. It requires the root thread/session to agree and
+refuses missing, ambiguous, stale or child bindings. Identity-resolution errors
+say `cannot resolve native Codex identity` and retain their underlying cause. A
 missing live binding does not establish a daemon connection failure; the daemon
-may have answered successfully with only an exited provider generation.
-This diagnostic does not create a binding or reconnect a conversation.
-It creates no app-server agent and
-never derives a thread from history or a display name. The native receiver keeps
-ownership of input receipts. Once resolved, a native question cannot fall back
-to a blocking legacy call if a binding changes during the request. This source
-change passed an actual Codex 0.160.0 macOS ARM64 loopback trial on
-`3065bd6e`: question identity matched the live TUI, its answer arrived once,
-and idle/draft/busy/recovery checks and private-process cleanup passed.
-Independent review and broader platform/version acceptance remain; this does
-not solve zero-prompt startup/reopen.
-Backend I/O failures while reading the binding inventory preserve the existing
-`agentd unreachable: <cause>` diagnostic and its cause chain. Local host or
+may have answered successfully with only an exited provider generation. This
+diagnostic does not create a binding or reconnect a conversation. It creates no
+app-server agent and never derives a thread from history or a display name. The
+native receiver keeps ownership of input receipts. Once resolved, a native
+question cannot fall back to a blocking legacy call if a binding changes during
+the request. Backend I/O failures while reading the binding inventory preserve
+the `agentd unreachable: <cause>` diagnostic and its cause chain. Local host or
 binding validation failures retain the native identity diagnostic.
 
 Native launch configuration flags are passed to both the dedicated server and
 its terminal, including supported settings on explicit UUID reopen. Remote resume
-restores the conversation’s saved permissions: direct overrides of `approval_policy`,
-`approvals_reviewer`, `default_permissions`, `sandbox_mode`, `sandbox_workspace_write`,
-`permissions` or `network`, including quoted root spellings, are refused before provider startup. Omit these overrides
-to reuse the saved permissions, or start a new conversation with new settings. The
-launcher never silently removes a requested restriction. The terminal reads local settings
+restores the conversation's saved permissions: direct overrides of
+`approval_policy`, `approvals_reviewer`, `default_permissions`, `sandbox_mode`,
+`sandbox_workspace_write`, `permissions` or `network`, including quoted root
+spellings, are refused before provider startup. Omit these overrides to reuse the
+saved permissions, or start a new conversation with new settings. The launcher
+never silently removes a requested restriction. The terminal reads local settings
 even in remote mode; dropping those flags can ignore launch-only preferences and
 let provider startup persist defaults. The launcher does not rewrite the profile.
-A controlled Mac comparison showed that the published launcher ignored a
-launch-only tooltip preference and persisted a counter; the corrected launcher
-honored it and preserved the private profile. Both trials retired cleanly.
-Codex 0.160 separately seeds its screen-reader detection marker directly from
-the saved user layer, before CLI overrides. Forwarding options does not prevent
-that provider first-use write. The Windows account preflight's exact marker
-addition was verified and restored. The corrected Windows account trial passed
-busy delivery, exact receipts, Unicode draft preservation, receiver replacement
-and normal exit. The first reopen then failed because the fixture repeated permission
-overrides. A later existing-account Windows trial on candidate `7dfd7c01`
-passed saved-permission UUID reopen without another prompt and early refusal
-before provider startup, alongside busy delivery, receipts, draft preservation
-and receiver replacement. All 28 observed process generations retired without
-force; configuration and protected sessions were independently verified. Final
-hosted beta.14 integration, broader versions and physical input remain open.
+Codex separately seeds its screen-reader detection marker directly from the saved
+user layer, before CLI overrides. Forwarding options does not prevent that
+provider first-use write.
 
 The receiver probes the read-only queue/history APIs before taking ownership.
 Hooks keep their normal delivery while that probe is pending or unsupported;
 only an accepted daemon binding suppresses their competing reads. An incompatible
 provider version on an existing binding keeps the queue and reports a pause.
 
-The candidate receiver also has a hidden `--app-server-record` integration path
-for an existing authenticated loopback app-server. Its private immutable record
-pins the native terminal and server process births, executable, checkout, profile,
-thread, numeric loopback port and capability-file digest. Both processes must
-select that exact endpoint in their arguments. The ledger retains the
-record path and digest; reconnect verifies both processes and the capability
-again, then checks the initialized profile and existing thread. It does not
-create or resume a conversation. The WebSocket observer bounds frames and
-notifications, reads durable history for receipts, refuses provider requests
-and cannot answer approvals. It opts out of streamed message, reasoning, command,
-file-change, diff and plan notifications on its own connection, keeping unused
-output from exhausting its bounded reader. Closing it closes only its socket.
-The `--app-server-record` argument alone launches nothing; the owned `codex-native`
+The receiver also has a hidden `--app-server-record` integration path for an
+existing authenticated loopback app-server. Its private immutable record pins the
+native terminal and server process births, executable, checkout, profile, thread,
+numeric loopback port and capability-file digest. Both processes must select that
+exact endpoint in their arguments. The ledger retains the record path and digest;
+reconnect verifies both processes and the capability again, then checks the
+initialized profile and existing thread. It does not create or resume a
+conversation. The WebSocket observer bounds frames and notifications, reads
+durable history for receipts, refuses provider requests and cannot answer
+approvals. It opts out of streamed message, reasoning, command, file-change, diff
+and plan notifications on its own connection, keeping unused output from
+exhausting its bounded reader. Closing it closes only its socket. The
+`--app-server-record` argument alone launches nothing; the owned `codex-native`
 launcher and version-2 birth admission are described below. Without a valid birth
-receipt, an unavailable pre-first-message history API still refuses delivery.
+receipt, an unavailable pre-first-message history API refuses delivery.
 
 For a first installation, preview **Tools → Codex → Review setup** (or
 `agentdocker setup codex --preview`), then apply the reviewed plan. The plan
 installs MCP, hooks and the shared coordination skill; it does not start a
 receiver for an unverified conversation. Accept the new hook definitions in
-Codex as required by the provider. On the tested CLI 0.154.0, the first ordinary
-turn emits the verified startup hook and bootstraps the receiver automatically.
-A separate maintainer-only receiver install is not required. Verify actual
-receipt for that session; a new or reopened terminal with no first turn still
-has the zero-prompt gap described above. An unsupported queue API must report
-its limitation, not claim idle delivery. Empty-profile setup/health/undo passed on `ce82d06` as configuration-only
-acceptance. Actual fresh-profile authentication, hook trust, model delivery
-and independent OS-account acceptance remain.
+Codex as required by the provider. The first ordinary turn emits the verified
+startup hook and bootstraps the receiver automatically. A separate
+maintainer-only receiver install is not required. Verify actual receipt for that
+session; a new or reopened terminal with no first turn has no receiver until its
+first turn, as described above. An unsupported queue API reports its limitation
+and does not claim idle delivery.
 
-The private `AGENTDOCKER_HOME/codex-queue/<agent-id>` record stores the controller
-token before binding and the exact input before offering it. An enqueue reply is
-only an offer. The receiver records the matching provider thread/turn/user-item
-before acknowledging the original AgentDocker message. Restart recovers that
-receipt or the exact native queue entry; absence of either pauses delivery and
-never authorizes blind resubmission. Competing legacy consumers are fenced by
-the daemon. A registered
-launch descriptor lets the daemon restart an ended receiver with bounded backoff,
-without restarting the provider or waiting for a hook. It pins the receiver's
-installed release and contains paths and arguments, not authentication. Delivered
-message bodies are discarded from the private ledger; only 128 receipt records
-are retained. `inbox --peek` provides administrative inspection of a bound queue.
+The private `$AGENTDOCKER_HOME/codex-queue/<agent-id>` record stores the
+controller token before binding and the exact input before offering it. An
+enqueue reply is only an offer. The receiver records the matching provider
+thread/turn/user-item before acknowledging the original AgentDocker message.
+Restart recovers that receipt or the exact native queue entry; absence of either
+pauses delivery and never authorizes blind resubmission. Competing legacy
+consumers are fenced by the daemon. A registered launch descriptor lets the
+daemon restart an ended receiver with bounded backoff, without restarting the
+provider or waiting for a hook. It pins the receiver's installed release and
+contains paths and arguments, not authentication. Delivered message bodies are
+discarded from the private ledger; only 128 receipt records are retained.
+`inbox --peek` provides administrative inspection of a bound queue.
 
 When a person explicitly reopens the same Codex thread, the verified hook finds
 its prior binding. A detached helper waits for the old receiver to exit and asks
@@ -148,97 +121,56 @@ receiver descriptor, whose locked ledger accepts the new process only after
 checking the daemon's matching generation and retained token. A live prior
 process, different conversation or missing ledger refuses the handoff.
 
-A real Codex terminal with a private profile and loopback Responses fixture has
-passed idle wake, draft preservation, mixed human/peer busy ordering, new
-asynchronous MCP questions, old synchronous MCP answers without duplicate input,
-a typed HTTP 429 hold with explicit resumption, lost queue replies and retained
-ambiguous submissions. These bounded fixtures do not establish paid-account,
-long-duration or every-provider acceptance. Combined `7133023` passed the full
-962-Rust/70-Python gate and six release-binary trials: disconnected questions,
-generic legacy replies, canonical process resume, new MCP questions, rate limits
-and ambiguous-submission recovery. The schema-20 historical-answer migration passed the release-binary fixture at
-`8831524`: the consumed synchronous answer was reconciled without another turn.
-The later `2a7656c` binary source passed the full
-964-Rust/70-Python gate. Zero-prompt reopen, final CI and installation remain open;
-see the
-delivery audit (MESSAGE-DELIVERY-AUDIT.md in git history). Repeat the trials with
-`python3 scripts/native_codex_queue_smoke.py --help` for the required binary paths
-and scenario choices. Each run saves a sanitized result beside private traces.
-`--reload --scenario question` additionally hands the private daemon over while
-idle, with an unsubmitted draft, during mixed-origin busy input and with a
-pending question. It checks unchanged provider/controller identities, exact
-answer receipt and retirement of all trial daemons and controllers. This uses
-the actual native client with a loopback model fixture; real account/provider
-service acceptance and other runtimes remain separate.
-Trial cleanup also covers provider startup failure after the private daemon
-has started, before the terminal reader or input binding exists.
+The daemon holds a synchronous question's answer until its route is settled. An
+answer handed to that tool stays queued as uncertain until the receiver finds its
+exact provider tool receipt. An unoffered answer from a CLI-posted question or
+disconnected ask uses ordinary input when the daemon confirms answer routing.
+Unknown historical offers require reconciliation.
 
-The daemon holds a synchronous question's answer until its route is settled.
-An answer handed to that tool stays queued as uncertain until the receiver finds
-its exact provider tool receipt. An unoffered answer from a CLI-posted question
-or disconnected ask uses ordinary input when the daemon confirms answer routing.
-Unknown historical offers still require reconciliation. The fixture includes
-`posted-question`, `disconnected-question` and explicit TUI `resume` scenarios;
-those passed on the recorded sources. Startup/reopen without a prompt failed the actual lifecycle trial and remains
-open; historical schema-19 answer migration passed its bounded fixture.
-The candidate's former 45-second idle guard caused a real long-busy failure.
-At `5f72f37`, a direct user turn held open for over 45 seconds retained peer input
-in the native queue, but the receiver incorrectly classified the turn as idle
-and paused delivery. Its historical turn query does not establish live TUI
-idleness. Live diagnostic trial 27 reproduced it: the sidecar reported
-`notLoaded` and reconstructed the active turn as `interrupted`, without a
-completion time. The correction removes the inferred idle deadline while the
-exact native queue entry remains present. One outstanding offer, exact receipts,
-provider-generation checks and the missing-entry reconciliation deadline remain.
-A queue offer still does not prove provider consumption or task completion.
-Fixed `5aeb651` passed the full 967-Rust/70-Python gate and actual 65-second
-long-busy, idle-wake, draft/FIFO and receiver-crash acceptance. A separate
-rate-limit hold/resume also passed. The recovery trial passed its functional
-checks but failed process cleanup; its raw pass label was incorrect and is not
-accepted. The driver now marks every exception failed and rechecks child exit
-after a process-group signal error. A deliberate late cleanup exception then
-correctly failed with exit 1. The next recovery repeat exposed the fixture
-competing with automatic receiver restart; fault injection now takes the
-receiver lock and leaves replacement solely to the daemon. PRs #148/#149 are
-merged after final evidence, review and CI. Corrected recovery34 at
-`bc0ea04` passed both lost-enqueue-reply reconciliation to the original native
-queue ID and uncertain-input retention without resubmission, using the real
-daemon supervisor. The long-busy defect is fixed and has bounded acceptance;
-installed-session verification still gates delivery. Trial 25 was a
-separate fixture input failure; trial 26 is the application defect. Both are
-retained in the [source-specific evidence](verification/INDEX.md).
-Use the existing driver's `--scenario long-busy` to hold a direct user turn for
-65 seconds, require both human/peer inputs to remain queued without a receipt or
-pause, then verify their ordered consumption and receiver crash recovery.
+The receiver does not infer idleness from elapsed time. A direct user turn held
+open for a long time keeps peer input in the native queue: the historical turn
+query does not establish live TUI idleness (the sidecar can report `notLoaded` and
+reconstruct an active turn as `interrupted`, without a completion time), so no
+idle deadline is inferred while the exact native queue entry remains present. One
+outstanding offer, exact receipts, provider-generation checks and the
+missing-entry reconciliation deadline apply. Receipt-history and provider-queue
+scans each have a one-minute total bound. A queue offer does not prove provider
+consumption or task completion. A live bootstrap marker is preserved; a dead
+receiver generation's marker may be replaced after a successful launch, and the
+private ledger validates the provider generation independently.
 
-## Active input in an existing terminal (candidate, September 17 UTC)
+The receiver keeps one outstanding offer and follows Codex's queue polling
+cadence, so a burst of messages is delivered durably and in order, with no
+low-latency promise.
 
-The native queue starts new turns only at idle. Its binding used to suppress
-all hook context, so an app pause could wait behind hours-old messages throughout
-an active turn. A PreToolUse/PostToolUse hook whose process matches the bound
-provider generation now asks that same receiver
-for the next FIFO input over a private local socket. The receiver remains the
-only daemon queue consumer; the hook never acknowledges messages itself.
+## Active input in an existing terminal
 
-A private version-3 ledger reserves the exact hook context before removing its
-own native queue entry and returning output. A false or lost removal response,
-a lost hook response, or missing exact history keeps the original input for
-reconciliation without automatic resubmission. The receiver accepts the matching complete provider context receipt. Actual
-Codex 0.154 records Pre/PostToolUse context as a developer message tagged
-`hooks.additional_context`, with a provider item ID and turn ID, but omits it
-from `thread/items/list`. A bounded reader therefore verifies the provider's
-reported transcript path, profile/session/checkout, opened file identity and
-complete records after the pre-offer byte boundary. The September 21 correction
+The native queue starts new turns only at idle, and a bound session suppresses
+ordinary hook context. A PreToolUse/PostToolUse hook whose process matches the
+bound provider generation asks that same receiver for the next FIFO input over a
+private local socket, so an app pause does not wait behind older messages
+throughout an active turn. The receiver remains the only daemon queue consumer;
+the hook never acknowledges messages itself.
+
+The private receiver ledger reserves the exact hook context before removing its
+own native queue entry and returning output. A false or lost removal response, a
+lost hook response, or missing exact history keeps the original input for
+reconciliation without automatic resubmission. The receiver accepts the matching
+complete provider context receipt. Codex records Pre/PostToolUse context as a
+developer message tagged `hooks.additional_context`, with a provider item ID and
+turn ID, but omits it from `thread/items/list`. A bounded reader therefore
+verifies the provider's reported transcript path, profile/session/checkout,
+opened file identity and complete records after the pre-offer byte boundary. It
 scans a fixed end of that suffix with bounded memory, including large compaction
-records, instead of refusing once cumulative growth exceeds 4 MiB. It retains
-only receipt fields; JSON nesting, object keys and captured strings have explicit
-bounds. Malformed or structurally oversized records fail closed. The whole suffix
-is checked for duplicate receipts; an incomplete last record is not evidence.
-The scan runs off the async executor, but has no fixed latency promise. It never
-accepts plain text or untagged messages.
-The older `hookPrompt` representation remains supported when the API exposes it. Native `userMessage` receipts remain valid if the original queue entry
-won the race. Older version-2 ledgers migrate without changing the token, queue
-ID, original input or receipts. An older receiver refuses the new ledger version.
+records. It retains only receipt fields; JSON nesting, object keys and captured
+strings have explicit bounds. Malformed or structurally oversized records fail
+closed. The whole suffix is checked for duplicate receipts; an incomplete last
+record is not evidence. The scan runs off the async executor, but has no fixed
+latency promise. It never accepts plain text or untagged messages. The older
+`hookPrompt` representation is supported when the API exposes it. Native
+`userMessage` receipts remain valid if the original queue entry won the race.
+Older ledger versions migrate without changing the token, queue ID, original
+input or receipts, and an older receiver refuses a newer ledger version.
 
 The hook waits at most four seconds including coordination and output. Human and
 peer text exceeding the 6,000-byte hook context budget stays on the native route;
@@ -251,100 +183,47 @@ that performs no tool call still controls when the next input is consumed.
 The hook shares the receiver's ordinary-input classification: a peer message
 whose kind is `answer` is ordinary input, and a human answer may enter hook
 context only when the daemon confirms native-queue routing. An uncertain prior
-offer is never eligible. Human answers without routing proof remain on the
-exact MCP receipt path; the fix does not replay synchronous tool answers.
-This September 18 source correction addresses a peer answer that otherwise
-blocked later active-turn input. Its focused policy test and actual-provider
-acceptance variant passed at `ee7bb1a` (1,271 Rust tests, seven skipped;
-94 Python checks, one skipped). Actual Codex/loopback-model acceptance reproduced
-the old failure and delivered the peer answer plus two human messages in order
-in the same turn on the fix. The installed `c0a7c56` receiver then delivered the
-original blocked answer without manual queue acknowledgement. #202 merged as
-`14f1c519`; broader startup and throughput limits remain. See
-`peer_answer_active_hook_2026_09_18` in the [native queue record](verification/INDEX.md).
+offer is never eligible. Human answers without routing proof remain on the exact
+MCP receipt path; the hook does not replay synchronous tool answers.
 
-### Retained hook recovery (merged September 21)
+Hooks of a Codex child (subagent) never act for the root conversation. Child
+hooks use their parent's `session_id`, so PID ancestry and that field alone do
+not establish which conversation receives hook output. The hook reads `agent_id`
+and `agent_type` and skips child hooks before registration, activity reporting,
+receiver startup or legacy/native queue access. Either non-null field, including
+an empty string, means the hook cannot act for the root. Root hooks omit the
+child fields; child hooks supply `agent_id` and an `agent_type` (`default` for an
+ordinary child). A receipt that reaches a child rather than the root conversation
+does not count, and the root retains the offer. Native hook protocol 2 requires
+explicit root scope: older clients that discarded the child identity are refused
+before queue access. Both the hook executable and the receiver must be upgraded;
+replacing only the receiver cannot restore active-turn hook delivery from an old
+client. Idle queue delivery is unaffected. The request carries the original
+monotonic deadline, leaving output time within the caller's four-second budget;
+delayed or expired requests cannot reserve a head. A timeout after reservation
+remains uncertain and is never automatically replayed.
 
-A lost hook result without an exact native receipt remains unresolved; increasing
-transcript capacity cannot turn missing evidence into delivery. The installed
-Codex receiver exposed both cases together: an uncertain hook offer blocked later
-messages, then transcript growth hid that original reason behind the 4 MiB error.
+The hook endpoint follows the host socket's owning-user trust boundary. Kernel
+peer credentials establish the connecting process, and the claimed hook PID is
+authenticated against them before queue access; PID birth and ancestry associate
+it with the provider. They do not prove that the provider invoked a genuine hook:
+an unsandboxed same-user descendant can call the endpoint itself. The nonce
+correlates the response; it is not an authorization credential. Such a caller can
+reserve an offer and stall delivery if no provider receipt follows. It cannot
+make the receiver acknowledge that offer merely by receiving its context, but a
+malicious same-user process can also access the host socket and state directly.
+Do not expose this endpoint as a boundary between mutually untrusted local
+processes. Restricted agents need OS isolation and the scoped container endpoint;
+an invocation secret readable by the same user would not supply that isolation.
 
-The same read-only preview also exposes a separate `start_confirmation` when an
-original native queue entry is retained without a hook offer or provider receipt.
-Codex can intentionally hold that entry after interruption even while its public
-thread status is idle. An operator who wants to continue that reviewed message
-can use the launcher-owned shared server's explicit recovery path:
+The provider's [hook contract](https://learn.chatgpt.com/docs/hooks) supports
+additional context without replacing the tool result.
 
-```sh
-agentdocker codex-queue-resolve --agent <id> --message <message-id> \
-  --start-queued <start-confirmation-from-preview> --note 'Continue this reviewed queued message'
-```
+### Retained hook recovery
 
-This starts the existing submission ID; it never adds a replacement input.
-The receiver checks the live generation, original content and queue head, absence
-of an existing receipt, and the daemon's ownership/provider-limit checks. It
-checks daemon admission and the current project's pause before persisting an
-intent and again after the journal write. Inbox visibility alone does not permit starting
-paused work: lifecycle notices must remain readable during a pause. A provider hold, ownership loss or pause
-observed after persistence retains the intent without sending to the provider.
-These are snapshots before transmission, not an atomic lock across daemon and
-provider; a later pause cannot retract an already transmitted start.
-The provider itself refuses a newly active or pending turn. A private version-7
-ledger persists one prepared start intent before the journal write. If journaling
-fails or a subsequent hold refuses the start, an explicit retry reuses that intent
-and repeats every live preflight check and the journal step. The preview keeps
-the same start confirmation available while transmission has not begun. Repeated
-journal notes identify the original intent and the current confirming operator.
-Immediately before the provider call, a second durable write marks transmission
-started. From that point repeating the same confirmation only reports the retained
-intent, including after a crash between the marker and the actual write. This
-conservative uncertainty never permits another provider start. The command prints
-only the intent ID to stdout; the full result goes to stderr.
-Once its ordinary receipt retires the pending entry, an old start
-request is refused because there is no retained input; the completed receipt
-remains delivery evidence. Lost replies, refused
-starts or interrupted journal writes leave it retained without an automatic
-retry or hook handoff. The ordinary exact provider receipt is still required
-before acknowledgement. A reply naming a turn is not a delivery receipt.
-Actual Codex 0.160 with a private model passed normal and discarded-local-client
-reply recovery on Mac ARM64 and hosted Linux. Each positive trial held input for
-30 seconds, refused four invalid confirmation/action/order cases, then preserved
-two exact receipts and one new model request; the repeated confirmation reported
-the same intent. Corrected runtime `3cd4fd47` on Mac and final `a80697fd` Linux CI
-bytes also refused provider-rate holds and committed project pauses before intent,
-without changing the queued entry or blocking read-only preview. The earlier
-project-pause bypass remains a retained failed trial.
-The `a80697fd` extracted Windows archive passed separate normal-recovery and hold
-scenarios with nine checks each, after its 22 original launcher checks. Normal
-recovery preserved three original receipts (including the initial MCP identity
-turn and interrupted held turn), one new model input and the same-intent retry.
-Both holds refused before intent and retained the two prior receipts. All
-recorded fixture generations retired, configurations were unchanged and private
-capabilities/scratch were removed. Source, archive, executable and driver hashes
-were independently checked. Separate actual Mac journal-boundary trials at
-`3cd4fd47` retained the same intent, queue and original receipt without a new input
-when a committed journal response was discarded or a project pause arrived before
-that response. Retry after clearing the fault remained read-only. A provider-rate
-hold injected at that boundary exposed a missing admission recheck; the receiver
-now checks admission again after journaling. Corrected release `a810409e` passed
-all six private-model Mac and hosted Linux cases: normal recovery, lost local
-response, existing holds, lost committed journal response, and post-journal
-pause/provider-limit refusal. All 58 Mac and 66 Linux recorded PIDs were
-independently absent; refused cases kept their original receipt and queue without
-a new input, and successful starts delivered one new input with two exact receipts. A
-Windows repeat reached recovery after its exact receipt had retired the attempt;
-the fixture now accepts that outcome only with the matching completed receipt,
-empty preview and no additional input. The corrected `a810409e` Windows archive
-passed 62 daemon/42 installer/22 launcher checks and both nine-check recovery
-scenarios. Its normal retry exercised that already-delivered refusal with three
-exact receipts and one new input; holds refused before intent. Source/archive/EXE
-and driver hashes and cleanup reports were independently verified. Original
-failed trials remain indexed.
-Full review, lost provider replies, broader concurrent pause/limit races, actual
-accounts and physical input remain. Windows discarded
-client replies are not covered, and these trials do not establish automatic
-crash/reopen recovery.
+A lost hook result without an exact native receipt stays unresolved; increasing
+transcript capacity cannot turn missing evidence into delivery. An uncertain hook
+offer blocks later messages until it is resolved.
 
 `agentdocker codex-queue-resolve --agent <id>` asks the owning receiver for a
 read-only preview of its complete retained envelope and a confirmation digest.
@@ -358,211 +237,111 @@ agentdocker codex-queue-resolve --agent <id> --message <message-id> \
 This explicitly records **manual readback**, never a native provider receipt. A
 confirmation prints the resolution id alone on stdout (the way every command that
 creates something prints its id) and its report on stderr; the preview prints its
-JSON report on stdout. The
-private endpoint checks OS peer identity, daemon endpoint and provider generation;
-the digest binds the exact input, hook nonce and generation. The controller refuses
-an input still scheduled under its original client or queue ID, even if its text
-was edited. A missing project journal refuses before any disposition is written.
-The existing provider, receiver ownership and queue order remain intact.
+JSON report on stdout. The private endpoint checks OS peer identity, daemon
+endpoint and provider generation; the digest binds the exact input, hook nonce
+and generation. The controller refuses an input still scheduled under its
+original client or queue ID, even if its text was edited. A missing project
+journal refuses before any disposition is written. The existing provider,
+receiver ownership and queue order remain intact.
 
-Ledger version 7 migrates versions 2/3/4/5/6 without changing their input or token.
-Versions before 5 cannot contain the immutable remote-server descriptor; versions
-before 6 cannot contain a queued-start intent. Version-6 intents have no transmission
-marker, so migration treats every such intent as possibly transmitted and forbids
-another start. A version-6 record containing a fabricated marker, or a version-7
-intent missing its marker, is refused without modifying the retained file.
-The existing manual readback protocol
-persists the manual intent, journals its resolution ID, acknowledges that one ID
-through the existing token-bound inbox, then records completion. Loss of a journal
-reply can produce duplicate notes with the same resolution ID; lost ACK/reply or
-restart resumes the same disposition without another input. At most 256 manual
-records are retained separately from the 128 rotating native receipts; reaching
-that bound refuses further resolution without discarding the audit. Resolved hook
-nonces cannot advance a later head. The receiver serves recovery while paused.
-A same-user local process can make this explicit administrative request; this
-permission does not prove a human or provider child made it.
-Windows uses the same generation-bound recovery protocol over a private named
-pipe. Kernel peer identity binds the caller and receiver before retained input
-is read or acknowledged. Actual Windows provider/recovery acceptance remains open.
-
-The first version-3 replacement trial exposed a fixture race: the preceding
-idle message was visible before its receiver acknowledgement was persisted.
-The driver now waits for the replacement scenario's exact pending message ID;
-an unrelated pending entry is not evidence that the upgrade case is prepared.
-The repeat showed the old hook could consume that head before replacement. The
-private fixture now holds hook forwarding during the upgrade, leaving the native
-queue entry pending, and releases it after the successor is verified. This holds
-only the fixture's hook; it does not alter the provider's queue or delivery ledger.
-The third run completed replacement and ordered model delivery, then caught the
-short interval between daemon acknowledgement and the receiver's completion
-write. Acceptance now waits for both durable checkpoints before asserting order.
-
-Source `13565901` passed 26 targeted regressions and the full gate: 1,314 Rust
-tests (seven skipped), 104 Python checks (one skipped), lint, doctests, packaging
-and release. The actual Codex 0.154.0/loopback-model `active-hook-resolve` trial
-passed dropped hook output, full readback, stale-confirmation refusal, lost reply,
-receiver restart and ordered later delivery. The version-3 replacement trial
-preserved the provider, token and six old receipts; a peer answer and two human
-messages reached one active turn in order in 14.81 seconds. Failed fixture
-attempts remain in the [existing evidence](verification/INDEX.md).
-
-The September 21 receiver-only activation replaced the receiver process while
-the Codex process, daemon, provider binding and token remained. After reading
-the complete original audit, Codex explicitly resolved only the one message it
-had been asked to, under that audit.
-That message has no native receipt. The next original message and later
-handoffs then arrived automatically with exact native receipts. The
-receiver lives in a permanent private release directory; older version-3 CLIs
-refuse its version-4 ledger. Further receiver operations must use a compatible
-CLI; never restore an old ledger over already acknowledged input. Fresh idle,
-throughput and sustained-use acceptance remain open. Provider receipt and task
+The manual readback protocol persists the manual intent, journals its resolution
+ID, acknowledges that one ID through the existing token-bound inbox, then records
+completion. Loss of a journal reply can produce duplicate notes with the same
+resolution ID; a lost ACK or reply, or a restart, resumes the same disposition
+without another input. At most 256 manual records are retained separately from
+the 128 rotating native receipts; reaching that bound refuses further resolution
+without discarding the audit. Resolved hook nonces cannot advance a later head.
+The receiver serves recovery while paused. A same-user local process can make
+this explicit administrative request; this permission does not prove a human or
+provider child made it. Windows uses the same generation-bound recovery protocol
+over a private named pipe. Kernel peer identity binds the caller and receiver
+before retained input is read or acknowledged. Provider receipt and task
 completion remain separate from manual readback.
 
-A second offer on September 21 exposed a different defect: the exact tagged
-context for one message reached a review **subagent**, not the root
-conversation. Codex child hooks use their parent's `session_id`; PID ancestry and
-that field alone do not establish which conversation receives hook output.
-The root correctly refused to count the child's receipt and retained the offer.
-The initial recovery did not close this recurrence; the corrected hook and
-receiver were both installed only after the root/child trial passed.
+The same read-only preview also exposes a separate `start_confirmation` when an
+original native queue entry is retained without a hook offer or provider receipt.
+Codex can intentionally hold that entry after interruption even while its public
+thread status is idle. An operator who wants to continue that reviewed message
+can use the launcher-owned shared server's explicit recovery path:
 
-The candidate now reads `agent_id` and `agent_type` and skips child hooks before
-registration, activity reporting, receiver startup or legacy/native queue access.
-Either non-null field, including an empty string, means the hook cannot act for
-the root. Native hook protocol 2 also requires explicit root scope: older clients
-that discarded the child identity are refused before queue access. Both the hook
-executable and receiver must be upgraded; replacing only the receiver cannot
-restore active-turn hook delivery from an old client. Idle queue delivery is
-unchanged. The request carries the original monotonic deadline, leaving output
-time within the caller's four-second budget; delayed/expired requests cannot
-reserve a head. A timeout after reservation remains uncertain and is never
-automatically replayed. Source `613c28c4` passed the combined gate (1,330 Rust
-tests/seven skipped, 104 Python checks/one skipped) and the actual Codex root/child
-trial: child tool hooks left the root queue and ledger unchanged, then one exact
-root receipt named the original root turn, with no child receipt or replay.
-Root hooks omit the child fields; real child hooks supply `agent_id` and
-`agent_type=default`. The first fixture failed an overly strict last-user-item
-assertion (Codex appends child notifications); a second passed behavior but was
-invalidated by a source merge during the run. Both failures remain recorded.
+```sh
+agentdocker codex-queue-resolve --agent <id> --message <message-id> \
+  --start-queued <start-confirmation-from-preview> --note 'Continue this reviewed queued message'
+```
 
-The root-scope and resolution fixes are merged. The historical stranded message
-was resolved by explicit audited readback, never counted as a native root
-receipt; later original messages received native root receipts. Exact installed
-revisions and trial identities remain in the [verification history](verification/INDEX.md).
-Broader live idle/busy throughput, sleep/reboot and additional versions remain open.
+This starts the existing submission ID; it never adds a replacement input. The
+receiver checks the live generation, original content and queue head, absence of
+an existing receipt, and the daemon's ownership/provider-limit checks. It checks
+daemon admission and the current project's pause before persisting an intent and
+again after the journal write. Inbox visibility alone does not permit starting
+paused work: lifecycle notices must remain readable during a pause. A provider
+hold, ownership loss or pause observed after persistence retains the intent
+without sending to the provider. These are snapshots before transmission, not an
+atomic lock across daemon and provider; a later pause cannot retract an already
+transmitted start. The provider itself refuses a newly active or pending turn. A
+private ledger persists one prepared start intent before the journal write. If
+journaling fails or a subsequent hold refuses the start, an explicit retry reuses
+that intent and repeats every live preflight check and the journal step. The
+preview keeps the same start confirmation available while transmission has not
+begun. Repeated journal notes identify the original intent and the current
+confirming operator. Immediately before the provider call, a second durable write
+marks transmission started. From that point repeating the same confirmation only
+reports the retained intent, including after a crash between the marker and the
+actual write. This conservative uncertainty never permits another provider start.
+The command prints only the intent ID to stdout; the full result goes to stderr.
+Once its ordinary receipt retires the pending entry, an old start request is
+refused because there is no retained input; the completed receipt is the delivery
+record. Lost replies, refused starts or interrupted journal writes leave the input
+retained without an automatic retry or hook handoff. The ordinary exact provider
+receipt is still required before acknowledgement. A reply naming a turn is not a
+delivery receipt. The path never adds, deletes, reorders or repeats the queued
+submission to recover a lost reply: the original submission ID is the only thing
+started. A lost provider reply, a closed client, or a crash after the
+transmission marker leaves the intent retained as possibly transmitted, and the
+only ways forward are the ordinary exact provider receipt or an explicit
+manual-readback resolution. An explicit retry is permitted only before
+transmission has begun, and then reuses the persisted intent and repeats every
+live preflight check. The same generation-bound intent and reconciliation path
+applies on every platform.
 
-Additional trials of those immutable binaries retained both outcomes: a 65-second
-busy user turn kept peer/human inputs in order, unacknowledged until actual
-receipt, without a false idle pause; zero-prompt reopening failed twice. The
-reopened Codex 0.154.0 process started MCP but no second `SessionStart` hook was
-captured and no receiver bound within 40 seconds. The original queue stayed
-retained; no receipt or retry was invented. The missing resume hook's cause
-remains unresolved. A separate explicit bootstrap-prompt resume passed with the
-same logical identity and retained queue drained; it does not close zero-prompt
-reopening. Independent Ubuntu repeated the zero-prompt failure with hosted beta.2
-and Codex 0.155.1: MCP restarted, but no second SessionStart hook or binding arrived
-within 40 seconds, including a repeat after every old receiver had retired.
-A provider-only isolation trial removed AgentDocker, MCP and its receiver:
-Codex 0.155.1 emitted the initial startup hook but no resume hook within 25 seconds
-of reopening the same conversation. This narrows the observed failure to the
-provider lifecycle in that fixture; zero-prompt reopening remains open.
-Separate native rate-limit and uncertain-delivery recovery trials passed with a
-loopback model; these do not establish real account reset. An active-hook lost-output
-trial also passed explicit readback recovery, stale-confirmation refusal and a
-retry after receiver restart, without counting manual readback as a native receipt.
-A pending-question trial preserved provider identity, binding, draft, FIFO and an
-exactly-once answer through four experimental daemon handovers. All of these
-independent Linux trials used hosted beta.2 and native Codex 0.155.1 with a loopback
-model; they do not close sustained real-provider replacement acceptance.
+The receiver ledger (current version 7) migrates versions 2 through 6 without
+changing their input or token. Versions before 5 cannot contain the immutable
+remote-server descriptor; versions before 6 cannot contain a queued-start intent.
+Version-6 intents have no transmission marker, so migration treats every such
+intent as possibly transmitted and forbids another start. A version-6 record
+containing a fabricated marker, or a version-7 intent missing its marker, is
+refused without modifying the retained file. The receiver lives in a permanent
+private release directory. Further receiver operations must use a CLI compatible
+with the ledger; never restore an old ledger over already acknowledged input.
 
-Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
-Codex executable and immutable candidate binaries. The trial adds peer, human
-project and human global input during one busy TUI turn and requires exact
-receipts, FIFO order and no later replay after baseline idle/draft/crash tests.
-Add `--active-peer-kind answer` to put a peer answer ahead of those human
-messages and require the same exact receipts and same-turn delivery.
-`--scenario active-hook-lost` discards one offered hook output and requires the
-original queued IDs to remain paused without receipt or automatic resubmission.
-Source `5545697` passed 14 focused tests, the full 1,093-Rust/84-Python gate
-(seven skipped), and both actual Codex 0.154.0 scenarios. Three peer/project/global
-inputs reached the same active turn in 8.7 seconds with separate exact receipts;
-the dropped-output trial retained all three IDs, paused, and did not invent a
-receipt or replay. Baseline idle wake, draft/FIFO preservation and receiver crash
-recovery passed. The old-binary failure and initial receipt-reader failure remain
-in the [existing evidence](verification/INDEX.md).
-Review follow-up `e896111` authenticates the claimed hook PID with kernel Unix
-peer credentials before queue access. Its full 1,094-Rust/84-Python gate passed
-(seven skipped), and both actual-client scenarios passed again with an explicit
-provider-visible order/exactly-once assertion.
+Installing an app alone does not change an immutable receiver launch descriptor;
+`codex-queue-upgrade` below replaces the receiver.
 
-This endpoint follows the host socket's owning-user trust boundary. Kernel peer
-credentials establish the connecting process; PID birth and ancestry associate
-it with the provider. They do not prove that the provider invoked a genuine hook:
-an unsandboxed same-user descendant can call the endpoint itself. The nonce
-correlates the response; it is not an authorization credential. Such a caller can
-reserve an offer and stall delivery if no provider receipt follows. It cannot
-make the receiver acknowledge that offer merely by receiving its context, but a
-malicious same-user process can also access the host socket and state directly.
-Do not expose this endpoint as a boundary between mutually untrusted local
-processes. Restricted agents need OS isolation and the scoped container endpoint;
-an invocation secret readable by the same user would not supply that isolation.
-
-The backed-up September 17 installation explicitly replaced the older pinned
-receiver after PR #171 merged. The existing Codex provider stayed alive; fresh
-CLI human-route and Claude peer messages reached its active turn with exact
-receipts. Installing an app alone still does not change an immutable receiver
-launch descriptor. Broader provider parity remains open. The provider's [hook contract](https://learn.chatgpt.com/docs/hooks)
-supports additional context without replacing the tool result.
-
-### Receiver upgrade candidate
+### Receiver upgrade
 
 `agentdocker codex-queue-upgrade --agent <id>` replaces only the existing
-receiver with the CLI release running that command. It requires a matching
-schema-22 daemon, checks the live provider and retained ledger without migrating
-it, and probes the provider's read-only native APIs. Only the receiver executable
-may change; its arguments, environment, checkout, provider PID/thread/profile,
-queue, token and receipts remain. The daemon compares the expected controller
-and launch, pins the new release, and commits a replacement intent before its
-normal supervision stops the old process. A coordinator crash resumes that
-intent. Refused writes and a transfer fence leave the running receiver alone.
-The successor takes the same lifetime ledger lock and reconciles pending input;
-a missing receipt never authorizes resubmission. Repeating an accepted request
-cannot stop the successor.
+receiver with the CLI release running that command. It requires a matching daemon
+that supports `upgrade_controller` (schema 22 or later), checks the live provider
+and retained ledger without migrating it, and probes the provider's read-only
+native APIs. Only the receiver executable may change; its arguments, environment,
+checkout, provider PID/thread/profile, queue, token and receipts remain. The
+daemon compares the expected controller and launch, pins the new release, and
+commits a replacement intent before its normal supervision stops the old process.
+A coordinator crash resumes that intent. Refused writes and a transfer fence leave
+the running receiver alone. The successor takes the same lifetime ledger lock and
+reconciles pending input; a missing receipt never authorizes resubmission.
+Repeating an accepted request cannot stop the successor. The upgrade identity
+defaults from the environment.
 
 If the live receiver executable cannot be verified, the daemon refuses without
-changing the binding or stopping it. Error details retain the controller identity,
-requested path, both canonical lookup results and the expected-file check from
-that decision. Lookup errors include their kind and OS code; arguments, environment
-and binding tokens are excluded. Two failed lookups never count as a match.
+changing the binding or stopping it. Error details retain the controller
+identity, requested path, both canonical lookup results and the expected-file
+check from that decision. Lookup errors include their kind and OS code;
+arguments, environment and binding tokens are excluded. Two failed lookups never
+count as a match.
 
 The schema version prevents an older daemon from opening a retained replacement
-intent it cannot understand. The candidate includes refusal/write-failure/reopen
-regressions and an actual-client `controller-upgrade` scenario with
-`--initial-receiver-cli` pointing to immutable older binaries. It deliberately
-keeps a native queue offer pending through replacement and requires the same
-provider and token, old receipts, new exact FIFO receipts and clean retirement.
-Source `5b3d688` passed three focused regressions and the full 1,097-Rust/84-Python
-gate (seven skipped), including formatting, strict lint, doctests, packaging and
-release. The actual Codex 0.154.0/local-model trial passed using an older
-`f4ef6c3` receiver with a version-2 ledger and a pending native offer. It retained
-the live provider, token, binding time and six prior receipts, retired the old
-receiver, and delivered three messages exactly once in FIFO order during the
-same active turn in 14.85 seconds including the handover. Cleanup found no
-surviving controllers. See the receiver-upgrade section of the existing
-[native queue evidence](verification/INDEX.md).
-A second actual trial used two installed packages in a disposable prefix: pins
-were held while the receivers ran, released at cleanup, and the retired release
-was pruned after activating a third package. The provider and six old receipts
-survived; the three new messages arrived in order in 14.86 seconds.
-Final review follow-up `8d42db5` defaults the upgrade identity from the environment and documents the request table. The full 1,097-Rust/84-Python gate passed again (seven skipped), as did a repeat with the actual older receiver: the same provider, token and six prior receipts survived, and three messages entered the same active turn in order in 14.84 seconds with clean cleanup.
-PR #171 merged as `df3b758` after final review and all CI checks. The actual
-installed upgrade to release `9bc0f0fc` (source `8d42db5`, schema22) retained the
-live provider identities, token/binding and 58 prior receipts, replacing receiver
-94744 with 20912. A fresh CLI test through the human-input route reached provider
-context in 0.176 seconds; a fresh Claude peer ping also entered the same active
-Codex turn. These are real installed/model-session observations, not a universal
-latency or provider guarantee. The original native-queue record stores exact
-message IDs, thread/turn/item receipts and backup provenance.
+intent it cannot understand.
 
 ## New managed conversations
 
@@ -578,7 +357,7 @@ It needs a matching schema-16 daemon and CLI, and a Codex version supporting
 `hooks/list` and paginated thread history. It does not attach to an existing Codex
 TUI. The desktop defaults the option on for a new Codex session; it applies only
 to that launch. The CLI requires the explicit `--codex-input` flag. Codex's
-app-server interface remains experimental.
+app-server interface is experimental.
 
 Send through the selected session's message composer, `send_message`, or the
 terminal input. All three use the daemon's ordinary `Send` queue. The bridge polls
@@ -597,68 +376,40 @@ AgentDocker MCP `send_message` supplies a correlated peer reply.
 Terminal lines are limited to 16,000 UTF-8 bytes. Invalid or oversized lines
 produce a local error and are skipped; the controller keeps running and accepts
 the next complete line. The bounded reader retains its place when provider
-events interrupt a partial read. The [review trial](verification/INDEX.md)
-reproduced the old controller exit and verified the correction with actual
-Codex and an owned raw PTY, followed by terminal, human and peer queue receipts.
+events interrupt a partial read. A line of exactly 16,000 bytes is accepted.
 
-Normal managed macOS terminals exposed a separate lower limit: the kernel's
-canonical input buffer could fill before the bridge saw a long paste, stranding
-even the next line. Managed Unix bridges now read characters with a bounded
-append/erase editor instead. Backspace erases a Unicode grapheme, Ctrl-U clears
-the draft and Ctrl-W erases its last word. Terminal navigation escape sequences
-are ignored; this is a line prompt, not the native Codex TUI editor. Signals and
-output processing retain their terminal settings, restored with input mode on
-exit. After an oversized line, all bytes through its newline are discarded,
-including edits, so its tail cannot become a separate prompt. Clean `d8db262f` normal managed Mac PTY trials with actual Codex 0.155.1 and a
-private empty profile rejected the oversized paste visibly, accepted the next
-Unicode-edited line intact, and accepted exactly 16,000 UTF-8 bytes. Both kept
-the same thread and cleaned up gracefully without changing production processes.
-The source-identical `6394a081` CI archive also passed on independent hosted Linux
-Ubuntu x86_64: a normal managed PTY visibly rejected the 20,028-byte paste, then
-queued the exact Unicode-edited 16,000-byte line in the same thread, with graceful
-cleanup and the unrelated runner/endurance trial unchanged. These empty-profile
-trials establish the terminal/bridge boundary. Hosted beta.12 separately passed
-an existing-account hosted Linux Codex 0.160.0 trial through a normal managed PTY: the
-20,028-byte line and its edited tail were refused without a receipt, then an
-exactly 16,000-byte Unicode-edited line and a following short input each produced
-one real model reply. Independent provider history matched both message IDs and
-thread/turn/item receipts. All nine watched generations retired without force;
-configuration remained unchanged and terminal settings were restored. This is
-synthetic managed-bridge input, not the native TUI. Authenticated acceptance on
-other platforms, physical keyboard/IME and broader terminal coverage remain
-open; the original normal-PTY failures are retained.
+Normal managed macOS terminals have a lower limit: the kernel's canonical input
+buffer can fill before the bridge sees a long paste, stranding even the next
+line. Managed Unix bridges therefore read characters with a bounded append/erase
+editor instead. Backspace erases a Unicode grapheme, Ctrl-U clears the draft and
+Ctrl-W erases its last word. Terminal navigation escape sequences are ignored;
+this is a line prompt, not the native Codex TUI editor. Signals and output
+processing retain their terminal settings, restored with input mode on exit.
+After an oversized line, all bytes through its newline are discarded, including
+edits, so its tail cannot become a separate prompt; the paste is rejected
+visibly and the next line is accepted intact.
 
 The provider profile, authentication, hooks, trust and approval policy are
 inherited. No profile is rewritten. The session's AgentDocker MCP entry is bound
 explicitly to the matching CLI, managed identity and daemon socket through leaf
 configuration overrides. Each enabled local AgentDocker MCP entry is required
 for this launch, so a startup failure cannot silently leave queued peer replies
-without their bound tool. Other MCP settings, approval modes and explicitly
-disabled entries remain unchanged. Managed identity lookup includes the nearest
-Codex app-server process even though inventory hides that helper; the exact
-managed role, controller ancestry, kernel birth and physical working-directory
-checks still decide whether the MCP server belongs to the session. This is required because Codex filters the MCP environment;
-plain inheritance sent early trial tools to the wrong daemon. `-c`/`--config`, `--enable`,
-`--disable` and `--strict-config` are preserved; `-m`/`--model` has an exact config
-equivalent. Other arguments, including initial prompts, are refused rather than
-dropped. Send the first prompt through AgentDocker. Provider restart remains the
-launch's existing explicit restart policy (`--restart on-failure:2`, for example).
-
-Clean `b334cc70` passed actual Codex 0.155.1 local MCP startup on macOS ARM64
-and independent Ubuntu x86_64 with empty private profiles and no model prompts.
-A private Mac MCP timeout caused `thread/start` to refuse and delivery to pause.
-The same runtime then passed a 49-second hosted Linux actual-model project pause/resume
-trial: two recipients (one in a real sleep command, one idle), exact lifecycle
-receipts, replies in the original project conversation and preserved threads.
-Local MCP contact was verified before model prompts; cloud apps were disabled
-only for that test launch, with saved configuration and approvals unchanged.
-The earlier hosted beta.3 MCP rejection and misplaced test replies remain in the
-[verification index](verification/INDEX.md); this does not complete the broader
-provider, account-limit, physical or sustained acceptance matrix.
+without their bound tool; a startup timeout makes `thread/start` refuse and
+pauses delivery. Other MCP settings, approval modes and explicitly disabled
+entries remain unchanged. Managed identity lookup includes the nearest Codex
+app-server process even though inventory hides that helper; the exact managed
+role, controller ancestry, kernel birth and physical working-directory checks
+still decide whether the MCP server belongs to the session. This is required
+because Codex filters the MCP environment; plain inheritance sends tools to the
+wrong daemon. `-c`/`--config`, `--enable`, `--disable` and `--strict-config` are
+preserved; `-m`/`--model` has an exact config equivalent. Other arguments,
+including initial prompts, are refused rather than dropped. Send the first prompt
+through AgentDocker. Provider restart follows the launch's explicit restart
+policy (`--restart on-failure:2`, for example).
 
 ## Delivery and recovery
 
-One private, locked record under `AGENTDOCKER_HOME/codex-input/<agent-id>` binds
+One private, locked record under `$AGENTDOCKER_HOME/codex-input/<agent-id>` binds
 the agent, daemon socket, physical checkout, provider profile and conversation.
 The controller durably records a complete input before submitting it. Queue
 acknowledgement requires the exact provider thread, turn, item and complete text;
@@ -674,14 +425,14 @@ Do not delete the record to make a paused controller retry: that discards its
 duplicate-work protection. History, frames, pending requests and retained receipts
 are bounded; exceeding a bound reports an error and preserves the pending input.
 
-Schema 12 reserves these queues for `provider_inbox`. Legacy inbox reads,
-acknowledgements and receiver subscriptions are refused for that mode. Current
-hooks skip their competing delivery path after checking the actual provider's
-ownership. Current MCP hides/refuses its three inbox-consumer tools. The daemon
-joins registration from the owned app-server child to its existing controller;
-it does not merge ordinary nested Codex sessions by ancestry alone. These are
-cooperative local delivery semantics, not an authentication boundary against
-other programs running as the same OS user.
+These queues are reserved for `provider_inbox`. Legacy inbox reads,
+acknowledgements and receiver subscriptions are refused for that mode. Hooks skip
+their competing delivery path after checking the actual provider's ownership. The
+MCP server hides and refuses its three inbox-consumer tools. The daemon joins
+registration from the owned app-server child to its existing controller; it does
+not merge ordinary nested Codex sessions by ancestry alone. These are cooperative
+local delivery semantics, not an authentication boundary against other programs
+running as the same OS user.
 
 ## Questions and approvals
 
@@ -693,156 +444,121 @@ for a different answer. These choices use the existing human answer queue, retai
 other question drafts and become unavailable when the question closes or expires.
 A Codex approval or question waits up to 24 hours for the person, as Codex's own
 terminal waits until someone answers; only then does it expire, and an expired
-approval is a denial. (It was five minutes, which turned a short absence into a
-silent denial.)
+approval is a denial.
 The structured presentation is checked against the complete fallback question
 text, so the native app and CLI describe the same request.
 
 Local command approvals also include the requested connection host/protocol and
 concrete additional filesystem/network permissions in that same checked review
-text. Read, write and excluded paths are shown completely. The parser uses the
-installed Codex 0.154.0 [app-server contract](https://learn.chatgpt.com/docs/app-server):
+text. Read, write and excluded paths are shown completely. The parser follows the
+Codex [app-server contract](https://learn.chatgpt.com/docs/app-server):
 omitted/null or `local` environments are accepted; other environments and
 unsupported permission selectors are refused. When Codex supplies
-`availableDecisions`, it must offer `accept` and either `decline` or `cancel`. The controller
-uses Codex 0.154.0's [default decision behavior](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/tui/src/approval_events.rs#L56)
-when the optional list is absent/null: `accept` and `cancel`, with the cancellation
-explanation retained in the human question. Existing saved reviews retain their
-original response semantics. The controller
-never selects a proposed policy amendment or session-wide approval. Only exact
-human `Allow` approves the reviewed operation; other answers deny it. This uses
-the existing shared command presentation, with no daemon schema change. If Codex
-offers cancellation instead of decline, the card explains that Deny cancels the
-request. Private delivery-record version 8 retains that exact negative response;
-older records cannot claim the new cancellation meaning. Recovery preserves the
-saved response without automatically sending it again.
-Managed-network requests with an exact host/protocol now use the existing choice
-controls whenever `networkApprovalContext` is present. Optional command and
-folder metadata remain context; absent fields are not invented. Display controls, including bidi controls and line injection, are refused in these fields before publishing a question. The question
-shows the destination and any supplied access details, and explains that approval
-can cover multiple pending connections to that destination, as the
+`availableDecisions`, it must offer `accept` and either `decline` or `cancel`. When
+the optional list is absent or null, the controller uses Codex's
+[default decision behavior](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/tui/src/approval_events.rs#L56):
+`accept` and `cancel`, with the cancellation explanation retained in the human
+question. Existing saved reviews retain their original response semantics. The
+controller never selects a proposed policy amendment or session-wide approval.
+Only exact human `Allow` approves the reviewed operation; other answers deny it.
+This uses the existing shared command presentation, with no daemon schema change.
+If Codex offers cancellation instead of decline, the card explains that Deny
+cancels the request. Delivery-record version 8 retains that exact negative
+response; older records cannot claim the cancellation meaning. Recovery preserves
+the saved response without automatically sending it again.
+
+Managed-network requests with an exact host/protocol use the existing choice
+controls whenever `networkApprovalContext` is present. Optional command and folder
+metadata remain context; absent fields are not invented. Display controls,
+including bidi controls and line injection, are refused in these fields before
+publishing a question. The question shows the destination and any supplied access
+details, and explains that approval can cover multiple pending connections to that
+destination, as the
 [provider contract specifies](https://learn.chatgpt.com/docs/app-server#command-execution-approvals).
 Allow selects `accept` for the pending request, never a session or policy grant.
-Private ledger version 9 retains this separate review kind and refuses it in an
-older-version record without rewriting bytes. Restored command records cannot carry a network choice presentation; legacy command records without a presentation remain supported.
-The implementation passed 61 focused input tests and the full 974-Rust/70-Python
-release gate. A private-profile actual Codex trial denied the connection before
-emitting an approval callback; actual managed-network provider, native UI and
-final integration acceptance remain open. See the [retained trial](verification/INDEX.md).
+Delivery-record version 9 retains this separate review kind and refuses it in an
+older-version record without rewriting bytes. Restored command records cannot
+carry a network choice presentation; legacy command records without a
+presentation are supported.
 
-Terminal-input approvals (`kind: writeStdin`) now have a separate one-time review
-using the installed Codex 0.155.1 contract. The card shows the existing terminal
-session and command item, launch directory, complete escaped input, reason and
-concrete retained access. Newlines, terminal controls and bidirectional marks in
-the input are visibly escaped; the approval does not change the original input.
-The directory is explicitly identified as the launch directory because the
-terminal's current directory and state may have changed. **Allow** approves only
-that input; **Deny** uses the provider's offered negative decision, with cancellation
-explained on the card. Session and policy grants are never selected.
+Terminal-input approvals (`kind: writeStdin`) have a separate one-time review.
+The card shows the existing terminal session and command item, launch directory,
+complete escaped input, reason and concrete retained access. Newlines, terminal
+controls and bidirectional marks in the input are visibly escaped; the approval
+does not change the original input. The directory is explicitly identified as the
+launch directory because the terminal's current directory and state may have
+changed. **Allow** approves only that input; **Deny** uses the provider's offered
+negative decision, with cancellation explained on the card. Session and policy
+grants are never selected.
 
 The parser requires one complete `write_stdin --session-id <id> <input>` argument
 vector, valid item/callback identities, local execution, and fully reviewable
 permissions. It refuses malformed or oversized input, NUL bytes, unsupported
-permissions and mixed network/terminal-input requests. Private delivery ledger
-version 11 retains the distinct review kind and rejects it in older records
-without rewriting them. Human answer correlation, pending peer/human ordering,
-and retained uncertain responses use the existing review path; a saved response
-is never automatically replayed. Actual Codex 0.155.1 trials on independent
-Ubuntu verified both decisions: the private terminal received the exact input
-only after Allow, Deny produced no fixture write, queued peer/human input waited
-through review and resumed in the original thread, and the answer was not
-replayed as ordinary input. Native Mac controls rendered those actual question
-payloads and routed each decision once while retaining an unrelated draft across
-navigation and reopening. These bounded trials use the upstream experimental
-`write_stdin_approval` feature for that launch only; they do not change saved
-provider policy or establish physical input/accessibility acceptance. The clean
-candidate passed 1,430 Rust tests and 155 Python checks with zero retries.
+permissions and mixed network/terminal-input requests. Delivery-record version 11
+retains the distinct review kind and rejects it in older records without
+rewriting them. Human answer correlation, pending peer/human ordering, and
+retained uncertain responses use the existing review path; a saved response is
+never automatically replayed. Queued peer/human input waits through review and
+resumes in the original thread, and the answer is not replayed as ordinary input.
 Managed delivery-ledger writes use the shared private atomic snapshot publisher.
 Windows replaces the flushed record while preserving open readers; Unix also
 flushes the containing directory. A failed publication never advances the
-in-memory attempt. The initial Windows managed-form trial exposed the previous
-Unix-only directory flush (Access is denied before input); its failure is retained
-and corrected `8d22f923` passed the extracted-package Windows form trial below.
+in-memory attempt.
 
-Broader permission forms, extended MCP elicitation and secret input still require completion.
 Provider `requestUserInput` bundles reject `isSecret: true` before opening any
 ordinary question route. A supplied flag must be a boolean; malformed values,
 including strings and null, cannot fall back to persisted ordinary answers.
+Masking a question is not proof that the provider or model does not retain its
+answer: the provider and model receive the value and may retain it, including in
+the provider's private rollout history.
 
-A private Codex 0.160.1 probe delivered an invented answer to an actual
-`isSecret: true` callback. The request resolved and the answer reached the
-scripted loopback model; the driver also found it twice in the provider's private
-rollout JSONL. `thread/read` did not expose it in that observation. Masking a
-question is therefore not proof that Codex or its model does not retain its
-answer. The initial fixture was rejected for missing choices; both outcomes and
-cleanup are indexed. This is provider behavior evidence, not AgentDocker secret
-input acceptance.
+The secret route keeps answers out of AgentDocker's messages, database, events,
+delivery-ledger payloads, logs and ordinary drafts. It uses dedicated masked
+entry, exact live request/turn/recipient ownership, bounded in-memory storage,
+explicit cancellation/expiry and no replay after a disconnect or crash. Before
+entry it explains that Codex and the selected model receive the value and may
+retain it. Mixed bundles do not send their secret fields through the ordinary
+persisted answer route. The bounded local daemon broker, pipe-only administration
+commands, managed-provider producer, durable metadata fence and masked desktop
+entry are behind `[experimental] secret_input = true` in `agentd.toml` (or
+`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` on the bridge). Default and native
+sessions, plus unsupported interactive console modes, refuse secret bundles.
+While either kind of review is pending, a conflicting secret/ordinary request
+gets an error without replacing the first review or changing its held input
+queue. The broker does not save submitted values, but cannot prevent Codex or its
+model from repeating them into ordinary output history.
 
-The remaining AgentDocker route must keep answers out of its messages, database,
-events, delivery-ledger payloads, logs and ordinary drafts. It needs dedicated
-masked entry, exact live request/turn/recipient ownership, bounded in-memory
-storage, explicit cancellation/expiry and no replay after a disconnect or crash.
-Before entry it must explain that Codex and the selected model receive the value
-and may retain it. Mixed bundles must not send their secret fields through the
-ordinary persisted answer route. The bounded local daemon broker, pipe-only
-administration commands, managed-provider producer, durable metadata fence and
-masked desktop entry are connected behind `[experimental] secret_input = true` in `agentd.toml` (or `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` on the bridge).
-Default and native sessions, plus unsupported interactive console modes, still
-refuse secret bundles. While either kind of review is pending, a conflicting
-secret/ordinary request gets an error without replacing the first review or
-changing its held input queue. Final-package, account, Windows/native parity and
-other crash-boundary acceptance remain open. The broker does not save submitted
-values, but cannot prevent Codex or its model from repeating them into ordinary
-output history.
-
-Source `9b88c488` passed an actual Codex 0.160.1/private-model trial with a proxy
-injecting one secret and one ordinary request during a real secret review. Both
-injected requests were refused; the original secret was answered once, two
-ordinary receipts completed in order, and the controller did not restart. Four
-recorded controller/proxy/provider processes and the private scratch retired;
-production services were unchanged. The initial fixture stopped before answering
-because it expected a serialized zero restart counter; that failure is retained.
-Natural provider parallelism, ordinary-first runtime and final-package/account
-acceptance remain open.
-
-Schema 15 also supports bounded file-change approval. Inbox lists the complete
-file operations and offers **Review changes**, **Allow once**, **Allow for session**
-and **Deny**.
+File-change approval is bounded. Inbox lists the complete file operations and
+offers **Review changes**, **Allow once**, **Allow for session** and **Deny**.
 Allow becomes available after opening the complete diff; Deny remains available
 without that extra step. The fallback question retains the same paths, rename
 destination, complete diffs, directory and reason. No diff is silently truncated.
 
 The controller correlates the request's item ID with an earlier file-change item
-in the same active thread and turn, following the [documented approval sequence](https://developers.openai.com/codex/app-server#file-change-approvals)
-and the installed Codex 0.153.4 schema. It retains at most 64 items of 32,000 bytes,
-at most 16 files per review, and a 16,000-byte complete question. Missing,
-completed, reused, ambiguous, unsupported or oversized changes are refused.
-Repeated details after review publication pause the controller, shut down its
-owned Codex process and cancel its pending human routes. The ledger keeps the
-uncertain review; it does not invent a confirmed cancellation or discard a
-possibly transmitted approval. Restart continues to require review of that
-retained uncertainty. Turn completion discards old item snapshots. Non-null `grantRoot`
-is refused because it can describe session-wide write authority. Allow sends
-`accept`; **Allow for session** sends `acceptForSession`, which Codex takes for any
-file change: later changes to the same files apply without asking until that
-Codex session ends. Both wait for the complete diff to be opened. Empty diffs are currently
-refused. File presentations and their receipts require delivery-record version
-6; an older record cannot claim to contain them. The [file-review trial](verification/INDEX.md)
-passed 848 Rust tests, 65 Python checks and 19 native review/draft/restart steps.
-Actual Codex Allow created exactly the reviewed fixture file; Deny left it absent.
-Each completed three ordered peer/human/peer inputs and retained one provider
-identity. The final compact UI rebuild has byte-identical CLI/daemon binaries to
-those provider trials. PR #112 passed final CI and actual source review and merged
-as `dd0665a`; review corrected schema history and confirmed the intentional
-retention of uncertain approval records.
+in the same active thread and turn, following the
+[documented approval sequence](https://developers.openai.com/codex/app-server#file-change-approvals).
+It retains at most 64 items of 32,000 bytes, at most 16 files per review, and a
+16,000-byte complete question. Missing, completed, reused, ambiguous, unsupported
+or oversized changes are refused. Repeated details after review publication pause
+the controller, shut down its owned Codex process and cancel its pending human
+routes. The ledger keeps the uncertain review; it does not invent a confirmed
+cancellation or discard a possibly transmitted approval. Restart continues to
+require review of that retained uncertainty. Turn completion discards old item
+snapshots. Non-null `grantRoot` is refused because it can describe session-wide
+write authority. Allow sends `accept`; **Allow for session** sends
+`acceptForSession`, which Codex takes for any file change: later changes to the
+same files apply without asking until that Codex session ends. Both wait for the
+complete diff to be opened. Empty diffs are refused. File presentations and their
+receipts require delivery-record version 6; an older record cannot claim to
+contain them.
 
-Schema 16 adds concrete permission requests to the same Inbox review. The card
-shows the directory, reason, each read/write/excluded path and requested network
-access. **Allow for this turn** sends exactly the reviewed permission profile with
-`scope: "turn"`, and **Allow for session** the same profile with `scope: "session"`;
-**Deny** sends an empty profile for the turn. Only an exact human Allow or Allow
-for session grants access, and no choice overrides Codex's configured automatic
-review policy.
+Concrete permission requests appear in the same Inbox review. The card shows the
+directory, reason, each read/write/excluded path and requested network access.
+**Allow for this turn** sends exactly the reviewed permission profile with
+`scope: "turn"`, and **Allow for session** the same profile with
+`scope: "session"`; **Deny** sends an empty profile for the turn. Only an exact
+human Allow or Allow for session grants access, and no choice overrides Codex's
+configured automatic review policy.
 
 The bounded parser accepts concrete absolute paths in legacy `read`/`write`
 lists or typed `entries`, including explicit deny entries. It rejects unknown
@@ -856,21 +572,12 @@ ASCII case and separator spelling, so equivalent paths cannot bypass duplicate
 or conflicting-access checks; the approved wire profile remains unchanged.
 The portable Windows subset requires ASCII names and a complete UNC server/share,
 and refuses device namespaces, reserved device names, alternate streams and
-trailing dots/spaces. Broader host-specific path forms need a separate review.
-Glob/special selectors, scan-depth settings and remote environments require a richer review
-and remain unsupported. The omitted/null environment ID and Codex's reserved
-`local` ID select this local flow; other IDs are refused. Permission receipts
-require delivery-record version 7;
-older records cannot claim this review meaning. Codex 0.153.4, installed at trial time, exposed
-the request-permissions tool as a disabled feature under development. The
-[permission trial](verification/INDEX.md) at `7051471`
-passed 856 Rust tests, 65 Python checks and actual Codex Allow/Deny with three
-ordered peer/human/peer inputs each,
-one exact human/provider resolution and one controller/conversation. Allow
-created the expected private fixture file; Deny left it absent. The corresponding
-native trial passed 18 review/draft/schema-upgrade/restart steps, including
-matching permission mirrors shown once. Initial environment/mirror failures and
-diagnostic setup failures are retained. PR #115 merged on September 13 after CI and review.
+trailing dots/spaces. Broader host-specific path forms are unsupported.
+Glob/special selectors, scan-depth settings and remote environments require a
+richer review and are unsupported. The omitted/null environment ID and Codex's
+reserved `local` ID select this local flow; other IDs are refused. Permission
+receipts require delivery-record version 7; older records cannot claim this
+review meaning.
 
 Command/file/permission approvals and nonsecret provider questions use AgentDocker's registered
 human question route and the same retained inbox as ordinary input. The controller
@@ -889,7 +596,7 @@ question pauses delivery with that message still queued. Question IDs survive
 restart and are never silently discarded to make room.
 
 A transient loss of the question event connection resumes from its last checked
-schema-14 cursor. Replayed closures remain private until the daemon's checked
+cursor. Replayed closures remain private until the daemon's checked
 replay-complete marker arrives; incomplete replay is retried from the previous
 cursor. The worker retains at most 128 pending question events and attempts at
 most three reconnects with 100 ms backoff. That allowance resets only after a
@@ -898,83 +605,44 @@ the subscriber fell behind its live broadcast (a burst of more than 1,024
 events, file changes included) counts as such a loss: the durable log still
 holds what was missed, so the worker resumes from its cursor within the same
 allowance. Unknown event kinds, history found missing at the resume and buffer
-overflow pause immediately; no fresh subscription replaces a lost cursor. The existing five-second connection/replay/frame bounds
-apply to each attempt, and shutdown cancels the worker and its socket.
+overflow pause immediately; no fresh subscription replaces a lost cursor. The
+five-second connection/replay/frame bounds apply to each attempt, and shutdown
+cancels the worker and its socket. The daemon reload gate is experimental.
 
-Actual Mac and hosted Linux Codex 0.160 with private model/MCP fixtures and source
-`8778a67f` each preserved four pending forms through eight experimental same-binary
-daemon handovers, with 32 stable seconds between replacements. Each form retained its
-original question and provider request; its explicit decision reached MCP once,
-and queued peer input waited for that decision. An earlier rapid burst exhausted
-the documented reconnect allowance after six successful handovers: the controller
-paused and exited with the fourth form unanswered in its ledger. That trial
-remains failed; the sustained result does not establish rapid-burst recovery,
-provider/controller crash recovery, account consent or installed service upgrades.
-The daemon reload gate remains experimental. See the
-[verification index](verification/INDEX.md).
+Read-only `provider_inbox` calls with an empty acknowledgement list retry up to
+three times after transient I/O failures or the five-second request timeout, with
+100 ms between attempts. Retries cannot start a replacement daemon. Protocol
+errors and explicit daemon refusals stop immediately, as does an uncertain
+acknowledgement or malformed response. Each retry reads the retained queue again;
+it neither submits a provider turn nor acknowledges a message.
 
-Read-only `provider_inbox` calls with an empty acknowledgement list now also
-retry up to three times after transient I/O failures or the existing five-second
-request timeout, with 100 ms between attempts. Retries cannot start a replacement
-daemon. Protocol errors and explicit daemon refusals stop immediately. Each retry
-reads the retained queue again; it neither submits a provider turn nor acknowledges
-a message. Socket tests verify a discarded read response, bounded exhaustion and
-no retry for an uncertain acknowledgement or malformed response. The
-[read-reconnect trial](verification/INDEX.md) passed
-850 Rust tests, 65 Python checks and an actual Codex read-response cut while file
-approval was pending. The previous controller stopped; the correction kept the
-same controller/conversation, resolved the approval once and completed three
-ordered peer/human inputs. Other connections and the daemon remained live.
-
-Periodic readiness refresh is bounded diagnostic metadata: a refused or timed-out refresh leaves the receiver running and its UI evidence expires after 90 seconds. This does not relax receipt or acknowledgement durability.
+Periodic readiness refresh is bounded diagnostic metadata: a refused or timed-out
+refresh leaves the receiver running and its UI state expires after 90 seconds.
+This does not relax receipt or acknowledgement durability.
 
 Queue acknowledgements, question publication, activity/receipt writes and other
-failed RPCs still pause delivery;
-a lost write response cannot prove whether the daemon accepted that operation.
-The [687e57f reconnect trial](verification/INDEX.md)
-passed 839 Rust tests, 65 Python checks and an actual Codex event-connection cut
-while command approval was pending. Checked replay resolved that answer once,
-kept the same controller/conversation and completed three ordered peer/human
-inputs. The daemon and other RPC connections stayed live during this trial. A restarted controller cancels its known pending human routes and
-requires recovery; it never automatically resends an approval. The private
-version-9 record preserves version-3/4/5/6/7/8 records and accepts version-1/2 records only without recorded question
-history. Version 2 could already have discarded older question IDs; those records
-are refused without rewriting the file. The current record retains eight detailed
-closed requests and up to 10,000 older question IDs, and has an 8 MiB total bound.
+failed RPCs pause delivery; a lost write response cannot prove whether the daemon
+accepted that operation. A restarted controller cancels its known pending human
+routes and requires recovery; it never automatically resends an approval. The
+private delivery record (version 15) preserves version-3 through version-14
+records and accepts version-1/2 records only without recorded question history.
+Version 2 could already have discarded older question IDs; those records are
+refused without rewriting the file. The record retains eight detailed closed
+requests and up to 10,000 older question IDs, and has an 8 MiB total bound.
 Reaching a bound preserves the previous record and reports an error.
 
-## Acceptance still required
+## MCP answers and URL elicitation
 
-The separate MCP `ask_human` path now records an exact completed tool result
-before acknowledging its human answer. Each submitted input retains the MCP
-server bindings actually installed for that turn. Recovery matches the result's
-message ID, sender and complete text to the queued answer and retains its
-question route. Current configuration cannot prove an older turn's MCP origin;
-unmatched human answers stay queued and pause input instead of becoming new turns.
-Up to 128 detailed MCP receipts rotate only after acknowledgement and a later
-turn; their older question routes share the 10,000-ID bound above.
+The separate MCP `ask_human` path records an exact completed tool result before
+acknowledging its human answer. Each submitted input retains the MCP server
+bindings actually installed for that turn. Recovery matches the result's message
+ID, sender and complete text to the queued answer and retains its question route.
+Configuration read at recovery time cannot prove an older turn's MCP origin; unmatched human
+answers stay queued and pause input instead of becoming new turns. Up to 128
+detailed MCP receipts rotate only after acknowledgement and a later turn; their
+older question routes share the 10,000-ID bound above.
 
-Hosted beta.12 (`d48c0ab6`) on hosted Linux with authenticated Codex 0.160.0 and its
-complete upstream package passed a 600-second MCP question through Code Mode.
-The exact tool answer was acknowledged once without another user input; two
-busy messages retained their order and the original terminal draft submitted
-once afterward. Four ordinary receipts and one MCP receipt matched provider
-history. All 13 process generations retired, with configuration and terminal
-settings unchanged. This used a synthetic managed PTY, not a provider approval,
-native TUI, physical keyboard or restart test. The earlier missing-helper and
-incorrect no-steering fixture failures remain in the verification index.
-
-The [MCP receipt trial](verification/INDEX.md) retains
-the failed extra-input baseline and passing actual Codex normal/crash recovery
-cases at `f42a8b0`. The crash cut let Codex consume the tool answer while its
-controller was stopped, then recovered the receipt from provider history after
-one controller restart. Both cases kept three ordered ordinary inputs and one
-provider record. The local gate passed 813 Rust tests, 65 Python checks and
-137 native workflow steps. PR #106 merged as `90c9e24` after final CI and
-actual source inspection of `1d76a88`; its parent integration gate passed
-814 Rust tests and 65 Python checks.
-
-MCP URL elicitation (`mcpServer/elicitation/request`, `mode: "url"`) now has a
+MCP URL elicitation (`mcpServer/elicitation/request`, `mode: "url"`) has a
 bounded human route. The request must name the bound thread. A supplied turn
 must match an active input; absent/null turn correlation uses the local active
 turn when present. While idle, an uncorrelated request instead belongs to the
@@ -992,165 +660,53 @@ URL are supported. Credentials, hidden display controls and ambiguous authoritie
 are rejected before question publication. The review records the opaque
 elicitation ID unchanged, but does not confuse it with Codex's request ID.
 Cancellation and five-minute expiry return `action: "cancel"`; an exact human
-Accept returns `action: "accept"` with no form content. Provider resolution
-acknowledges the decision, not completion of the external website action. There
-is no page polling, completion inference or automatic tool retry. Existing
-uncertain-write and no-replay recovery rules apply; URL reviews require ledger version 12 or later and cannot be fabricated in older records. Source tests cover the route. Actual Codex 0.160 with Mac ARM64
-release binaries and private model/MCP fixtures passed Accept, Decline, Cancel
-and route cancellation, eight distinct ordinary input receipts, exact server-side
-decisions and independently verified cleanup. The fixture preserves normal
-on-request policy and explicitly configures only its synthetic tool for use;
-`never` policy declined the URL request before human review. These are synthetic
-human decisions, not account/browser consent. A separate actual-provider-binary
-trial held the request until its five-minute expiry with no human answer: the
-MCP server received one cancellation and the queued peer input received its own
-ordinary-turn receipt. Private processes and scratch were independently confirmed
-gone. Hosted Linux x86-64 repeated all four decision/cancellation paths from the
-CI CLI archive with the same source tree, eight exact input receipts and clean
-process retirement. That short private fixture overlapped the separate 48-hour
-provider trial. Browser interaction, final packages, Windows/other versions,
-pending restart and real-account waits remain open.
+Accept returns `action: "accept"` with no form content (Codex forwards an empty
+`content` object to the MCP server). Provider resolution acknowledges the
+decision, not completion of the external website action. There is no page
+polling, completion inference or automatic tool retry. Existing uncertain-write
+and no-replay recovery rules apply; URL reviews require ledger version 12 or
+later and cannot be fabricated in older records. Under the `never` approval
+policy Codex declines the URL request before human review. When a provider
+request omits its turn ID, the review binds to the locally active turn; a late
+request with no turn ID, after an interruption or restart, cannot be tied to its
+original turn. Human review is required for every decision.
 
-Unknown callbacks,
-session-wide file grants, unsupported permission selectors, extended MCP forms/device-verification elicitation,
-secret inputs without the development switch, and oversized requests currently
-return an explicit provider error. Complete
-those review surfaces before treating the adapter as a general replacement for
-the provider terminal. Automatic provider review and configured approval policy
-are not overridden.
+Unknown callbacks, session-wide file grants, unsupported permission selectors,
+extended MCP forms/device-verification elicitation, secret inputs without the
+development switch, and oversized requests return an explicit provider error.
+Automatic provider review and configured approval policy are not overridden. The
+bridge is not a general replacement for the provider terminal.
 
-The [provider-question trial](verification/INDEX.md)
-at `de9d6b2` passed 803 Rust tests, 65 Python checks, 123 native workflow steps and
-actual Codex Allow, Deny, cancelled-reply and queued-answer crash cases. Approval
-answers did not become extra ordinary turns, and cancellation did not authorize
-a later reply. PR #104 merged as `8103a0e` after final CI and source inspection.
-The [structured Iced controls](verification/INDEX.md)
-passed 808 Rust tests, 65 Python checks and 137 native workflow steps; actual
-Codex Allow and Deny each passed six rendered control steps at the earlier
-`cb17213` checkpoint. PR #105 merged as `7110670` after its 809-test review
-correction, final CI and actual source inspection.
+Ordinary-input receipts and bounded pause reasons are persisted for the desktop.
+The selected session shows queue count and the latest receipt; **Review delivery**
+opens the reason and recent saved logs without resending input, restarting a
+provider or changing the draft. Paused exited sessions remain in **Needs input**.
+The latest UI receipt covers ordinary inputs; native question and MCP answer
+receipts keep their existing ledger paths.
 
-The [verified implementation](verification/INDEX.md)
-passed fourteen targeted tests, the full gate with 784 Rust tests and 65 Python
-checks, and 123 native workflow steps. An actual
-Codex 0.153.4 trial delivered peer/human/peer input in order, received three
-correlated replies and retained one Codex record. The trial used an explicitly
-authorized `send_message` tool in its private profile; it does not establish
-general approval acceptance. Actual cuts also covered a completed provider turn
-before controller completion, an uncertain input before provider submission,
-and an unused conversation. Both queue recovery and refusal to replay passed.
-Broader crash cuts and sustained use remain gates. Schema 13 also persists
-ordinary-input receipts and bounded pause reasons for the desktop. The selected
-session shows queue count and the latest receipt; **Review delivery** opens the
-reason and recent saved logs without resending input, restarting a provider or
-changing the draft. Paused exited sessions remain in **Needs input**. The latest
-UI receipt covers ordinary inputs; native question and MCP answer receipts keep
-their existing ledger paths. The [status checkpoint](verification/INDEX.md)
-records actual Codex receipt/late-answer acceptance and native restart checks.
-PR #108 merged after final CI and actual source inspection at `5778212`. The delivery audit (MESSAGE-DELIVERY-AUDIT.md in git history)
-retains the other open review surfaces and acceptance cases.
-The existing installation and active sessions have not been switched.
+Post-review peer input may be steered into the existing provider turn, so
+distinct message/item receipts do not imply distinct turns.
 
 The provider transport and MCP policy reference are documented by OpenAI in
 [App server](https://learn.chatgpt.com/docs/app-server) and
 [MCP configuration](https://learn.chatgpt.com/docs/extend/mcp).
 
-### September 14 command access and offered decisions
+## Active-turn steering
 
-At clean `8ff5665`, actual Codex 0.154.0 exercised separate Allow and Deny
-conversations. Both provider requests offered `cancel` as the negative choice.
-Each trial completed three FIFO peer/human/peer inputs with three correlated
-model replies, one exact human/provider approval receipt and no fourth input
-turn. Original provider configuration and binary hashes stayed unchanged and
-owned fixture processes were cleaned up. The full gate at `7d683cc` (identical
-Rust code) passed 890 Rust tests, 67 Python checks, lint, packaging and release
-build; the native workflow at `8ff5665` passed 170 steps.
-
-The preceding actual Allow attempt at `7f87fe4` was refused before a question
-because its decision check required `decline`. A separate wrapper probe failed
-managed MCP identity initialization and is not counted as provider acceptance.
-Both failures are retained privately. The corrected trials do not complete
-provider-limit recovery, unsupported review forms or installed-app acceptance.
-
-The September 15 30-message mixed human/peer burst at `2fa897b`, using the
-`2a7656c` release binaries, delivered all 30 turns once and in order after the
-baseline and receiver-restart checks (38 total model requests, 36 queue
-receipts). The first burst input took 9.03 seconds and the last 299.15 seconds;
-the current one-outstanding-offer receiver follows Codex's queue polling cadence.
-This proves bounded durability/order, not low-latency burst handling or paid-model
-throughput. The retained [native trial record](verification/INDEX.md)
-includes the exact source, driver and binary hashes.
-
-Final review corrections preserve a live bootstrap marker but allow a dead
-receiver generation's marker to be replaced after a successful launch; the
-private ledger still validates the provider generation independently. Both
-receipt-history and provider-queue scans now have a one-minute total bound.
-The receiver flags document their verified identity/path inputs. The fixture
-serializes bootstrap/question claims and response numbering, including auxiliary
-requests. The preceding `153fad3` integration gate passed 965 Rust tests (six
-skipped), 70 Python checks and release packaging; the corrected `bb1e50c` source then passed 967 Rust tests (six skipped), 70 Python
-checks and the same full gate. The final release-TUI legacy-reply trial at
-`b2c3938` then passed idle wake, preserved drafts, mixed-origin FIFO, automatic
-receiver restart and exact legacy human-answer consumption without another turn
-(nine model requests). Source and executable hashes stayed fixed.
-
-The `c6ee1d49` Linux CI archive also passed four URL decision paths with actual
-Codex 0.155.1 and a private model/MCP server: four exact replies, eight distinct
-input receipts and one controller generation. Post-review peer input may be
-steered into the existing provider turn, so distinct message/item receipts do
-not imply distinct turns. The earlier fixture that required different turns
-remains failed; its corrected repeat independently confirmed all 12 recorded
-processes had retired. This adds provider-version coverage, not browser/account
-consent or final-package acceptance.
-
-The Windows package harness also supports a separate URL-mode trial: four
-explicit decisions, the original destination/callback, held peer input, no form
-content and eight exact ordinary-input receipts. It shares the bounded snapshot
-reader with form trials and retains its own wire, ledger and cleanup report.
-Source `8a249fde` passed all four paths/eight receipts on Windows Codex 0.160
-and 0.155.1, with exact wire/ledger/source/archive pins and clean recorded
-process retirement. This private fixture does not open a browser or establish
-account consent. When a provider request omits its
-turn ID, the review binds to the locally active turn. Its original turn cannot
-be independently established from that omission; late no-turn requests across
-interruption/restart remain a provider-contract acceptance question. Human
-review is still required for every acceptance.
-
-## Active-turn steering acceptance (September 16)
-
-The owned bridge now retains one additional steering attempt independently of
-the message that started the turn. Its complete input is persisted before the
+The owned bridge retains one additional steering attempt independently of the
+message that started the turn. Its complete input is persisted before the
 provider call; only an exact item receipt permits queue acknowledgement. Lost
 replies retain the attempt for history reconciliation. A definite active-turn
 precondition refusal leaves the message eligible for a later ordinary turn: the
 server's structured `activeTurnNotSteerable` (a review or compaction turn), or
-the two documented preconditions it still states only in words.
-Other errors do not permit resubmission. A `turn/start` the server answers with
-an error of its own is its word that no turn started: the prepared input is
-dropped and the message stays queued with the provider's structured reason on
-the record; a timeout or a closed pipe is retained for receipt recovery. Both
-loops refuse an app-server older than 0.154.0 at `initialize`, naming both
-versions, before any thread is touched. Active-turn steering was introduced in bridge ledger version 10;
-existing version 1–9 records retain their inputs when upgraded.
-
-The installed Codex 0.154.0 API passed an isolated local-model trial: the second
-input reached the same active turn, wrong-turn and idle steering were refused,
-and no production profile or conversation changed. Source `13c3e40` passed 1,010 Rust tests, 77 Python checks and private actual-Codex
-bridge trials for CLI human/peer/broadcast input in one busy turn and supervised
-lost-reply recovery without resubmission. Fixture failures and passing reruns are
-retained in [input evidence](verification/INDEX.md).
-Final integration `7fbb8c4` passed 1,015 Rust tests and 77 Python checks,
-including legacy-record migration and duplicate-item receipt rejection. Both
-actual-client scenarios passed again on its immutable release binaries; the
-lost-reply trial recovered the same agent/thread without repeating input.
-
-Run `python3 scripts/codex_steering_smoke.py --binary-dir target/release
---output /tmp/steering-trial` (add `--scenario lost-reply` for recovery or
-`--scenario refused` for an injected no-active-turn failure, or
-`--scenario changed-turn` for a refusal followed by that other turn's completion).
-Hosted-model and broader provider acceptance remain open. The native TUI queue alone still waits for idle; the separate bounded
-[hook route](#active-input-in-an-existing-terminal-candidate-september-17-utc)
-now supplies active-turn input for the installed existing-session receiver.
+the two documented preconditions it states only in words. Other errors do not
+permit resubmission. A `turn/start` the server answers with an error of its own
+is its word that no turn started: the prepared input is dropped and the message
+stays queued with the provider's structured reason on the record; a timeout or a
+closed pipe is retained for receipt recovery. Both loops refuse an app-server
+older than 0.154.0 at `initialize`, naming both versions, before any thread is
+touched. Steering needs delivery-record version 10; older records keep their
+inputs when upgraded.
 
 A no-active-turn precondition refusal suppresses further steering for the
 retained turn. Its completion clears the suppression and the still-queued input
@@ -1158,58 +714,17 @@ can enter through the ordinary turn-start path. A different-active-turn refusal
 instead pauses delivery immediately with a clear reason, keeps the original
 receipt and leaves the unsubmitted message queued. It cannot treat that other
 turn's completion as the retained turn or acknowledge its refused input. A later
-controller restart must recover the retained conversation before becoming ready. Ambiguous failures retain the durable
-attempt for receipt reconciliation; they do not authorize another submission.
+controller restart must recover the retained conversation before becoming ready.
+Ambiguous failures retain the durable attempt for receipt reconciliation; they do
+not authorize another submission.
 
-The refusal follow-up `01531dc` passed the full 1,015-Rust/77-Python gate and all
-three actual-client scenarios. The injected-refusal trial held the original turn
-busy over several queue polls, observed one rejected steering request, then one
-ordinary turn start with an exact receipt after completion.
-
-The September 16 changed-turn regression passed on source `36ac92b` with actual
-Codex 0.154.0 and a private local model service. An injected different-turn
-refusal followed by that turn's completion left the original receipt intact and
-the refused message queued once, with an explicit pause and no resubmission.
-Busy, no-active-turn and lost-reply scenarios also passed. The prior binary
-failed the changed-turn trial as expected; both results and the full
-1,077-Rust/84-Python gate are retained in the existing
-[reload evidence](verification/INDEX.md).
-
-### September 17 active peer burst
-
-One actual Claude-to-Codex burst delivered all three original messages once, in
-order, into the same active model turn without a human prompt or manual queue
-acknowledgement. Exact retained receipts match provider context records. Those
-records appeared **104.19–119.36 seconds after sending**, so this is an ordering
-pass and an open latency finding, not immediate-delivery acceptance. Two earlier
-system notices were acknowledged before the first peer message. The external
-service retains one attempt and the active hook offers one head per tool
-boundary. The first tool completed at 20:20:08.578 UTC; the next tool began at
-20:20:58.985 and was a 45-second coordinator sleep. The first peer input arrived
-when that wait ended at 20:21:44.314; the next tool at 20:21:59.161 delivered the
-other two. These are end-to-end context delays including gaps between tools
-and an explicit coordinator wait, not 104–119 seconds of daemon or RPC work.
-The trace does not isolate every native queue/API wait.
-
-The [existing queue record](verification/INDEX.md) retains
-all three IDs, timestamps and receipt hashes. Bounded batching and scheduling
-need further engineering/measurement with exact recovery and no duplicate
-execution preserved. The [documented active-turn steering API](https://learn.chatgpt.com/docs/app-server#steer-an-active-turn)
-requires an active turn on the target thread and a matching `expectedTurnId`.
-The current independent-terminal bridge has a local compatibility limitation:
-its separate connection has not established a route to steer that terminal's
-active turn. This is not an additional ownership requirement in the API contract.
-
-The native queue acceptance driver also has an `approval-wait` scenario. It
-uses a private `on-request` policy and a narrowly matched prompt rule, then
-holds a harmless print command for 65 seconds while peer and human input
-remain queued; the approval-triggering message may also retain its receipt
-until the current turn completes. It requires ordered provider receipts after one-time approval
-and complete private-process cleanup. On Codex 0.160.0 Mac ARM64, driver
-`d3361106` with immutable runtime `3065bd6e` passed a 65.259-second approval
-wait, 65 queue observations and ordered peer/human receipts exactly once after
-one-time approval, with clean private-process retirement. Real-account, other
-versions/platforms and non-command permission surfaces remain open.
+The [documented active-turn steering API](https://learn.chatgpt.com/docs/app-server#steer-an-active-turn)
+requires an active turn on the target thread and a matching `expectedTurnId`. The
+bridge's separate connection to an independently running terminal cannot steer
+that terminal's active turn; this is a local compatibility limit, not an
+additional ownership requirement in the API contract. The native TUI queue alone
+waits for idle; the separate bounded [hook route](#active-input-in-an-existing-terminal)
+supplies active-turn input for the existing-session receiver.
 
 The managed bridge records an accepted conversation as the existing managed
 agent's `session_id` after Codex accepts its first turn, and confirms that same
@@ -1224,20 +739,27 @@ an unavailable daemon cannot make this accounting step strand an input that
 Codex never received. Existing receipt recovery still prevents replay; the
 collector reconciles samples scanned before the label becomes available.
 
-The native shared-server candidate also accepts a private version-2 birth receipt
-for a launcher that observed an empty dedicated server and then its sole TUI
-creating a new thread. Initial history admission requires both children still
-belong to that exact live launcher, matching empty/idle root-thread metadata,
-an empty native queue and a receiver ledger with no attempted, completed, failed
-or manually disposed input. This establishes an initial anchor without treating
-any history error as empty history. Writing the first attempt permanently spends
-that allowance; receipt recovery, explicit resolution and upgrades keep normal
-history requirements. After a queued input is accepted, its history can briefly remain unavailable: the exact `-32601` “list_turns is not supported yet” refusal on the first page now gets up to two additional seconds of read-only retries. An actual history page and exact receipt are still required; this never recreates the birth allowance, treats an error as empty history, or sends the input again. Other errors, later-page errors and an expired wait retain normal recovery behavior. Version-1 records cannot opt into the birth allowance. Codex reconstructs both timestamps from
-its current clock while a thread remains unmaterialized. They must be equal and
-bounded by the witnessed creation and current read time; they are not thread
-identity. Thread/session IDs, canonical checkout, live generations and all empty
-state checks remain required. The experimental owned launcher and its scoped
-platform acceptance are described below.
+## Owned native launcher
+
+The native shared-server path accepts a private version-2 birth receipt for a
+launcher that observed an empty dedicated server and then its sole TUI creating a
+new thread. Initial history admission requires both children still belong to that
+exact live launcher, matching empty/idle root-thread metadata, an empty native
+queue and a receiver ledger with no attempted, completed, failed or manually
+disposed input. This establishes an initial anchor without treating any history
+error as empty history. Writing the first attempt permanently spends that
+allowance; receipt recovery, explicit resolution and upgrades keep normal history
+requirements. After a queued input is accepted, its history can briefly remain
+unavailable: the exact `-32601` "list_turns is not supported yet" refusal on the
+first page gets up to two additional seconds of read-only retries. An actual
+history page and exact receipt are still required; this never recreates the birth
+allowance, treats an error as empty history, or sends the input again. Other
+errors, later-page errors and an expired wait retain normal recovery behavior.
+Version-1 records cannot opt into the birth allowance. Codex reconstructs both
+timestamps from its current clock while a thread remains unmaterialized. They must
+be equal and bounded by the witnessed creation and current read time; they are not
+thread identity. Thread/session IDs, canonical checkout, live generations and all
+empty state checks remain required.
 
 `AGENTDOCKER_TRACE_NATIVE_STARTUP=1` optionally records fixed startup refusal
 stages (launcher generation/child ancestry, empty-thread metadata or queue). It
@@ -1256,99 +778,47 @@ per second, interrupting the 30-second reconnect delay or an outstanding
 recovery client when that generation disappears. Cancellation preserves the
 durable input disposition and never acknowledges or retries an uncertain write.
 Stalled local handshakes are read concurrently within fixed connection/time
-bounds so they do not serialize the owner’s startup. The TUI still inherits the terminal directly. Mac ARM64 `8dc1e614` passed front-end
-SIGKILL after a receipt and during pre-binding provider startup, SIGTERM and
-failed-spawn cleanup. Receiver replacement, preserved draft and the original
-UUID reopen also passed. The same five scopes passed on hosted Linux x86-64 from the extracted CI
-package for `39bf8ae2` (compiled merge `569662e9`, identical source tree). Windows
-x64 passed 62 package, 42 installer and 16 native checks from that same source,
-including a third prompt-free reopen followed by front-end termination. Its
-owner/provider/receiver exit, capability revocation, unchanged receipts and no
-additional model request were verified before closing the synthetic console.
-These trials used actual Codex 0.160 with a private loopback model and synthetic
-terminals. Internal-owner death and whole-console cleanup have the additional
-bounded acceptance below. Final review, broader pending-input recovery,
-real-account and physical-terminal acceptance remain open.
-It observes an empty server before launching the terminal, requires the sole new
-thread birth, then registers the exact TUI and publishes its private birth
-receipt before starting the receiver. The TUI inherits the terminal; the launcher
-never types a warmup or answers approvals. Configuration flags after `--` use the
-existing conservative app-server mapping. `--profile` and `--cwd` select existing
-paths without editing the provider profile. Initial prompts and positional
-resume commands are refused. The explicit `--resume <UUID>` option asks the native
-TUI to reopen that exact persisted root conversation. The launcher observes the
-same sole loaded thread, checks its checkout/root identity, requires normal
-persisted history, and publishes a version-1 record with no birth allowance. A
-unique dead predecessor hands off the canonical identity, original queued IDs
-and retained receipts through the daemon; a live or ambiguous predecessor
-refuses. The daemon alone starts the replacement receiver. The integrated candidate `d139c06c` passed actual Codex 0.160 reopen trials on
-Mac ARM64, hosted Linux x86-64 and Windows x64: after native exit, an original
-message queued while offline arrived once under the same canonical agent,
-thread and profile with a new provider/server generation. Both original receipts
-and the earlier draft survived; only three user items existed, and the resumed
-record used ordinary history with no birth allowance. Windows also verified
-actual MCP identity in both terminal generations. The Unix trials configured
-MCP but did not invoke it. These private loopback-model and synthetic-terminal
-trials do not establish real-account or physical-input acceptance. Published beta.14 (`10b57894`) also passed explicit UUID reopen with actual
-Codex 0.163 and existing accounts on a development Mac and independent hosted Linux. Each
-trial completed two real turns: after native exit, one offline message arrived
-once under the same canonical agent and thread without a bootstrap prompt. The
-original receipt and both exact model replies were retained. All 16 Mac and 49
-Linux owned process generations retired without force. Mac saved settings stayed
-unchanged; the originally absent Linux private configuration was restored exactly
-after all profile users retired. Protected production sessions stayed unchanged.
-These used synthetic terminals and existing authentication; physical input,
-fresh login, unsent drafts through whole-terminal exit and the separate hook-only
-zero-prompt gap remain open.
+bounds so they do not serialize the owner's startup. The TUI inherits the
+terminal directly.
+
+The launcher observes an empty server before launching the terminal, requires the
+sole new thread birth, then registers the exact TUI and publishes its private
+birth receipt before starting the receiver, so the receiver binds before the first
+prompt. The TUI inherits the terminal; the launcher never types a warmup or
+answers approvals. Configuration flags after `--` use the existing conservative
+app-server mapping. `--profile` and `--cwd` select existing paths without editing
+the provider profile. Initial prompts and positional resume commands are refused.
+The explicit `--resume <UUID>` option asks the native TUI to reopen that exact
+persisted root conversation. The launcher observes the same sole loaded thread,
+checks its checkout/root identity, requires normal persisted history, and
+publishes a version-1 record with no birth allowance. A unique dead predecessor
+hands off the canonical identity, original queued IDs and retained receipts
+through the daemon; a live or ambiguous predecessor refuses. The daemon alone
+starts the replacement receiver. After the native client exits, a message queued
+while offline arrives once under the same canonical agent, thread and profile,
+with a new provider and server generation and without a bootstrap prompt.
 
 If receiver binding and its cleanup both fail, the original binding error is
-retained with the cleanup failure as additional context. On Unix, the front end now creates a dedicated group for the internal owner and retains its unreaped child identity until that group is retired. It also owns the capability path before startup, so an internal-owner crash can revoke it. A controlling terminal is handed to the owner group directly, with foreground and mode restoration on cleanup and suspension; stdin is never proxied. Source `4042605a` passed the bounded actual Codex 0.160 owner-crash trial, but failed a separate controlling-terminal suspension: Darwin returned a stopped-child notification to the exit wait. Corrected `368443bc` passed the independent-host suspension/continue and owner-death trial, with foreground and terminal modes restored before host cleanup. Frontend SIGKILL and SIGTERM regressions also passed. All three retained the exact first receipt, revoked the capability, retired their processes and produced no extra model request. These private-model Mac trials do not establish startup-crash, physical keyboard or other-platform acceptance. On Windows, the authenticated internal owner enters an unnamed kill-on-close job
-before starting provider children. Its non-inheritable handle remains until
-process exit; daemon startup happens before admission, and provider descendants
-cannot autostart a shared daemon inside the job. A retained private kernel
-delete-on-close file handle revokes the capability even when console closure
-prevents either Rust cleanup path from running.
+retained with the cleanup failure as additional context. On Unix, the front end
+creates a dedicated group for the internal owner and retains its unreaped child
+identity until that group is retired. It also owns the capability path before
+startup, so an internal-owner crash can revoke it. A controlling terminal is
+handed to the owner group directly, with foreground and mode restoration on
+cleanup and suspension; stdin is never proxied. On Windows, the authenticated
+internal owner enters an unnamed kill-on-close job before starting provider
+children. Its non-inheritable handle remains until process exit; daemon startup
+happens before admission, and provider descendants cannot autostart a shared
+daemon inside the job. A retained private kernel delete-on-close file handle
+revokes the capability even when console closure prevents either Rust cleanup
+path from running.
 
-Actual Windows Codex 0.160 package `64a93e82` (compiled `ffadbda6`, identical source
-tree) passed 62 daemon, 42 installer and 22 native checks. Distinct frontend and
-internal-owner termination retained an independent live, resizable console.
-Separately dropping the last ConPTY owner while all watched participants were
-alive retired the console host, frontend, owner, providers and receiver and
-removed the capability. Original receipts stayed exact, no extra model request
-occurred, and no forced fixture cleanup was needed. Source/archive/executable,
-CRLF driver/helper hashes and cleanup reports were independently verified; the
-[trial index](verification/INDEX.md) preserves the original failures as well.
-These are extracted-package, private-model and synthetic-console checks.
-Windows startup races, pending-input/unsent-draft recovery, installed service
-survival, real accounts and physical consoles remain open.
-
-The launcher retires its own children on exit, revokes its capability
-and retains bounded private server diagnostics. Capability cleanup is owned before
-fallible file writes and server creation, so a failed initial spawn also revokes
-the file; a real CLI/daemon regression covers a non-executable provider path.
-The original `d139c06c` failed-spawn capability leak remains recorded. Corrected
-runtime `87776874` passed the Mac negative control and native startup/reopen
-trial; Windows `8388c2ee` passed the same startup refusal plus all 12 positive
-checks, including actual MCP identity in both terminal generations. These
-sources have identical runtime compilation inputs. The full `8388c2ee` gate
-passed 1,536 Rust and 169 Python tests with zero retries.
-Source `e3445323` passed the full
-1,528-Rust/169-Python gate (zero retries) and an actual Mac Release trial: automatic
-binding before the first prompt, original queued receipt, receiver replacement
-and retained draft submitted once with unchanged private configuration. Launcher
-exit retired its own provider children and revoked the token. A stronger repeat
-also verified the replacement receiver retired before fixture cleanup; only the
-private test daemon was terminated by the fixture. Windows `a3091852` passed
-seven automatic product-launch checks, including actual MCP identity and native
-terminal exit; the launcher terminates its owned server through the native
-process API. Hosted Linux first binding/receipt passed, but replacement failed
-because the original receiver remained a zombie child. The launcher now reaps
-its receiver while the terminal continues, allowing daemon-owned replacement.
-Source `4e3c447f` passed the native Linux zombie regression and fresh hosted Linux
-first-receipt/replacement/draft/exit acceptance with complete unforced cleanup. The first Mac attempt
-stopped after binding on a fixture process-group assumption, before model input;
-that failure is retained. Broader adoption and desktop/default launch remain open;
-ordinary `codex` and the current managed bridge are unchanged.
+The launcher retires its own children on exit, revokes its capability and retains
+bounded private server diagnostics. Capability cleanup is owned before fallible
+file writes and server creation, so a failed initial spawn also revokes the file.
+The launcher reaps its receiver while the terminal continues, allowing
+daemon-owned replacement. On Windows it terminates its owned server through the
+native process API. Ordinary `codex` and the managed bridge are unchanged by the
+launcher.
 
 ## Nonsecret MCP form review
 
@@ -1363,36 +833,18 @@ Unknown constraints, nested schemas, secret/extended formats and device
 verification fail explicitly. Explicit `null` schema fields are invalid, including
 constraints and defaults; only omission selects the documented fallback.
 Idle form and URL reviews require delivery-ledger version 14 or newer. Earlier
-records cannot introduce these receipts. The current package uses delivery-ledger
-version 15 and state schema 27, which also preserve secret-response metadata.
-Binary rollback to beta.9/schema 26 or earlier is refused before activation;
-older receivers also refuse ledger 15 without rewriting it. Keep a compatible
-receiver for these conversations, and never restore an older delivery ledger over
-already acknowledged input. Pending
-or uncertain reviews on restart still pause delivery; replies are never replayed.
-Requests are limited to 16 fields, 32 options,
+records cannot introduce these receipts. The delivery ledger (version 15) and the
+daemon state schema also preserve secret-response metadata. A binary rollback to
+a schema that predates it is refused before activation; older receivers also
+refuse ledger 15 without rewriting it. Keep a compatible receiver for these
+conversations, and never restore an older delivery ledger over already
+acknowledged input. Pending or uncertain reviews on restart pause delivery;
+replies are never replayed. Requests are limited to 16 fields, 32 options,
 16,000-byte schemas/responses and 4,096-byte text fields. Schema text-length
 bounds count Unicode characters; exceeding the separate byte cap reports its
-own error. Numeric magnitudes may
-not exceed 2^53 − 1. The generated Codex 0.160 schema does not carry regex patterns,
-so such constraints are unsupported rather than ignored.
-
-The Windows package suite now includes a private managed-provider form trial
-(`--mcp-forms`): four decisions, invalid-answer refusal, held peer input and eight
-exact ordinary-input receipts, with birth-pinned cleanup and retained wire/ledger
-evidence. Source `8d22f923` passed on native Windows with actual Codex 0.160:
-four exact MCP replies, eight unique ordinary-input receipts, invalid answers
-refused and peer input held during review. Source/archive/executable/provider/
-helper hashes, original wire replies and retained ledger were independently
-matched. The CI report records clean retirement of all 50 process generations.
-It also passed 62 daemon, 42 installer, 22 native-launcher and three nine-check
-queue-recovery scenarios. A later Windows Codex 0.155.1 trial completed Submit
-and Decline but failed in the fixture observer: Python opened the live ledger
-without sharing deletion during atomic replacement. The observer now uses the
-existing bounded shared-file reader. The original failed trial is retained; a
-complete corrected older-version trial passed in `8a249fde`, described below.
-This does not prove account, physical interaction,
-installed-service, restart or long-wait behavior.
+own error. Numeric magnitudes may not exceed 2^53 − 1. The generated Codex
+schema does not carry regex patterns, so such constraints are unsupported rather
+than ignored.
 
 Defaults are editable suggestions. Optional fields can be omitted; submitting
 shares only included values with the named server. Unsubmitted edits remain in
@@ -1402,139 +854,97 @@ API keys and payment credentials belong in URL elicitation, never these forms.
 Terminal users can answer with a JSON object: `agentdocker answer <id>
 '{"count":2}'`, or with `Decline` or `Cancel`. Cancel/expiry sends no form content.
 An accepted answer requires the original question's exact daemon receipt, and an
-uncertain provider write is retained without replay. Source `5bda72d0` passed the full 1,558-Rust/179-Python gate (8/1 skipped),
-zero retries, and an actual Codex 0.160 Mac ARM64 release-binary trial. Four
-form decision/cancellation paths preserved exact schemas and values, refused
-invalid answers while pending, delivered eight unique ordinary-input receipts
-and left no private processes or scratch. Final `4737ed1a` passed the same full
-gate, including stale-schema submission and oversized-edit refusal. Its native
-Mac UI passed 39 rendered-control steps for Submit/Decline/Cancel, invalid input,
-exact typed values and omitted optional input; native accessibility extraction,
-screenshots, six ordinary-input receipts and clean process retirement passed.
-The identical-tree Linux CI archive passed all four decision/cancellation paths
-with both actual Codex 0.160 and 0.155.1, eight unique input receipts per version
-and independently verified cleanup. Peer input stayed queued during review and
-resumed only after the exact MCP answer, either in the active turn or a new one.
-An initial fixture incorrectly required separate turns; that failure and its
-corrected assertion are retained. A separate Linux/Codex 0.160 trial held an
-unanswered form to its five-minute expiry: 1,126 observations retained peer
-input, one exact cancellation shared no content, two ordinary-input receipts
-followed, and all private processes retired cleanly. These use private model/MCP fixtures and
-synthetic answers; account, final desktop packages, broader versions,
-physical interaction, pending restart and waits beyond five minutes remain open.
+uncertain provider write is retained without replay. Peer input stays queued
+during review and resumes only after the exact MCP answer, either in the active
+turn or a new one. Stale-schema submissions and oversized edits are refused.
 
-Windows source `58d652a9` passed the managed four-form/eight-receipt trial with
-both pinned Codex 0.160 and 0.155.1 after fixing deletion sharing in the observer.
-Their subsequent native-launcher checks failed independently. The 0.160 terminal
-interleaved the ready prefix and agent ID with provider redraw output; reopen
-acceptance now reads the exact daemon binding, provider generation and durable
-ledger, and retains those observations before asserting. A displayed banner
-alone cannot establish identity. Windows 0.155.1's native MCP identity call was
-refused because its metadata did not satisfy the root-conversation contract;
-the retained managed wire and pinned upstream source show the older nested
-session/thread identity shape. Source now accepts that complete shape while
-refusing conflicting fields and preserving host/generation/child checks.
-Source `0d4f0ca5` passed separate 11-check established-session native MCP
-trials on Mac Codex 0.160 and hosted Linux Codex 0.155.1: original-TUI identity,
-two exact input receipts, preserved draft and receiver replacement. The Linux
-archive has the identical CI source tree; all six recorded processes were
-independently absent. The Mac check independently confirmed five recorded PIDs
-and both signalled groups absent; other descendant cleanup uses its fixture
-report. These private-model trials require an explicit warmup/manual binding.
-Corrected `8a249fde` passed full extracted Windows package acceptance on both
-Codex 0.160 and 0.155.1: 62 daemon/42 installer/22 native-launcher checks and
-three nine-check recovery scenarios. Both original-TUI MCP identities matched
-the exact provider generation before/after reopen, including the older nested
-metadata. Authoritative binding/ledger snapshots verified canonical reopen for
-frontend exit, owner exit and console close; draft and receiver replacement
-checks also passed. Birth-pinned cleanup reports have no forced cleanup,
-survivors or reader errors. Source/archive/EXE/provider/helper pins and all
-standalone reports/ledgers were independently checked. These private-model,
-synthetic-ConPTY trials do not establish account, physical or installed-service
-acceptance. Neither original failed package job inherits this pass. See the
-trial index.
+## Secret input
 
-The first Windows URL harness run on `0d4f0ca5` failed its observer assertion on
-both pinned providers after the initial Accept and two exact input receipts.
-The app-server closure retained `content: null`, while Codex forwarded
-`content: {}` to the MCP server. This carries no form fields. The observer and
-package validator now require that exact empty object on URL Accept and omitted
-content on Decline/Cancel; nonempty content still fails. Corrected `8a249fde`
-passed all four paths and eight distinct original input receipts on both
-providers. Form trials also passed four decisions/eight receipts on both.
-Invalid answers refused and peers stayed held until the exact review resolved;
-controller/configuration were unchanged. The CI reports record clean retirement
-of 58 form/54 URL process generations for 0.160 and 30 form/28 URL generations
-for 0.155.1. Both original failed URL reports remain indexed.
+A managed-only secret producer and metadata-only restart fence are behind
+`[experimental] secret_input = true` in `agentd.toml` (or
+`AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` on the bridge). Default sessions refuse
+secret bundles. An interactive route additionally requires AgentDocker to control
+terminal echo. On Windows, the managed bridge owns a duplicate console input
+handle, disables line buffering and echo, and enables virtual-terminal input for
+the bounded editor. It preserves Ctrl-C and output behavior and restores the saved
+input mode when the guard drops. Non-terminal or unsupported interactive handles
+refuse. With virtual-terminal input mode, Ctrl-] arrives as a Win32 keyboard
+record, so Windows attachment recognizes the complete key-down record as the local
+detach key, including the protocol defaults for omitted parameters; other keyboard
+bytes remain unchanged. A split record is bounded to 64 bytes, and an incomplete
+Escape prefix is forwarded after 25 ms without further input, or immediately on
+EOF/error.
 
-A managed-only secret producer and metadata-only restart fence are implemented
-behind `[experimental] secret_input = true` in `agentd.toml` (or `AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT=1` on the bridge). This development switch does not
-establish full acceptance. Source `0433147b` passed actual Mac Codex0.160.1
-delivery through a private model, masked desktop entry and a synthetic PTY draft
-trial. No supplied value was found in AgentDocker state/logs; Codex retained it
-in its rollout. Broader lifecycle/fault, account, final-package and native-terminal
-parity remain open. Default sessions still refuse secret bundles. An interactive
-route additionally requires AgentDocker to control terminal echo. On Windows,
-the managed bridge now owns a duplicate console input handle, disables line
-buffering and echo, and enables virtual-terminal input for the bounded editor.
-It preserves Ctrl-C and output behavior and restores the saved input mode when
-the guard drops. Non-terminal/unsupported interactive handles still refuse.
-The native Windows workflow exercises actual console-mode restoration and the
-extracted package's masked form, suspended typing, Unicode draft and oversized
-line with a private Codex model and synthetic ConPTY. Source `e0f5d577` passed
-the exact extracted-package trial with Codex 0.160.0; its scope is recorded below.
-The initial run passed the kernel checks but
-refused its fixture report ancestry before UI rendering and separately timed out
-detaching. Corrected private capture passed the ten UI steps and four receipts,
-but Ctrl-] still failed before the detach acknowledgement. A provider-free
-`windows.yml` dispatch with `console_input_probe=true` compares raw control bytes
-and advertised Win32 keyboard transport in private Python consoles. It is
-diagnostic evidence, separate from extracted-product acceptance. The extended probe
-reproduced mode 9001 changing Ctrl-] into a Win32 keyboard record. Windows
-attachment now recognizes its complete key-down record as the local detach key,
-including the protocol defaults for omitted parameters;
-other keyboard bytes remain unchanged. A split record is bounded to 64 bytes,
-and an incomplete Escape prefix is forwarded after 25 ms without further input,
-or immediately on EOF/error. The first corrected native run retired the attachment
-and ConPTY but its observer stopped before the buffered farewell finished. The
-fixture now drains output to EOF; complete farewell and retention checks remain
-required. The corrected `e0f5d577` package passed all ten masked UI steps, four
-unique receipts, Unicode draft restoration, discarded suspended/late typing,
-oversized-line refusal and subsequent valid input, and the complete detach
-farewell. All 56 watched process generations retired without forced cleanup;
-private scratch was removed. Independent scans found no invented value in
-AgentDocker state, internal logs or GUI reports; the provider retained it twice
-after explicit consent. This is a native runner/private-model/synthetic-input
-result, not hosted publication, account, physical keyboard/IME, screen-reader or
-logon/reboot acceptance. The supplied secret field remains unadvertised and the
-experimental gate stays. Original failed reports remain in the trial index.
-A supported managed terminal discards new typing without echo while a secret route is
-open. After it closes, Enter discards the suspended line and returns to the
-preexisting draft; buffered text cannot become an ordinary queued message. A possibly sent answer without a provider resolution stays
-paused for inspection and is never resubmitted by restart.
+A supported managed terminal discards new typing without echo while a secret route
+is open. After it closes, Enter discards the suspended line and returns to the
+preexisting draft; buffered text cannot become an ordinary queued message. A
+possibly sent answer without a provider resolution stays paused for inspection and
+is never resubmitted by restart. If the exact `serverRequest/resolved`
+notification is lost after the provider received the answer, the metadata-only
+uncertainty fence and original input receipt are retained across a controller
+restart and the waiting ordinary message stays queued; read-only history recovery
+does not send the secret again or start another model turn. Receipts are
+correlated by message ID: same-turn steering may finish before the original turn
+and share its post-answer model request.
 
-Installed hosted beta.11 (`47d06d3b`) separately passed all eleven masked UI/PTY
-steps on a development Mac with Codex0.160.1 and a private model. Three exact receipts,
-retention acknowledgement, preserved draft and no suspended-input delivery were
-verified; all sixteen recorded process generations and private paths retired.
-AgentDocker state/logs contained no invented value; Codex retained it. The
-provider did not advertise the supplied `isSecret` field in its model schema,
-so this does not establish advertised tool support, real-account, physical-input
-or screen-reader acceptance. The experimental gate remains.
+## Trial drivers
 
-An actual Codex0.160.1/private-model trial on `ecfffb22` dropped the exact
-`serverRequest/resolved` notification through a supported Node proxy after the
-provider received the invented answer. The terminal turn and one bounded
-controller restart retained the metadata-only uncertainty fence and original
-input receipt; the waiting ordinary message stayed queued. Read-only history
-recovery did not send the secret again or start another model turn. Independent
-cleanup checks passed. This is scoped confirmation-loss acceptance, not a manual
-inspection/reconciliation workflow, other crash boundaries or final-package,
-account, native-terminal or Windows acceptance. The first Python proxy failed
-its MCP handshake before model input; that failure remains in the trial index.
+`python3 scripts/native_codex_queue_smoke.py --help` lists the required binary
+paths and scenario choices. The driver runs an actual Codex terminal against a
+private profile and loopback Responses fixture and saves a sanitized result
+beside private traces. Scenarios cover idle wake, draft preservation, mixed
+human/peer busy ordering, asynchronous MCP questions, synchronous MCP answers
+without duplicate input (`legacy-question`, `legacy-reply`, `migration`),
+`posted-question`, `disconnected-question`, a typed HTTP 429 hold with explicit
+resumption (`rate-limit`), lost queue replies and retained ambiguous submissions
+(`recovery`), and explicit TUI `resume`. `--reload --scenario question`
+additionally hands the private daemon over while idle, with an unsubmitted draft,
+during mixed-origin busy input and with a pending question, and checks unchanged
+provider/controller identities, exact answer receipt and retirement of all
+daemons and controllers. Cleanup covers provider startup failure after the
+private daemon has started, before the terminal reader or input binding exists.
 
-The installed beta.11 Linux private-model/Xvfb trial separately passed ten masked
-UI steps, held input, draft restoration and stale-answer refusal. Receipts are
-correlated by message ID: same-turn steering may finish before the original
-turn and share its post-answer model request. A prior observer that assumed
-completion order matched submission order failed and remains indexed.
+- `--scenario long-busy` holds a direct user turn for 65 seconds, requires both
+  human/peer inputs to remain queued without a receipt or pause, then verifies
+  their ordered consumption and receiver crash recovery.
+- `--scenario active-hook` adds peer, human project and human global input during
+  one busy TUI turn and requires exact receipts, FIFO order and no later replay
+  after the baseline idle, draft and crash checks. `--active-peer-kind answer`
+  puts a peer answer ahead of the human messages and requires the same exact
+  receipts and same-turn delivery.
+- `--scenario active-hook-lost` discards one offered hook output and requires the
+  original queued IDs to remain paused without receipt or automatic resubmission.
+- `--scenario active-hook-resolve` covers dropped hook output, full readback,
+  stale-confirmation refusal, a lost reply and receiver restart.
+- `--scenario subagent-hook` checks that child tool hooks leave the root queue and
+  ledger unchanged and that one exact root receipt names the root turn.
+- `--scenario controller-upgrade` with `--initial-receiver-cli` pointing to an
+  immutable older CLI keeps a native queue offer pending through replacement and
+  requires the same provider and token, old receipts, new exact FIFO receipts and
+  clean retirement.
+- `--scenario approval-wait` uses a private `on-request` policy and a narrowly
+  matched prompt rule, then holds a harmless print command for 65 seconds while
+  peer and human input remain queued; the approval-triggering message may retain
+  its receipt until the current turn completes. It requires ordered provider
+  receipts after one-time approval and complete private-process cleanup.
+
+`python3 scripts/codex_steering_smoke.py --binary-dir target/release
+--output <new-directory>` exercises active-turn steering against an actual Codex
+and private local model; add `--scenario lost-reply` for recovery,
+`--scenario refused` for an injected no-active-turn failure, or
+`--scenario changed-turn` for a refusal followed by that other turn's completion.
+
+On native Windows, `scripts/windows_package_smoke.py` runs against an extracted
+package: `--native-manifest <manifest> --output <new-directory> --codex
+<native-codex.exe>`, with `--codex-scenario automatic` for the product-owned
+launcher. Add `--queue-recovery` (requires the automatic scenario) for explicit
+queued start and daemon holds; `--mcp-forms` for managed Codex form decisions
+(Submit, Decline, Cancel, invalid-answer refusal, held peer input and exact
+ordinary-input receipts); `--mcp-urls` for website decisions without opening a
+browser (the original destination and callback, no form content, and exact
+receipts); `--mcp-idle` for form and website decisions after the model turn
+ends; and `--managed-secret` for experimental masked input and synthetic ConPTY
+boundaries. The `--mcp-*` and `--managed-secret` options require `--codex`.
+
+These drivers use an actual Codex client with a loopback model fixture and
+synthetic terminals; they do not exercise a real account or provider service.

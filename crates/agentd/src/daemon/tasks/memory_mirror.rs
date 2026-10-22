@@ -359,7 +359,7 @@ impl Daemon {
             &SupermemoryConfig::namespace(&project),
             key,
         ));
-        let (_, gone) = memory::mirror_plan(&memories, &held.held());
+        let (_, gone) = memory::mirror_plan(&memories, &held.held(), Utc::now());
         let mut removed = 0;
         // What is no longer said goes first, and on its own.
         for ids in gone.chunks(REMOVALS_PER_REQUEST) {
@@ -380,7 +380,7 @@ impl Daemon {
         }
         // Additions are recorded as possibly there before any is sent.
         let present: BTreeSet<String> = held.ids.iter().chain(&held.processing).cloned().collect();
-        let (lacking, _) = memory::mirror_plan(&memories, &present);
+        let (lacking, _) = memory::mirror_plan(&memories, &present, Utc::now());
         let sending: Vec<Memory> = lacking.into_iter().take(ADDS_PER_RUN).cloned().collect();
         held.pending.extend(sending.iter().map(|m| m.id.clone()));
         if !self.record_mirror(held, 0, removed) {
@@ -606,6 +606,8 @@ mod tests {
                 text: text.into(),
                 links: Vec::new(),
                 supersedes: None,
+                standing: false,
+                forget_after: None,
             })
             .await
         {

@@ -1038,7 +1038,8 @@ pub enum Request {
     },
     /// Keep a fact for a project's agents: a memory, by an agent or the
     /// person, in `project` or the author's own. `supersedes` names the
-    /// memory it replaces. Answers `memory`.
+    /// memory it replaces; a `standing` one is said first in the profile;
+    /// after `forget_after` it is no longer said. Answers `memory`.
     MemoryAdd {
         from: String,
         #[serde(default)]
@@ -1048,6 +1049,10 @@ pub enum Request {
         links: Vec<crate::Link>,
         #[serde(default)]
         supersedes: Option<String>,
+        #[serde(default)]
+        standing: bool,
+        #[serde(default)]
+        forget_after: Option<chrono::DateTime<chrono::Utc>>,
     },
     /// A project's current memories that answer `query`, the best first;
     /// `from` names the project when `project` does not. Answers
@@ -1062,8 +1067,9 @@ pub enum Request {
         #[serde(default)]
         limit: Option<usize>,
     },
-    /// What a project's agents should know first: its current memories,
-    /// newest first, within `max_chars`. Answers `memories`.
+    /// What a project's agents should know first, within `max_chars`: its
+    /// standing memories, the oldest first, then the others, newest first.
+    /// Answers `memories`.
     MemoryProfile {
         #[serde(default)]
         from: Option<String>,
