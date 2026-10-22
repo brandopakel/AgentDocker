@@ -169,6 +169,14 @@ impl Invocation {
         }
     }
 
+    /// The daemon from this executable under a name that is not `agentd`.
+    pub fn daemon_run(program: PathBuf) -> Self {
+        Self {
+            program,
+            args: vec!["daemon".into(), "run".into()],
+        }
+    }
+
     /// A command that starts it; the caller adds the program's arguments.
     pub fn command(&self) -> std::process::Command {
         let mut command = std::process::Command::new(&self.program);
@@ -185,29 +193,29 @@ impl Invocation {
     }
 }
 
-/// How to start the program in `executable` as `role`. A file already named
-/// for `role`, or any file that is neither name (a test fixture, a
-/// candidate named by the environment), starts as it is. One of the two
-/// names starts as the other through the other's name beside it when that
-/// runs the same program ([`same_program`]); otherwise the CLI's file runs
-/// the daemon as `agentdocker daemon run`. There is no such fallback the
-/// other way: every layout ships the CLI's own name.
+/// How to start this executable's program, at `executable` under any name,
+/// as `role`. A file named for `role` starts as it is. A file of the other
+/// name starts through `role`'s name beside it when that runs the same
+/// program ([`same_program`]). Otherwise the daemon is `<file> daemon run`
+/// whatever the file is called, since any name but `agentd` is the CLI; and
+/// the CLI is the file as it is, which every shipped layout names
+/// `agentdocker`. A file that may be another program, such as an earlier
+/// release's standalone `agentd` under another name, is not this function's
+/// to judge: ask it (see the daemon's reload).
 pub fn invocation(executable: &Path, role: Role) -> Invocation {
-    match file_role(executable) {
-        Some(named) if named == role.other() => {
-            let sibling = executable.with_file_name(role.file_name());
-            if same_program(&sibling, executable) {
-                Invocation::plain(sibling)
-            } else if role == Role::Daemon {
-                Invocation {
-                    program: executable.to_owned(),
-                    args: vec!["daemon".into(), "run".into()],
-                }
-            } else {
-                Invocation::plain(executable.to_owned())
-            }
+    let named = file_role(executable);
+    if named == Some(role) {
+        return Invocation::plain(executable.to_owned());
+    }
+    if named.is_some() {
+        let sibling = executable.with_file_name(role.file_name());
+        if same_program(&sibling, executable) {
+            return Invocation::plain(sibling);
         }
-        _ => Invocation::plain(executable.to_owned()),
+    }
+    match role {
+        Role::Daemon => Invocation::daemon_run(executable.to_owned()),
+        Role::Cli => Invocation::plain(executable.to_owned()),
     }
 }
 
@@ -340,11 +348,16 @@ mod tests {
             invocation(&daemon, Role::Cli),
             Invocation::plain(cli.clone())
         );
-        // A file that is neither name starts as it is.
-        let fixture = dir.path().join("candidate.sh");
+        // This executable under any other name is the CLI by that name, so
+        // it runs the daemon as `daemon run`; the CLI as it is.
+        let renamed = dir.path().join("candidate");
         assert_eq!(
-            invocation(&fixture, Role::Daemon),
-            Invocation::plain(fixture.clone())
+            invocation(&renamed, Role::Daemon),
+            Invocation::daemon_run(renamed.clone())
+        );
+        assert_eq!(
+            invocation(&renamed, Role::Cli),
+            Invocation::plain(renamed.clone())
         );
     }
 

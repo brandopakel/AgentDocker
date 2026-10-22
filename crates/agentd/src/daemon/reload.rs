@@ -422,7 +422,7 @@ impl Daemon {
         let (candidate, chosen) = candidate()
             .map_err(|e| Self::unavailable(format!("cannot find this daemon's executable: {e}")))?;
         info!(candidate = %candidate.display(), chosen, "reload candidate");
-        let info = tokio::task::spawn_blocking({
+        let (info, start) = tokio::task::spawn_blocking({
             let candidate = candidate.clone();
             move || build_info(&candidate, BUILD_INFO_WITHIN)
         })
@@ -459,13 +459,10 @@ impl Daemon {
         let transfer_id = transfer.id.clone();
         // The successor's pid is not known until spawn; the offer named
         // ours as a placeholder and is corrected under the same fence.
-        // Started as the daemon whatever its file is called: through an
-        // `agentd` name, or as `agentdocker daemon run`.
-        let mut command = agentdocker_host::program::invocation(
-            &candidate,
-            agentdocker_host::program::Role::Daemon,
-        )
-        .command();
+        // Started as the daemon the way it answered `--build-info`: through
+        // an `agentd` name, as `daemon run`, or as the standalone daemon an
+        // earlier release shipped.
+        let mut command = start.command();
         command
             .arg("--take-over")
             .arg("3")
@@ -714,29 +711,62 @@ impl Daemon {
 }
 
 #[cfg(unix)]
-/// `candidate --build-info`, read once, within [`BUILD_INFO_WITHIN`]: the
-/// bounded host runner ends the whole process group on the deadline, so
-/// a candidate that hangs costs a reload, not a thread.
-fn build_info(candidate: &std::path::Path, within: Duration) -> Result<BuildInfo, String> {
+/// The ways to start `candidate` as the daemon, in the order to ask them.
+/// A file named `agentd` or `agentdocker`, or this daemon's own file, is
+/// this executable or an earlier release's daemon by that name, and starts
+/// as [`agentdocker_host::program::invocation`] says. A file of any other
+/// name is asked: as it is first, which is how an earlier release's
+/// standalone daemon (or a test's stand-in) takes its options, then as
+/// `daemon run`, which is how this executable renamed is the daemon, since
+/// by any other name it is the CLI.
+fn starts(candidate: &std::path::Path) -> Vec<agentdocker_host::program::Invocation> {
+    use agentdocker_host::program::{self, Invocation, Role};
+    let known = program::file_role(candidate).is_some()
+        || agentdocker_host::procinfo::executable_path()
+            .is_ok_and(|own| program::same_file(&own, candidate));
+    let daemon = program::invocation(candidate, Role::Daemon);
+    if known {
+        vec![daemon]
+    } else {
+        vec![Invocation::plain(candidate.to_owned()), daemon]
+    }
+}
+
+#[cfg(unix)]
+/// `candidate --build-info`, within [`BUILD_INFO_WITHIN`] in all, and the
+/// way of starting it that answered ([`starts`]): the successor is started
+/// the same way. A refusal moves on to the next way and is the reason given
+/// when none answers; a candidate that cannot be run or hangs is not asked
+/// again. The bounded host runner ends the whole process group on the
+/// deadline, so a candidate that hangs costs a reload, not a thread.
+fn build_info(
+    candidate: &std::path::Path,
+    within: Duration,
+) -> Result<(BuildInfo, agentdocker_host::program::Invocation), String> {
     let root = candidate
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(std::env::temp_dir);
-    let mut argv =
-        agentdocker_host::program::invocation(candidate, agentdocker_host::program::Role::Daemon)
-            .argv();
-    argv.push("--build-info".to_owned());
-    let output = agentdocker_host::command::run(&root, &argv, within)
-        .map_err(|e| format!("cannot run the candidate for --build-info: {e}"))?;
-    if !output.success {
-        return Err(format!(
-            "candidate failed --build-info: {}",
-            output.text.trim()
-        ));
+    let deadline = std::time::Instant::now() + within;
+    let mut refused = None;
+    for start in starts(candidate) {
+        let mut argv = start.argv();
+        argv.push("--build-info".to_owned());
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let output = agentdocker_host::command::run(&root, &argv, remaining)
+            .map_err(|e| format!("cannot run the candidate for --build-info: {e}"))?;
+        if !output.success {
+            refused.get_or_insert_with(|| {
+                format!("candidate failed --build-info: {}", output.text.trim())
+            });
+            continue;
+        }
+        return serde_json::from_str(&output.stdout)
+            .map(|info| (info, start))
+            .map_err(|e| format!("candidate build info unreadable: {e}"));
     }
-    serde_json::from_str(&output.stdout)
-        .map_err(|e| format!("candidate build info unreadable: {e}"))
+    Err(refused.unwrap_or_else(|| "candidate failed --build-info".to_owned()))
 }
 
 #[cfg(unix)]
@@ -1190,6 +1220,40 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
+    /// A candidate of another name is asked as it is, then as `daemon run`,
+    /// and is started the way that answered: an earlier release's
+    /// standalone daemon takes its options directly, this executable
+    /// renamed is the daemon only as `daemon run`. A file named `agentd` is
+    /// only ever asked as it is.
+    #[test]
+    fn a_renamed_candidate_is_started_the_way_it_answered() {
+        use agentdocker_host::program::Invocation;
+        let dir = tempfile::TempDir::new().unwrap();
+        let answer =
+            r#"printf '{"arch":"x","format":1,"os":"y","state_schema":7,"version":"0"}\n'"#;
+        let standalone = candidate_script(&dir, "standalone", answer);
+        let (_, start) = build_info(&standalone, Duration::from_secs(5)).unwrap();
+        assert_eq!(start, Invocation::plain(standalone.clone()));
+        // The unified executable by another name: the CLI refuses the
+        // daemon's option, `daemon run` answers it.
+        let renamed = candidate_script(
+            &dir,
+            "renamed",
+            &format!(
+                "if [ \"$1 $2\" = 'daemon run' ]; then {answer}; else echo \"unexpected argument '$1'\" >&2; exit 2; fi"
+            ),
+        );
+        let (info, start) = build_info(&renamed, Duration::from_secs(5)).unwrap();
+        assert_eq!(info.state_schema, 7);
+        assert_eq!(start, Invocation::daemon_run(renamed.clone()));
+        let named = candidate_script(&dir, "agentd", "echo \"$@\" >> asked; exit 3");
+        assert!(build_info(&named, Duration::from_secs(5)).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("asked")).unwrap(),
+            "--build-info\n"
+        );
+    }
+
     /// What a candidate says on `--build-info` is read as is; a refusal
     /// or nonsense is named rather than guessed at.
     #[test]
@@ -1200,7 +1264,7 @@ mod tests {
             "good",
             r#"printf '{"arch":"x","format":1,"os":"y","state_schema":7,"version":"0"}\n'"#,
         );
-        let info = build_info(&good, Duration::from_secs(5)).unwrap();
+        let (info, _) = build_info(&good, Duration::from_secs(5)).unwrap();
         assert_eq!((info.format, info.state_schema), (1, 7));
         assert_eq!((info.os.as_str(), info.arch.as_str()), ("y", "x"));
 
