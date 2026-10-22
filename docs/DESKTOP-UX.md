@@ -69,9 +69,10 @@ Agents in a forgotten project stay out of Jump to until you add that project aga
 
 **Back** and **Forward**, the two arrows beside the mark at the top of the
 sidebar, go through the places you went in this window, as a browser does: a
-project's Chat, Agents with the session that was open, Board with the card
-that was open, a thread beside a chat, a conversation in Messages, To-do,
-Tools, Settings. Pointing at an arrow says where it goes, by the project and
+project's Chat, Agents with the session that was open, Board with the board
+and the card that were open, an agent's terminal (ready to type into), a
+thread beside a chat, a conversation in Messages or, in a narrow window,
+the list of them, To-do, Tools, Settings. Pointing at an arrow says where it goes, by the project and
 the screen or what was open there (*Back to* a project's name *· Chat*); with
 nowhere to go it is greyed out. ⌘[ and ⌘] (Ctrl+[ and Ctrl+] on Linux and
 Windows), a keyboard's own Back and Forward keys and the mouse's side buttons
@@ -897,7 +898,8 @@ and notarization; locally signed builds are explicit previews.
 - Command/Ctrl+[ goes back and Command/Ctrl+] forward, from a text field too;
   so do a keyboard's Back and Forward keys and the mouse's side buttons. On
   Linux and Windows, Ctrl+[ and Ctrl+] in an agent's terminal stay the
-  terminal's (Escape and detach).
+  terminal's (Escape and detach); the keyboard's Back and Forward keys still
+  go back and forward there.
 - Command/Ctrl+N opens **Launch agent…** for the project on screen.
 - Command/Ctrl+Shift+U goes to the next agent that needs you (questions, waits
   and failures first, then finished work you have not seen), round again at

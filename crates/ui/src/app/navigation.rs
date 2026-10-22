@@ -2,7 +2,8 @@
 //!
 //! A [`Place`] is a destination as the window shows it: the screen and
 //! what is open on it — the project, the session, the conversation and its
-//! thread, the board's card. Hover, menus, drafts, filters and scroll are
+//! thread (or, in a compact window, the list of them), the board and its
+//! card. Hover, menus, drafts, filters and scroll are
 //! not places. Each update the person makes (a click, a key, a link, a
 //! notification, an assistive technology's action) is compared before and
 //! after; a different place records where they were. Changes the window
@@ -52,8 +53,13 @@ pub struct Place {
     /// The agent whose thread is open in Inbox, against a daemon without
     /// conversations.
     pub inbox: Option<String>,
+    /// Whether Messages or Inbox shows the conversation rather than the
+    /// list of them, which a compact window shows one at a time.
+    pub detail: bool,
     /// The thread open beside the conversation, on Chat or Messages.
     pub thread: Option<MessageId>,
+    /// The project's board on Board, by slug: the one chosen, else main.
+    pub board: Option<String>,
     /// The card open on Board.
     pub card: Option<TaskId>,
 }
@@ -258,18 +264,33 @@ impl App {
             inbox: on(&[Screen::Questions])
                 .then(|| self.shell.inbox_thread.clone())
                 .flatten(),
+            detail: on(&[Screen::Questions]) && self.shell.inbox_open,
             thread: on(&[Screen::Chat, Screen::Questions])
                 .then(|| self.shell.thread.clone())
                 .flatten(),
+            board: on(&[Screen::Board]).then(|| self.board_chosen()).flatten(),
             card: on(&[Screen::Board])
                 .then(|| self.task_open.clone())
                 .flatten(),
         }
     }
 
+    /// The selected project's board as chosen, by slug: main until
+    /// another is picked.
+    fn board_chosen(&self) -> Option<String> {
+        let project = self.selected_project_root()?;
+        Some(
+            self.shell
+                .board_choice
+                .get(&project)
+                .cloned()
+                .unwrap_or_else(|| agentdocker_core::board::MAIN.to_owned()),
+        )
+    }
+
     /// Whether a place can be shown again: its project still listed, its
-    /// session still known (its terminal still attachable), its card not
-    /// archived.
+    /// session still known (its terminal still attachable), its board
+    /// still among the project's, its card not archived.
     pub(super) fn reachable(&self, place: &Place) -> bool {
         if let Some(Scope::Project(root)) = &place.scope
             && !self
@@ -297,6 +318,15 @@ impl App {
             if !self.agents.iter().any(|a| a.id.as_str() == id) {
                 return false;
             }
+        }
+        if let (Some(slug), Some(Scope::Project(root))) = (&place.board, &place.scope)
+            && slug != agentdocker_core::board::MAIN
+            && self
+                .boards
+                .get(&root.display().to_string())
+                .is_some_and(|boards| !boards.iter().any(|b| &b.slug == slug))
+        {
+            return false;
         }
         if let Some(card) = &place.card
             && self.card_gone(place, card)
@@ -375,10 +405,16 @@ impl App {
             }));
         }
         match (place.screen, place.session.clone()) {
+            // Still attached: the same connection, its pane given the
+            // keyboard again as attaching does, since the pane drawn anew
+            // starts without it.
             (Screen::Terminal, Some(id))
                 if self.terminal.as_ref().is_some_and(|t| t.agent == id) =>
             {
                 self.screen = Screen::Terminal;
+                tasks.push(iced::widget::operation::focus(
+                    iced::advanced::widget::Id::new("terminal"),
+                ));
             }
             (Screen::Terminal, Some(id)) => tasks.push(self.update(Message::Attach(id))),
             (screen, _) => tasks.push(self.update(Message::Navigate(screen))),
@@ -388,16 +424,25 @@ impl App {
                 Some(id) => tasks.push(self.update(Message::SelectSession(id.clone()))),
                 None => self.shell.selected = None,
             },
-            Screen::Board => match &place.card {
-                Some(card) if self.task_open.as_ref() != Some(card) => {
-                    tasks.push(self.update(Message::TaskOpen(card.clone())));
+            Screen::Board => {
+                // The board first: picking one closes the card open on
+                // the other.
+                if let Some(slug) = &place.board
+                    && self.board_chosen().as_ref() != Some(slug)
+                {
+                    tasks.push(self.update(Message::BoardPick(slug.clone())));
                 }
-                Some(_) => {}
-                None => {
-                    self.task_open = None;
-                    self.card = None;
+                match &place.card {
+                    Some(card) if self.task_open.as_ref() != Some(card) => {
+                        tasks.push(self.update(Message::TaskOpen(card.clone())));
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.task_open = None;
+                        self.card = None;
+                    }
                 }
-            },
+            }
             Screen::Questions => {
                 self.shell.inbox_thread = place.inbox.clone();
                 match &place.conversation {
@@ -406,9 +451,11 @@ impl App {
                         self.shell.conversation = None;
                         self.shell.thread = None;
                         self.thread = None;
-                        self.shell.inbox_open = place.inbox.is_some();
                     }
                 }
+                // Opening a conversation shows it; the list was on view if
+                // that is what the place was.
+                self.shell.inbox_open = place.detail;
             }
             _ => {}
         }
@@ -461,6 +508,7 @@ impl App {
                     .card
                     .as_ref()
                     .and_then(|card| self.card_name(card))
+                    .or_else(|| self.board_name(place))
                     .unwrap_or_else(|| "Board".to_owned()),
             ),
             Screen::Plans => Some("Plans".to_owned()),
@@ -473,13 +521,14 @@ impl App {
                 match place
                     .conversation
                     .as_deref()
+                    .filter(|_| place.detail)
                     .and_then(|id| self.conversation_name(id))
                 {
                     Some(name) => format!("Messages · {name}"),
                     None => "Messages".to_owned(),
                 },
             ),
-            Screen::Questions => Some(match &place.inbox {
+            Screen::Questions => Some(match place.inbox.as_deref().filter(|_| place.detail) {
                 Some(agent) => format!("Inbox · {}", self.name_of(agent)),
                 None => "Inbox".to_owned(),
             }),
@@ -516,6 +565,22 @@ impl App {
         } else {
             task.key.clone()
         })
+    }
+
+    /// A board other than main, by its name, when the project's boards
+    /// have been read.
+    fn board_name(&self, place: &Place) -> Option<String> {
+        let (Some(slug), Some(Scope::Project(root))) = (&place.board, &place.scope) else {
+            return None;
+        };
+        if slug == agentdocker_core::board::MAIN {
+            return None;
+        }
+        self.boards
+            .get(&root.display().to_string())?
+            .iter()
+            .find(|b| &b.slug == slug)
+            .map(|b| b.name.clone())
     }
 
     /// A conversation as the Messages sidebar names it, when listed.

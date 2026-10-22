@@ -248,9 +248,11 @@ control does, its id or its accessible label:
   project *· Chat*, *Forward to Settings*). A place is the screen and what
   is open on it, only what that screen shows: the project of a project
   screen (or All projects, or Other sessions), the session on Agents, the
-  attached session on Terminal, the card on Board, the conversation and
-  thread on Messages, the thread beside a project's Chat, the agent's thread
-  in Inbox. Hover, menus, drafts, searches, filters, layout, scroll and a
+  attached session on Terminal, the board chosen and the card open on Board,
+  the conversation and thread on Messages, the thread beside a project's
+  Chat, the agent's thread in Inbox, and on Messages and Inbox whether the
+  conversation or the list of them is on view (a compact window shows one
+  at a time; **Conversations** going to the list is a move). Hover, menus, drafts, searches, filters, layout, scroll and a
   plan open on Plans are not places. Every update is one move: the place
   before and after an update the person makes — a click, a key, a link, a
   palette row, a notification, an assistive technology's action — are
@@ -262,12 +264,16 @@ control does, its id or its accessible label:
   person asked — a launched or reconnected session's terminal opening, a
   notification's destination opening — are moves. Going Back or Forward
   restores the place by the messages that went there (the project, then the
-  screen, then the session, card, conversation or thread) and keeps the
-  place left on the other side, recording nothing; a place equal to the one
-  on view, or whose project is no longer listed, whose session is no longer
-  known (for Terminal, no longer attachable), or whose card was archived
-  (an archive event takes its places away; a card missing from its board
-  read in full is gone too) is passed over and let go. At most a hundred
+  screen, then the board before its card, the session, conversation or
+  thread, then the list or the conversation) and keeps the place left on the
+  other side, recording nothing. A terminal still attached keeps its
+  connection and its pane is given the keyboard again, as attaching does;
+  otherwise the session is attached anew. A place equal to the one on view,
+  or whose project is no longer listed, whose session is no longer known
+  (for Terminal, no longer attachable), whose board is no longer among the
+  project's, or whose card was archived (an archive event takes its places
+  away; a card missing from its board read in full is gone too) is passed
+  over and let go. At most a hundred
   places are kept behind, the oldest going first; the history is
   window-local and never saved. ⌘[ and ⌘] (Control elsewhere; the bracket
   character, or the bracket keys' place on layouts that type another
@@ -275,7 +281,8 @@ control does, its id or its accessible label:
   keys are read by the window-root key wrapper ahead of a focused field,
   which would otherwise type the bracket; a held key does not repeat them.
   On Linux and Windows the Terminal screen keeps Control+[ and Control+]
-  (Escape and detach), as it keeps Control+K. Over the open palette they are
+  (Escape and detach), as it keeps Control+K; the Browser keys go back and
+  forward there too. Over the open palette they are
   swallowed, and while the palette or the launch form is open Back and
   Forward do nothing. The mouse's Back and Forward buttons go through the
   window's event subscription wherever the pointer is. Tests:
@@ -284,6 +291,9 @@ control does, its id or its accessible label:
   `history_keeps_the_newest_hundred_places`,
   `transient_state_and_the_same_place_are_not_recorded`,
   `back_restores_the_session_card_and_thread_that_were_open`,
+  `back_restores_the_board_before_its_card`,
+  `the_list_and_a_conversation_are_places_of_their_own`,
+  `back_to_an_attached_terminal_gives_it_the_keyboard`,
   `back_passes_over_places_that_are_gone`,
   `the_windows_own_changes_refine_the_place_and_a_launch_moves`,
   `the_arrows_are_disabled_at_the_ends_and_name_where_they_go`,

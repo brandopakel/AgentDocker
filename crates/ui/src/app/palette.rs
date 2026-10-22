@@ -313,8 +313,10 @@ fn hairline<'a>(c: Colors) -> Element<'a, Message> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Keys {
     /// Closed: only the shortcut that opens it, and Back and Forward
-    /// (`navigation::travel_key`), which a terminal keeps where Control+K,
-    /// Control+[ (Escape) and Control+] (detach) mean something to it.
+    /// (`navigation::travel_key`). `shortcut` is false where a terminal
+    /// keeps Control+K, Control+[ (Escape) and Control+] (detach), which
+    /// mean something to it; the Browser Back and Forward keys go back
+    /// and forward there too.
     Closed {
         shortcut: bool,
     },
@@ -385,10 +387,13 @@ pub(super) fn handle(
         && key.to_latin(physical) == Some('k');
     // Back and Forward go ahead of a focused field too, which would
     // otherwise type the bracket; over the open palette they do nothing.
+    // A terminal keeps only the Control chords; a keyboard's own Back
+    // and Forward keys mean nothing to a shell.
     let travel = super::navigation::travel_key(key, physical, modifiers);
+    let browser = matches!(key, Key::Named(Named::BrowserBack | Named::BrowserForward));
     match keys {
         Keys::Closed { shortcut: true } if shortcut => once(Command::Palette),
-        Keys::Closed { shortcut: true } if travel.is_some() => {
+        Keys::Closed { shortcut } if travel.is_some() && (shortcut || browser) => {
             once(Command::Travel(travel == Some(true)))
         }
         Keys::Closed { .. } => Handling::Pass,

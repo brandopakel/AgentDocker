@@ -10387,6 +10387,176 @@ mod tests {
         assert_eq!(app.travel_tip(true), "Forward to Settings");
     }
 
+    /// The board on view is part of a Board place: a card comes back on
+    /// its own board, picked first, and a switch of boards is a move of
+    /// its own; a board that is gone is passed over.
+    #[test]
+    fn back_restores_the_board_before_its_card() {
+        let (mut app, alpha, _, _kept) = travel();
+        let root = alpha.display().to_string();
+        let main =
+            agentdocker_core::Board::main(ProjectRef::directory(&alpha).id(), "alpha", Utc::now());
+        let mut other = main.clone();
+        other.slug = "agents".into();
+        other.name = "Agents".into();
+        app.boards.insert(root.clone(), vec![main.clone(), other]);
+        let card = card_in("aaaaaaaaaaaa", &alpha, "Port the parser");
+        let board_on_view = |app: &App| app.board_on_view().map(|b| b.slug);
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        let _ = app.update(Message::Navigate(Screen::Board));
+        let _ = app.update(Message::TaskOpen(card.id.clone()));
+        let _ = app.update(Message::BoardPick("agents".into()));
+        assert_eq!(app.task_open, None, "picking a board closes the card");
+        assert_eq!(
+            app.destination(false)
+                .map(|p| (p.board.clone(), p.card.clone())),
+            Some((Some("main".into()), Some(card.id.clone()))),
+            "switching boards was a move"
+        );
+        let _ = app.update(Message::Navigate(Screen::Journal));
+
+        let _ = app.update(Message::GoBack);
+        assert_eq!(board_on_view(&app).as_deref(), Some("agents"));
+        assert_eq!(app.task_open, None);
+        assert_eq!(app.travel_tip(false), "Back to alpha · Board");
+        let _ = app.update(Message::GoBack);
+        assert_eq!(board_on_view(&app).as_deref(), Some("main"));
+        assert_eq!(
+            app.task_open.as_ref(),
+            Some(&card.id),
+            "the card is open on the board it was open on"
+        );
+        assert_eq!(app.travel_tip(true), "Forward to alpha · Agents");
+        let _ = app.update(Message::GoForward);
+        assert_eq!(board_on_view(&app).as_deref(), Some("agents"));
+        assert_eq!(app.task_open, None);
+        let _ = app.update(Message::GoForward);
+        assert_eq!(app.screen, Screen::Journal);
+
+        // The other board is deleted: its place is passed over.
+        app.boards.insert(root, vec![main]);
+        assert_eq!(
+            app.destination(false)
+                .map(|p| (p.board.clone(), p.card.clone())),
+            Some((Some("main".into()), Some(card.id.clone())))
+        );
+    }
+
+    /// A compact window shows the list of conversations or one of them:
+    /// each is a place, in Messages and in the older Inbox alike, and
+    /// going back restores which was on view.
+    #[test]
+    fn the_list_and_a_conversation_are_places_of_their_own() {
+        let (mut app, alpha, _, _kept) = travel();
+        app.agents = vec![session_in("worker", &alpha)];
+        let _ = app.update(Message::Navigate(Screen::Questions));
+        let _ = app.update(Message::SelectConversation("dm:user:worker".into()));
+        assert!(app.shell.inbox_open);
+        let _ = app.update(Message::InboxList);
+        assert!(!app.shell.inbox_open);
+        assert_eq!(
+            app.destination(false).map(|p| p.detail),
+            Some(true),
+            "leaving the conversation for the list was a move"
+        );
+        let _ = app.update(Message::Navigate(Screen::Settings));
+
+        let _ = app.update(Message::GoBack);
+        assert_eq!(app.screen, Screen::Questions);
+        assert_eq!(app.shell.conversation.as_deref(), Some("dm:user:worker"));
+        assert!(!app.shell.inbox_open, "the list, as it was");
+        let _ = app.update(Message::GoBack);
+        assert!(app.shell.inbox_open, "then the conversation");
+        let _ = app.update(Message::GoForward);
+        assert!(!app.shell.inbox_open);
+
+        // The older Inbox: one agent's thread, or the list.
+        let _ = app.update(Message::SelectThread(Some("worker".into())));
+        let _ = app.update(Message::InboxList);
+        let _ = app.update(Message::GoBack);
+        assert_eq!(app.shell.inbox_thread.as_deref(), Some("worker"));
+        assert!(app.shell.inbox_open);
+        let _ = app.update(Message::GoForward);
+        assert!(!app.shell.inbox_open);
+    }
+
+    /// Run a task's widget operations against one focusable control with
+    /// this id, and say whether it ends up with the keyboard.
+    fn focuses(task: Task<Message>, id: &'static str) -> bool {
+        use iced::advanced::widget::operation::Focusable;
+        use iced::futures::StreamExt;
+        struct Probe(bool);
+        impl Focusable for Probe {
+            fn is_focused(&self) -> bool {
+                self.0
+            }
+            fn focus(&mut self) {
+                self.0 = true;
+            }
+            fn unfocus(&mut self) {
+                self.0 = false;
+            }
+        }
+        let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+            return false;
+        };
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut probe = Probe(false);
+                while let Ok(Some(action)) =
+                    tokio::time::timeout(Duration::from_millis(200), stream.next()).await
+                {
+                    if let iced_runtime::Action::Widget(mut operation) = action {
+                        operation.focusable(
+                            Some(&iced::advanced::widget::Id::new(id)),
+                            iced::Rectangle::default(),
+                            &mut probe,
+                        );
+                    }
+                }
+                probe.0
+            })
+    }
+
+    /// Going back or forward to a terminal still attached keeps its
+    /// connection and gives its pane the keyboard again, so typing
+    /// reaches the agent at once.
+    #[test]
+    fn back_to_an_attached_terminal_gives_it_the_keyboard() {
+        let (mut app, alpha, _, _kept) = travel();
+        // Not one the window could attach anew: only the connection it
+        // holds can bring the terminal back.
+        app.agents = vec![session_in("worker", &alpha)];
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        app.navigating(true, |app| {
+            let mut terminal = crate::terminal::Terminal::unserved("worker");
+            terminal.input_notice = Some("the same connection");
+            app.terminal = Some(terminal);
+            app.screen = Screen::Terminal;
+        });
+        let _ = app.update(Message::Navigate(Screen::Board));
+
+        let task = app.update(Message::GoBack);
+        assert_eq!(app.screen, Screen::Terminal);
+        assert!(focuses(task, "terminal"), "the pane takes the keyboard");
+        assert_eq!(
+            app.terminal.as_ref().and_then(|t| t.input_notice),
+            Some("the same connection"),
+            "not reconnected"
+        );
+        let _ = app.update(Message::GoBack);
+        assert_eq!(app.screen, Screen::Chat);
+        let task = app.update(Message::GoForward);
+        assert_eq!(app.screen, Screen::Terminal);
+        assert!(focuses(task, "terminal"));
+        let task = app.update(Message::GoForward);
+        assert_eq!(app.screen, Screen::Board);
+        assert!(!focuses(task, "terminal"), "Board does not take it");
+    }
+
     /// ⌘[ and ⌘] (Control elsewhere) go back and forward ahead of a
     /// focused field, as do a keyboard's Browser keys and the mouse's own
     /// buttons; a terminal that owns Control keeps them, the open palette
@@ -10447,15 +10617,33 @@ mod tests {
                 Handling::Pass
             ));
         }
+        // A keyboard's own Back and Forward keys mean nothing to a shell:
+        // they go back and forward over a terminal too.
+        for keys in [closed, terminal] {
+            assert!(matches!(
+                handle(
+                    keys,
+                    &Key::Named(Named::BrowserBack),
+                    Physical::Code(Code::BrowserBack),
+                    Modifiers::empty(),
+                    false
+                ),
+                Handling::Send(Command::Travel(false))
+            ));
+            assert!(matches!(
+                handle(
+                    keys,
+                    &Key::Named(Named::BrowserForward),
+                    Physical::Code(Code::BrowserForward),
+                    Modifiers::empty(),
+                    false
+                ),
+                Handling::Send(Command::Travel(true))
+            ));
+        }
         assert!(matches!(
-            handle(
-                closed,
-                &Key::Named(Named::BrowserBack),
-                Physical::Code(Code::BrowserBack),
-                Modifiers::empty(),
-                false
-            ),
-            Handling::Send(Command::Travel(false))
+            bracket("]", Code::BracketRight, command, terminal, false),
+            Handling::Pass
         ));
         assert!(matches!(
             Message::from(Command::Travel(false)),
