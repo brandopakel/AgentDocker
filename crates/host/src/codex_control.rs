@@ -243,6 +243,62 @@ pub struct Thread {
     pub status: ThreadStatus,
 }
 
+/// The server's own error answer to one request: it answered, so the
+/// connection stands, and the request did nothing.
+#[derive(Debug)]
+pub struct Rejection {
+    pub method: String,
+    pub code: Option<i64>,
+    pub message: String,
+}
+
+impl std::fmt::Display for Rejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Codex refused {}: {}", self.method, self.message)
+    }
+}
+
+impl std::error::Error for Rejection {}
+
+/// A well-formed answer this client cannot use for one conversation: a read
+/// of another conversation, or a status this build does not know.
+#[derive(Debug)]
+pub struct Unusable(pub String);
+
+impl std::fmt::Display for Unusable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unusable {}
+
+/// The server's error answer in `error`, when it is one rather than a failed
+/// connection or a malformed frame.
+pub fn rejection(error: &io::Error) -> Option<&Rejection> {
+    error.get_ref()?.downcast_ref::<Rejection>()
+}
+
+/// Whether the server answered the request, with its own error or with a
+/// result this client cannot use: about that request alone, the connection
+/// standing. A failed, closed or confused connection is not answered.
+pub fn answered(error: &io::Error) -> bool {
+    rejection(error).is_some() || error.get_ref().is_some_and(|e| e.is::<Unusable>())
+}
+
+/// Whether `error` is the shared server saying this one conversation is not
+/// loaded: `thread/read` answers an unloaded thread with code -32600 and the
+/// message `thread not loaded: <thread>`. Nothing else is taken for it.
+pub fn not_loaded(error: &io::Error, thread: &str) -> bool {
+    rejection(error).is_some_and(|rejection| {
+        rejection.code == Some(-32600)
+            && rejection
+                .message
+                .strip_prefix("thread not loaded: ")
+                .is_some_and(|named| named == thread)
+    })
+}
+
 #[cfg(unix)]
 pub use unix::{Session, connect, connect_stream};
 
@@ -506,10 +562,16 @@ mod unix {
                 return Err(invalid("Codex control answered another request"));
             }
             if let Some(error) = answer.get("error") {
-                return Err(io::Error::other(format!(
-                    "Codex refused {method}: {}",
-                    error["message"].as_str().unwrap_or("no reason given")
-                )));
+                return Err(io::Error::other(Rejection {
+                    method: method.to_owned(),
+                    code: error["code"].as_i64(),
+                    message: error["message"]
+                        .as_str()
+                        .unwrap_or("no reason given")
+                        .chars()
+                        .take(1024)
+                        .collect(),
+                }));
             }
             answer
                 .get("result")
@@ -565,11 +627,13 @@ mod unix {
                 )
                 .await?;
             let read = &value["thread"];
+            let unusable =
+                |what: &str| io::Error::new(io::ErrorKind::InvalidData, Unusable(what.to_owned()));
             if read["id"].as_str() != Some(thread) {
-                return Err(invalid("thread/read answered another conversation"));
+                return Err(unusable("thread/read answered another conversation"));
             }
             let status = ThreadStatus::parse(&read["status"])
-                .ok_or_else(|| invalid("thread/read has no known status"))?;
+                .ok_or_else(|| unusable("thread/read has no known status"))?;
             Ok(Thread {
                 id: thread.to_owned(),
                 cwd: read["cwd"].as_str().map(PathBuf::from),
@@ -656,6 +720,54 @@ mod tests {
         assert_eq!(parse(json!({"type":"systemError"})).activity(), None);
         assert_eq!(ThreadStatus::parse(&json!({"type":"later"})), None);
         assert_eq!(ThreadStatus::parse(&json!({"type":"active"})), None);
+    }
+
+    /// Only the server's own "thread not loaded" answer for this very
+    /// conversation is taken for it, as Codex 0.163 answers `thread/read`
+    /// for a thread it has not loaded.
+    #[test]
+    fn only_the_servers_not_loaded_answer_for_this_thread_means_not_loaded() {
+        let answer = |code: Option<i64>, message: &str| {
+            io::Error::other(Rejection {
+                method: "thread/read".into(),
+                code,
+                message: message.into(),
+            })
+        };
+        assert!(not_loaded(
+            &answer(Some(-32600), "thread not loaded: t1"),
+            "t1"
+        ));
+        assert!(!not_loaded(
+            &answer(Some(-32600), "thread not loaded: t2"),
+            "t1"
+        ));
+        assert!(!not_loaded(
+            &answer(Some(-32603), "thread not loaded: t1"),
+            "t1"
+        ));
+        assert!(!not_loaded(
+            &answer(Some(-32600), "thread not found: t1"),
+            "t1"
+        ));
+        assert!(!not_loaded(&answer(None, "thread not loaded: t1"), "t1"));
+        assert!(!not_loaded(
+            &io::Error::other("thread not loaded: t1"),
+            "t1"
+        ));
+        assert!(answered(&answer(Some(-32603), "boom")));
+        assert!(answered(&io::Error::new(
+            io::ErrorKind::InvalidData,
+            Unusable("no known status".into())
+        )));
+        assert!(!answered(&io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "closed"
+        )));
+        assert!(!answered(&io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid JSON"
+        )));
     }
 
     #[test]

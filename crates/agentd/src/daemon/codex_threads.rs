@@ -125,13 +125,13 @@ async fn observe(
                     .filter(|(_, thread)| *thread == change.thread)
                     .collect();
                 if !watched.is_empty() {
-                    match session.read(&change.thread).await {
-                        Ok(read) if read.parent.is_none() => {
+                    match status(&mut session, &change.thread).await {
+                        Ok(Some(status)) => {
                             for (id, thread) in watched {
-                                daemon.observe_codex_thread(&id, profile, &thread, &read.status, waits);
+                                daemon.observe_codex_thread(&id, profile, &thread, &status, waits);
                             }
                         }
-                        Ok(_) => {}
+                        Ok(None) => {}
                         Err(error) => break Err(error),
                     }
                 }
@@ -143,7 +143,8 @@ async fn observe(
 }
 
 /// Each watched record's conversation status: read when the server has it
-/// loaded, not loaded otherwise. A child conversation is never a record's own.
+/// loaded, not loaded otherwise; one with nothing to say this round is left
+/// out.
 async fn statuses(
     session: &mut codex_control::Session,
     watched: Vec<(AgentId, String)>,
@@ -152,17 +153,40 @@ async fn statuses(
     let mut statuses = Vec::with_capacity(watched.len());
     for (id, thread) in watched {
         let status = if loaded.contains(&thread) {
-            let read = session.read(&thread).await?;
-            if read.parent.is_some() {
-                continue;
+            match status(session, &thread).await? {
+                Some(status) => status,
+                None => continue,
             }
-            read.status
         } else {
             ThreadStatus::NotLoaded
         };
         statuses.push((id, thread, status));
     }
     Ok(statuses)
+}
+
+/// One conversation's status from a fresh read. The server's word that it
+/// is not loaded (it unloaded between the list and the read) is that status.
+/// Any other answer about it alone (a refusal, a status this build does not
+/// know, a child conversation, which is never a record's own) says nothing
+/// this round, so one conversation never ends the profile's watch. Only a
+/// failed connection is an error.
+async fn status(
+    session: &mut codex_control::Session,
+    thread: &str,
+) -> std::io::Result<Option<ThreadStatus>> {
+    match session.read(thread).await {
+        Ok(read) if read.parent.is_some() => Ok(None),
+        Ok(read) => Ok(Some(read.status)),
+        Err(error) if codex_control::not_loaded(&error, thread) => {
+            Ok(Some(ThreadStatus::NotLoaded))
+        }
+        Err(error) if codex_control::answered(&error) => {
+            debug!(thread, %error, "Codex conversation skipped this round");
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 impl Daemon {
@@ -320,6 +344,8 @@ mod tests {
     struct Hosted {
         loaded: Vec<String>,
         status: HashMap<String, Value>,
+        /// `thread/read` of these threads is refused with this error.
+        refuse: HashMap<String, Value>,
         /// Every method asked, in order.
         asked: Vec<String>,
     }
@@ -346,29 +372,33 @@ mod tests {
                     let Some(id) = request.get("id").cloned() else { continue };
                     let method = request["method"].as_str().unwrap().to_owned();
                     let params = &request["params"];
-                    let result = {
+                    let reply = {
                         let mut hosted = hosted.lock().unwrap();
                         hosted.asked.push(method.clone());
-                        match method.as_str() {
+                        let result = match method.as_str() {
                             "initialize" => json!({"codexHome": home,
                                 "userAgent": "codex_cli_rs/0.163.0 (test)",
                                 "platformFamily": "unix", "platformOs": "test"}),
                             "thread/loaded/list" => json!({"data": hosted.loaded, "nextCursor": null}),
                             "thread/read" => {
                                 let thread = params["threadId"].as_str().unwrap();
-                                json!({"thread": {"id": thread, "cwd": "/checkout",
-                                    "parentThreadId": null,
-                                    "status": hosted.status.get(thread).cloned()
-                                        .unwrap_or(json!({"type": "notLoaded"}))}})
+                                if let Some(error) = hosted.refuse.get(thread) {
+                                    json!({"error": error})
+                                } else {
+                                    json!({"thread": {"id": thread, "cwd": "/checkout",
+                                        "parentThreadId": null,
+                                        "status": hosted.status.get(thread).cloned()
+                                            .unwrap_or(json!({"type": "notLoaded"}))}})
+                                }
                             }
                             other => panic!("a read-only watch asked {other}"),
+                        };
+                        match result.get("error") {
+                            Some(error) => json!({"id": id, "error": error}),
+                            None => json!({"id": id, "result": result}),
                         }
                     };
-                    if socket
-                        .send(Message::text(json!({"id": id, "result": result}).to_string()))
-                        .await
-                        .is_err()
-                    {
+                    if socket.send(Message::text(reply.to_string())).await.is_err() {
                         break;
                     }
                 }
@@ -404,6 +434,7 @@ mod tests {
         _root: tempfile::TempDir,
         daemon: Arc<Daemon>,
         profile: PathBuf,
+        checkout: PathBuf,
         agent: AgentId,
         other: AgentId,
         hosted: Arc<Mutex<Hosted>>,
@@ -458,6 +489,7 @@ mod tests {
             _root: root,
             daemon,
             profile,
+            checkout,
             agent: agent.id,
             other: other.id,
             hosted,
@@ -467,6 +499,27 @@ mod tests {
     }
 
     impl Fixture {
+        /// Another conversation of the same profile, loaded with `status`.
+        async fn another(&self, thread: &str, status: Value) -> AgentId {
+            let Response::Agent { agent } = self
+                .daemon
+                .handle(Request::SessionAttach {
+                    runtime: "codex".into(),
+                    profile: self.profile.display().to_string(),
+                    session: thread.into(),
+                    workdir: self.checkout.clone(),
+                    adapter: AdapterKind::Hooks,
+                })
+                .await
+            else {
+                panic!("another conversation's keyed record");
+            };
+            let mut hosted = self.hosted.lock().unwrap();
+            hosted.loaded.push(thread.into());
+            hosted.status.insert(thread.into(), status);
+            agent.id
+        }
+
         fn status(&self, status: Value) {
             self.hosted
                 .lock()
@@ -619,5 +672,75 @@ mod tests {
             .unwrap();
         until(daemon, id, (ReportedActivity::Idle, None)).await;
         f.only_reads();
+    }
+
+    /// One conversation's read refused does not end the profile's watch: the
+    /// server's "thread not loaded" for it is that status (its stop for the
+    /// person ends), any other refusal skips it for the round, and another
+    /// conversation waiting on the person keeps waiting and keeps being read.
+    #[tokio::test]
+    async fn a_refused_read_of_one_conversation_leaves_the_others_standing() {
+        let f = fixture(approval()).await;
+        let second = "0199a6f1-0000-7000-8000-00000000000c";
+        let waiting = f.another(second, question()).await;
+        let watching = tokio::spawn(run(f.daemon.clone(), std::time::Duration::from_millis(50)));
+        let daemon = &f.daemon;
+        until(
+            daemon,
+            &f.agent,
+            (ReportedActivity::Waiting, Some(WaitReason::Permission)),
+        )
+        .await;
+        until(
+            daemon,
+            &waiting,
+            (ReportedActivity::Waiting, Some(WaitReason::Question)),
+        )
+        .await;
+        // The first unloads between the list and the read, as Codex answers it.
+        f.hosted.lock().unwrap().refuse.insert(
+            THREAD.into(),
+            json!({"code": -32600, "message": format!("thread not loaded: {THREAD}")}),
+        );
+        until(daemon, &f.agent, (ReportedActivity::Idle, None)).await;
+        assert_eq!(
+            activity(daemon, &waiting),
+            Some((ReportedActivity::Waiting, Some(WaitReason::Question))),
+            "the other conversation still waits on the person"
+        );
+        // Any other refusal says nothing about it this round, and the watch
+        // goes on reading the other.
+        f.status(approval());
+        f.hosted.lock().unwrap().refuse.insert(
+            THREAD.into(),
+            json!({"code": -32603, "message": "failed to read thread"}),
+        );
+        let reads = || f.hosted.lock().unwrap().asked.len();
+        let before = reads();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while reads() < before + 12 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the watch stopped reading"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            activity(daemon, &f.agent),
+            Some((ReportedActivity::Idle, None))
+        );
+        assert_eq!(
+            activity(daemon, &waiting),
+            Some((ReportedActivity::Waiting, Some(WaitReason::Question)))
+        );
+        f.hosted
+            .lock()
+            .unwrap()
+            .status
+            .insert(second.into(), json!({"type": "idle"}));
+        until(daemon, &waiting, (ReportedActivity::Idle, None)).await;
+        f.only_reads();
+        watching.abort();
+        f.server.abort();
     }
 }

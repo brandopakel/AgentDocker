@@ -385,7 +385,12 @@ set), so the session *needs you*; `active` without either is *working*; `idle` i
 after four minutes, inside an observation's lifetime. A stop for the person this
 watch reported ends (reported idle) when the conversation is no longer loaded,
 fails, or the connection ends, unless something else has reported since. A child
-(sub-agent) conversation is never a record's own. The connection opts out of
+(sub-agent) conversation is never a record's own. A read the server refuses for
+one conversation never ends the watch: its answer for a conversation that
+unloaded between the list and the read (code -32600, `thread not loaded:
+<thread>`) is *not loaded*, and any other refusal, or a status this build does not
+know, skips that conversation for the round; only a failed connection ends the
+watch. The connection opts out of
 streamed output notifications, never answers a server request (one asked of it
 ends the connection), and asks nothing but `initialize`, `thread/loaded/list` and
 `thread/read`. The watch ends when no live record names the profile.
@@ -430,7 +435,9 @@ path.
 `agentdocker codex-threads [--profile <dir>] [--json]` lists what the shared
 server has loaded, through the same kind of read-only connection: each
 conversation, its status, its checkout, and the AgentDocker record keyed by it.
-Without the socket it says so and lists nothing.
+It asks the daemon for records only if one is running and never starts one;
+without a daemon it names no records. Without the socket it says so and lists
+nothing.
 
 ## New managed conversations
 

@@ -54,6 +54,10 @@ fn main() {
             "a_shared_server_conversation_is_fed_through_its_control_socket_once",
             a_shared_server_conversation_is_fed_through_its_control_socket_once,
         ),
+        (
+            "the_shared_server_listing_never_starts_a_daemon",
+            the_shared_server_listing_never_starts_a_daemon,
+        ),
     ];
     // The libtest command line that `cargo test` and nextest speak:
     // `--list --format terse` wants one `name: test` line per test and
@@ -1219,6 +1223,80 @@ fn a_shared_server_conversation_is_fed_through_its_control_socket_once() {
     runtime.shutdown_background();
 }
 
+/// `codex-threads` is a diagnostic: with no daemon running it lists what the
+/// shared server has loaded, names no record, and starts no daemon, although
+/// nothing in its environment turns autostart off.
+#[cfg(unix)]
+fn the_shared_server_listing_never_starts_a_daemon() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Command, Stdio};
+    use std::sync::{Arc, Mutex};
+    let root = fixture::root();
+    let home = root.path().join("home");
+    let socket = root.path().join("agentd.sock");
+    let checkout = root.path().join("checkout");
+    let codex_home = root.path().join("codex-home");
+    let control = codex_home.join("app-server-control");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&checkout).unwrap();
+    std::fs::create_dir_all(&control).unwrap();
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(&control, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let codex_home = codex_home.canonicalize().unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let server = Arc::new(Mutex::new(shared::Server::default()));
+    let listener = {
+        let _entered = runtime.enter();
+        tokio::net::UnixListener::bind(control.join("app-server-control.sock")).unwrap()
+    };
+    runtime.spawn(shared::serve(
+        listener,
+        codex_home.clone(),
+        checkout.canonicalize().unwrap(),
+        server.clone(),
+    ));
+    let started = Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
+        .args(["codex-threads", "--json", "--profile"])
+        .arg(&codex_home)
+        .env("AGENTDOCKER_HOME", &home)
+        .env("AGENTDOCKER_SOCKET", &socket)
+        .env_remove("AGENTDOCKER_NO_AUTOSTART")
+        .env_remove("AGENTDOCKER_TOKEN_FILE")
+        .env_remove("AGENTDOCKER_AGENT_ID")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let daemon_started = socket.exists();
+    if daemon_started {
+        // Stop what the listing should never have started.
+        let _ = fixture::rpc(&socket, json!({"op": "shutdown"}));
+    }
+    assert!(!daemon_started, "the listing started a daemon");
+    assert!(output.status.success(), "{output:?}");
+    let rows: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(rows[0]["thread"], "thread-1", "{rows}");
+    assert_eq!(rows[0]["status"], "idle", "{rows}");
+    assert!(rows[0]["agent"].is_null(), "no daemon, no record: {rows}");
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "it did not wait for a daemon to start: {:?}",
+        started.elapsed()
+    );
+    let frames = server.lock().unwrap().frames.clone();
+    assert!(
+        frames.iter().all(|(_, frame)| matches!(
+            frame["method"].as_str(),
+            Some("initialize" | "thread/loaded/list" | "thread/read")
+        )),
+        "only reads: {frames:?}"
+    );
+    runtime.shutdown_background();
+}
+
+#[cfg(not(unix))]
+#[allow(dead_code)]
+fn the_shared_server_listing_never_starts_a_daemon() {}
 #[cfg(not(unix))]
 #[allow(dead_code)]
 fn a_shared_server_conversation_is_fed_through_its_control_socket_once() {}

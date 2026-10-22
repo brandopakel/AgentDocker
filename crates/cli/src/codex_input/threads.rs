@@ -1,7 +1,8 @@
 //! `agentdocker codex-threads`: the conversations Codex's shared app-server
 //! has loaded, read through the profile's control socket, each with its
 //! status and the AgentDocker record keyed by it. Read-only: the server is
-//! asked `thread/loaded/list` and `thread/read`, nothing else.
+//! asked `thread/loaded/list` and `thread/read`, nothing else, and the
+//! daemon is asked only if it is already running.
 use crate::client::Client;
 use agentdocker_core::{AgentRecord, Request, Response};
 use agentdocker_host::codex_control::{Session, Thread};
@@ -63,8 +64,11 @@ pub async fn run(client: &Client, args: Args) -> Result<()> {
     .await;
     session.close().await;
     read?;
-    // Without a daemon the listing still stands; it only names no records.
+    // A diagnostic never starts a coordinator: without a running daemon the
+    // listing still stands, it only names no records.
     let agents = match client
+        .clone()
+        .with_start_timeout(None)
         .call(&Request::List {
             all: false,
             project: None,
