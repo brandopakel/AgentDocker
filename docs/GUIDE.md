@@ -894,9 +894,10 @@ Current behaviour that the sections above do not already state, by area.
   (`reviewer` by default); `--publish` also sets it as a GitHub commit
   status that branch protection can require. An agent's verdict is refused
   on the branch its checkout is on and on any branch it has committed to,
-  through `commit` or with `git commit` in its own checkout, wherever its
-  checkout is now; checking a branch out or pulling it is not committing to
-  it, and your own verdict is never refused this way.
+  through `commit` or with `git commit` in a checkout AgentDocker knows it
+  works in, wherever its checkout is now; checking a branch out or pulling
+  it is not committing to it. A commit in a clone the agent never
+  registered in is not seen. Your own verdict is never refused this way.
 
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or

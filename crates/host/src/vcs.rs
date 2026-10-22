@@ -17,6 +17,8 @@ use chrono::Utc;
 
 use crate::project::resolve;
 
+pub mod reflog;
+
 /// The checkout containing `dir`, or `None` outside any repository.
 pub fn state(dir: &Path) -> Option<VcsState> {
     let observed_at = Utc::now();
@@ -84,66 +86,6 @@ pub fn subject(dir: &Path, sha: &str, timeout: std::time::Duration) -> Option<St
     std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
     let subject = out.trim();
     (!subject.is_empty()).then(|| subject.chars().take(200).collect())
-}
-
-/// Reflog entries read at most, newest first: far more than a checkout
-/// moves between two looks.
-const REFLOG_ENTRIES: &str = "64";
-
-/// Whether git's own record of this checkout's HEAD says a commit was made
-/// here, on the branch it is on, since HEAD was last seen at `before`. Two
-/// heads cannot say it: a fast-forward of one commit fetched from elsewhere
-/// has the old head as its parent just as a commit made here does. The
-/// checkout's HEAD reflog, which git keeps per worktree, names the
-/// operation that made each move. See [`committed_between`]. `false` when
-/// git cannot answer within `timeout`.
-pub fn committed_here(dir: &Path, before: &str, after: &str, timeout: std::time::Duration) -> bool {
-    if !valid_oid(before) || !valid_oid(after) || before == after {
-        return false;
-    }
-    let argv: Vec<String> = [
-        "git",
-        "reflog",
-        "show",
-        "--no-show-signature",
-        "--format=%H%x09%gs",
-        "-n",
-        REFLOG_ENTRIES,
-        "HEAD",
-        "--",
-    ]
-    .map(str::to_owned)
-    .to_vec();
-    let quiet = [("GIT_OPTIONAL_LOCKS", Some(std::ffi::OsStr::new("0")))];
-    match crate::command::run_with_env(dir, &argv, timeout, &quiet) {
-        Ok(output) if output.success => committed_between(&output.stdout, before, after),
-        _ => false,
-    }
-}
-
-/// Whether a HEAD reflog (`<commit>\t<subject>` a line, newest first) shows
-/// a commit made with `git commit` — its entries read `commit: …`,
-/// `commit (amend): …`, `commit (merge): …` — between the entry that moved
-/// HEAD to `after` and the one that moved it to `before`, with no branch
-/// switch (`checkout: …`) after the commit. A pull, a merge git concludes
-/// by itself, a reset, a cherry-pick or a rebase is not counted. A reflog
-/// that never reaches `after`, or ends before `before` or a switch, says
-/// no: it cannot tell what happened.
-pub fn committed_between(reflog: &str, before: &str, after: &str) -> bool {
-    let entries = reflog
-        .lines()
-        .filter_map(|line| line.split_once('\t'))
-        .skip_while(|(commit, _)| *commit != after);
-    let mut made = false;
-    for (index, (commit, subject)) in entries.enumerate() {
-        // The entry that moved HEAD to `after` is the newest one read; the
-        // first older one to land on `before` is where the last look was.
-        if (index > 0 && commit == before) || subject.starts_with("checkout:") {
-            return made;
-        }
-        made |= subject.starts_with("commit:") || subject.starts_with("commit (");
-    }
-    false
 }
 
 /// Every checkout of the repository `dir` belongs to: the main one and
@@ -440,97 +382,5 @@ mod tests {
         #[cfg(windows)]
         std::os::windows::fs::symlink_file(secret, dot.join("refs/heads/main")).unwrap();
         assert_eq!(state(tmp.path()).unwrap().head, None);
-    }
-
-    /// Only a `git commit` between the two looks, after any switch, is a
-    /// commit made here; a reflog that cannot place both looks says no.
-    #[test]
-    fn a_commit_made_here_is_told_from_a_move_by_its_reflog() {
-        let log = |entries: &[(&str, &str)]| {
-            entries
-                .iter()
-                .map(|(commit, subject)| format!("{commit}\t{subject}\n"))
-                .collect::<String>()
-        };
-        let made = log(&[
-            ("c", "commit: second"),
-            ("b", "commit (amend): first"),
-            ("a", "checkout: moving from main to feature"),
-        ]);
-        assert!(committed_between(&made, "a", "c"));
-        assert!(committed_between(&made, "b", "c"));
-        let pulled = log(&[
-            ("c", "pull: Fast-forward"),
-            ("b", "merge upstream: Fast-forward"),
-            ("a", "commit: mine, before the last look"),
-        ]);
-        assert!(!committed_between(&pulled, "a", "c"));
-        // Moved since the head was read: counted from the entry for it.
-        let later = log(&[
-            ("d", "commit: after the read"),
-            ("c", "reset: moving to c"),
-            ("a", "commit: x"),
-        ]);
-        assert!(!committed_between(&later, "a", "c"));
-        // A commit, then a switch back onto this branch: the commit was
-        // on the other branch.
-        let switched = log(&[
-            ("c", "checkout: moving from other to feature"),
-            ("b", "commit: on other"),
-            ("a", "checkout: moving from feature to other"),
-        ]);
-        assert!(!committed_between(&switched, "a", "c"));
-        // Undone by a reset back to where it was, then pulled.
-        let undone = log(&[
-            ("d", "pull: Fast-forward"),
-            ("a", "reset: moving to HEAD~1"),
-            ("b", "commit: scratch"),
-            ("a", "commit: x"),
-        ]);
-        assert!(!committed_between(&undone, "a", "d"));
-        // Neither head in the reflog, or no reflog: nothing is known.
-        assert!(!committed_between(&made, "a", "z"));
-        assert!(!committed_between(&log(&[("c", "commit: x")]), "a", "c"));
-        assert!(!committed_between("", "a", "c"));
-    }
-
-    #[test]
-    fn git_s_own_reflog_tells_a_commit_from_a_fast_forward_or_a_switch() {
-        if !have_git() {
-            return;
-        }
-        let tmp = TempDir::new().unwrap();
-        let main = repo(&tmp);
-        let head = |dir: &Path| git(tmp.path(), dir, &["rev-parse", "HEAD"]);
-        let wait = std::time::Duration::from_secs(10);
-        git(tmp.path(), &main, &["branch", "feature"]);
-        let root = head(&main);
-        // A commit made here.
-        git(
-            tmp.path(),
-            &main,
-            &["commit", "-q", "--allow-empty", "-m", "one"],
-        );
-        let one = head(&main);
-        assert!(committed_here(&main, &root, &one, wait));
-        // A fast-forward of one commit has the old head as its parent too.
-        git(tmp.path(), &main, &["checkout", "-q", "feature"]);
-        git(tmp.path(), &main, &["merge", "-q", "--ff-only", "main"]);
-        assert_eq!(head(&main), one);
-        assert!(!committed_here(&main, &root, &one, wait));
-        // A switch is not a commit, and neither is a reset.
-        git(tmp.path(), &main, &["checkout", "-q", "-b", "other"]);
-        git(
-            tmp.path(),
-            &main,
-            &["commit", "-q", "--allow-empty", "-m", "two"],
-        );
-        let two = head(&main);
-        git(tmp.path(), &main, &["checkout", "-q", "feature"]);
-        git(tmp.path(), &main, &["reset", "-q", "--hard", &two]);
-        assert!(!committed_here(&main, &one, &two, wait));
-        // Bad ids are not passed to git.
-        assert!(!committed_here(&main, "HEAD", &two, wait));
-        assert!(!committed_here(&main, &two, &two, wait));
     }
 }

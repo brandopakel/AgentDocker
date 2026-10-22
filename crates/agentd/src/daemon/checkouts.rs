@@ -35,25 +35,24 @@ impl Daemon {
                     let state = vcs::state(&dir)?;
                     let moved = state.head.is_some()
                         && old.as_ref().and_then(|o| o.head.clone()) != state.head;
-                    let seen = if moved {
-                        HeadMove::read(
-                            &dir,
-                            old.as_ref().and_then(|o| o.head.as_deref()),
-                            state.head.as_deref(),
-                        )
+                    let subject = if moved {
+                        state
+                            .head
+                            .as_deref()
+                            .and_then(|sha| vcs::subject(&dir, sha, SUBJECT_TIMEOUT))
                     } else {
-                        HeadMove::default()
+                        None
                     };
-                    Some((id, state, old, moved, seen))
+                    Some((id, state, old, moved, subject))
                 })
                 .collect::<Vec<_>>()
         })
         .await
         .unwrap_or_default();
-        for (id, state, old, moved, seen) in observed {
+        for (id, state, old, moved, subject) in observed {
             self.apply_vcs(&id, state.clone());
             if moved {
-                lock(&self.state).note_head_move(&id, old.as_ref(), &state, seen);
+                lock(&self.state).note_head_move(&id, old.as_ref(), &state, subject);
             }
         }
     }
@@ -145,27 +144,45 @@ impl Daemon {
     /// a checkout as a checkout, so a commit in a worktree nobody
     /// registered still reaches the journal.
     pub(crate) async fn note_checkout(&self, checkout: &Checkout) {
+        // What was committed here since the last reading, from git's own
+        // record, whatever the head says now. A reading that fails keeps
+        // its place and is tried again on the next look, as does one in a
+        // checkout the daemon is committing in: that commit's author is
+        // being recorded already.
+        let committing = lock(&self.state).committing.contains(&checkout.dir);
+        if !committing {
+            match self
+                .replay_checkout(checkout.project.clone(), checkout.dir.clone())
+                .await
+            {
+                Ok(_) => {}
+                Err(authorship::Unreplayed::Unreadable(reason)) => {
+                    debug!(checkout = %checkout.dir.display(), %reason, "reflog not read");
+                }
+                Err(authorship::Unreplayed::Storage(_)) => return,
+            }
+        }
         let dir = checkout.dir.clone();
         let known = lock(&self.state).last_head.get(&dir).cloned();
         let dir_for_read = dir.clone();
         let known_for_read = known.clone();
         let observed = tokio::task::spawn_blocking(move || {
             let state = vcs::state(&dir_for_read)?;
-            // Naming the commit and reading how HEAD got there run `git`,
-            // so they are only done when there is something new to name.
-            // This is called for every checkout of every project on every
-            // sweep.
-            let seen = HeadMove::read(
-                &dir_for_read,
-                known_for_read.as_deref(),
-                state.head.as_deref(),
-            );
-            Some((state, seen))
+            // Naming the commit runs `git log`, so it is only done when
+            // there is something new to name. This is called for every
+            // checkout of every project on every sweep.
+            let subject = match &state.head {
+                Some(head) if Some(head) != known_for_read.as_ref() => {
+                    vcs::subject(&dir_for_read, head, SUBJECT_TIMEOUT)
+                }
+                _ => None,
+            };
+            Some((state, subject))
         })
         .await
         .ok()
         .flatten();
-        let Some((state, seen)) = observed else {
+        let Some((state, subject)) = observed else {
             return;
         };
         // A checkout seen for the first time is recorded, not announced:
@@ -197,7 +214,7 @@ impl Daemon {
             checkout.worktree.clone(),
             Some(&old),
             &state,
-            seen,
+            subject,
         );
     }
 

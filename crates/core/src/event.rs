@@ -785,6 +785,12 @@ pub enum EventKind {
         branch: String,
         commit: String,
     },
+    /// The daemon read a checkout's HEAD reflog further: `entries` read so
+    /// far, kept so the next reading starts where this one stopped.
+    ReflogRead {
+        checkout: std::path::PathBuf,
+        entries: u64,
+    },
     /// A journal entry was appended to a project.
     JournalAppended {
         entry: JournalEntry,

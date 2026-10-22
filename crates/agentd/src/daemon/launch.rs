@@ -442,6 +442,13 @@ impl Daemon {
         }
         let project = self.project_for(spec.workdir.clone(), true).await;
         let vcs = Self::vcs_for(spec.workdir.clone()).await;
+        // The checkout's reflog is read up to now before the newcomer is
+        // in it: what is committed there from here on can be its.
+        if let Some(project) = &project {
+            let _ = self
+                .replay_checkout(project.id(), project.dir().to_path_buf())
+                .await;
+        }
         let mut record = AgentRecord::new(spec, false, Utc::now());
         record.project = project;
         record.vcs = vcs;
@@ -720,6 +727,9 @@ impl Daemon {
                     lock(&self.state)
                         .worktree_creators
                         .insert(path.clone(), record.id.clone());
+                    if let Some(project) = &record.project {
+                        let _ = self.replay_checkout(project.id(), path.clone()).await;
+                    }
                     self.emit(EventKind::WorktreeCreated {
                         agent: record.id.clone(),
                         path: path.clone(),

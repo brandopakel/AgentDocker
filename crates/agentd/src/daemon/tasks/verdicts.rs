@@ -1,95 +1,19 @@
 //! Reviewers' verdicts on branches, each bound to the commit it read, and
 //! the gate over them: documents of their own kind, by project. An agent
 //! holding a role in the project, or the person, gives one; anybody may
-//! ask the gate. Beside them, what each agent has committed to, so that
-//! no agent's word is taken on a branch it wrote.
+//! ask the gate. No agent's word is taken on a branch it has committed to
+//! (`daemon/authorship.rs`).
 use std::collections::HashMap;
 
 use super::*;
 use agentdocker_core::gate::{
-    self, Authorship, CodeVerdict, Findings, GATE_ROLE, VERDICTS_PER_PROJECT, full_commit,
+    self, CodeVerdict, Findings, GATE_ROLE, VERDICTS_PER_PROJECT, full_commit,
 };
 use agentdocker_core::{JournalEntry, JournalKind, SummarySource, Verdict};
 
 pub(in crate::daemon) const VERDICT: &str = "code_verdict";
-/// What an agent committed to: one document per project, agent and branch,
-/// which neither journal pruning nor retention touches.
-pub(in crate::daemon) const AUTHORSHIP: &str = "authorship";
 
 impl State {
-    /// The authorship a commit's journal entry proves, and the event that
-    /// says so, when the entry names an agent (never the person) and the
-    /// branch and commit it made: the record as it stands with this commit
-    /// added. `None` when there is nothing to record or the record could
-    /// not be read, which has then failed storage.
-    pub(in crate::daemon) fn authorship_of(
-        &mut self,
-        entry: &JournalEntry,
-    ) -> Option<((&'static str, String, String), EventKind)> {
-        let agent = entry.agent.as_ref()?;
-        let branch = entry.branch.as_deref().filter(|b| !b.is_empty())?;
-        let commit = entry.head_after.as_deref()?;
-        if self
-            .registry
-            .get(agent)
-            .is_none_or(super::super::humans::is_human)
-        {
-            return None;
-        }
-        let id = gate::authorship_id(&entry.project, agent, branch);
-        let previous = self.store_read("authorship", |store| {
-            store.document::<Authorship>(AUTHORSHIP, &id)
-        })?;
-        let record = Authorship::after(
-            previous
-                .as_ref()
-                .filter(|p| p.names(&entry.project, agent, branch)),
-            &entry.project,
-            agent,
-            branch,
-            commit,
-            entry.at,
-        );
-        let kind = EventKind::AuthorshipRecorded {
-            project: record.project.clone(),
-            agent: record.agent.clone(),
-            branch: record.branch.clone(),
-            commit: record.last_commit.clone(),
-        };
-        Some((doc(AUTHORSHIP, id, &record), kind))
-    }
-
-    /// Whether `agent`, or a record folded into it, has committed to
-    /// `branch` in `project`.
-    fn has_committed_to(
-        &mut self,
-        project: &ProjectId,
-        agent: &AgentId,
-        branch: &str,
-    ) -> Result<bool, Box<Response>> {
-        let ids = self.registry.identity_ids(agent);
-        self.store_read("authorship", |store| {
-            for id in &ids {
-                let key = gate::authorship_id(project, id, branch);
-                if store
-                    .document::<Authorship>(AUTHORSHIP, &key)?
-                    .is_some_and(|a| a.names(project, id, branch))
-                {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        })
-        .ok_or_else(|| {
-            Box::new(self.storage_failure().unwrap_or_else(|| {
-                Response::error(
-                    ErrorCode::StorageUnavailable,
-                    "what the reviewer has committed to could not be read",
-                )
-            }))
-        })
-    }
-
     /// A project's verdicts, oldest first.
     fn project_verdicts(&mut self, project: &ProjectId) -> Result<Vec<CodeVerdict>, Box<Response>> {
         self.store_read("verdicts", |store| {
@@ -222,6 +146,20 @@ impl Daemon {
                     );
                 }
             }
+            // What it has committed to, brought up to date from git's own
+            // record of every checkout it works in, so a commit followed at
+            // once by a switch away is already known. A commit the daemon
+            // is still making for it is not recorded yet.
+            let reviewer = AgentId::from(actor.id.as_str());
+            if lock(&self.state).is_committing(&reviewer) {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    "the reviewer has a commit in progress",
+                );
+            }
+            if let Err(response) = self.replay_agent(&reviewer).await {
+                return *response;
+            }
         }
         let mut state = lock(&self.state);
         // What was checked before the branch was read must still hold: the
@@ -252,9 +190,17 @@ impl Daemon {
             return error;
         }
         // Nor on a branch it has committed to, wherever its checkout is now:
-        // the daemon's own record of that, which outlives the journal.
+        // the daemon's own record of that, which outlives the journal. A
+        // commit the daemon is still making for it is not recorded yet.
         if !actor.human {
-            match state.has_committed_to(&project, &AgentId::from(actor.id.as_str()), branch) {
+            let reviewer = AgentId::from(actor.id.as_str());
+            if state.is_committing(&reviewer) {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    "the reviewer has a commit in progress",
+                );
+            }
+            match state.has_committed_to(&project, &reviewer, branch) {
                 Ok(false) => {}
                 Ok(true) => {
                     return Response::error(
@@ -665,6 +611,8 @@ mod tests {
     }
 
     use super::*;
+    use crate::daemon::authorship::AUTHORSHIP;
+    use agentdocker_core::gate::Authorship;
     use tempfile::TempDir;
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1100,7 +1048,7 @@ mod tests {
     /// brought up to date with a fast-forward that has the old head as its
     /// parent just as a commit would — reviews it: the journal names the
     /// reviewer on those moves, and that is not authorship. A commit it
-    /// makes there with git is, after it has switched away too.
+    /// makes there with git, seen by the periodic sweep, is.
     #[tokio::test]
     async fn checking_a_branch_out_is_not_writing_it_and_committing_there_is() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1118,14 +1066,14 @@ mod tests {
         let reviewer = register(&daemon, "reviewer", &repo).await;
         give_role(&daemon, &reviewer.id, "reviewer");
         let project = reviewer.project.as_ref().unwrap().id();
-        daemon.refresh_vcs(None).await;
+        daemon.refresh_project_checkouts().await;
 
         git_in(&repo, &["checkout", "-q", "feature/x"]);
-        daemon.refresh_vcs(None).await;
+        daemon.refresh_project_checkouts().await;
         git_in(&repo, &["merge", "-q", "--ff-only", "upstream"]);
-        daemon.refresh_vcs(None).await;
+        daemon.refresh_project_checkouts().await;
         git_in(&repo, &["checkout", "-q", "main"]);
-        daemon.refresh_vcs(None).await;
+        daemon.refresh_project_checkouts().await;
         let moves = commit_entries(&daemon, &project).await;
         assert!(
             moves.iter().any(|e| e.agent.as_ref() == Some(&reviewer.id)
@@ -1153,14 +1101,12 @@ mod tests {
             .await;
         assert!(matches!(said, Response::CodeVerdict { .. }), "{said:?}");
 
-        // A commit made there with git, seen by the watcher, is authorship.
+        // A commit made there with git, seen by the sweep, is authorship.
         git_in(&repo, &["checkout", "-q", "feature/x"]);
-        daemon.refresh_vcs(None).await;
         git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "mine"]);
         let mine = git_in(&repo, &["rev-parse", "HEAD"]);
-        daemon.refresh_vcs(None).await;
         git_in(&repo, &["checkout", "-q", "main"]);
-        daemon.refresh_vcs(None).await;
+        daemon.refresh_project_checkouts().await;
         assert!(daemon.recent_events(100).iter().any(|e| matches!(&e.kind,
             EventKind::AuthorshipRecorded { agent, branch, commit, .. }
             if *agent == reviewer.id && branch == "feature/x" && *commit == mine)));
@@ -1177,6 +1123,271 @@ mod tests {
         )
         .expect("refused");
         assert_eq!(code, ErrorCode::Forbidden);
+    }
+
+    /// A commit, then a switch back to a branch at the very head it left:
+    /// no head ever moved where the daemon could see it, and nothing ran in
+    /// between. The verdict reads the reviewer's history itself.
+    #[tokio::test]
+    async fn a_commit_and_a_switch_back_before_anything_looked_is_still_seen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = open(&tmp);
+        let repo = tmp.path().join("repo");
+        committed_repository(&repo, "review");
+        git_in(&repo, &["branch", "feature"]);
+        let root = git_in(&repo, &["rev-parse", "HEAD"]);
+        let reviewer = register(&daemon, "reviewer", &repo).await;
+        give_role(&daemon, &reviewer.id, "reviewer");
+        let project = reviewer.project.as_ref().unwrap().id();
+
+        git_in(&repo, &["checkout", "-q", "feature"]);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "mine"]);
+        let mine = git_in(&repo, &["rev-parse", "HEAD"]);
+        git_in(&repo, &["checkout", "-q", "review"]);
+        assert_eq!(git_in(&repo, &["rev-parse", "HEAD"]), root);
+        let (code, message) = refusal(
+            daemon
+                .handle(verdict(
+                    reviewer.id.as_str(),
+                    None,
+                    "feature",
+                    &mine,
+                    "approve",
+                ))
+                .await,
+        )
+        .expect("refused");
+        assert_eq!(code, ErrorCode::Forbidden, "{message}");
+        assert!(message.contains("committed to"), "{message}");
+        let kept = lock(&daemon.state)
+            .has_committed_to(&project, &reviewer.id, "feature")
+            .unwrap();
+        assert!(kept, "and it is kept");
+    }
+
+    /// Somebody else's commit fast-forwarded in, in the same interval as a
+    /// commit made here: the head the journal sees is theirs, and the
+    /// commit kept is the one made here.
+    #[tokio::test]
+    async fn the_commit_kept_is_the_one_made_not_the_head_after_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = open(&tmp);
+        let repo = tmp.path().join("repo");
+        committed_repository(&repo, "main");
+        let reviewer = register(&daemon, "reviewer", &repo).await;
+        let project = reviewer.project.as_ref().unwrap().id();
+        daemon.refresh_project_checkouts().await;
+
+        git_in(&repo, &["checkout", "-q", "-b", "feature"]);
+        daemon.refresh_project_checkouts().await;
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "b"]);
+        let b = git_in(&repo, &["rev-parse", "HEAD"]);
+        let tree = git_in(&repo, &["rev-parse", "HEAD^{tree}"]);
+        let c = git_in(&repo, &["commit-tree", &tree, "-p", &b, "-m", "c"]);
+        git_in(&repo, &["merge", "-q", "--ff-only", &c]);
+        daemon.refresh_project_checkouts().await;
+        let moves = commit_entries(&daemon, &project).await;
+        assert_eq!(
+            moves.last().and_then(|e| e.head_after.as_deref()),
+            Some(c.as_str())
+        );
+        let kept: Authorship = lock(&daemon.state)
+            .store
+            .document(
+                AUTHORSHIP,
+                &gate::authorship_id(&project, &reviewer.id, "feature"),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.last_commit, b);
+    }
+
+    /// The daemon's commit is the agent's as soon as git has made it: while
+    /// its push is held up the authorship is already kept, and a verdict
+    /// given meanwhile waits for the commit to be done.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_commit_is_recorded_before_its_push_and_a_verdict_waits_for_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = open(&tmp);
+        let remote = tmp.path().join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        git_in(&remote, &["init", "-q", "--bare"]);
+        let repo = tmp.path().join("repo");
+        committed_repository(&repo, "feature/mine");
+        git_in(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git_in(&repo, &["push", "-q", "-u", "origin", "feature/mine"]);
+        let gate = tmp.path().join("open");
+        let hook = repo.join(".git/hooks/pre-push");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nfor i in $(seq 1 200); do [ -e '{}' ] && exit 0; sleep 0.1; done\nexit 1\n",
+                gate.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let reviewer = register(&daemon, "reviewer", &repo).await;
+        give_role(&daemon, &reviewer.id, "reviewer");
+        let project = reviewer.project.as_ref().unwrap().id();
+        std::fs::write(repo.join("work.txt"), "x\n").unwrap();
+        git_in(&repo, &["add", "."]);
+
+        let committing = {
+            let daemon = daemon.clone();
+            let agent = reviewer.id.to_string();
+            tokio::spawn(async move {
+                daemon
+                    .handle(Request::Commit {
+                        agent,
+                        message: "mine".into(),
+                        all: false,
+                        push: true,
+                    })
+                    .await
+            })
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let recorded = lock(&daemon.state)
+                .has_committed_to(&project, &reviewer.id, "feature/mine")
+                .unwrap();
+            if recorded {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "never recorded");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!committing.is_finished(), "the push is still held");
+        assert!(lock(&daemon.state).is_committing(&reviewer.id));
+        let (code, message) = refusal(
+            daemon
+                .handle(verdict(
+                    reviewer.id.as_str(),
+                    None,
+                    "feature/x",
+                    A,
+                    "approve",
+                ))
+                .await,
+        )
+        .expect("refused");
+        assert_eq!(code, ErrorCode::Conflict, "{message}");
+        assert!(message.contains("commit in progress"), "{message}");
+
+        std::fs::write(&gate, "").unwrap();
+        let done = committing.await.unwrap();
+        assert!(
+            matches!(done, Response::Committed { pushed: true, .. }),
+            "{done:?}"
+        );
+        assert!(!lock(&daemon.state).is_committing(&reviewer.id));
+        let said = daemon
+            .handle(verdict(
+                reviewer.id.as_str(),
+                None,
+                "feature/x",
+                A,
+                "approve",
+            ))
+            .await;
+        assert!(matches!(said, Response::CodeVerdict { .. }), "{said:?}");
+        git_in(&repo, &["checkout", "-q", "-b", "elsewhere"]);
+        assert!(refused(
+            daemon
+                .handle(verdict(
+                    reviewer.id.as_str(),
+                    None,
+                    "feature/mine",
+                    A,
+                    "approve"
+                ))
+                .await,
+            ErrorCode::Forbidden
+        ));
+    }
+
+    /// A worktree the daemon made for the reviewer is a checkout it works
+    /// in, registered there or not: a commit there counts.
+    #[tokio::test]
+    async fn a_commit_in_a_worktree_made_for_the_reviewer_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = open(&tmp);
+        let repo = tmp.path().join("repo");
+        committed_repository(&repo, "main");
+        let reviewer = register(&daemon, "reviewer", &repo).await;
+        give_role(&daemon, &reviewer.id, "reviewer");
+        let aside = tmp.path().join("aside");
+        let made = daemon
+            .handle(Request::WorktreeCreate {
+                agent: reviewer.id.to_string(),
+                path: aside.to_string_lossy().into_owned(),
+                branch: "feature/aside".into(),
+                from: None,
+            })
+            .await;
+        assert!(matches!(made, Response::Worktree { .. }), "{made:?}");
+        let aside = std::fs::canonicalize(&aside).unwrap();
+        git_in(&aside, &["commit", "-q", "--allow-empty", "-m", "aside"]);
+        assert!(refused(
+            daemon
+                .handle(verdict(
+                    reviewer.id.as_str(),
+                    None,
+                    "feature/aside",
+                    A,
+                    "approve"
+                ))
+                .await,
+            ErrorCode::Forbidden
+        ));
+    }
+
+    /// A history that cannot be read is no proof the reviewer committed
+    /// nothing: its word waits until it can be read.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_reviewer_whose_history_cannot_be_read_is_refused_until_it_can() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = open(&tmp);
+        let repo = tmp.path().join("repo");
+        committed_repository(&repo, "main");
+        let reviewer = register(&daemon, "reviewer", &repo).await;
+        give_role(&daemon, &reviewer.id, "reviewer");
+        let log = repo.join(".git/logs/HEAD");
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = std::fs::File::open(&log).is_ok();
+        let said = daemon
+            .handle(verdict(
+                reviewer.id.as_str(),
+                None,
+                "feature/x",
+                A,
+                "approve",
+            ))
+            .await;
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
+        if !readable {
+            let (code, message) = refusal(said).expect("refused");
+            assert_eq!(code, ErrorCode::Unavailable, "{message}");
+            assert!(message.contains("history could not be read"), "{message}");
+        }
+        let said = daemon
+            .handle(verdict(
+                reviewer.id.as_str(),
+                None,
+                "feature/x",
+                A,
+                "approve",
+            ))
+            .await;
+        assert!(matches!(said, Response::CodeVerdict { .. }), "{said:?}");
     }
 
     /// An authorship under a record folded into the reviewer's counts for

@@ -27,18 +27,39 @@ fn failure(e: impl std::fmt::Display) -> Response {
 pub(super) struct Committing<'a> {
     daemon: &'a Daemon,
     root: PathBuf,
+    agent: Option<AgentId>,
 }
 
 impl<'a> Committing<'a> {
-    pub(super) fn mark(daemon: &'a Daemon, root: PathBuf) -> Self {
-        lock(&daemon.state).committing.insert(root.clone());
-        Self { daemon, root }
+    /// Mark `root` as being committed in, and `agent` as having a commit
+    /// in flight, until this is dropped.
+    pub(super) fn mark(daemon: &'a Daemon, root: PathBuf, agent: Option<AgentId>) -> Self {
+        let mut state = lock(&daemon.state);
+        state.committing.insert(root.clone());
+        if let Some(agent) = &agent {
+            *state.committing_agents.entry(agent.clone()).or_default() += 1;
+        }
+        drop(state);
+        Self {
+            daemon,
+            root,
+            agent,
+        }
     }
 }
 
 impl Drop for Committing<'_> {
     fn drop(&mut self) {
-        lock(&self.daemon.state).committing.remove(&self.root);
+        let mut state = lock(&self.daemon.state);
+        state.committing.remove(&self.root);
+        if let Some(agent) = &self.agent
+            && let Entry::Occupied(mut held) = state.committing_agents.entry(agent.clone())
+        {
+            *held.get_mut() -= 1;
+            if *held.get() == 0 {
+                held.remove();
+            }
+        }
     }
 }
 
@@ -455,12 +476,23 @@ impl Daemon {
         if let Err(response) = add_worktree(root, &path, &branch, from.as_deref()).await {
             return *response;
         }
-        let mut state = lock(&self.state);
-        state.worktree_creators.insert(path.clone(), agent.clone());
-        state.emit(EventKind::WorktreeCreated {
-            agent,
-            path: path.clone(),
-        });
+        let project = {
+            let mut state = lock(&self.state);
+            state.worktree_creators.insert(path.clone(), agent.clone());
+            state.emit(EventKind::WorktreeCreated {
+                agent: agent.clone(),
+                path: path.clone(),
+            });
+            state
+                .registry
+                .get(&agent)
+                .and_then(|r| r.project.as_ref())
+                .map(ProjectRef::id)
+        };
+        // Its reflog is read from here on, so its first commit is the agent's.
+        if let Some(project) = project {
+            let _ = self.replay_checkout(project, path.clone()).await;
+        }
         Response::Worktree { path, branch }
     }
 
@@ -662,7 +694,7 @@ impl Daemon {
         // the mark, and a mark left behind does not fail loudly: it
         // silently stops that checkout being journaled for as long as
         // the daemon lives.
-        let _committing = Committing::mark(self, root.clone());
+        let _committing = Committing::mark(self, root.clone(), Some(agent.clone()));
 
         let mut args = vec!["commit".into()];
         if all {
@@ -707,6 +739,11 @@ impl Daemon {
                 .map(str::to_owned),
             _ => None,
         };
+        // Who made it is recorded now, before a push that may take its
+        // time: a verdict given meanwhile already sees it.
+        if let Some(error) = lock(&self.state).record_commit(&agent, branch.as_deref(), &head) {
+            return error;
+        }
 
         // Pushed after the commit exists, so a push that fails leaves a
         // commit rather than losing the work.
@@ -736,9 +773,7 @@ impl Daemon {
                 entry.head_before = parent.clone();
                 entry.head_after = Some(head.clone());
                 entry.paths_total = files;
-                // The daemon made this commit for this agent: it wrote the
-                // branch, whatever the journal later keeps.
-                state.append_commit(entry, true);
+                state.append_journal(entry);
             }
             state.last_head.insert(root.clone(), head.clone());
             state.emit(EventKind::Committed {

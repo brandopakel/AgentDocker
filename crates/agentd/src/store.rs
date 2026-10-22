@@ -2365,30 +2365,6 @@ impl Store {
         Ok(())
     }
 
-    /// A journal entry, the documents it is evidence for and their events,
-    /// as one commit: a commit's entry and the authorship it proves land
-    /// together or not at all.
-    pub fn append_journal_with_documents(
-        &self,
-        entry: &JournalEntry,
-        documents: &[(&str, String, String)],
-        events: &[Event],
-    ) -> Result<()> {
-        let tx = write_transaction(&self.conn)?;
-        self.insert_journal(entry)?;
-        for (kind, id, json) in documents {
-            self.conn.execute(
-                "INSERT INTO documents (kind,id,json) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json",
-                params![kind, id, json],
-            )?;
-        }
-        for event in events {
-            self.append_event(event)?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
     /// Acknowledgement must not advance past a failed replay event.
     pub fn set_journal_cursor_with_event(
         &self,
@@ -4689,70 +4665,6 @@ mod tests {
             "kind":"note", "summary":format!("entry {seq}"), "summary_source":"explicit"
         }))
         .unwrap()
-    }
-
-    /// A commit's entry and the authorship it proves are one commit: an
-    /// event that fails takes both back. Pruning the journal takes the
-    /// entry and leaves the authorship.
-    #[test]
-    fn a_commit_s_entry_and_its_authorship_land_together_and_only_the_entry_is_pruned() {
-        let store = Store::in_memory().unwrap();
-        let project = ProjectId::from("p");
-        let entry = aged_entry("p", 1, Duration::zero());
-        let document = ("authorship", "a-1".to_owned(), "{}".to_owned());
-        let mut events = vec![
-            Event::new(
-                EventKind::JournalAppended {
-                    entry: entry.clone(),
-                },
-                Utc::now(),
-            ),
-            Event::new(
-                EventKind::AuthorshipRecorded {
-                    project: project.clone(),
-                    agent: AgentId::from("a"),
-                    branch: "feature/x".into(),
-                    commit: "c".repeat(40),
-                },
-                Utc::now(),
-            ),
-        ];
-        events[0].seq = 1;
-        events[1].seq = 2;
-        let authorship = |store: &Store| {
-            store
-                .document::<serde_json::Value>("authorship", "a-1")
-                .unwrap()
-        };
-        let entries = |store: &Store| -> i64 {
-            store
-                .conn
-                .query_row("SELECT COUNT(*) FROM journal", [], |row| row.get(0))
-                .unwrap()
-        };
-        store.reject_event_for_test("authorship_recorded");
-        assert!(
-            store
-                .append_journal_with_documents(&entry, std::slice::from_ref(&document), &events)
-                .is_err()
-        );
-        assert_eq!(entries(&store), 0);
-        assert!(authorship(&store).is_none());
-        store
-            .conn
-            .execute_batch("DROP TRIGGER reject_event")
-            .unwrap();
-        store
-            .append_journal_with_documents(&entry, std::slice::from_ref(&document), &events)
-            .unwrap();
-        assert_eq!(entries(&store), 1);
-        assert!(authorship(&store).is_some());
-        assert_eq!(store.prune_journal(&project, 2).unwrap(), 1);
-        assert_eq!(entries(&store), 0);
-        assert!(
-            authorship(&store).is_some(),
-            "pruning is the journal's alone"
-        );
     }
 
     #[test]

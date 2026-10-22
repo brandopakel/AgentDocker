@@ -288,7 +288,7 @@ impl Daemon {
         // watcher; without a record for the person the watcher records it.
         let _committing = person
             .is_some()
-            .then(|| Committing::mark(self, root.clone()));
+            .then(|| Committing::mark(self, root.clone(), None));
         // A failed observation is not evidence that the checkout is free.
         match in_progress(&root).await {
             Ok(Some(operation)) => {

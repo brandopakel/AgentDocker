@@ -703,6 +703,12 @@ pub fn event_line(event: &Event) -> String {
             agent.short(),
             commit.chars().take(8).collect::<String>()
         ),
+        EventKind::ReflogRead { checkout, entries } => {
+            format!(
+                "reflog read      {} ({entries} entries)",
+                checkout.display()
+            )
+        }
         EventKind::WatcherStarting => "watcher starting".to_owned(),
         EventKind::WatcherStarted => "watcher started".to_owned(),
         EventKind::WatcherUnavailable { reason } => format!("watcher unavailable ({reason})"),
