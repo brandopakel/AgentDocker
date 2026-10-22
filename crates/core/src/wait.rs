@@ -243,11 +243,14 @@ pub enum Activity {
     /// Stopped for the person, by its adapter's report: a permission
     /// prompt or a question the provider put in its own terminal. Only
     /// the person can move it on, from there. `reason` says which, when
-    /// the adapter could tell.
+    /// the adapter could tell, and `detail` what the prompt is about in
+    /// one short line (see [`wait_detail`]).
     Waiting {
         since: DateTime<Utc>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<WaitReason>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
     /// Not running any more.
     Finished,
@@ -269,7 +272,9 @@ impl Activity {
 }
 
 /// Explicit adapter observations; process liveness and MCP configuration are
-/// not turn observations. No prompts, tool arguments or transcripts are stored.
+/// not turn observations. No prompts or transcripts are stored, and of a
+/// tool's arguments only a permission prompt's one bounded line
+/// ([`ActivityObservation::detail`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportedActivity {
@@ -281,8 +286,8 @@ pub enum ReportedActivity {
 }
 
 /// What a provider stopped for the person for, as its adapter read the
-/// provider's own event kind. Only the kind is kept, never the prompt's
-/// words.
+/// provider's own event kind. The kind, never the prompt's words; what
+/// the prompt is about travels separately, as a bounded detail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitReason {
@@ -303,9 +308,100 @@ pub struct ActivityObservation {
     /// predating it ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<WaitReason>,
+    /// For a wait, what it is about in one short line — the tool a
+    /// permission prompt is for and a summary of its input — as
+    /// [`wait_detail`] leaves it. Only a wait carries one. A daemon
+    /// predating it ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// The most characters a wait's detail keeps.
+pub const WAIT_DETAIL_CHARS: usize = 120;
+
+/// How long after a detailed wait a plain one for the same reason is
+/// taken for the same prompt. Claude Code says a permission prompt twice:
+/// its `PermissionRequest` hook as the dialog opens, with the tool and its
+/// input, and a `Notification` six seconds later, without them.
+pub const WAIT_DETAIL_CARRY_SECS: i64 = 60;
+
+/// `text` as a wait's detail may show it: its first line, without control
+/// or invisible formatting characters, runs of spaces as one, cut to
+/// [`WAIT_DETAIL_CHARS`] with an ellipsis. None when nothing is left or it
+/// reads like a credential ([`crate::memory::secret_like`]): a detail is
+/// shown to the person and kept with the agent's record, and is never
+/// worth a secret.
+pub fn wait_detail(text: &str) -> Option<String> {
+    let mut kept = text
+        .split(['\n', '\r'])
+        .map(|line| {
+            line.chars()
+                .map(|c| if c.is_whitespace() { ' ' } else { c })
+                .filter(|c| !c.is_control() && !invisible(*c))
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .find(|line| !line.is_empty())?;
+    if crate::memory::secret_like(&kept) {
+        return None;
+    }
+    if kept.chars().count() > WAIT_DETAIL_CHARS {
+        kept = kept.chars().take(WAIT_DETAIL_CHARS - 1).collect::<String>();
+        kept = kept.trim_end().to_owned();
+        kept.push('…');
+    }
+    Some(kept)
+}
+
+/// Characters that change how the text around them reads without showing
+/// themselves: bidirectional controls, zero-width marks and joiners, the
+/// soft hyphen, the byte-order mark.
+fn invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
 }
 
 impl ActivityObservation {
+    /// The observation as the daemon keeps it after `previous`: a detail
+    /// only on a wait, and only as [`wait_detail`] leaves it; and a plain
+    /// wait — one that said nothing of what it is about — for the same
+    /// reason that follows a detailed one within [`WAIT_DETAIL_CARRY_SECS`]
+    /// keeps that detail, since it is the same prompt said again without
+    /// it. A wait whose detail was left out (it read like a secret) is a
+    /// prompt of its own and carries nothing over.
+    pub fn settled(mut self, previous: Option<&ActivityObservation>) -> Self {
+        if self.activity != ReportedActivity::Waiting {
+            self.detail = None;
+            return self;
+        }
+        let plain = self.detail.is_none();
+        self.detail = self.detail.as_deref().and_then(wait_detail);
+        if plain
+            && let Some(previous) = previous.filter(|previous| {
+                previous.activity == ReportedActivity::Waiting
+                    && previous.reason == self.reason
+                    && previous.observed_at <= self.observed_at
+                    && self.observed_at - previous.observed_at
+                        <= chrono::Duration::seconds(WAIT_DETAIL_CARRY_SECS)
+            })
+        {
+            self.detail = previous.detail.clone();
+        }
+        self
+    }
+
     /// A missed hook must not leave a permanent working/idle assertion. Long
     /// silent turns become unknown until another provider event arrives.
     /// A wait for the person is silent by nature and may last as long as
@@ -330,6 +426,7 @@ impl ActivityObservation {
             ReportedActivity::Waiting => Activity::Waiting {
                 since: self.observed_at,
                 reason: self.reason,
+                detail: self.detail.clone(),
             },
         })
     }
@@ -364,6 +461,7 @@ mod tests {
                 activity,
                 observed_at: now,
                 reason: None,
+                detail: None,
             };
             assert!(observation.current(now).is_some());
             assert!(
@@ -389,12 +487,14 @@ mod tests {
             activity: ReportedActivity::Waiting,
             observed_at: now,
             reason: Some(WaitReason::Permission),
+            detail: None,
         };
         assert_eq!(
             observation.current(now + chrono::Duration::hours(2)),
             Some(Activity::Waiting {
                 since: now,
-                reason: Some(WaitReason::Permission)
+                reason: Some(WaitReason::Permission),
+                detail: None
             })
         );
         assert_eq!(observation.current(now + chrono::Duration::hours(12)), None);
@@ -405,7 +505,8 @@ mod tests {
         assert_eq!(
             Activity::Waiting {
                 since: now,
-                reason: None
+                reason: None,
+                detail: None
             }
             .label(),
             "waiting"
@@ -437,9 +538,120 @@ mod tests {
             read.current(now),
             Some(Activity::Waiting {
                 since: now,
-                reason: Some(WaitReason::Other)
+                reason: Some(WaitReason::Other),
+                detail: None
             })
         );
+    }
+
+    /// A detail is one short line the person can read: the first line
+    /// with text, no control or invisible formatting characters, spaces
+    /// collapsed, cut with an ellipsis — and nothing at all when it reads
+    /// like a credential.
+    #[test]
+    fn a_wait_detail_is_one_bounded_printable_line_and_never_a_secret() {
+        assert_eq!(
+            wait_detail("Bash: git push\u{202E} origin\tmain\nrm -rf /").as_deref(),
+            Some("Bash: git push origin main")
+        );
+        assert_eq!(
+            wait_detail("\n  \nEdit: src/lib.rs").as_deref(),
+            Some("Edit: src/lib.rs")
+        );
+        assert_eq!(wait_detail("\u{200B}\u{0007}\n \r"), None);
+        let long = format!("Bash: {}", "a ".repeat(200));
+        let cut = wait_detail(&long).unwrap();
+        assert_eq!(cut.chars().count(), WAIT_DETAIL_CHARS);
+        assert!(cut.ends_with('…'));
+        for secret in [
+            "Bash: curl -H 'token: ghp_abcdefghijklmnopqrstuvwxyz0123456789'",
+            "Bash: export KEY=x9Fk2LmQ7vR3tY8wZ1aB4cD6eG0hJ5nP",
+        ] {
+            assert_eq!(wait_detail(secret), None, "{secret}");
+        }
+    }
+
+    /// Claude Code says a permission prompt twice: as the dialog opens,
+    /// with what it is for, and six seconds later without. The second keeps
+    /// the first's detail; anything else replaces it, and only a wait
+    /// carries one at all.
+    #[test]
+    fn a_plain_wait_after_a_detailed_one_keeps_its_detail() {
+        let now = now();
+        let observation =
+            |activity, seconds: i64, reason, detail: Option<&str>| ActivityObservation {
+                activity,
+                observed_at: now + chrono::Duration::seconds(seconds),
+                reason,
+                detail: detail.map(str::to_owned),
+            };
+        let permission = Some(WaitReason::Permission);
+        let asked = observation(
+            ReportedActivity::Waiting,
+            0,
+            permission,
+            Some("Bash: cargo test\nsecond line"),
+        )
+        .settled(None);
+        assert_eq!(asked.detail.as_deref(), Some("Bash: cargo test"));
+        let again =
+            observation(ReportedActivity::Waiting, 6, permission, None).settled(Some(&asked));
+        assert_eq!(again.detail.as_deref(), Some("Bash: cargo test"));
+        assert_eq!(
+            again.current(again.observed_at),
+            Some(Activity::Waiting {
+                since: again.observed_at,
+                reason: permission,
+                detail: Some("Bash: cargo test".into())
+            })
+        );
+        // Another prompt, a question, or one long after is not the same.
+        let other = observation(ReportedActivity::Waiting, 7, permission, Some("Edit: a.rs"))
+            .settled(Some(&asked));
+        assert_eq!(other.detail.as_deref(), Some("Edit: a.rs"));
+        let question = observation(
+            ReportedActivity::Waiting,
+            6,
+            Some(WaitReason::Question),
+            None,
+        )
+        .settled(Some(&asked));
+        assert_eq!(question.detail, None);
+        let late = observation(
+            ReportedActivity::Waiting,
+            WAIT_DETAIL_CARRY_SECS + 1,
+            permission,
+            None,
+        )
+        .settled(Some(&asked));
+        assert_eq!(late.detail, None);
+        let working =
+            observation(ReportedActivity::Working, 8, None, Some("Bash: ls")).settled(Some(&asked));
+        assert_eq!(working.detail, None);
+        let after_work =
+            observation(ReportedActivity::Waiting, 9, permission, None).settled(Some(&working));
+        assert_eq!(after_work.detail, None);
+        let secret = observation(
+            ReportedActivity::Waiting,
+            10,
+            permission,
+            Some("Bash: echo sk-abcdefghijklmnopqrstuvwxyz"),
+        )
+        .settled(None);
+        assert_eq!(secret.detail, None);
+        let secret_after = observation(
+            ReportedActivity::Waiting,
+            11,
+            permission,
+            Some("Bash: echo sk-abcdefghijklmnopqrstuvwxyz"),
+        )
+        .settled(Some(&asked));
+        assert_eq!(secret_after.detail, None, "its own prompt, said unseen");
+        // Older readers and writers: no field, no change.
+        let plain = serde_json::json!({"activity": "waiting", "observed_at": now});
+        let read: ActivityObservation = serde_json::from_value(plain.clone()).unwrap();
+        assert_eq!(read.detail, None);
+        assert_eq!(serde_json::to_value(&read).unwrap(), plain);
     }
 
     fn agent(name: &str) -> AgentId {

@@ -430,6 +430,9 @@ struct ToolState<'a> {
     supported: bool,
     unverified: bool,
     missing: bool,
+    /// Its hooks were installed by an earlier version and lack events this
+    /// one expects: Set up is offered even while its sessions report.
+    outdated: bool,
     sessions: Vec<&'a AgentRecord>,
     tone: iced::Color,
     word: String,
@@ -459,6 +462,7 @@ impl App {
                 .any(|state| matches!(state, State::Ready { .. }));
         let missing =
             installed && (runtime.mcp == Wiring::Missing || runtime.hooks == Wiring::Missing);
+        let outdated = installed && runtime.hooks_outdated();
         // A session whose delivery is held — its receiver paused, or its
         // provider blocked, which pauses it — or whose receiver has gone
         // quiet is not one whose input waits for a prompt: it is one whose
@@ -476,7 +480,11 @@ impl App {
         // the session while it is idle, so messages wait for its next
         // prompt; with a route that is paused or silent, they wait for
         // that to be put right.
-        let (tone, word) = if ready {
+        // Hooks an earlier version installed still connect a session, but
+        // without the events added since; a connected row says so too.
+        let (tone, word) = if reporting && outdated {
+            (c.amber, super::missing_setup(runtime))
+        } else if ready {
             (c.green, "Receiving messages".to_owned())
         } else if reporting && paused {
             (c.amber, "Connected · messages paused".to_owned())
@@ -517,6 +525,7 @@ impl App {
             supported,
             unverified,
             missing,
+            outdated,
             sessions,
             tone,
             word,
@@ -664,8 +673,7 @@ impl App {
         let state = self.tool_state(runtime, c);
         state.installed
             && state.supported
-            && (state.missing || state.unverified)
-            && !state.reporting
+            && (state.outdated || ((state.missing || state.unverified) && !state.reporting))
     }
 
     /// One tool: its mark, its name over its status, and one thing to do
@@ -750,7 +758,14 @@ impl App {
         };
         let mut facts: Vec<(String, Element<'a, Message>)> = vec![
             ("MCP".into(), wired(runtime.mcp)),
-            ("Hooks".into(), wired(runtime.hooks)),
+            (
+                "Hooks".into(),
+                if state.outdated {
+                    status_word("Outdated", c.amber, c)
+                } else {
+                    wired(runtime.hooks)
+                },
+            ),
         ];
         if runtime.name == "claude-code" {
             let (word, tone, why) = match runtime.shell {
@@ -2496,5 +2511,72 @@ mod tests {
             word(&mut app, &agent),
             "Connected · not heard from recently"
         );
+    }
+
+    /// Hooks an earlier version installed are outdated: the row says so and
+    /// which events they lack, and offers Set up, even while a session of
+    /// the tool is connected through them.
+    #[test]
+    fn outdated_hooks_are_said_and_set_up_even_while_connected() {
+        use agentdocker_core::{AdapterContact, AdapterKind, AgentRecord, AgentSpec, AgentStatus};
+        let (tx, _commands) = crate::app::queue::channel();
+        let (_sender, rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::bare(tx, rx);
+        app.connected = Ok(());
+        let mut runtime = RuntimeInfo {
+            name: "claude-code".into(),
+            vendor: "fixture".into(),
+            label: "Claude Code".into(),
+            cli: Some("/fixture/claude".into()),
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: Wiring::Wired,
+            hooks: Wiring::Missing,
+            hooks_missing: vec!["PermissionRequest".into(), "CwdChanged".into()],
+            shell: Wiring::Unsupported,
+            running: 0,
+        };
+        let colors = Colors::new(false);
+        let state = app.tool_state(&runtime, colors);
+        assert!(state.outdated);
+        assert_eq!(
+            state.word,
+            "Hooks outdated · missing PermissionRequest and CwdChanged hooks"
+        );
+        assert!(app.tool_needs_action(&runtime, colors));
+        let now = Utc::now();
+        let mut agent = AgentRecord::new(
+            AgentSpec {
+                runtime: "claude-code".into(),
+                ..Default::default()
+            },
+            false,
+            now,
+        );
+        agent.status = AgentStatus::Running;
+        agent.process_started_at = Some(now);
+        agent.adapter_contacts.insert(
+            AdapterKind::Hooks,
+            AdapterContact {
+                process_started_at: now,
+                observed_at: now,
+            },
+        );
+        app.agents = vec![agent];
+        let state = app.tool_state(&runtime, colors);
+        assert!(state.reporting);
+        assert_eq!(
+            state.word,
+            "Hooks outdated · missing PermissionRequest and CwdChanged hooks"
+        );
+        assert!(app.tool_needs_action(&runtime, colors));
+        // Brought up to date, a connected tool needs nothing.
+        runtime.hooks = Wiring::Wired;
+        runtime.hooks_missing.clear();
+        assert!(!app.tool_state(&runtime, colors).outdated);
+        assert!(!app.tool_needs_action(&runtime, colors));
     }
 }

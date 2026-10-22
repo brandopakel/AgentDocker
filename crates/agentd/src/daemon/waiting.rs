@@ -332,6 +332,10 @@ impl State {
         {
             return Response::Ok;
         }
+        // A wait's detail is kept only as one bounded, printable line that
+        // reads like no secret, whoever sent it; and a plain repeat of a
+        // detailed wait keeps what the first said.
+        let observation = observation.settled(record.reported_activity.as_ref());
         // Preserve the observation's age. Using receipt time here would let a
         // delayed idle report fall back to "working" after its own expiry.
         record.last_seen = record.last_seen.max(observation.observed_at);

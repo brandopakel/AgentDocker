@@ -7346,6 +7346,7 @@ mod tests {
             agentdocker_core::Activity::Waiting {
                 since: Utc::now(),
                 reason: None,
+                detail: None,
             },
         );
         let _ = app.update(Message::Event(iced::Event::Window(window::Event::Focused)));

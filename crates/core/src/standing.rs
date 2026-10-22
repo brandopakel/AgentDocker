@@ -158,6 +158,7 @@ mod tests {
         let waiting = Activity::Waiting {
             since: now,
             reason: None,
+            detail: None,
         };
         let idle = Activity::Idle { since: now };
         let blocked = Activity::Blocked {

@@ -176,8 +176,12 @@ stopped at a permission prompt or question in their own terminal, each the
 agent's name with an amber glyph for the errand — a shield for a permission,
 a question mark for a question, an hourglass when its hooks did not say which
 — read aloud as *Claude Code wants permission in its terminal*, *has a
-question in its terminal* or *is waiting for you in its terminal*; **Go to
-Terminal** takes you there. Seen across
+question in its terminal* or *is waiting for you in its terminal*. A
+permission prompt whose hooks said what it is for shows that one line after
+the name in the quiet ink, clipped to the row (*Bash: cargo test*, *Edit:
+src/lib.rs*), and the spoken line ends with it (*… wants permission in its
+terminal: Bash: cargo test*); it is never an answer, and nothing that reads
+like a secret is shown. **Go to Terminal** takes you there. Seen across
 projects, each row starts with its project's name (*&lt;project&gt; · Claude Code · Badger*).
 A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not
@@ -793,8 +797,11 @@ configuration alone cannot establish it; a session whose receiver is paused,
 or whose provider is blocked, reads **Connected · messages paused** and one
 whose delivery has stopped reporting **Connected · not heard from recently**, since a prompt does not
 release what such a route holds. Other states distinguish **Needs setup · missing …** (which says
-what: the MCP entry, the hooks, or the one or two hook events setup requires,
-for example *StopFailure hook*), **Setup needs review**, **Configured ·
+what: the MCP entry, the hooks, or the one or two hook events setup requires),
+**Hooks outdated · missing …** (hooks an earlier version installed, which lack
+the events named, for example *CwdChanged hook*; said even while a session is
+connected through them, with **Set up** offered, and Details reads Hooks
+*Outdated*), **Setup needs review**, **Configured ·
 waiting for contact**, unavailable integration and **Not installed**.
 Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
 [CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md). Missing supported setup offers
