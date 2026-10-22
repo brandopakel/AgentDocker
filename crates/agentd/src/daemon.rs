@@ -1968,7 +1968,11 @@ impl Daemon {
                 path,
                 branch,
                 from,
-            } => self.worktree_create(&agent, path, branch, from).await,
+                seed_build,
+            } => {
+                self.worktree_create(&agent, path, branch, from, seed_build)
+                    .await
+            }
             Request::WorktreeDiff { agent } => self.worktree_diff(&agent).await,
             Request::WorktreeRemove { agent } => self.worktree_remove(&agent).await,
             Request::ReviewBranch { agent } => self.review_branch(&agent).await,

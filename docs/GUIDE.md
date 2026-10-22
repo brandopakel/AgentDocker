@@ -579,7 +579,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `worktree-create --branch <name> [--from <ref>]` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours |
+| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]…` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
 | `worktree-diff` | Tracked changes in an agent's checkout |
 | `worktree-remove <agent>` | Remove an ended session's own worktree once its branch is merged or no longer wanted; the worktree must be clean, and the branch is deleted only when git considers it merged |
 | `review-branch <agent>` | What an agent's branch would bring to the branch in the project's main checkout: commits, files and lines, and what stops a merge now (uncommitted work, uncommitted changes in the main checkout, conflicts, held files); `--patch` prints the diff, `--json` the whole review |

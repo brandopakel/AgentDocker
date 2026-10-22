@@ -996,6 +996,16 @@ fn single_line(text: &str) -> String {
         .collect()
 }
 
+/// One `seed_build` directory's line under `worktree-create`: `target:
+/// cloned`, `node_modules: skipped (the source checkout has no such
+/// directory)`.
+pub fn seeded(seed: &agentdocker_core::seed::Seeded) -> String {
+    match &seed.note {
+        Some(note) => format!("{}: {} ({note})", seed.dir, seed.outcome),
+        None => format!("{}: {}", seed.dir, seed.outcome),
+    }
+}
+
 /// A token count as the report knows it: the sum when every sample in
 /// the row said, the sum marked `~` when some did not, `—` when none
 /// did. A number never stands where the report has none.
@@ -1344,6 +1354,25 @@ pub fn rule_line(rule: &agentdocker_core::Rule) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Each seed is one line: the directory, what became of it, and why
+    /// when there is a reason.
+    #[test]
+    fn a_seed_line_names_the_directory_its_outcome_and_any_reason() {
+        use agentdocker_core::seed::{Outcome, Seeded};
+        let line = |dir: &str, outcome, note: Option<&str>| {
+            super::seeded(&Seeded {
+                dir: dir.into(),
+                outcome,
+                note: note.map(str::to_owned),
+            })
+        };
+        assert_eq!(line("target", Outcome::Cloned, None), "target: cloned");
+        assert_eq!(
+            line("node_modules", Outcome::Skipped, Some("not there")),
+            "node_modules: skipped (not there)"
+        );
+    }
+
     /// A count shows as the report knows it: whole, marked partial, or
     /// a dash — a dash and not a zero when no sample said. Overhead that
     /// was not measured is said so, never shown as nothing.

@@ -110,6 +110,11 @@ pub enum Request {
         /// the agent's HEAD when absent.
         #[serde(default)]
         from: Option<String>,
+        /// Directories, relative to the agent's checkout, to seed the new
+        /// worktree with (`target`, `node_modules`): cloned copy-on-write
+        /// where the filesystem can, else copied. See [`crate::seed`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        seed_build: Vec<String>,
     },
     WorktreeDiff {
         agent: String,
@@ -1754,6 +1759,9 @@ pub enum Response {
     Worktree {
         path: std::path::PathBuf,
         branch: String,
+        /// What became of each `seed_build` directory, in the order named.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        seeded: Vec<crate::seed::Seeded>,
     },
     Diff {
         text: String,
