@@ -219,9 +219,11 @@ impl Starter {
 /// the daemon above a terminal still counts; the top reached with a root
 /// below it is [`Starter::Person`], without one or past a break in the chain
 /// [`Starter::Unknown`]. `None` when it cannot be read now (the process is
-/// not that one any more, or a row this user owns is unreadable) and when
-/// the daemon's own process is the session or among its parents, whose
-/// launches are said at launch: nothing is decided.
+/// not that one any more, a row this user owns is unreadable, or with no
+/// root found a root check could not say, as a signature check that timed
+/// out) and when the daemon's own process is the session or among its
+/// parents, whose launches are said at launch: nothing is decided, and the
+/// next registration traces again.
 #[allow(clippy::too_many_arguments)]
 fn starter(
     pid: u32,
@@ -231,19 +233,24 @@ fn starter(
     agents: &HashMap<u32, DateTime<Utc>>,
     born: impl Fn(u32) -> Option<DateTime<Utc>>,
     unseen: impl Fn(u32) -> Unseen,
-    root: impl Fn(&procinfo::Process) -> bool,
+    root: impl Fn(&procinfo::Process) -> Option<bool>,
 ) -> Option<Starter> {
     if pid == own || born(pid) != Some(birth) {
         return None;
     }
     let session = table.iter().find(|p| p.pid == pid)?;
+    // A root found, and a process whose check could not say whether it is
+    // one: with no root found, that leaves the top undecided.
     let mut rooted = false;
-    let top = |rooted: bool| {
-        Some(if rooted {
-            Starter::Person
+    let mut undecided = false;
+    let top = |rooted: bool, undecided: bool| {
+        if rooted {
+            Some(Starter::Person)
+        } else if undecided {
+            None
         } else {
-            Starter::Unknown
-        })
+            Some(Starter::Unknown)
+        }
     };
     let mut child = birth;
     let mut current = session.ppid;
@@ -252,11 +259,11 @@ fn starter(
             return None;
         }
         if current <= 1 {
-            return top(rooted);
+            return top(rooted, undecided);
         }
         let missing = |pid: u32| match unseen(pid) {
             Unseen::Ended => Some(Starter::Unknown),
-            Unseen::OtherUser => top(rooted),
+            Unseen::OtherUser => top(rooted, undecided),
             Unseen::Unreadable => None,
         };
         let Some(process) = table.iter().find(|p| p.pid == current) else {
@@ -271,9 +278,13 @@ fn starter(
         if agent_session(process, birth, agents).is_some() {
             return Some(Starter::Agent);
         }
-        rooted = rooted || root(process);
+        match root(process) {
+            Some(true) => rooted = true,
+            Some(false) => {}
+            None => undecided = true,
+        }
         if process.ppid == current {
-            return top(rooted);
+            return top(rooted, undecided);
         }
         child = birth;
         current = process.ppid;
@@ -305,7 +316,7 @@ const APPLICATION_FOLDERS: &[&str] = &[
 /// Where the person's own installs of them are, on macOS: the shared
 /// Applications folder and their own `~/Applications` (`HOME` taken in
 /// [`root_program`]). A bundle here that root does not own counts only
-/// when its code signature verifies ([`signed`]).
+/// when its code signature verifies ([`codesign_verifies`]).
 const OWN_APPLICATION_FOLDERS: &[&str] = &["/Applications", "/Applications/Utilities"];
 
 /// How long a signature check may take: a large application's sealed
@@ -318,20 +329,13 @@ const SIGNATURE_CHECK: StdDuration = StdDuration::from_secs(5);
 /// own certificate) verifies without it.
 const SIGNATURE_REQUIREMENT: &str = "anchor apple generic";
 
-/// A bundle's signature verdict is for one install of it: the bundle and
-/// the running executable's file (device, inode, modification time).
-type SignatureKey = (std::path::PathBuf, u64, u64, i64, i64);
-
-/// The verdicts so far, each said at most once per install. Cleared once
-/// it holds [`SIGNATURES_KEPT`].
-static SIGNATURES: std::sync::LazyLock<Mutex<HashMap<SignatureKey, bool>>> =
-    std::sync::LazyLock::new(Mutex::default);
-const SIGNATURES_KEPT: usize = 256;
-
 /// One of the person's session roots, by the executable the kernel names
-/// for `process` ([`root_program`]).
-fn session_root(process: &procinfo::Process) -> bool {
-    procinfo::executable_path_of(process.pid).is_ok_and(|executable| root_program(&executable))
+/// for `process` ([`root_program`]); not one when it cannot be named.
+fn session_root(process: &procinfo::Process) -> Option<bool> {
+    match procinfo::executable_path_of(process.pid) {
+        Ok(executable) => root_program(&executable),
+        Err(_) => Some(false),
+    }
 }
 
 /// Whether `executable` is a program the person's sessions start under,
@@ -346,32 +350,28 @@ fn session_root(process: &procinfo::Process) -> bool {
 /// administrator's install are. On macOS a known application of the
 /// person's own — in the shared or their own Applications folder, not
 /// root's — counts too when the program running is the bundle's own (in
-/// its `Contents/MacOS`) and the bundle's signature verifies ([`signed`]).
-/// A copy, an unsigned or self-signed bundle, or one with anything added
-/// inside is no root.
-fn root_program(executable: &std::path::Path) -> bool {
+/// its `Contents/MacOS`) and the bundle's signature verifies now
+/// ([`codesign_verifies`]); `None` when that check could not say. A copy,
+/// an unsigned or self-signed bundle, or one with anything added inside is
+/// no root.
+fn root_program(executable: &std::path::Path) -> Option<bool> {
     let Ok(executable) = std::fs::canonicalize(executable) else {
-        return false;
+        return Some(false);
     };
     let home = std::env::home_dir().and_then(|home| std::fs::canonicalize(home).ok());
-    root_at(
-        &executable,
-        home.as_deref(),
-        root_owned,
-        |bundle, running| signed(bundle, running, &SIGNATURES, codesign_verifies),
-    )
+    root_at(&executable, home.as_deref(), root_owned, codesign_verifies)
 }
 
 /// [`root_program`]'s rule for a resolved `executable`, with `home` the
 /// person's home folder, `owned` saying whether root alone owns and may
-/// write a file or folder, and `signed` whether a bundle's signature
-/// verifies for the program running from it.
+/// write a file or folder, and `verifies` whether a bundle's signature
+/// verifies (`None`: it could not say).
 fn root_at(
     executable: &std::path::Path,
     home: Option<&std::path::Path>,
     owned: impl Fn(&std::path::Path) -> bool,
-    signed: impl Fn(&std::path::Path, &std::path::Path) -> bool,
-) -> bool {
+    verifies: impl Fn(&std::path::Path) -> Option<bool>,
+) -> Option<bool> {
     let path = std::path::Path::new;
     let system = ROOT_PROGRAMS
         .iter()
@@ -386,17 +386,17 @@ fn root_at(
                 .all(&owned)
     };
     let Some(folder) = executable.parent() else {
-        return false;
+        return Some(false);
     };
     if system {
-        return owned_from(folder);
+        return Some(owned_from(folder));
     }
     if cfg!(target_os = "macos") {
         let Some(bundle) = host.and_then(|host| host.app) else {
-            return false;
+            return Some(false);
         };
         let Some(installed) = bundle.parent() else {
-            return false;
+            return Some(false);
         };
         let in_folder = |folders: &[&str]| {
             folders
@@ -404,78 +404,33 @@ fn root_at(
                 .any(|known| installed == std::path::Path::new(known))
         };
         if in_folder(APPLICATION_FOLDERS) && owned_from(&bundle) {
-            return true;
+            return Some(true);
         }
         let own_folder = in_folder(OWN_APPLICATION_FOLDERS)
             || home.is_some_and(|home| installed == home.join("Applications"));
-        own_folder && folder == bundle.join("Contents").join("MacOS") && signed(&bundle, executable)
+        if !own_folder || folder != bundle.join("Contents").join("MacOS") {
+            return Some(false);
+        }
+        verifies(&bundle)
     } else if cfg!(unix) {
-        host.is_some_and(|host| host.app.is_none())
-            && ["/usr/", "/bin/", "/sbin/"]
-                .iter()
-                .any(|dir| executable.starts_with(dir))
-            && owned_from(folder)
+        Some(
+            host.is_some_and(|host| host.app.is_none())
+                && ["/usr/", "/bin/", "/sbin/"]
+                    .iter()
+                    .any(|dir| executable.starts_with(dir))
+                && owned_from(folder),
+        )
     } else {
-        false
+        Some(false)
     }
-}
-
-/// Whether `bundle`'s signature verifies, for the program `running` from
-/// it: what `verify` says, asked at most once for this install of it (the
-/// bundle and the running file's identity) and remembered in `verdicts`.
-/// `verify` saying nothing (a timeout, a check that could not run) is no
-/// root, and is asked again next time.
-fn signed(
-    bundle: &std::path::Path,
-    running: &std::path::Path,
-    verdicts: &Mutex<HashMap<SignatureKey, bool>>,
-    verify: impl FnOnce(&std::path::Path) -> Option<bool>,
-) -> bool {
-    let Some(key) = install_of(bundle, running) else {
-        return false;
-    };
-    let known = verdicts
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&key)
-        .copied();
-    if let Some(verdict) = known {
-        return verdict;
-    }
-    let Some(verdict) = verify(bundle) else {
-        return false;
-    };
-    let mut verdicts = verdicts.lock().unwrap_or_else(PoisonError::into_inner);
-    if verdicts.len() >= SIGNATURES_KEPT {
-        verdicts.clear();
-    }
-    verdicts.insert(key, verdict);
-    verdict
-}
-
-/// This install of `bundle`, by the running file's identity.
-#[cfg(unix)]
-fn install_of(bundle: &std::path::Path, running: &std::path::Path) -> Option<SignatureKey> {
-    use std::os::unix::fs::MetadataExt;
-    let meta = std::fs::metadata(running).ok()?;
-    Some((
-        bundle.to_path_buf(),
-        meta.dev(),
-        meta.ino(),
-        meta.mtime(),
-        meta.mtime_nsec(),
-    ))
-}
-
-#[cfg(not(unix))]
-fn install_of(_: &std::path::Path, _: &std::path::Path) -> Option<SignatureKey> {
-    None
 }
 
 /// `codesign --verify --strict` of `bundle` against
-/// [`SIGNATURE_REQUIREMENT`], within [`SIGNATURE_CHECK`]: whether it
-/// verifies — its code and every sealed resource intact, so a program
-/// added inside breaks it — or `None` when the check could not say.
+/// [`SIGNATURE_REQUIREMENT`], within [`SIGNATURE_CHECK`], each time it is
+/// asked — a verdict kept would outlive a change to any sealed file:
+/// whether it verifies — its code and every sealed resource intact, so a
+/// program added inside breaks it — or `None` when the check could not say
+/// (it timed out or could not run).
 fn codesign_verifies(bundle: &std::path::Path) -> Option<bool> {
     let argv = [
         "/usr/bin/codesign".to_owned(),
@@ -781,19 +736,36 @@ impl Daemon {
     /// ([`AgentRecord::starter_traceable`]): its process's parents say who
     /// started it ([`starter`]) and the record says so from here on — the
     /// person (`launched_by=user`), an agent, or that it cannot be known.
-    /// A client's word plays no part; what cannot be read now decides
-    /// nothing, and the answer is left as it was.
-    pub(super) async fn mark_starter(&self, response: Response) -> Response {
-        let Response::Agent { agent } = &response else {
-            return response;
+    /// Traced on its own task once the answer is on its way, so the reply
+    /// waits for neither the process table nor a signature check, and no
+    /// lock is held while either runs; the label goes in its own commit,
+    /// only while the record is still that process. A client's word plays
+    /// no part; what cannot be read now decides nothing.
+    pub(super) fn trace_starter(self: &Arc<Self>, response: &Response) {
+        let Response::Agent { agent } = response else {
+            return;
         };
         let (Some(pid), Some(birth)) = (agent.pid, agent.process_started_at) else {
-            return response;
+            return;
         };
         if !agent.starter_traceable() {
-            return response;
+            return;
         }
         let id = agent.id.clone();
+        let daemon = self.clone();
+        tokio::spawn(async move {
+            daemon.write_traced_starter(id, pid, birth).await;
+        });
+    }
+
+    /// [`Daemon::trace_starter`]'s work: the trace off the lock, then the
+    /// label, admitted like any background write.
+    async fn write_traced_starter(
+        self: Arc<Self>,
+        id: AgentId,
+        pid: u32,
+        birth: DateTime<Utc>,
+    ) -> Option<AgentRecord> {
         let agents: HashMap<u32, DateTime<Utc>> = lock(&self.state)
             .registry
             .live()
@@ -813,14 +785,11 @@ impl Daemon {
                 session_root,
             )
         })
-        .await;
-        let Ok(Some(found)) = found else {
-            return response;
-        };
-        match lock(&self.state).write_starter(&id, pid, birth, found, Utc::now()) {
-            Some(agent) => Response::Agent { agent },
-            None => response,
-        }
+        .await
+        .ok()
+        .flatten()?;
+        let _admitted = self.admit_background().ok()?;
+        lock(&self.state).write_starter(&id, pid, birth, found, Utc::now())
     }
 
     /// Where the process on a connection runs: the person's, inside an
@@ -1071,9 +1040,9 @@ mod tests {
             _ => Unseen::Ended,
         };
         let root = |process: &procinfo::Process| {
-            process.argv.first().is_some_and(|program| {
+            Some(process.argv.first().is_some_and(|program| {
                 program.contains(".app/") || program == "login" || program == "xterm"
-            })
+            }))
         };
         let started = |pid: u32, agents: &HashMap<u32, DateTime<Utc>>| {
             let birth = if pid == 61 { at(5) } else { at(i64::from(pid)) };
@@ -1142,6 +1111,81 @@ mod tests {
         );
     }
 
+    /// A root check that cannot say (a signature check that timed out)
+    /// decides nothing when no other root is found, so the session is
+    /// traced again at its next registration and found then; an agent's
+    /// session among its parents, or a root found elsewhere, still decides.
+    #[test]
+    fn a_root_check_that_cannot_say_leaves_the_starter_undecided() {
+        let table = [
+            process(
+                300,
+                1,
+                &["/Applications/Ghostty.app/Contents/MacOS/ghostty"],
+            ),
+            process(301, 300, &["/bin/zsh"]),
+            process(302, 301, &["claude"]),
+            // A root that can be told, beneath one that cannot.
+            process(305, 300, &["login"]),
+            process(306, 305, &["/bin/zsh"]),
+            process(307, 306, &["claude"]),
+            // An agent above the one that cannot be told.
+            process(
+                310,
+                1,
+                &[
+                    "node",
+                    "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+                ],
+            ),
+            process(
+                311,
+                310,
+                &["/Applications/Ghostty.app/Contents/MacOS/ghostty"],
+            ),
+            process(312, 311, &["/bin/zsh"]),
+            process(313, 312, &["claude"]),
+        ];
+        let born = |pid: u32| Some(at(i64::from(pid)));
+        let unseen = |_| Unseen::Ended;
+        let none = HashMap::new();
+        // The signature check times out the first time, verifies the next.
+        let checks = std::cell::Cell::new(0);
+        let root = |process: &procinfo::Process| {
+            let program = process.argv.first().map(String::as_str);
+            if program == Some("login") {
+                return Some(true);
+            }
+            if !program.is_some_and(|program| program.contains(".app/")) {
+                return Some(false);
+            }
+            checks.set(checks.get() + 1);
+            (checks.get() > 1).then_some(true)
+        };
+        let started = |pid: u32| {
+            starter(
+                pid,
+                at(i64::from(pid)),
+                50,
+                &table,
+                &none,
+                born,
+                unseen,
+                root,
+            )
+        };
+        assert_eq!(started(302), None, "the check timed out: nothing decided");
+        assert_eq!(started(302), Some(Starter::Person), "the next trace says");
+        checks.set(0);
+        assert_eq!(
+            started(307),
+            Some(Starter::Person),
+            "a root that can be told decides"
+        );
+        checks.set(0);
+        assert_eq!(started(313), Some(Starter::Agent), "an agent above decides");
+    }
+
     /// A root is a known program where no process of the person's could
     /// have put or changed it: never any bundle, a known terminal's bundle
     /// or a copy of `login` in a folder of theirs, or a bundle the person
@@ -1171,128 +1215,110 @@ mod tests {
             std::fs::metadata(tmp.path()).unwrap().uid() == 0
         };
         for path in [&helper, &terminal, &applications, &copied, &xterm] {
-            assert!(!root_program(path), "{}", path.display());
+            assert_eq!(root_program(path), Some(false), "{}", path.display());
             assert_eq!(root_owned(path), as_root, "the person's own file");
         }
         let path = std::path::Path::new;
-        let never = |_: &std::path::Path, _: &std::path::Path| false;
-        let verifies = |_: &std::path::Path, _: &std::path::Path| true;
+        let never = |_: &std::path::Path| Some(false);
+        let verifies = |_: &std::path::Path| Some(true);
+        let cannot_say = |_: &std::path::Path| None;
         let macos = cfg!(target_os = "macos");
+        // On macOS what the signature check says; elsewhere never a root.
+        let on_macos = |says: Option<bool>| if macos { says } else { Some(false) };
         let installed = path("/Applications/Ghostty.app/Contents/MacOS/ghostty");
-        assert!(
-            !root_at(installed, None, |_| false, never),
+        assert_eq!(
+            root_at(installed, None, |_| false, never),
+            Some(false),
             "a bundle the person owns, unsigned"
         );
-        assert!(
-            !root_at(
+        assert_eq!(
+            root_at(
                 installed,
                 None,
                 |p| p != path("/Applications/Ghostty.app"),
                 never
             ),
+            Some(false),
             "root's file in a bundle folder the person owns, unsigned"
         );
         assert_eq!(
             root_at(installed, None, |_| true, never),
-            macos,
+            Some(macos),
             "an administrator's install, on macOS"
         );
         assert_eq!(
             root_at(installed, None, |_| false, verifies),
-            macos,
+            Some(macos),
             "the person's own install, signed"
         );
-        assert!(
-            !root_at(
+        assert_eq!(
+            root_at(installed, None, |_| false, cannot_say),
+            on_macos(None),
+            "a signature check that could not say"
+        );
+        assert_eq!(
+            root_at(
                 path("/Applications/Ghostty.app/Contents/Resources/helper"),
                 None,
                 |_| false,
                 verifies
             ),
+            Some(false),
             "a program of the bundle's that is not its own"
         );
         // In the person's own Applications folder only a signed install
         // counts, whoever the file says owns it.
         if let Some(home) = std::env::home_dir() {
             let mine = home.join("Applications/Ghostty.app/Contents/MacOS/ghostty");
-            assert!(!root_at(&mine, Some(&home), |_| true, never));
-            assert_eq!(root_at(&mine, Some(&home), |_| false, verifies), macos);
-            assert!(
-                !root_at(&mine, None, |_| true, verifies),
+            assert_eq!(root_at(&mine, Some(&home), |_| true, never), Some(false));
+            assert_eq!(
+                root_at(&mine, Some(&home), |_| false, verifies),
+                Some(macos)
+            );
+            assert_eq!(
+                root_at(&mine, None, |_| true, verifies),
+                Some(false),
                 "with no home, not there"
             );
         }
-        assert!(
-            !root_at(
+        assert_eq!(
+            root_at(
                 path("/Applications/Claude.app/Contents/MacOS/Claude"),
                 None,
                 |_| true,
                 verifies
             ),
+            Some(false),
             "an application that is no terminal or editor"
         );
-        assert!(
-            !root_at(&copied, None, |_| true, verifies),
+        assert_eq!(
+            root_at(&copied, None, |_| true, verifies),
+            Some(false),
             "a copy of login"
         );
         let login = path("/usr/bin/login");
-        assert!(
-            !root_at(login, None, |_| false, verifies),
+        assert_eq!(
+            root_at(login, None, |_| false, verifies),
+            Some(false),
             "login the person could change"
         );
-        assert!(root_at(login, None, |_| true, never));
+        assert_eq!(root_at(login, None, |_| true, never), Some(true));
         if macos {
             for system in [
                 "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
                 "/usr/bin/login",
             ] {
-                assert!(root_program(path(system)), "{system}");
+                assert_eq!(root_program(path(system)), Some(true), "{system}");
             }
         }
     }
 
-    /// A bundle's signature is checked once per install of it: the same
-    /// running file asks nothing more, a changed one asks again, and a check
-    /// that could not say is no root and asked again.
-    #[cfg(unix)]
-    #[test]
-    fn a_signature_is_checked_once_per_install() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bundle = tmp.path().join("Ghostty.app");
-        let running = bundle.join("Contents/MacOS/ghostty");
-        std::fs::create_dir_all(running.parent().unwrap()).unwrap();
-        std::fs::write(&running, "one").unwrap();
-        let verdicts = Mutex::default();
-        let asked = std::cell::Cell::new(0);
-        let check = |says: Option<bool>| {
-            signed(&bundle, &running, &verdicts, |_| {
-                asked.set(asked.get() + 1);
-                says
-            })
-        };
-        assert!(!check(None), "a timeout is no root");
-        assert!(check(Some(true)), "asked again, and it verifies");
-        assert!(check(Some(false)), "the same install: remembered");
-        assert_eq!(asked.get(), 2);
-        // Updated in place: another file, or the same one changed.
-        std::fs::write(&running, "two").unwrap();
-        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
-        std::fs::File::options()
-            .write(true)
-            .open(&running)
-            .unwrap()
-            .set_modified(later)
-            .unwrap();
-        assert!(!check(Some(false)), "a changed install is asked again");
-        assert_eq!(asked.get(), 3);
-        assert!(!check(Some(true)), "and remembered as it was found");
-    }
-
-    /// The real check: an unsigned bundle and one signed by nobody Apple
-    /// vouches for (ad hoc) do not verify, even in the person's own
-    /// Applications folder; the system's own Terminal does, and so does a
-    /// user-owned signed terminal in `/Applications`, where this machine has
-    /// one.
+    /// The real check, made afresh each time: an unsigned bundle and one
+    /// signed by nobody Apple vouches for (ad hoc) do not verify, even in
+    /// the person's own Applications folder, and the system's own Terminal
+    /// does. A user-owned signed terminal in `/Applications` is checked
+    /// only when `AGENTDOCKER_TEST_INSTALLED_APPS=1` asks for it: a local or
+    /// ad hoc build there rightly fails.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_bundle_counts_only_when_its_signature_verifies() {
@@ -1313,16 +1339,9 @@ mod tests {
 "#,
         )
         .unwrap();
-        let real = |verdicts: &Mutex<HashMap<SignatureKey, bool>>| {
-            root_at(
-                &running,
-                Some(&home),
-                |_| false,
-                |bundle, running| signed(bundle, running, verdicts, codesign_verifies),
-            )
-        };
+        let real = || root_at(&running, Some(&home), |_| false, codesign_verifies);
         assert_eq!(codesign_verifies(&bundle), Some(false), "unsigned");
-        assert!(!real(&Mutex::default()));
+        assert_eq!(real(), Some(false));
         let adhoc = std::process::Command::new("/usr/bin/codesign")
             .args(["-s", "-", "--force"])
             .arg(&bundle)
@@ -1330,20 +1349,22 @@ mod tests {
             .unwrap();
         assert!(adhoc.status.success(), "{adhoc:?}");
         assert_eq!(codesign_verifies(&bundle), Some(false), "ad hoc");
-        assert!(!real(&Mutex::default()));
+        assert_eq!(real(), Some(false));
         assert_eq!(
             codesign_verifies(std::path::Path::new(
                 "/System/Applications/Utilities/Terminal.app"
             )),
             Some(true)
         );
-        for (bundle, program) in [
-            ("/Applications/Ghostty.app", "Contents/MacOS/ghostty"),
-            ("/Applications/iTerm.app", "Contents/MacOS/iTerm2"),
-        ] {
-            let program = std::path::Path::new(bundle).join(program);
-            if program.exists() && !root_owned(&program) {
-                assert!(root_program(&program), "{}", program.display());
+        if std::env::var_os("AGENTDOCKER_TEST_INSTALLED_APPS").is_some_and(|v| v == "1") {
+            for (bundle, program) in [
+                ("/Applications/Ghostty.app", "Contents/MacOS/ghostty"),
+                ("/Applications/iTerm.app", "Contents/MacOS/iTerm2"),
+            ] {
+                let program = std::path::Path::new(bundle).join(program);
+                if program.exists() && !root_owned(&program) {
+                    assert_eq!(root_program(&program), Some(true), "{}", program.display());
+                }
             }
         }
     }

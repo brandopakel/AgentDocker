@@ -1046,7 +1046,9 @@ Current behaviour that the sections above do not already state, by area.
   (the system's Terminal, an App Store or administrator's install) or, for
   one you installed yourself in `/Applications` or `~/Applications`, when
   its code signature verifies (`codesign --verify --strict`, signed by a
-  developer Apple vouches for) and the program running is the app's own.
+  developer Apple vouches for, checked afresh each time) and the program
+  running is the app's own; a check that times out leaves it unsaid until
+  the session registers again.
   One with an agent's session among its parents, even above a terminal
   that agent opened, is marked `agent`, and one whose parents can no
   longer say (an orphan, a multiplexer server) `unknown`, whatever its
