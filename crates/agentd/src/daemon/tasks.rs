@@ -2076,10 +2076,10 @@ impl Daemon {
             .and_then(|a| state.actor(a).ok())
             .map(|a| a.id);
         let assignee = match query.assignee.as_deref().map(str::trim) {
-            None => None,
-            Some("none") | Some("") => Some(None),
+            None => Holder::Anyone,
+            Some("none") | Some("") => Holder::Nobody,
             Some("me") => match &me {
-                Some(me) => Some(Some(me.clone())),
+                Some(me) => Holder::One(me.clone()),
                 None => {
                     return Response::error(
                         ErrorCode::Invalid,
@@ -2087,8 +2087,19 @@ impl Daemon {
                     );
                 }
             },
+            // The person's cards and their agents': for the person, or a
+            // reader who names nobody (as an unsigned answer is the
+            // person's). An agent asking means its own, as `me` does.
+            Some("mine") => match query.agent.as_deref() {
+                None => Holder::Persons,
+                Some(reader) => match state.actor(reader) {
+                    Ok(actor) if actor.human => Holder::Persons,
+                    Ok(actor) => Holder::One(actor.id),
+                    Err(response) => return *response,
+                },
+            },
             Some(who) => match state.resolve(who) {
-                Ok(id) => Some(Some(id.to_string())),
+                Ok(id) => Holder::One(id.to_string()),
                 Err(response) => return *response,
             },
         };
@@ -2106,9 +2117,18 @@ impl Daemon {
                 })
             })
             .filter(|t| match &assignee {
-                None => true,
-                Some(None) => t.assignee.is_none(),
-                Some(Some(who)) => t.assignee.as_ref().is_some_and(|a| a.as_str() == who),
+                Holder::Anyone => true,
+                Holder::Nobody => t.assignee.is_none(),
+                Holder::One(who) => t.assignee.as_ref().is_some_and(|a| a.as_str() == who),
+                // By the holder's record as it stands (a retired id by the
+                // record it became); a holder the registry no longer has
+                // is nobody's in particular.
+                Holder::Persons => t.assignee.as_ref().is_some_and(|a| {
+                    let registry = &state.registry;
+                    registry
+                        .get(registry.canonical_id(a))
+                        .is_some_and(AgentRecord::persons)
+                }),
             })
             .filter(|t| tag.as_ref().is_none_or(|tag| t.tags.contains(tag)))
             .filter(|t| {
@@ -2177,6 +2197,17 @@ pub(super) struct TaskQuery {
     pub open: bool,
     pub query: Option<String>,
     pub tag: Option<String>,
+}
+
+/// Whose cards a listing keeps.
+enum Holder {
+    Anyone,
+    Nobody,
+    /// This agent's, by id.
+    One(String),
+    /// The person's and those of the agents they launched
+    /// ([`AgentRecord::persons`]).
+    Persons,
 }
 
 #[cfg(test)]

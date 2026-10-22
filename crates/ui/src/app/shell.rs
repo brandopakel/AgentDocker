@@ -5,7 +5,8 @@ use iced::{Subscription, Task, keyboard, window};
 use std::path::PathBuf;
 
 /// The board's filter toggles: high priority, waiting on something,
-/// waiting for the person, and nobody holding it.
+/// waiting for the person, nobody holding it, an agent holding it, and the
+/// person's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct BoardFilters {
     pub high: bool,
@@ -14,6 +15,8 @@ pub(super) struct BoardFilters {
     pub unassigned: bool,
     /// Held by an agent.
     pub agent: bool,
+    /// Held by the person or by an agent they launched.
+    pub mine: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +26,7 @@ pub enum BoardFilterKind {
     Waiting,
     Unassigned,
     Agent,
+    Mine,
 }
 
 /// How the board is laid out: lanes side by side, or every card a row.
@@ -2121,6 +2125,7 @@ impl App {
                     BoardFilterKind::Waiting => filters.waiting = !filters.waiting,
                     BoardFilterKind::Unassigned => filters.unassigned = !filters.unassigned,
                     BoardFilterKind::Agent => filters.agent = !filters.agent,
+                    BoardFilterKind::Mine => filters.mine = !filters.mine,
                 }
             }
             Message::BoardLayout => {
@@ -2449,6 +2454,7 @@ impl App {
                             name,
                             color: None,
                             description: None,
+                            tools: None,
                         },
                     );
                 }
@@ -2473,6 +2479,7 @@ impl App {
                             name: def.name,
                             color: Some(all[(at + 1) % all.len()]),
                             description: None,
+                            tools: None,
                         },
                     );
                 }
@@ -5425,6 +5432,75 @@ mod tests {
         (App::bare(tx, rx), commands, messages)
     }
 
+    /// The board's Mine toggle keeps the cards the person holds and those
+    /// held by agents they launched, and leaves out the rest: another
+    /// agent's, one held by a session the app has no record of, and a card
+    /// nobody holds.
+    #[test]
+    fn the_mine_filter_keeps_the_persons_cards_and_their_agents() {
+        use agentdocker_core::task::Column;
+        let (mut app, _commands, _messages) = app();
+        let project = ProjectRef::directory("/work/alpha");
+        let record = |id: &str, runtime: &str, launched: bool| {
+            let mut agent = AgentRecord::new(
+                agentdocker_core::AgentSpec {
+                    name: id.into(),
+                    runtime: runtime.into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            agent.id = id.into();
+            if launched {
+                agent.spec.labels.insert(
+                    agentdocker_core::agent::LAUNCHED_BY_LABEL.into(),
+                    agentdocker_core::HUMAN.into(),
+                );
+            }
+            agent
+        };
+        app.agents = vec![
+            record("person", agentdocker_core::HUMAN_RUNTIME, false),
+            record("launched", "codex", true),
+            record("terminal", "claude-code", false),
+        ];
+        let board = agentdocker_core::Board::main(project.id(), "alpha", Utc::now());
+        let cards = [
+            Some("person"),
+            Some("launched"),
+            Some("terminal"),
+            Some("gone"),
+            None,
+        ]
+        .map(|holder| {
+            let mut card = agentdocker_core::Task::new(
+                project.id(),
+                "Card",
+                "",
+                Some(Column::Ready),
+                "user",
+                Vec::new(),
+                Utc::now(),
+            )
+            .unwrap();
+            card.assignee = holder.map(Into::into);
+            card
+        });
+        let shown = |app: &App| {
+            cards
+                .iter()
+                .map(|t| app.shown(t, &board))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown(&app), [true; 5], "off, every card");
+        let _ = app.update(Message::BoardFilter(BoardFilterKind::Mine));
+        assert!(app.shell.board_filters.mine);
+        assert_eq!(shown(&app), [true, true, false, false, false]);
+        let _ = app.update(Message::BoardFilter(BoardFilterKind::Mine));
+        assert_eq!(shown(&app), [true; 5], "off again");
+    }
+
     /// The person keeps a fact for the project's agents from its Plans
     /// screen: each project its own draft, the draft kept until the daemon
     /// confirms it (and then only if unchanged), a search answered only for
@@ -5690,6 +5766,7 @@ mod tests {
                 role: "reviewer".into(),
                 by: "user".into(),
                 deleted: false,
+                tools: None,
             },
             Utc::now(),
         ));
@@ -5757,6 +5834,7 @@ mod tests {
                 role: "reviewer".into(),
                 by: "user".into(),
                 deleted: false,
+                tools: None,
             },
             Utc::now(),
         ));

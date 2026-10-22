@@ -2177,7 +2177,9 @@ impl App {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
-            EventKind::RoleSet { .. } | EventKind::AgentRenamed { .. } => self.send(Cmd::Agents),
+            EventKind::RoleSet { .. }
+            | EventKind::AgentRenamed { .. }
+            | EventKind::AgentLaunchedBy { .. } => self.send(Cmd::Agents),
             EventKind::LeaseClaimed { .. }
             | EventKind::LeaseRenewed { .. }
             | EventKind::LeaseReleased { .. }

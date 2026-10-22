@@ -226,7 +226,10 @@ The app remembers the selected project and keeps quiet projects available.
   place (its fields, comments and history). Agents pull the next ready card;
   a lane says its count and turns red past its limit. The toolbar searches,
   shows only high-priority cards, those waiting on something, those waiting
-  for you, those nobody holds, those an agent holds or those with some tags,
+  for you, those nobody holds, those an agent holds, yours and your agents'
+  (cards you hold and those held by agents you launched from the app, your
+  own terminal or a card, or by Claude Code and Codex sessions you started
+  yourself in a terminal app or IDE) or those with some tags,
   switches between lanes and a table of every card (`v`), between roomy and
   compact cards (`d`), switches boards, and edits a board's lanes, tags and
   rules. `n` adds a card to the first lane, `/` searches, Esc closes what is
@@ -490,7 +493,7 @@ each one by pid.
 | `restart <agent>` | Replace a managed container after confirming it exited |
 | `deregister` / `rm` | Mark an external agent finished / forget a finished one |
 | `role <name>…` | Give an agent (`--as`) roles from its project's palette (`roles`) — `role --as codex-1 reviewer tester` — in place of what it held; `--add reviewer` and `--remove tester` change one at a time, `--clear` takes them all away. Roles are yours to give: run from an agent's own shell it is refused. A command that names no sender speaks as you only from a terminal outside every agent: where a provider's own variables are set (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`) it asks for `--as` instead, even when the provider's process cannot be found. An agent's `send --to role:reviewer` reaches every reviewer in the project, in the role's room (one thread, where the sender hears the answers); `handoff role:reviewer` needs the role's one holder |
-| `roles` | A project's roles, each with its colour: the five every project offers (lead, implementer, reviewer, explorer, tester) and your own. `roles add "Security reviewer" --color red --description "…"` makes one, `roles set reviewer --name "Code review" --color pink` changes one (its address stays), `roles rm tester` takes one out. Only you change them, and nothing holds a role until you give it; run from an agent's shell, including a Codex conversation's shared server, they are refused. `--project` names another project |
+| `roles` | A project's roles, each with its colour: the five every project offers (lead, implementer, reviewer, explorer, tester) and your own. `roles add "Security reviewer" --color red --description "…"` makes one, `roles set reviewer --name "Code review" --color pink` changes one (its address stays), `roles rm tester` takes one out. `roles set reviewer --tools review_verdict,review_gate,get_task` offers its holders only those MCP tools and the few every agent keeps (`--tools` works on `roles add` too), `roles set reviewer --all-tools` offers every tool again; the list shows a limited role's tools. Only you change them, and nothing holds a role until you give it; run from an agent's shell, including a Codex conversation's shared server, they are refused. `--project` names another project |
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not. A finished record that holds nothing is forgotten by itself thirty days on, or after `[agents] retention` in `~/.agentdocker/agentd.toml` (`"off"` keeps every record) |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml` |
@@ -554,7 +557,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `renew` / `release` | Extend or give up a lease you hold |
 | `leases` | Every lease held right now |
 | `waiting` | Claims waiting for a resource, oldest first |
-| `task` | The board of work. `task create "Fix login" --acceptance "SSO works" --lane ready --priority high --size m --due YYYY-MM-DD --tag auth --blocked-by AD-7 --link pr:#<n>` files a card and prints its key (`AD-12`); `--parent`, `--description` and `--blocker "waiting on legal"` say more, and `--board` files it on another board. `task create-many cards.json` files up to 50 at once, all or none, each able to name another of the batch by its `ref` as its parent or in `--blocked-by`. `task pull --as <agent>` takes the next ready card (the first in the board's pull source, free and waiting on nothing; it says how many are held or waiting when there is none), `task pull AD-12 --as <agent>` that card; either holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`). `task move AD-12 review --comment "ready for eyes"` moves it to a lane by slug, name or category (`--after`/`--before` another card places it; an agent moves only a card it holds; back to Ready or to Done ends the hold). `task show AD-12` is the card in full: fields, comments, history, what it waits on. `task update AD-12 --assignee bob --priority low --tag ui` edits it (`--size ""`, `--due ""`, `--parent ""`, `--no-tags`, `--no-blocked-by`, `--no-links` clear). `task comment AD-12 "…" [--reply-to <comment>]`, `task comment-edit <comment> "…"`, `task comment-delete <comment>`. `task archive AD-12`, `task unarchive AD-12`, `task archive-lane done`. `task boards`, `task board-create Sprint --template agents` (classic, agents or simple), `task board-update sprint --lanes lanes.json --pull-source approved`. `task search "logn page"` finds cards by words, slips forgiven, a key exactly. `task start AD-12 --runtime codex` starts an agent on a card nobody holds that waits on nothing, and hands it the card. `task rules`, `task rule-add "Stale review" --idle review --days 14 --comment "Still waiting?"` (or `--enter LANE`; `--move LANE`, `--archive`, `--start RUNTIME [--max N]`), `task rule-off\|rule-on\|rule-rm <id>`. `task tags`, `task tag ui --color teal [--rename frontend]`, `task tag-rm ui`; `--plan` on `create` and `update` names the plan a card carries out. `task list [--board B] [--lane L] [--assignee me --as <agent>\|none] [--open] [--query words] [--tag T] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts) |
+| `task` | The board of work. `task create "Fix login" --acceptance "SSO works" --lane ready --priority high --size m --due YYYY-MM-DD --tag auth --blocked-by AD-7 --link pr:#<n>` files a card and prints its key (`AD-12`); `--parent`, `--description` and `--blocker "waiting on legal"` say more, and `--board` files it on another board. `task create-many cards.json` files up to 50 at once, all or none, each able to name another of the batch by its `ref` as its parent or in `--blocked-by`. `task pull --as <agent>` takes the next ready card (the first in the board's pull source, free and waiting on nothing; it says how many are held or waiting when there is none), `task pull AD-12 --as <agent>` that card; either holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`). `task move AD-12 review --comment "ready for eyes"` moves it to a lane by slug, name or category (`--after`/`--before` another card places it; an agent moves only a card it holds; back to Ready or to Done ends the hold). `task show AD-12` is the card in full: fields, comments, history, what it waits on. `task update AD-12 --assignee bob --priority low --tag ui` edits it (`--size ""`, `--due ""`, `--parent ""`, `--no-tags`, `--no-blocked-by`, `--no-links` clear). `task comment AD-12 "…" [--reply-to <comment>]`, `task comment-edit <comment> "…"`, `task comment-delete <comment>`. `task archive AD-12`, `task unarchive AD-12`, `task archive-lane done`. `task boards`, `task board-create Sprint --template agents` (classic, agents or simple), `task board-update sprint --lanes lanes.json --pull-source approved`. `task search "logn page"` finds cards by words, slips forgiven, a key exactly. `task start AD-12 --runtime codex` starts an agent on a card nobody holds that waits on nothing, and hands it the card. `task rules`, `task rule-add "Stale review" --idle review --days 14 --comment "Still waiting?"` (or `--enter LANE`; `--move LANE`, `--archive`, `--start RUNTIME [--max N]`), `task rule-off\|rule-on\|rule-rm <id>`. `task tags`, `task tag ui --color teal [--rename frontend]`, `task tag-rm ui`; `--plan` on `create` and `update` names the plan a card carries out. `task list [--board B] [--lane L] [--assignee me --as <agent>\|mine\|none] [--open] [--query words] [--tag T] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts); `--assignee mine` is your cards together with those held by your agents — launched with `run` or `up` from your own terminal, the app's launch, or `task start` and start rules, or a Claude Code or Codex session you started yourself in a terminal app or IDE (root's install, or one whose signature verifies), or over SSH, with no agent's session anywhere above it (their records carry `launched_by=user`, so `ps --label launched_by=user` lists them; a session inside a multiplexer server such as tmux cannot be told apart from an agent's and is not counted) — and, with `--as <agent>`, that agent's own |
 | `plan` | A project's plans, specs in Markdown that cards carry out: `plan list [--all]`, `plan show <id>`, `plan new "Auth rewrite" --body spec.md` (or `-` for stdin), `plan edit <id> [--title …] [--body FILE] [--status draft\|active\|done\|archived]` |
 | `file` | A project's files, kept beside the work: `file list [--task AD-12]`, `file put notes.md [--task AD-12] [--name …]` (at most 4 MiB; the same name again is a new version), `file get <id> [--out PATH]`, `file link <id> AD-12 [--unlink]`, `file rm <id>` |
 | `pause` | `agentdocker pause "sleeping the laptop"` tells every agent in this directory's project to hold: they get the reason as a `pause` message and their new leases are refused until `agentdocker pause --lift`; `--project` names another project; `pause --list` lists what is paused and why |
@@ -706,6 +709,16 @@ about us:
 A browser agent on the remote connector has the messaging tools and
 `list_tasks`, `get_task`, `search_tasks`, `comment_task`, `list_plans` and
 `get_plan`.
+
+A role you limit (`roles set <role> --tools …`) narrows this. An agent
+holding only limited roles sees the tools those roles name, together, and
+`whoami`, `send_message`, `read_inbox`, `wait_for_messages`,
+`acknowledge_messages`, `list_agents` and `list_roles`, which every agent
+keeps; a call to any other is refused, naming its roles. One role without a
+limit, or no role at all, means every tool. A change reaches a running
+session's calls within half a minute; the list it shows follows the next
+time it asks for its tools, usually its next start. It narrows what the
+session is offered, not what its shell can run.
 
 Results are compact rather than pretty-printed, and most answer with a
 projection — the fields an agent uses, not every field the daemon keeps.
@@ -1035,7 +1048,25 @@ Current behaviour that the sections above do not already state, by area.
   says about who sent it: the daemon checks which process is asking. Run
   those from your own terminal or the app. A launch does not carry a
   role in: `agentdocker run --label role=…` and an Agentfile's
-  `labels = { role = … }` give the roles after the launch, as you.
+  `labels = { role = … }` give the roles after the launch, as you. Nor
+  does it say who launched it: an agent launched from your own terminal or
+  the app, and a session that registers itself whose process's parents
+  pass through your terminal app or IDE, `login` or `sshd` with no agent's
+  session anywhere among them, is marked yours by the daemon
+  (`launched_by=user`). On macOS that app counts when root installed it
+  (the system's Terminal, an App Store or administrator's install) or, for
+  one you installed yourself in `/Applications` or `~/Applications`, when
+  its code signature verifies (`codesign --verify --strict`, signed by a
+  developer Apple vouches for, checked afresh each time) and the program
+  running is the app's own; a check that times out leaves it unsaid until
+  the session registers again.
+  One with an agent's session among its parents, even above a terminal
+  that agent opened, is marked `agent`, and one whose parents can no
+  longer say (an orphan, a multiplexer server) `unknown`, whatever its
+  labels say. What is written is never rewritten. It is for showing and
+  filtering your cards, never permission for anything: a window an agent
+  opens through the system's app launcher (`open`, `osascript`) looks just
+  like one you opened.
 
 
 - Codex input needs an app-server of 0.154.0 or later and refuses an older one

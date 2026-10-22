@@ -892,6 +892,10 @@ async fn card_starts_launch_the_input_adapter_and_queue_the_assignment() {
         let captured = captured.expect("fixture command did not write its arguments");
         let lines: Vec<_> = captured.lines().collect();
         assert_eq!(assigned.assignee.as_ref(), Some(&agent.id));
+        assert!(
+            agent.launched_by_person(),
+            "started by the person, by hand or by their rule"
+        );
         assert_eq!(queued, 1, "the card is durably queued once");
         if runtime == "codex" {
             assert_eq!(lines[..4], ["1", "", "codex-input", "--"]);
@@ -1006,6 +1010,7 @@ async fn a_projects_roles_are_the_five_until_the_person_changes_them() {
             name: name.to_owned(),
             color,
             description: None,
+            tools: None,
         };
     assert!(matches!(
         d.handle(save(f.agent.id.as_str(), Some("reviewer"), "Mine", None))
@@ -1071,6 +1076,118 @@ async fn a_projects_roles_are_the_five_until_the_person_changes_them() {
             ..
         }
     ));
+}
+
+/// The person names the tools a role's holders are offered, kept sorted
+/// once, and lifts the limit with an empty list; the change is in the
+/// event. A name of the wrong shape is refused, and an agent changes none.
+#[tokio::test]
+async fn a_roles_tools_are_the_persons_to_name_and_lift() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let save =
+        |from: &str, role: Option<&str>, name: &str, tools: Option<&[&str]>| Request::RoleSave {
+            from: from.to_owned(),
+            project: Some(f.work.clone()),
+            role: role.map(str::to_owned),
+            name: name.to_owned(),
+            color: None,
+            description: None,
+            tools: tools.map(|tools| tools.iter().map(|&t| t.to_owned()).collect()),
+        };
+    let changed = |events: &mut tokio::sync::broadcast::Receiver<Event>| {
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::RoleChanged { role, tools, .. } = event.kind {
+                seen.push((role, tools));
+            }
+        }
+        seen
+    };
+    let mut events = d.subscribe_events();
+
+    assert!(matches!(
+        d.handle(save(
+            f.agent.id.as_str(),
+            Some("reviewer"),
+            "Reviewer",
+            Some(&["review_gate"])
+        ))
+        .await,
+        Response::Error {
+            code: ErrorCode::Forbidden,
+            ..
+        }
+    ));
+    let Response::RoleDef { role } = d
+        .handle(save(
+            HUMAN,
+            Some("reviewer"),
+            "Reviewer",
+            Some(&["review_gate", "get_task", "review_gate"]),
+        ))
+        .await
+    else {
+        panic!("saved")
+    };
+    let limit = Some(vec!["get_task".to_owned(), "review_gate".to_owned()]);
+    assert_eq!(role.tools, limit);
+    assert_eq!(
+        changed(&mut events),
+        [("reviewer".to_owned(), limit.clone())]
+    );
+
+    // A rename leaves the tools as they were, and its event says nothing
+    // of them.
+    let Response::RoleDef { role } = d
+        .handle(save(HUMAN, Some("reviewer"), "Code review", None))
+        .await
+    else {
+        panic!("renamed")
+    };
+    assert_eq!(role.tools, limit);
+    assert_eq!(changed(&mut events), [("reviewer".to_owned(), None)]);
+    let Response::RoleCatalog { roles } = d
+        .handle(Request::RoleCatalog {
+            project: Some(f.work.clone()),
+        })
+        .await
+    else {
+        panic!("read")
+    };
+    assert_eq!(roles[2].tools, limit, "kept");
+
+    // A new role can be made limited.
+    assert!(matches!(
+        d.handle(save(HUMAN, None, "Docs", Some(&["put_file"]))).await,
+        Response::RoleDef { role } if role.tools == Some(vec!["put_file".to_owned()])
+    ));
+    changed(&mut events);
+
+    for bad in [&["Review-Gate"][..], &[""], &["a b"]] {
+        assert!(matches!(
+            d.handle(save(HUMAN, Some("reviewer"), "Code review", Some(bad)))
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+    }
+    assert!(changed(&mut events).is_empty(), "a refusal changes nothing");
+
+    // An empty list lifts the limit; said as an empty list.
+    let Response::RoleDef { role } = d
+        .handle(save(HUMAN, Some("reviewer"), "Code review", Some(&[])))
+        .await
+    else {
+        panic!("lifted")
+    };
+    assert_eq!(role.tools, None);
+    assert_eq!(
+        changed(&mut events),
+        [("reviewer".to_owned(), Some(Vec::new()))]
+    );
 }
 
 /// An agent keeps a memory in its own project; another finds it by its
@@ -1210,4 +1327,123 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
             "{reference}"
         );
     }
+}
+
+/// `mine` is the person's cards and those held by the agents they launched:
+/// for the person, or a reader who names nobody. An agent asking means its
+/// own, as `me` does; a holder nobody says the person launched is not
+/// guessed into it.
+#[tokio::test]
+async fn mine_is_the_persons_cards_and_their_agents() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let Response::Agent { agent: carol } = d
+        .handle(Request::Register {
+            spec: AgentSpec {
+                name: "carol".into(),
+                workdir: Some(f.work.clone().into()),
+                labels: [(
+                    agentdocker_core::agent::LAUNCHED_BY_LABEL.to_owned(),
+                    HUMAN.to_owned(),
+                )]
+                .into(),
+                ..AgentSpec::default()
+            },
+            pid: None,
+            session: None,
+        })
+        .await
+    else {
+        panic!("carol registers")
+    };
+    assert!(carol.launched_by_person());
+    let mut held = Vec::new();
+    for (title, holder) in [
+        ("The person's", Some("user")),
+        ("Carol's", Some("carol")),
+        ("Alice's", Some("alice")),
+        ("Nobody's", None),
+    ] {
+        let filed = card(
+            d.handle(create(HUMAN, &f.work, title, Some("ready"), &[]))
+                .await,
+        );
+        if let Some(holder) = holder {
+            card(
+                d.handle(Request::TaskUpdate {
+                    agent: HUMAN.to_owned(),
+                    task: filed.id.to_string(),
+                    title: None,
+                    acceptance: None,
+                    assignee: Some(holder.to_owned()),
+                    links: None,
+                    description: None,
+                    priority: None,
+                    size: None,
+                    due: None,
+                    external_blocker: None,
+                    parent: None,
+                    blocked_by: None,
+                    tags: None,
+                    plan: None,
+                    expected_updated_at: None,
+                })
+                .await,
+            );
+        }
+        held.push(filed);
+    }
+    let list = |assignee: &str, agent: Option<&str>| Request::Tasks {
+        project: Some(f.work.clone()),
+        column: None,
+        archived: false,
+        offset: 0,
+        limit: 0,
+        board: None,
+        lane: None,
+        assignee: Some(assignee.to_owned()),
+        agent: agent.map(str::to_owned),
+        open: false,
+        query: None,
+        tag: None,
+    };
+    let titles = |response: Response| match response {
+        Response::Tasks { tasks, .. } => {
+            let mut titles: Vec<String> = tasks.into_iter().map(|t| t.title).collect();
+            titles.sort();
+            titles
+        }
+        other => panic!("{other:?}"),
+    };
+    for reader in [None, Some(HUMAN)] {
+        assert_eq!(
+            titles(d.handle(list("mine", reader)).await),
+            ["Carol's", "The person's"],
+            "{reader:?}"
+        );
+    }
+    assert_eq!(
+        titles(d.handle(list("mine", Some("alice"))).await),
+        ["Alice's"],
+        "an agent's own, as `me`"
+    );
+    assert_eq!(
+        titles(d.handle(list("mine", Some(carol.id.as_str()))).await),
+        ["Carol's"]
+    );
+    assert!(matches!(
+        d.handle(list("mine", Some("nobody-such"))).await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+    // `me` still wants the reader named.
+    assert!(matches!(
+        d.handle(list("me", None)).await,
+        Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }
+    ));
 }

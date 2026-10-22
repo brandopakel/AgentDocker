@@ -988,8 +988,9 @@ pub enum Request {
         #[serde(default)]
         project: Option<String>,
     },
-    /// Make a role, or rename, recolour or describe one; its address never
-    /// changes. The person's to do. Answers `role_def`.
+    /// Make a role, or rename, recolour or describe one, or name the MCP
+    /// tools its holders are offered; its address never changes. The
+    /// person's to do. Answers `role_def`.
     RoleSave {
         from: String,
         #[serde(default)]
@@ -1002,6 +1003,10 @@ pub enum Request {
         color: Option<crate::RoleColor>,
         #[serde(default)]
         description: Option<String>,
+        /// The tools its holders are offered; an empty list lifts the
+        /// limit, so they are offered every tool. Absent, unchanged.
+        #[serde(default)]
+        tools: Option<Vec<String>>,
     },
     /// Give an agent roles from its project's palette, or take some away.
     /// The person's to do. Answers `agent`.
@@ -1159,8 +1164,10 @@ pub enum Request {
     ///
     /// The filters narrow it: a board, a lane (slug, name or category),
     /// whose it is (`assignee`: an agent, `me` with `agent` naming the
-    /// caller, or `none`), only open cards, words in its key, title or
-    /// description, a tag. Without a project, every project's cards.
+    /// caller, `mine` — the person's and those of the agents they
+    /// launched or started, or a calling agent's own — or `none`), only open cards,
+    /// words in its key, title or description, a tag. Without a project,
+    /// every project's cards.
     Tasks {
         #[serde(default)]
         project: Option<String>,
@@ -1178,7 +1185,7 @@ pub enum Request {
         lane: Option<String>,
         #[serde(default)]
         assignee: Option<String>,
-        /// Who is asking, for `assignee: me`.
+        /// Who is asking, for `assignee: me` or `mine`.
         #[serde(default)]
         agent: Option<String>,
         #[serde(default)]

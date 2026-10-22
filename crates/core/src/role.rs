@@ -1,7 +1,8 @@
 //! A project's roles: what an agent can be given to do, each with a colour.
 //! Every project offers five to pick from; the person can rename, recolour,
 //! describe or remove them and add their own. A role is the person's to
-//! give: nothing holds one until they say so.
+//! give: nothing holds one until they say so. A role can also name the
+//! MCP tools its holders are offered; one that names none offers them all.
 use crate::ProjectId;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,22 @@ pub const ROLES_PER_PROJECT: usize = 24;
 pub const DESCRIPTION_CHARS: usize = 120;
 /// A role's name, as people read it, in characters.
 pub const NAME_CHARS: usize = 32;
+/// At most this many MCP tools a role names.
+pub const TOOLS_PER_ROLE: usize = 128;
+/// A tool's name, in characters.
+pub const TOOL_CHARS: usize = 64;
+
+/// The tools an agent keeps whatever its roles limit it to: enough to know
+/// who it is, find the others and its roles, and talk and be talked to.
+pub const ALWAYS_TOOLS: &[&str] = &[
+    "whoami",
+    "send_message",
+    "read_inbox",
+    "wait_for_messages",
+    "acknowledge_messages",
+    "list_agents",
+    "list_roles",
+];
 
 /// A role's colour, by name: Claude Code's eight, so an agent's colour in
 /// its own terminal can match the app's.
@@ -77,6 +94,10 @@ pub struct RoleDef {
     pub description: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub removed: bool,
+    /// The MCP tools its holders are offered, besides [`ALWAYS_TOOLS`];
+    /// absent, every tool. Never empty: clearing the list lifts the limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
     /// Who changed it last; empty for a built-in role nobody has changed.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub created_by: String,
@@ -126,6 +147,7 @@ pub fn defaults(project: &ProjectId, at: DateTime<Utc>) -> Vec<RoleDef> {
         color,
         description: description.to_owned(),
         removed: false,
+        tools: None,
         created_by: String::new(),
         created_at: at,
         updated_at: at,
@@ -207,6 +229,55 @@ pub fn check_words(name: &str, description: &str) -> Result<(), &'static str> {
         return Err("a role's name and description are one line of text");
     }
     Ok(())
+}
+
+/// A role's tool list as it is kept, sorted with repeats dropped: at most
+/// [`TOOLS_PER_ROLE`] names, each one to [`TOOL_CHARS`] lowercase letters,
+/// digits and underscores, the shape of every MCP tool's name. Which tools
+/// exist is the MCP server's to know, not this.
+pub fn check_tools(tools: &[String]) -> Result<Vec<String>, &'static str> {
+    if tools.len() > TOOLS_PER_ROLE {
+        return Err("a role names at most 128 tools");
+    }
+    let mut kept = std::collections::BTreeSet::new();
+    for tool in tools {
+        let tool = tool.trim();
+        if tool.is_empty()
+            || tool.len() > TOOL_CHARS
+            || !tool
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        {
+            return Err(
+                "a tool's name is one to sixty-four lowercase letters, digits and underscores",
+            );
+        }
+        kept.insert(tool.to_owned());
+    }
+    Ok(kept.into_iter().collect())
+}
+
+/// The tools an agent holding `held` is offered from a project's roles:
+/// `None` for every tool, when it holds no role or any of its roles names
+/// none (a role the palette lacks names none); otherwise every tool its
+/// roles name, together, with [`ALWAYS_TOOLS`].
+pub fn tool_limit(
+    held: &[&str],
+    palette: &[RoleDef],
+) -> Option<std::collections::BTreeSet<String>> {
+    if held.is_empty() {
+        return None;
+    }
+    let mut allowed: std::collections::BTreeSet<String> =
+        ALWAYS_TOOLS.iter().map(|&tool| tool.to_owned()).collect();
+    for role in held {
+        let tools = palette
+            .iter()
+            .find(|def| def.role == *role)
+            .and_then(|def| def.tools.as_ref())?;
+        allowed.extend(tools.iter().cloned());
+    }
+    Some(allowed)
 }
 
 #[cfg(test)]
@@ -298,5 +369,50 @@ mod tests {
         assert!(check_words("", "x").is_err());
         assert!(check_words("Two\nlines", "").is_err());
         assert!(check_words("R", &"x".repeat(121)).is_err());
+    }
+
+    #[test]
+    fn a_roles_tools_are_names_kept_sorted_once() {
+        let names = |tools: &[&str]| tools.iter().map(|&t| t.to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            check_tools(&names(&["review_gate", " claim", "claim", "list_tasks2"])).unwrap(),
+            ["claim", "list_tasks2", "review_gate"]
+        );
+        assert_eq!(check_tools(&[]).unwrap(), Vec::<String>::new());
+        for bad in ["", "Claim", "send-message", "a b", "é", &"x".repeat(65)] {
+            assert!(check_tools(&names(&[bad])).is_err(), "{bad:?}");
+        }
+        assert!(check_tools(&names(&["x"; 129])).is_err());
+        assert!(check_tools(&names(&[&"x".repeat(64)])).is_ok());
+    }
+
+    #[test]
+    fn an_agent_is_offered_its_roles_tools_together_or_every_tool() {
+        let project = ProjectId::from("p");
+        let mut palette = defaults(&project, Utc::now());
+        palette[2].tools = Some(vec!["review_gate".into(), "get_task".into()]);
+        palette[4].tools = Some(vec!["validate".into()]);
+        let always = || ALWAYS_TOOLS.iter().map(|&t| t.to_owned());
+
+        assert_eq!(tool_limit(&[], &palette), None, "no role, every tool");
+        let reviewer = tool_limit(&["reviewer"], &palette).unwrap();
+        assert!(always().all(|t| reviewer.contains(&t)));
+        assert!(reviewer.contains("review_gate") && !reviewer.contains("validate"));
+        assert_eq!(reviewer.len(), ALWAYS_TOOLS.len() + 2);
+
+        let both = tool_limit(&["reviewer", "tester"], &palette).unwrap();
+        assert!(both.contains("review_gate") && both.contains("validate"));
+        assert_eq!(both.len(), ALWAYS_TOOLS.len() + 3);
+
+        assert_eq!(
+            tool_limit(&["reviewer", "implementer"], &palette),
+            None,
+            "a role without a limit offers every tool"
+        );
+        assert_eq!(
+            tool_limit(&["reviewer", "gone"], &palette),
+            None,
+            "a role the palette lacks limits nothing"
+        );
     }
 }
