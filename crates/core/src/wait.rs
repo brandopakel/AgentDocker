@@ -450,28 +450,54 @@ const CREDENTIAL_FLAG_PARTS: &[&str] = &[
 /// `-k`/`-K` keys. In a cluster or with a value attached, any of them.
 const CREDENTIAL_FLAG_LETTERS: &[char] = &['u', 'p', 'P', 'H', 'k', 'K'];
 
-/// Words that begin a credential's part of a command (`cargo login`,
-/// `gh auth`, a key or password store's entry): a subcommand that is one
-/// ends what is shown.
-const CREDENTIAL_ARGUMENT_PARTS: &[&str] = &[
-    "login", "logon", "signin", "auth", "pass", "pwd", "cookie", "key", "cred",
-];
-
-/// The programs whose leading words are subcommands — names the program
-/// defines, never a value the person supplies — and how many of them a
-/// detail shows: `cargo test`, `git push origin`, `npm run build`, `make
-/// check`. Every other program is shown alone: an argument in an unknown
-/// position may be a password (`smbclient //server/share <password>`,
-/// `isql <dsn> <user> <password>`), and no reading of an unknown program
-/// can tell. Kept small on purpose.
-const SUBCOMMANDS: &[(&str, usize)] = &[
-    ("cargo", 2),
-    ("git", 2),
-    ("go", 2),
-    ("make", 1),
-    ("npm", 2),
-    ("pnpm", 2),
-    ("yarn", 2),
+/// The programs a detail may show one word of besides their name, and
+/// the words: each program's own subcommands, written out literally. A
+/// word in that place is shown only when it is exactly one of these, and
+/// nothing after it ever is — what follows a subcommand may be a value the
+/// person supplies and the program passes on (`cargo run -- <args>`, `npm
+/// run <script> <args>`, `go run <file> <args>`), and neither a word's
+/// shape nor its position can tell a subcommand from a value. Every other
+/// program is shown alone: an argument in an unknown position may be a
+/// password (`smbclient //server/share <password>`, `isql <dsn> <user>
+/// <password>`). Kept small on purpose.
+const SUBCOMMANDS: &[(&str, &[&str])] = &[
+    (
+        "cargo",
+        &[
+            "build", "check", "clippy", "test", "run", "fmt", "doc", "bench", "install", "update",
+            "add", "remove", "tree", "metadata", "nextest",
+        ],
+    ),
+    (
+        "git",
+        &[
+            "status", "diff", "log", "show", "add", "commit", "push", "pull", "fetch", "merge",
+            "rebase", "checkout", "switch", "branch", "stash", "worktree", "reset", "restore",
+            "tag", "remote", "clone", "init",
+        ],
+    ),
+    (
+        "go",
+        &["build", "test", "run", "vet", "mod", "get", "install"],
+    ),
+    (
+        "npm",
+        &[
+            "install", "ci", "test", "run", "build", "add", "remove", "exec",
+        ],
+    ),
+    (
+        "pnpm",
+        &[
+            "install", "ci", "test", "run", "build", "add", "remove", "exec",
+        ],
+    ),
+    (
+        "yarn",
+        &[
+            "install", "ci", "test", "run", "build", "add", "remove", "exec",
+        ],
+    ),
 ];
 
 /// Whether `word` is a flag that takes, or is, a credential: a long name
@@ -526,29 +552,16 @@ fn plain_word(word: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "._/~+,:%@-".contains(c))
 }
 
-/// A subcommand's shape: a short lower-case name, nothing a person would
-/// type as a value of their own (no path, no address, no capitals).
-fn subcommand(word: &str) -> bool {
-    word.len() <= 32
-        && word.starts_with(|c: char| c.is_ascii_lowercase())
-        && word
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-}
-
 /// A shell command as a wait's detail may show it: an allowlist, with
 /// arguments left out by default.
 ///
 /// Nothing at all when the command reads like a secret or names a
 /// [`CREDENTIAL_WORDS`] word. Otherwise the program of its first line — by
 /// its name, without its directory, `NAME=value` assignments before it
-/// skipped unseen — and nothing else, unless the program is one whose
-/// leading words are its own subcommands ([`SUBCOMMANDS`]): then those that
-/// follow it directly, up to that program's count, each a plain lower-case
-/// name, stopping at the first that is not (a flag, a path, an address, a
-/// capital, anything quoted) or that names a credential's part (`login`,
-/// `auth`, a key). A program a shell could not read plainly, or a flag in
-/// the program's place, shows nothing.
+/// skipped unseen — and, for the few programs in [`SUBCOMMANDS`], the word
+/// that directly follows it when that word is exactly one of the program's
+/// own subcommands. Nothing after that, ever. A program a shell could not
+/// read plainly, or a flag in the program's place, shows nothing.
 pub fn command_detail(command: &str) -> Option<String> {
     let lower = command.to_ascii_lowercase();
     if crate::memory::secret_like(command) || CREDENTIAL_WORDS.iter().any(|w| lower.contains(w)) {
@@ -564,23 +577,17 @@ pub fn command_detail(command: &str) -> Option<String> {
         .filter(|word| !word.starts_with('-') && plain_word(word) && !userinfo(word))?;
     let name = program.rsplit('/').find(|part| !part.is_empty())?;
     let known = name.strip_suffix(".exe").unwrap_or(name);
-    let count = SUBCOMMANDS
+    let subcommand = SUBCOMMANDS
         .iter()
         .find(|(program, _)| *program == known)
-        .map_or(0, |(_, count)| *count);
-    let mut kept = vec![name.to_owned()];
-    for word in words.take(count) {
-        let lower = word.to_ascii_lowercase();
-        if !subcommand(word)
-            || CREDENTIAL_ARGUMENT_PARTS
-                .iter()
-                .any(|part| lower.contains(part))
-        {
-            break;
-        }
-        kept.push(word.to_owned());
-    }
-    Some(kept.join(" "))
+        .and_then(|(_, subcommands)| {
+            let word = words.next()?;
+            subcommands.iter().find(|subcommand| **subcommand == word)
+        });
+    Some(match subcommand {
+        Some(subcommand) => format!("{name} {subcommand}"),
+        None => name.to_owned(),
+    })
 }
 
 /// `NAME=value` before a program: an environment assignment.
@@ -790,7 +797,7 @@ mod tests {
     fn a_wait_detail_is_one_bounded_printable_line_and_never_a_secret() {
         assert_eq!(
             wait_detail("Bash: git push\u{202E} origin\tmain\nrm -rf /").as_deref(),
-            Some("Bash: git push origin")
+            Some("Bash: git push")
         );
         assert_eq!(
             wait_detail("\n  \nEdit: src/lib.rs").as_deref(),
@@ -809,10 +816,11 @@ mod tests {
         }
     }
 
-    /// A command shows its program and nothing else, unless the program's
-    /// leading words are its own subcommands: an argument in an unknown
-    /// position may be a password, flagged or not, and no reading of an
-    /// unknown program can tell.
+    /// A command shows its program and, for a few programs, one word more
+    /// when it is exactly one of their own subcommands — nothing after it,
+    /// ever: an argument in an unknown position may be a password, flagged
+    /// or not, and what follows a subcommand may be a value the program
+    /// passes on. Neither shape nor position can tell.
     #[test]
     fn a_command_shows_its_program_and_only_known_subcommands() {
         for (command, shown) in [
@@ -839,9 +847,20 @@ mod tests {
             ("docker login -u alice hunter2", "docker"),
             ("Get-Item -Path C:/hunter2", "Get-Item"),
             ("/opt/tools/smbclient //server/share hunter2", "smbclient"),
-            // A known program's own subcommands, never a value.
-            ("git push origin main", "git push origin"),
-            ("git config somename hunter2", "git config somename"),
+            // A known program's own subcommand, and nothing after it.
+            ("cargo run hunter2", "cargo run"),
+            ("cargo run -- alice hunter2", "cargo run"),
+            ("cargo nextest run -p hunter2", "cargo nextest"),
+            ("npm run deploy hunter2", "npm run"),
+            ("pnpm exec tool hunter2", "pnpm exec"),
+            ("go run main.go hunter2", "go run"),
+            ("yarn deploy hunter2", "yarn"),
+            ("yarn run deploy hunter2", "yarn run"),
+            ("make deploy DB_PASS=hunter2", "make"),
+            ("make deploy hunter2", "make"),
+            ("git push origin main", "git push"),
+            ("git config somename hunter2", "git"),
+            ("git hunter2", "git"),
             (
                 "git clone https://alice:hunter2@example.invalid/o/r.git",
                 "git clone",
@@ -852,10 +871,10 @@ mod tests {
             ("cargo test -p core", "cargo test"),
             ("cargo login hunter2", "cargo"),
             ("cargo.exe build --release", "cargo.exe build"),
-            ("npm run build", "npm run build"),
-            ("yarn npm login hunter2", "yarn npm"),
+            ("npm run build", "npm run"),
+            ("yarn npm login hunter2", "yarn"),
             ("go test ./...", "go test"),
-            ("make check hunter2", "make check"),
+            ("Cargo Run hunter2", "Cargo"),
             ("rm -rf target", "rm"),
             ("./scripts/verify.sh check", "verify.sh"),
         ] {
@@ -903,7 +922,13 @@ mod tests {
             ),
             ("Bash: mysql -phunter2 -e SELECT", Some("Bash: mysql")),
             ("Bash: PGPASSWORD=hunter2 psql", Some("Bash")),
-            ("Bash: git push origin main", Some("Bash: git push origin")),
+            ("Bash: git push origin main", Some("Bash: git push")),
+            ("Bash: cargo run hunter2", Some("Bash: cargo run")),
+            (
+                "PowerShell: npm run deploy hunter2",
+                Some("PowerShell: npm run"),
+            ),
+            ("cargo run hunter2", Some("cargo run")),
             ("Bash: rm -rf target", Some("Bash: rm")),
             ("Bash", Some("Bash")),
             ("redis-cli -a hunter2 ping", Some("redis-cli")),

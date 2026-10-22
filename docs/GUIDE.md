@@ -732,14 +732,14 @@ For Claude Code, `agentdocker setup claude-code` installs handlers for
 `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `StopFailure`,
 `SessionEnd`, `Notification`, `PermissionRequest`, `SubagentStart`, `SubagentStop`
 and `CwdChanged`. A permission prompt or question dialog marks the session
-*waiting* for you; `PermissionRequest` adds what the prompt is for in one line —
-the tool and, for a shell command, its program alone (for `cargo`, `git`, `go`,
-`make`, `npm`, `pnpm` and `yarn`, also their own subcommands, as in *cargo
-test* or *git push origin*; no other argument is ever shown, since any of them
-could be a password), for a file, its path, for a fetch, its address without
-user, password or query; a search shows its tool alone, never its query or
-pattern — and never answers it: the dialog stays yours, and nothing that reads
-like a secret is kept. A subagent starting keeps its session *working*, and is never an agent
+*waiting* for you. `PermissionRequest` adds what the prompt is for in one line
+and never answers it: the dialog stays yours. The line is the tool and: for a
+shell command, the program and, for a few tools (`cargo`, `git`, `go`, `npm`,
+`pnpm`, `yarn`), one known subcommand, as in *cargo test* or *git push*, never
+another argument, since any of them could be a password; for a file, its path;
+for a fetch, its address without user, password or query. A search shows its
+tool alone, never its query or pattern, and nothing that reads like a secret is
+kept. A subagent starting keeps its session *working*, and is never an agent
 of its own. `Stop` marks the session idle unless it leaves background work
 running (a shell, a subagent, a monitor or a workflow it started), which keeps
 it working, as a subagent finishing with background work still running does. When

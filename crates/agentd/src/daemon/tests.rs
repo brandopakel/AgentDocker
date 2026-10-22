@@ -4064,9 +4064,10 @@ async fn a_wait_keeps_what_it_is_for_through_the_store() {
 
 /// A password in an ordinary command never reaches the record or its
 /// event: not from the hooks adapter, nor from any other client sending
-/// the command whole, which gets the same treatment — the program, and
-/// only a known program's own subcommands — whether the password is
-/// flagged, in an address or in a position only the program knows.
+/// the command whole, which gets the same treatment — the program, and for
+/// a few programs one literal subcommand, nothing after — whether the
+/// password is flagged, in an address, in a position only the program
+/// knows, or a value a known subcommand passes on.
 #[tokio::test]
 async fn a_password_in_a_wait_detail_is_never_kept_or_announced() {
     use agentdocker_core::wait::command_detail;
@@ -4075,27 +4076,41 @@ async fn a_password_in_a_wait_detail_is_never_kept_or_announced() {
     let daemon = open(&dir);
     let agent = register(&daemon, "secret-detail-fixture", None).await;
     let mut events = daemon.subscribe_events();
-    let start = Utc::now() - Duration::seconds(60);
+    let start = Utc::now() - Duration::seconds(90);
     let commands = [
-        "smbclient //server/share hunter2",
-        "isql localdb alice hunter2",
-        "mysql -u alice db hunter2",
-        "tool run hunter2",
-        "redis-cli -a hunter2 ping",
-        "curl -u alice:hunter2 https://example.invalid",
-        "curl https://alice:hunter2@example.invalid/data",
-        "mysql -phunter2 -e SELECT",
-        "curl --user=alice:hunter2 https://example.invalid",
-        "mysql -uroot -phunter2",
+        ("smbclient //server/share hunter2", "smbclient"),
+        ("isql localdb alice hunter2", "isql"),
+        ("mysql -u alice db hunter2", "mysql"),
+        ("tool run hunter2", "tool"),
+        ("redis-cli -a hunter2 ping", "redis-cli"),
+        ("curl -u alice:hunter2 https://example.invalid", "curl"),
+        ("curl https://alice:hunter2@example.invalid/data", "curl"),
+        ("mysql -phunter2 -e SELECT", "mysql"),
+        ("curl --user=alice:hunter2 https://example.invalid", "curl"),
+        ("mysql -uroot -phunter2", "mysql"),
+        ("cargo run hunter2", "cargo run"),
+        ("cargo run -- alice hunter2", "cargo run"),
+        ("npm run deploy hunter2", "npm run"),
+        ("go run main.go hunter2", "go run"),
+        ("yarn deploy hunter2", "yarn"),
+        ("make deploy hunter2", "make"),
     ];
-    let details = commands.iter().flat_map(|command| {
+    let details = commands.iter().flat_map(|(command, shown)| {
+        assert_eq!(
+            command_detail(command).as_deref(),
+            Some(*shown),
+            "{command}"
+        );
         [
-            format!("Bash: {command}"),
-            format!("PowerShell: {command}"),
-            format!("Bash: {}", command_detail(command).unwrap()),
+            (format!("Bash: {command}"), format!("Bash: {shown}")),
+            (
+                format!("PowerShell: {command}"),
+                format!("PowerShell: {shown}"),
+            ),
+            (format!("Bash: {shown}"), format!("Bash: {shown}")),
         ]
     });
-    for (step, detail) in details.enumerate() {
+    for (step, (detail, shown)) in details.enumerate() {
         let at = start + Duration::seconds(step as i64);
         let mut state = lock(&daemon.state);
         assert!(matches!(
@@ -4119,21 +4134,22 @@ async fn a_password_in_a_wait_detail_is_never_kept_or_announced() {
             .reported_activity
             .clone();
         drop(state);
-        let event = serde_json::to_string(&events.try_recv().unwrap().kind).unwrap();
-        for text in [&stored, &event] {
+        let event = events.try_recv().unwrap().kind;
+        let announced = serde_json::to_string(&event).unwrap();
+        for text in [&stored, &announced] {
             assert!(
-                !text.contains("hunter2") && !text.contains("alice:"),
+                !text.contains("hunter2") && !text.contains("alice"),
                 "{detail}: {text}"
             );
         }
-        // What is kept is the program alone, as the hook would send it.
-        let program = detail.split_whitespace().nth(1).unwrap();
-        let tool = detail.split(": ").next().unwrap();
-        assert_eq!(
-            kept.and_then(|o| o.detail),
-            Some(format!("{tool}: {program}")),
-            "{detail}"
-        );
+        // What is kept and announced is what the hook would have sent.
+        assert_eq!(kept.and_then(|o| o.detail), Some(shown.clone()), "{detail}");
+        match event {
+            EventKind::AgentActivityReported { observation, .. } => {
+                assert_eq!(observation.detail, Some(shown), "{detail}");
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
     }
 }
 

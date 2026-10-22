@@ -2806,7 +2806,7 @@ mod tests {
                 json!({"command": "git push origin main\n# and more"})
             )
             .as_deref(),
-            Some("Bash: git push origin")
+            Some("Bash: git push")
         );
         for command in [
             "curl -H 'Authorization: Bearer abc' https://example.invalid",
@@ -2898,7 +2898,14 @@ mod tests {
             ("mysql -uroot -phunter2", "Bash: mysql"),
             ("tool 'alice:hunter2'", "Bash: tool"),
             ("cargo login hunter2", "Bash: cargo"),
-            ("git config somename hunter2", "Bash: git config somename"),
+            ("git config somename hunter2", "Bash: git"),
+            ("cargo run hunter2", "Bash: cargo run"),
+            ("cargo run -- alice hunter2", "Bash: cargo run"),
+            ("npm run deploy hunter2", "Bash: npm run"),
+            ("go run main.go hunter2", "Bash: go run"),
+            ("yarn deploy hunter2", "Bash: yarn"),
+            ("make deploy PASSWORD=hunter2", "Bash"),
+            ("make deploy hunter2", "Bash: make"),
             ("PGPASSWORD=hunter2 psql", "Bash"),
         ] {
             let mut event = input("PermissionRequest");
