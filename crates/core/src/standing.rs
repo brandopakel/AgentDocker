@@ -48,7 +48,11 @@ pub enum Standing {
     Starting,
     /// It finished something the person has not looked at.
     FinishedUnseen,
-    /// Live and quiet, or nothing is known.
+    /// Live, and no fresh report says what it is doing: its provider has
+    /// no adapter that reports, or the last report has gone stale. Not
+    /// idle: only an adapter's explicit report proves that.
+    Running,
+    /// Live, and its adapter reported it quiet (`Activity::Idle`).
     Idle,
     /// It has ended, with nothing left for the person.
     Ended,
@@ -104,7 +108,9 @@ impl Standing {
             Some(Activity::Blocked { .. }) => Self::Parked,
             Some(Activity::Starting) => Self::Starting,
             _ if signals.finished_unseen => Self::FinishedUnseen,
-            _ => Self::Idle,
+            // Silence, or a report gone stale, is not idleness.
+            Some(Activity::Idle { .. }) => Self::Idle,
+            _ => Self::Running,
         }
     }
 
@@ -131,6 +137,7 @@ impl Standing {
             Self::Parked => "waiting on a lease",
             Self::Starting => "starting",
             Self::FinishedUnseen => "finished since you looked",
+            Self::Running => "running",
             Self::Idle => "idle",
             Self::Ended => "ended",
         }
@@ -147,6 +154,7 @@ impl Standing {
             Self::Parked => "Waiting on a lease",
             Self::Starting => "Starting",
             Self::FinishedUnseen => "Finished",
+            Self::Running => "Running",
             Self::Idle => "Idle",
             Self::Ended => "Ended",
         }
@@ -167,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn the_loudest_state_wins_and_idle_says_nothing() {
+    fn the_loudest_state_wins_and_only_a_report_is_idle() {
         let now = Utc::now();
         let working = Activity::Working { since: now };
         let waiting = Activity::Waiting {
@@ -182,6 +190,23 @@ mod tests {
         };
         assert_eq!(Standing::of(live(&working)), Standing::Working);
         assert_eq!(Standing::of(live(&idle)), Standing::Idle);
+        // Only an explicit report is idle: no fresh evidence, or none at
+        // all, is a session that runs.
+        assert_eq!(Standing::of(live(&Activity::Unknown)), Standing::Running);
+        assert_eq!(
+            Standing::of(Signals {
+                live: true,
+                ..Signals::default()
+            }),
+            Standing::Running
+        );
+        assert_eq!(
+            Standing::of(Signals {
+                finished_unseen: true,
+                ..live(&Activity::Unknown)
+            }),
+            Standing::FinishedUnseen
+        );
         assert_eq!(Standing::of(live(&blocked)), Standing::Parked);
         assert_eq!(Standing::of(live(&Activity::Starting)), Standing::Starting);
         assert_eq!(
@@ -259,6 +284,7 @@ mod tests {
         let mut all = vec![
             Standing::Ended,
             Standing::Idle,
+            Standing::Running,
             Standing::FinishedUnseen,
             Standing::Starting,
             Standing::Parked,
@@ -288,6 +314,7 @@ mod tests {
             Standing::Parked,
             Standing::Starting,
             Standing::FinishedUnseen,
+            Standing::Running,
             Standing::Idle,
             Standing::Ended,
         ];

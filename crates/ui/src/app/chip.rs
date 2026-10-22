@@ -154,7 +154,9 @@ pub(super) fn standing(id: impl Into<String>, standing: Standing) -> Chip {
         Standing::Parked => (Some(Icon::Hourglass), Tone::Neutral),
         Standing::Starting => (Some(Icon::Ring), Tone::Neutral),
         Standing::FinishedUnseen => (Some(Icon::Check), Tone::Info),
-        Standing::Idle | Standing::Ended => (None, Tone::Neutral),
+        // Running claims nothing it has no report of: not working, not
+        // idle.
+        Standing::Running | Standing::Idle | Standing::Ended => (None, Tone::Neutral),
     };
     Chip::new(id, glyph, standing.label(), tone).detail(sentence(standing.word()))
 }
@@ -320,6 +322,12 @@ mod tests {
         );
         let idle = standing("s", Standing::Idle);
         assert_eq!((idle.words.as_str(), idle.detail), ("Idle", None));
+        let running = standing("s", Standing::Running);
+        assert_eq!(
+            (running.words.as_str(), running.tone),
+            ("Running", Tone::Neutral),
+            "a live session nothing reports on does not claim to be idle"
+        );
         assert_eq!(standing("s", Standing::Failed).tone, Tone::Alert);
         assert_eq!(standing("s", Standing::Working).words, "Working");
     }

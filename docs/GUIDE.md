@@ -1245,7 +1245,8 @@ Current behaviour that the sections above do not already state, by area.
   read with your signed-in `gh` every two minutes and when the window regains
   focus; without `gh`, on a default branch or off GitHub there is no chip.
   Every agent row says where the agent stands in a chip (**Needs you**,
-  **Failed**, **Working**, **Finished**, **Idle**), the same in the chat, the
+  **Failed**, **Working**, **Finished**, **Running**, **Idle** — only when its
+  tool reported it quiet), the same in the chat, the
   session list and the rail. An agent that finished while you were not
   looking keeps its **Finished** chip until you open it or its project.
 

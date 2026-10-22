@@ -97,14 +97,18 @@ control does, its id or its accessible label:
   `agentdocker_core::standing::Standing::of` is the one function: **needs
   you** (an open question, a provider stopped at its own prompt, or held
   messages), **failed** (until seen), **working**, **parked** (waiting on a
-  lease), **starting**, **finished since you looked**, **idle**, **ended**,
-  loudest first, so sorting by it is the attention order. Every view draws it
-  the same way, as its chip (`chip::standing`, `view::standing_chip`) after
-  the agent's name: `Standing::label` is its word (*Needs you*, *Failed*,
-  *Working*, *Waiting on a lease*, *Starting*, *Finished*, *Idle*, *Ended*)
-  and `Standing::word` its detail where it says more (which need, *finished
-  since you looked*); attention for needs you, alert for failed, the accent
-  for news, neutral for the rest, with an icon for each but idle and ended.
+  lease), **starting**, **finished since you looked**, **running**, **idle**,
+  **ended**, loudest first, so sorting by it is the attention order.
+  **Idle** is only an adapter's explicit report (`Activity::Idle`); a live
+  session with no fresh report, or none ever (`Activity::Unknown`, no
+  observation), is **running**, which claims neither work nor rest. Every
+  view draws it the same way, as its chip (`chip::standing`,
+  `view::standing_chip`) after the agent's name: `Standing::label` is its
+  word (*Needs you*, *Failed*, *Working*, *Waiting on a lease*, *Starting*,
+  *Finished*, *Running*, *Idle*, *Ended*) and `Standing::word` its detail
+  where it says more (which need, *finished since you looked*); attention for
+  needs you, alert for failed, the accent for news, neutral for the rest,
+  with an icon for each but running, idle and ended.
 - **Finished, not yet viewed.** When a session's activity goes from working
   or blocked to idle or finished while the user is not looking at its project
   in a focused window, the session is marked unviewed: its standing is

@@ -130,7 +130,9 @@ palette and a board card's holder, is one line: its mark, its name, then its
 question, its own prompt, or messages it cannot take, which the chip's detail
 names), **Failed** (red, until you look), **Working**, **Waiting on a lease**,
 **Starting**, **Finished** (the accent, *finished since you looked* in its
-detail), **Idle** and **Ended**. The name is set semibold when something there
+detail), **Running** (live, with no fresh report of what it is doing),
+**Idle** (only when its tool reported it quiet) and **Ended**. The name is set
+semibold when something there
 is new or waits on you, and is cut before the chip is. "Finished since you
 looked" means its turn ended, or the session did, while its project was not
 on screen in a focused window; going to its terminal, opening its details or

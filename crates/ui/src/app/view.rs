@@ -5108,13 +5108,16 @@ mod tests {
             agent
         };
         let (worker, quiet) = (agent("worker"), agent("quiet"));
+        // No fresh report (Unknown) and no report at all: neither is idle.
+        let (stale, silent) = (agent("stale"), agent("silent"));
         app.activity.insert(
             worker.id.to_string(),
             Activity::Working { since: Utc::now() },
         );
         app.activity
             .insert(quiet.id.to_string(), Activity::Idle { since: Utc::now() });
-        app.agents = vec![worker.clone(), quiet.clone()];
+        app.activity.insert(stale.id.to_string(), Activity::Unknown);
+        app.agents = vec![worker.clone(), quiet.clone(), stale.clone(), silent.clone()];
         let c = Colors::new(false);
         let label = |view: &super::super::view::testing::Seen, id: &str| {
             view.control(id)
@@ -5138,6 +5141,28 @@ mod tests {
             "Idle",
             "an idle session says so too"
         );
+        let rows = seen(app.session_rows(&[&stale, &silent], c));
+        for agent in [&stale, &silent] {
+            assert_eq!(
+                label(&rows, &format!("session-standing-{}", agent.id)),
+                "Running",
+                "{}: live without a report is not idle",
+                agent.spec.name
+            );
+        }
+        // A project's chip is its loudest agent's: idle only when an
+        // adapter said so, running when nothing did.
+        let all = app.agents.clone();
+        for (only, word) in [(&quiet, "Idle"), (&stale, "Running"), (&silent, "Running")] {
+            app.agents = vec![only.clone()];
+            assert_eq!(
+                label(&seen(app.sidebar(c)), &project),
+                word,
+                "{}",
+                only.spec.name
+            );
+        }
+        app.agents = all;
 
         let panel = seen(app.inspector(&worker, c));
         assert_eq!(label(&panel, "inspector-standing"), "Working");
