@@ -544,11 +544,24 @@ fn audit_entry_modes(
     Ok(hard_links)
 }
 
-/// Look inside the archive before anything is written from it: the hard
-/// links it carries ([`audit_entry_modes`]), which extraction makes itself.
-fn audit_archive(archive: &Path, payload: &str) -> Result<Vec<HardLink>> {
+/// The most an archive's payload may expand to, a hard link counted as the
+/// copy of its target it may become.
+const EXPANDED_BYTES: u64 = 210 * 1024 * 1024;
+
+/// What an audited archive will write: the hard links it carries, which
+/// extraction makes itself, and the bytes of every other entry, which the
+/// archive tool writes.
+#[derive(Debug)]
+struct Audit {
+    links: Vec<HardLink>,
+    written: u64,
+}
+
+/// Look inside the archive before anything is written from it.
+fn audit_archive(archive: &Path, payload: &str) -> Result<Audit> {
     let path = archive.to_string_lossy().into_owned();
-    let (names, long) = if cfg!(target_os = "macos") {
+    let zip = cfg!(target_os = "macos");
+    let (names, long) = if zip {
         (
             listing(&["/usr/bin/unzip".into(), "-Z1".into(), path.clone()])?,
             listing(&["/usr/bin/unzip".into(), "-Z".into(), path])?,
@@ -559,11 +572,21 @@ fn audit_archive(archive: &Path, payload: &str) -> Result<Vec<HardLink>> {
             listing(&["tar".into(), "-tvzf".into(), path])?,
         )
     };
+    audit_listing(&names, long, payload, zip)
+}
+
+/// [`audit_archive`]'s judgement of a listing: `names` one per entry, and
+/// `long` the same entries with their modes and sizes, as `unzip -Z` lists a
+/// ZIP (`zip`) or GNU `tar -tv` a tar. Every name is checked, every mode
+/// ([`audit_entry_modes`]), and the expanded size against
+/// [`EXPANDED_BYTES`]: each entry's size, and each hard link (listed with
+/// none) at its target's, since a filesystem that cannot link gets a copy.
+fn audit_listing(names: &[String], long: Vec<String>, payload: &str, zip: bool) -> Result<Audit> {
     ensure!(
         !names.is_empty() && names.len() <= 4096,
         "archive must contain 1 to 4096 entries"
     );
-    for name in &names {
+    for name in names {
         audit_entry_name(name, payload)?;
     }
     // Reject every entry with an unknown type; only known zipinfo headers and
@@ -571,7 +594,7 @@ fn audit_archive(archive: &Path, payload: &str) -> Result<Vec<HardLink>> {
     let modes: Vec<String> = long
         .into_iter()
         .filter(|l| {
-            !(cfg!(target_os = "macos")
+            !(zip
                 && (l.starts_with("Archive: ")
                     || l.starts_with("Zip file size: ")
                     || l.as_bytes().first().is_some_and(u8::is_ascii_digit)))
@@ -582,57 +605,89 @@ fn audit_archive(archive: &Path, payload: &str) -> Result<Vec<HardLink>> {
         "archive listing has ambiguous entries"
     );
     // A ZIP has no hard links: only a tar listing may name one.
-    let links = audit_entry_modes(&names, &modes, payload, !cfg!(target_os = "macos"))?;
-    let mut bytes = 0u64;
-    for line in &modes {
+    let links = audit_entry_modes(names, &modes, payload, !zip)?;
+    let add = |bytes: u64, size: u64| -> Result<u64> {
+        let bytes = bytes.checked_add(size).context("archive size overflow")?;
+        ensure!(
+            bytes <= EXPANDED_BYTES,
+            "archive exceeds the expanded payload budget"
+        );
+        Ok(bytes)
+    };
+    let mut sizes = BTreeMap::new();
+    let mut written = 0u64;
+    for (name, line) in names.iter().zip(&modes) {
         // zipinfo: mode/version/host/size; GNU tar: mode/owner/size.
         let size = line
             .split_whitespace()
-            .nth(if cfg!(target_os = "macos") { 3 } else { 2 })
+            .nth(if zip { 3 } else { 2 })
             .context("archive listing lacks an entry size")?
             .parse::<u64>()
             .context("archive listing has an invalid entry size")?;
-        bytes = bytes.checked_add(size).context("archive size overflow")?;
-        ensure!(
-            bytes <= 210 * 1024 * 1024,
-            "archive exceeds the expanded payload budget"
-        );
+        sizes.insert(name.as_str(), size);
+        written = add(written, size)?;
     }
-    Ok(links)
+    let mut expanded = written;
+    for link in &links {
+        let size = sizes
+            .get(link.target.as_str())
+            .copied()
+            .context("archive link names no listed entry")?;
+        expanded = add(expanded, size)?;
+    }
+    Ok(Audit { links, written })
 }
 
 /// Make each audited hard link inside `destination`, after everything else
 /// was extracted: a hard link to the regular file its target names there,
-/// or a copy of it where the filesystem cannot link. The target must be a
-/// regular file inside `destination`, reached through no symbolic link, and
-/// the link's own name must be free.
-fn materialize_links(destination: &Path, links: &[HardLink]) -> Result<()> {
+/// or a copy of it where the filesystem cannot link, the copies together
+/// within `budget` bytes. The target must be a regular file inside
+/// `destination`, reached through no symbolic link, and the link's own name
+/// must be free.
+fn materialize_links(destination: &Path, links: &[HardLink], budget: u64) -> Result<()> {
+    materialize_links_with(destination, links, budget, |target, path| {
+        std::fs::hard_link(target, path)
+    })
+}
+
+/// [`materialize_links`], linking with `link`: a test makes it fail to take
+/// the copy path.
+fn materialize_links_with(
+    destination: &Path,
+    links: &[HardLink],
+    budget: u64,
+    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<()> {
     let root = destination.canonicalize()?;
-    for link in links {
-        let target = destination.join(&link.target);
-        let path = destination.join(&link.name);
+    let mut remaining = budget;
+    for entry in links {
+        let target = destination.join(&entry.target);
+        let path = destination.join(&entry.name);
         let metadata = target.symlink_metadata().with_context(|| {
             format!(
                 "archive link {} names {}, which it did not extract",
-                link.name, link.target
+                entry.name, entry.target
             )
         })?;
         ensure!(
-            metadata.is_file() && target.canonicalize()? == root.join(&link.target),
+            metadata.is_file() && target.canonicalize()? == root.join(&entry.target),
             "archive link {} does not name a regular file inside the payload",
-            link.name
+            entry.name
         );
         let parent = path.parent().context("archive link has no parent")?;
         ensure!(
             parent.canonicalize()?.starts_with(&root),
             "archive link {} is outside the payload",
-            link.name
+            entry.name
         );
         match path.symlink_metadata() {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            _ => bail!("archive link {} names an existing file", link.name),
+            _ => bail!("archive link {} names an existing file", entry.name),
         }
-        if std::fs::hard_link(&target, &path).is_err() {
+        if link(&target, &path).is_err() {
+            remaining = remaining
+                .checked_sub(metadata.len())
+                .context("archive exceeds the expanded payload budget")?;
             std::fs::copy(&target, &path)?;
         }
     }
@@ -651,7 +706,8 @@ fn extract(archive: &Path, destination: &Path) -> Result<PathBuf> {
     } else {
         "agentdocker-desktop"
     };
-    let links = audit_archive(archive, payload_name)?;
+    let audit = audit_archive(archive, payload_name)?;
+    let links = &audit.links;
     if destination.exists() {
         std::fs::remove_dir_all(destination)?;
     }
@@ -686,7 +742,13 @@ fn extract(archive: &Path, destination: &Path) -> Result<PathBuf> {
         "cannot extract the update: {}",
         output.text.trim()
     );
-    materialize_links(destination, &links)?;
+    // What the audit allowed beyond what the archive tool wrote: no more
+    // may be copied.
+    materialize_links(
+        destination,
+        links,
+        EXPANDED_BYTES.saturating_sub(audit.written),
+    )?;
     let payload = destination.join(payload_name);
     ensure!(
         payload.symlink_metadata()?.is_dir(),
@@ -1419,22 +1481,102 @@ mod tests {
             name: format!("agentdocker-desktop/bin/{name}"),
             target: format!("agentdocker-desktop/bin/{target}"),
         };
-        materialize_links(&destination, &[link("agentdocker", "agentd")]).unwrap();
+        let budget = EXPANDED_BYTES;
+        materialize_links(&destination, &[link("agentdocker", "agentd")], budget).unwrap();
         assert!(same_file(&bin.join("agentdocker"), &bin.join("agentd")));
         // Over an existing file, to nothing extracted, to a directory, or
         // through a symbolic link out of the destination: refused.
-        assert!(materialize_links(&destination, &[link("agentdocker", "agentd")]).is_err());
-        assert!(materialize_links(&destination, &[link("x", "missing")]).is_err());
+        assert!(materialize_links(&destination, &[link("agentdocker", "agentd")], budget).is_err());
+        assert!(materialize_links(&destination, &[link("x", "missing")], budget).is_err());
         std::fs::create_dir(bin.join("dir")).unwrap();
-        assert!(materialize_links(&destination, &[link("x", "dir")]).is_err());
+        assert!(materialize_links(&destination, &[link("x", "dir")], budget).is_err());
         let outside = root.path().join("outside");
         std::fs::create_dir(&outside).unwrap();
         std::fs::write(outside.join("secret"), "outside").unwrap();
         std::os::unix::fs::symlink(&outside, bin.join("escape")).unwrap();
-        assert!(materialize_links(&destination, &[link("x", "escape/secret")]).is_err());
+        assert!(materialize_links(&destination, &[link("x", "escape/secret")], budget).is_err());
         std::os::unix::fs::symlink(outside.join("secret"), bin.join("alias")).unwrap();
-        assert!(materialize_links(&destination, &[link("x", "alias")]).is_err());
+        assert!(materialize_links(&destination, &[link("x", "alias")], budget).is_err());
         assert!(!bin.join("x").exists());
+    }
+
+    /// A hard link the archive lists with no size may become a copy of its
+    /// target, so it counts as one: an archive of one file and many links
+    /// to it that would expand past the budget is refused at the audit,
+    /// before anything is written, with the same error as any other.
+    #[test]
+    fn hard_links_count_as_the_copies_they_may_become() {
+        let payload = "agentdocker-desktop";
+        let mib = 1024 * 1024;
+        let listing = |links: usize| -> (Vec<String>, Vec<String>) {
+            let mut names = vec![format!("{payload}/agentd")];
+            let mut lines = vec![format!(
+                "-rwxr-xr-x runner/runner {mib} 2026-10-22 05:00 {payload}/agentd"
+            )];
+            for index in 0..links {
+                let name = format!("{payload}/link-{index}");
+                lines.push(format!(
+                    "hrwxr-xr-x runner/runner 0 2026-10-22 05:00 {name} link to {payload}/agentd"
+                ));
+                names.push(name);
+            }
+            (names, lines)
+        };
+        let (names, lines) = listing(100);
+        let audit = audit_listing(&names, lines, payload, false).unwrap();
+        assert_eq!((audit.links.len(), audit.written), (100, mib));
+        // 1 MiB written, 256 MiB more as copies: past the 210 MiB budget.
+        let (names, lines) = listing(256);
+        let error = audit_listing(&names, lines, payload, false).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "archive exceeds the expanded payload budget"
+        );
+    }
+
+    /// Where the filesystem cannot link, a link is a copy of its target,
+    /// and the copies together stay within the budget extraction was given:
+    /// the one that would pass it is refused and not written.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_that_cannot_be_made_is_a_copy_within_the_budget() {
+        use agentdocker_host::program::same_file;
+        let cannot = |_: &Path, _: &Path| Err(std::io::Error::other("no hard links here"));
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("staged");
+        let bin = destination.join("agentdocker-desktop/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("agentd"), vec![7_u8; 1000]).unwrap();
+        let link = |name: &str| HardLink {
+            name: format!("agentdocker-desktop/bin/{name}"),
+            target: "agentdocker-desktop/bin/agentd".into(),
+        };
+        materialize_links_with(
+            &destination,
+            &[link("agentdocker"), link("two")],
+            2000,
+            cannot,
+        )
+        .unwrap();
+        for name in ["agentdocker", "two"] {
+            assert_eq!(
+                std::fs::read(bin.join(name)).unwrap(),
+                std::fs::read(bin.join("agentd")).unwrap()
+            );
+            assert!(!same_file(&bin.join(name), &bin.join("agentd")));
+        }
+        let error =
+            materialize_links_with(&destination, &[link("three"), link("four")], 1500, cannot)
+                .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "archive exceeds the expanded payload budget"
+        );
+        assert!(bin.join("three").exists());
+        assert!(
+            !bin.join("four").exists(),
+            "the copy past the budget was written"
+        );
     }
 
     #[cfg(unix)]
@@ -1516,6 +1658,7 @@ mod tests {
         assert_eq!(
             audit_archive(&archive, "agentdocker-desktop")
                 .unwrap()
+                .links
                 .len(),
             1
         );
@@ -1529,6 +1672,39 @@ mod tests {
             super::super::tree_hash(&extracted).unwrap(),
             super::super::tree_hash(&payload).unwrap()
         );
+    }
+
+    /// A real archive of one file and enough hard links to it to pass the
+    /// budget as copies is refused before the destination is made.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_archive_whose_links_would_expand_past_the_budget_writes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("agentdocker-desktop/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("agentd"), vec![7_u8; 1024 * 1024]).unwrap();
+        for index in 0..256 {
+            std::fs::hard_link(bin.join("agentd"), bin.join(format!("link-{index}"))).unwrap();
+        }
+        let archive = root.path().join("links.tar.gz");
+        let argv = [
+            "tar".to_owned(),
+            "-czf".to_owned(),
+            archive.to_string_lossy().into_owned(),
+            "agentdocker-desktop".to_owned(),
+        ];
+        assert!(
+            command::run(root.path(), &argv, Duration::from_secs(10))
+                .unwrap()
+                .success
+        );
+        let destination = root.path().join("staged");
+        let error = extract(&archive, &destination).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "archive exceeds the expanded payload budget"
+        );
+        assert!(!destination.exists(), "nothing is written");
     }
 
     #[test]
