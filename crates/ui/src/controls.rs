@@ -319,6 +319,9 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
         {
             state.focused = false;
             state.by_pointer = false;
+            // Its ring goes now, and the screen reader hears the focus left.
+            shell.request_redraw();
+            shell.publish(Message::Blurred);
         }
         if self.semantic.role != accesskit::Role::Button || self.semantic.action.is_some() {
             if matches!(
@@ -1159,9 +1162,20 @@ mod tests {
             &mut shell,
             &viewport,
         );
+        let redraw = shell.redraw_request();
+        drop(shell);
         assert!(
             !tree.state.downcast_ref::<Focus>().focused,
             "a click elsewhere blurs it"
+        );
+        assert_ne!(
+            redraw,
+            iced::window::RedrawRequest::Wait,
+            "the ring goes now, not at the next sweep"
+        );
+        assert!(
+            matches!(messages.as_slice(), [Message::Blurred]),
+            "the app hears it, to tell assistive technology: {messages:?}"
         );
     }
     #[test]

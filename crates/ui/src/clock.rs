@@ -5,66 +5,94 @@ use std::sync::OnceLock;
 
 use chrono::{DateTime, Local, TimeZone, Utc};
 
-/// Whether the person reads a 12-hour clock: what the system says, read
-/// once.
+/// Whether the person reads a 12-hour clock: what the system's own time
+/// format says, asked once. Unknown means the 24-hour clock.
 fn hour12() -> bool {
     static HOUR12: OnceLock<bool> = OnceLock::new();
-    *HOUR12.get_or_init(|| {
-        let (force24, force12, locale) = system_clock();
-        hour12_from(force24, force12, locale.as_deref())
-    })
+    *HOUR12.get_or_init(|| system_pattern().is_some_and(|p| hour12_from(&p)))
 }
 
-/// macOS keeps an explicit choice (`AppleICUForce24HourTime`,
-/// `AppleICUForce12HourTime`) and, without one, follows the region of
-/// `AppleLocale`; elsewhere the region of `LC_ALL`, `LC_TIME` or `LANG`.
-fn system_clock() -> (bool, bool, Option<String>) {
+/// Ask for the clock early, off the window's thread, so the first message
+/// drawn does not wait for the system to answer.
+pub fn warm() {
+    std::thread::spawn(hour12);
+}
+
+/// The system's time pattern for this person, as its own formatter writes
+/// it: Foundation's for the current locale on macOS (which honours the
+/// 12/24-hour choice in System Settings), the C library's `t_fmt` for the
+/// time locale elsewhere on Unix, and the regional `sTimeFormat` on
+/// Windows.
+fn system_pattern() -> Option<String> {
+    let run = |program: &str, args: &[&str]| {
+        std::process::Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .filter(|p| !p.is_empty())
+    };
     #[cfg(target_os = "macos")]
     {
-        let read = |key: &str| {
-            std::process::Command::new("/usr/bin/defaults")
-                .args(["read", "-g", key])
-                .stderr(std::process::Stdio::null())
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-        };
-        let set = |key: &str| read(key).is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-        (
-            set("AppleICUForce24HourTime"),
-            set("AppleICUForce12HourTime"),
-            read("AppleLocale"),
+        run(
+            "/usr/bin/osascript",
+            &[
+                "-l",
+                "JavaScript",
+                "-e",
+                "ObjC.import('Foundation'); $.NSDateFormatter.dateFormatFromTemplateOptionsLocale('jmm', 0, $.NSLocale.currentLocale).js",
+            ],
         )
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let locale = ["LC_ALL", "LC_TIME", "LANG"]
-            .into_iter()
-            .filter_map(|name| std::env::var(name).ok())
-            .find(|value| !value.is_empty());
-        (false, false, locale)
+        // `t_fmt="%r"`: the strftime pattern, quoted.
+        run("locale", &["-k", "t_fmt"]).and_then(|line| {
+            line.split_once('=')
+                .map(|(_, value)| value.trim_matches('"').to_owned())
+        })
+    }
+    #[cfg(windows)]
+    {
+        // `    sTimeFormat    REG_SZ    h:mm:ss tt`
+        run(
+            "reg",
+            &[
+                "query",
+                r"HKCU\Control Panel\International",
+                "/v",
+                "sTimeFormat",
+            ],
+        )
+        .and_then(|out| {
+            out.lines()
+                .find_map(|line| line.split_once("REG_SZ").map(|(_, v)| v.trim().to_owned()))
+        })
     }
 }
 
-/// The clock a choice and a locale (`en_US`, `en_US.UTF-8`, `de-DE`) call
-/// for: an explicit choice wins; otherwise the regions that write the
-/// time on a 12-hour clock.
-fn hour12_from(force24: bool, force12: bool, locale: Option<&str>) -> bool {
-    if force24 {
-        return false;
+/// Whether a system time pattern is a 12-hour clock: Unicode patterns
+/// (macOS) and Windows patterns write a 12-hour hour as `h` or `K`, a
+/// 24-hour one as `H` or `k`; strftime (`t_fmt`) writes it as `%I`, `%l`
+/// or `%r`, and `%H`, `%k` or `%T` otherwise.
+fn hour12_from(pattern: &str) -> bool {
+    if pattern.contains('%') {
+        return ["%I", "%l", "%r"].iter().any(|p| pattern.contains(p));
     }
-    if force12 {
-        return true;
+    // Quoted literals ('at') are not part of the hour.
+    let mut quoted = false;
+    for c in pattern.chars() {
+        match c {
+            '\'' => quoted = !quoted,
+            'h' | 'K' if !quoted => return true,
+            'H' | 'k' if !quoted => return false,
+            _ => {}
+        }
     }
-    let region = locale
-        .and_then(|l| l.split(['.', '@']).next())
-        .and_then(|l| l.split(['_', '-']).nth(1))
-        .unwrap_or("");
-    matches!(
-        region.to_ascii_uppercase().as_str(),
-        "US" | "CA" | "AU" | "NZ" | "IN" | "PH" | "PK" | "BD" | "EG" | "SA" | "MY" | "CO"
-    )
+    false
 }
 
 fn clock_of<Tz: TimeZone>(at: &DateTime<Tz>, hour12: bool) -> String
@@ -99,16 +127,27 @@ mod tests {
     use chrono::FixedOffset;
 
     #[test]
-    fn an_explicit_choice_wins_and_the_region_decides_otherwise() {
-        assert!(hour12_from(false, false, Some("en_US")));
-        assert!(hour12_from(false, false, Some("en_US.UTF-8")));
-        assert!(!hour12_from(false, false, Some("de_DE")));
-        assert!(!hour12_from(false, false, Some("en_GB")));
-        assert!(hour12_from(false, false, Some("en-AU")));
-        assert!(!hour12_from(true, false, Some("en_US")), "forced 24-hour");
-        assert!(hour12_from(false, true, Some("fr_FR")), "forced 12-hour");
-        assert!(!hour12_from(false, false, None));
-        assert!(!hour12_from(false, false, Some("C")));
+    fn the_hour_is_read_from_the_systems_own_pattern() {
+        // Foundation's patterns for en_US, zh_Hant_TW, en_SG, fr_CA,
+        // en_GB and de_DE.
+        for (pattern, twelve) in [
+            ("h:mm a", true),
+            ("ah:mm", true),
+            ("HH:mm", false),
+            ("H:mm", false),
+            ("K:mm a", true),
+            ("'at' HH:mm", false),
+        ] {
+            assert_eq!(hour12_from(pattern), twelve, "{pattern}");
+        }
+        // strftime patterns from `locale -k t_fmt`.
+        assert!(hour12_from("%r"));
+        assert!(hour12_from("%I:%M:%S %p"));
+        assert!(!hour12_from("%H:%M:%S"));
+        assert!(!hour12_from("%T"));
+        // Windows sTimeFormat.
+        assert!(hour12_from("h:mm:ss tt"));
+        assert!(!hour12_from("HH:mm:ss"));
     }
 
     #[test]

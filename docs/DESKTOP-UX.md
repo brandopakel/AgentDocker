@@ -653,9 +653,10 @@ last, with **Show earlier messages** at the top until the first is on view, a
 bare rule where the day turns and an accent rule before the unread part, each
 named for a reader (the day, *New*); a question keeps
 its card (Answer, Allow, Deny) in place. Messages from one sender run together
-under one mark and one header — the name and the time it was sent, in this
-computer's timezone and on its 12- or 24-hour clock (the day too on the name's
-tooltip), and a question or hand-off as a glyph —
+under one mark and one header — the name and the time it was sent, in the
+computer's own timezone and in the time format its system uses (12- or
+24-hour, as the operating system's settings say), with the day on the name's
+tooltip, and a question or hand-off as a glyph —
 until the sender or kind changes, five minutes pass, or a message names you;
 AgentDocker's own notices are single quiet lines, their time on the pointer. Long messages fold behind
 **Show more**. The window keeps as much of
