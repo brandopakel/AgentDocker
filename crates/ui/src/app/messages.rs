@@ -2106,7 +2106,7 @@ mod tests {
         app.conversations_supported = Some(true);
         let mut project = ProjectRef::directory("/fixture/alpha");
         project.fingerprint = Some("alpha-fingerprint".into());
-        app.shell.catalog.remember(project.clone(), false);
+        app.shell.catalog.remember(project.clone(), false).unwrap();
         let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
         human.id = AgentId::from("human-id");
         let mut agent = record("codex-1", "codex", Some(1));

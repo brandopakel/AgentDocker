@@ -65,7 +65,8 @@ spoken name says so. The palette has no key footer, and a row's folder or
 standing word is searched and spoken rather than drawn. Initials work (*cc* for Claude
 Code), and three or more letters in order find what nothing else did.
 **Launch agent…** in it lists the installed tools.
-Agents in a forgotten project stay out of Jump to until you add that project again.
+Agents in a forgotten project stay out of Jump to and out of **Next agent that
+needs you** until that project is listed again.
 
 With no saved selection, the app opens on **All projects**, with sessions grouped
 under their project names. A saved project or Other sessions view is restored.
@@ -257,12 +258,14 @@ pointer is on the row or the row is selected: **Rename…**
 gives the entry a name of your own in the sidebar and All projects headings (an empty name goes back to the
 folder's), **Pin**/**Unpin**, and **Remove from list**, which keeps the folder
 off the list even when its sessions are discovered again, until you add it
-again (the list of removed folders is bounded like the project list, at 512;
+again or open one of its sessions (from All projects, say): going there is
+asking for it, so the project is listed again, unpinned, with that session
+open (the list of removed folders is bounded like the project list, at 512;
 at the bound a removal is refused with a message and the project stays, so
 nothing removed earlier comes back on its own). **More → Forget project** does the same for the selected project.
 A removed folder is also out of AgentDocker's hands: its hooks leave the
 sessions working there alone — no read-before-write guard, no leases, no
-messages or journal put in front of the model — until you add it again (the
+messages or journal put in front of the model — until it is listed again (the
 desktop keeps the list in `uncoordinated.json` in the AgentDocker home, which
 every hook reads first, at most 1 MiB; a list past that is not written).
 A session already registered there still gives back its leases at a turn's
@@ -290,7 +293,12 @@ them apart comes before the rest. Sessions whose
 project is unknown, or was only the filesystem root or your home folder (where
 a session runs when nobody chose a folder), appear under **Other sessions**:
 discovery never makes `/` or the home folder a project, and entries it made
-before are dropped, though you can still add either yourself.
+before are dropped, though you can still add either yourself. Opening such a
+session goes to Other sessions. Opening any other session goes to its project
+and lists it when it is not listed yet (one under the per-user temporary
+directory, listed only by a pin, opens on All projects instead); only a list
+already holding 512 projects refuses, saying it is full and to forget an old
+project first.
 
 A session that asked something shows **Answer**, which opens that exact
 question, as the project chat's **Answer N** (read aloud *Answer N questions*)

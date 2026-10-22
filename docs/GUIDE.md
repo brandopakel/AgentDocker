@@ -743,7 +743,8 @@ despite sibling edits, stays fresh while the directory baseline is retained.
 An own edit clears only when its current identity matches recorded evidence.
 Unknown or expired evidence requires a reread; a watcher flush alone cannot
 prove that all operating-system events arrived. In a folder removed from the desktop's project list the
-hooks do nothing at all until it is added back. `PreToolUse` takes a lease on the
+hooks do nothing at all until it is listed again: added back, or one of its
+sessions opened in the desktop. `PreToolUse` takes a lease on the
 file about to be edited and `Stop` gives those edit leases back when the
 turn ends; a lease the session claimed itself — a worktree, a branch, the
 build campaign — is not touched until the session releases it, its TTL runs

@@ -1629,7 +1629,10 @@ impl App {
                     // not a project the person keeps; only a pin lists it.
                     .filter(|p| !crate::catalog::is_temporary(&p.root))
                 {
-                    self.shell.catalog.remember(project, false);
+                    // Discovery lists what it may: a folder the person
+                    // removed, `/`, the home folder or a full list leaves
+                    // the project off without a word.
+                    let _ = self.shell.catalog.remember(project, false);
                 }
                 self.shell.catalog.forget_missing();
                 if before != self.shell.catalog {
@@ -1843,27 +1846,48 @@ impl App {
                 };
                 let project = agent.project.clone();
                 let root = project.as_ref().map(|p| p.root.clone());
+                // Opening a session is asking to go to its project: one the
+                // person removed comes back to the list. A folder under the
+                // temporary directory is listed only by a pin.
                 if let Some(project) = project.filter(|p| !crate::catalog::is_temporary(&p.root)) {
-                    self.shell.catalog.remember(project, false);
-                    if !self
-                        .shell
+                    match self.shell.catalog.visit(project) {
+                        Ok(changed) => {
+                            if changed {
+                                self.shell.changed();
+                            }
+                        }
+                        Err(crate::catalog::Refusal::Full) => {
+                            self.say(format!(
+                                "The project list is full ({} projects). Forget an old project before opening this session.",
+                                crate::catalog::MAX_PROJECTS
+                            ));
+                            return Task::none();
+                        }
+                        // `/`, the home folder or a relative folder is no
+                        // project: the session is one of the Other
+                        // sessions. (`visit` brings a removed folder back.)
+                        Err(
+                            crate::catalog::Refusal::Broad
+                            | crate::catalog::Refusal::Relative
+                            | crate::catalog::Refusal::Removed,
+                        ) => {}
+                    }
+                }
+                let listed = |root: &PathBuf| {
+                    self.shell
                         .catalog
                         .projects
                         .iter()
-                        .any(|entry| Some(&entry.project.root) == root.as_ref())
-                    {
-                        self.say("The project list is full. Forget an old project before opening this session.");
-                        return Task::none();
-                    }
-                }
-                match root {
-                    Some(root) => {
-                        tasks.push(self.update(Message::SelectProject(root)));
-                    }
-                    None => {
-                        tasks.push(self.update(Message::Unassigned));
-                    }
-                }
+                        .any(|entry| &entry.project.root == root)
+                };
+                let destination = match root {
+                    Some(root) if listed(&root) => Message::SelectProject(root),
+                    // An unlisted folder under the temporary directory: the
+                    // home view shows every session.
+                    Some(root) if !self.shell.catalog.projectless(&root) => Message::AllProjects,
+                    _ => Message::Unassigned,
+                };
+                tasks.push(self.update(destination));
                 self.screen = Screen::Agents;
                 tasks.push(self.update(Message::SelectSession(id)));
             }
@@ -3609,10 +3633,18 @@ impl App {
                 }
             }
             Message::NextAttention => {
+                // As in the palette, a folder the person removed does not
+                // call for them: walking onto its session would bring it
+                // back to the list without their asking.
                 let mut calling: Vec<_> = self
                     .agents
                     .iter()
                     .filter(|a| a.spec.runtime != agentdocker_core::HUMAN_RUNTIME)
+                    .filter(|a| {
+                        a.project
+                            .as_ref()
+                            .is_none_or(|p| !self.shell.catalog.hidden.contains(&p.root))
+                    })
                     .map(|a| (self.standing(a), a.id.to_string()))
                     .filter(|(standing, _)| standing.calls_for_attention())
                     .collect();
@@ -6448,8 +6480,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
         let beta = agentdocker_core::ProjectRef::directory(dir.path().join("beta"));
-        app.shell.catalog.remember(alpha.clone(), true);
-        app.shell.catalog.remember(beta.clone(), true);
+        app.shell.catalog.remember(alpha.clone(), true).unwrap();
+        app.shell.catalog.remember(beta.clone(), true).unwrap();
         app.shell.catalog.selected = Some(alpha.root.clone());
         let alpha_root = alpha.root.display().to_string();
         let beta_root = beta.root.display().to_string();
@@ -6616,8 +6648,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
         let beta = agentdocker_core::ProjectRef::directory(dir.path().join("beta"));
-        app.shell.catalog.remember(alpha.clone(), true);
-        app.shell.catalog.remember(beta.clone(), true);
+        app.shell.catalog.remember(alpha.clone(), true).unwrap();
+        app.shell.catalog.remember(beta.clone(), true).unwrap();
         app.shell.catalog.selected = Some(alpha.root.clone());
         let root = alpha.root.display().to_string();
         let page = |from: usize, count: usize| {
@@ -6818,8 +6850,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
         let beta = agentdocker_core::ProjectRef::directory(dir.path().join("beta"));
-        app.shell.catalog.remember(alpha.clone(), true);
-        app.shell.catalog.remember(beta.clone(), false);
+        app.shell.catalog.remember(alpha.clone(), true).unwrap();
+        app.shell.catalog.remember(beta.clone(), false).unwrap();
         let root = alpha.root.clone();
         let _ = app.update(Message::ProjectMenu(root.clone()));
         assert_eq!(app.shell.project_menu.as_ref(), Some(&root));
@@ -6846,8 +6878,9 @@ mod tests {
         assert!(app.shell.catalog.projects[1].pinned);
         let _ = app.update(Message::ProjectRemove(beta.root.clone()));
         assert_eq!(app.shell.catalog.projects.len(), 1);
-        assert!(
-            !app.shell.catalog.remember(beta, false),
+        assert_eq!(
+            app.shell.catalog.remember(beta, false),
+            Err(crate::catalog::Refusal::Removed),
             "kept off the list"
         );
     }
@@ -7463,6 +7496,7 @@ mod tests {
             ("first", "/work/alpha"),
             ("quiet", "/work/alpha"),
             ("second", "/work/beta"),
+            ("removed", "/work/gone"),
         ] {
             let mut agent = AgentRecord::new(
                 agentdocker_core::AgentSpec {
@@ -7480,6 +7514,10 @@ mod tests {
         }
         app.shell.unviewed_done.insert("first".into());
         app.shell.unviewed_done.insert("second".into());
+        // A session in a folder the person removed is not walked to, so
+        // the folder is not brought back behind their back.
+        app.shell.catalog.hidden.push("/work/gone".into());
+        app.shell.unviewed_done.insert("removed".into());
         let _ = app.update(Message::NextAttention);
         assert_eq!(app.shell.selected.as_deref(), Some("first"));
         let _ = app.update(Message::NextAttention);
@@ -7487,7 +7525,11 @@ mod tests {
         // Both have been looked at now: nothing is left to walk to.
         let _ = app.update(Message::NextAttention);
         assert_eq!(app.shell.selected.as_deref(), Some("second"));
-        assert!(app.shell.unviewed_done.is_empty());
+        assert_eq!(
+            app.shell.unviewed_done,
+            ["removed".to_owned()].into_iter().collect()
+        );
+        assert_eq!(app.shell.catalog.hidden, [PathBuf::from("/work/gone")]);
     }
 
     #[test]
@@ -7610,7 +7652,7 @@ mod tests {
             std::fs::create_dir(&previous).unwrap();
             std::fs::create_dir(&selected).unwrap();
             let project = crate::catalog::resolve(&selected).unwrap();
-            app.shell.catalog.remember(project.clone(), false);
+            app.shell.catalog.remember(project.clone(), false).unwrap();
             action.target.project = Some(project.id());
             app.questions.push(Question {
                 presentation: None,
@@ -7908,7 +7950,7 @@ mod tests {
         let alpha = agentdocker_core::ProjectRef::directory(home.path().join("alpha"));
         let beta = agentdocker_core::ProjectRef::directory(home.path().join("beta"));
         for project in [&alpha, &beta] {
-            app.shell.catalog.remember(project.clone(), true);
+            app.shell.catalog.remember(project.clone(), true).unwrap();
         }
         let a = alpha.root.display().to_string();
         let b = beta.root.display().to_string();
@@ -8603,7 +8645,7 @@ mod tests {
         let (mut app, commands, messages, home, mut action) = notification_app();
         app.shell.inbox_thread = Some("another-agent".into());
         let project = crate::catalog::resolve(home.path()).unwrap();
-        app.shell.catalog.remember(project.clone(), false);
+        app.shell.catalog.remember(project.clone(), false).unwrap();
         action.target.project = Some(project.id());
         let question = Question {
             presentation: None,
@@ -9112,7 +9154,8 @@ mod tests {
         let (mut app, commands, _) = app();
         app.shell
             .catalog
-            .remember(ProjectRef::directory("/work/repo"), true);
+            .remember(ProjectRef::directory("/work/repo"), true)
+            .unwrap();
         app.shell.catalog.selected = Some("/work/repo".into());
         let _ = app.update(Message::OpenLaunch);
         assert!(app.shell.launch);
@@ -9185,10 +9228,13 @@ mod tests {
             "/private/tmp/fixture/workspace",
         ));
         app.agents.push(scratch);
-        app.shell.catalog.remember(
-            agentdocker_core::ProjectRef::directory("/private/tmp/fixture/workspace"),
-            false,
-        );
+        app.shell
+            .catalog
+            .remember(
+                agentdocker_core::ProjectRef::directory("/private/tmp/fixture/workspace"),
+                false,
+            )
+            .unwrap();
         let _ = app.update(Message::ToggleTemporary);
         assert_eq!(app.shell.temporary_open, Some(false));
         assert!(
@@ -9716,7 +9762,7 @@ mod tests {
             let mut project = ProjectRef::directory(root);
             project.fingerprint = Some(name.into());
             agent.project = Some(project.clone());
-            app.shell.catalog.remember(project, false);
+            app.shell.catalog.remember(project, false).unwrap();
             agents.push(agent);
         }
         let mut homeless = AgentRecord::new(
@@ -9769,6 +9815,118 @@ mod tests {
         let _ = app.update(Message::OpenSession(homeless.id.to_string()));
         assert!(app.shell.catalog.unassigned);
         assert_eq!(app.shell.selected.as_deref(), Some(homeless.id.as_str()));
+    }
+
+    /// Opening a session is asking to go to its project. One in a folder
+    /// the person removed brings that project back to the list, unpinned;
+    /// one in `/`, the home folder or a relative folder is one of the
+    /// Other sessions, with no word; and only a list at its limit says it
+    /// is full, naming the limit.
+    #[test]
+    fn opening_a_session_lists_its_project_and_only_a_full_list_refuses() {
+        use agentdocker_core::AgentSpec;
+        let (mut app, _, _) = app();
+        let session = |name: &str, root: Option<PathBuf>| {
+            let mut agent = AgentRecord::new(
+                AgentSpec {
+                    name: name.into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            agent.id = name.into();
+            agent.status = agentdocker_core::AgentStatus::Running;
+            agent.project = root.map(ProjectRef::directory);
+            agent
+        };
+        let removed = PathBuf::from("/fixture/removed");
+        app.shell
+            .catalog
+            .remember(ProjectRef::directory(&removed), false)
+            .unwrap();
+        app.shell
+            .catalog
+            .remember(ProjectRef::directory("/fixture/kept"), true)
+            .unwrap();
+        assert!(app.shell.catalog.remove(&removed).unwrap());
+        let home = std::env::home_dir().unwrap();
+        app.agents = vec![
+            session("in-removed", Some(removed.clone())),
+            session("at-home", Some(home)),
+            session("at-root", Some("/".into())),
+            session("relative", Some("relative/folder".into())),
+            session("newcomer", Some("/fixture/newcomer".into())),
+        ];
+        let on_view = |app: &App| -> Vec<String> {
+            app.session_records(sessions::Filter::Current)
+                .iter()
+                .map(|a| a.id.to_string())
+                .collect()
+        };
+
+        // The removed project is listed again, unpinned, with its session
+        // open in it, and nothing says the list is full.
+        let _ = app.update(Message::OpenSession("in-removed".into()));
+        assert!(app.shell.catalog.hidden.is_empty(), "no longer removed");
+        let entry = app
+            .shell
+            .catalog
+            .projects
+            .iter()
+            .find(|e| e.project.root == removed)
+            .expect("listed again");
+        assert!(!entry.pinned);
+        assert_eq!(app.shell.catalog.selected.as_ref(), Some(&removed));
+        assert_eq!(app.shell.selected.as_deref(), Some("in-removed"));
+        assert_eq!(on_view(&app), ["in-removed"]);
+        assert!(!app.status.contains("full"), "{}", app.status);
+
+        // `/`, the home folder and a relative folder are no project: each
+        // session opens under Other sessions, where it is on view.
+        for id in ["at-home", "at-root", "relative"] {
+            let _ = app.update(Message::OpenSession(id.into()));
+            assert!(app.shell.catalog.unassigned, "{id}");
+            assert_eq!(app.shell.selected.as_deref(), Some(id));
+            assert!(on_view(&app).iter().any(|a| a == id), "{id} is on view");
+            assert!(!app.status.contains("full"), "{id}: {}", app.status);
+        }
+        assert_eq!(app.shell.catalog.projects.len(), 2, "nothing more listed");
+
+        // At the limit, a listed project's session still opens; a new one
+        // is refused with the limit and the advice, and nothing moves.
+        let mut filler = 0;
+        while app.shell.catalog.projects.len() < crate::catalog::MAX_PROJECTS {
+            app.shell
+                .catalog
+                .remember(
+                    ProjectRef::directory(format!("/fixture/filler-{filler}")),
+                    false,
+                )
+                .unwrap();
+            filler += 1;
+        }
+        let _ = app.update(Message::OpenSession("in-removed".into()));
+        assert_eq!(app.shell.selected.as_deref(), Some("in-removed"));
+        assert!(!app.status.contains("full"), "{}", app.status);
+        let _ = app.update(Message::OpenSession("newcomer".into()));
+        assert_eq!(
+            app.status,
+            "The project list is full (512 projects). Forget an old project before opening this session."
+        );
+        assert_eq!(
+            app.shell.selected.as_deref(),
+            Some("in-removed"),
+            "nothing moved"
+        );
+        assert_eq!(app.shell.catalog.selected.as_ref(), Some(&removed));
+        assert!(
+            !app.shell
+                .catalog
+                .projects
+                .iter()
+                .any(|e| e.project.root == std::path::Path::new("/fixture/newcomer"))
+        );
     }
 
     #[test]

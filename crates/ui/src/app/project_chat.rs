@@ -416,7 +416,7 @@ mod tests {
         for name in ["alpha", "beta"] {
             let mut project = ProjectRef::directory(format!("/fixture/{name}"));
             project.fingerprint = Some(name.to_owned());
-            app.shell.catalog.remember(project, false);
+            app.shell.catalog.remember(project, false).unwrap();
         }
         let _ = app.update(Message::SelectProject("/fixture/alpha".into()));
         assert_eq!(app.screen, Screen::Chat);
@@ -465,7 +465,8 @@ mod tests {
             for path in [&alpha, &beta] {
                 app.shell
                     .catalog
-                    .remember(ProjectRef::directory(path), false);
+                    .remember(ProjectRef::directory(path), false)
+                    .unwrap();
             }
             let _ = app.update(Message::SelectProject(alpha.clone()));
             let old = app.shell.conversation.clone().unwrap();
