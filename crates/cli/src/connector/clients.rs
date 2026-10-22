@@ -159,13 +159,16 @@ fn bounded(text: &str, max: usize) -> Option<String> {
     (!kept.is_empty()).then_some(kept)
 }
 
-/// Unicode format characters that change how text around them reads
-/// without showing themselves: bidirectional controls, zero-width marks
-/// and joiners, the byte-order mark. A stored client string keeps none.
+/// Unicode characters that change how text around them reads without
+/// showing themselves: bidirectional controls, the soft hyphen, the
+/// combining grapheme joiner, zero-width marks and joiners, the byte-order
+/// mark. A stored client string keeps none.
 fn invisible(c: char) -> bool {
     matches!(
         c,
-        '\u{061C}'
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{061C}'
             | '\u{180E}'
             | '\u{200B}'..='\u{200F}'
             | '\u{202A}'..='\u{202E}'
@@ -187,6 +190,9 @@ mod tests {
             Some("Claudelmth.exe 1.0")
         );
         assert_eq!(bounded("\u{200B}\u{202E}", 64), None);
+        for alone in ["\u{00AD}", "\u{034F}", "\u{00AD}\u{034F}"] {
+            assert_eq!(bounded(alone, 64), None, "{alone:?}");
+        }
     }
 
     fn at(minutes: i64) -> DateTime<Utc> {
