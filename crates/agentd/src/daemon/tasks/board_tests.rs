@@ -1006,6 +1006,7 @@ async fn a_projects_roles_are_the_five_until_the_person_changes_them() {
             name: name.to_owned(),
             color,
             description: None,
+            tools: None,
         };
     assert!(matches!(
         d.handle(save(f.agent.id.as_str(), Some("reviewer"), "Mine", None))
@@ -1071,6 +1072,118 @@ async fn a_projects_roles_are_the_five_until_the_person_changes_them() {
             ..
         }
     ));
+}
+
+/// The person names the tools a role's holders are offered, kept sorted
+/// once, and lifts the limit with an empty list; the change is in the
+/// event. A name of the wrong shape is refused, and an agent changes none.
+#[tokio::test]
+async fn a_roles_tools_are_the_persons_to_name_and_lift() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let save =
+        |from: &str, role: Option<&str>, name: &str, tools: Option<&[&str]>| Request::RoleSave {
+            from: from.to_owned(),
+            project: Some(f.work.clone()),
+            role: role.map(str::to_owned),
+            name: name.to_owned(),
+            color: None,
+            description: None,
+            tools: tools.map(|tools| tools.iter().map(|&t| t.to_owned()).collect()),
+        };
+    let changed = |events: &mut tokio::sync::broadcast::Receiver<Event>| {
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::RoleChanged { role, tools, .. } = event.kind {
+                seen.push((role, tools));
+            }
+        }
+        seen
+    };
+    let mut events = d.subscribe_events();
+
+    assert!(matches!(
+        d.handle(save(
+            f.agent.id.as_str(),
+            Some("reviewer"),
+            "Reviewer",
+            Some(&["review_gate"])
+        ))
+        .await,
+        Response::Error {
+            code: ErrorCode::Forbidden,
+            ..
+        }
+    ));
+    let Response::RoleDef { role } = d
+        .handle(save(
+            HUMAN,
+            Some("reviewer"),
+            "Reviewer",
+            Some(&["review_gate", "get_task", "review_gate"]),
+        ))
+        .await
+    else {
+        panic!("saved")
+    };
+    let limit = Some(vec!["get_task".to_owned(), "review_gate".to_owned()]);
+    assert_eq!(role.tools, limit);
+    assert_eq!(
+        changed(&mut events),
+        [("reviewer".to_owned(), limit.clone())]
+    );
+
+    // A rename leaves the tools as they were, and its event says nothing
+    // of them.
+    let Response::RoleDef { role } = d
+        .handle(save(HUMAN, Some("reviewer"), "Code review", None))
+        .await
+    else {
+        panic!("renamed")
+    };
+    assert_eq!(role.tools, limit);
+    assert_eq!(changed(&mut events), [("reviewer".to_owned(), None)]);
+    let Response::RoleCatalog { roles } = d
+        .handle(Request::RoleCatalog {
+            project: Some(f.work.clone()),
+        })
+        .await
+    else {
+        panic!("read")
+    };
+    assert_eq!(roles[2].tools, limit, "kept");
+
+    // A new role can be made limited.
+    assert!(matches!(
+        d.handle(save(HUMAN, None, "Docs", Some(&["put_file"]))).await,
+        Response::RoleDef { role } if role.tools == Some(vec!["put_file".to_owned()])
+    ));
+    changed(&mut events);
+
+    for bad in [&["Review-Gate"][..], &[""], &["a b"]] {
+        assert!(matches!(
+            d.handle(save(HUMAN, Some("reviewer"), "Code review", Some(bad)))
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+    }
+    assert!(changed(&mut events).is_empty(), "a refusal changes nothing");
+
+    // An empty list lifts the limit; said as an empty list.
+    let Response::RoleDef { role } = d
+        .handle(save(HUMAN, Some("reviewer"), "Code review", Some(&[])))
+        .await
+    else {
+        panic!("lifted")
+    };
+    assert_eq!(role.tools, None);
+    assert_eq!(
+        changed(&mut events),
+        [("reviewer".to_owned(), Some(Vec::new()))]
+    );
 }
 
 /// An agent keeps a memory in its own project; another finds it by its

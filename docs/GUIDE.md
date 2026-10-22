@@ -490,7 +490,7 @@ each one by pid.
 | `restart <agent>` | Replace a managed container after confirming it exited |
 | `deregister` / `rm` | Mark an external agent finished / forget a finished one |
 | `role <name>…` | Give an agent (`--as`) roles from its project's palette (`roles`) — `role --as codex-1 reviewer tester` — in place of what it held; `--add reviewer` and `--remove tester` change one at a time, `--clear` takes them all away. Roles are yours to give: run from an agent's own shell it is refused. A command that names no sender speaks as you only from a terminal outside every agent: where a provider's own variables are set (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`) it asks for `--as` instead, even when the provider's process cannot be found. An agent's `send --to role:reviewer` reaches every reviewer in the project, in the role's room (one thread, where the sender hears the answers); `handoff role:reviewer` needs the role's one holder |
-| `roles` | A project's roles, each with its colour: the five every project offers (lead, implementer, reviewer, explorer, tester) and your own. `roles add "Security reviewer" --color red --description "…"` makes one, `roles set reviewer --name "Code review" --color pink` changes one (its address stays), `roles rm tester` takes one out. Only you change them, and nothing holds a role until you give it; run from an agent's shell, including a Codex conversation's shared server, they are refused. `--project` names another project |
+| `roles` | A project's roles, each with its colour: the five every project offers (lead, implementer, reviewer, explorer, tester) and your own. `roles add "Security reviewer" --color red --description "…"` makes one, `roles set reviewer --name "Code review" --color pink` changes one (its address stays), `roles rm tester` takes one out. `roles set reviewer --tools review_verdict,review_gate,get_task` offers its holders only those MCP tools and the few every agent keeps (`--tools` works on `roles add` too), `roles set reviewer --all-tools` offers every tool again; the list shows a limited role's tools. Only you change them, and nothing holds a role until you give it; run from an agent's shell, including a Codex conversation's shared server, they are refused. `--project` names another project |
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not. A finished record that holds nothing is forgotten by itself thirty days on, or after `[agents] retention` in `~/.agentdocker/agentd.toml` (`"off"` keeps every record) |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml` |
@@ -706,6 +706,16 @@ about us:
 A browser agent on the remote connector has the messaging tools and
 `list_tasks`, `get_task`, `search_tasks`, `comment_task`, `list_plans` and
 `get_plan`.
+
+A role you limit (`roles set <role> --tools …`) narrows this. An agent
+holding only limited roles sees the tools those roles name, together, and
+`whoami`, `send_message`, `read_inbox`, `wait_for_messages`,
+`acknowledge_messages`, `list_agents` and `list_roles`, which every agent
+keeps; a call to any other is refused, naming its roles. One role without a
+limit, or no role at all, means every tool. A change reaches a running
+session's calls within half a minute; the list it shows follows the next
+time it asks for its tools, usually its next start. It narrows what the
+session is offered, not what its shell can run.
 
 Results are compact rather than pretty-printed, and most answer with a
 projection — the fields an agent uses, not every field the daemon keeps.

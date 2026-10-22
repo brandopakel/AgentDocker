@@ -2449,6 +2449,7 @@ impl App {
                             name,
                             color: None,
                             description: None,
+                            tools: None,
                         },
                     );
                 }
@@ -2473,6 +2474,7 @@ impl App {
                             name: def.name,
                             color: Some(all[(at + 1) % all.len()]),
                             description: None,
+                            tools: None,
                         },
                     );
                 }
@@ -5690,6 +5692,7 @@ mod tests {
                 role: "reviewer".into(),
                 by: "user".into(),
                 deleted: false,
+                tools: None,
             },
             Utc::now(),
         ));
@@ -5757,6 +5760,7 @@ mod tests {
                 role: "reviewer".into(),
                 by: "user".into(),
                 deleted: false,
+                tools: None,
             },
             Utc::now(),
         ));

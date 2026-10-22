@@ -2467,8 +2467,9 @@ impl Daemon {
                 name,
                 color,
                 description,
+                tools,
             } => {
-                self.role_save(&from, project, role, &name, color, description)
+                self.role_save(&from, project, role, &name, color, description, tools)
                     .await
             }
             Request::RoleDelete {

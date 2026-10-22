@@ -1111,8 +1111,13 @@ enum RolesAction {
         color: Option<String>,
         #[arg(long)]
         description: Option<String>,
+        /// The only MCP tools its holders are offered, comma-separated,
+        /// besides the few every agent keeps (every tool when absent).
+        #[arg(long, value_name = "TOOL,…", value_delimiter = ',')]
+        tools: Option<Vec<String>>,
     },
-    /// Rename, recolour or describe a role; its address stays.
+    /// Rename, recolour or describe a role, or name its tools; its address
+    /// stays.
     Set {
         role: String,
         #[arg(long)]
@@ -1122,6 +1127,13 @@ enum RolesAction {
         color: Option<String>,
         #[arg(long)]
         description: Option<String>,
+        /// The only MCP tools its holders are offered, comma-separated,
+        /// besides the few every agent keeps.
+        #[arg(long, value_name = "TOOL,…", value_delimiter = ',')]
+        tools: Option<Vec<String>>,
+        /// Offer its holders every tool again.
+        #[arg(long, conflicts_with = "tools")]
+        all_tools: bool,
     },
     /// Take a role out of the project's palette.
     Rm { role: String },
@@ -1756,6 +1768,35 @@ struct HandoffArgs {
 }
 
 /// `kind:target` from the command line, checked for its kind's shape.
+/// A role's tools as `roles add` and `roles set` ask for them: the named
+/// ones, each a tool the MCP server offers; an empty list for
+/// `--all-tools`, which lifts the limit; nothing when neither is given.
+fn role_tools(tools: Option<Vec<String>>, all_tools: bool) -> Result<Option<Vec<String>>> {
+    if all_tools {
+        return Ok(Some(Vec::new()));
+    }
+    let Some(tools) = tools else {
+        return Ok(None);
+    };
+    let tools: Vec<String> = tools
+        .iter()
+        .map(|tool| tool.trim())
+        .filter(|tool| !tool.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if tools.is_empty() {
+        bail!("name the tools, or use --all-tools to offer every one");
+    }
+    let known = mcp::tool_names();
+    if let Some(unknown) = tools.iter().find(|tool| !known.contains(tool)) {
+        bail!(
+            "no MCP tool is called {unknown}; the tools are {}",
+            known.join(", ")
+        );
+    }
+    Ok(Some(tools))
+}
+
 fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
     agentdocker_core::Link::parse(text).map_err(str::to_owned)
 }
@@ -4100,6 +4141,12 @@ async fn run() -> Result<()> {
                     role.color.as_str()
                 );
                 line.push_str(&role.description);
+                if let Some(tools) = &role.tools {
+                    if !role.description.is_empty() {
+                        line.push_str("  ");
+                    }
+                    line.push_str(&format!("tools: {}", tools.join(", ")));
+                }
                 line.trim_end().to_owned()
             };
             match action {
@@ -4116,6 +4163,7 @@ async fn run() -> Result<()> {
                     name,
                     color: wanted,
                     description,
+                    tools,
                 }) => {
                     let request = Request::RoleSave {
                         from: from.clone(),
@@ -4124,6 +4172,7 @@ async fn run() -> Result<()> {
                         name,
                         color: color(wanted)?,
                         description,
+                        tools: role_tools(tools, false)?,
                     };
                     if let Response::RoleDef { role } = client.call(&request).await? {
                         println!("{}", line(&role));
@@ -4134,7 +4183,10 @@ async fn run() -> Result<()> {
                     name,
                     color: wanted,
                     description,
+                    tools,
+                    all_tools,
                 }) => {
+                    let tools = role_tools(tools, all_tools)?;
                     // Its name stays unless a new one is given.
                     let name = match name {
                         Some(name) => name,
@@ -4159,6 +4211,7 @@ async fn run() -> Result<()> {
                         name,
                         color: color(wanted)?,
                         description,
+                        tools,
                     };
                     if let Response::RoleDef { role } = client.call(&request).await? {
                         println!("{}", line(&role));
@@ -5935,6 +5988,84 @@ mod tests {
             .expect("a parsing thread")
             .join()
             .expect("parsing does not panic")
+    }
+
+    /// `roles set --tools a,b` names a role's tools, each one the MCP
+    /// server offers; `--all-tools` lifts the limit and cannot be asked for
+    /// with `--tools`; `roles add` takes `--tools` too.
+    #[test]
+    fn a_roles_tools_are_named_or_lifted_on_the_command_line() {
+        let parsed = parse_cli([
+            "agentdocker",
+            "roles",
+            "set",
+            "reviewer",
+            "--tools",
+            "review_gate,get_task",
+        ])
+        .unwrap();
+        let Command::Roles {
+            action: Some(RolesAction::Set {
+                tools, all_tools, ..
+            }),
+            ..
+        } = parsed.command
+        else {
+            panic!("expected roles set")
+        };
+        assert!(!all_tools);
+        assert_eq!(
+            super::role_tools(tools, all_tools).unwrap(),
+            Some(vec!["review_gate".to_owned(), "get_task".to_owned()])
+        );
+
+        let parsed = parse_cli(["agentdocker", "roles", "set", "reviewer", "--all-tools"]).unwrap();
+        let Command::Roles {
+            action: Some(RolesAction::Set {
+                tools, all_tools, ..
+            }),
+            ..
+        } = parsed.command
+        else {
+            panic!("expected roles set")
+        };
+        assert_eq!(
+            super::role_tools(tools, all_tools).unwrap(),
+            Some(Vec::new())
+        );
+
+        let error = parse_cli([
+            "agentdocker",
+            "roles",
+            "set",
+            "reviewer",
+            "--all-tools",
+            "--tools",
+            "claim",
+        ])
+        .err()
+        .expect("both cannot be asked for");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let parsed =
+            parse_cli(["agentdocker", "roles", "add", "Docs", "--tools", "put_file"]).unwrap();
+        let Command::Roles {
+            action: Some(RolesAction::Add { tools, .. }),
+            ..
+        } = parsed.command
+        else {
+            panic!("expected roles add")
+        };
+        assert_eq!(tools, Some(vec!["put_file".to_owned()]));
+
+        assert_eq!(super::role_tools(None, false).unwrap(), None, "unchanged");
+        let unknown = super::role_tools(Some(vec!["no_such_tool".into()]), false).unwrap_err();
+        assert!(
+            unknown
+                .to_string()
+                .contains("no MCP tool is called no_such_tool")
+        );
+        assert!(super::role_tools(Some(vec![String::new()]), false).is_err());
     }
 
     #[test]

@@ -1347,7 +1347,8 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                                 host_started_at: None,
                             },
                         )
-                        .remote(grant.project.clone()),
+                        .remote(grant.project.clone())
+                        .limit_by_roles(),
                     )
                 })
                 .clone()
@@ -2753,6 +2754,7 @@ mod tests {
             live_agent("claude-connector-test"), // Register, at the token exchange
             live_agent("claude-connector-test"), // Inspect before initialize
             live_agent("claude-connector-test"), // Inspect before tools/list
+            live_agent("claude-connector-test"), // Inspect: no role limits its tools
             live_agent("claude-connector-test"), // Inspect before send_message
             Response::Ok,                        // Heartbeat
             Response::Ok,                        // Send
