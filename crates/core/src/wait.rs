@@ -333,18 +333,19 @@ pub const WAIT_DETAIL_CARRY_SECS: i64 = 60;
 /// Its first line, without control or invisible formatting characters,
 /// runs of spaces as one. None when that whole line reads like a credential
 /// ([`crate::memory::secret_like`]), judged before anything is cut. Then
-/// what follows the tool's name is kept only as far as that tool's
-/// arguments are known to be safe to show:
-/// - a file tool's path ([`PATH_TOOLS`]) and a fetch's address, up to a
+/// what follows the tool's name is kept only where that tool's argument is
+/// known to be safe to show, and free text never is:
+/// - a file tool's path ([`PATH_TOOLS`]) and `WebFetch`'s address, up to a
 ///   flag that takes a credential or a `user:password@host`, every address
 ///   reduced to scheme, host and path ([`scrubbed`]);
-/// - a search's query or pattern ([`QUERY_TOOLS`]) the same way, and not
-///   at all when it names a [`CREDENTIAL_WORDS`] word;
-/// - anything else — a shell command (`Bash`, `PowerShell`), an unknown
-///   tool, a line with no tool — as a command, which by default shows its
-///   program alone ([`command_detail`]).
+/// - a shell command ([`SHELL_TOOLS`]) as [`command_detail`] reduces it:
+///   its program alone, or a few programs' own subcommands;
+/// - any other tool — a search (`Grep`, `Glob`, `WebSearch`), whose query
+///   or pattern is free text a short plain password slips through, an MCP
+///   tool, one this build does not know — as its name alone.
 ///
-/// Cut to [`WAIT_DETAIL_CHARS`] with an ellipsis.
+/// A line with no tool is read as a command. Cut to [`WAIT_DETAIL_CHARS`]
+/// with an ellipsis.
 pub fn wait_detail(text: &str) -> Option<String> {
     let line = text
         .split(['\n', '\r'])
@@ -365,11 +366,10 @@ pub fn wait_detail(text: &str) -> Option<String> {
         Some((tool, what)) => {
             let what = if PATH_TOOLS.contains(&tool) || tool == "WebFetch" {
                 Some(scrubbed(what))
-            } else if QUERY_TOOLS.contains(&tool) {
-                let lower = what.to_ascii_lowercase();
-                (!CREDENTIAL_WORDS.iter().any(|word| lower.contains(word))).then(|| scrubbed(what))
-            } else {
+            } else if SHELL_TOOLS.contains(&tool) {
                 command_detail(what)
+            } else {
+                None
             };
             match what.filter(|what| !what.is_empty()) {
                 Some(what) => format!("{tool}: {what}"),
@@ -389,8 +389,8 @@ pub fn wait_detail(text: &str) -> Option<String> {
 /// The tools whose argument is a file's path.
 pub const PATH_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "Read", "NotebookEdit"];
 
-/// The tools whose argument is a search's query or pattern.
-pub const QUERY_TOOLS: &[&str] = &["WebSearch", "Glob", "Grep"];
+/// The tools whose argument is a shell command.
+pub const SHELL_TOOLS: &[&str] = &["Bash", "PowerShell"];
 
 /// Whether what precedes `: ` in a detail is a tool's name.
 fn tool_name(word: &str) -> bool {
@@ -419,8 +419,8 @@ fn scrubbed(line: &str) -> String {
     kept.join(" ")
 }
 
-/// Words that, anywhere in a command or a search, say a credential is in
-/// it or near it: such a line is never shown.
+/// Words that, anywhere in a command, say a credential is in it or near
+/// it: such a command is never shown.
 pub const CREDENTIAL_WORDS: &[&str] = &[
     "password",
     "passwd",
@@ -877,9 +877,10 @@ mod tests {
     }
 
     /// Whoever sends a detail, it gets the hooks adapter's treatment: what
-    /// follows a shell tool, an unknown tool or no tool at all is reduced
-    /// as a command, and a path, an address or a search keeps nothing of
-    /// a credential.
+    /// follows a shell tool or no tool at all is reduced as a command, a
+    /// path or an address keeps nothing of a credential, and a search, an
+    /// MCP tool or an unknown one shows its name alone — its query or
+    /// pattern is free text.
     #[test]
     fn any_detail_gets_the_hooks_treatment() {
         for (sent, kept) in [
@@ -908,7 +909,7 @@ mod tests {
             ("redis-cli -a hunter2 ping", Some("redis-cli")),
             (
                 "mcp__fixture__run: tool run hunter2",
-                Some("mcp__fixture__run: tool"),
+                Some("mcp__fixture__run"),
             ),
             ("Edit: src/lib.rs", Some("Edit: src/lib.rs")),
             ("Read: alice:hunter2@host/f", Some("Read")),
@@ -916,8 +917,12 @@ mod tests {
                 "WebFetch: https://alice:hunter2@example.invalid/a?k=v",
                 Some("WebFetch: https://example.invalid/a"),
             ),
-            ("Grep: fn main", Some("Grep: fn main")),
+            ("Grep: fn main", Some("Grep")),
+            ("Grep: hunter2", Some("Grep")),
             ("Grep: password=hunter2", Some("Grep")),
+            ("Glob: **/hunter2*", Some("Glob")),
+            ("WebSearch: alice hunter2", Some("WebSearch")),
+            ("ToolSearch: hunter2", Some("ToolSearch")),
             ("-u alice:hunter2", None),
         ] {
             assert_eq!(wait_detail(sent).as_deref(), kept, "{sent}");

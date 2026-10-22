@@ -4137,6 +4137,63 @@ async fn a_password_in_a_wait_detail_is_never_kept_or_announced() {
     }
 }
 
+/// A search's query or pattern is free text, where a short plain password
+/// slips past every check: whoever sends it, the record and its event keep
+/// the search tool's name alone.
+#[tokio::test]
+async fn a_search_detail_keeps_only_the_tool_name() {
+    use agentdocker_core::{ActivityObservation, ReportedActivity, WaitReason};
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let agent = register(&daemon, "search-detail-fixture", None).await;
+    let mut events = daemon.subscribe_events();
+    let start = Utc::now() - Duration::seconds(60);
+    for (step, (sent, tool)) in [
+        ("Grep: hunter2", "Grep"),
+        ("WebSearch: alice hunter2", "WebSearch"),
+        ("Glob: **/hunter2*", "Glob"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let at = start + Duration::seconds(step as i64);
+        let mut state = lock(&daemon.state);
+        assert!(matches!(
+            state.report_activity(
+                agent.id.as_str(),
+                ActivityObservation {
+                    activity: ReportedActivity::Waiting,
+                    observed_at: at,
+                    reason: Some(WaitReason::Permission),
+                    detail: Some(sent.into()),
+                },
+                at,
+            ),
+            Response::Ok
+        ));
+        let stored = state.store.load_agents().unwrap();
+        let stored = stored.iter().find(|a| a.id == agent.id).unwrap();
+        assert_eq!(
+            stored
+                .reported_activity
+                .as_ref()
+                .and_then(|o| o.detail.as_deref()),
+            Some(tool),
+            "{sent}"
+        );
+        assert!(!serde_json::to_string(stored).unwrap().contains("hunter2"));
+        drop(state);
+        let event = events.try_recv().unwrap().kind;
+        assert!(!serde_json::to_string(&event).unwrap().contains("hunter2"));
+        match event {
+            EventKind::AgentActivityReported { observation, .. } => {
+                assert_eq!(observation.detail.as_deref(), Some(tool), "{sent}");
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn provider_activity_is_ordered_expires_and_commits_with_its_event() {
     use agentdocker_core::{ActivityObservation, ReportedActivity};

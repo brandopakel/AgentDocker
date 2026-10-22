@@ -532,13 +532,14 @@ fn observation(input: &HookInput, output: Option<&Value>) -> Option<Observed> {
 /// The one line a permission prompt's wait carries, `<Tool>: <what>`, as
 /// [`agentdocker_core::wait::wait_detail`] keeps it — the same gate the
 /// daemon puts every detail through, so what it keeps is exactly this.
-/// What the tool was given: a shell command (which shows its program and,
-/// for a few programs, their own subcommands, never another argument), the
-/// file an edit or a read names (from the session's directory when it is
-/// under it), the address a fetch goes to, a search's query or pattern.
-/// Whatever reads like a secret is judged on the whole of what the tool
-/// was given, before anything is shortened for display, and leaves the
-/// tool alone. None without a tool name.
+/// What the tool was given, for the tools whose argument may show: a shell
+/// command (which shows its program and, for a few programs, their own
+/// subcommands, never another argument), the file an edit or a read names
+/// (from the session's directory when it is under it), the address a fetch
+/// goes to. Every other tool — a search, whose query is free text, an MCP
+/// tool — is its name alone. Whatever reads like a secret is judged on the
+/// whole of what the tool was given, before anything is shortened for
+/// display, and leaves the tool alone. None without a tool name.
 fn permission_detail(input: &HookInput) -> Option<String> {
     use agentdocker_core::memory::secret_like;
     use agentdocker_core::wait::wait_detail;
@@ -556,9 +557,6 @@ fn permission_detail(input: &HookInput) -> Option<String> {
     };
     let about: Option<String> = match tool.as_str() {
         "Bash" | "PowerShell" => field("command").map(str::to_owned),
-        "WebSearch" | "Glob" | "Grep" => field("query")
-            .or_else(|| field("pattern"))
-            .map(str::to_owned),
         "Edit" | "Write" | "MultiEdit" | "Read" | "NotebookEdit" => field("file_path")
             .or_else(|| field("notebook_path"))
             .map(|path| shown_path(path, input.cwd.as_deref())),
@@ -2844,10 +2842,14 @@ mod tests {
             .as_deref(),
             Some("WebFetch: https://example.invalid/a/b")
         );
-        assert_eq!(
-            ask("Grep", json!({"pattern": "fn main"})).as_deref(),
-            Some("Grep: fn main")
-        );
+        // A search's query or pattern is free text: never shown.
+        for (tool, value) in [
+            ("Grep", json!({"pattern": "hunter2"})),
+            ("Glob", json!({"pattern": "**/hunter2*"})),
+            ("WebSearch", json!({"query": "alice hunter2"})),
+        ] {
+            assert_eq!(ask(tool, value).as_deref(), Some(tool));
+        }
         assert_eq!(
             ask("mcp__agentdocker__claim", json!({"resource": "path:/x"})).as_deref(),
             Some("mcp__agentdocker__claim")
