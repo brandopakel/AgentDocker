@@ -251,7 +251,7 @@ trigger network refreshes or change their existing configuration.
   tunnels change address after restart, which the screen explains before setup.
   Setup marks only the selected tunnel as starting and disables both setup
   actions until it finishes. It has its own bounded worker; failure remains on the card, while ordinary
-  message delivery and refresh continue. Service installation is not successful
+  message delivery and refresh continue. Service installation does not prove
   browser consent or a provider receipt.
 
 ## What the connector's agent cannot get

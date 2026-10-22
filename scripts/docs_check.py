@@ -41,7 +41,7 @@ LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 POINTER = re.compile(r"docs/([A-Z][A-Z0-9-]*\.md)")
 # Instruction files that are not Markdown but are read the same way.
 INSTRUCTION_FILES = (".coderabbit.yaml",)
-MONTH = r"(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)"
+MONTH = r"(?:(?i:January|February|April|June|July|August|September|October|November|December|March)|May|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)"
 # A placeholder user owns the whole path component: `/Users/you/x` is one,
 # `/Users/you-team/x` is somebody.
 PLACEHOLDER_USER = r"(?:you|me|runner|USER)(?=[/\\\s`'\")\],;:]|\.(?:\s|$)|$)"
@@ -51,7 +51,7 @@ PLACEHOLDER_USER = r"(?:you|me|runner|USER)(?=[/\\\s`'\")\],;:]|\.(?:\s|$)|$)"
 # literal value, such as a protocol revision, not a moment. A `#` before hex
 # digits with a letter among them is a colour, not a commit.
 SPECIFICS = (
-    ("a date", re.compile(r"\b20\d\d-[01]\d-[0-3]\d\b")),
+    ("a date", re.compile(r"\b(?:19|20)\d\d-[01]\d-[0-3]\d\b")),
     ("a date", re.compile(rf"\b{MONTH}\.? [0-3]?\d(?:st|nd|rd|th)?\b")),
     ("a date", re.compile(rf"\b[0-3]?\d(?:st|nd|rd|th)? (?:of )?{MONTH}\b")),
     ("a date", re.compile(rf"\b{MONTH},? 20\d\d\b")),

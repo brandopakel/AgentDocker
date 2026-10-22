@@ -20,6 +20,7 @@ def kinds(line, denied=()):
 class Specifics(unittest.TestCase):
     def test_finds_moments_numbers_and_people(self):
         self.assertEqual(kinds("Trialled on 2026-09-17 and again on September 18."), ["a date", "a date"])
+        self.assertEqual(kinds("Seen on 1999-12-31 and on october 21."), ["a date", "a date"])
         for line in ("Trialled on 21 October 2026.", "Trialled on the 3rd of May.", "Since October 2026.",
                      "Seen Sept. 17 and Oct 21st."):
             with self.subTest(line=line):
