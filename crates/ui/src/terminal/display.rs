@@ -123,7 +123,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
                         self.size,
                     ));
                 }
-                shell.publish(Message::Focus("terminal".into()));
+                shell.publish(Message::Pressed("terminal".into()));
                 shell.request_redraw();
                 shell.capture_event();
             }

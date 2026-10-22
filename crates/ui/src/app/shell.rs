@@ -318,6 +318,10 @@ pub(super) struct State {
     /// keyboard, the menu takes the focus to its first entry, since menus
     /// float above the page and would otherwise be last in the Tab order.
     pub pressed: Option<String>,
+    /// The control that opened the menu on screen from the keyboard, which
+    /// took the focus into the menu: Escape gives it back there. A pointer
+    /// press anywhere forgets it, and so does the menu closing.
+    pub menu_opener: Option<String>,
     /// The project being renamed, and the name so far.
     pub project_rename: Option<(PathBuf, String)>,
     /// The conversation open in Inbox: one agent, or every agent at once.
@@ -1271,9 +1275,17 @@ pub enum Message {
     WindowScale(f32),
     NativeAccessibility(Result<usize, String>),
     Captured(window::Screenshot),
+    /// Give the control with this id the focus, from the keyboard,
+    /// assistive technology or the app itself: it shows its ring.
     Focus(String),
+    /// The pointer pressed the control with this id: it takes the focus
+    /// without a ring, wherever the press has moved it.
+    Pressed(String),
     /// A click away from a focused control took its focus.
     Blurred,
+    /// Escape closed the menu that floats over the page: the focus goes
+    /// back to the control that opened it, when the keyboard opened it.
+    MenuEscaped,
     Accessibility(crate::accessibility::Snapshot),
     // command palette
     /// Open the command palette, or close it: ⌘K / Control+K, the rail's
@@ -1306,6 +1318,8 @@ pub enum Message {
 /// other, and every frame paints the whole window, so the wakes that
 /// arrive while this waits are folded into the one it sends.
 const WAKE_SETTLE: Duration = Duration::from_millis(40);
+/// The launch dialog's task field, which takes the focus when it opens.
+pub(super) const LAUNCH_PROMPT: &str = "launch-prompt";
 
 async fn notifications(mut output: iced::futures::channel::mpsc::Sender<Message>) {
     use iced::futures::SinkExt;
@@ -1495,11 +1509,14 @@ impl App {
     }
 
     /// Focus a menu's first entry when the menu was opened from the
-    /// keyboard; a pointer-opened menu leaves the focus alone.
-    fn menu_focus(&self, trigger: &str, first: String) -> Task<Message> {
+    /// keyboard, remembering where to give it back; a pointer-opened menu
+    /// leaves the focus alone.
+    fn menu_focus(&mut self, trigger: &str, first: String) -> Task<Message> {
         if self.shell.pressed.as_deref() == Some(trigger) {
+            self.shell.menu_opener = None;
             return Task::none();
         }
+        self.shell.menu_opener = Some(trigger.to_owned());
         iced::widget::operation::focus(iced::advanced::widget::Id::from(first))
             .chain(crate::controls::reveal_focus())
             .chain(crate::accessibility::collect())
@@ -3544,6 +3561,13 @@ impl App {
                 if self.shell.launch {
                     self.shell.selected = None;
                     self.shell.session_filter = super::sessions::Filter::Current;
+                    // The dialog takes the focus, into its task field: what
+                    // had it is under the scrim now, and must not answer
+                    // the keys typed here.
+                    let focus = iced::widget::operation::focus(iced::advanced::widget::Id::from(
+                        LAUNCH_PROMPT,
+                    ))
+                    .chain(crate::accessibility::collect());
                     // The form lives on Chat and Agents; from Board or
                     // History, Launch agent… goes to Agents to show it.
                     if !matches!(self.screen, Screen::Chat | Screen::Agents) {
@@ -3551,8 +3575,9 @@ impl App {
                         // it; it is opened again on arrival.
                         let task = self.update(Message::Navigate(Screen::Agents));
                         self.shell.launch = true;
-                        return Task::batch([task, self.refresh_codex_trust()]);
+                        return Task::batch([task, self.refresh_codex_trust(), focus]);
                     }
+                    tasks.push(focus);
                 }
                 tasks.push(self.refresh_codex_trust());
             }
@@ -4021,13 +4046,9 @@ impl App {
                 use keyboard::{Key, key::Named};
                 match key {
                     Key::Named(Named::Tab | Named::F6) => tasks.push(
-                        (if modifiers.shift() {
-                            iced::widget::operation::focus_previous()
-                        } else {
-                            iced::widget::operation::focus_next()
-                        })
-                        .chain(crate::controls::reveal_focus())
-                        .chain(crate::accessibility::collect()),
+                        crate::controls::step_focus(!modifiers.shift())
+                            .chain(crate::controls::reveal_focus())
+                            .chain(crate::accessibility::collect()),
                     ),
                     Key::Named(Named::Escape) => {
                         self.shell.pending_notification = None;
@@ -4135,6 +4156,22 @@ impl App {
                     .chain(crate::controls::reveal_focus())
                     .chain(crate::accessibility::collect())
             }),
+            Message::MenuEscaped => {
+                if let Some(opener) = self.shell.menu_opener.take() {
+                    tasks.push(
+                        iced::widget::operation::focus(iced::advanced::widget::Id::from(opener))
+                            .chain(crate::controls::reveal_focus())
+                            .chain(crate::accessibility::collect()),
+                    );
+                }
+            }
+            // Not revealed, as the keyboard's focus is: the pointer is on
+            // it, and scrolling now would move it from under the click.
+            Message::Pressed(id) => tasks.push({
+                self.shell.menu_opener = None;
+                self.shell.pressed = Some(id.clone());
+                crate::controls::focus_by_pointer(id).chain(crate::accessibility::collect())
+            }),
             Message::Accessibility(snapshot) => {
                 if let Some(scenario) = self.smoke.as_mut().and_then(|s| s.scenario.as_mut()) {
                     scenario.snapshot = snapshot.clone();
@@ -4161,6 +4198,15 @@ impl App {
             Message::UpdateLater => {
                 self.desktop.later = self.desktop.update_available().map(str::to_owned);
             }
+        }
+        // The focus goes back to a menu's opener on Escape only while the
+        // menu is open; closed any other way, there is nothing to give back.
+        if !(self.shell.more
+            || self.shell.launch_menu
+            || self.shell.project_menu.is_some()
+            || self.shell.editor_menu.is_some())
+        {
+            self.shell.menu_opener = None;
         }
         // Catalog removal and missing-folder cleanup can choose another
         // project too. Its header must never accompany the previous queue.
@@ -6219,7 +6265,7 @@ mod tests {
     fn a_menu_opened_by_pointer_keeps_focus_and_navigation_closes_the_launch_menu() {
         let (mut app, _commands, _messages) = app();
         // A pointer press on the trigger marks it; a key press forgets it.
-        let _ = app.update(Message::Focus("project-more".into()));
+        let _ = app.update(Message::Pressed("project-more".into()));
         assert_eq!(app.shell.pressed.as_deref(), Some("project-more"));
         let _ = app.update(Message::More);
         assert!(app.shell.more);

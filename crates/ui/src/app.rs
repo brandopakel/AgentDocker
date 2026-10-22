@@ -10,6 +10,8 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 mod board;
 mod forms;
 mod icons;
+#[cfg(test)]
+mod interaction;
 mod logos;
 mod messages;
 mod naming;

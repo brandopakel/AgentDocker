@@ -289,6 +289,11 @@ impl overlay::Overlay<Message, iced::Theme, iced::Renderer> for Popup<'_, '_> {
         if (outside_press || escape)
             && let Some(dismiss) = &self.on_dismiss
         {
+            if escape {
+                // Said first, while the menu is still open: the app gives
+                // the focus back to whatever opened it from the keyboard.
+                shell.publish(Message::MenuEscaped);
+            }
             shell.publish(dismiss.clone());
             if escape {
                 shell.capture_event();

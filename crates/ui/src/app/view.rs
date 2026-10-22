@@ -3683,7 +3683,7 @@ impl App {
         let ready =
             !self.shell.launching && self.shell.launch_runtime.is_some() && self.connected.is_ok();
         let prompt = crate::controls::composer(
-            "launch-prompt",
+            super::shell::LAUNCH_PROMPT,
             "launch",
             "What should it work on?",
             &self.shell.launch_prompt,
