@@ -467,17 +467,24 @@ pub const GENERATED_NAME: &str = "generated";
 /// the process 4242 is a chosen name, not the adapter's.
 pub const CHOSEN_NAME: &str = "chosen";
 
-/// The label an agent carries when the person started it (`launched_by=user`):
-/// a `run`, `run_container` or `resume_session` sent by a process the daemon
-/// found outside every agent's session (the app, the person's own terminal);
-/// an agent started on a card by the person or by one of their board's
-/// rules; or a session that registered itself (hooks, MCP, `adopt`) whose
-/// process has no agent's session among its parents. Only the daemon sets
-/// it, and once set it stays: a client's spec never brings it in, and a
-/// record without it (a launch or session started from inside an agent's
-/// session, a connector agent, a session known by its key alone, a record
-/// from before) is nobody's in particular.
+/// The label that says who started an agent. `user` (the person): a `run`,
+/// `run_container` or `resume_session` sent by a process the daemon found
+/// outside every agent's session (the app, the person's own terminal); an
+/// agent started on a card by the person or by one of their board's rules;
+/// or a session that registered itself (hooks, MCP, `adopt`) whose
+/// process's parents reach the person's session root without an agent's
+/// session. [`LAUNCHED_BY_AGENT`] or [`LAUNCHED_BY_UNKNOWN`] for such a
+/// session whose parents say otherwise. Only the daemon sets it, and once
+/// set it stays: a client's spec never brings it in, and a record without it
+/// (a launch from inside an agent's session, a connector agent, a session
+/// known by its key alone, a record from before) is nobody's in particular.
 pub const LAUNCHED_BY_LABEL: &str = "launched_by";
+/// [`LAUNCHED_BY_LABEL`] for a registered session an agent's session stands
+/// above.
+pub const LAUNCHED_BY_AGENT: &str = "agent";
+/// [`LAUNCHED_BY_LABEL`] for a registered session whose parents could no
+/// longer say who started it (orphaned, a parent ended or its pid reused).
+pub const LAUNCHED_BY_UNKNOWN: &str = "unknown";
 
 /// Label the remote connector puts on the agent it registers
 /// (`connector=true`): an external agent with no process on this machine.
@@ -809,6 +816,16 @@ mod tests {
         said.spec
             .labels
             .insert(LAUNCHED_BY_LABEL.into(), crate::HUMAN.into());
+        let mut by_agent = session();
+        by_agent
+            .spec
+            .labels
+            .insert(LAUNCHED_BY_LABEL.into(), LAUNCHED_BY_AGENT.into());
+        let mut unknown = session();
+        unknown
+            .spec
+            .labels
+            .insert(LAUNCHED_BY_LABEL.into(), LAUNCHED_BY_UNKNOWN.into());
         let mut ended = session();
         ended.status = AgentStatus::Exited { code: Some(0) };
         for (record, why) in [
@@ -819,6 +836,8 @@ mod tests {
             (paned, "a pane the daemon opened"),
             (person, "the person"),
             (said, "already said"),
+            (by_agent, "said to be an agent's"),
+            (unknown, "said to be unknowable"),
             (ended, "ended"),
         ] {
             assert!(!record.starter_traceable(), "{why}");

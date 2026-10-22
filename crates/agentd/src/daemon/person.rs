@@ -111,12 +111,10 @@ enum Traced {
 }
 
 /// Walk up from `peer`, itself included. Inside an agent's session when a
-/// process on the way is a provider's session process, a Codex server, or
-/// a live agent's own process — by its pid *and* its birth, so a reused
-/// pid is not taken for the agent. Outside when the chain reaches the
-/// first process, a process that has ended, another user's, or a "parent"
-/// born after its child (its pid was reused). This user's process that
-/// still runs and cannot be read authorises nothing.
+/// process on the way is one ([`agent_session`]). Outside when the chain
+/// reaches the first process, a process that has ended, another user's, or
+/// a "parent" born after its child (its pid was reused). This user's process
+/// that still runs and cannot be read authorises nothing.
 fn walk(
     peer: u32,
     table: &[procinfo::Process],
@@ -124,22 +122,9 @@ fn walk(
     born: impl Fn(u32) -> Option<DateTime<Utc>>,
     unseen: impl Fn(u32) -> Unseen,
 ) -> Result<Walk, String> {
-    walk_from(peer, None, table, agents, born, unseen)
-}
-
-/// [`walk`] from `start`, whose child (when the walk begins above one) was
-/// born at `child`: a "parent" born after it is a reused pid.
-fn walk_from(
-    start: u32,
-    child: Option<DateTime<Utc>>,
-    table: &[procinfo::Process],
-    agents: &HashMap<u32, DateTime<Utc>>,
-    born: impl Fn(u32) -> Option<DateTime<Utc>>,
-    unseen: impl Fn(u32) -> Unseen,
-) -> Result<Walk, String> {
     let mut chain = Vec::new();
-    let mut pid = start;
-    let mut child = child;
+    let mut pid = peer;
+    let mut child: Option<DateTime<Utc>> = None;
     for _ in 0..ANCESTRY {
         if pid <= 1 {
             return Ok(Walk::Outside(chain));
@@ -162,40 +147,80 @@ fn walk_from(
                 )),
             };
         };
-        let birth = Some(birth);
-        if let (Some(birth), Some(child)) = (birth, child)
-            && birth > child
-        {
+        if child.is_some_and(|child| birth > child) {
             return Ok(Walk::Outside(chain));
         }
-        if birth.is_some() && agents.get(&pid) == birth.as_ref() {
-            return Ok(Walk::Inside(format!("an agent's process ({pid})")));
-        }
-        if let Some(runtime) = procinfo::session_runtime_of(&process.argv) {
-            return Ok(Walk::Inside(format!("a {runtime} session ({pid})")));
-        }
-        if procinfo::is_codex_binary(&process.argv) {
-            return Ok(Walk::Inside(format!("a Codex server ({pid})")));
+        if let Some(reason) = agent_session(process, birth, agents) {
+            return Ok(Walk::Inside(reason));
         }
         chain.push(pid);
         if process.ppid == pid {
             return Ok(Walk::Outside(chain));
         }
-        child = birth.or(child);
+        child = Some(birth);
         pid = process.ppid;
     }
     Err("its process ancestry is deeper than can be traced".to_owned())
 }
 
-/// Whether the person started the session whose process is `pid`, born
-/// `birth`, as its parents show: the process is there with that birth and is
-/// not the daemon's own, its parent is not the first process (an orphan's
-/// starter is gone), and the person check's walk up from that parent passes
-/// at least one process and leaves without meeting an agent's session (a
-/// live agent's own process by pid and birth, a provider's session process,
-/// a Codex server) or the daemon's own process, which starts only what it
-/// launches. Anything the walk cannot read says nothing.
-fn started_by_person(
+/// Whether `process`, born `birth`, is an agent's session, and which: a live
+/// agent's own process — by its pid *and* its birth, so a reused pid is not
+/// taken for the agent — a provider's session process, or a Codex server.
+fn agent_session(
+    process: &procinfo::Process,
+    birth: DateTime<Utc>,
+    agents: &HashMap<u32, DateTime<Utc>>,
+) -> Option<String> {
+    let pid = process.pid;
+    if agents.get(&pid) == Some(&birth) {
+        return Some(format!("an agent's process ({pid})"));
+    }
+    if let Some(runtime) = procinfo::session_runtime_of(&process.argv) {
+        return Some(format!("a {runtime} session ({pid})"));
+    }
+    if procinfo::is_codex_binary(&process.argv) {
+        return Some(format!("a Codex server ({pid})"));
+    }
+    None
+}
+
+/// Who started a session that registered itself, as its parents say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Starter {
+    /// Its parents reach the person's session root — a terminal
+    /// application or another application bundle, a login or SSH session
+    /// leader, another user's process — without meeting an agent's session.
+    Person,
+    /// An agent's session ([`agent_session`]) stands among its parents.
+    Agent,
+    /// Its parents can no longer say: the first process reached with no
+    /// root on the way (an orphan, or something the system started), a
+    /// parent that has ended, or a "parent" born after its child (a reused
+    /// pid).
+    Unknown,
+}
+
+impl Starter {
+    /// The value its record's `launched_by` label takes.
+    fn label(self) -> &'static str {
+        match self {
+            Starter::Person => HUMAN,
+            Starter::Agent => agentdocker_core::agent::LAUNCHED_BY_AGENT,
+            Starter::Unknown => agentdocker_core::agent::LAUNCHED_BY_UNKNOWN,
+        }
+    }
+}
+
+/// Who started the session whose process is `pid`, born `birth`: up from
+/// its parent, each process is an agent's session ([`Starter::Agent`]), the
+/// person's session root (`root`, and another user's process: the person),
+/// or passed on to its own parent; a chain that breaks before either is
+/// [`Starter::Unknown`]. `None` when it cannot be read now (the process is
+/// not that one any more, or a row this user owns is unreadable) and for
+/// the daemon's own process and what it started, whose launches are said
+/// at launch: nothing is decided.
+#[allow(clippy::too_many_arguments)]
+fn starter(
     pid: u32,
     birth: DateTime<Utc>,
     own: u32,
@@ -203,20 +228,62 @@ fn started_by_person(
     agents: &HashMap<u32, DateTime<Utc>>,
     born: impl Fn(u32) -> Option<DateTime<Utc>>,
     unseen: impl Fn(u32) -> Unseen,
-) -> bool {
+    root: impl Fn(&procinfo::Process) -> bool,
+) -> Option<Starter> {
     if pid == own || born(pid) != Some(birth) {
-        return false;
+        return None;
     }
-    let Some(process) = table.iter().find(|p| p.pid == pid) else {
-        return false;
-    };
-    if process.ppid <= 1 || process.ppid == pid {
-        return false;
+    let session = table.iter().find(|p| p.pid == pid)?;
+    let mut child = birth;
+    let mut current = session.ppid;
+    for _ in 0..ANCESTRY {
+        // What the daemon starts it says of at launch.
+        if current == own {
+            return None;
+        }
+        if current <= 1 {
+            return Some(Starter::Unknown);
+        }
+        let missing = |pid: u32| match unseen(pid) {
+            Unseen::Ended => Some(Starter::Unknown),
+            Unseen::OtherUser => Some(Starter::Person),
+            Unseen::Unreadable => None,
+        };
+        let Some(process) = table.iter().find(|p| p.pid == current) else {
+            return missing(current);
+        };
+        let Some(birth) = born(current) else {
+            return missing(current);
+        };
+        if birth > child {
+            return Some(Starter::Unknown);
+        }
+        if agent_session(process, birth, agents).is_some() {
+            return Some(Starter::Agent);
+        }
+        if root(process) {
+            return Some(Starter::Person);
+        }
+        if process.ppid == current {
+            return Some(Starter::Unknown);
+        }
+        child = birth;
+        current = process.ppid;
     }
-    matches!(
-        walk_from(process.ppid, Some(birth), table, agents, born, unseen),
-        Ok(Walk::Outside(chain)) if !chain.is_empty() && !chain.contains(&own)
-    )
+    Some(Starter::Unknown)
+}
+
+/// The person's session root, by the executable the kernel names: a
+/// terminal application or another application bundle (what a record's
+/// `terminal` is read from), or a login or SSH session leader.
+fn session_root(process: &procinfo::Process) -> bool {
+    procinfo::executable_path_of(process.pid).is_ok_and(|executable| {
+        agentdocker_core::terminal::classify(&executable).is_some()
+            || executable
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| matches!(name, "login" | "sshd" | "sshd-session"))
+    })
 }
 
 fn refusal(reason: &str) -> Response {
@@ -362,16 +429,18 @@ impl State {
 }
 
 impl State {
-    /// Say on a registered session that the person started it, once:
-    /// `launched_by=user` on its record and `agent_launched_by`, in one
-    /// commit. Only while the record is still that process (`pid`, `birth`)
-    /// and still [`AgentRecord::starter_traceable`]; `None` otherwise, or
-    /// when the write failed.
-    fn mark_started_by_person(
+    /// Say on a registered session who started it, once: `launched_by` on
+    /// its record and `agent_launched_by`, in one commit. Only while the
+    /// record is still that process (`pid`, `birth`) and still
+    /// [`AgentRecord::starter_traceable`] — what is said is never said
+    /// again, so a later loss of its ancestry cannot change it; `None`
+    /// otherwise, or when the write failed.
+    fn write_starter(
         &mut self,
         id: &AgentId,
         pid: u32,
         birth: DateTime<Utc>,
+        starter: Starter,
         now: DateTime<Utc>,
     ) -> Option<AgentRecord> {
         let mut record = self.registry.get(id)?.clone();
@@ -381,15 +450,16 @@ impl State {
         {
             return None;
         }
+        let by = starter.label().to_owned();
         record.spec.labels.insert(
             agentdocker_core::agent::LAUNCHED_BY_LABEL.to_owned(),
-            HUMAN.to_owned(),
+            by.clone(),
         );
         let event = Event::new(
             EventKind::AgentLaunchedBy {
                 agent: id.clone(),
                 project: record.project.as_ref().map(ProjectRef::id),
-                by: HUMAN.to_owned(),
+                by,
             },
             now,
         );
@@ -467,9 +537,9 @@ impl Daemon {
     /// theirs ([`Traced::Person`]: the app, their own terminal), and then
     /// it carries `launched_by=user`. Whatever a client wrote there was
     /// dropped at admission, so a launch from inside an agent's session, or
-    /// from a process that cannot be traced, carries none. With the person
-    /// check off every client is taken for the person, as every claim then
-    /// is.
+    /// from a process that cannot be traced, carries none. Traced whether or
+    /// not the person check is on: turning authorisation off lets a launch
+    /// through, and says nothing of whose it is.
     pub(crate) async fn mark_launcher(self: &Arc<Self>, peer: Option<Peer>, request: &mut Request) {
         if !matches!(
             request,
@@ -477,8 +547,7 @@ impl Daemon {
         ) {
             return;
         }
-        let persons =
-            !self.person_check || matches!(self.trace(peer, request).await, Traced::Person);
+        let persons = matches!(self.trace(peer, request).await, Traced::Person);
         if let Request::Run { spec }
         | Request::RunContainer { spec, .. }
         | Request::ResumeSession { spec, .. } = request
@@ -492,11 +561,12 @@ impl Daemon {
     }
 
     /// After a registration (`register`, `adopt`, `session_attach`) answers
-    /// with a record: when nothing has said who started it yet
-    /// ([`AgentRecord::starter_traceable`]) and its process has no agent's
-    /// session among its parents ([`started_by_person`]), the person started
-    /// it, and the record says so from here on. A client's word plays no
-    /// part; otherwise the answer is left as it was.
+    /// with a record whose starter nothing has said yet
+    /// ([`AgentRecord::starter_traceable`]): its process's parents say who
+    /// started it ([`starter`]) and the record says so from here on — the
+    /// person (`launched_by=user`), an agent, or that it cannot be known.
+    /// A client's word plays no part; what cannot be read now decides
+    /// nothing, and the answer is left as it was.
     pub(super) async fn mark_starter(&self, response: Response) -> Response {
         let Response::Agent { agent } = &response else {
             return response;
@@ -514,9 +584,9 @@ impl Daemon {
             .filter(|a| !humans::is_human(a) && a.pid != Some(pid))
             .filter_map(|a| Some((a.pid?, a.process_started_at?)))
             .collect();
-        let started = tokio::task::spawn_blocking(move || {
+        let found = tokio::task::spawn_blocking(move || {
             let table = procinfo::processes().ok()?;
-            Some(started_by_person(
+            starter(
                 pid,
                 birth,
                 std::process::id(),
@@ -524,13 +594,14 @@ impl Daemon {
                 &agents,
                 procinfo::start_time,
                 procinfo::unseen,
-            ))
+                session_root,
+            )
         })
         .await;
-        if !matches!(started, Ok(Some(true))) {
+        let Ok(Some(found)) = found else {
             return response;
-        }
-        match lock(&self.state).mark_started_by_person(&id, pid, birth, Utc::now()) {
+        };
+        match lock(&self.state).write_starter(&id, pid, birth, found, Utc::now()) {
             Some(agent) => Response::Agent { agent },
             None => response,
         }
@@ -690,16 +761,23 @@ mod tests {
         assert_eq!(acting(&human), ["user"], "registering a person");
     }
 
-    /// A session that registered itself is the person's when nothing
-    /// between its parent and the top is an agent's session: not when a
-    /// provider session's tool or a live agent's own process (by pid and
-    /// birth) started it, nor when it is orphaned, its pid now names
-    /// another process, its parent's pid was reused, or the daemon started
-    /// it or is it.
+    /// Who started a registered session, from its parents: the person only
+    /// when they reach the person's session root with no agent's session on
+    /// the way; an agent when one stands among them; unknown when the chain
+    /// breaks first — an orphan, a parent reparented to the first process
+    /// after the agent that started it exited, an ended or reused
+    /// grandparent, a chain with no root at all — and nothing at all when a
+    /// row cannot be read now, the process is not the one recorded, or the
+    /// daemon started it or is it.
     #[test]
-    fn a_session_is_the_persons_only_when_no_agent_started_it() {
+    fn a_session_is_the_persons_only_when_its_parents_reach_the_persons_root() {
         let table = [
-            process(10, 1, &["/usr/bin/login"]),
+            process(
+                5,
+                1,
+                &["/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"],
+            ),
+            process(10, 5, &["login", "-pf", "someone"]),
             process(11, 10, &["-zsh"]),
             // In the person's terminal.
             process(12, 11, &["claude"]),
@@ -719,7 +797,27 @@ mod tests {
             process(31, 30, &["codex"]),
             // Orphaned.
             process(40, 1, &["claude"]),
-            // Its parent's pid was reused: the "parent" is younger.
+            // The agent that started its shell exited: the shell is now the
+            // first process's.
+            process(70, 1, &["/bin/zsh"]),
+            process(71, 70, &["claude"]),
+            // Its grandparent's pid was reused: the "grandparent" is younger.
+            process(80, 11, &["/opt/tools/other"]),
+            process(81, 80, &["/bin/zsh"]),
+            process(82, 81, &["claude"]),
+            // Its grandparent has ended (90), cannot be read (100), or is
+            // another user's (110).
+            process(91, 90, &["/bin/zsh"]),
+            process(92, 91, &["claude"]),
+            process(101, 100, &["/bin/zsh"]),
+            process(102, 101, &["claude"]),
+            process(111, 110, &["/bin/zsh"]),
+            process(112, 111, &["claude"]),
+            // A multiplexer server: the first process's, no root above.
+            process(120, 1, &["tmux"]),
+            process(121, 120, &["/bin/zsh"]),
+            process(122, 121, &["claude"]),
+            // Its parent's pid was reused.
             process(60, 11, &["/opt/tools/other"]),
             process(61, 60, &["claude"]),
             // The daemon, and a process it started.
@@ -728,90 +826,164 @@ mod tests {
         ];
         let born = |pid: u32| match pid {
             61 => Some(at(5)),
+            80 => Some(at(500)),
             _ => Some(at(i64::from(pid))),
         };
-        let unseen = |_| Unseen::Ended;
-        let person = |pid: u32, birth: DateTime<Utc>, agents: &HashMap<u32, DateTime<Utc>>| {
-            started_by_person(pid, birth, 50, &table, agents, born, unseen)
+        let unseen = |pid: u32| match pid {
+            100 => Unseen::Unreadable,
+            110 => Unseen::OtherUser,
+            _ => Unseen::Ended,
+        };
+        let root = |process: &procinfo::Process| {
+            process
+                .argv
+                .first()
+                .is_some_and(|program| program.contains(".app/") || program == "login")
+        };
+        let started = |pid: u32, birth: DateTime<Utc>, agents: &HashMap<u32, DateTime<Utc>>| {
+            starter(pid, birth, 50, &table, agents, born, unseen, root)
         };
         let none = HashMap::new();
         let agent = HashMap::from([(30, at(30))]);
-        assert!(person(12, at(12), &none), "the person's terminal");
-        assert!(person(12, at(12), &agent), "an agent elsewhere");
-        assert!(!person(22, at(22), &none), "a provider session's tool");
-        assert!(!person(31, at(31), &agent), "a live agent's process");
-        assert!(
-            person(31, at(31), &HashMap::from([(30, at(999))])),
+        use Starter::{Agent, Person, Unknown};
+        for (pid, agents, expected, why) in [
+            (12, &none, Some(Person), "the person's terminal"),
+            (12, &agent, Some(Person), "an agent elsewhere"),
+            (22, &none, Some(Agent), "a provider session's tool"),
+            (31, &agent, Some(Agent), "a live agent's process"),
+            (40, &none, Some(Unknown), "an orphan"),
+            (
+                71,
+                &none,
+                Some(Unknown),
+                "its shell orphaned when its agent exited",
+            ),
+            (82, &none, Some(Unknown), "a reused grandparent"),
+            (92, &none, Some(Unknown), "an ended grandparent"),
+            (102, &none, None, "an unreadable grandparent"),
+            (112, &none, Some(Person), "another user's session leader"),
+            (
+                122,
+                &none,
+                Some(Unknown),
+                "no root before the first process",
+            ),
+            (61, &none, Some(Unknown), "a reused parent"),
+            (51, &none, None, "the daemon's own launch"),
+            (50, &none, None, "the daemon itself"),
+        ] {
+            let birth = if pid == 61 { at(5) } else { at(i64::from(pid)) };
+            assert_eq!(started(pid, birth, agents), expected, "{why}");
+        }
+        assert_eq!(
+            started(31, at(31), &HashMap::from([(30, at(999))])),
+            Some(Person),
             "a reused pid is not the agent"
         );
-        assert!(!person(40, at(40), &none), "an orphan");
-        assert!(!person(12, at(99), &none), "another process now");
-        assert!(!person(61, at(5), &none), "a reused parent");
-        assert!(!person(51, at(51), &none), "the daemon's own launch");
-        assert!(!person(50, at(50), &none), "the daemon itself");
+        assert_eq!(started(12, at(99), &none), None, "another process now");
     }
 
-    /// The mark is the daemon's, written once with its event and kept
-    /// across a restart; a registration from under the daemon (this test's
-    /// own children) is not marked, nor is a record that is no longer the
-    /// process traced or already says who launched it.
+    /// What is said of a session's starter is the daemon's, written once
+    /// with its event and kept across a restart: a later trace cannot turn
+    /// an agent's session into the person's. A registration from under the
+    /// daemon (this test's own children) decides nothing, nor does a record
+    /// that is no longer the process traced or has no process.
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_person_started_session_is_marked_once_and_kept() {
+    async fn what_is_said_of_a_starter_is_said_once_and_kept() {
         let tmp = tempfile::tempdir().unwrap();
         let open =
             || Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("host.sock")).unwrap());
         let daemon = open();
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
-        let Response::Agent { agent } = daemon
-            .handle(Request::Register {
-                spec: AgentSpec {
-                    name: "terminal-session".into(),
-                    runtime: "claude-code".into(),
-                    workdir: Some(tmp.path().to_owned()),
-                    ..AgentSpec::default()
-                },
-                pid: Some(child.id()),
-                session: None,
-            })
-            .await
-        else {
-            panic!("registers")
+        let mut children = Vec::new();
+        let mut register = async |name: &str| {
+            let child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap();
+            let pid = child.id();
+            children.push(child);
+            let Response::Agent { agent } = daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: name.into(),
+                        runtime: "claude-code".into(),
+                        workdir: Some(tmp.path().to_owned()),
+                        ..AgentSpec::default()
+                    },
+                    pid: Some(pid),
+                    session: None,
+                })
+                .await
+            else {
+                panic!("registers")
+            };
+            agent
         };
-        assert!(
-            !agent.launched_by_person(),
-            "started by the daemon's process"
-        );
-        let (pid, birth) = (agent.pid.unwrap(), agent.process_started_at.unwrap());
+        let person = register("terminal-session").await;
+        let agents = register("agent-session").await;
+        for record in [&person, &agents] {
+            assert!(
+                record.starter_traceable(),
+                "under the daemon's own process nothing is decided: {record:?}"
+            );
+        }
+        let label = |record: &AgentRecord| {
+            record
+                .spec
+                .labels
+                .get(agentdocker_core::agent::LAUNCHED_BY_LABEL)
+                .cloned()
+        };
         let mut events = daemon.subscribe_events();
         {
             let mut state = lock(&daemon.state);
+            let now = Utc::now();
+            let (pid, birth) = (person.pid.unwrap(), person.process_started_at.unwrap());
             assert!(
                 state
-                    .mark_started_by_person(&agent.id, pid, at(1), Utc::now())
+                    .write_starter(&person.id, pid, at(1), Starter::Person, now)
                     .is_none(),
                 "another process"
             );
             let marked = state
-                .mark_started_by_person(&agent.id, pid, birth, Utc::now())
+                .write_starter(&person.id, pid, birth, Starter::Person, now)
                 .unwrap();
             assert!(marked.launched_by_person());
+            for again in [Starter::Person, Starter::Agent, Starter::Unknown] {
+                assert!(
+                    state
+                        .write_starter(&person.id, pid, birth, again, now)
+                        .is_none(),
+                    "said once"
+                );
+            }
+            let (pid, birth) = (agents.pid.unwrap(), agents.process_started_at.unwrap());
+            let marked = state
+                .write_starter(&agents.id, pid, birth, Starter::Agent, now)
+                .unwrap();
+            assert_eq!(label(&marked).as_deref(), Some("agent"));
+            assert!(!marked.persons());
             assert!(
                 state
-                    .mark_started_by_person(&agent.id, pid, birth, Utc::now())
+                    .write_starter(&agents.id, pid, birth, Starter::Person, now)
                     .is_none(),
-                "said once"
+                "an agent's session is never promoted"
             );
         }
-        assert!(matches!(
-            events.try_recv().unwrap().kind,
-            EventKind::AgentLaunchedBy { agent: ref marked, ref by, .. }
-                if *marked == agent.id && by == HUMAN
-        ));
-        assert!(events.try_recv().is_err(), "one event");
+        let said: Vec<(AgentId, String)> = std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match event.kind {
+                EventKind::AgentLaunchedBy { agent, by, .. } => Some((agent, by)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                (person.id.clone(), HUMAN.to_owned()),
+                (agents.id.clone(), "agent".to_owned())
+            ]
+        );
         // A record with no process of its own (a connector agent, a session
         // known by its key alone) is never traced or marked.
         let Response::Agent { agent: pidless } = daemon
@@ -833,10 +1005,11 @@ mod tests {
         else {
             panic!("registers")
         };
-        assert!(!pidless.launched_by_person());
+        assert_eq!(label(&pidless), None);
+        let (pid, birth) = (person.pid.unwrap(), person.process_started_at.unwrap());
         assert!(
             lock(&daemon.state)
-                .mark_started_by_person(&pidless.id, pid, birth, Utc::now())
+                .write_starter(&pidless.id, pid, birth, Starter::Person, Utc::now())
                 .is_none()
         );
         while let Ok(event) = events.try_recv() {
@@ -848,17 +1021,80 @@ mod tests {
         drop(events);
         drop(daemon);
         let daemon = open();
-        let Response::Agent { agent: kept } = daemon
-            .handle(Request::Inspect {
-                agent: agent.id.to_string(),
+        for (record, by) in [(&person, HUMAN), (&agents, "agent")] {
+            let Response::Agent { agent: kept } = daemon
+                .handle(Request::Inspect {
+                    agent: record.id.to_string(),
+                })
+                .await
+            else {
+                panic!("kept")
+            };
+            assert_eq!(label(&kept).as_deref(), Some(by));
+        }
+        for mut child in children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    /// Turning the person check off lets launches through and says nothing
+    /// of whose they are: a launch is marked the person's only when its
+    /// process is traced to them, never from inside an agent's process or
+    /// from one that cannot be identified.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_launch_is_traced_to_its_starter_with_the_person_check_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::open(tmp.path().into(), tmp.path().join("host.sock")).unwrap();
+        daemon.person_check = false;
+        let daemon = Arc::new(daemon);
+        let launch = || -> Request {
+            serde_json::from_str(r#"{"op":"run","spec":{"name":"x","command":["true"]}}"#).unwrap()
+        };
+        let marked = |request: &Request| {
+            matches!(request, Request::Run { spec }
+                if spec.labels.contains_key(agentdocker_core::agent::LAUNCHED_BY_LABEL))
+        };
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let Response::Agent { .. } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "an-agent".into(),
+                    workdir: Some(tmp.path().to_owned()),
+                    ..AgentSpec::default()
+                },
+                pid: Some(child.id()),
+                session: None,
             })
             .await
         else {
-            panic!("kept")
+            panic!("registers")
         };
-        assert!(kept.launched_by_person());
+        let mut inside = launch();
+        daemon
+            .mark_launcher(
+                Some((child.id(), procinfo::start_time(child.id()))),
+                &mut inside,
+            )
+            .await;
+        let mut unknown = launch();
+        daemon.mark_launcher(None, &mut unknown).await;
+        let mut own = launch();
+        daemon
+            .mark_launcher(
+                Some((std::process::id(), procinfo::start_time(std::process::id()))),
+                &mut own,
+            )
+            .await;
         let _ = child.kill();
         let _ = child.wait();
+        assert!(!marked(&inside), "from an agent's own process");
+        assert!(!marked(&unknown), "from a process nobody can identify");
+        assert!(marked(&own), "from the person's (here the daemon's own)");
     }
 
     #[test]
