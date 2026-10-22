@@ -3,7 +3,8 @@
 //! The window is a rail and a workspace. The rail carries the mark, the
 //! four destinations and the project list; the workspace leads with the
 //! project name, then the section tabs, then whatever the section shows.
-//! Status is drawn as a coloured dot *and* said in words, every time.
+//! A state is a labelled chip (`chip::Chip`): an icon and its word, every
+//! time, with any fix beside it.
 use super::icons::{Icon, icon};
 use super::style::{Colors, alpha, weight};
 use super::*;
@@ -196,12 +197,11 @@ pub(super) fn agent_mark<'a>(
         None => monogram(name, seed, size, c),
     }
 }
-/// Something small that says what it means when pointed at. Used only
-/// where the words are not already printed beside it (the rail's project
-/// marks); a tooltip that repeats visible text is noise.
 /// A control that says what it does when pointed at: an icon button's
-/// name, which its glyph alone does not say. Unlike `hint` it adds no
-/// padding, since the control is already its own hover target.
+/// name, which its glyph alone does not say; or the detail of a chip,
+/// beyond the words it prints. Never a state's meaning: that is the
+/// chip's word. Unlike `hint` it adds no padding, since the control is
+/// already its own hover target.
 pub(super) fn tip<'a>(
     control: impl Into<Element<'a, Message>>,
     label: impl Into<String>,
@@ -224,9 +224,9 @@ pub(super) fn tip<'a>(
     .into()
 }
 
-/// Words a glyph stands for, as its accessible name: a reader (and the
-/// workflow driver) hears what the eye reads from the mark. A tooltip
-/// alone is not in the accessibility tree.
+/// Words a mark stands for, as its accessible name: a reader (and the
+/// workflow driver) hears what the eye reads from it. A tooltip alone is
+/// not in the accessibility tree.
 pub(super) fn said<'a>(
     id: impl Into<String>,
     words: impl Into<String>,
@@ -243,22 +243,6 @@ pub(super) fn said<'a>(
     .into()
 }
 
-/// A state shown as a dot: its words are the dot's tooltip and its
-/// accessible name.
-pub(super) fn status_dot<'a>(
-    id: impl Into<String>,
-    tone: iced::Color,
-    words: impl Into<String>,
-    c: Colors,
-) -> Element<'a, Message> {
-    let words = words.into();
-    tip(
-        said(id, words.clone(), container(dot(tone, 6.0, c)).padding(4)),
-        words,
-        c,
-    )
-}
-
 /// A failure in one line: the amber mark and the first line of the
 /// words, clipped; all of them on the pointer and in its name.
 pub(super) fn error_line<'a>(
@@ -267,8 +251,19 @@ pub(super) fn error_line<'a>(
     c: Colors,
 ) -> Element<'a, Message> {
     let id = id.into();
+    // The words are beside the mark; the mark carries all of them, for a
+    // reader and on the pointer, where the line is cut.
+    let mark = tip(
+        said(
+            format!("{id}-mark"),
+            words.to_owned(),
+            container(icon(Icon::Alert, c.amber, 13.0)).padding(3),
+        ),
+        words.to_owned(),
+        c,
+    );
     row![
-        alert_mark(format!("{id}-mark"), words.to_owned(), c),
+        mark,
         container(
             text(first_line(words, 140))
                 .size(13)
@@ -283,25 +278,31 @@ pub(super) fn error_line<'a>(
     .into()
 }
 
-/// Something went wrong, as a mark: the amber triangle, its words on the
-/// pointer and in its name.
+/// Something went wrong, as a chip: the alert icon and the head of its
+/// words (`chip::headline`), cut to fit a row; all of them its detail when
+/// that is not all.
 pub(super) fn alert_mark<'a>(
     id: impl Into<String>,
     words: impl Into<String>,
     c: Colors,
 ) -> Element<'a, Message> {
     let words = words.into();
-    tip(
-        said(
-            id,
-            words.clone(),
-            container(icon(Icon::Alert, c.amber, 13.0)).padding(3),
-        ),
-        words,
-        c,
-    )
+    let shown = super::chip::headline(&words, 60);
+    let mut chip = super::chip::Chip::new(
+        id,
+        Some(Icon::Alert),
+        shown.clone(),
+        super::chip::Tone::Attention,
+    );
+    if shown != words.trim().trim_end_matches('.') {
+        chip = chip.detail(words);
+    }
+    chip.view(c)
 }
 
+/// Something small that says what it is when pointed at, with its hover
+/// target padded: the rail's project marks (the folder, how many are live
+/// or new) and a row's name (its tool and branch).
 pub(super) fn hint<'a>(
     content: impl Into<Element<'a, Message>>,
     label: impl Into<String>,
@@ -500,86 +501,56 @@ where
     }
 }
 
-/// The tone a standing is drawn and worded in: amber for the person,
-/// red for a failure, the accent for news, quiet for the rest.
-pub(super) fn standing_tone(
-    standing: agentdocker_core::standing::Standing,
-    c: Colors,
-) -> iced::Color {
-    use agentdocker_core::standing::Standing;
-    match standing {
-        Standing::NeedsYou(_) => c.amber,
-        Standing::Failed => c.red,
-        Standing::FinishedUnseen => c.accent,
-        Standing::Working => c.muted,
-        Standing::Parked | Standing::Starting | Standing::Idle | Standing::Ended => c.faint,
-    }
-}
-
-/// An agent's standing as one glyph, the loudest state only: dots for
-/// live states, shapes for settled ones, nothing for an idle agent. The
-/// word comes when it is pointed at; a row prints the word only when it
-/// calls for the person.
-pub(super) fn standing_glyph<'a>(
+/// An agent's standing as its chip, the loudest state only: *Needs you*,
+/// *Working*, *Idle*, the same words on every row that shows the agent.
+pub(super) fn standing_chip<'a>(
+    id: impl Into<String>,
     standing: agentdocker_core::standing::Standing,
     c: Colors,
 ) -> Element<'a, Message> {
-    use agentdocker_core::standing::Standing;
-    let tone = standing_tone(standing, c);
-    let glyph: Element<'a, Message> = match standing {
-        Standing::NeedsYou(_) | Standing::Working | Standing::FinishedUnseen => dot(tone, 8.0, c),
-        Standing::Failed => icon(Icon::Alert, tone, 12.0),
-        Standing::Parked => icon(Icon::Hourglass, tone, 12.0),
-        Standing::Starting => icon(Icon::Ring, tone, 12.0),
-        Standing::Idle | Standing::Ended => Space::new().width(8).height(8).into(),
-    };
-    let slot = container(glyph)
-        .width(12)
-        .height(12)
-        .align_x(iced::alignment::Horizontal::Center)
-        .align_y(iced::alignment::Vertical::Center);
-    if matches!(standing, Standing::Idle | Standing::Ended) {
-        // Nothing to point at: an empty slot keeps the names aligned.
-        container(slot).padding(5).into()
-    } else {
-        hint(slot, standing.word(), c)
-    }
+    super::chip::standing(id, standing).view(c)
 }
 
 impl App {
     /// The pull request of the branch an agent works on, as one chip that
-    /// opens it: its number, then a tick, a dot or a cross for its checks,
-    /// or *merged*. Nothing when the branch has none, or nothing is known.
+    /// opens it: its number and its checks in a word — *#12 · Passed*,
+    /// *Running*, *Failed*, *Merged*, or *Open* with no checks. Nothing
+    /// when the branch has none, or nothing is known.
     pub(super) fn pull_request_chip<'a>(
         &self,
         agent: &AgentRecord,
         c: Colors,
     ) -> Option<Element<'a, Message>> {
-        use crate::pull_request::Status;
         let pull = self.pull_request_of(agent)?;
-        let number = text(format!("#{}", pull.number))
-            .size(12)
-            .line_height(iced::Pixels(16.0))
-            .font(weight(iced::font::Weight::Medium))
-            .color(c.muted);
-        let mut content = row![number].spacing(4).align_y(Center);
-        match pull.status {
-            Status::Open => {}
-            Status::Passed => content = content.push(icon(Icon::Check, c.green, 11.0)),
-            Status::Running => content = content.push(dot(c.amber, 6.0, c)),
-            Status::Failed => content = content.push(icon(Icon::Close, c.red, 10.0)),
-            Status::Merged => content = content.push(icon(Icon::LaneDone, c.muted, 11.0)),
-        }
         Some(custom(
             format!("pull-request-{}", agent.id),
             pull.spoken(),
-            content,
+            pull_request_look(pull).look(c),
             Some(Message::OpenPullRequest(pull.url.clone())),
             false,
             Kind::Inline,
-            [2, 6],
+            [0, 0],
         ))
     }
+}
+
+/// A pull request as a chip: its number and the word for its checks.
+pub(super) fn pull_request_look(pull: &crate::pull_request::PullRequest) -> super::chip::Chip {
+    use super::chip::{Chip, Tone};
+    use crate::pull_request::Status;
+    let (glyph, word, tone) = match pull.status {
+        Status::Open => (None, "Open", Tone::Neutral),
+        Status::Passed => (Some(Icon::Check), "Passed", Tone::Positive),
+        Status::Running => (Some(Icon::Clock), "Running", Tone::Attention),
+        Status::Failed => (Some(Icon::Close), "Failed", Tone::Alert),
+        Status::Merged => (Some(Icon::LaneDone), "Merged", Tone::Neutral),
+    };
+    Chip::new(
+        format!("pull-request-state-{}", pull.number),
+        glyph,
+        format!("#{} · {word}", pull.number),
+        tone,
+    )
 }
 
 /// A glyph or a monogram on a small raised tile.
@@ -1057,7 +1028,7 @@ impl App {
             })
     }
 
-    /// What a session's readiness dot says: the one decision, unless the
+    /// What a session's readiness chip says: the one decision, unless the
     /// daemon is not connected, or words wait behind a ready receiver.
     pub(super) fn input_readiness(&self, agent: &AgentRecord) -> super::send_readiness::Readiness {
         use super::send_readiness::Readiness;
@@ -1484,42 +1455,41 @@ impl App {
     /// to install. A healthy service says nothing, as the status apps
     /// studied do (Docker Desktop, Tailscale); the page keeps its height.
     fn service_chip(&self, r: Colors) -> Option<Element<'_, Message>> {
-        // A dot that says what it means when pointed at, and to a reader.
+        use super::chip::{Chip, Tone};
+        // A chip that says the state, and the one action beside it.
         let chip: Element<'_, Message> = if self.connected.is_err() {
-            row![
-                status_dot(
-                    "service-reconnecting",
-                    r.amber,
-                    "Reconnecting to the background service…",
-                    r
-                ),
-                text("Reconnecting…").size(12).color(r.muted),
-            ]
-            .spacing(4)
-            .align_y(Center)
-            .into()
+            Chip::new(
+                "service-reconnecting",
+                Some(Icon::Ring),
+                "Reconnecting…",
+                Tone::Attention,
+            )
+            .detail("Reconnecting to the background service…")
+            .view(r)
         } else if let Some(version) = self.daemon_behind_now() {
             if self.daemon_restarting() || self.shell.confirm_daemon_restart {
                 // The strip across the bottom has it now.
                 return None;
             }
             row![
-                status_dot(
+                Chip::new(
                     "service-behind",
-                    r.amber,
-                    format!(
-                        "Background service {version} is older than this app ({}).",
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                    r
-                ),
+                    Some(Icon::Alert),
+                    "Service is older",
+                    Tone::Attention
+                )
+                .detail(format!(
+                    "Background service {version} is older than this app ({}).",
+                    env!("CARGO_PKG_VERSION")
+                ))
+                .view(r),
                 ghost(
                     "daemon-restart",
                     "Restart…",
                     Some(Message::ConfirmDaemonRestart(true)),
                 ),
             ]
-            .spacing(2)
+            .spacing(4)
             .align_y(Center)
             .into()
         } else {
@@ -1528,7 +1498,7 @@ impl App {
                 "open-available-update",
                 format!("Update {version} available"),
                 row![
-                    dot(r.accent_ink, 6.0, r),
+                    icon(Icon::Download, r.accent_ink, 12.0),
                     text(format!("Update {version}"))
                         .size(12)
                         .color(r.accent_ink)
@@ -1546,7 +1516,8 @@ impl App {
     }
 
     /// A destination on the rail: glyph, label and an optional count,
-    /// amber when it is something waiting on the person.
+    /// amber when it is something waiting on the person; a count of none
+    /// is the *Unread* chip.
     fn nav_item<'a>(
         &self,
         id: &'a str,
@@ -1572,8 +1543,17 @@ impl App {
             None => label.to_owned(),
         };
         match badge {
-            // Unread with nothing addressed to the person: a dot, no number.
-            Some((0, _)) => content = content.push(dot(r.accent, 7.0, r)),
+            // Unread with nothing addressed to the person: the word, no
+            // number.
+            Some((0, _)) => {
+                content = content.push(super::chip::chip(
+                    format!("{id}-unread"),
+                    None,
+                    "Unread",
+                    super::chip::Tone::Info,
+                    r,
+                ))
+            }
             Some((count, waiting)) => content = content.push(count_chip(count, waiting, r)),
             None => {}
         }
@@ -1639,19 +1619,17 @@ impl App {
             .spacing(6)
             .width(Fill)
             .align_y(Center);
-        // The loudest agent's glyph, and a number only for agents that need
-        // the person: how many run is not a reason to look.
+        // The loudest agent's chip, which counts the agents that need the
+        // person when more than one does: how many run is not a reason to
+        // look. The name is cut before the chip is.
         let (loudest, needs) = self.project_standing(&path);
-        if needs > 0 {
-            content = content.push(
-                text(needs.to_string())
-                    .size(12)
-                    .font(weight(iced::font::Weight::Semibold))
-                    .color(r.amber),
-            );
-        }
         if let Some(loudest) = loudest {
-            content = content.push(standing_glyph(loudest, r));
+            let mut chip =
+                super::chip::standing(format!("project-standing-{}", path.display()), loudest);
+            if needs > 1 {
+                chip.words = format!("{} · {needs}", chip.words);
+            }
+            content = content.push(chip.view(r));
         }
         // The row's own menu button, at the row's right edge, shown only
         // where it is wanted: under the pointer, on the selected row and
@@ -1733,7 +1711,7 @@ impl App {
     /// Live, non-human sessions in the project at `root`, each session once.
     /// A project's agents as the rail shows them: the loudest standing
     /// among them, and how many need the person. A collapsed project takes
-    /// its loudest agent's glyph, so attention shows without opening it.
+    /// its loudest agent's chip, so attention shows without opening it.
     pub(super) fn project_standing(
         &self,
         root: &std::path::Path,
@@ -1799,8 +1777,8 @@ impl App {
             Icon::Inbox,
             {
                 // A number only for what is addressed to the person (direct
-                // messages, open questions); unread project chat is a dot.
-                // Slack's dock does the same: the count is a reason to look.
+                // messages, open questions), since the count is a reason to
+                // look; unread project chat is the word Unread.
                 let now = Utc::now();
                 if self.has_conversations() {
                     use agentdocker_core::ConversationKind;
@@ -1877,14 +1855,13 @@ impl App {
             .spacing(8)
             .align_y(Center);
             if live > 0 {
-                fold = fold.push(
-                    row![
-                        dot(r.green, 6.0, r),
-                        text(live.to_string()).size(12).color(r.muted)
-                    ]
-                    .spacing(5)
-                    .align_y(Center),
-                );
+                fold = fold.push(super::chip::chip(
+                    "projects-temporary-live",
+                    None,
+                    format!("{live} live"),
+                    super::chip::Tone::Positive,
+                    r,
+                ));
             }
             projects = projects.push(Space::new().height(6)).push(custom(
                 "projects-temporary",
@@ -2407,19 +2384,24 @@ impl App {
         let control = self.pause_states.get(&root);
         let sending = control.is_some_and(|control| control.pending.is_some());
         if let Some(pause) = self.selected_pause() {
+            // Paused is a chip that starts the reason; a reason too long
+            // for it is whole in the detail.
+            let (short, whole) = (
+                first_line(&pause.reason, 32),
+                first_line(&pause.reason, 120),
+            );
+            let mut paused = super::chip::Chip::new(
+                "project-paused",
+                Some(Icon::Pause),
+                format!("Paused · {short}"),
+                super::chip::Tone::Attention,
+            );
+            if short != whole {
+                paused = paused.detail(whole);
+            }
             return Some(
                 row![
-                    // Paused is the amber pause mark; why is its tooltip
-                    // and its name.
-                    tip(
-                        said(
-                            "project-paused",
-                            format!("Paused · {}", first_line(&pause.reason, 120)),
-                            container(icon(Icon::Pause, c.amber, 14.0)).padding(3),
-                        ),
-                        first_line(&pause.reason, 120),
-                        c,
-                    ),
+                    paused.view(c),
                     action(
                         "resume-project",
                         if sending { "Resuming…" } else { "Resume" },
@@ -2907,8 +2889,9 @@ impl App {
     /// The rows of one list of sessions in one card, a rule between rows
     /// and a project label before each project's rows when every project
     /// is on view. A row reads left to right: who (the session's mark, its
-    /// name over its tool and branch), how it is (a dot and a word, how
-    /// long), and the one thing to do with it, only when there is one.
+    /// name, its tool and branch on the pointer), how it is (its standing
+    /// chip, then the time left to answer or its pull request), and the
+    /// one thing to do with it, only when there is one.
     fn session_rows<'a>(&'a self, records: &[&'a AgentRecord], c: Colors) -> Element<'a, Message> {
         let mut items: Vec<Element<'a, Message>> = Vec::new();
         let mut previous_project = None;
@@ -3006,24 +2989,26 @@ impl App {
             if let Some(chips) = self.role_chips(agent, Some(2), c) {
                 named = named.push(chips);
             }
+            // The name is cut before the chips are: the state always shows.
             let mut content = row![
-                standing_glyph(standing, c),
                 agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 20.0, c),
-                container(named).width(Fill).clip(true)
+                container(named).width(Fill).clip(true),
+                standing_chip(format!("session-standing-{id}"), standing, c),
             ]
             .spacing(8)
             .align_y(Center);
-            // One trailing slot, the first that applies: the time left to
-            // answer, else the pull request. The glyph at the front already
-            // says the standing, and the row's name says it to a reader.
+            // One more chip, the first that applies: the time left to
+            // answer, else the pull request.
             if standing.needs_you() || standing == agentdocker_core::standing::Standing::Failed {
-                if let Some(left) = self.soonest_answer_window(&id) {
-                    content = content.push(approvals::ring(
-                        left,
-                        if left < 0.2 { c.red } else { c.amber },
-                        14.0,
-                        c,
-                    ));
+                if let Some(question) = self.soonest_answer_window(&id) {
+                    content = content.push(
+                        approvals::time_left_chip(
+                            format!("session-time-left-{id}"),
+                            question,
+                            Utc::now(),
+                        )
+                        .view(c),
+                    );
                 }
             } else if let Some(chip) = self.pull_request_chip(agent, c) {
                 content = content.push(chip);
@@ -3079,9 +3064,9 @@ impl App {
         let name = self.display_name(agent);
         let header = row![
             agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 32.0, c),
-            // The name and the row's standing glyph, so the panel and the
+            // The name and the row's standing chip, so the panel and the
             // list never disagree; what it is doing, its tool and where it
-            // runs are the glyph's tooltip and name.
+            // runs are the chip's detail.
             row![
                 heading(name.clone(), 15).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 {
@@ -3091,16 +3076,9 @@ impl App {
                     {
                         words.push(place);
                     }
-                    let words = words.join(" · ");
-                    tip(
-                        said(
-                            "inspector-standing",
-                            words.clone(),
-                            standing_glyph(self.standing(agent), c),
-                        ),
-                        words,
-                        c,
-                    )
+                    super::chip::standing("inspector-standing", self.standing(agent))
+                        .detail(super::chip::sentence(&words.join(" · ")))
+                        .view(c)
                 },
             ]
             .spacing(6)
@@ -3129,74 +3107,60 @@ impl App {
             body = body.push(small(model, c));
         }
         if agent.spec.runtime != "human" {
-            // How messages reach it: its readiness as a dot, what waits for
-            // it as a count; the words are the marks' tooltips and names.
-            let mut words = Vec::new();
-            if self.connected.is_err() {
-                words.push("Last known".to_owned());
-            }
-            let readiness = agent.status.is_live().then(|| self.input_readiness(agent));
-            if let Some(readiness) = readiness {
-                words.push(readiness.label().to_owned());
-            }
-            if let Some(received_at) = delivery.and_then(|d| d.received_at) {
-                words.push(format!(
-                    "Last took a message {}",
-                    ago(Utc::now(), received_at)
-                ));
-            }
+            // How messages reach it: its readiness and what waits for it,
+            // each a chip; when it last took one is their detail.
+            let last = delivery
+                .and_then(|d| d.received_at)
+                .map(|at| format!("Last took a message {}", ago(Utc::now(), at)));
             let mut marks = row![].spacing(6).align_y(Center);
-            if !words.is_empty() {
-                marks = marks.push(status_dot(
-                    "inspector-readiness",
-                    readiness.map_or(c.faint, |r| r.tone(c)),
-                    words.join(" · "),
-                    c,
-                ));
+            if agent.status.is_live() {
+                let mut readiness = self.input_readiness(agent).chip("inspector-readiness");
+                if let Some(last) = &last {
+                    readiness = readiness.detail(last.clone());
+                }
+                marks = marks.push(readiness.view(c));
+            } else if let Some(last) = &last {
+                marks = marks.push(small(last.clone(), c));
             }
             if let Some(count) = self.queued_inputs.get(&id).filter(|n| **n > 0) {
-                marks = marks.push(said(
+                marks = marks.push(super::chip::chip(
                     "inspector-queued",
+                    Some(Icon::Inbox),
                     format!("{count} queued"),
-                    row![
-                        icon(Icon::Inbox, c.muted, 13.0),
-                        count_chip(*count, false, c)
-                    ]
-                    .spacing(4)
-                    .align_y(Center),
+                    super::chip::Tone::Neutral,
+                    c,
                 ));
             }
             body = body.push(marks);
             if let Some((source, state)) = agentdocker_core::provider_block(agent, &self.agents) {
                 let issue = state.issue.as_ref().expect("blocked");
-                // The limit is the hourglass, when it resets its tooltip.
-                let words = match issue.reset_at {
-                    Some(reset) => format!(
-                        "{} {}",
-                        issue.kind.label(),
-                        reset_words(Utc::now(), reset, &chrono::Local)
-                    ),
+                // The limit is the chip; when it lifts, or when the daemon
+                // tries a passing failure again, is printed beside it.
+                let when = match issue.reset_at {
+                    Some(reset) => Some(reset_words(Utc::now(), reset, &chrono::Local)),
                     // A transient failure the daemon retries by itself.
-                    None => match state.retry_at() {
-                        Some(at) => format!(
-                            "{} · tries again at {}",
-                            issue.kind.label(),
+                    None => state.retry_at().map(|at| {
+                        format!(
+                            "tries again at {}",
                             at.with_timezone(&chrono::Local).format("%H:%M")
-                        ),
-                        None => issue.kind.label().to_owned(),
-                    },
+                        )
+                    }),
                 };
+                let mut limit = row![super::chip::chip(
+                    "provider-limit",
+                    Some(Icon::Hourglass),
+                    issue.kind.label(),
+                    super::chip::Tone::Attention,
+                    c,
+                )]
+                .spacing(6)
+                .align_y(Center);
+                if let Some(when) = when {
+                    limit = limit.push(small(when, c));
+                }
                 body = body.push(
                     row![
-                        tip(
-                            said(
-                                "provider-limit",
-                                words.clone(),
-                                container(icon(Icon::Hourglass, c.amber, 14.0)).padding(3)
-                            ),
-                            words,
-                            c
-                        ),
+                        limit,
                         action(
                             "resume-provider",
                             "Resume delivery",
@@ -3215,14 +3179,17 @@ impl App {
             if let Some(binding) = agent.input_binding.as_ref().filter(|b| b.restart.exhausted) {
                 body = body.push(
                     row![
-                        alert_mark(
+                        super::chip::Chip::new(
                             "receiver-exhausted",
-                            format!(
-                                "Delivery restart failed after {} tries; its messages are kept",
-                                binding.restart.attempts
-                            ),
-                            c
-                        ),
+                            Some(Icon::Alert),
+                            "Delivery restart failed",
+                            super::chip::Tone::Alert,
+                        )
+                        .detail(format!(
+                            "After {} tries; its messages are kept",
+                            binding.restart.attempts
+                        ))
+                        .view(c),
                         action(
                             "retry-receiver",
                             "Restart delivery",
@@ -3240,19 +3207,22 @@ impl App {
             // many, how to get them delivered, and let the person put the
             // notice away. Nothing waiting means nothing to review.
             if paused && !agent.status.is_live() && self.ended_with_undelivered(agent) {
-                body = body.push(said(
-                    "ended-undelivered",
-                    format!(
+                body = body.push(
+                    super::chip::Chip::new(
+                        "ended-undelivered",
+                        Some(Icon::Inbox),
+                        match self.undelivered(agent) {
+                            Some(count) => format!("{count} not delivered"),
+                            None => "Not delivered".to_owned(),
+                        },
+                        super::chip::Tone::Attention,
+                    )
+                    .detail(format!(
                         "This session ended {}.",
                         undelivered_phrase(self.undelivered(agent))
-                    ),
-                    row![
-                        icon(Icon::Inbox, c.amber, 13.0),
-                        count_chip(self.undelivered(agent).unwrap_or(0), true, c)
-                    ]
-                    .spacing(4)
-                    .align_y(Center),
-                ));
+                    ))
+                    .view(c),
+                );
             }
             // Every notice an ended session raises can be put away: it can
             // report no recovery, so a block or a count would otherwise stay.
@@ -3280,8 +3250,11 @@ impl App {
                 ));
                 if self.shell.review_delivery {
                     if let Some(reason) = delivery.and_then(|d| d.pause_reason.as_deref()) {
-                        body =
-                            body.push(alert_mark("delivery-paused", plain_pause_reason(reason), c));
+                        body = body.push(error_line(
+                            "delivery-paused",
+                            &plain_pause_reason(reason),
+                            c,
+                        ));
                     }
                     if let Some((log_agent, result)) = &self.session_log
                         && log_agent == &id
@@ -3420,25 +3393,24 @@ impl App {
                             .and_then(|d| d.received.as_ref())
                             .is_some_and(|input| input.messages.contains(id))
                     });
-                // Taken is a tick, waiting a clock; the words are their names.
-                body = body.push(tip(
-                    said(
+                // Waiting in its queue, then taken: a chip that says which.
+                body = body.push(if received {
+                    super::chip::chip(
                         "session-message-queued",
-                        if received {
-                            "Received by agent"
-                        } else {
-                            "Message saved to queue"
-                        },
-                        container(if received {
-                            icon(Icon::Check, c.green, 14.0)
-                        } else {
-                            icon(Icon::Clock, c.muted, 14.0)
-                        })
-                        .padding(3),
-                    ),
-                    if received { "Received" } else { "Queued" },
-                    c,
-                ));
+                        Some(Icon::Check),
+                        "Received by agent",
+                        super::chip::Tone::Positive,
+                        c,
+                    )
+                } else {
+                    super::chip::chip(
+                        "session-message-queued",
+                        Some(Icon::Clock),
+                        "Message saved to queue",
+                        super::chip::Tone::Neutral,
+                        c,
+                    )
+                });
             }
         }
         // A name of one's choosing, for a live session: the daemon keeps it
@@ -3529,8 +3501,8 @@ impl App {
                 Some(Message::StartRename(id.clone())),
             ));
         }
-        // Keep it as something to come back to: its accent dot returns
-        // until it is opened again.
+        // Keep it as something to come back to: its Finished chip
+        // returns until it is opened again.
         if agent.spec.runtime != agentdocker_core::HUMAN_RUNTIME
             && !self.shell.unviewed_done.contains(&id)
             && !self.standing(agent).needs_you()
@@ -3993,15 +3965,20 @@ impl App {
         direct
     }
 
-    /// The least time left among this agent's unanswered questions, as a
-    /// fraction of its window; `None` when nothing is waiting.
-    fn soonest_answer_window(&self, agent: &str) -> Option<f32> {
+    /// This agent's unanswered question with the least of its window
+    /// left; `None` when nothing is waiting.
+    fn soonest_answer_window(&self, agent: &str) -> Option<&agentdocker_core::Question> {
         let now = Utc::now();
         self.questions
             .iter()
             .filter(|q| q.from == agent && !q.expired(now))
-            .map(|q| remaining_fraction(q.asked_at, q.expires_at, now))
-            .min_by(|a, b| a.total_cmp(b))
+            .min_by(|a, b| {
+                remaining_fraction(a.asked_at, a.expires_at, now).total_cmp(&remaining_fraction(
+                    b.asked_at,
+                    b.expires_at,
+                    now,
+                ))
+            })
     }
 
     /// The last `keep` messages, plus the one a notification pointed at when
@@ -5094,6 +5071,121 @@ mod tests {
             crate::app::App::session_editor_folder(&agent),
             Some(worktree)
         );
+    }
+
+    /// Every state is a chip that prints its word, the healthy ones too:
+    /// a project row in the rail says its loudest agent's standing (and
+    /// how many need the person), a session row and the session's panel
+    /// say its standing and its readiness, and a row waiting on the person
+    /// prints the time left to answer.
+    #[test]
+    fn rows_say_their_states_in_chips() {
+        use super::super::view::testing::seen;
+        use super::*;
+        use agentdocker_core::{Activity, AgentSpec, AgentStatus, ProjectRef};
+        let (commands, _requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        let root = std::path::PathBuf::from("/work/orchard");
+        app.shell.catalog.projects.push(crate::catalog::Entry {
+            project: ProjectRef::directory(&root),
+            pinned: true,
+            label: None,
+        });
+        let agent = |name: &str| {
+            let mut agent = AgentRecord::new(
+                AgentSpec {
+                    name: name.into(),
+                    runtime: "codex".into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            agent.status = AgentStatus::Running;
+            agent.project = Some(ProjectRef::directory(&root));
+            agent
+        };
+        let (worker, quiet) = (agent("worker"), agent("quiet"));
+        app.activity.insert(
+            worker.id.to_string(),
+            Activity::Working { since: Utc::now() },
+        );
+        app.activity
+            .insert(quiet.id.to_string(), Activity::Idle { since: Utc::now() });
+        app.agents = vec![worker.clone(), quiet.clone()];
+        let c = Colors::new(false);
+        let label = |view: &super::super::view::testing::Seen, id: &str| {
+            view.control(id)
+                .unwrap_or_else(|| panic!("no {id} in {:?}", view.controls))
+                .1
+                .clone()
+        };
+
+        let rail = seen(app.sidebar(c));
+        let project = format!("project-standing-{}", root.display());
+        assert_eq!(label(&rail, &project), "Working", "the loudest, healthy");
+        assert!(rail.texts.iter().any(|t| t == "Working"), "printed");
+
+        let rows = seen(app.session_rows(&[&worker, &quiet], c));
+        assert_eq!(
+            label(&rows, &format!("session-standing-{}", worker.id)),
+            "Working"
+        );
+        assert_eq!(
+            label(&rows, &format!("session-standing-{}", quiet.id)),
+            "Idle",
+            "an idle session says so too"
+        );
+
+        let panel = seen(app.inspector(&worker, c));
+        assert_eq!(label(&panel, "inspector-standing"), "Working");
+        let readiness = app.input_readiness(&worker);
+        assert_eq!(label(&panel, "inspector-readiness"), readiness.label());
+
+        // Two that need the person: the project's chip says so and counts.
+        let asked = |from: &AgentRecord, id: &str| agentdocker_core::Question {
+            id: agentdocker_core::MessageId::from(id.to_owned()),
+            from: from.id.to_string(),
+            to: agentdocker_core::Destination::Agent("human".into()),
+            text: "Which route?".into(),
+            presentation: None,
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(10),
+        };
+        app.questions = vec![asked(&worker, "q1"), asked(&quiet, "q2")];
+        let rail = seen(app.sidebar(c));
+        assert_eq!(label(&rail, &project), "Needs you · 2");
+        let rows = seen(app.session_rows(&[&worker], c));
+        assert_eq!(
+            label(&rows, &format!("session-standing-{}", worker.id)),
+            "Needs you"
+        );
+        assert!(
+            label(&rows, &format!("session-time-left-{}", worker.id)).ends_with("m left"),
+            "the time left to answer is printed"
+        );
+    }
+
+    /// A pull request's chip prints its number and its checks in a word.
+    #[test]
+    fn a_pull_request_chip_says_its_checks() {
+        use crate::pull_request::{PullRequest, Status};
+        let words = |status| {
+            super::pull_request_look(&PullRequest {
+                number: 12,
+                url: "https://example.invalid/pull/12".into(),
+                status,
+                head: None,
+            })
+            .words
+        };
+        assert_eq!(words(Status::Passed), "#12 · Passed");
+        assert_eq!(words(Status::Running), "#12 · Running");
+        assert_eq!(words(Status::Failed), "#12 · Failed");
+        assert_eq!(words(Status::Merged), "#12 · Merged");
+        assert_eq!(words(Status::Open), "#12 · Open");
     }
 
     #[test]

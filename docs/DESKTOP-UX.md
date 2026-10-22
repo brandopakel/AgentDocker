@@ -5,9 +5,16 @@ restores the last project and appearance. No browser, container engine or cloud
 account is required to organize local agent work.
 
 The screens carry names, content and the labels of controls. A state is a
-mark — a dot, a glyph, a ring or a meter — whose words are its tooltip and its
-accessible name, so a screen reader hears what the eye reads from it; a
-failure is the amber alert mark with its first line beside it. What just
+labelled chip: an icon and its word, with any fix beside it — **Restart…**,
+**Set up**, **Resume delivery**, **Answer**, **Reconnect here**,
+**Connection**. Healthy states are chips too (*Idle*, *Working*,
+*Delivered*, *Receiving messages*), so nothing is told by a colour alone. A
+chip's words are its accessible name; its tooltip, when it has one, only adds
+detail (a time, a reason, who), and is its accessible value. A chip is one
+line of fixed height that fits its row, and the row's name is cut before the
+chip is. A failure is the alert mark: a chip with the alert icon and the head
+of its words (all of them its detail), or, for an error that reads as a
+sentence, the amber mark with its first line beside it. What just
 happened shows as a toast at the window's foot for eight seconds, and only
 when the screen does not already show it.
 
@@ -71,16 +78,18 @@ With no saved selection, the app opens on **All projects**, with sessions groupe
 under their project names. A saved project or Other sessions view is restored.
 **Projects** in the sidebar returns to All projects. Choosing a project opens
 its shared **Chat**, with the agents working there beside it. Under each of your
-own five newest messages in a conversation, one dot says where it stands
-with the agents it went to, refreshed with the screen, in the tone of its
-loudest state (amber for a problem, faint while it waits, green once
-delivered, blue once answered). Its spoken name groups the agents by
-state, problems first, named while there are one or two in a state and counted
-beyond that; pointing at it lists each one's own line. The states are *answered*, *delivered*,
-*received by the model*, *shown to its session, not confirmed*, or why it still
-waits — *nothing connects its session to AgentDocker*, *waiting for its next
-prompt*, *waits until it checks in* (a browser agent, or a session away for hours), *delivery paused*, *session ended before taking it*. Nothing says
-*read*: the daemon cannot know it. **Agents** opens the
+own five newest messages in a conversation, one chip says where it stands
+with the agents it went to, refreshed with the screen: the word for its
+loudest state — a problem before a wait, a wait before a delivery, a delivery
+before an answer — in that state's tone (*Paused*, *Not delivered*, *Waiting*,
+*Delivered*, *Answered*), and, when it went to several, how many the word is
+true of (*Delivered · 2*, *Waiting · 1 of 3*). Pointing at it lists each
+recipient's own line, which is also the chip's accessible value. Those lines
+say *answered*, *delivered*, *received by the model*, *shown to its session,
+not confirmed*, or why it still waits — *nothing connects its session to
+AgentDocker*, *waiting for its next prompt*, *waits until it checks in* (a
+browser agent, or a session away for hours), *delivery paused*, *session ended
+before taking it*. Nothing says *read*: the daemon cannot know it. **Agents** opens the
 session list and **Board** the project's cards. **More** opens a menu of History,
 Files in use, Usage, AgentDocker commands and the project's Pin and Forget; the tab takes the name of the screen on view and is underlined only
 while one of those screens is open. **Pause…**, the project terminal and
@@ -109,30 +118,31 @@ Ghostty, an editor's terminal, a JetBrains IDE — is brought to the front. Ghos
 is not asked for the agent's tab: its scripting names each terminal's
 folder but no tty or process, and a folder is not an identity (an agent can work
 in another folder than its tab reports, and that folder can be another tab's). The
-standing glyph beside the name in its details says on its tooltip where an
-agent runs (*in Terminal (ttys005)*, *in
+standing chip beside the name in its details says in its detail what it is
+doing, its tool and where it runs (*in Terminal (ttys005)*, *in
 tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
 tmux pane**). Nothing is typed into the agent, and no second copy is started.
 An agent without a terminal to reach opens its details instead.
 
-An agent's row, in the chat's agent list and in the session list, is one line
-that leads with its **standing**, the same everywhere it appears: an amber dot
-when it needs you (a question, its own prompt, or messages it cannot take), a
-red triangle when it failed and you have not looked, a muted dot while it
-works, an hourglass while it waits on a lease, a dashed ring while it starts,
-an **accent dot** when it finished since you last looked, and nothing when it
-is idle. Pointing at the glyph says the word (in the session list the row's
-spoken name gives what it is doing too); the row prints no status word, and sets the name semibold when something there is new
-or waits on you. "Finished since you looked" means its turn ended, or the
-session did, while its project was not on screen in a focused window; going to
-its terminal, opening its details or opening its project clears it, as does
-the agent starting to work again; **Mark unread** in a session's panel brings
-the dot back, to come back to it later. In the session list the row's one
-trailing slot is the time left to answer, as a ring, while it waits on you,
-else the **pull request chip**; in the chat's list it is the pull request
-chip, and what the agent is doing and for how long is the name's tooltip. The pull request chip names the pull request of the agent's branch — **#&lt;n&gt;**
-with a green tick when its checks passed, an amber dot while they run, a red
-cross when one failed, a done glyph once merged — and opens it in the
+An agent's row, in the chat's agent list, the session list, the command
+palette and a board card's holder, is one line: its mark, its name, then its
+**standing** chip, the same everywhere it appears — **Needs you** (amber; a
+question, its own prompt, or messages it cannot take, which the chip's detail
+names), **Failed** (red, until you look), **Working**, **Waiting on a lease**,
+**Starting**, **Finished** (the accent, *finished since you looked* in its
+detail), **Idle** and **Ended**. The name is set semibold when something there
+is new or waits on you, and is cut before the chip is. "Finished since you
+looked" means its turn ended, or the session did, while its project was not
+on screen in a focused window; going to its terminal, opening its details or
+opening its project clears it, as does the agent starting to work again;
+**Mark unread** in a session's panel brings **Finished** back, to come back
+to it later. In the session list a second chip follows: the time left to
+answer (*4m left*, red in the last fifth of its window) while it waits on
+you, else the **pull request chip**; in the chat's list it is the pull
+request chip, and what the agent is doing and for how long is the name's
+tooltip. The pull request chip names the pull request of the agent's branch
+and its checks in a word — **#&lt;n&gt; · Passed**, **Running**, **Failed**,
+**Merged**, or **Open** with none reported — and opens it in the
 browser. It is read with the `gh` you are signed in to, in the background, at
 most every two minutes and again when the window regains focus, for live
 agents and those that ended within a day. A default branch (main, master,
@@ -167,34 +177,35 @@ the window opens. A session working in a worktree of its own offers the same
 **Open in…** in its Details, under its folder, for that worktree. The command
 palette has one **Open in** row per editor for the selected project.
 
-**Needs you**, a card headed by an amber dot and its count (read aloud *Needs
-you, n*), shows only what waits on you: questions, each row the asker, the
-ask, the time-left ring and **Answer** (a question
-from a session that has since ended carries a leave glyph, and its spoken line
-says it was asked before the session ended), and sessions
-stopped at a permission prompt or question in their own terminal, each the
-agent's name with an amber glyph for the errand — a shield for a permission,
-a question mark for a question, an hourglass when its hooks did not say which
-— read aloud as *Claude Code wants permission in its terminal*, *has a
-question in its terminal* or *is waiting for you in its terminal*; **Go to
-Terminal** takes you there. Seen across
+**Needs you**, a card headed by its chip and count (*Needs you · n*), shows
+only what waits on you: questions, each row the asker, the ask, the
+time-left chip (*4m left*, *Expired*) and **Answer** (a question from a
+session that has since ended carries a *Session ended* chip, and its spoken
+line says it was asked before the session ended), and sessions stopped at a
+permission prompt or question in their own terminal, each the agent's name
+with a chip for the errand — **Wants permission**, **Has a question**, or
+**Waiting for you** when its hooks did not say which — read aloud as *Claude
+Code wants permission in its terminal*, *has a question in its terminal* or
+*is waiting for you in its terminal*; **Go to Terminal** takes you there. Seen across
 projects, each row starts with its project's name (*&lt;project&gt; · Claude Code · Badger*).
 A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not
-here: its row's amber dot marks it, with the reason in its spoken name, and
-opening it shows the details — a provider's limit is an amber hourglass whose
-tooltip says when it lifts on your own clock (*Usage limit resets in 42 min
-(15:00)*), or for a passing provider outage, which AgentDocker tries again by itself
-(*Provider unavailable · tries again at 14:31*), beside **Resume delivery**; an
-ended session's kept messages are an
-inbox glyph with their count; **Review delivery** opens
-a live session's paused delivery and **Dismiss** puts away an ended one's notice, which
-leaves the messages as they are.
-Finished sessions keep their accent dot on the row.
-A project's row in the rail shows its loudest agent's glyph, a number only for
-agents that need you, and its name in semibold when something there is new;
-how many agents run is not shown on the row, since it is not a reason to look
-(the project tile's tooltip gives the folder and how many are live or new). Question previews use at
+here: its row's **Needs you** chip marks it, with the reason in the chip's
+detail, and opening it shows the details — a provider's limit is a chip with
+its name (*Usage limit*) and when it lifts on your own clock printed beside it
+(*resets in 42 min (15:00)*), or for a passing provider outage, which
+AgentDocker tries again by itself, *Provider unavailable* and *tries again at
+14:31*, beside **Resume delivery**; an ended session's kept messages are a
+chip with their count (*3 not delivered*); **Review delivery** opens a live
+session's paused delivery and **Dismiss** puts away an ended one's notice,
+which leaves the messages as they are. Finished sessions keep their
+**Finished** chip on the row.
+A project's row in the rail shows its loudest agent's chip — *Needs you*
+counts the agents that need you when more than one does (*Needs you · 2*) —
+and its name in semibold when something there is new; how many agents run is
+not shown on the row, since it is not a reason to look (the project tile's
+tooltip gives the folder and how many are live or new). A project with no
+live agent shows no chip. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
 Inbox, where an approval card also has a line (*Why not?*) for words to go with **Deny** —
@@ -213,24 +224,24 @@ and the window is wide enough, send the same exact answer as the Inbox card, wit
 the command in the row's words; file changes, which must be looked at first,
 and every other question open with **Answer**. The first three items are shown; **Show N more** expands the same list and
 **Show fewer** collapses it. When nobody needs an answer or delivery review, the
-same card, headed by a cyan dot and read aloud *To get started*, can offer
+same card, headed by a *To get started* chip, can offer
 **Connect** for discovered processes and **Set up** for installed tools. Tools
 also keeps the full setup controls.
 
 A vendor's browser extension (Claude, ChatGPT) has its own Tools row, whose
-state dot says on the pointer and to a reader
-**Installed in Chrome · its sessions reach here only through the connector,
-which is not running**, or **… · the connector is ready; add it to your Claude
-account and its clients appear here** while `agentdocker connector` serves on
-this machine, or, once a consent has made an agent, **… · clients of your
-Claude account reach here as one agent through the connector** (a consent is
+chip says **Installed in Chrome**, with the rest in its detail: *its sessions
+reach here only through the connector, which is not running*, or *the
+connector is ready; add it to your Claude account and its clients appear
+here* while `agentdocker connector` serves on this machine, or, once a
+consent has made an agent, *clients of your Claude account reach here as one
+agent through the connector* (a consent is
 the account's: the side panel, the apps and a terminal reaching the account's
 connectors all come in as that agent, and nothing tells them apart) — with
 the browser, profile and version of
 each copy under **Details**, and the connector: its MCP
 URL, whose tooltip says where in the vendor's settings to add it, and the
 pairing code the consent page asks for (one consent each; the page then asks
-which project the agent joins), or, when none serves, a *Not running* dot with
+which project the agent joins), or, when none serves, a *Not running* chip with
 **Tailscale** and **Cloudflare** to start one, each saying on the pointer what
 its address does. The row offers no **Set up**: what the extension is doing runs
 in the browser and on the vendor's side, and only the connector's consent
@@ -282,7 +293,7 @@ among your projects: it sits in a **Temporary** fold under them (a
 fixture's workspace, a trial's worktree). Until you toggle it the fold is
 automatic — open while one of them has a live session or is the selected
 project, closed otherwise — and from then on it is as you left it, closable
-even while one runs or is selected; a green dot and the live count sit on the fold. Pinning
+even while one runs or is selected; a chip on the fold counts the live sessions (*2 live*). Pinning
 one moves it up. Two projects with one folder name (four `workspace`
 fixtures, say) are read aloud with the folder above each first —
 `workspace · app-a · /tmp` — so the part that tells
@@ -309,17 +320,16 @@ Search applies to the
 selected project, both filters and the Earlier group. Switching projects
 returns to Current. Nothing is deleted when a row moves to Earlier.
 
-Session rows show the standing glyph, the session's small mark — its tool's
-logo (Claude, OpenAI, Gemini, Copilot, Cursor, Windsurf, VS Code, OpenCode),
-or a letter tile for a tool without one — and its name, then one trailing slot
-(the time left to answer, as a ring, while it waits on you, else the pull
-request chip). Pointing at the name shows its tool, branch and the tokens
+Session rows show the session's small mark — its tool's logo (Claude, OpenAI,
+Gemini, Copilot, Cursor, Windsurf, VS Code, OpenCode), or a letter tile for a
+tool without one — and its name, then its standing chip and one more chip
+(the time left to answer while it waits on you, else the pull request chip). Pointing at the name shows its tool, branch and the tokens
 its provider reported over the last 24 hours when collection is on
 (`1.23M tokens in 24h`, `~` where some samples did not say, nothing where
 none did); the row's spoken name adds what it is doing. Sessions needing
 input appear first within each project. An ended Claude Code session that can
 come back carries **Reconnect here** on its row itself (the same action as in
-Details, whose dot beside the button still says why a session cannot be reconnected yet); while its
+Details, which says why a session cannot be reconnected yet); while its
 resume is on its way the row says **Reconnecting…**. Select a row for terminal access, reply, or stop. On a narrow
 window, the session replaces the list; **Back to sessions** returns to it. On a
 wide window, it opens beside the list. A session working on its own branch (in a
@@ -386,9 +396,10 @@ or over SSH, with no agent's session anywhere above it — as `list_tasks`
 counts `mine`; each card still shows its holder, and it is for showing,
 never permission) — and
 **Tags**, a row of the project's tags to show only cards that carry them all.
-**Table** lays every card of the project out as a row (key, lane mark,
-title, priority, due day, tags, holder; a row opens its card under it), and
-**Compact** drops a card's marks for its key and title. Pressed with no
+**Table** lays every card of the project out as a row (key, its lane as a
+chip, title, then *High priority*, its due day and its tags as chips, and its
+holder; a row opens its card under it), and **Compact** drops a card's chips
+for its key and title. Pressed with no
 field in use, `n` opens the first lane's title line, `/` the search, `v`
 switches lanes and table, `d` roomy and compact, and Esc closes, innermost
 first, a menu, the title line, the open card, the board's settings, then
@@ -409,10 +420,13 @@ card draft: they wait while another project is on view, survive closing and
 reopening the window (shown in the board's first lane), and only the reply to
 their own filing clears them; a refused filing keeps them and says why under
 the line. A card's face is its key, title and
-marks — due (amber when today, red when past), waiting on something, its
-first tags — and who holds it, as every agent row draws them; a
-high-priority card has a red edge, a free card in the pull source an accent
-dot (*Ready to pull*), and a card another session just changed flashes once.
+chips, wrapping in a narrow lane — its due day (*Due today* amber, *Overdue*
+red, else *Due* and the day), *Waiting* when it waits on something (what, from off
+the board, in its detail), its first four tags by name with each tag's colour
+beside it (*+n* for the rest) — and who holds it, their mark and standing
+chip as every agent row draws them; a high-priority card has a red edge, a
+free card in the pull source a *Ready to pull* chip, and a card another
+session just changed flashes once.
 Drag a card to a lane, or onto a card to land beside it; a press released
 where it started opens it in place: title, description, *Done when…*,
 priority and size segments, due, what it waits on off the board, tags,
@@ -442,12 +456,13 @@ channel consent and tool permissions still apply in the new terminal.
 **To-do**, in the sidebar under Projects, is every project's open cards in
 three groups, each named by its mark: yours, your agents' (every card an
 agent holds, whoever started it), and those you filed that nobody holds; within a group, by project (named above its rows),
-then by due day and priority. A row is a circle that ticks the card done
-(to its board's Done), its key, title, priority and due marks, and its
-holder; pressed, it opens the card on its project's board.
+then by due day and priority. A row is a **Done** button (a tick and the
+word) that moves the card to its board's Done, its key, title, its *High
+priority* and due chips, and its holder; pressed, it opens the card on its
+project's board.
 
 **More → Plans** is the project's plans, files and memory. The list is each plan's
-name with a dot for where it stands (draft, active, done, archived) and a
+name with a chip for where it stands (*Draft*, *Active*, *Done*, *Archived*) and a
 **New plan**; the plan open is its title, its status as segments, its
 Markdown in an editor, **Save** while it has changes, and the cards that
 carry it out, each opening on its board. Under it are the project's files,
@@ -468,14 +483,14 @@ progress under that agent at once; two agents never get one card, and a
 card that waits on an open card is skipped. When the person moves, hands or
 comments on a card an agent holds, that agent is told with the card linked;
 what the person does is never told back to them. The Board tab counts the
-cards waiting for the person. A held card shows its holder's standing glyph
+cards waiting for the person. A held card shows its holder's standing chip
 and pull request chip, so whether anyone is on it reads off the card. While
 the board is on screen, a card follows its holder's pull request forward:
 from In progress to Review once the pull request is open, and from In
 progress or Review to Done once it is merged. Each move is made once, so an
 agent that moves the card back is not fought. The pull is a `task:<id>`
 lease: a card whose holder's lease has lapsed — expired, released, or the
-agent gone — carries a *Not being worked on* mark; nobody takes it by a
+agent gone — carries a *Not being worked on* chip; nobody takes it by a
 plain pull, only by naming that holder (`pull_task` with `take_over_from`)
 or by **Hand to**, which ends the old hold and gives a running agent the
 card's lease in one step. A move back to a waiting lane, or to Done or
@@ -491,9 +506,9 @@ project forgets the old asks. Narrow, the lanes stack.
 
 **Pause…** beside it asks for a reason and tells every agent in the project
 to hold: they read the reason as a `pause` message, the daemon refuses their
-new leases until **Resume**, and while it holds the header shows the amber
-pause mark beside **Resume**, the reason on its tooltip and in its spoken name
-(*Paused · reason*). What an agent already holds, it keeps; your own actions are not
+new leases until **Resume**, and while it holds the header shows a chip
+beside **Resume** that starts the reason (*Paused · reason*), the whole
+reason in its detail when the chip cuts it. What an agent already holds, it keeps; your own actions are not
 held; only you can pause or resume, an agent asks with a message.
 **Launch agent…** opens the form. For Claude and Codex it offers **Model** and **Effort**, each a chip that opens its list: the provider's default first, named (*Default (&lt;model&gt;)*), then the models the provider shows on this machine (Codex's `models_cache.json`; Claude's aliases) and the efforts the chosen model takes. The defaults are read from the provider's own settings (`~/.codex/config.toml`, `~/.claude/settings.json`) off the UI thread; nothing is fetched. A choice becomes the tool's own options (`--model`, `--effort`, `-c model_reasoning_effort=…`) before **More options**' arguments, which win where they name one (in any spelling the tool takes, the last in force): the chip then shows the argument's value and gives way to it, and an effort the model in force does not take is dropped. Changing the tool starts from its defaults, and a read made for an earlier tool never applies. The session's panel says the model and effort it was launched with (`<model> · xhigh`). In a git project it offers **Own worktree**, on by default: the session works on a branch of its own (`agent/<name>`) in its own folder under AgentDocker's worktree directory, with the files the project's `.worktreeinclude` lists copied in; off, it works in the project folder on its current branch. Pressing the button again leaves the form open; **Cancel**
 or a press outside the dialog closes it) to choose an installed CLI and start it at the project root
@@ -523,7 +538,7 @@ the connector is named for it — its tool reads **Claude (connector)** or
 **ChatGPT (connector)**, not the browser extension, since any client of the
 account may be calling — and has no process here; it counts as live while it is heard from
 and, after an hour without a tool call, sits under **Earlier**, *not
-connected* in its row's spoken name and its panel's standing tooltip. A conversation or session that only loads the connector is not
+connected* in its row's spoken name and its panel's standing chip's detail. A conversation or session that only loads the connector is not
 using it. It is still registered, messages still wait for it, and its next
 tool call makes it current again.
 Installation or configuration alone does not prove that an agent is working.
@@ -534,11 +549,12 @@ view while the process continues. Finished sessions remain available under Earli
 
 **Message** opens a small composer for the selected agent. **Send message** uses
 the same inbox queue as messages from other agents. Its queued receipt — a
-clock read aloud *Message saved to queue*, a tick (*Received by agent*) once
-the agent's receiver takes it — confirms
+chip, *Message saved to queue*, then *Received by agent* once the agent's
+receiver takes it — confirms
 local acceptance; it does not mean the agent has read or completed the request.
 Direct-message and thread composers show the recipient's current input readiness
-as a dot whose tooltip and spoken name give it, beside a **Connection** shortcut to Tools. The shortcut preserves both drafts.
+as a chip in the readiness words (*Receiving messages*, *Messages may wait for
+its next prompt*, *Not receiving messages*), beside a **Connection** shortcut to Tools. The shortcut preserves both drafts.
 MCP/hook contact alone cannot verify idle wake; disconnected views show unavailable
 readiness. The enabled Claude channel can wake an idle session. Codex and other connections
 still require their supported input integration. Drafts survive navigation and
@@ -619,7 +635,7 @@ The sidebar lists the project chats — the chat (`#everyone`) of each project i
 sidebar, on the project's tile, named for the project and opening that project's **Chat** — then,
 under a rule, the direct messages: your conversations with agents that have something in
 them, one row per agent by its stable name (with its project's name while every
-project is on view), a presence dot for a live session, and one row for an
+project is on view), a *Live* or *Ended* chip after the name, and one row for an
 identity however many ids it has had. A conversation with a session that has
 ended stays listed only while it holds something unread; a search box filters
 by name, and **+** starts a conversation. Every row is the name alone, on one
@@ -632,8 +648,8 @@ are the CLI's (`agentdocker conversations`, `agentdocker history
 counts cover what is yours to answer: each project's chat and your own direct
 messages, never what two agents said to each other or what AgentDocker told
 them. The rail's **Messages** badge is a number only for your direct messages
-(questions arrive in them) and a dot when only a project chat has something
-unread, as Slack's dock does; **Mark all read**, above the rows while
+(questions arrive in them) and an *Unread* chip when only a project chat has
+something unread; **Mark all read**, above the rows while
 anything is unread, reads all of it at once. What reaches you in `#all`, a channel or a contested room is
 read through as each list arrives, so it never waits in your queue or under
 a count nobody can clear here. The
@@ -647,16 +663,17 @@ shows one pane with a way back. Expanding restores saved widths (rail 180–440
 points, sidebar 200–560, thread 240–640).
 The pane's header is the name alone, with what the
 conversation is about (a project chat's participants, a pair's branches) on
-its tooltip; in a project's Chat the page header names it and the pane has
-none. The pane shows the newest 200 archived messages, newest
+its tooltip, and a direct conversation's *Live* or *Ended* chip after it; in a
+project's Chat the page header names it and the pane has none. The pane shows the newest 200 archived messages, newest
 last, with **Show earlier messages** at the top until the first is on view, a
 bare rule where the day turns and an accent rule before the unread part, each
 named for a reader (the day, *New*); a question keeps
 its card (Answer, Allow, Deny) in place. Messages from one sender run together
 under one mark and one header — the name, with the time on its tooltip and a
-question or hand-off as a glyph —
+*Question* or *Handoff* chip —
 until the sender or kind changes, five minutes pass, or a message names you;
-AgentDocker's own notices are single quiet lines, their time on the pointer. Long messages fold behind
+AgentDocker's own notices are single quiet lines that start with its name,
+their time on the pointer. Long messages fold behind
 **Show more**. The window keeps as much of
 one conversation as the daemon does (5,000 messages), so paging back reaches
 the earliest it has; when the daemon prunes, the window drops every archive
@@ -784,45 +801,50 @@ screen, project, session or conversation, or another notification — or
 losing the daemon ends the search, and a page that arrives late moves
 nothing.
 
-Each Tools row is the tool's mark and name with a state dot whose tooltip and
-spoken name carry the state and the version. The dot says **Receiving messages** only with a fresh report from the message
-delivery bound to a live session. **Connected · messages wait for its next prompt**
-requires recent MCP or hook contact and no input route at all — the session
+Each Tools row is the tool's mark and name with a state chip; the part of its
+words that is not the state (*Connected*, *Configured*, what is missing) and
+the version are the chip's detail. The chip says **Receiving messages** only with a fresh report from the message
+delivery bound to a live session. **Messages wait for its next prompt**
+(*Connected*) requires recent MCP or hook contact and no input route at all — the session
 is in touch, but nothing reaches it while it is idle — and activity and
 configuration alone cannot establish it; a session whose receiver is paused,
-or whose provider is blocked, reads **Connected · messages paused** and one
-whose delivery has stopped reporting **Connected · not heard from recently**, since a prompt does not
-release what such a route holds. Other states distinguish **Needs setup · missing …** (which says
-what: the MCP entry, the hooks, or the one or two hook events setup requires,
-for example *StopFailure hook*), **Setup needs review**, **Configured ·
-waiting for contact**, unavailable integration and **Not installed**.
+or whose provider is blocked, reads **Messages paused** and one
+whose delivery has stopped reporting **Not heard from recently**, both
+*Connected*, since a prompt does not release what such a route holds. Other
+states distinguish **Needs setup** (whose detail says what is missing: the MCP
+entry, the hooks, or the one or two hook events setup requires, for example
+*StopFailure hook*), **Setup needs review**, **Waiting for contact**
+(*Configured*), **Integration unavailable** and **Not installed**.
 Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
 [CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md). Missing supported setup offers
 **Set up**. **Details** holds the facts the tool has — MCP, Hooks, Shell,
 Version, Command, Browser, URL, Code — and each live session as its name with
-a readiness dot and MCP and Hooks contact dots, plus **Review setup**,
+its readiness chip and its contact chips (*MCP · recent*, *Hooks · none*), plus **Review setup**,
 **Check connections** and **Setup history**; an incomplete inventory is the
 alert mark; **Other tools (n)** expands
-the inventory. Delivery, a session's readiness dot, says the same words as `ps`
+the inventory. Delivery, a session's readiness chip, says the same words as `ps`
 and a send's warning: **Ready for messages** (nothing taken
 yet), **Receiving messages**, **Not receiving messages**, **Not heard from
 recently**, **Messages may wait for its next prompt**, **Waits until it checks
 in** (a browser agent, or a session away for hours), **Can't receive
 messages**, **Session ended** or the provider's limit, in a tone that follows
-the state; with words queued behind current delivery that no receipt names it
+the state (positive while it takes them, the accent while words or the
+session wait, amber when something stands in the way, quiet once ended); with words queued behind current delivery that no receipt names it
 reads **Sent · waiting for the agent to take it**, since an earlier receipt says nothing about them
 (a message still in the queue with a receipt from the current process counts
 as delivered). The session
-inspector shows the same readiness as a dot, the latest receipt among its
-words, beside an inbox glyph with the queued count.
+inspector shows the same readiness as a chip, the latest receipt in its
+detail, beside a chip with the queued count (*2 queued*).
 A setup review is named for its tool; its files show their MCP, Hooks or Shell
-lines as a diff, and its state is the footer's dot. Applying a plan turns that
-dot to saved (*Saved; start a fresh session to load it*), with **Undo** available afterwards. Fresh
+lines as a diff, and its state is the footer's chip (*Waiting for you*,
+*Applying…*, *Nothing to change*). Applying a plan turns that chip to saved
+(*Saved; start a fresh session to load it*), with **Undo** available afterwards. Fresh
 sessions load saved setup; only the provider can request its required approval.
-The connection check is one line per installed tool, a tick (read aloud
-*Configuration checked*) when configuration passes or the alert mark with the
-problems on its tooltip, and closes with **Close**. Busy is a ring, and a
-failure one line beside the alert mark. A connection
+The connection check is one line per installed tool, a *Configuration
+checked* chip when configuration passes or the alert mark with the first
+problem printed and all of them its detail, and closes with **Close**. Busy is a *Checking…*
+chip, and a failure one line beside the alert mark. Setup history lists each
+saved setup with its phase as a chip (*Applied*, *Prepared*, *Undone*). A connection
 failure retains the last snapshot and clearly pauses daemon actions.
 
 ## Settings and installation
@@ -842,20 +864,22 @@ installation moves from one preview build to the next without asking again
 a signed one still is);
 on a stable installation a newer preview build is shown with its version and
 downloads only after **Allow preview builds**. The installation screen's update
-card is a disc beside the version alone, the disc's tooltip and spoken name
-saying what the state means. When nothing has been published yet the disc says **No
-update published yet**; a check that fails is one line beside the alert mark,
+card is the state's icon on a disc, the version, and the state as a chip —
+**Update available**, **You have the newest release**, or **No update
+published yet** when nothing has been — with what to do about it in the chip's
+detail; a feed that could not be reached is a *Couldn’t reach the release
+feed* chip beside it; a check that fails is one line beside the alert mark,
 *Could not check for updates* and why (no connection to GitHub, say), never
 *Installation failed*, and a failed daily check is the alert mark in Settings.
 
 The foot of the sidebar, above **Add project…**, says something about the
 background service only when there is something to say, and then one thing: it
-is not reachable yet (an amber dot and *Reconnecting…*, the dot read aloud
-*Reconnecting to the background service…*); or it is older
-than the app — an older version, or another installed release of the same
-version, which is what an update installed underneath a running daemon looks
-like — an amber dot whose tooltip gives both versions, and **Restart…**; or an update is ready
-to install (a dot and *Update &lt;version&gt;*). A healthy service says nothing and takes no room. The restart's
+is not reachable yet (a *Reconnecting…* chip); or it is older than the app —
+an older version, or another installed release of the same version, which is
+what an update installed underneath a running daemon looks like — a *Service
+is older* chip whose detail gives both versions, and **Restart…** beside it;
+or an update is ready to install (a download icon and *Update
+&lt;version&gt;*). A healthy service says nothing and takes no room. The restart's
 confirmation, an amber strip across the bottom with **Restart** and **Cancel**,
 says what a restart costs:
 how many sessions AgentDocker itself started will stop (and how many are set to
@@ -892,7 +916,7 @@ On macOS the dock icon shows how many questions and prompts are waiting on you,
 in every project: the rows Needs you holds. It shows nothing when none are waiting.
 
 Text inputs and the terminal support native input methods. Focus indicators,
-and the words each status mark carries as its tooltip and accessible name,
+and the words every state chip prints and carries as its accessible name,
 complement color. Native accessibility adapters expose control
 labels, values and actions. Platform screen-reader and input-method validation is described in
 [the design and validation contracts](ICED-DESIGN.md).

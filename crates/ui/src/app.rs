@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 mod board;
+mod chip;
 mod forms;
 mod icons;
 mod logos;
