@@ -768,13 +768,10 @@ impl App {
             body_text
         };
         let mark_size = if in_thread { 28.0 } else { 32.0 };
-        // When it was said is the name's tooltip, with the day.
-        let time = message
-            .envelope
-            .sent_at
-            .with_timezone(&chrono::Local)
-            .format("%a %-d %b, %H:%M")
-            .to_string();
+        // When it was said, in this computer's time: the clock after the
+        // name, the day as well on the name's tooltip.
+        let time = crate::clock::moment(message.envelope.sent_at);
+        let clock = crate::clock::time(message.envelope.sent_at);
         let open = self.shell.thread.as_ref() == Some(&id);
         let thread_message = if open {
             Message::CloseThread
@@ -813,17 +810,20 @@ impl App {
             );
         } else {
             if head {
-                // The sender, its time on the pointer; a question or a
-                // hand-off says so in a chip. A mention is the row's amber
-                // tint.
-                let mut header = row![super::view::tip(
-                    text(name.clone())
-                        .size(13.5)
-                        .font(weight(iced::font::Weight::Semibold))
-                        .color(c.text),
-                    time.clone(),
-                    c
-                )]
+                // The sender and the time, the day on the pointer; a
+                // question or a hand-off says so in a chip. A mention is the
+                // row's amber tint.
+                let mut header = row![
+                    super::view::tip(
+                        text(name.clone())
+                            .size(13.5)
+                            .font(weight(iced::font::Weight::Semibold))
+                            .color(c.text),
+                        time.clone(),
+                        c
+                    ),
+                    text(clock).size(12).color(c.faint)
+                ]
                 .spacing(7)
                 .align_y(Center);
                 match Self::kind_word(&message.envelope.kind) {

@@ -1503,13 +1503,7 @@ impl App {
                     row![
                         tip(
                             self.agent_mark_for(&comment.author, &name, 18.0, c),
-                            format!(
-                                "{name} · {}",
-                                comment
-                                    .created_at
-                                    .with_timezone(&chrono::Local)
-                                    .format("%a %-d %b, %H:%M")
-                            ),
+                            format!("{name} · {}", crate::clock::moment(comment.created_at)),
                             c
                         ),
                         container(words).width(Fill),
@@ -1547,11 +1541,7 @@ impl App {
                     ]
                     .spacing(6)
                     .align_y(Center),
-                    entry
-                        .at
-                        .with_timezone(&chrono::Local)
-                        .format("%a %-d %b, %H:%M")
-                        .to_string(),
+                    crate::clock::moment(entry.at),
                     c,
                 ));
             }
