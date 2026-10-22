@@ -29,7 +29,8 @@ pub enum Outcome {
     /// on its way (none is followed); the new worktree has something
     /// there already, or a symlink or file on the way, or another writer
     /// made it while the seed was being built (theirs is left as it was);
-    /// or this platform does not seed yet.
+    /// or the filesystem has no rename that refuses to replace, or this
+    /// platform does not seed yet.
     Refused,
     /// The copy failed, ran out of time or would have taken too much
     /// space, and what it made was removed.

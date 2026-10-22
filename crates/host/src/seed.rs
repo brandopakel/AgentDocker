@@ -12,7 +12,9 @@
 //! The seed is built under a fresh name of its own inside the destination's
 //! checked folder and only then published under its real name by a rename
 //! that never replaces anything (`renameatx_np(RENAME_EXCL)` on macOS,
-//! `renameat2(RENAME_NOREPLACE)` on Linux): when another writer made that
+//! `renameat2(RENAME_NOREPLACE)` on Linux; a filesystem without one is
+//! refused rather than risk replacing an empty folder another writer has
+//! just made and holds open): when another writer made that
 //! name meanwhile, theirs is left as it was and the seed is removed. Only
 //! what this seed made is ever removed, and only while it is still what was
 //! made.
@@ -149,6 +151,13 @@ mod unix {
     thread_local! {
         pub(super) static PAUSE: std::cell::RefCell<Option<Hook>> =
             const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        /// Whether a test has this filesystem lack an exclusive rename.
+        pub(super) static NO_EXCLUSIVE_RENAME: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
     }
 
     fn pause(phase: Phase) {
@@ -480,17 +489,24 @@ mod unix {
             Ok(()) => (built.outcome, built.note),
             Err(e) => {
                 let removed = remove_tree(parent.as_raw_fd(), &temp, built.id);
-                if matches!(e.raw_os_error(), Some(libc::EEXIST | libc::ENOTEMPTY)) {
-                    (
+                match e.raw_os_error() {
+                    Some(libc::EEXIST | libc::ENOTEMPTY) => (
                         Outcome::Refused,
                         Some(format!(
                             "another writer made it while the seed was built; theirs was left \
                              as it was{}",
                             leftover(removed)
                         )),
-                    )
-                } else {
-                    (Outcome::Failed, Some(format!("{e}{}", leftover(removed))))
+                    ),
+                    Some(libc::EINVAL | libc::ENOSYS | libc::ENOTSUP) => (
+                        Outcome::Refused,
+                        Some(format!(
+                            "this filesystem cannot rename without replacing what is there, so \
+                             nothing was seeded{}",
+                            leftover(removed)
+                        )),
+                    ),
+                    _ => (Outcome::Failed, Some(format!("{e}{}", leftover(removed)))),
                 }
             }
         }
@@ -624,28 +640,17 @@ mod unix {
         Ok(Cloning::Copy(None))
     }
 
-    /// Rename `from` to `to` in `at` unless `to` is there. Where the
-    /// filesystem has no such rename, `to` is looked for first; a folder
-    /// there with anything in it still refuses the rename itself.
+    /// Rename `from` to `to` in `at` unless `to` is there, in one step.
+    /// There is no fallback: looking first and renaming after would replace
+    /// an empty folder another writer made in between, and holds open, so
+    /// a filesystem without such a rename (`EINVAL`, `ENOSYS`, `ENOTSUP`)
+    /// gets nothing published.
     fn publish(at: RawFd, from: &CStr, to: &CStr) -> io::Result<()> {
-        match rename_exclusive(at, from, to) {
-            Err(e)
-                if matches!(
-                    e.raw_os_error(),
-                    Some(libc::EINVAL | libc::ENOSYS | libc::ENOTSUP)
-                ) =>
-            {
-                match lstat(at, to) {
-                    Ok(_) => Err(io::Error::from_raw_os_error(libc::EEXIST)),
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                        // SAFETY: valid C strings and an open directory.
-                        check(unsafe { libc::renameat(at, from.as_ptr(), at, to.as_ptr()) })
-                    }
-                    Err(e) => Err(e),
-                }
-            }
-            other => other,
+        #[cfg(test)]
+        if NO_EXCLUSIVE_RENAME.with(std::cell::Cell::get) {
+            return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
         }
+        rename_exclusive(at, from, to)
     }
 
     #[cfg(target_os = "macos")]
@@ -881,7 +886,7 @@ mod unix {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::unix::{PAUSE, Phase};
+    use super::unix::{NO_EXCLUSIVE_RENAME, PAUSE, Phase};
     use super::*;
     use std::fs;
     use std::path::PathBuf;
@@ -1240,6 +1245,57 @@ mod tests {
             let theirs: &[&str] = if with_a_file { &["theirs"] } else { &[] };
             assert_eq!(names(&worktree.join("target")), theirs);
             assert_eq!(names(&worktree), ["target"], "the seed was removed");
+        }
+    }
+
+    /// Where the filesystem has no rename that refuses to replace, nothing
+    /// is published: not even when the name is free when the seed looks,
+    /// since an empty folder another writer makes and holds open in the
+    /// moment after would be replaced.
+    #[test]
+    fn without_an_exclusive_rename_nothing_is_published() {
+        use std::os::unix::fs::MetadataExt;
+        for (clone, someone_makes_it) in
+            [(true, false), (true, true), (false, false), (false, true)]
+        {
+            let (_tmp, source, worktree) = checkouts();
+            build_output(&source.join("target"));
+            let wt = worktree.clone();
+            let theirs = std::rc::Rc::new(std::cell::Cell::new(None));
+            let made = theirs.clone();
+            NO_EXCLUSIVE_RENAME.with(|flag| flag.set(true));
+            let seeded = seed_pausing(
+                &source,
+                &worktree,
+                &["target"],
+                &options(clone, None),
+                move |phase| {
+                    if phase == Phase::Built && someone_makes_it {
+                        fs::create_dir(wt.join("target")).unwrap();
+                        made.set(Some(fs::metadata(wt.join("target")).unwrap().ino()));
+                    }
+                },
+            );
+            NO_EXCLUSIVE_RENAME.with(|flag| flag.set(false));
+            assert_eq!(seeded[0].outcome, Outcome::Refused, "{seeded:?}");
+            assert!(
+                seeded[0]
+                    .note
+                    .as_deref()
+                    .unwrap()
+                    .contains("without replacing"),
+                "{seeded:?}"
+            );
+            match theirs.get() {
+                Some(inode) => {
+                    // Theirs is the same folder it was, and still empty.
+                    let now = fs::metadata(worktree.join("target")).unwrap();
+                    assert_eq!(now.ino(), inode);
+                    assert!(names(&worktree.join("target")).is_empty());
+                    assert_eq!(names(&worktree), ["target"]);
+                }
+                None => assert!(names(&worktree).is_empty(), "{:?}", names(&worktree)),
+            }
         }
     }
 

@@ -1552,9 +1552,15 @@ mod lifecycle_tests {
             );
             assert!(!path.join("target").exists());
         }
+        // A missing one is skipped where seeding is done at all; Windows
+        // refuses every name alike.
         assert_eq!(
             seeded[1].outcome,
-            agentdocker_core::seed::Outcome::Skipped,
+            if cfg!(unix) {
+                agentdocker_core::seed::Outcome::Skipped
+            } else {
+                agentdocker_core::seed::Outcome::Refused
+            },
             "{seeded:?}"
         );
         // Seeded output is ignored, so the new checkout is clean.
