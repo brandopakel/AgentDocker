@@ -99,13 +99,22 @@ enum Walk {
     Outside(Vec<u32>),
 }
 
+/// Where the process on a connection was found to run.
+enum Traced {
+    /// The person's: outside every agent's session, or the daemon's own.
+    Person,
+    /// Inside an agent's session, as found.
+    Inside(String),
+    /// Somewhere that cannot be told, for this reason; it authorises
+    /// nothing.
+    Unknown(String),
+}
+
 /// Walk up from `peer`, itself included. Inside an agent's session when a
-/// process on the way is a provider's session process, a Codex server, or
-/// a live agent's own process — by its pid *and* its birth, so a reused
-/// pid is not taken for the agent. Outside when the chain reaches the
-/// first process, a process that has ended, another user's, or a "parent"
-/// born after its child (its pid was reused). This user's process that
-/// still runs and cannot be read authorises nothing.
+/// process on the way is one ([`agent_session`]). Outside when the chain
+/// reaches the first process, a process that has ended, another user's, or
+/// a "parent" born after its child (its pid was reused). This user's process
+/// that still runs and cannot be read authorises nothing.
 fn walk(
     peer: u32,
     table: &[procinfo::Process],
@@ -138,29 +147,314 @@ fn walk(
                 )),
             };
         };
-        let birth = Some(birth);
-        if let (Some(birth), Some(child)) = (birth, child)
-            && birth > child
-        {
+        if child.is_some_and(|child| birth > child) {
             return Ok(Walk::Outside(chain));
         }
-        if birth.is_some() && agents.get(&pid) == birth.as_ref() {
-            return Ok(Walk::Inside(format!("an agent's process ({pid})")));
-        }
-        if let Some(runtime) = procinfo::session_runtime_of(&process.argv) {
-            return Ok(Walk::Inside(format!("a {runtime} session ({pid})")));
-        }
-        if procinfo::is_codex_binary(&process.argv) {
-            return Ok(Walk::Inside(format!("a Codex server ({pid})")));
+        if let Some(reason) = agent_session(process, birth, agents) {
+            return Ok(Walk::Inside(reason));
         }
         chain.push(pid);
         if process.ppid == pid {
             return Ok(Walk::Outside(chain));
         }
-        child = birth.or(child);
+        child = Some(birth);
         pid = process.ppid;
     }
     Err("its process ancestry is deeper than can be traced".to_owned())
+}
+
+/// Whether `process`, born `birth`, is an agent's session, and which: a live
+/// agent's own process — by its pid *and* its birth, so a reused pid is not
+/// taken for the agent — a provider's session process, or a Codex server.
+fn agent_session(
+    process: &procinfo::Process,
+    birth: DateTime<Utc>,
+    agents: &HashMap<u32, DateTime<Utc>>,
+) -> Option<String> {
+    let pid = process.pid;
+    if agents.get(&pid) == Some(&birth) {
+        return Some(format!("an agent's process ({pid})"));
+    }
+    if let Some(runtime) = procinfo::session_runtime_of(&process.argv) {
+        return Some(format!("a {runtime} session ({pid})"));
+    }
+    if procinfo::is_codex_binary(&process.argv) {
+        return Some(format!("a Codex server ({pid})"));
+    }
+    None
+}
+
+/// Who started a session that registered itself, as its parents say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Starter {
+    /// Its parents reach the top — the first process, or another user's —
+    /// through one of the person's session roots ([`session_root`]) and
+    /// with no agent's session anywhere among them.
+    Person,
+    /// An agent's session ([`agent_session`]) stands among its parents,
+    /// below a root or above one.
+    Agent,
+    /// Its parents cannot say: they reach the top through no root (an
+    /// orphan, a shell whose agent exited, a multiplexer server), or the
+    /// chain breaks first, at a parent that has ended or a "parent" born
+    /// after its child (a reused pid).
+    Unknown,
+}
+
+impl Starter {
+    /// The value its record's `launched_by` label takes.
+    fn label(self) -> &'static str {
+        match self {
+            Starter::Person => HUMAN,
+            Starter::Agent => agentdocker_core::agent::LAUNCHED_BY_AGENT,
+            Starter::Unknown => agentdocker_core::agent::LAUNCHED_BY_UNKNOWN,
+        }
+    }
+}
+
+/// Who started the session whose process is `pid`, born `birth`, walking
+/// every parent from its own up to the top: an agent's session anywhere on
+/// the way makes it [`Starter::Agent`]; a root on the way (`root`) is
+/// evidence for the person and never the end of the walk, so an agent or
+/// the daemon above a terminal still counts; the top reached with a root
+/// below it is [`Starter::Person`], without one or past a break in the chain
+/// [`Starter::Unknown`]. `None` when it cannot be read now (the process is
+/// not that one any more, a row this user owns is unreadable, or with no
+/// root found a root check could not say, as a signature check that timed
+/// out) and when the daemon's own process is the session or among its
+/// parents, whose launches are said at launch: nothing is decided, and the
+/// next registration traces again.
+#[allow(clippy::too_many_arguments)]
+fn starter(
+    pid: u32,
+    birth: DateTime<Utc>,
+    own: u32,
+    table: &[procinfo::Process],
+    agents: &HashMap<u32, DateTime<Utc>>,
+    born: impl Fn(u32) -> Option<DateTime<Utc>>,
+    unseen: impl Fn(u32) -> Unseen,
+    root: impl Fn(&procinfo::Process) -> Option<bool>,
+) -> Option<Starter> {
+    if pid == own || born(pid) != Some(birth) {
+        return None;
+    }
+    let session = table.iter().find(|p| p.pid == pid)?;
+    // A root found, and a process whose check could not say whether it is
+    // one: with no root found, that leaves the top undecided.
+    let mut rooted = false;
+    let mut undecided = false;
+    let top = |rooted: bool, undecided: bool| {
+        if rooted {
+            Some(Starter::Person)
+        } else if undecided {
+            None
+        } else {
+            Some(Starter::Unknown)
+        }
+    };
+    let mut child = birth;
+    let mut current = session.ppid;
+    for _ in 0..ANCESTRY {
+        if current == own {
+            return None;
+        }
+        if current <= 1 {
+            return top(rooted, undecided);
+        }
+        let missing = |pid: u32| match unseen(pid) {
+            Unseen::Ended => Some(Starter::Unknown),
+            Unseen::OtherUser => top(rooted, undecided),
+            Unseen::Unreadable => None,
+        };
+        let Some(process) = table.iter().find(|p| p.pid == current) else {
+            return missing(current);
+        };
+        let Some(birth) = born(current) else {
+            return missing(current);
+        };
+        if birth > child {
+            return Some(Starter::Unknown);
+        }
+        if agent_session(process, birth, agents).is_some() {
+            return Some(Starter::Agent);
+        }
+        match root(process) {
+            Some(true) => rooted = true,
+            Some(false) => {}
+            None => undecided = true,
+        }
+        if process.ppid == current {
+            return top(rooted, undecided);
+        }
+        child = birth;
+        current = process.ppid;
+    }
+    Some(Starter::Unknown)
+}
+
+/// `login` and the SSH session leaders at the system's own paths.
+const ROOT_PROGRAMS: &[&str] = &[
+    "/usr/bin/login",
+    "/bin/login",
+    "/usr/sbin/sshd",
+    "/usr/sbin/sshd-session",
+    "/usr/libexec/sshd-session",
+    "/usr/lib/openssh/sshd-session",
+    "/usr/libexec/openssh/sshd-session",
+];
+
+/// Where a person's terminal and editor applications are installed on
+/// macOS, root's: the sealed system's own folders and the shared
+/// Applications folder.
+const APPLICATION_FOLDERS: &[&str] = &[
+    "/System/Applications",
+    "/System/Applications/Utilities",
+    "/Applications",
+    "/Applications/Utilities",
+];
+
+/// Where the person's own installs of them are, on macOS: the shared
+/// Applications folder and their own `~/Applications` (`HOME` taken in
+/// [`root_program`]). A bundle here that root does not own counts only
+/// when its code signature verifies ([`codesign_verifies`]).
+const OWN_APPLICATION_FOLDERS: &[&str] = &["/Applications", "/Applications/Utilities"];
+
+/// How long a signature check may take: a large application's sealed
+/// resources take a second or two to hash.
+const SIGNATURE_CHECK: StdDuration = StdDuration::from_secs(5);
+
+/// The signature check's requirement: a certificate chain to Apple's root
+/// (an Apple, App Store or Developer ID signature), which a process of the
+/// person's cannot make. A signature it makes for itself (ad hoc, or its
+/// own certificate) verifies without it.
+const SIGNATURE_REQUIREMENT: &str = "anchor apple generic";
+
+/// One of the person's session roots, by the executable the kernel names
+/// for `process` ([`root_program`]); not one when it cannot be named.
+fn session_root(process: &procinfo::Process) -> Option<bool> {
+    match procinfo::executable_path_of(process.pid) {
+        Ok(executable) => root_program(&executable),
+        Err(_) => Some(false),
+    }
+}
+
+/// Whether `executable` is a program the person's sessions start under,
+/// where nothing an agent can write could stand in for it: `login`, `sshd`
+/// or `sshd-session` at the system's own paths ([`ROOT_PROGRAMS`]); on
+/// macOS, a known terminal or editor application (by its bundle's name,
+/// never any bundle) installed directly in a system or the shared
+/// Applications folder; elsewhere on Unix, a known terminal emulator under
+/// `/usr`, `/bin` or `/sbin`. The file, and every folder from its bundle
+/// (or its own folder) down to it, is root's and nobody else may write it
+/// ([`root_owned`]), as the system's own programs and an App Store or
+/// administrator's install are. On macOS a known application of the
+/// person's own — in the shared or their own Applications folder, not
+/// root's — counts too when the program running is the bundle's own (in
+/// its `Contents/MacOS`) and the bundle's signature verifies now
+/// ([`codesign_verifies`]); `None` when that check could not say. A copy,
+/// an unsigned or self-signed bundle, or one with anything added inside is
+/// no root.
+fn root_program(executable: &std::path::Path) -> Option<bool> {
+    let Ok(executable) = std::fs::canonicalize(executable) else {
+        return Some(false);
+    };
+    let home = std::env::home_dir().and_then(|home| std::fs::canonicalize(home).ok());
+    root_at(&executable, home.as_deref(), root_owned, codesign_verifies)
+}
+
+/// [`root_program`]'s rule for a resolved `executable`, with `home` the
+/// person's home folder, `owned` saying whether root alone owns and may
+/// write a file or folder, and `verifies` whether a bundle's signature
+/// verifies (`None`: it could not say).
+fn root_at(
+    executable: &std::path::Path,
+    home: Option<&std::path::Path>,
+    owned: impl Fn(&std::path::Path) -> bool,
+    verifies: impl Fn(&std::path::Path) -> Option<bool>,
+) -> Option<bool> {
+    let path = std::path::Path::new;
+    let system = ROOT_PROGRAMS
+        .iter()
+        .any(|program| executable == path(program));
+    let host = agentdocker_core::terminal::classify(executable).filter(|host| host.kind != "app");
+    // The file, and each folder from `top` down to it.
+    let owned_from = |top: &std::path::Path| {
+        executable.starts_with(top)
+            && executable
+                .ancestors()
+                .take_while(|folder| folder.starts_with(top))
+                .all(&owned)
+    };
+    let Some(folder) = executable.parent() else {
+        return Some(false);
+    };
+    if system {
+        return Some(owned_from(folder));
+    }
+    if cfg!(target_os = "macos") {
+        let Some(bundle) = host.and_then(|host| host.app) else {
+            return Some(false);
+        };
+        let Some(installed) = bundle.parent() else {
+            return Some(false);
+        };
+        let in_folder = |folders: &[&str]| {
+            folders
+                .iter()
+                .any(|known| installed == std::path::Path::new(known))
+        };
+        if in_folder(APPLICATION_FOLDERS) && owned_from(&bundle) {
+            return Some(true);
+        }
+        let own_folder = in_folder(OWN_APPLICATION_FOLDERS)
+            || home.is_some_and(|home| installed == home.join("Applications"));
+        if !own_folder || folder != bundle.join("Contents").join("MacOS") {
+            return Some(false);
+        }
+        verifies(&bundle)
+    } else if cfg!(unix) {
+        Some(
+            host.is_some_and(|host| host.app.is_none())
+                && ["/usr/", "/bin/", "/sbin/"]
+                    .iter()
+                    .any(|dir| executable.starts_with(dir))
+                && owned_from(folder),
+        )
+    } else {
+        Some(false)
+    }
+}
+
+/// `codesign --verify --strict` of `bundle` against
+/// [`SIGNATURE_REQUIREMENT`], within [`SIGNATURE_CHECK`], each time it is
+/// asked — a verdict kept would outlive a change to any sealed file:
+/// whether it verifies — its code and every sealed resource intact, so a
+/// program added inside breaks it — or `None` when the check could not say
+/// (it timed out or could not run).
+fn codesign_verifies(bundle: &std::path::Path) -> Option<bool> {
+    let argv = [
+        "/usr/bin/codesign".to_owned(),
+        "--verify".to_owned(),
+        "--strict".to_owned(),
+        format!("-R={SIGNATURE_REQUIREMENT}"),
+        bundle.to_string_lossy().into_owned(),
+    ];
+    agentdocker_host::command::run(std::path::Path::new("/"), &argv, SIGNATURE_CHECK)
+        .ok()
+        .map(|output| output.success)
+}
+
+/// Whether root owns `path` and nobody else may write it: what a process
+/// of the person's cannot make or change.
+#[cfg(unix)]
+fn root_owned(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.uid() == 0 && meta.mode() & 0o022 == 0)
+}
+
+#[cfg(not(unix))]
+fn root_owned(_: &std::path::Path) -> bool {
+    false
 }
 
 fn refusal(reason: &str) -> Response {
@@ -305,6 +599,58 @@ impl State {
     }
 }
 
+impl State {
+    /// Say on a registered session who started it, once: `launched_by` on
+    /// its record and `agent_launched_by`, in one commit. Only while the
+    /// record is still that process (`pid`, `birth`) and still
+    /// [`AgentRecord::starter_traceable`] — what is said is never said
+    /// again, so a later loss of its ancestry cannot change it; `None`
+    /// otherwise, or when the write failed.
+    fn write_starter(
+        &mut self,
+        id: &AgentId,
+        pid: u32,
+        birth: DateTime<Utc>,
+        starter: Starter,
+        now: DateTime<Utc>,
+    ) -> Option<AgentRecord> {
+        let mut record = self.registry.get(id)?.clone();
+        if !record.starter_traceable()
+            || record.pid != Some(pid)
+            || record.process_started_at != Some(birth)
+        {
+            return None;
+        }
+        let by = starter.label().to_owned();
+        record.spec.labels.insert(
+            agentdocker_core::agent::LAUNCHED_BY_LABEL.to_owned(),
+            by.clone(),
+        );
+        let event = Event::new(
+            EventKind::AgentLaunchedBy {
+                agent: id.clone(),
+                project: record.project.as_ref().map(ProjectRef::id),
+                by,
+            },
+            now,
+        );
+        let _ = self.transition(
+            "launcher",
+            event,
+            |store, event| store.agent_transition(&record, event),
+            |state| {
+                if let Some(current) = state.registry.get_mut(id) {
+                    *current = record.clone();
+                }
+            },
+        );
+        if self.write_failure().is_some() {
+            return None;
+        }
+        Some(record)
+    }
+}
+
 impl Daemon {
     /// [`admit_controller_launch`], for the socket.
     pub(crate) fn admit_launch(&self, request: &mut Request) -> Option<Response> {
@@ -332,11 +678,7 @@ impl Daemon {
         if names.is_empty() {
             return None;
         }
-        // The daemon's own callers, in this process.
-        if peer.is_some_and(|(pid, _)| pid == std::process::id()) {
-            return None;
-        }
-        let agents: HashMap<u32, DateTime<Utc>> = {
+        {
             let state = lock(&self.state);
             let person = names.iter().any(|name| {
                 name == HUMAN
@@ -350,25 +692,134 @@ impl Daemon {
             if !person {
                 return None;
             }
-            state
-                .registry
-                .live()
-                .filter(|a| !humans::is_human(a))
-                .filter_map(|a| Some((a.pid?, a.process_started_at?)))
-                .collect()
+        }
+        match self.trace(peer, request).await {
+            Traced::Person => None,
+            Traced::Inside(reason) => {
+                let pid = peer.map_or(0, |(pid, _)| pid);
+                warn!(peer = pid, %reason, "refused a request acting as the person");
+                Some(refusal(&reason))
+            }
+            Traced::Unknown(reason) => Some(refusal(&reason)),
+        }
+    }
+
+    /// A client's launch is the person's when the process that sent it is
+    /// theirs ([`Traced::Person`]: the app, their own terminal), and then
+    /// it carries `launched_by=user`. Whatever a client wrote there was
+    /// dropped at admission, so a launch from inside an agent's session, or
+    /// from a process that cannot be traced, carries none. Traced whether or
+    /// not the person check is on: turning authorisation off lets a launch
+    /// through, and says nothing of whose it is.
+    pub(crate) async fn mark_launcher(self: &Arc<Self>, peer: Option<Peer>, request: &mut Request) {
+        if !matches!(
+            request,
+            Request::Run { .. } | Request::RunContainer { .. } | Request::ResumeSession { .. }
+        ) {
+            return;
+        }
+        let persons = matches!(self.trace(peer, request).await, Traced::Person);
+        if let Request::Run { spec }
+        | Request::RunContainer { spec, .. }
+        | Request::ResumeSession { spec, .. } = request
+            && persons
+        {
+            spec.labels.insert(
+                agentdocker_core::agent::LAUNCHED_BY_LABEL.to_owned(),
+                HUMAN.to_owned(),
+            );
+        }
+    }
+
+    /// After a registration (`register`, `adopt`, `session_attach`) answers
+    /// with a record whose starter nothing has said yet
+    /// ([`AgentRecord::starter_traceable`]): its process's parents say who
+    /// started it ([`starter`]) and the record says so from here on — the
+    /// person (`launched_by=user`), an agent, or that it cannot be known.
+    /// Traced on its own task once the answer is on its way, so the reply
+    /// waits for neither the process table nor a signature check, and no
+    /// lock is held while either runs; the label goes in its own commit,
+    /// only while the record is still that process. A client's word plays
+    /// no part; what cannot be read now decides nothing.
+    pub(super) fn trace_starter(self: &Arc<Self>, response: &Response) {
+        let Response::Agent { agent } = response else {
+            return;
         };
+        let (Some(pid), Some(birth)) = (agent.pid, agent.process_started_at) else {
+            return;
+        };
+        if !agent.starter_traceable() {
+            return;
+        }
+        let id = agent.id.clone();
+        let daemon = self.clone();
+        tokio::spawn(async move {
+            daemon.write_traced_starter(id, pid, birth).await;
+        });
+    }
+
+    /// [`Daemon::trace_starter`]'s work: the trace off the lock, then the
+    /// label, admitted like any background write.
+    async fn write_traced_starter(
+        self: Arc<Self>,
+        id: AgentId,
+        pid: u32,
+        birth: DateTime<Utc>,
+    ) -> Option<AgentRecord> {
+        let agents: HashMap<u32, DateTime<Utc>> = lock(&self.state)
+            .registry
+            .live()
+            .filter(|a| !humans::is_human(a) && a.pid != Some(pid))
+            .filter_map(|a| Some((a.pid?, a.process_started_at?)))
+            .collect();
+        let found = tokio::task::spawn_blocking(move || {
+            let table = procinfo::processes().ok()?;
+            starter(
+                pid,
+                birth,
+                std::process::id(),
+                &table,
+                &agents,
+                procinfo::start_time,
+                procinfo::unseen,
+                session_root,
+            )
+        })
+        .await
+        .ok()
+        .flatten()?;
+        let _admitted = self.admit_background().ok()?;
+        lock(&self.state).write_starter(&id, pid, birth, found, Utc::now())
+    }
+
+    /// Where the process on a connection runs: the person's, inside an
+    /// agent's session, or somewhere that cannot be told. The process must
+    /// still be the one that connected; what was found is remembered by
+    /// its pid and birth ([`Peers`]).
+    async fn trace(self: &Arc<Self>, peer: Option<Peer>, request: &Request) -> Traced {
+        // The daemon's own callers, in this process.
+        if peer.is_some_and(|(pid, _)| pid == std::process::id()) {
+            return Traced::Person;
+        }
+        let agents: HashMap<u32, DateTime<Utc>> = lock(&self.state)
+            .registry
+            .live()
+            .filter(|a| !humans::is_human(a))
+            .filter_map(|a| Some((a.pid?, a.process_started_at?)))
+            .collect();
+        let unknown = |reason: &str| Traced::Unknown(reason.to_owned());
         // The process that opened the connection, still: not another that
         // was given its pid. Checked before anything is let through.
         let Some((pid, Some(born))) = peer else {
-            return Some(refusal("a process the daemon cannot identify"));
+            return unknown("a process the daemon cannot identify");
         };
         if procinfo::start_time(pid) != Some(born) {
-            return Some(refusal("a connection whose process has ended"));
+            return unknown("a connection whose process has ended");
         }
         if matches!(request, Request::Send { from, .. } if from == HUMAN) {
             let running = Running::of(pid);
             if lock(&self.state).controller_typing((pid, Some(born)), request, &running) {
-                return None;
+                return Traced::Person;
             }
         }
         let key = (pid, born.timestamp_micros());
@@ -384,18 +835,16 @@ impl Daemon {
             _ => {
                 let table = match tokio::task::spawn_blocking(procinfo::processes).await {
                     Ok(Ok(table)) => table,
-                    _ => return Some(refusal("a process whose ancestry could not be read")),
+                    _ => return unknown("a process whose ancestry could not be read"),
                 };
                 let found = match walk(pid, &table, &agents, procinfo::start_time, procinfo::unseen)
                 {
                     Ok(Walk::Inside(reason)) => Found::Inside(reason),
                     Ok(Walk::Outside(chain)) => Found::Outside(Instant::now(), chain),
-                    Err(reason) => return Some(refusal(&reason)),
+                    Err(reason) => return Traced::Unknown(reason),
                 };
                 if procinfo::start_time(pid) != Some(born) {
-                    return Some(refusal(
-                        "a connection whose process ended while it was traced",
-                    ));
+                    return unknown("a connection whose process ended while it was traced");
                 }
                 let mut peers = lock(&self.peers);
                 if peers.found.len() >= REMEMBERED {
@@ -406,11 +855,8 @@ impl Daemon {
             }
         };
         match found {
-            Found::Inside(reason) => {
-                warn!(peer = pid, %reason, "refused a request acting as the person");
-                Some(refusal(&reason))
-            }
-            Found::Outside(..) => None,
+            Found::Inside(reason) => Traced::Inside(reason),
+            Found::Outside(..) => Traced::Person,
         }
     }
 }
@@ -498,6 +944,643 @@ mod tests {
             session: None,
         };
         assert_eq!(acting(&human), ["user"], "registering a person");
+    }
+
+    /// Who started a registered session, from all of its parents: the
+    /// person only when they reach the top through one of the person's
+    /// roots with no agent's session anywhere on the way, a terminal an
+    /// agent or the daemon started included; an agent when one stands among
+    /// them; unknown when no root is passed or the chain breaks — an orphan,
+    /// a shell orphaned when its agent exited, an ended or reused
+    /// grandparent, a multiplexer server, an ended parent above a root —
+    /// and nothing at all when a row cannot be read now, the process is not
+    /// the one recorded, or the daemon is it or among its parents.
+    #[test]
+    fn a_session_is_the_persons_only_when_its_parents_reach_the_persons_root() {
+        let table = [
+            process(
+                5,
+                1,
+                &["/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"],
+            ),
+            process(10, 5, &["login", "-pf", "someone"]),
+            process(11, 10, &["-zsh"]),
+            // In the person's terminal.
+            process(12, 11, &["claude"]),
+            // From a provider session's tool.
+            process(
+                20,
+                11,
+                &[
+                    "node",
+                    "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+                ],
+            ),
+            process(21, 20, &["/bin/zsh", "-c", "claude -p go"]),
+            process(22, 21, &["claude", "-p", "go"]),
+            // In a terminal that session opened.
+            process(23, 21, &["xterm"]),
+            process(24, 23, &["/bin/zsh"]),
+            process(25, 24, &["claude"]),
+            // Under a program that is an agent only by its record, directly
+            // and through a terminal it opened.
+            process(30, 11, &["/opt/tools/some-agent"]),
+            process(31, 30, &["codex"]),
+            process(32, 30, &["xterm"]),
+            process(33, 32, &["/bin/zsh"]),
+            process(34, 33, &["claude"]),
+            // Orphaned.
+            process(40, 1, &["claude"]),
+            // The agent that started its shell exited: the shell is now the
+            // first process's.
+            process(70, 1, &["/bin/zsh"]),
+            process(71, 70, &["claude"]),
+            // Its grandparent's pid was reused: the "grandparent" is younger.
+            process(80, 11, &["/opt/tools/other"]),
+            process(81, 80, &["/bin/zsh"]),
+            process(82, 81, &["claude"]),
+            // Its grandparent has ended (90), cannot be read (100), or is
+            // another user's (110); another user's above a terminal (140).
+            process(91, 90, &["/bin/zsh"]),
+            process(92, 91, &["claude"]),
+            process(101, 100, &["/bin/zsh"]),
+            process(102, 101, &["claude"]),
+            process(111, 110, &["/bin/zsh"]),
+            process(112, 111, &["claude"]),
+            process(141, 140, &["xterm"]),
+            process(142, 141, &["/bin/zsh"]),
+            process(143, 142, &["claude"]),
+            // A terminal whose own parent has ended: what was above it
+            // cannot be seen.
+            process(131, 130, &["xterm"]),
+            process(132, 131, &["/bin/zsh"]),
+            process(133, 132, &["claude"]),
+            // A multiplexer server: the first process's, no root above.
+            process(120, 1, &["tmux"]),
+            process(121, 120, &["/bin/zsh"]),
+            process(122, 121, &["claude"]),
+            // Its parent's pid was reused.
+            process(60, 11, &["/opt/tools/other"]),
+            process(61, 60, &["claude"]),
+            // The daemon, a process it started, and a terminal it opened.
+            process(50, 11, &["agentd"]),
+            process(51, 50, &["claude"]),
+            process(52, 50, &["xterm"]),
+            process(53, 52, &["/bin/zsh"]),
+            process(54, 53, &["claude"]),
+        ];
+        let born = |pid: u32| match pid {
+            61 => Some(at(5)),
+            80 => Some(at(500)),
+            _ => Some(at(i64::from(pid))),
+        };
+        let unseen = |pid: u32| match pid {
+            100 => Unseen::Unreadable,
+            110 | 140 => Unseen::OtherUser,
+            _ => Unseen::Ended,
+        };
+        let root = |process: &procinfo::Process| {
+            Some(process.argv.first().is_some_and(|program| {
+                program.contains(".app/") || program == "login" || program == "xterm"
+            }))
+        };
+        let started = |pid: u32, agents: &HashMap<u32, DateTime<Utc>>| {
+            let birth = if pid == 61 { at(5) } else { at(i64::from(pid)) };
+            starter(pid, birth, 50, &table, agents, born, unseen, root)
+        };
+        let none = HashMap::new();
+        let agent = HashMap::from([(30, at(30))]);
+        use Starter::{Agent, Person, Unknown};
+        for (pid, agents, expected, why) in [
+            (12, &none, Some(Person), "the person's terminal"),
+            (12, &agent, Some(Person), "an agent elsewhere"),
+            (22, &none, Some(Agent), "a provider session's tool"),
+            (
+                25,
+                &none,
+                Some(Agent),
+                "a terminal a provider session opened",
+            ),
+            (31, &agent, Some(Agent), "a live agent's process"),
+            (34, &agent, Some(Agent), "a terminal a live agent opened"),
+            (40, &none, Some(Unknown), "an orphan"),
+            (
+                71,
+                &none,
+                Some(Unknown),
+                "its shell orphaned when its agent exited",
+            ),
+            (82, &none, Some(Unknown), "a reused grandparent"),
+            (92, &none, Some(Unknown), "an ended grandparent"),
+            (102, &none, None, "an unreadable grandparent"),
+            (
+                112,
+                &none,
+                Some(Unknown),
+                "another user's, with no root below",
+            ),
+            (143, &none, Some(Person), "another user's, above a terminal"),
+            (
+                133,
+                &none,
+                Some(Unknown),
+                "an ended parent above a terminal",
+            ),
+            (
+                122,
+                &none,
+                Some(Unknown),
+                "no root before the first process",
+            ),
+            (61, &none, Some(Unknown), "a reused parent"),
+            (51, &none, None, "the daemon's own launch"),
+            (54, &none, None, "a terminal the daemon opened"),
+            (50, &none, None, "the daemon itself"),
+        ] {
+            assert_eq!(started(pid, agents), expected, "{why}");
+        }
+        assert_eq!(
+            started(31, &HashMap::from([(30, at(999))])),
+            Some(Person),
+            "a reused pid is not the agent"
+        );
+        assert_eq!(
+            starter(12, at(99), 50, &table, &none, born, unseen, root),
+            None,
+            "another process now"
+        );
+    }
+
+    /// A root check that cannot say (a signature check that timed out)
+    /// decides nothing when no other root is found, so the session is
+    /// traced again at its next registration and found then; an agent's
+    /// session among its parents, or a root found elsewhere, still decides.
+    #[test]
+    fn a_root_check_that_cannot_say_leaves_the_starter_undecided() {
+        let table = [
+            process(
+                300,
+                1,
+                &["/Applications/Ghostty.app/Contents/MacOS/ghostty"],
+            ),
+            process(301, 300, &["/bin/zsh"]),
+            process(302, 301, &["claude"]),
+            // A root that can be told, beneath one that cannot.
+            process(305, 300, &["login"]),
+            process(306, 305, &["/bin/zsh"]),
+            process(307, 306, &["claude"]),
+            // An agent above the one that cannot be told.
+            process(
+                310,
+                1,
+                &[
+                    "node",
+                    "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+                ],
+            ),
+            process(
+                311,
+                310,
+                &["/Applications/Ghostty.app/Contents/MacOS/ghostty"],
+            ),
+            process(312, 311, &["/bin/zsh"]),
+            process(313, 312, &["claude"]),
+        ];
+        let born = |pid: u32| Some(at(i64::from(pid)));
+        let unseen = |_| Unseen::Ended;
+        let none = HashMap::new();
+        // The signature check times out the first time, verifies the next.
+        let checks = std::cell::Cell::new(0);
+        let root = |process: &procinfo::Process| {
+            let program = process.argv.first().map(String::as_str);
+            if program == Some("login") {
+                return Some(true);
+            }
+            if !program.is_some_and(|program| program.contains(".app/")) {
+                return Some(false);
+            }
+            checks.set(checks.get() + 1);
+            (checks.get() > 1).then_some(true)
+        };
+        let started = |pid: u32| {
+            starter(
+                pid,
+                at(i64::from(pid)),
+                50,
+                &table,
+                &none,
+                born,
+                unseen,
+                root,
+            )
+        };
+        assert_eq!(started(302), None, "the check timed out: nothing decided");
+        assert_eq!(started(302), Some(Starter::Person), "the next trace says");
+        checks.set(0);
+        assert_eq!(
+            started(307),
+            Some(Starter::Person),
+            "a root that can be told decides"
+        );
+        checks.set(0);
+        assert_eq!(started(313), Some(Starter::Agent), "an agent above decides");
+    }
+
+    /// A root is a known program where no process of the person's could
+    /// have put or changed it: never any bundle, a known terminal's bundle
+    /// or a copy of `login` in a folder of theirs, or a bundle the person
+    /// owns, down to any folder of it, whose signature does not verify for
+    /// the program running from its own `Contents/MacOS`.
+    #[cfg(unix)]
+    #[test]
+    fn a_root_is_a_known_program_no_process_of_the_persons_could_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = |relative: &str| {
+            let path = tmp.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "x").unwrap();
+            path
+        };
+        let helper = file("Helper.app/Contents/MacOS/helper");
+        let terminal = file("Terminal.app/Contents/MacOS/Terminal");
+        let applications = file("Applications/Ghostty.app/Contents/MacOS/ghostty");
+        let copied = tmp.path().join("login");
+        if std::fs::copy("/usr/bin/login", &copied).is_err() {
+            std::fs::write(&copied, "x").unwrap();
+        }
+        let xterm = file("usr/bin/xterm");
+        // Run as root, every file here is root's: only the places refuse.
+        let as_root = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(tmp.path()).unwrap().uid() == 0
+        };
+        for path in [&helper, &terminal, &applications, &copied, &xterm] {
+            assert_eq!(root_program(path), Some(false), "{}", path.display());
+            assert_eq!(root_owned(path), as_root, "the person's own file");
+        }
+        let path = std::path::Path::new;
+        let never = |_: &std::path::Path| Some(false);
+        let verifies = |_: &std::path::Path| Some(true);
+        let cannot_say = |_: &std::path::Path| None;
+        let macos = cfg!(target_os = "macos");
+        // On macOS what the signature check says; elsewhere never a root.
+        let on_macos = |says: Option<bool>| if macos { says } else { Some(false) };
+        let installed = path("/Applications/Ghostty.app/Contents/MacOS/ghostty");
+        assert_eq!(
+            root_at(installed, None, |_| false, never),
+            Some(false),
+            "a bundle the person owns, unsigned"
+        );
+        assert_eq!(
+            root_at(
+                installed,
+                None,
+                |p| p != path("/Applications/Ghostty.app"),
+                never
+            ),
+            Some(false),
+            "root's file in a bundle folder the person owns, unsigned"
+        );
+        assert_eq!(
+            root_at(installed, None, |_| true, never),
+            Some(macos),
+            "an administrator's install, on macOS"
+        );
+        assert_eq!(
+            root_at(installed, None, |_| false, verifies),
+            Some(macos),
+            "the person's own install, signed"
+        );
+        assert_eq!(
+            root_at(installed, None, |_| false, cannot_say),
+            on_macos(None),
+            "a signature check that could not say"
+        );
+        assert_eq!(
+            root_at(
+                path("/Applications/Ghostty.app/Contents/Resources/helper"),
+                None,
+                |_| false,
+                verifies
+            ),
+            Some(false),
+            "a program of the bundle's that is not its own"
+        );
+        // In the person's own Applications folder only a signed install
+        // counts, whoever the file says owns it.
+        if let Some(home) = std::env::home_dir() {
+            let mine = home.join("Applications/Ghostty.app/Contents/MacOS/ghostty");
+            assert_eq!(root_at(&mine, Some(&home), |_| true, never), Some(false));
+            assert_eq!(
+                root_at(&mine, Some(&home), |_| false, verifies),
+                Some(macos)
+            );
+            assert_eq!(
+                root_at(&mine, None, |_| true, verifies),
+                Some(false),
+                "with no home, not there"
+            );
+        }
+        assert_eq!(
+            root_at(
+                path("/Applications/Claude.app/Contents/MacOS/Claude"),
+                None,
+                |_| true,
+                verifies
+            ),
+            Some(false),
+            "an application that is no terminal or editor"
+        );
+        assert_eq!(
+            root_at(&copied, None, |_| true, verifies),
+            Some(false),
+            "a copy of login"
+        );
+        let login = path("/usr/bin/login");
+        assert_eq!(
+            root_at(login, None, |_| false, verifies),
+            Some(false),
+            "login the person could change"
+        );
+        assert_eq!(root_at(login, None, |_| true, never), Some(true));
+        if macos {
+            for system in [
+                "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+                "/usr/bin/login",
+            ] {
+                assert_eq!(root_program(path(system)), Some(true), "{system}");
+            }
+        }
+    }
+
+    /// The real check, made afresh each time: an unsigned bundle and one
+    /// signed by nobody Apple vouches for (ad hoc) do not verify, even in
+    /// the person's own Applications folder, and the system's own Terminal
+    /// does. A user-owned signed terminal in `/Applications` is checked
+    /// only when `AGENTDOCKER_TEST_INSTALLED_APPS=1` asks for it: a local or
+    /// ad hoc build there rightly fails.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_bundle_counts_only_when_its_signature_verifies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(tmp.path()).unwrap();
+        let bundle = home.join("Applications/Ghostty.app");
+        let running = bundle.join("Contents/MacOS/ghostty");
+        std::fs::create_dir_all(running.parent().unwrap()).unwrap();
+        std::fs::write(&running, "#!/bin/sh\nexit 0\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&running, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(
+            bundle.join("Contents/Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleExecutable</key><string>ghostty</string><key>CFBundleIdentifier</key><string>test.not.ghostty</string></dict></plist>
+"#,
+        )
+        .unwrap();
+        let real = || root_at(&running, Some(&home), |_| false, codesign_verifies);
+        assert_eq!(codesign_verifies(&bundle), Some(false), "unsigned");
+        assert_eq!(real(), Some(false));
+        let adhoc = std::process::Command::new("/usr/bin/codesign")
+            .args(["-s", "-", "--force"])
+            .arg(&bundle)
+            .output()
+            .unwrap();
+        assert!(adhoc.status.success(), "{adhoc:?}");
+        assert_eq!(codesign_verifies(&bundle), Some(false), "ad hoc");
+        assert_eq!(real(), Some(false));
+        assert_eq!(
+            codesign_verifies(std::path::Path::new(
+                "/System/Applications/Utilities/Terminal.app"
+            )),
+            Some(true)
+        );
+        if std::env::var_os("AGENTDOCKER_TEST_INSTALLED_APPS").is_some_and(|v| v == "1") {
+            for (bundle, program) in [
+                ("/Applications/Ghostty.app", "Contents/MacOS/ghostty"),
+                ("/Applications/iTerm.app", "Contents/MacOS/iTerm2"),
+            ] {
+                let program = std::path::Path::new(bundle).join(program);
+                if program.exists() && !root_owned(&program) {
+                    assert_eq!(root_program(&program), Some(true), "{}", program.display());
+                }
+            }
+        }
+    }
+
+    /// What is said of a session's starter is the daemon's, written once
+    /// with its event and kept across a restart: a later trace cannot turn
+    /// an agent's session into the person's. A registration from under the
+    /// daemon (this test's own children) decides nothing, nor does a record
+    /// that is no longer the process traced or has no process.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn what_is_said_of_a_starter_is_said_once_and_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let open =
+            || Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("host.sock")).unwrap());
+        let daemon = open();
+        let mut children = Vec::new();
+        let mut register = async |name: &str| {
+            let child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap();
+            let pid = child.id();
+            children.push(child);
+            let Response::Agent { agent } = daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: name.into(),
+                        runtime: "claude-code".into(),
+                        workdir: Some(tmp.path().to_owned()),
+                        ..AgentSpec::default()
+                    },
+                    pid: Some(pid),
+                    session: None,
+                })
+                .await
+            else {
+                panic!("registers")
+            };
+            agent
+        };
+        let person = register("terminal-session").await;
+        let agents = register("agent-session").await;
+        for record in [&person, &agents] {
+            assert!(
+                record.starter_traceable(),
+                "under the daemon's own process nothing is decided: {record:?}"
+            );
+        }
+        let label = |record: &AgentRecord| {
+            record
+                .spec
+                .labels
+                .get(agentdocker_core::agent::LAUNCHED_BY_LABEL)
+                .cloned()
+        };
+        let mut events = daemon.subscribe_events();
+        {
+            let mut state = lock(&daemon.state);
+            let now = Utc::now();
+            let (pid, birth) = (person.pid.unwrap(), person.process_started_at.unwrap());
+            assert!(
+                state
+                    .write_starter(&person.id, pid, at(1), Starter::Person, now)
+                    .is_none(),
+                "another process"
+            );
+            let marked = state
+                .write_starter(&person.id, pid, birth, Starter::Person, now)
+                .unwrap();
+            assert!(marked.launched_by_person());
+            for again in [Starter::Person, Starter::Agent, Starter::Unknown] {
+                assert!(
+                    state
+                        .write_starter(&person.id, pid, birth, again, now)
+                        .is_none(),
+                    "said once"
+                );
+            }
+            let (pid, birth) = (agents.pid.unwrap(), agents.process_started_at.unwrap());
+            let marked = state
+                .write_starter(&agents.id, pid, birth, Starter::Agent, now)
+                .unwrap();
+            assert_eq!(label(&marked).as_deref(), Some("agent"));
+            assert!(!marked.persons());
+            assert!(
+                state
+                    .write_starter(&agents.id, pid, birth, Starter::Person, now)
+                    .is_none(),
+                "an agent's session is never promoted"
+            );
+        }
+        let said: Vec<(AgentId, String)> = std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match event.kind {
+                EventKind::AgentLaunchedBy { agent, by, .. } => Some((agent, by)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                (person.id.clone(), HUMAN.to_owned()),
+                (agents.id.clone(), "agent".to_owned())
+            ]
+        );
+        // A record with no process of its own (a connector agent, a session
+        // known by its key alone) is never traced or marked.
+        let Response::Agent { agent: pidless } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "no-process".into(),
+                    runtime: "claude-browser".into(),
+                    labels: [(
+                        agentdocker_core::agent::CONNECTOR_LABEL.to_owned(),
+                        "true".to_owned(),
+                    )]
+                    .into(),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("registers")
+        };
+        assert_eq!(label(&pidless), None);
+        let (pid, birth) = (person.pid.unwrap(), person.process_started_at.unwrap());
+        assert!(
+            lock(&daemon.state)
+                .write_starter(&pidless.id, pid, birth, Starter::Person, Utc::now())
+                .is_none()
+        );
+        while let Ok(event) = events.try_recv() {
+            assert!(
+                !matches!(event.kind, EventKind::AgentLaunchedBy { .. }),
+                "nothing said of it: {event:?}"
+            );
+        }
+        drop(events);
+        drop(daemon);
+        let daemon = open();
+        for (record, by) in [(&person, HUMAN), (&agents, "agent")] {
+            let Response::Agent { agent: kept } = daemon
+                .handle(Request::Inspect {
+                    agent: record.id.to_string(),
+                })
+                .await
+            else {
+                panic!("kept")
+            };
+            assert_eq!(label(&kept).as_deref(), Some(by));
+        }
+        for mut child in children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    /// Turning the person check off lets launches through and says nothing
+    /// of whose they are: a launch is marked the person's only when its
+    /// process is traced to them, never from inside an agent's process or
+    /// from one that cannot be identified.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_launch_is_traced_to_its_starter_with_the_person_check_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::open(tmp.path().into(), tmp.path().join("host.sock")).unwrap();
+        daemon.person_check = false;
+        let daemon = Arc::new(daemon);
+        let launch = || -> Request {
+            serde_json::from_str(r#"{"op":"run","spec":{"name":"x","command":["true"]}}"#).unwrap()
+        };
+        let marked = |request: &Request| {
+            matches!(request, Request::Run { spec }
+                if spec.labels.contains_key(agentdocker_core::agent::LAUNCHED_BY_LABEL))
+        };
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let Response::Agent { .. } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "an-agent".into(),
+                    workdir: Some(tmp.path().to_owned()),
+                    ..AgentSpec::default()
+                },
+                pid: Some(child.id()),
+                session: None,
+            })
+            .await
+        else {
+            panic!("registers")
+        };
+        let mut inside = launch();
+        daemon
+            .mark_launcher(
+                Some((child.id(), procinfo::start_time(child.id()))),
+                &mut inside,
+            )
+            .await;
+        let mut unknown = launch();
+        daemon.mark_launcher(None, &mut unknown).await;
+        let mut own = launch();
+        daemon
+            .mark_launcher(
+                Some((std::process::id(), procinfo::start_time(std::process::id()))),
+                &mut own,
+            )
+            .await;
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(!marked(&inside), "from an agent's own process");
+        assert!(!marked(&unknown), "from a process nobody can identify");
+        assert!(marked(&own), "from the person's (here the daemon's own)");
     }
 
     #[test]
@@ -800,13 +1883,16 @@ mod tests {
     /// the person is refused before anything is done; the same request from
     /// the daemon's own process is not; and a supervised Codex terminal's
     /// controller — the agent's own process, exactly — may queue what the
-    /// person typed to that agent.
+    /// person typed to that agent; nor is its launch the person's.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_process_under_an_agent_cannot_act_as_the_person() {
         use std::io::Write as _;
         let tmp = tempfile::tempdir().unwrap();
-        let daemon = Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("s")).unwrap());
+        // Not `s`: that is where session owners live, and this test
+        // launches one.
+        let daemon =
+            Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("host.sock")).unwrap());
         let listener = crate::server::bind(&daemon).await.unwrap();
         let serving = tokio::spawn(crate::server::serve(daemon.clone(), listener));
         // A shell that, once told, becomes a client sending `request`.
@@ -911,6 +1997,38 @@ mod tests {
             matches!(&reply, Response::Error { code: ErrorCode::Invalid, message, .. }
                 if message.contains("codex-input")),
             "{reply:?}"
+        );
+
+        // A launch from under an agent is not the person's, whatever its
+        // spec says; the same launch from the daemon's own process is.
+        let inside = spawn(
+            r#"{"op":"run","spec":{"name":"launched-inside","command":["/bin/sh","-c","exit 0"],"labels":{"launched_by":"user"}}}"#
+                .into(),
+        );
+        register("another-agent", inside.id()).await;
+        let reply = finish(inside).await;
+        let Response::Agent { agent: launched } = &reply else {
+            panic!("{reply:?}")
+        };
+        assert!(!launched.launched_by_person(), "{launched:?}");
+        let mut launch: Request = serde_json::from_str(
+            r#"{"op":"run","spec":{"name":"launched-here","command":["/bin/sh","-c","exit 0"]}}"#,
+        )
+        .unwrap();
+        daemon
+            .mark_launcher(
+                Some((std::process::id(), procinfo::start_time(std::process::id()))),
+                &mut launch,
+            )
+            .await;
+        let Request::Run { spec } = &launch else {
+            unreachable!()
+        };
+        assert_eq!(
+            spec.labels
+                .get(agentdocker_core::agent::LAUNCHED_BY_LABEL)
+                .map(String::as_str),
+            Some(HUMAN)
         );
 
         // The daemon's own process is trusted, whatever its ancestry.

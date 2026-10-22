@@ -375,9 +375,16 @@ role) and an optional limit; a project's main board starts from the classic
 five, and **New agent workflow board** adds one from the `agents` template
 (Backlog, Approved, Analyst, In progress, Testing, UAT, Done, Blocked,
 Cancelled). The toolbar switches boards, searches (a key, or words in a
-title, description or tag, a typing slip forgiven), keeps five filters as
+title, description or tag, a typing slip forgiven), keeps six filters as
 named icons — high priority, waiting on something, waiting for you (a
-Review lane that is the person's), nobody holds it, an agent holds it — and
+Review lane that is the person's), nobody holds it, an agent holds it, and
+yours and your agents' (held by the person or by an agent whose record says
+the person started it — launched from the app, their own terminal, or on a
+card by hand or by a rule, or a session they started themselves in a
+terminal app or IDE (root's install, or one whose code signature verifies),
+or over SSH, with no agent's session anywhere above it — as `list_tasks`
+counts `mine`; each card still shows its holder, and it is for showing,
+never permission) — and
 **Tags**, a row of the project's tags to show only cards that carry them all.
 **Table** lays every card of the project out as a row (key, lane mark,
 title, priority, due day, tags, holder; a row opens its card under it), and
@@ -433,8 +440,8 @@ adapter or incompatible launch arguments leaves the card free. Provider trust,
 channel consent and tool permissions still apply in the new terminal.
 
 **To-do**, in the sidebar under Projects, is every project's open cards in
-three groups, each named by its mark: yours, your agents', and those you
-filed that nobody holds; within a group, by project (named above its rows),
+three groups, each named by its mark: yours, your agents' (every card an
+agent holds, whoever started it), and those you filed that nobody holds; within a group, by project (named above its rows),
 then by due day and priority. A row is a circle that ticks the card done
 (to its board's Done), its key, title, priority and due marks, and its
 holder; pressed, it opens the card on its project's board.

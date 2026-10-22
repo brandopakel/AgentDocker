@@ -708,12 +708,15 @@ impl Daemon {
         cli: PathBuf,
         executable: std::io::Result<PathBuf>,
     ) -> Response {
-        let (task, workdir, git) = {
+        let (task, workdir, git, persons) = {
             let mut state = lock(&self.state);
             let task = match state.resolve_task(start.task.as_str()) {
                 Ok(task) => task,
                 Err(response) => return *response,
             };
+            // The person asked, by hand or through a rule of theirs: the
+            // agent is one they launched.
+            let persons = state.actor(&start.from).is_ok_and(|actor| actor.human);
             let workdir = start
                 .workdir
                 .clone()
@@ -723,7 +726,7 @@ impl Daemon {
                     .as_ref()
                     .is_some_and(|p| p.id() == task.project && p.source == ProjectSource::Git)
             });
-            (task, workdir, git)
+            (task, workdir, git, persons)
         };
         let Some(workdir) = workdir else {
             return Response::error(
@@ -751,6 +754,12 @@ impl Daemon {
         )]);
         if let Some(rule) = &start.rule {
             labels.insert(rule::STARTED_BY_LABEL.to_owned(), rule.id.clone());
+        }
+        if persons {
+            labels.insert(
+                agentdocker_core::agent::LAUNCHED_BY_LABEL.to_owned(),
+                HUMAN.to_owned(),
+            );
         }
         let handle = task.handle().to_lowercase();
         let mut spec = AgentSpec {
