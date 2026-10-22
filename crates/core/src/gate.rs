@@ -79,15 +79,19 @@ pub fn full_commit(text: &str) -> bool {
 pub fn branch_name(branch: &str) -> bool {
     !branch.is_empty()
         && branch.len() <= 255
+        && branch != "@"
         && !branch.starts_with(['-', '/'])
         && !branch.ends_with(['/', '.'])
-        && !branch.ends_with(".lock")
         && !branch.contains("..")
-        && !branch.contains("//")
         && !branch.contains("@{")
         && !branch
             .chars()
             .any(|c| c.is_control() || c.is_whitespace() || "~^:?*[\\".contains(c))
+        // As git checks a ref, one `/` part at a time: none empty, none
+        // starting with `.`, none ending with `.lock`.
+        && branch
+            .split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
 }
 
 impl CodeVerdict {
@@ -338,11 +342,26 @@ mod tests {
         assert!(v.check().is_err(), "an approval with a P1");
         v.verdict = Verdict::Changes;
         assert!(v.check().is_ok());
-        for bad in ["", "-x", "a..b", "a b", "a~1", "x.lock", "a/", "@{u}"] {
+        for bad in [
+            "",
+            "-x",
+            "a..b",
+            "a b",
+            "a~1",
+            "x.lock",
+            "a/",
+            "@{u}",
+            "@",
+            ".x",
+            "feature/.hidden",
+            "a.lock/b",
+            "a//b",
+        ] {
             v.branch = bad.into();
             assert!(v.check().is_err(), "{bad:?}");
         }
         assert!(branch_name("claude/review-gate"));
+        assert!(branch_name("release/v1.2") && branch_name("a.b/c-d_e"));
     }
 
     #[test]
