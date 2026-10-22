@@ -653,8 +653,10 @@ last, with **Show earlier messages** at the top until the first is on view, a
 bare rule where the day turns and an accent rule before the unread part, each
 named for a reader (the day, *New*); a question keeps
 its card (Answer, Allow, Deny) in place. Messages from one sender run together
-under one mark and one header — the name, with the time on its tooltip and a
-question or hand-off as a glyph —
+under one mark and one header — the name and the time it was sent, in the
+computer's own timezone and in the time format its system uses (12- or
+24-hour, as the operating system's settings say), with the day on the name's
+tooltip, and a question or hand-off as a glyph —
 until the sender or kind changes, five minutes pass, or a message names you;
 AgentDocker's own notices are single quiet lines, their time on the pointer. Long messages fold behind
 **Show more**. The window keeps as much of
@@ -875,7 +877,10 @@ and notarization; locally signed builds are explicit previews.
 
 - Tab and Shift-Tab move between controls; Enter/Space activate a focused button.
   The focus ring is the keyboard's: a click focuses a control without one, and
-  the next key press shows it on whatever is focused.
+  the next key that moves or uses the focus (Tab, an arrow, Home, End, the page
+  keys, Enter, Space or a character) shows it on whatever is focused; a
+  modifier, a Command or Control shortcut, or Escape does not. A click anywhere
+  else takes the focus away, and Escape closes a project's menu.
 - Command/Ctrl+1–4 switch Projects, Inbox, Tools and Settings.
 - Command/Ctrl+N opens **Launch agent…** for the project on screen.
 - Command/Ctrl+Shift+U goes to the next agent that needs you (questions, waits

@@ -1272,6 +1272,8 @@ pub enum Message {
     NativeAccessibility(Result<usize, String>),
     Captured(window::Screenshot),
     Focus(String),
+    /// A click away from a focused control took its focus.
+    Blurred,
     Accessibility(crate::accessibility::Snapshot),
     // command palette
     /// Open the command palette, or close it: ⌘K / Control+K, the rail's
@@ -1519,6 +1521,10 @@ impl App {
             Self::new(),
             Task::batch([
                 window::oldest().and_then(|id| Task::done(Message::Window(id))),
+                Task::future(async {
+                    crate::clock::warm();
+                })
+                .discard(),
                 find_editors(),
             ]),
         )
@@ -4026,6 +4032,8 @@ impl App {
                     Key::Named(Named::Escape) => {
                         self.shell.pending_notification = None;
                         self.shell.notification_message = None;
+                        self.shell.project_menu = None;
+                        self.shell.project_rename = None;
                         self.shell.selected = None;
                         self.shell.launch = false;
                         self.shell.adding = false;
@@ -4120,6 +4128,7 @@ impl App {
                     tasks.push(smoke.captured(capture));
                 }
             }
+            Message::Blurred => tasks.push(crate::accessibility::collect()),
             Message::Focus(id) => tasks.push({
                 self.shell.pressed = Some(id.clone());
                 iced::widget::operation::focus(iced::advanced::widget::Id::from(id))

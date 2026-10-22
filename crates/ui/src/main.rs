@@ -9,6 +9,7 @@ mod accessibility;
 mod app;
 mod catalog;
 mod client;
+mod clock;
 mod color;
 mod controls;
 mod desktop;
