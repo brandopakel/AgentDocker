@@ -66,8 +66,8 @@ system, which is drawn from the mark. The look never changes what a
 control does, its id or its accessible label:
 
 - **Brand.** The rail leads with the cube mark (`crates/ui/src/mark.png`, the
-  transparent mark downscaled to 96 px, drawn at 22 points) and no wordmark:
-  the window title names the app. An empty place is the mark in a quiet tile
+  transparent mark downscaled to 96 px, drawn at 22 points), Back and Forward
+  beside it, and no wordmark: the window title names the app. An empty place is the mark in a quiet tile
   at reduced opacity, or the one thing to do there, with no title or sentence
   (`view::empty`).
 - **Every project has its own mark.** A rounded tile with the project's
@@ -241,6 +241,53 @@ control does, its id or its accessible label:
   otherwise types the *k* and keeps Escape. The window is always the first
   layer of one stack, with the launch dialog and the palette as optional
   layers over it, so opening either resets nothing underneath.
+- **Back and Forward** (`app/navigation.rs`). Two arrow buttons beside the
+  mark (`history-back`, `history-forward`, read as *Back* and *Forward*, the
+  chevron glyphs) go through the window's places; each is disabled while
+  there is nowhere to go, and its tooltip names the destination (*Back to*
+  project *· Chat*, *Forward to Settings*). A place is the screen and what
+  is open on it, only what that screen shows: the project of a project
+  screen (or All projects, or Other sessions), the session on Agents, the
+  attached session on Terminal, the card on Board, the conversation and
+  thread on Messages, the thread beside a project's Chat, the agent's thread
+  in Inbox. Hover, menus, drafts, searches, filters, layout, scroll and a
+  plan open on Plans are not places. Every update is one move: the place
+  before and after an update the person makes — a click, a key, a link, a
+  palette row, a notification, an assistive technology's action — are
+  compared, and a different place keeps the earlier one behind and drops
+  what was ahead; updates nested in it are part of it. The window's own
+  updates (ticks, replies, saves, its window events) refine the place on
+  view and record nothing, so a reply that closes a pruned thread or settles
+  a conversation never drops what was ahead; the two that finish what the
+  person asked — a launched or reconnected session's terminal opening, a
+  notification's destination opening — are moves. Going Back or Forward
+  restores the place by the messages that went there (the project, then the
+  screen, then the session, card, conversation or thread) and keeps the
+  place left on the other side, recording nothing; a place equal to the one
+  on view, or whose project is no longer listed, whose session is no longer
+  known (for Terminal, no longer attachable), or whose card was archived
+  (an archive event takes its places away; a card missing from its board
+  read in full is gone too) is passed over and let go. At most a hundred
+  places are kept behind, the oldest going first; the history is
+  window-local and never saved. ⌘[ and ⌘] (Control elsewhere; the bracket
+  character, or the bracket keys' place on layouts that type another
+  character there; no Shift or Option) and the Browser Back and Forward
+  keys are read by the window-root key wrapper ahead of a focused field,
+  which would otherwise type the bracket; a held key does not repeat them.
+  On Linux and Windows the Terminal screen keeps Control+[ and Control+]
+  (Escape and detach), as it keeps Control+K. Over the open palette they are
+  swallowed, and while the palette or the launch form is open Back and
+  Forward do nothing. The mouse's Back and Forward buttons go through the
+  window's event subscription wherever the pointer is. Tests:
+  `back_and_forward_walk_the_places_the_person_went`,
+  `a_new_place_after_going_back_drops_what_was_ahead`,
+  `history_keeps_the_newest_hundred_places`,
+  `transient_state_and_the_same_place_are_not_recorded`,
+  `back_restores_the_session_card_and_thread_that_were_open`,
+  `back_passes_over_places_that_are_gone`,
+  `the_windows_own_changes_refine_the_place_and_a_launch_moves`,
+  `the_arrows_are_disabled_at_the_ends_and_name_where_they_go`,
+  `keys_and_mouse_buttons_go_back_and_forward`.
 - **Segmented controls** (`controls::segment` in a `segmented` track) pick one
   of a few peers: the session filters and the theme. The track is an inset
   with a hairline; the selected segment is a card-coloured thumb with a
@@ -630,8 +677,8 @@ one action for its one fix.
 
 All action buttons participate in Tab/Shift-Tab traversal and activate with
 Enter/Space. Repeated key events do not repeat an activation. Escape closes
-forms/details; Command/Ctrl+1–4 switch primary sections and Command/Ctrl+K opens
-Jump to…. F6 leaves terminal input;
+forms/details; Command/Ctrl+1–4 switch primary sections, Command/Ctrl+K opens
+Jump to…, and Command/Ctrl+[ and Command/Ctrl+] go back and forward. F6 leaves terminal input;
 Control+] detaches. Button focus follows stable identity when session rows move.
 The focus ring follows the input modality: a click focuses a control without
 it (the pointer knows where it clicked) and it stays off that control until a

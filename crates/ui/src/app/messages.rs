@@ -122,7 +122,7 @@ impl App {
     /// The name the sidebar and headers show: `#everyone` for a project's
     /// chat, the other party's name for a direct conversation. The kinds
     /// the app leaves to the CLI go by their title.
-    fn conversation_label(&self, summary: &ConversationSummary) -> String {
+    pub(super) fn conversation_label(&self, summary: &ConversationSummary) -> String {
         match summary.kind {
             // Every project has one; when more than one is on view, say
             // whose.

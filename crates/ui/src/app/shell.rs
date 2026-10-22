@@ -411,6 +411,8 @@ pub(super) struct State {
     /// its card can show the choice as the receipt. Only answers still in
     /// flight are kept. Window-local, display only.
     pub chosen_answers: BTreeMap<MessageId, String>,
+    /// The places behind and ahead, for Back and Forward.
+    pub history: super::navigation::History,
 }
 
 impl State {
@@ -931,6 +933,10 @@ pub enum Message {
     CloseWithoutDraftSave,
     Notification(crate::notification_route::Activation),
     Navigate(Screen),
+    /// Back and Forward through the places the person went: the rail's
+    /// arrows, ⌘[ and ⌘] (Control elsewhere), the mouse's own buttons.
+    GoBack,
+    GoForward,
     /// The usage screen's window (`24h`, `7d`, `30d`) or grouping.
     UsageSince(&'static str),
     UsageBy(agentdocker_core::usage::report::Group),
@@ -1481,14 +1487,7 @@ impl App {
                 FOCUSED_SWEEP
             })
             .map(|_| Message::Tick),
-            iced::event::listen_with(|event, status, _| match event {
-                iced::Event::Keyboard(_) if status == iced::event::Status::Ignored => {
-                    Some(Message::Event(event))
-                }
-                iced::Event::Window(iced::window::Event::RedrawRequested(_)) => None,
-                iced::Event::Window(_) => Some(Message::Event(event)),
-                _ => None,
-            }),
+            iced::event::listen_with(|event, status, _| super::navigation::listened(event, status)),
         ])
     }
 
@@ -1524,7 +1523,19 @@ impl App {
         )
     }
 
+    /// One message, as one move for Back and Forward: the person's moves
+    /// are recorded, Back and Forward keep the history their own way, and
+    /// the window's own updates refine the place on view
+    /// (`navigation::moved`).
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        match super::navigation::moved(&message) {
+            super::navigation::Moved::ByPerson => self.navigating(true, |app| app.apply(message)),
+            super::navigation::Moved::Travel => self.navigating(false, |app| app.apply(message)),
+            super::navigation::Moved::ByWindow => self.apply(message),
+        }
+    }
+
+    fn apply(&mut self, message: Message) -> Task<Message> {
         let mut tasks = Vec::new();
         if matches!(
             &message,
@@ -1541,6 +1552,8 @@ impl App {
                 | Message::SelectConversation(_)
                 | Message::InboxList
                 | Message::Navigate(_)
+                | Message::GoBack
+                | Message::GoForward
                 | Message::SelectProject(_)
                 | Message::SelectSession(_)
                 | Message::Unassigned
@@ -1561,6 +1574,8 @@ impl App {
         if matches!(
             &message,
             Message::Navigate(_)
+                | Message::GoBack
+                | Message::GoForward
                 | Message::SelectThread(_)
                 | Message::InboxList
                 | Message::SelectProject(_)
@@ -1631,7 +1646,9 @@ impl App {
                 }
                 self.refresh_project_context();
                 tasks.push(self.refresh_pull_requests(false));
-                tasks.push(self.advance_notification());
+                // A notification's destination that opens now finishes
+                // the person's click on it: a move of theirs.
+                tasks.push(self.navigating(true, Self::advance_notification));
                 if let Some(smoke) = &mut self.smoke {
                     tasks.push(smoke.tick(
                         self.connected.is_ok(),
@@ -1762,6 +1779,8 @@ impl App {
                     self.send(Cmd::Desktop(self.desktop.command("status")));
                 }
             }
+            Message::GoBack => return self.travel(false),
+            Message::GoForward => return self.travel(true),
             Message::UsageSince(since) => {
                 self.shell.usage_since = since;
                 self.request_usage();
@@ -9992,6 +10011,495 @@ mod tests {
         assert!(!state.save_enabled);
         assert!(state.error.unwrap().contains("preserved"));
         assert_eq!(std::fs::read(path).unwrap(), b"not JSON");
+    }
+
+    // Back and Forward (navigation.rs).
+
+    /// What a travelling window's test keeps alive: the worker's end of
+    /// its queue, the way replies reach it, and the projects' folder.
+    struct Kept {
+        _commands: CommandReceiver,
+        messages: SyncSender<Msg>,
+        _dir: tempfile::TempDir,
+    }
+
+    /// A window with two pinned projects, `alpha` and `beta`, on All
+    /// projects.
+    fn travel() -> (App, PathBuf, PathBuf, Kept) {
+        let (mut app, _commands, messages) = app();
+        let dir = tempfile::tempdir().unwrap();
+        let alpha = ProjectRef::directory(dir.path().join("alpha"));
+        let beta = ProjectRef::directory(dir.path().join("beta"));
+        app.shell.catalog.remember(alpha.clone(), true);
+        app.shell.catalog.remember(beta.clone(), true);
+        let kept = Kept {
+            _commands,
+            messages,
+            _dir: dir,
+        };
+        (app, alpha.root, beta.root, kept)
+    }
+
+    /// A session of `runtime` in the project at `root`, running.
+    fn session_in(id: &str, root: &std::path::Path) -> AgentRecord {
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: id.into(),
+                runtime: "claude-code".into(),
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        agent.id = id.into();
+        agent.status = agentdocker_core::AgentStatus::Running;
+        agent.project = Some(ProjectRef::directory(root));
+        agent
+    }
+
+    fn card_in(id: &str, root: &std::path::Path, title: &str) -> agentdocker_core::Task {
+        let now = Utc::now();
+        serde_json::from_value(serde_json::json!({
+            "id": id, "project": ProjectRef::directory(root).id(), "title": title,
+            "acceptance": "", "column": "ready", "assignee": null,
+            "created_by": "user", "created_at": now, "updated_at": now,
+            "archived_at": null, "links": []
+        }))
+        .unwrap()
+    }
+
+    /// The screen and the project on view.
+    fn on(app: &App) -> (Screen, Option<PathBuf>) {
+        (app.screen, app.shell.catalog.selected.clone())
+    }
+
+    /// Back and Forward walk the places the person went, in order, each
+    /// restored whole; going there records nothing, and at either end
+    /// there is nowhere further to go.
+    #[test]
+    fn back_and_forward_walk_the_places_the_person_went() {
+        let (mut app, alpha, beta, _kept) = travel();
+        assert!(app.destination(false).is_none() && app.destination(true).is_none());
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        let _ = app.update(Message::Navigate(Screen::Board));
+        let _ = app.update(Message::SelectProject(beta.clone()));
+        assert_eq!(on(&app), (Screen::Chat, Some(beta.clone())));
+        assert_eq!(app.shell.history.lengths(), (3, 0));
+
+        let _ = app.update(Message::GoBack);
+        assert_eq!(on(&app), (Screen::Board, Some(alpha.clone())));
+        let _ = app.update(Message::GoBack);
+        assert_eq!(on(&app), (Screen::Chat, Some(alpha.clone())));
+        assert_eq!(
+            app.shell.history.lengths(),
+            (1, 2),
+            "going back moves places from behind to ahead and adds none"
+        );
+        let _ = app.update(Message::GoBack);
+        assert_eq!(on(&app), (Screen::Agents, None), "All projects, the start");
+        assert!(app.destination(false).is_none());
+        let _ = app.update(Message::GoBack);
+        assert_eq!(on(&app), (Screen::Agents, None), "nothing behind the start");
+
+        let _ = app.update(Message::GoForward);
+        assert_eq!(on(&app), (Screen::Chat, Some(alpha.clone())));
+        let _ = app.update(Message::GoForward);
+        assert_eq!(on(&app), (Screen::Board, Some(alpha.clone())));
+        let _ = app.update(Message::GoForward);
+        assert_eq!(on(&app), (Screen::Chat, Some(beta.clone())));
+        assert!(app.destination(true).is_none());
+        let _ = app.update(Message::GoForward);
+        assert_eq!(
+            on(&app),
+            (Screen::Chat, Some(beta)),
+            "nothing ahead of the end"
+        );
+        assert_eq!(app.shell.history.lengths(), (3, 0));
+    }
+
+    /// A new place after going back drops the places that were ahead, as a
+    /// browser does; the places behind stay.
+    #[test]
+    fn a_new_place_after_going_back_drops_what_was_ahead() {
+        let (mut app, alpha, _, _kept) = travel();
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        let _ = app.update(Message::Navigate(Screen::Board));
+        let _ = app.update(Message::Navigate(Screen::Usage));
+        let _ = app.update(Message::GoBack);
+        let _ = app.update(Message::GoBack);
+        assert_eq!(on(&app), (Screen::Chat, Some(alpha.clone())));
+        assert_eq!(app.shell.history.lengths().1, 2);
+
+        let _ = app.update(Message::Navigate(Screen::Journal));
+        assert_eq!(app.shell.history.lengths(), (2, 0), "nothing ahead now");
+        assert!(app.destination(true).is_none());
+        let _ = app.update(Message::GoForward);
+        assert_eq!(on(&app), (Screen::Journal, Some(alpha.clone())));
+        let _ = app.update(Message::GoBack);
+        assert_eq!(on(&app), (Screen::Chat, Some(alpha)));
+    }
+
+    /// At most a hundred places are kept behind: the oldest go first.
+    #[test]
+    fn history_keeps_the_newest_hundred_places() {
+        let (mut app, alpha, _, _kept) = travel();
+        let _ = app.update(Message::SelectProject(alpha));
+        for i in 0..150 {
+            let screen = if i % 2 == 0 {
+                Screen::Board
+            } else {
+                Screen::Journal
+            };
+            let _ = app.update(Message::Navigate(screen));
+        }
+        assert_eq!(
+            app.shell.history.lengths(),
+            (super::super::navigation::PLACES, 0)
+        );
+        let mut steps = 0;
+        while app.destination(false).is_some() {
+            let _ = app.update(Message::GoBack);
+            steps += 1;
+            assert!(steps <= 100, "Back ends");
+        }
+        assert_eq!(steps, 100);
+        assert_eq!(
+            app.screen,
+            Screen::Journal,
+            "the hundredth place back, not the first project chat"
+        );
+    }
+
+    /// Hover, menus, drafts, searches, filters, layout and the window's
+    /// own ticks are not places, and nor is going where the person already
+    /// is.
+    #[test]
+    fn transient_state_and_the_same_place_are_not_recorded() {
+        let (mut app, alpha, _, _kept) = travel();
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        let _ = app.update(Message::Navigate(Screen::Board));
+        let recorded = app.shell.history.lengths();
+        for message in [
+            Message::RailHover(alpha.clone()),
+            Message::RailLeave(alpha.clone()),
+            Message::More,
+            Message::More,
+            Message::ProjectMenu(alpha.clone()),
+            Message::ProjectMenu(alpha.clone()),
+            Message::TagsMenu,
+            Message::TagsMenu,
+            Message::BoardQuery("parser".into()),
+            Message::BoardLayout,
+            Message::BoardDense,
+            Message::TaskTitle("Port the parser".into()),
+            Message::MessagesSearch("alpha".into()),
+            Message::LaunchMenu,
+            Message::LaunchMenu,
+            Message::Tick,
+            Message::Navigate(Screen::Board),
+        ] {
+            let _ = app.update(message);
+        }
+        assert_eq!(app.shell.history.lengths(), recorded);
+        assert_eq!(app.destination(false).map(|p| p.screen), Some(Screen::Chat));
+    }
+
+    /// What is open on a screen comes back with it: the session on Agents,
+    /// the card on Board, the thread beside the chat.
+    #[test]
+    fn back_restores_the_session_card_and_thread_that_were_open() {
+        let (mut app, alpha, beta, _kept) = travel();
+        app.agents = vec![session_in("worker", &alpha)];
+        let card = card_in("aaaaaaaaaaaa", &beta, "Port the parser");
+        let thread = MessageId::from("thread-root".to_owned());
+        let _ = app.update(Message::OpenSession("worker".into()));
+        assert_eq!(on(&app), (Screen::Agents, Some(alpha.clone())));
+        let _ = app.update(Message::SelectProject(beta.clone()));
+        let _ = app.update(Message::OpenThread(thread.clone()));
+        let _ = app.update(Message::Navigate(Screen::Board));
+        let _ = app.update(Message::TaskOpen(card.id.clone()));
+        let _ = app.update(Message::Navigate(Screen::Journal));
+
+        let _ = app.update(Message::GoBack);
+        assert_eq!(on(&app), (Screen::Board, Some(beta.clone())));
+        assert_eq!(app.task_open.as_ref(), Some(&card.id));
+        let _ = app.update(Message::GoBack);
+        assert_eq!(app.task_open, None, "the board before the card opened");
+        let _ = app.update(Message::GoBack);
+        assert_eq!(on(&app), (Screen::Chat, Some(beta.clone())));
+        assert_eq!(app.shell.thread.as_ref(), Some(&thread));
+        let _ = app.update(Message::GoBack);
+        assert_eq!(app.shell.thread, None);
+        let _ = app.update(Message::GoBack);
+        assert_eq!(on(&app), (Screen::Agents, Some(alpha.clone())));
+        assert_eq!(app.shell.selected.as_deref(), Some("worker"));
+
+        // Forward again opens the card on the other project's board.
+        for _ in 0..4 {
+            let _ = app.update(Message::GoForward);
+        }
+        assert_eq!(on(&app), (Screen::Board, Some(beta)));
+        assert_eq!(app.task_open.as_ref(), Some(&card.id));
+    }
+
+    /// A place whose project was removed, whose session is no longer
+    /// listed or whose card was archived is passed over, and the arrows
+    /// say so before they are pressed.
+    #[test]
+    fn back_passes_over_places_that_are_gone() {
+        let (mut app, alpha, beta, _kept) = travel();
+        app.agents = vec![session_in("gone", &beta), session_in("kept", &beta)];
+        let card = card_in("aaaaaaaaaaaa", &beta, "Port the parser");
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        let _ = app.update(Message::OpenSession("kept".into()));
+        let _ = app.update(Message::OpenSession("gone".into()));
+        let _ = app.update(Message::Navigate(Screen::Board));
+        let _ = app.update(Message::TaskOpen(card.id.clone()));
+        let _ = app.update(Message::Navigate(Screen::Journal));
+
+        // The card is archived, the session leaves the list, and the first
+        // project is removed.
+        app.on_event(agentdocker_core::Event::new(
+            agentdocker_core::EventKind::TaskArchived {
+                task: card.id.clone(),
+                project: ProjectRef::directory(&beta).id(),
+                by: agentdocker_core::HUMAN.into(),
+            },
+            Utc::now(),
+        ));
+        app.agents.retain(|a| a.id.as_str() != "gone");
+        let _ = app.update(Message::ProjectRemove(alpha.clone()));
+        assert_eq!(on(&app), (Screen::Journal, Some(beta.clone())));
+
+        assert_eq!(
+            app.destination(false).map(|p| (p.screen, p.card.clone())),
+            Some((Screen::Board, None)),
+            "the archived card's place is not offered"
+        );
+        let _ = app.update(Message::GoBack);
+        assert_eq!(on(&app), (Screen::Board, Some(beta.clone())));
+        assert_eq!(app.task_open, None);
+        let _ = app.update(Message::GoBack);
+        assert_eq!(on(&app), (Screen::Agents, Some(beta.clone())));
+        assert_eq!(
+            app.shell.selected.as_deref(),
+            Some("kept"),
+            "the gone session's place is passed over"
+        );
+        let _ = app.update(Message::GoBack);
+        assert_eq!(
+            on(&app),
+            (Screen::Agents, None),
+            "the removed project's chat is passed over too"
+        );
+        assert!(app.destination(false).is_none());
+    }
+
+    /// Replies that settle the place on view (a thread pruned under the
+    /// person) record nothing and keep what is ahead; a launched
+    /// session's terminal opening finishes the person's launch and is a
+    /// move Back undoes.
+    #[test]
+    fn the_windows_own_changes_refine_the_place_and_a_launch_moves() {
+        let (mut app, alpha, _, kept) = travel();
+        let messages = &kept.messages;
+        let thread = MessageId::from("thread-root".to_owned());
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        let _ = app.update(Message::OpenThread(thread.clone()));
+        let _ = app.update(Message::Navigate(Screen::Board));
+        let _ = app.update(Message::GoBack);
+        assert_eq!(app.shell.thread.as_ref(), Some(&thread));
+        let recorded = app.shell.history.lengths();
+        messages
+            .send(Msg::ThreadGone(thread, app.history_epoch))
+            .unwrap();
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.shell.thread, None, "the pruned thread closed");
+        assert_eq!(app.shell.history.lengths(), recorded, "and nothing moved");
+        assert!(app.destination(true).is_some(), "Board is still ahead");
+
+        // The launched session is listed running: its terminal opens.
+        app.shell.attach_when_listed = Some(("launched".into(), None));
+        let mut launched = session_in("launched", &alpha);
+        launched.spec.tty = true;
+        messages
+            .send(Msg::Agents(vec![launched], BTreeMap::new()))
+            .unwrap();
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.screen, Screen::Terminal);
+        assert_eq!(app.shell.history.lengths(), (recorded.0 + 1, 0));
+        assert_eq!(
+            app.destination(false).map(|p| p.screen),
+            Some(Screen::Chat),
+            "Back returns to where the launch was asked"
+        );
+    }
+
+    /// The arrows: disabled with nowhere to go, named Back and Forward to
+    /// a reader, and saying where they go when pointed at.
+    #[test]
+    fn the_arrows_are_disabled_at_the_ends_and_name_where_they_go() {
+        use super::super::view::testing::seen;
+        let (mut app, alpha, _, _kept) = travel();
+        let c = super::super::style::Colors::new(false);
+        let arrows = |app: &App| {
+            let seen = seen(app.travel_controls(c.rail(), c));
+            let state = |id: &str| {
+                let (_, label, _, enabled) = seen.control(id).expect(id).clone();
+                (label, enabled)
+            };
+            (state("history-back"), state("history-forward"))
+        };
+        assert_eq!(
+            arrows(&app),
+            (("Back".into(), false), ("Forward".into(), false))
+        );
+        assert_eq!(app.travel_tip(false), "Back");
+
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        assert_eq!(app.travel_tip(false), "Back to All projects");
+        let _ = app.update(Message::Navigate(Screen::Board));
+        assert_eq!(
+            arrows(&app),
+            (("Back".into(), true), ("Forward".into(), false))
+        );
+        assert_eq!(app.travel_tip(false), "Back to alpha · Chat");
+
+        let _ = app.update(Message::GoBack);
+        assert_eq!(
+            arrows(&app),
+            (("Back".into(), true), ("Forward".into(), true))
+        );
+        assert_eq!(app.travel_tip(true), "Forward to alpha · Board");
+        let _ = app.update(Message::GoBack);
+        assert_eq!(
+            arrows(&app),
+            (("Back".into(), false), ("Forward".into(), true))
+        );
+
+        // A session and a place of the window's own read by name.
+        app.agents = vec![session_in("worker", &alpha)];
+        let _ = app.update(Message::OpenSession("worker".into()));
+        let _ = app.update(Message::Navigate(Screen::Settings));
+        let name = app.name_of("worker");
+        assert_eq!(app.travel_tip(false), format!("Back to alpha · {name}"));
+        let _ = app.update(Message::GoBack);
+        assert_eq!(app.travel_tip(true), "Forward to Settings");
+    }
+
+    /// ⌘[ and ⌘] (Control elsewhere) go back and forward ahead of a
+    /// focused field, as do a keyboard's Browser keys and the mouse's own
+    /// buttons; a terminal that owns Control keeps them, the open palette
+    /// swallows them, and nothing moves while it is open.
+    #[test]
+    fn keys_and_mouse_buttons_go_back_and_forward() {
+        use super::super::palette::{Command, Handling, Keys, handle};
+        use iced::keyboard::key::{Code, Named, Physical};
+        use iced::keyboard::{Key, Modifiers};
+        let bracket = |c: &str, code: Code, modifiers: Modifiers, keys: Keys, repeat: bool| {
+            handle(
+                keys,
+                &Key::Character(c.into()),
+                Physical::Code(code),
+                modifiers,
+                repeat,
+            )
+        };
+        let closed = Keys::Closed { shortcut: true };
+        let terminal = Keys::Closed { shortcut: false };
+        let open = Keys::Open {
+            query_empty: true,
+            nested: false,
+        };
+        let command = Modifiers::COMMAND;
+        assert!(matches!(
+            bracket("[", Code::BracketLeft, command, closed, false),
+            Handling::Send(Command::Travel(false))
+        ));
+        assert!(matches!(
+            bracket("]", Code::BracketRight, command, closed, false),
+            Handling::Send(Command::Travel(true))
+        ));
+        // A layout whose bracket key types another letter goes by the key.
+        assert!(matches!(
+            bracket("ü", Code::BracketLeft, command, closed, false),
+            Handling::Send(Command::Travel(false))
+        ));
+        assert!(matches!(
+            bracket("[", Code::BracketLeft, command, closed, true),
+            Handling::Swallow
+        ));
+        assert!(matches!(
+            bracket("[", Code::BracketLeft, command, terminal, false),
+            Handling::Pass
+        ));
+        assert!(matches!(
+            bracket("]", Code::BracketRight, command, open, false),
+            Handling::Swallow
+        ));
+        for modifiers in [
+            Modifiers::empty(),
+            command | Modifiers::SHIFT,
+            command | Modifiers::ALT,
+        ] {
+            assert!(matches!(
+                bracket("[", Code::BracketLeft, modifiers, closed, false),
+                Handling::Pass
+            ));
+        }
+        assert!(matches!(
+            handle(
+                closed,
+                &Key::Named(Named::BrowserBack),
+                Physical::Code(Code::BrowserBack),
+                Modifiers::empty(),
+                false
+            ),
+            Handling::Send(Command::Travel(false))
+        ));
+        assert!(matches!(
+            Message::from(Command::Travel(false)),
+            Message::GoBack
+        ));
+        assert!(matches!(
+            Message::from(Command::Travel(true)),
+            Message::GoForward
+        ));
+        use iced::event::Status;
+        use iced::mouse::{Button, Event as Mouse};
+        for status in [Status::Ignored, Status::Captured] {
+            assert!(matches!(
+                super::super::navigation::listened(
+                    iced::Event::Mouse(Mouse::ButtonPressed(Button::Back)),
+                    status
+                ),
+                Some(Message::GoBack)
+            ));
+            assert!(matches!(
+                super::super::navigation::listened(
+                    iced::Event::Mouse(Mouse::ButtonPressed(Button::Forward)),
+                    status
+                ),
+                Some(Message::GoForward)
+            ));
+        }
+        assert!(
+            super::super::navigation::listened(
+                iced::Event::Mouse(Mouse::ButtonPressed(Button::Left)),
+                Status::Ignored
+            )
+            .is_none()
+        );
+
+        // Over the palette, Back does nothing.
+        let (mut app, alpha, _, _kept) = travel();
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        let _ = app.update(Message::CommandPalette);
+        let _ = app.update(Message::GoBack);
+        assert_eq!(on(&app), (Screen::Chat, Some(alpha)));
+        let _ = app.update(Message::CommandPalette);
+        let _ = app.update(Message::GoBack);
+        assert_eq!(on(&app), (Screen::Agents, None));
     }
 }
 
