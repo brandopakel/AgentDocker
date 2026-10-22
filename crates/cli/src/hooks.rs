@@ -529,20 +529,19 @@ fn observation(input: &HookInput, output: Option<&Value>) -> Option<Observed> {
     Some(activity.into())
 }
 
-/// The one line a permission prompt's wait carries: the tool, and what it
-/// is for when the tool's input says so in a word — a shell command as
-/// [`agentdocker_core::wait::command_detail`] reduces it (the program and
-/// only the arguments safe to show), the file an edit or a read names
-/// (from the session's directory when it is under it), the address a fetch
-/// goes to without its credentials, query or fragment, a search's query or
-/// pattern. Whatever reads like a secret is judged on the whole of what the
-/// tool was given, before anything is shortened for display, and leaves
-/// the tool alone; so does a query or pattern that names a credential
-/// word. Bounded and made printable by
-/// [`agentdocker_core::wait::wait_detail`]. None without a tool name.
+/// The one line a permission prompt's wait carries, `<Tool>: <what>`, as
+/// [`agentdocker_core::wait::wait_detail`] keeps it — the same gate the
+/// daemon puts every detail through, so what it keeps is exactly this.
+/// What the tool was given: a shell command (which shows its program and,
+/// for a few programs, their own subcommands, never another argument), the
+/// file an edit or a read names (from the session's directory when it is
+/// under it), the address a fetch goes to, a search's query or pattern.
+/// Whatever reads like a secret is judged on the whole of what the tool
+/// was given, before anything is shortened for display, and leaves the
+/// tool alone. None without a tool name.
 fn permission_detail(input: &HookInput) -> Option<String> {
     use agentdocker_core::memory::secret_like;
-    use agentdocker_core::wait::{CREDENTIAL_WORDS, address, command_detail, wait_detail};
+    use agentdocker_core::wait::wait_detail;
     let tool: String = wait_detail(input.tool_name.as_deref()?)?
         .chars()
         .take(48)
@@ -555,23 +554,21 @@ fn permission_detail(input: &HookInput) -> Option<String> {
             .and_then(Value::as_str)
             .filter(|text| !secret_like(text))
     };
-    let plain = |text: &&str| {
-        let lower = text.to_ascii_lowercase();
-        !CREDENTIAL_WORDS.iter().any(|word| lower.contains(word))
-    };
     let about: Option<String> = match tool.as_str() {
-        "Bash" | "PowerShell" => field("command").and_then(command_detail),
+        "Bash" | "PowerShell" => field("command").map(str::to_owned),
         "WebSearch" | "Glob" | "Grep" => field("query")
             .or_else(|| field("pattern"))
-            .filter(plain)
             .map(str::to_owned),
         "Edit" | "Write" | "MultiEdit" | "Read" | "NotebookEdit" => field("file_path")
             .or_else(|| field("notebook_path"))
             .map(|path| shown_path(path, input.cwd.as_deref())),
-        "WebFetch" => field("url").map(address),
+        "WebFetch" => field("url").map(str::to_owned),
         _ => None,
     };
-    let line = match about.as_deref().and_then(wait_detail) {
+    let first = about
+        .as_deref()
+        .and_then(|about| about.lines().map(str::trim).find(|line| !line.is_empty()));
+    let line = match first {
         Some(about) => format!("{tool}: {about}"),
         None => tool.clone(),
     };
@@ -2811,7 +2808,7 @@ mod tests {
                 json!({"command": "git push origin main\n# and more"})
             )
             .as_deref(),
-            Some("Bash: git push origin main")
+            Some("Bash: git push origin")
         );
         for command in [
             "curl -H 'Authorization: Bearer abc' https://example.invalid",
@@ -2855,34 +2852,41 @@ mod tests {
             ask("mcp__agentdocker__claim", json!({"resource": "path:/x"})).as_deref(),
             Some("mcp__agentdocker__claim")
         );
+        // A program shows no arguments unless it is one whose leading
+        // words are its own subcommands; control characters never show.
         assert_eq!(
             ask("Bash\u{202E}\n", json!({"command": "ls -la"})).as_deref(),
-            Some("Bash: ls -la")
+            Some("Bash: ls")
         );
-        // A program a shell could not read plainly is not shown at all.
         assert_eq!(
-            ask("Bash", json!({"command": "ls\u{0007} -la"})).as_deref(),
-            Some("Bash")
+            ask("Bash", json!({"command": "cargo\u{0007} test -p core"})).as_deref(),
+            Some("Bash: cargo test")
         );
         let mut nothing = input("PermissionRequest");
         nothing.tool_input = Some(json!({"command": "ls"}));
         assert_eq!(permission_detail(&nothing), None);
     }
 
-    /// A password in an ordinary command — after `-u`, attached to `-p`,
-    /// before an address's host — never reaches the line, and so never the
-    /// report the hook sends, which is what the daemon keeps on the record
-    /// and announces in its event.
+    /// A password in an ordinary command — in a position only the program
+    /// knows, after `-u` or `-a`, attached to `-p`, before an address's
+    /// host — never reaches the line, and so never the report the hook
+    /// sends, which is what the daemon keeps on the record and announces in
+    /// its event.
     #[tokio::test]
     async fn a_password_in_a_command_never_leaves_the_hook() {
         for (command, shown) in [
+            ("smbclient //server/share hunter2", "Bash: smbclient"),
+            ("isql localdb alice hunter2", "Bash: isql"),
+            ("mysql -u alice db hunter2", "Bash: mysql"),
+            ("tool run hunter2", "Bash: tool"),
+            ("redis-cli -a hunter2 ping", "Bash: redis-cli"),
             (
                 "curl -u alice:hunter2 https://example.invalid",
                 "Bash: curl",
             ),
             (
                 "curl https://alice:hunter2@example.invalid/data",
-                "Bash: curl https://example.invalid/data",
+                "Bash: curl",
             ),
             ("mysql -phunter2 -e SELECT", "Bash: mysql"),
             (
@@ -2890,8 +2894,9 @@ mod tests {
                 "Bash: curl",
             ),
             ("mysql -uroot -phunter2", "Bash: mysql"),
-            ("redis-cli -a hunter2 ping", "Bash: redis-cli -a"),
             ("tool 'alice:hunter2'", "Bash: tool"),
+            ("cargo login hunter2", "Bash: cargo"),
+            ("git config somename hunter2", "Bash: git config somename"),
             ("PGPASSWORD=hunter2 psql", "Bash"),
         ] {
             let mut event = input("PermissionRequest");

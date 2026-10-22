@@ -325,15 +325,26 @@ pub const WAIT_DETAIL_CHARS: usize = 120;
 /// input, and a `Notification` six seconds later, without them.
 pub const WAIT_DETAIL_CARRY_SECS: i64 = 60;
 
-/// `text` as a wait's detail may show it: its first line, without control
-/// or invisible formatting characters, runs of spaces as one, cut to
-/// [`WAIT_DETAIL_CHARS`] with an ellipsis. A detail is shown to the person
-/// and kept with the agent's record, and is never worth a secret: none
-/// when the whole line reads like a credential
-/// ([`crate::memory::secret_like`]), checked before anything is cut, and
-/// whatever the sender, the line ends before the first word that may carry
-/// one ([`scrubbed`]) — an address loses its user, password, query and
-/// fragment.
+/// `text` as a wait's detail is kept and shown: one line, `<Tool>: <what>`
+/// or a tool alone, never worth a secret. The one gate every detail passes,
+/// the hooks adapter's and any other client's alike, so a client that
+/// sends a raw command gets exactly the hook's treatment.
+///
+/// Its first line, without control or invisible formatting characters,
+/// runs of spaces as one. None when that whole line reads like a credential
+/// ([`crate::memory::secret_like`]), judged before anything is cut. Then
+/// what follows the tool's name is kept only as far as that tool's
+/// arguments are known to be safe to show:
+/// - a file tool's path ([`PATH_TOOLS`]) and a fetch's address, up to a
+///   flag that takes a credential or a `user:password@host`, every address
+///   reduced to scheme, host and path ([`scrubbed`]);
+/// - a search's query or pattern ([`QUERY_TOOLS`]) the same way, and not
+///   at all when it names a [`CREDENTIAL_WORDS`] word;
+/// - anything else — a shell command (`Bash`, `PowerShell`), an unknown
+///   tool, a line with no tool — as a command, which by default shows its
+///   program alone ([`command_detail`]).
+///
+/// Cut to [`WAIT_DETAIL_CHARS`] with an ellipsis.
 pub fn wait_detail(text: &str) -> Option<String> {
     let line = text
         .split(['\n', '\r'])
@@ -350,16 +361,43 @@ pub fn wait_detail(text: &str) -> Option<String> {
     if crate::memory::secret_like(&line) {
         return None;
     }
-    let mut kept = scrubbed(&line);
-    if kept.is_empty() {
-        return None;
-    }
+    let mut kept = match line.split_once(": ").filter(|(tool, _)| tool_name(tool)) {
+        Some((tool, what)) => {
+            let what = if PATH_TOOLS.contains(&tool) || tool == "WebFetch" {
+                Some(scrubbed(what))
+            } else if QUERY_TOOLS.contains(&tool) {
+                let lower = what.to_ascii_lowercase();
+                (!CREDENTIAL_WORDS.iter().any(|word| lower.contains(word))).then(|| scrubbed(what))
+            } else {
+                command_detail(what)
+            };
+            match what.filter(|what| !what.is_empty()) {
+                Some(what) => format!("{tool}: {what}"),
+                None => tool.to_owned(),
+            }
+        }
+        None => command_detail(&line)?,
+    };
     if kept.chars().count() > WAIT_DETAIL_CHARS {
         kept = kept.chars().take(WAIT_DETAIL_CHARS - 1).collect::<String>();
         kept = kept.trim_end().to_owned();
         kept.push('…');
     }
     Some(kept)
+}
+
+/// The tools whose argument is a file's path.
+pub const PATH_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "Read", "NotebookEdit"];
+
+/// The tools whose argument is a search's query or pattern.
+pub const QUERY_TOOLS: &[&str] = &["WebSearch", "Glob", "Grep"];
+
+/// Whether what precedes `: ` in a detail is a tool's name.
+fn tool_name(word: &str) -> bool {
+    !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c))
 }
 
 /// The words of `line` before the first that may carry a credential: a
@@ -412,26 +450,28 @@ const CREDENTIAL_FLAG_PARTS: &[&str] = &[
 /// `-k`/`-K` keys. In a cluster or with a value attached, any of them.
 const CREDENTIAL_FLAG_LETTERS: &[char] = &['u', 'p', 'P', 'H', 'k', 'K'];
 
-/// Words that, as an argument, begin a credential's part of a command:
-/// `docker login`, `gh auth`, a key or password manager's entry.
+/// Words that begin a credential's part of a command (`cargo login`,
+/// `gh auth`, a key or password store's entry): a subcommand that is one
+/// ends what is shown.
 const CREDENTIAL_ARGUMENT_PARTS: &[&str] = &[
     "login", "logon", "signin", "auth", "pass", "pwd", "cookie", "key", "cred",
 ];
 
-/// Programs whose arguments are data — what they print, export or
-/// evaluate — rather than what they act on: shown alone.
-const DATA_PROGRAMS: &[&str] = &[
-    "echo",
-    "printf",
-    "print",
-    "export",
-    "set",
-    "env",
-    "eval",
-    "read",
-    "write-host",
-    "write-output",
-    "convertto-securestring",
+/// The programs whose leading words are subcommands — names the program
+/// defines, never a value the person supplies — and how many of them a
+/// detail shows: `cargo test`, `git push origin`, `npm run build`, `make
+/// check`. Every other program is shown alone: an argument in an unknown
+/// position may be a password (`smbclient //server/share <password>`,
+/// `isql <dsn> <user> <password>`), and no reading of an unknown program
+/// can tell. Kept small on purpose.
+const SUBCOMMANDS: &[(&str, usize)] = &[
+    ("cargo", 2),
+    ("git", 2),
+    ("go", 2),
+    ("make", 1),
+    ("npm", 2),
+    ("pnpm", 2),
+    ("yarn", 2),
 ];
 
 /// Whether `word` is a flag that takes, or is, a credential: a long name
@@ -477,8 +517,8 @@ pub fn address(url: &str) -> String {
 }
 
 /// Whether `word` is plain enough to show as it is: letters, digits and
-/// the punctuation of paths, versions and addresses, nothing a shell
-/// would expand, quote or split on.
+/// the punctuation of paths, versions and names, nothing a shell would
+/// expand, quote or split on.
 fn plain_word(word: &str) -> bool {
     !word.is_empty()
         && word
@@ -486,21 +526,29 @@ fn plain_word(word: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "._/~+,:%@-".contains(c))
 }
 
-/// A shell command as a wait's detail may show it, conservatively: the
-/// program and the arguments that are safe to show, never a credential.
+/// A subcommand's shape: a short lower-case name, nothing a person would
+/// type as a value of their own (no path, no address, no capitals).
+fn subcommand(word: &str) -> bool {
+    word.len() <= 32
+        && word.starts_with(|c: char| c.is_ascii_lowercase())
+        && word
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// A shell command as a wait's detail may show it: an allowlist, with
+/// arguments left out by default.
 ///
-/// Nothing at all when the command, any line of it, reads like a secret
-/// or names a [`CREDENTIAL_WORDS`] word. Otherwise its first line, word by
-/// word: `NAME=value` assignments before the program are skipped, values
-/// unseen; a program whose arguments are data (`echo`, `export`…) is shown
-/// alone. Then, in order:
-/// - a flag that takes a credential ([`credential_flag`]) ends the line
-///   there, and so does a word naming one (`login`, `auth`, a key…);
-/// - a plain flag (`-rf`, `--release`) is kept, and the first word after
-///   any flag ends the line, since it may be that flag's value;
-/// - an address keeps only its scheme, host and path;
-/// - an argument that cannot be read plainly — quoted, expanded, an
-///   assignment, `user:password@host`, a pipe — leaves the program alone.
+/// Nothing at all when the command reads like a secret or names a
+/// [`CREDENTIAL_WORDS`] word. Otherwise the program of its first line — by
+/// its name, without its directory, `NAME=value` assignments before it
+/// skipped unseen — and nothing else, unless the program is one whose
+/// leading words are its own subcommands ([`SUBCOMMANDS`]): then those that
+/// follow it directly, up to that program's count, each a plain lower-case
+/// name, stopping at the first that is not (a flag, a path, an address, a
+/// capital, anything quoted) or that names a credential's part (`login`,
+/// `auth`, a key). A program a shell could not read plainly, or a flag in
+/// the program's place, shows nothing.
 pub fn command_detail(command: &str) -> Option<String> {
     let lower = command.to_ascii_lowercase();
     if crate::memory::secret_like(command) || CREDENTIAL_WORDS.iter().any(|w| lower.contains(w)) {
@@ -513,47 +561,24 @@ pub fn command_detail(command: &str) -> Option<String> {
     let mut words = line.split_whitespace().skip_while(|word| assignment(word));
     let program = words
         .next()
-        .filter(|word| plain_word(word) && !userinfo(word))?;
-    let name = program
-        .rsplit('/')
-        .next()
-        .unwrap_or(program)
-        .to_ascii_lowercase();
-    if DATA_PROGRAMS.contains(&name.as_str()) {
-        return Some(program.to_owned());
-    }
-    let alone = || Some(program.to_owned());
-    let mut kept = vec![program.to_owned()];
-    let mut flagged = false;
-    for word in words {
-        if word.starts_with('-') {
-            if credential_flag(word) {
-                break;
-            }
-            if !flag_shape(word) {
-                return alone();
-            }
-            flagged = true;
-            kept.push(word.to_owned());
-            continue;
-        }
-        let word = if word.contains("://") {
-            address(word)
-        } else {
-            word.to_owned()
-        };
-        if !plain_word(&word) || userinfo(&word) {
-            return alone();
-        }
+        .filter(|word| !word.starts_with('-') && plain_word(word) && !userinfo(word))?;
+    let name = program.rsplit('/').find(|part| !part.is_empty())?;
+    let known = name.strip_suffix(".exe").unwrap_or(name);
+    let count = SUBCOMMANDS
+        .iter()
+        .find(|(program, _)| *program == known)
+        .map_or(0, |(_, count)| *count);
+    let mut kept = vec![name.to_owned()];
+    for word in words.take(count) {
         let lower = word.to_ascii_lowercase();
-        if flagged
+        if !subcommand(word)
             || CREDENTIAL_ARGUMENT_PARTS
                 .iter()
                 .any(|part| lower.contains(part))
         {
             break;
         }
-        kept.push(word);
+        kept.push(word.to_owned());
     }
     Some(kept.join(" "))
 }
@@ -566,15 +591,6 @@ fn assignment(word: &str) -> bool {
             .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
             && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     })
-}
-
-/// A flag with nothing attached a shell would read: `-`, `--`, `-rf`,
-/// `--release`, `-Recurse`.
-fn flag_shape(word: &str) -> bool {
-    let name = word.trim_start_matches('-');
-    word.len() - name.len() <= 2
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        && !name.starts_with('-')
 }
 
 /// Characters that change how the text around them reads without showing
@@ -774,14 +790,14 @@ mod tests {
     fn a_wait_detail_is_one_bounded_printable_line_and_never_a_secret() {
         assert_eq!(
             wait_detail("Bash: git push\u{202E} origin\tmain\nrm -rf /").as_deref(),
-            Some("Bash: git push origin main")
+            Some("Bash: git push origin")
         );
         assert_eq!(
             wait_detail("\n  \nEdit: src/lib.rs").as_deref(),
             Some("Edit: src/lib.rs")
         );
         assert_eq!(wait_detail("\u{200B}\u{0007}\n \r"), None);
-        let long = format!("Bash: {}", "a ".repeat(200));
+        let long = format!("Read: {}", "a ".repeat(200));
         let cut = wait_detail(&long).unwrap();
         assert_eq!(cut.chars().count(), WAIT_DETAIL_CHARS);
         assert!(cut.ends_with('…'));
@@ -793,63 +809,58 @@ mod tests {
         }
     }
 
-    /// A password in an ordinary command never reaches a detail: a flag
-    /// that takes one ends the line, an address loses its user and
-    /// password, and anything that cannot be read plainly leaves the
-    /// program alone. What is safe to show still is.
+    /// A command shows its program and nothing else, unless the program's
+    /// leading words are its own subcommands: an argument in an unknown
+    /// position may be a password, flagged or not, and no reading of an
+    /// unknown program can tell.
     #[test]
-    fn a_command_shows_its_program_and_only_what_is_safe() {
+    fn a_command_shows_its_program_and_only_known_subcommands() {
         for (command, shown) in [
+            // Positional passwords, which no credential word or shape gives
+            // away.
+            ("smbclient //server/share hunter2", "smbclient"),
+            ("isql localdb alice hunter2", "isql"),
+            ("mysql -u alice db hunter2", "mysql"),
+            ("mysql db hunter2", "mysql"),
+            ("tool run hunter2", "tool"),
+            ("redis-cli -a hunter2 ping", "redis-cli"),
+            // Flagged ones and passwords in addresses.
             ("curl -u alice:hunter2 https://example.invalid", "curl"),
-            ("curl --user alice:hunter2 https://example.invalid", "curl"),
             ("curl --user=alice:hunter2 https://example.invalid", "curl"),
-            ("curl -sSu alice:hunter2 https://example.invalid", "curl"),
-            (
-                "curl https://alice:hunter2@example.invalid/data",
-                "curl https://example.invalid/data",
-            ),
-            (
-                "git clone https://alice:hunter2@example.invalid/o/r.git dir",
-                "git clone https://example.invalid/o/r.git dir",
-            ),
-            (
-                "curl https://example.invalid/data?pw=hunter2#frag",
-                "curl https://example.invalid/data",
-            ),
+            ("curl https://alice:hunter2@example.invalid/data", "curl"),
             ("mysql -phunter2 -e SELECT", "mysql"),
             ("mysql -uroot -phunter2", "mysql"),
-            ("mysql -e SELECT -phunter2", "mysql -e"),
-            ("redis-cli -a hunter2 ping", "redis-cli -a"),
             ("sshpass -p hunter2 ssh host", "sshpass"),
             ("scp alice:hunter2@host:/f .", "scp"),
-            (
-                "psql postgresql://alice:hunter2@db/app",
-                "psql postgresql://db/app",
-            ),
-            ("DB_PASS=hunter2 psql -h db", "psql -h"),
-            ("curl -H 'X-Api: hunter2' https://example.invalid", "curl"),
-            (
-                "curl -d user=alice&pw=hunter2 https://example.invalid",
-                "curl",
-            ),
-            ("tool --data=alice:hunter2", "tool"),
+            ("psql postgresql://alice:hunter2@db/app", "psql"),
+            ("DB_PASS=hunter2 psql -h db", "psql"),
             ("tool 'alice:hunter2'", "tool"),
             ("echo hunter2 | sudo -S true", "echo"),
             ("docker login -u alice hunter2", "docker"),
             ("Get-Item -Path C:/hunter2", "Get-Item"),
-            // What is safe to show still is.
-            ("git push origin main", "git push origin main"),
-            ("rm -rf target", "rm -rf"),
-            ("ls -la", "ls -la"),
+            ("/opt/tools/smbclient //server/share hunter2", "smbclient"),
+            // A known program's own subcommands, never a value.
+            ("git push origin main", "git push origin"),
+            ("git config somename hunter2", "git config somename"),
+            (
+                "git clone https://alice:hunter2@example.invalid/o/r.git",
+                "git clone",
+            ),
+            ("git -C /work status", "git"),
+            ("git checkout Hunter2", "git checkout"),
+            ("/usr/bin/git status", "git status"),
             ("cargo test -p core", "cargo test"),
-            ("./scripts/verify.sh check", "./scripts/verify.sh check"),
+            ("cargo login hunter2", "cargo"),
+            ("cargo.exe build --release", "cargo.exe build"),
+            ("npm run build", "npm run build"),
+            ("yarn npm login hunter2", "yarn npm"),
+            ("go test ./...", "go test"),
+            ("make check hunter2", "make check"),
+            ("rm -rf target", "rm"),
+            ("./scripts/verify.sh check", "verify.sh"),
         ] {
             assert_eq!(command_detail(command).as_deref(), Some(shown), "{command}");
-            let line = format!("Bash: {}", command_detail(command).unwrap());
-            assert!(
-                !line.contains("hunter2") && !line.contains("alice:"),
-                "{line}"
-            );
+            assert!(!shown.contains("hunter2"), "{command}");
         }
         for command in [
             "PGPASSWORD=hunter2 psql",
@@ -858,32 +869,55 @@ mod tests {
             "echo ghp_abcdefghijklmnopqrstuvwxyz0123456789",
             "ls\nexport KEY=x9Fk2LmQ7vR3tY8wZ1aB4cD6eG0hJ5nP",
             "'quoted program' arg",
+            "-u alice:hunter2",
             "   \n  ",
         ] {
             assert_eq!(command_detail(command), None, "{command}");
         }
     }
 
-    /// Whoever sends a detail, the daemon keeps none of a credential an
-    /// ordinary command carries: the line ends before a flag that takes
-    /// one or a `user:password@host`, and an address loses its user,
-    /// password, query and fragment.
+    /// Whoever sends a detail, it gets the hooks adapter's treatment: what
+    /// follows a shell tool, an unknown tool or no tool at all is reduced
+    /// as a command, and a path, an address or a search keeps nothing of
+    /// a credential.
     #[test]
-    fn any_detail_loses_what_carries_a_credential() {
+    fn any_detail_gets_the_hooks_treatment() {
         for (sent, kept) in [
+            ("Bash: redis-cli -a hunter2 ping", Some("Bash: redis-cli")),
+            (
+                "Bash: smbclient //server/share hunter2",
+                Some("Bash: smbclient"),
+            ),
+            (
+                "PowerShell: isql localdb alice hunter2",
+                Some("PowerShell: isql"),
+            ),
             (
                 "Bash: curl -u alice:hunter2 https://example.invalid",
                 Some("Bash: curl"),
             ),
             (
                 "Bash: curl https://alice:hunter2@example.invalid/data?k=v",
-                Some("Bash: curl https://example.invalid/data"),
+                Some("Bash: curl"),
             ),
             ("Bash: mysql -phunter2 -e SELECT", Some("Bash: mysql")),
-            ("Bash: mysql --password=hunter2", Some("Bash: mysql")),
-            ("Bash: scp alice:hunter2@host:/f .", Some("Bash: scp")),
-            ("Bash: rm -rf target", Some("Bash: rm -rf target")),
+            ("Bash: PGPASSWORD=hunter2 psql", Some("Bash")),
+            ("Bash: git push origin main", Some("Bash: git push origin")),
+            ("Bash: rm -rf target", Some("Bash: rm")),
+            ("Bash", Some("Bash")),
+            ("redis-cli -a hunter2 ping", Some("redis-cli")),
+            (
+                "mcp__fixture__run: tool run hunter2",
+                Some("mcp__fixture__run: tool"),
+            ),
             ("Edit: src/lib.rs", Some("Edit: src/lib.rs")),
+            ("Read: alice:hunter2@host/f", Some("Read")),
+            (
+                "WebFetch: https://alice:hunter2@example.invalid/a?k=v",
+                Some("WebFetch: https://example.invalid/a"),
+            ),
+            ("Grep: fn main", Some("Grep: fn main")),
+            ("Grep: password=hunter2", Some("Grep")),
             ("-u alice:hunter2", None),
         ] {
             assert_eq!(wait_detail(sent).as_deref(), kept, "{sent}");

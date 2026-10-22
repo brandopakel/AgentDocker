@@ -4063,10 +4063,10 @@ async fn a_wait_keeps_what_it_is_for_through_the_store() {
 }
 
 /// A password in an ordinary command never reaches the record or its
-/// event: not from the hooks adapter, which sends only what
-/// `command_detail` keeps, nor from any other client sending the command
-/// whole, whose detail ends before the flag or `user:password@` that
-/// carries it.
+/// event: not from the hooks adapter, nor from any other client sending
+/// the command whole, which gets the same treatment — the program, and
+/// only a known program's own subcommands — whether the password is
+/// flagged, in an address or in a position only the program knows.
 #[tokio::test]
 async fn a_password_in_a_wait_detail_is_never_kept_or_announced() {
     use agentdocker_core::wait::command_detail;
@@ -4077,6 +4077,11 @@ async fn a_password_in_a_wait_detail_is_never_kept_or_announced() {
     let mut events = daemon.subscribe_events();
     let start = Utc::now() - Duration::seconds(60);
     let commands = [
+        "smbclient //server/share hunter2",
+        "isql localdb alice hunter2",
+        "mysql -u alice db hunter2",
+        "tool run hunter2",
+        "redis-cli -a hunter2 ping",
         "curl -u alice:hunter2 https://example.invalid",
         "curl https://alice:hunter2@example.invalid/data",
         "mysql -phunter2 -e SELECT",
@@ -4086,6 +4091,7 @@ async fn a_password_in_a_wait_detail_is_never_kept_or_announced() {
     let details = commands.iter().flat_map(|command| {
         [
             format!("Bash: {command}"),
+            format!("PowerShell: {command}"),
             format!("Bash: {}", command_detail(command).unwrap()),
         ]
     });
@@ -4120,9 +4126,12 @@ async fn a_password_in_a_wait_detail_is_never_kept_or_announced() {
                 "{detail}: {text}"
             );
         }
-        assert!(
-            kept.and_then(|o| o.detail)
-                .is_some_and(|line| line.starts_with("Bash: ")),
+        // What is kept is the program alone, as the hook would send it.
+        let program = detail.split_whitespace().nth(1).unwrap();
+        let tool = detail.split(": ").next().unwrap();
+        assert_eq!(
+            kept.and_then(|o| o.detail),
+            Some(format!("{tool}: {program}")),
             "{detail}"
         );
     }
