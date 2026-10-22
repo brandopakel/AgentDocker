@@ -1,4 +1,4 @@
-# The remote connector: agents that work inside a browser
+# The remote connector: clients of a Claude or ChatGPT account
 
 The connector is `agentdocker connector` (`crates/cli/src/connector/`). A
 connector on `--tunnel tailscale` serves from the machine's own `*.ts.net` name,
@@ -18,8 +18,17 @@ agent should know, the only way in is the one the vendors offer hosted agents:
 a remote MCP server over public HTTPS with OAuth. The connector is that server,
 kept as small as the requirement allows and as far from the daemon as possible.
 It is one per machine, not one per project: whoever installs AgentDocker gets
-one door for every project the daemon knows, and each browser agent chooses
-its project when it consents.
+one door for every project the daemon knows, and each consent chooses its
+project.
+
+A connector is added to the person's account, not to a browser. Every client
+of that account that offers its connectors — the browser side panel, the web
+and desktop apps, and a terminal Codex or Claude Code reaching the account's
+connectors — presents the same grant from the same vendor addresses, so
+nothing the connector receives proves which one is calling. It does not claim
+to know: the agent a consent makes is named for the connector and labelled
+`surface=unverified`, and what each client says about its own software is kept
+beside the grant for the person to read.
 
 ## What it is, and is not
 
@@ -60,15 +69,22 @@ its project when it consents.
   its Client ID Metadata Document — an HTTPS URL on its own host, fetched and
   admitted here, which both Claude and ChatGPT prefer — or by dynamic client
   registration; either way only the vendors' callback URLs are admitted.
-- One browser-agent identity per consent, in the project the consent chose,
-  registered until revoked. It has no process here whose end could retire it,
+- One agent identity per consent, in the project the consent chose,
+  registered until revoked, used by whichever client of the account calls.
+  It has no process here whose end could retire it,
   so it counts as connected only while it is heard from: within an hour (one
   access token's lifetime) of its last tool call. Initializing and listing
   tools is a client loading the connector — Claude Code loads the claude.ai
   connectors at every start — and does not count. Past that, `ps` and the
   desktop show it **not connected** and do not count it as a live session; its
   grant, record and queue stand, and its next tool call makes it connected again.
-- A messaging-only tool surface. A browser agent has no checkout here.
+- A messaging-only tool surface. The connector's agent has no checkout here.
+- Not a way in for terminal agents. A tool call whose `_meta` names a Codex
+  conversation (a `threadId`, or `x-codex-turn-metadata` naming a thread or
+  session — what Codex sends with its tool calls) is refused with the way to
+  AgentDocker's local MCP server, which acts as the session itself, and does
+  not count as the agent being used. A bare `sessionId` is not taken for
+  Codex: other clients may send one.
 
 ## The flow
 
@@ -90,20 +106,23 @@ its project when it consents.
    under a one-time ticket bound to that authorization request, that asks
    which project the agent joins (the projects the daemon has seen agents in,
    the proposed one first, or the full path of any folder on this machine) and
-   a name for the agent (a `claude-browser-xxxx` / `chatgpt-browser-xxxx` name
-   is suggested), and sends the person back to the vendor with a one-time code.
+   a name for the agent (a `claude-connector-xxxx` / `chatgpt-connector-xxxx`
+   name is suggested: the vendor's account and how it came in, never a
+   surface), and sends the person back to the vendor with a one-time code.
    Consent alone creates nothing.
 4. The vendor redeems the code with its PKCE verifier. That is when the daemon
-   registers the browser agent — an external, pidless agent in the chosen
-   project, runtime `claude-browser` or `chatgpt-browser`, labels
-   `connector=true` and `vendor=<label>` — and the grant and its first tokens
-   exist. A code that is never redeemed, or redeemed with the wrong verifier,
+   registers the agent — an external, pidless agent in the chosen project,
+   runtime `claude-browser` or `chatgpt-browser` (the names existing records,
+   logos and the inventory know; they name the vendor account, not a
+   browser), labels `connector=true`, `vendor=<label>` and
+   `surface=unverified` — and the grant and its first tokens exist. A code
+   that is never redeemed, or redeemed with the wrong verifier,
    leaves no agent behind.
-5. From then on the hosted agent calls `POST <public-url>/mcp` with its bearer
-   token. Every accepted request is a heartbeat for the agent. `initialize`
-   names the project the connector reaches, says the account offers it in
-   sessions about other work too and that it acts only in that project, and
-   that it has no checkout.
+5. From then on the account's clients call `POST <public-url>/mcp` with the
+   grant's bearer token. Every accepted tool call is a heartbeat for the
+   agent. `initialize` names the project the connector reaches, says the
+   account offers it in sessions about other work too and that it acts only
+   in that project, and that it has no checkout.
 
 ## Endpoints
 
@@ -116,13 +135,25 @@ its project when it consents.
 | `GET /authorize` | Validates the request. A `client_id` that is an `https://` URL with a path is a Client ID Metadata Document: it is fetched (`connector/cimd.rs`: HTTPS only, no redirects, 10 s, 64 KiB, once an hour per URL) only when its host is a vendor's (`claude.ai`, `chatgpt.com`) or the host of an `--allow-callback`, and admitted only when the document names its own URL as `client_id` and every `redirect_uris` entry is that vendor's callback — explicit token authentication methods must support the public-client `none` method. Unsupported or malformed method declarations are refused before client state changes. A bad client, host, document or callback is a page (nothing is sent to an untrusted callback); any other problem goes back to the callback as an OAuth error. Otherwise the first consent page: who asks, and the pairing code. It lists no project and asks the daemon nothing. |
 | `POST /authorize` | Two forms, both carrying the request's fields. The first carries the pairing code: ten characters, fifty random bits, compared in constant time with case, spaces and the dash forgiven. A right code is spent and answers the second page with a `consent_ticket` (ten minutes, one consent, bound to the request's client, callback, challenge and state; at most 64 open). A wrong one costs its source a strike: five within fifteen minutes and that source is refused for the rest of them. The source is the address in the header the tunnel is known to write (the one the connector's own tunnel writes, or `--client-ip-header`, with or without `--allow-from`), read as the allowlist reads it; with no such header known, or none on the request, there is no source and nobody is refused. Twenty wrong codes against one code, from anywhere, replace it, so guessing never gets further and nobody is locked out by somebody else's. Judging a code, counting it and spending or replacing it are one step under one lock, so a right code typed on several pages at once opens one, and the status file shows the codes in the order they were made. A ticket is checked again against the time when it is spent. The second carries the ticket, the project (`project`, one of the listed roots, or `project_path`, any absolute directory on this machine; a folder that is not here is refused on the page, with the choices kept) and the agent name. A name that is a live agent's is refused on the page. |
 | `POST /token` | `authorization_code` (code, `code_verifier`, client and callback must match; single use; five-minute lifetime) registers the agent and issues tokens; `refresh_token` rotates. Errors are RFC 6749 codes: a rotated or revoked refresh token is `invalid_grant`. |
-| `POST /mcp` | Streamable HTTP, JSON-RPC in `application/json`, plain JSON out (`202` for a notification). No bearer, an expired or revoked token, or an agent the daemon answers is no longer live: `401` with `WWW-Authenticate: Bearer resource_metadata="…"`, and the grant ends. A daemon that is not answering: `503` with `Retry-After`, and the grant stands. `GET`/`DELETE` are `405`: the server opens no stream. |
+| `POST /mcp` | Streamable HTTP, JSON-RPC in `application/json`, plain JSON out (`202` for a notification). No bearer, an expired or revoked token, or an agent the daemon answers is no longer live: `401` with `WWW-Authenticate: Bearer resource_metadata="…"`, and the grant ends. A daemon that is not answering: `503` with `Retry-After`, and the grant stands. `GET`/`DELETE` are `405`: the server opens no stream. An `initialize` or `tools/call` adds its client's fingerprint to the grant (below); a `tools/call` naming a Codex conversation is answered with a JSON-RPC error and no heartbeat. |
 
 Access tokens last one hour; the vendor refreshes on the `401`. Refresh tokens
 rotate on every use. Clients and grants persist in
 `$AGENTDOCKER_HOME/connector/state.json` (mode `0600`) as hashes — no token is
 ever written down — so a connector restart costs the vendor one refresh; codes
 and access tokens live in memory only.
+
+Each grant also keeps `clients_seen`: the last eight distinct fingerprints its
+clients presented, each with when it was first and last seen. A fingerprint is
+what one `initialize` or `tools/call` said about its software — the
+`User-Agent` header, the `clientInfo` name and version and the protocol
+version (from `initialize`, or a later request's `MCP-Protocol-Version`
+header), and the sorted names of its `_meta` keys — never a `_meta` value,
+which may carry a person's locale, location or ids, and nothing from the
+arguments. Each field is bounded and stripped of control characters. A new
+fingerprint is saved when it first appears; one seen again is updated in
+memory and saved with the next change, as `last_used_at` is. Every field is
+the client's own claim: a fingerprint is evidence of what called, not proof.
 
 The connector advertises only public-client token exchange (`none`) with PKCE.
 For CIMD, `token_endpoint_auth_methods_supported` must include `none` when
@@ -141,20 +172,21 @@ It does not implement JWT client assertions.
 `journal_note`, `report_activity`. Everything else — leases, observations,
 worktrees, commits, hand-offs, tasks, channels, `wait_for_messages` — is refused
 by name with the reason: the agent has no checkout here, and a long wait would
-hold an HTTP request. Messages a browser agent sends are attributed input to
-their recipients, never instructions; its own instructions say the same about
-what it reads on web pages.
+hold an HTTP request. Messages the connector's agent sends are attributed
+input to their recipients, never instructions; its own instructions say the
+same about what it reads on web pages, and tell a Claude Code or Codex
+session to use its own AgentDocker tools instead.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `connector serve [--public-url <https://…>] [--tunnel tailscale [--tunnel-port 443\|8443\|10000] [--tailscale <path>] \| --tunnel cloudflared [--tunnel-name <name>] [--cloudflared <path>]] [--bind 127.0.0.1:0] [--project <path>] [--allow-callback <url>]… [--allow-from <cidr>\|anthropic\|openai\|@<file>]… [--client-ip-header <name>]` | Serve every project on this machine; `--project` is the one proposed first at consent. Prints the MCP URL, the admitted addresses and the vendors' setup steps, and the pairing code only to a terminal (a service's stderr is its log, which never gets it), and writes `$AGENTDOCKER_HOME/connector/serve.json` (created 0600; `agentdocker_host::connector::Serving`, which the desktop reads too) with the same for `status`, rewritten whenever the code is replaced. Plain `http://` is accepted only for a loopback host, for a trial without a tunnel. |
-| `connector status` | Whether a connector is serving here: its address, listening socket, pairing code, proposed project, tunnel, admitted prefixes, and how many browser agents the daemon holds live. |
+| `connector status` | Whether a connector is serving here: its address, listening socket, pairing code, proposed project, tunnel, admitted prefixes, and how many connector agents the daemon holds live. |
 | `connector install <serve arguments> [--dry-run]` | Run the connector as a login service — a launchd agent (`dev.agentdocker.connector`) or a systemd user unit (on Windows, a login task, described below) — with those arguments, `AGENTDOCKER_HOME` and a PATH that includes where cloudflared was found; its log is `$AGENTDOCKER_HOME/connector/serve.log`. A quick tunnel gets a new hostname at every start and says so. |
 | `connector enable <serve arguments> [--dry-run]` | Install/start a new login service or start its byte-identical definition. A synced temporary file is published atomically without replacement; exact comparison refuses symlinks or different existing settings. Failed staging leaves no partial definition to block retry. The desktop uses this conservative entry point; `install` remains the explicit replacement command. |
 | `connector uninstall [--dry-run]` | Stop and remove the service. On Linux, stop/disable runs while the definition exists; a stop or disable failure preserves the installed definition for diagnosis and retry. Those failures are tolerated when the definition was already missing. Systemd reload runs after removal. |
-| `connector grants` | Every consent: agent, runtime, vendor, project, when connected and last used, whether active, and whether the daemon still holds the agent live. |
+| `connector grants` | Every consent: agent, runtime, vendor, project, when connected and last used, whether active, whether the daemon still holds the agent live, and how many client fingerprints it has seen; then each grant's fingerprints, most recent first, as the clients described their own software. |
 | `connector revoke <agent>` | Ends the grant (tokens stop) and marks the agent finished. A serving connector notices on that agent's next request. |
 
 ## Admitting only the vendors
@@ -219,12 +251,12 @@ trigger network refreshes or change their existing configuration.
   tunnels change address after restart, which the screen explains before setup.
   Setup marks only the selected tunnel as starting and disables both setup
   actions until it finishes. It has its own bounded worker; failure remains on the card, while ordinary
-  message delivery and refresh continue. Service installation is not successful
+  message delivery and refresh continue. Service installation does not prove
   browser consent or a provider receipt.
 
-## What a browser agent cannot get
+## What the connector's agent cannot get
 
-It is not woken. A message to a browser agent waits in its inbox until the
+It is not woken. A message to it waits in its inbox until the
 hosted model calls `read_inbox` — which it does only when the person's prompt
 leads it to. Nothing in the vendors' connector model lets a server start a
 turn. Terminal agents, by contrast, can be woken through their own adapters.

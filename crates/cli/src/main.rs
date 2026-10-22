@@ -10,6 +10,7 @@ mod connector;
 mod desktop;
 mod emission;
 mod format;
+mod gate;
 mod hooks;
 mod input_status;
 mod mcp;
@@ -467,6 +468,10 @@ enum Command {
         /// What you want to say.
         note: Option<String>,
     },
+    /// Give your verdict on a branch at the commit you read. An approval counts at the gate for the roles you hold; any later commit makes it stale.
+    Verdict(gate::VerdictArgs),
+    /// Whether a pull request or branch may land: approved at its head as it is now. Exits 1 when not.
+    Gate(gate::GateArgs),
     /// The agent tools installed on this machine — CLI, version, apps — and whether AgentDocker is wired into each.
     Runtimes,
     /// Open the desktop app: a native window over the same socket, showing agents, runtimes, the journal, leases and events.
@@ -787,7 +792,7 @@ enum Command {
     Hook(hooks::HookArgs),
     /// Serve AgentDocker's tools to an MCP host (Claude Code, Codex, Cursor...) over stdio.
     Mcp(mcp::McpArgs),
-    /// Let agents that work inside a browser (Claude's or ChatGPT's extension) join a project's messaging, through a tunnel you run.
+    /// Let clients of your Claude or ChatGPT account (its browser side panel, its apps, a terminal reaching its connectors) join a project's messaging, through a tunnel you run.
     Connector(connector::ConnectorArgs),
     /// Supervised Codex input controller (launched by run --codex-input).
     #[command(hide = true)]
@@ -2454,9 +2459,7 @@ async fn run() -> Result<()> {
             if input_details {
                 let now = chrono::Utc::now();
                 for agent in &agents {
-                    let blocked = agentdocker_core::provider_block(agent, sources)
-                        .and_then(|(_, state)| state.issue.as_ref())
-                        .map(|issue| issue.kind);
+                    let blocked = agentdocker_core::readiness::provider_issue(agent, sources);
                     if let Some(issue) =
                         agentdocker_core::RecipientReadiness::for_agent(agent, now, blocked)
                     {
@@ -3265,6 +3268,7 @@ async fn run() -> Result<()> {
                         blocked_by: replace(blocked_by, no_blocked_by),
                         tags: replace(tags, no_tags),
                         plan,
+                        expected_updated_at: None,
                     };
                     if let Response::Task { task } = client.call(&request).await? {
                         println!("{}", card_line(&task));
@@ -3784,6 +3788,12 @@ async fn run() -> Result<()> {
             };
             if let Response::Channel { channel } = client.call(&request).await? {
                 print_reviews(&client, &channel).await?;
+            }
+        }
+        Command::Verdict(args) => gate::verdict(&client, args).await?,
+        Command::Gate(args) => {
+            if !gate::gate(&client, args).await? {
+                std::process::exit(1);
             }
         }
         Command::Runtimes => {
@@ -5407,17 +5417,9 @@ fn print_agents(
                 },
                 if a.spec.runtime == agentdocker_core::HUMAN_RUNTIME {
                     "App inbox".into()
-                } else if let Some((_, state)) = agentdocker_core::provider_block(a, input_sources)
-                {
-                    state
-                        .issue
-                        .as_ref()
-                        .expect("provider block")
-                        .kind
-                        .label()
-                        .into()
                 } else {
-                    agentdocker_core::InputReadiness::for_agent(a, chrono::Utc::now())
+                    agentdocker_core::readiness::decide_among(a, input_sources, chrono::Utc::now())
+                        .state
                         .label()
                         .into()
                 },

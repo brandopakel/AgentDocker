@@ -63,11 +63,12 @@ impl Daemon {
                 {
                     return Response::error(ErrorCode::Invalid, "agent is not running");
                 }
-                // The sweep may have folded the resolved record into its
-                // session's record since (during `localise`, or between
-                // attempts before any place was taken): a lease granted to
-                // the retired id would be one its session's releases never
-                // find. Claim as the record that stays.
+                // A session's return may have folded the resolved record
+                // into the record its session ended with since (during
+                // `localise`, or between attempts before any place was
+                // taken): a lease granted to the retired id would be one its
+                // session's releases never find. Claim as the record that
+                // stays.
                 if let Some(current) = state.registry.get(&holder).map(|a| a.id.clone())
                     && current != holder
                 {

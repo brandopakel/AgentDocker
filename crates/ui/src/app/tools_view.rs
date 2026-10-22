@@ -13,6 +13,7 @@ use super::view::{
 };
 use super::*;
 use crate::controls::{Kind, button as action, custom, ghost, input, primary, segment};
+use agentdocker_core::readiness::State;
 use agentdocker_core::runtime::Wiring;
 use iced::{
     Border, Center, Element, Fill, Font, Length, Padding,
@@ -412,17 +413,6 @@ fn wiring_word(wiring: Wiring, c: Colors) -> (&'static str, iced::Color) {
     }
 }
 
-/// The tone that goes with a session's input readiness.
-pub(super) fn readiness_tone(word: &str, c: Colors) -> iced::Color {
-    match word {
-        "Receiving messages" | "Ready for messages" => c.green,
-        "Sent · waiting for the agent to take it" => c.accent,
-        "Messages may wait for its next prompt" => c.cyan,
-        "Session ended" | "Readiness unavailable" => c.faint,
-        _ => c.amber,
-    }
-}
-
 /// The colour a terminal palette draws its prompt in: its yellow, the
 /// bright one on a dark ground.
 fn prompt_ink(palette: &crate::theme::Palette) -> iced::Color {
@@ -457,30 +447,26 @@ impl App {
             .iter()
             .filter(|agent| agent.spec.runtime == runtime.name && self.live_session(agent))
             .collect();
+        // Each session's readiness is the one decision; the tool's word
+        // sums them up.
+        let states: Vec<_> = sessions
+            .iter()
+            .map(|agent| self.readiness_decision(agent).state)
+            .collect();
         let ready = self.connected.is_ok()
-            && sessions.iter().any(|agent| {
-                agent.input_delivery.as_ref().is_some_and(|delivery| {
-                    delivery.current_for(agent.process_started_at, Utc::now())
-                })
-            });
+            && states
+                .iter()
+                .any(|state| matches!(state, State::Ready { .. }));
         let missing =
             installed && (runtime.mcp == Wiring::Missing || runtime.hooks == Wiring::Missing);
-        // A session with a receiver that is paused, or whose report has
-        // gone stale, is not one whose input waits for a prompt: it is
-        // one whose route needs attention, and it says which.
-        let paused = sessions.iter().any(|agent| {
-            agent
-                .input_delivery
-                .as_ref()
-                .is_some_and(|delivery| delivery.paused_for(agent.process_started_at))
-        });
-        let stale = !paused
-            && sessions.iter().any(|agent| {
-                agent.input_delivery.as_ref().is_some_and(|delivery| {
-                    agent.process_started_at == Some(delivery.process_started_at)
-                        && !delivery.current_for(agent.process_started_at, Utc::now())
-                })
-            });
+        // A session whose delivery is held — its receiver paused, or its
+        // provider blocked, which pauses it — or whose receiver has gone
+        // quiet is not one whose input waits for a prompt: it is one whose
+        // route needs attention, and it says which.
+        let paused = states
+            .iter()
+            .any(|state| matches!(state, State::Paused | State::ProviderBlocked(_)));
+        let stale = !paused && states.contains(&State::Silent);
         // Keep the overview compact; individual sessions and receipts
         // remain in Details. Saved configuration is not contact evidence.
         // "Needs setup" says what: a release can require a hook event
@@ -951,8 +937,8 @@ impl App {
                             .width(Fill),
                         super::view::status_dot(
                             format!("tool-session-readiness-{}", agent.id),
-                            readiness_tone(readiness, c),
-                            readiness,
+                            readiness.tone(c),
+                            readiness.label(),
                             c
                         )
                     ]
@@ -966,10 +952,8 @@ impl App {
                     .wrap()
                 ]
                 .spacing(6);
-                if let Some(guidance) =
-                    super::send_readiness::reconnect(agent, &self.agents, "tools", c)
-                {
-                    entry = entry.push(guidance);
+                if let Some(fix) = self.fix_view(agent, "tools", c) {
+                    entry = entry.push(fix);
                 }
                 sessions = sessions.push(container(entry).padding([10, 12]).width(Fill).style(
                     move |_| container::Style {
@@ -2424,5 +2408,93 @@ mod tests {
             "available": {"version": "0.3.1"}
         }));
         assert_ne!(app.desktop.later.as_deref(), app.desktop.update_available());
+    }
+
+    /// A tool's word sums up its sessions' readiness decisions: a held
+    /// delivery — paused, or a provider block, which pauses it — and a
+    /// receiver gone quiet say so; a ready one says it receives.
+    #[test]
+    fn a_tools_word_sums_up_its_sessions_decisions() {
+        use agentdocker_core::{
+            AdapterContact, AdapterKind, AgentRecord, AgentSpec, AgentStatus, InputDelivery,
+            ProviderAvailability, ProviderIssue, ProviderIssueKind,
+        };
+        let (tx, _commands) = crate::app::queue::channel();
+        let (_sender, rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::bare(tx, rx);
+        app.connected = Ok(());
+        let runtime = RuntimeInfo {
+            name: "codex".into(),
+            vendor: "fixture".into(),
+            label: "Codex".into(),
+            cli: Some("/fixture/codex".into()),
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: Wiring::Wired,
+            hooks: Wiring::Wired,
+            hooks_missing: vec![],
+            shell: Wiring::Unsupported,
+            running: 1,
+        };
+        let now = Utc::now();
+        let birth = now - chrono::Duration::minutes(5);
+        let mut agent = AgentRecord::new(
+            AgentSpec {
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            birth,
+        );
+        agent.status = AgentStatus::Running;
+        agent.process_started_at = Some(birth);
+        agent.adapter_contacts.insert(
+            AdapterKind::Mcp,
+            AdapterContact {
+                process_started_at: birth,
+                observed_at: now,
+            },
+        );
+        let word = |app: &mut crate::app::App, agent: &AgentRecord| {
+            app.agents = vec![agent.clone()];
+            app.tool_state(&runtime, Colors::new(false)).word
+        };
+        assert_eq!(
+            word(&mut app, &agent),
+            "Connected · messages wait for its next prompt"
+        );
+        let delivery = |paused: bool, reported_at| InputDelivery {
+            process_started_at: birth,
+            paused,
+            pause_reason: None,
+            reported_at,
+            received: None,
+            received_at: None,
+        };
+        agent.input_delivery = Some(delivery(false, now));
+        assert_eq!(word(&mut app, &agent), "Receiving messages");
+        agent.provider_availability = Some(ProviderAvailability {
+            process_started_at: birth,
+            observed_at: now,
+            issue: Some(ProviderIssue::local(ProviderIssueKind::Usage)),
+            cleared_observation: None,
+            retries: 0,
+        });
+        assert_eq!(
+            word(&mut app, &agent),
+            "Connected · messages paused",
+            "a provider block holds delivery whatever the receiver says"
+        );
+        agent.provider_availability = None;
+        agent.input_delivery = Some(delivery(true, now));
+        assert_eq!(word(&mut app, &agent), "Connected · messages paused");
+        agent.input_delivery = Some(delivery(false, birth));
+        assert_eq!(
+            word(&mut app, &agent),
+            "Connected · not heard from recently"
+        );
     }
 }

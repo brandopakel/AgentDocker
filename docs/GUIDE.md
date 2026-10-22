@@ -161,9 +161,15 @@ is the one the vendors give hosted agents: a remote MCP connector.
 per machine, for every project on it — exposes it through Tailscale Funnel on
 this machine's own stable `*.ts.net` name (`--tunnel cloudflared` for a quick
 tunnel instead), prints the URL to add as a custom connector in Claude or
-ChatGPT and a pairing code for the consent page, and each consent becomes a
-browser agent in the project chosen on that page (any folder on this machine)
-with the messaging tools and nothing that touches a checkout. It stays
+ChatGPT and a pairing code for the consent page, and each consent becomes an
+agent in the project chosen on that page (any folder on this machine) with the
+messaging tools and nothing that touches a checkout. The connector belongs to
+your account, so any client of it — the side panel, the web or desktop app, a
+terminal reaching your account's connectors — comes in as that agent, and
+nothing tells them apart: it is named `claude-connector-xxxx` or
+`chatgpt-connector-xxxx`, never called a browser, and `connector grants` shows
+what each client said it was. A call from a Codex session is refused with the
+way to AgentDocker's own MCP server, which Codex uses as itself. It stays
 registered until revoked but counts as connected only while it is heard from:
 an hour after its last tool call, `ps` and the desktop show it `not connected`
 until it calls one again. `connector
@@ -461,7 +467,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); `--input-details` adds reconnect guidance |
+| `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); `--input-details` adds the one fix for each session that cannot take messages now |
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is doing: working, idle, or blocked on a named resource |
 | `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour`), each count with its coverage (`~` where some samples did not say, `—` where none did), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on, and AgentDocker's emitted-byte overhead with partial coverage, or *not measured* without matching records; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
@@ -509,16 +515,25 @@ each one by pid.
 
 A successful `send` prints the message ID on stdout. Acceptance and recipient
 warnings go to stderr: a queued message can still be waiting for another prompt
-in a session without an input receiver. `agentdocker ps --input-details` names
-these sessions and gives reconnect guidance; it does not restart them. Provider
-limits remain separate from receiver health. When the daemon does not report readiness, `send` prints `recipient input readiness unavailable from this daemon` rather than imply that every recipient can wake.
+in a session without an input receiver. Each warning names where the session
+stands and the one thing that would get it taking messages — the same fix
+`agentdocker ps --input-details`, the INPUT column's words and the desktop
+give: a Claude Code session's resume command (`agentdocker reconnect <id>` for
+one AgentDocker started, which a plain resume could not bring back under its
+record), `agentdocker setup <runtime>`
+first for a session nothing of which ever reached AgentDocker, `codex resume`
+with its conversation (only for a Codex started in a terminal), a live Codex from Launch agent, waiting out a provider
+limit, reviewing a paused delivery, or the agent's own read of its inbox. None
+of them restarts anything. Provider limits remain separate from receiver
+health. When the daemon does not report readiness, `send` prints `recipient input readiness unavailable from this daemon` rather than imply that every recipient can wake.
 
 For an existing Claude session with no channel, save the current work, exit that
-Claude session, and either press **Reconnect here** in the app's session Details,
+Claude session, and either press **Reconnect here** on its row or in the app's
+session Details,
 run `agentdocker reconnect <session>` (`--claude <path>` to choose a different
 executable; otherwise the recorded command or `claude` on PATH is used), or use
-the session-specific resume command shown in Delivery
-details or `ps --input-details` from its project folder. The first two bring the
+the session-specific resume command that the session's panel, `send`'s warning
+and `ps --input-details` show, from its project folder. The first two bring the
 session back under its own record with its conversation and the channel — what
 was queued for it stays its own — and refuse with the reason while its process
 is still running, in another checkout, or with somebody attached; the app opens
@@ -539,7 +554,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `renew` / `release` | Extend or give up a lease you hold |
 | `leases` | Every lease held right now |
 | `waiting` | Claims waiting for a resource, oldest first |
-| `task` | The board of work. `task create "Fix login" --acceptance "SSO works" --lane ready --priority high --size m --due YYYY-MM-DD --tag auth --blocked-by AD-7 --link pr:#<n>` files a card and prints its key (`AD-12`); `--parent`, `--description` and `--blocker "waiting on legal"` say more, and `--board` files it on another board. `task create-many cards.json` files up to 50 at once, all or none, each able to name another of the batch by its `ref` as its parent or in `--blocked-by`. `task pull --as <agent>` takes the next ready card (the first in the board's pull source, free and waiting on nothing; it says how many are held or waiting when there is none), `task pull AD-12 --as <agent>` that card; either holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`). `task move AD-12 review --comment "ready for eyes"` moves it to a lane by slug, name or category (`--after`/`--before` another card places it; an agent moves only a card it holds; back to Ready or to Done ends the hold). `task show AD-12` is the card in full: fields, comments, history, what it waits on. `task update AD-12 --assignee bob --priority low --tag ui` edits it (`--size ""`, `--due ""`, `--parent ""`, `--no-tags`, `--no-blocked-by`, `--no-links` clear). `task comment AD-12 "…" [--reply-to <comment>]`, `task comment-edit <comment> "…"`, `task comment-delete <comment>`. `task archive AD-12`, `task unarchive AD-12`, `task archive-lane done`. `task boards`, `task board-create Sprint --template agents` (classic, agents or simple), `task board-update sprint --lanes lanes.json --pull-source approved`. `task search "logn page"` finds cards by words, slips forgiven, a key exactly. `task start AD-12 --runtime codex` starts an agent on a card nobody holds that waits on nothing, and hands it the card. `task rules`, `task rule-add "Stale review" --idle review --days 14 --comment "Still waiting?"` (or `--enter LANE`; `--move LANE`, `--archive`, `--start RUNTIME [--max N]`), `task rule-off|rule-on|rule-rm <id>`. `task tags`, `task tag ui --color teal [--rename frontend]`, `task tag-rm ui`; `--plan` on `create` and `update` names the plan a card carries out. `task list [--board B] [--lane L] [--assignee me --as <agent>\|none] [--open] [--query words] [--tag T] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts) |
+| `task` | The board of work. `task create "Fix login" --acceptance "SSO works" --lane ready --priority high --size m --due YYYY-MM-DD --tag auth --blocked-by AD-7 --link pr:#<n>` files a card and prints its key (`AD-12`); `--parent`, `--description` and `--blocker "waiting on legal"` say more, and `--board` files it on another board. `task create-many cards.json` files up to 50 at once, all or none, each able to name another of the batch by its `ref` as its parent or in `--blocked-by`. `task pull --as <agent>` takes the next ready card (the first in the board's pull source, free and waiting on nothing; it says how many are held or waiting when there is none), `task pull AD-12 --as <agent>` that card; either holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`). `task move AD-12 review --comment "ready for eyes"` moves it to a lane by slug, name or category (`--after`/`--before` another card places it; an agent moves only a card it holds; back to Ready or to Done ends the hold). `task show AD-12` is the card in full: fields, comments, history, what it waits on. `task update AD-12 --assignee bob --priority low --tag ui` edits it (`--size ""`, `--due ""`, `--parent ""`, `--no-tags`, `--no-blocked-by`, `--no-links` clear). `task comment AD-12 "…" [--reply-to <comment>]`, `task comment-edit <comment> "…"`, `task comment-delete <comment>`. `task archive AD-12`, `task unarchive AD-12`, `task archive-lane done`. `task boards`, `task board-create Sprint --template agents` (classic, agents or simple), `task board-update sprint --lanes lanes.json --pull-source approved`. `task search "logn page"` finds cards by words, slips forgiven, a key exactly. `task start AD-12 --runtime codex` starts an agent on a card nobody holds that waits on nothing, and hands it the card. `task rules`, `task rule-add "Stale review" --idle review --days 14 --comment "Still waiting?"` (or `--enter LANE`; `--move LANE`, `--archive`, `--start RUNTIME [--max N]`), `task rule-off\|rule-on\|rule-rm <id>`. `task tags`, `task tag ui --color teal [--rename frontend]`, `task tag-rm ui`; `--plan` on `create` and `update` names the plan a card carries out. `task list [--board B] [--lane L] [--assignee me --as <agent>\|none] [--open] [--query words] [--tag T] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts) |
 | `plan` | A project's plans, specs in Markdown that cards carry out: `plan list [--all]`, `plan show <id>`, `plan new "Auth rewrite" --body spec.md` (or `-` for stdin), `plan edit <id> [--title …] [--body FILE] [--status draft\|active\|done\|archived]` |
 | `file` | A project's files, kept beside the work: `file list [--task AD-12]`, `file put notes.md [--task AD-12] [--name …]` (at most 4 MiB; the same name again is a new version), `file get <id> [--out PATH]`, `file link <id> AD-12 [--unlink]`, `file rm <id>` |
 | `pause` | `agentdocker pause "sleeping the laptop"` tells every agent in this directory's project to hold: they get the reason as a `pause` message and their new leases are refused until `agentdocker pause --lift`; `--project` names another project; `pause --list` lists what is paused and why |
@@ -584,6 +599,8 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one |
 | `review-request` / `review` | Ask for and give verdicts; requested changes block |
+| `verdict <branch> --head <commit> --approve\|--changes\|--comment [--from <commit>] [--findings P1,P2,P3] [note]` | Give your verdict on a branch at the commit you read; it counts for the roles you hold, and only for that commit |
+| `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: approved at its head as it is now (exit 0), else changes asked, stale (commits since the approval) or unreviewed (exit 1). `--publish` sets the `agentdocker/review` commit status on GitHub |
 | `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first |
 
 ### Containers
@@ -608,7 +625,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `cancel-question` | Close a question you asked; messages and answers are retained |
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
-| `connector serve` / `status` / `install` / `enable` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
+| `connector serve` / `status` / `install` / `enable` / `uninstall` / `grants` / `revoke` | Let the clients of your Claude or ChatGPT account join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
 
 On Windows, Ctrl-] also works when the nested console uses Win32 keyboard events; other keys keep their normal meaning.
 
@@ -673,7 +690,7 @@ about us:
 `list_handoffs`
 
 `open_channel` · `list_channels` · `close_channel` · `request_review` ·
-`review`
+`review` · `review_verdict` · `review_gate`
 
 `contests` · `enter_contest` · `submit_entry`
 
@@ -868,6 +885,15 @@ Current behaviour that the sections above do not already state, by area.
 
 ### Board, plans and files
 
+- **A review counts for the commit it read.** A reviewer gives its verdict
+  on a branch at the exact commit it read (`agentdocker verdict`, or the
+  `review_verdict` tool), and `agentdocker gate <PR|branch>` says whether
+  the branch may land now: approved only at that commit. Any later commit,
+  a merge of main included, makes the approval stale until the reviewer
+  reads what came after. Whose word counts is a role you give
+  (`reviewer` by default); `--publish` also sets it as a GitHub commit
+  status that branch protection can require.
+
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or
   has sat there some days (`task rule-add`, the board's settings). A
@@ -930,9 +956,9 @@ Current behaviour that the sections above do not already state, by area.
   project. `list_agents` and the session-start note do not name agents in
   other projects. You can still message anyone anywhere.
 
-- The Messages workspace: **+** for a new direct message or channel,
-  invitations, `@` mentions with counts, Enter to send, resizable panes,
-  an Earlier group for ended sessions' conversations.
+- The Messages workspace: **+** for a new direct message, `@` mentions
+  with counts, Enter to send, resizable panes, an Earlier group for ended
+  sessions' conversations.
 
 - Needs you holds only questions waiting on you, each naming its project. A
   session that is blocked, not receiving messages or ended with messages
@@ -1256,16 +1282,18 @@ Current behaviour that the sections above do not already state, by area.
 
 - The remote connector: `agentdocker connector serve --public-url <https://…>`
   serves an OAuth-protected MCP endpoint on loopback for a tunnel you run, so
-  Claude's or ChatGPT's browser side panel can join a project as a browser
-  agent — registered when its code is redeemed, after the pairing code from
-  the terminal is typed on the consent page — with the messaging tools only.
-  `connector grants` lists consents, `connector revoke <agent>` ends one.
+  the clients of a Claude or ChatGPT account (the browser side panel, the
+  apps, a terminal reaching the account's connectors) can join a project as
+  one agent per consent — registered when its code is redeemed, after the
+  pairing code from the terminal is typed on the consent page — with the
+  messaging tools only. `connector grants` lists consents and what each
+  client said about its software, `connector revoke <agent>` ends one.
   `--tunnel tailscale` exposes it through Tailscale Funnel on this machine's
   own stable name and `--tunnel cloudflared` starts a quick tunnel;
   `connector install` runs it as a login service, `connector status` shows
   its address and pairing code, and `--allow-from` admits only the vendors'
   published addresses. One connector serves every project on the machine:
-  the consent page chooses the project a browser agent joins, and its
+  the consent page chooses the project the agent joins, and its
   `project` broadcast names that project, wherever the connector runs. A
   vendor may identify itself by its Client ID Metadata Document instead of
   registering (fetched only from the vendors' hosts); the desktop's Tools

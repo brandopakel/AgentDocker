@@ -619,8 +619,10 @@ one status line under the composer with a quiet **Details** link (spoken
 *Delivery details*); expanded details scroll within a
 180-point area and show named recipients plus explicit open/copy controls. The
 snapshot is not persisted and never changes message acknowledgement, provider
-consent or queue order. Expanded session/tool details compute current guidance
-from the same provider-block and receiver-evidence rules.
+consent or queue order. Expanded session/tool details, the readiness dots and
+the Tools overview render the one readiness decision
+(`agentdocker_core::readiness::decide`): its words, a tone by its state, and
+one action for its one fix.
 
 ## Keyboard and native accessibility
 

@@ -109,9 +109,9 @@ fn select(
         })
         .collect();
     // One provider session the daemon still holds twice (a hook from a
-    // moved shell registered it again; the daemon folds the second into the
-    // first when nothing would be lost) is one caller: the record that
-    // stays speaks for it, as it answers the session's registrations.
+    // moved shell once registered it again, and nothing folds the second
+    // while both live) is one caller: the record that stays speaks for it,
+    // as it answers the session's registrations.
     if let [first, rest @ ..] = records.as_slice()
         && !rest.is_empty()
         && rest

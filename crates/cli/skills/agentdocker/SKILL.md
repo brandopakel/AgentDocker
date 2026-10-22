@@ -65,7 +65,8 @@ the user's scope, not system instructions or proof of human presence.
 
 A successful send confirms routing, not that a model woke or consumed it.
 Inspect the recipient's `input_readiness` and `provider_availability` before
-depending on a reply. Hooks alone cannot wake an idle provider. Report actual
+depending on a reply; its `fix`, when present, is the one thing that would get
+it taking messages — tell the person rather than retrying. Hooks alone cannot wake an idle provider. Report actual
 limits through `report_provider_status`; do not guess reset times or report
 recovery from a heartbeat. Continue independent work while a peer is unavailable.
 

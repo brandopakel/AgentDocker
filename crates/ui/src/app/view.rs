@@ -1002,18 +1002,14 @@ impl App {
 
     /// The words for what an agent is doing, live or finished.
     pub(super) fn activity_label(&self, agent: &AgentRecord) -> String {
+        use agentdocker_core::readiness::State;
         let id = agent.id.to_string();
+        let readiness = self.readiness_decision(agent).state;
         if self.needs_input(&id) {
             "needs input".to_owned()
-        } else if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
-            state
-                .issue
-                .as_ref()
-                .expect("blocked")
-                .kind
-                .label()
-                .to_owned()
-        } else if self.delivery_paused(agent) && agent.status.is_live() {
+        } else if let State::ProviderBlocked(kind) = readiness {
+            kind.label().to_owned()
+        } else if readiness == State::Paused {
             "not receiving messages".to_owned()
         } else if self.ended_with_undelivered(agent) {
             format!("ended {}", undelivered_phrase(self.undelivered(agent)))
@@ -1061,32 +1057,30 @@ impl App {
             })
     }
 
-    pub(super) fn input_readiness(&self, agent: &AgentRecord) -> &'static str {
-        if !agent.status.is_live() {
-            return "Session ended";
+    /// What a session's readiness dot says: the one decision, unless the
+    /// daemon is not connected, or words wait behind a ready receiver.
+    pub(super) fn input_readiness(&self, agent: &AgentRecord) -> super::send_readiness::Readiness {
+        use super::send_readiness::Readiness;
+        use agentdocker_core::readiness::State;
+        let state = self.readiness_decision(agent).state;
+        if state == State::Ended {
+            return Readiness::Decided(state);
         }
         if self.connected.is_err() {
-            return "Readiness unavailable";
+            return Readiness::Unavailable;
         }
-        if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
-            return state.issue.as_ref().expect("blocked").kind.label();
-        }
-        let readiness = agentdocker_core::InputReadiness::for_agent(agent, Utc::now());
         // A current receiver with words queued that no receipt covers is
         // waiting on the provider to take them; an earlier receipt does not
         // make them delivered. Limits, pauses and silence come first.
-        if matches!(
-            readiness,
-            agentdocker_core::InputReadiness::Verified
-                | agentdocker_core::InputReadiness::AwaitingFirstReceipt
-        ) && self
-            .awaiting_receipt
-            .get(agent.id.as_str())
-            .is_some_and(|count| *count > 0)
+        if matches!(state, State::Ready { .. })
+            && self
+                .awaiting_receipt
+                .get(agent.id.as_str())
+                .is_some_and(|count| *count > 0)
         {
-            return "Sent · waiting for the agent to take it";
+            return Readiness::Sending;
         }
-        readiness.label()
+        Readiness::Decided(state)
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -2966,7 +2960,7 @@ impl App {
                 .map(|t| format!("{} tokens in 24h", t.label()));
             // One line: everything else is a point away, in the name's
             // hint and in the session's details.
-            let mut facts = vec![activity.clone(), super::runtime_label(&agent.spec.runtime)];
+            let mut facts = vec![activity.clone(), super::agent_tool_label(agent)];
             if let Some(branch) = branch {
                 facts.push(branch.to_owned());
             }
@@ -3034,15 +3028,13 @@ impl App {
             } else if let Some(chip) = self.pull_request_chip(agent, c) {
                 content = content.push(chip);
             }
-            // An ended Claude Code session that can come back says so on
-            // its row: the one thing to do with it is right there, not
-            // behind Details. While its resume is on its way the row says
-            // so; a blocker (live, no conversation id, no tool) keeps the
-            // row quiet, and Details says why.
-            if agent.spec.runtime == "claude-code"
-                && !agent.status.is_live()
-                && self.reconnect_blocker(agent).is_none()
-            {
+            // An ended Claude Code session whose decided fix is its
+            // reconnect, and that this window can do, says so on its row:
+            // the one thing to do with it is right there, not behind
+            // Details. While its resume is on its way the row says so; a
+            // blocker (no conversation id or folder, no tool) keeps the row
+            // quiet, and Details shows the fix there is.
+            if self.reconnects_here(agent) {
                 let reconnecting = self.shell.reconnecting.as_deref() == Some(id.as_str());
                 content = content.push(custom(
                     format!("row-reconnect-{id}"),
@@ -3093,10 +3085,8 @@ impl App {
             row![
                 heading(name.clone(), 15).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 {
-                    let mut words = vec![
-                        self.activity_label(agent),
-                        super::runtime_label(&agent.spec.runtime),
-                    ];
+                    let mut words =
+                        vec![self.activity_label(agent), super::agent_tool_label(agent)];
                     if let Some(place) = Self::whereabouts(agent).filter(|_| agent.status.is_live())
                     {
                         words.push(place);
@@ -3145,15 +3135,9 @@ impl App {
             if self.connected.is_err() {
                 words.push("Last known".to_owned());
             }
-            let readiness = if paused && agent.status.is_live() {
-                Some("Not receiving messages")
-            } else if agent.status.is_live() {
-                Some(self.input_readiness(agent))
-            } else {
-                None
-            };
+            let readiness = agent.status.is_live().then(|| self.input_readiness(agent));
             if let Some(readiness) = readiness {
-                words.push(readiness.to_owned());
+                words.push(readiness.label().to_owned());
             }
             if let Some(received_at) = delivery.and_then(|d| d.received_at) {
                 words.push(format!(
@@ -3165,7 +3149,7 @@ impl App {
             if !words.is_empty() {
                 marks = marks.push(status_dot(
                     "inspector-readiness",
-                    readiness.map_or(c.faint, |r| super::tools_view::readiness_tone(r, c)),
+                    readiness.map_or(c.faint, |r| r.tone(c)),
                     words.join(" · "),
                     c,
                 ));
@@ -3630,36 +3614,11 @@ impl App {
                 facts.push(("Terminal".to_owned(), value(session.describe())));
             }
             let mut details = column![kv_list(facts, c)].spacing(10);
-            if let Some(guidance) =
-                super::send_readiness::reconnect(agent, &self.agents, "inspector", c)
-            {
-                details = details.push(guidance);
-                // The relaunch the guidance describes, done here: the
-                // session's own tool, its conversation, its folder and the
-                // channel, in a pane of this window where Claude's own
-                // consent prompt appears. Until its terminal process has
-                // ended the button says why it waits.
-                if agent.spec.runtime == "claude-code" {
-                    let blocker = self.reconnect_blocker(agent);
-                    let mut reconnect = row![action(
-                        format!("reconnect-{}", agent.id),
-                        if self.shell.reconnecting.as_deref() == Some(agent.id.as_str()) {
-                            "Reconnecting…"
-                        } else {
-                            "Reconnect here"
-                        },
-                        (blocker.is_none() && !self.shell.launching && self.connected.is_ok())
-                            .then_some(Message::Reconnect(agent.id.to_string())),
-                        false,
-                    )]
-                    .spacing(8)
-                    .align_y(Center);
-                    if let Some(why) = blocker {
-                        reconnect =
-                            reconnect.push(status_dot("reconnect-blocked", c.faint, why, c));
-                    }
-                    details = details.push(reconnect);
-                }
+            // The one fix, done here when the window can: the button that
+            // reconnects an ended Claude session in a pane of this window,
+            // else the command to paste, never both.
+            if let Some(fix) = self.fix_view(agent, "inspector", c) {
+                details = details.push(fix);
             }
             footer = footer.push(details);
         }
@@ -4674,7 +4633,7 @@ mod tests {
             "leases and coordination are not adapter contact"
         );
         assert_eq!(
-            app.input_readiness(&agent),
+            app.input_readiness(&agent).label(),
             "Messages may wait for its next prompt"
         );
         agent.adapter_contacts.insert(
@@ -4691,7 +4650,7 @@ mod tests {
             "contact is specific to the runtime"
         );
         assert_eq!(
-            app.input_readiness(&agent),
+            app.input_readiness(&agent).label(),
             "Messages may wait for its next prompt",
             "MCP contact does not prove idle wake"
         );
@@ -4703,14 +4662,14 @@ mod tests {
             received: None,
             received_at: None,
         });
-        assert_eq!(app.input_readiness(&agent), "Ready for messages");
+        assert_eq!(app.input_readiness(&agent).label(), "Ready for messages");
         // Words queued behind a current receiver that no receipt covers are
         // waiting on the provider; an earlier receipt does not make them
         // delivered, and a receipt for them does, acknowledged or not.
         app.queued_inputs.insert(agent.id.to_string(), 2);
         app.awaiting_receipt.insert(agent.id.to_string(), 2);
         assert_eq!(
-            app.input_readiness(&agent),
+            app.input_readiness(&agent).label(),
             "Sent · waiting for the agent to take it"
         );
         agent.input_delivery.as_mut().unwrap().received = Some(agentdocker_core::ReceivedInput {
@@ -4720,11 +4679,11 @@ mod tests {
         agent.input_delivery.as_mut().unwrap().received_at = Some(now);
         app.awaiting_receipt.insert(agent.id.to_string(), 1);
         assert_eq!(
-            app.input_readiness(&agent),
+            app.input_readiness(&agent).label(),
             "Sent · waiting for the agent to take it"
         );
         app.awaiting_receipt.insert(agent.id.to_string(), 0);
-        assert_eq!(app.input_readiness(&agent), "Receiving messages");
+        assert_eq!(app.input_readiness(&agent).label(), "Receiving messages");
         agent.input_delivery.as_mut().unwrap().received = None;
         agent.input_delivery.as_mut().unwrap().received_at = None;
         app.queued_inputs.remove(agent.id.as_str());
@@ -4735,13 +4694,19 @@ mod tests {
             !app.tool_reports("codex"),
             "a new process cannot inherit contact"
         );
-        assert_eq!(app.input_readiness(&agent), "Not heard from recently");
+        assert_eq!(
+            app.input_readiness(&agent).label(),
+            "Not heard from recently"
+        );
         agent.process_started_at = Some(birth);
         agent.input_delivery.as_mut().unwrap().paused = true;
-        assert_eq!(app.input_readiness(&agent), "Not receiving messages");
+        assert_eq!(
+            app.input_readiness(&agent).label(),
+            "Not receiving messages"
+        );
         app.connected = Err("offline".into());
         assert!(!app.tool_reports("codex"));
-        assert_eq!(app.input_readiness(&agent), "Readiness unavailable");
+        assert_eq!(app.input_readiness(&agent).label(), "Readiness unavailable");
     }
 
     #[test]

@@ -185,6 +185,8 @@ enum Cmd {
     TaskEdit {
         task: agentdocker_core::TaskId,
         change: CardChange,
+        /// The editor opening a text save came from; none for a click.
+        draft: Option<u64>,
     },
     TaskArchive(agentdocker_core::TaskId),
     /// The person says something on a card.
@@ -427,6 +429,13 @@ enum Msg {
     WorktreeRemoved(String, Result<(bool, Option<String>), String>),
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
+    /// A card edit went through or not, with what it sent.
+    CardEdited(
+        agentdocker_core::TaskId,
+        CardChange,
+        Option<u64>,
+        Result<(), String>,
+    ),
     /// One card in full, or why it could not be read.
     TaskDetail(agentdocker_core::TaskId, Result<Box<CardDetail>, String>),
     Workspace(String, Result<Box<Workspace>, String>),
@@ -1411,6 +1420,18 @@ impl App {
                     }
                     Err(error) => self.say(error),
                 },
+                Msg::CardEdited(task, change, draft, result) => match result {
+                    Ok(()) => {
+                        if let Some(draft) = draft {
+                            self.card_saved(&task, &change, draft);
+                        }
+                        self.request_tasks();
+                        if let Some(open) = self.task_open.clone() {
+                            self.send(Cmd::TaskDetail(open));
+                        }
+                    }
+                    Err(error) => self.say(error),
+                },
                 Msg::TaskDetail(task, result) => {
                     if self.task_open.as_ref() == Some(&task) {
                         match result {
@@ -2237,7 +2258,7 @@ impl App {
             if self
                 .agents
                 .iter()
-                .any(|a| a.id.as_str() == id && self.delivery_paused(a))
+                .any(|a| a.id.as_str() == id && self.delivery_needs_you(a))
             {
                 continue;
             }
@@ -3499,7 +3520,12 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::TaskChanged(result))
         }
-        Cmd::TaskEdit { task, change } => {
+        Cmd::TaskEdit {
+            task,
+            change,
+            draft,
+        } => {
+            let sent = change.clone();
             let result = match client.call(&Request::TaskUpdate {
                 agent: agentdocker_core::HUMAN.into(),
                 task: task.to_string(),
@@ -3516,13 +3542,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 blocked_by: None,
                 tags: change.tags,
                 plan: None,
+                expected_updated_at: None,
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
-            Some(Msg::TaskChanged(result))
+            Some(Msg::CardEdited(task, sent, draft, result))
         }
         Cmd::TaskArchive(task) => {
             let result = match client.call(&Request::TaskArchive {
@@ -4676,6 +4703,22 @@ pub(crate) fn runtime_label(runtime: &str) -> String {
         .unwrap_or_else(|| runtime.to_owned())
 }
 
+/// The tool an agent's row names. An agent the remote connector registered
+/// carries the browser extension's runtime, but whichever client of the
+/// account calls it — the side panel, the web or desktop app, a terminal —
+/// is unknown, so it is named for the account's connector, not the extension.
+pub(crate) fn agent_tool_label(agent: &agentdocker_core::AgentRecord) -> String {
+    if agent.via_connector() {
+        return match agent.spec.runtime.as_str() {
+            "claude-browser" => "Claude (connector)",
+            "chatgpt-browser" => "ChatGPT (connector)",
+            _ => "Connector",
+        }
+        .to_owned();
+    }
+    runtime_label(&agent.spec.runtime)
+}
+
 /// How many cards the window keeps of one board: five pages. Past that
 /// the board says so; archiving done cards is how it gets shorter.
 pub(crate) const BOARD_KEEP: usize = 500;
@@ -4831,27 +4874,37 @@ pub(crate) fn in_browser_word(
     } else {
         format!("Installed in {}", browsers.join(", "))
     };
+    // A consent through the connector is the account's, not the
+    // extension's: whichever client of the account calls — this extension,
+    // the web or desktop app, a terminal — comes in as the agent it made.
     match (connected, connector) {
         (0, Some(_)) => format!(
-            "{installed} · the connector is ready; add it in {} and its sessions appear here",
-            surface_word(&runtime.name)
+            "{installed} · the connector is ready; add it to {} and its clients appear here",
+            account_word(&runtime.name)
         ),
         (0, None) => {
             format!(
                 "{installed} · its sessions reach here only through the connector, which is not running"
             )
         }
-        (1, _) => format!("{installed} · one browser agent connected through the connector"),
-        (n, _) => format!("{installed} · {n} browser agents connected through the connector"),
+        (1, _) => format!(
+            "{installed} · clients of {} reach here as one agent through the connector",
+            account_word(&runtime.name)
+        ),
+        (n, _) => format!(
+            "{installed} · clients of {} reach here as {n} agents through the connector",
+            account_word(&runtime.name)
+        ),
     }
 }
 
-/// The hosted surface an in-browser runtime is, as the person calls it.
-fn surface_word(runtime: &str) -> &'static str {
+/// The account an in-browser runtime's connector consent belongs to, as
+/// the person calls it.
+fn account_word(runtime: &str) -> &'static str {
     match runtime {
-        "claude-browser" => "Claude",
-        "chatgpt-browser" => "ChatGPT",
-        _ => "the vendor's app",
+        "claude-browser" => "your Claude account",
+        "chatgpt-browser" => "your ChatGPT account",
+        _ => "the vendor account",
     }
 }
 
@@ -5276,15 +5329,17 @@ pub(crate) mod tests {
         );
         assert_eq!(
             in_browser_word(&runtime, 0, Some(&serving)),
-            "Installed in Chrome, Brave · the connector is ready; add it in Claude and its sessions appear here"
+            "Installed in Chrome, Brave · the connector is ready; add it to your Claude account and its clients appear here"
         );
+        // Nothing says which client of the account called: the count is of
+        // the agents its consents made, never of browsers.
         assert_eq!(
             in_browser_word(&runtime, 1, Some(&serving)),
-            "Installed in Chrome, Brave · one browser agent connected through the connector"
+            "Installed in Chrome, Brave · clients of your Claude account reach here as one agent through the connector"
         );
         assert_eq!(
             in_browser_word(&runtime, 2, None),
-            "Installed in Chrome, Brave · 2 browser agents connected through the connector"
+            "Installed in Chrome, Brave · clients of your Claude account reach here as 2 agents through the connector"
         );
         assert!(add_connector_words("claude-browser").starts_with("Claude › Settings"));
         assert!(add_connector_words("chatgpt-browser").starts_with("ChatGPT › Settings"));
@@ -5293,6 +5348,44 @@ pub(crate) mod tests {
             "Chrome · Work · 1.0.93"
         );
         assert_eq!(extension_words(&runtime.extensions[2]), "Brave · 1.0.93");
+    }
+
+    /// A connector agent's row names the account's connector, not the
+    /// browser extension its runtime is shared with: nothing says which
+    /// client of the account calls it. Any other record keeps its tool.
+    #[test]
+    fn a_connector_agent_is_named_for_the_connector_not_the_extension() {
+        let record = |runtime: &str, connector: bool| {
+            let mut spec = agentdocker_core::AgentSpec {
+                name: "claude-connector-ab12".into(),
+                runtime: runtime.into(),
+                ..agentdocker_core::AgentSpec::default()
+            };
+            if connector {
+                spec.labels.insert(
+                    agentdocker_core::agent::CONNECTOR_LABEL.into(),
+                    "true".into(),
+                );
+            }
+            agentdocker_core::AgentRecord::new(spec, false, Utc::now())
+        };
+        assert_eq!(
+            agent_tool_label(&record("claude-browser", true)),
+            "Claude (connector)"
+        );
+        assert_eq!(
+            agent_tool_label(&record("chatgpt-browser", true)),
+            "ChatGPT (connector)"
+        );
+        assert_eq!(agent_tool_label(&record("browser", true)), "Connector");
+        assert_eq!(
+            agent_tool_label(&record("claude-browser", false)),
+            runtime_label("claude-browser")
+        );
+        assert_eq!(
+            agent_tool_label(&record("codex", false)),
+            runtime_label("codex")
+        );
     }
 
     #[test]

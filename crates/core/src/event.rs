@@ -201,7 +201,9 @@ pub enum EventKind {
     /// same process birth, runtime, project and session — were made one:
     /// the others were retired into `agent` exactly as a resumed session's
     /// are (queue, documents, observations, aliases), and their ids are
-    /// aliases of it from now on.
+    /// aliases of it from now on. No longer emitted: a session has one
+    /// record from registration, so nothing folds live duplicates. Kept so
+    /// stored events and older clients decode.
     SessionDuplicatesFolded {
         agent: AgentId,
         retired: Vec<AgentId>,
@@ -765,6 +767,14 @@ pub enum EventKind {
         channel: crate::ChannelId,
         by: AgentId,
         of: AgentId,
+        verdict: crate::Verdict,
+    },
+    /// A reviewer gave its word on a branch at the commit it read.
+    CodeVerdictGiven {
+        project: ProjectId,
+        branch: String,
+        head: String,
+        by: AgentId,
         verdict: crate::Verdict,
     },
     /// A journal entry was appended to a project.

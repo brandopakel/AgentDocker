@@ -61,8 +61,8 @@ pub fn same_registration(a: &AgentRecord, b: &AgentRecord) -> bool {
 /// same session and agree on process birth, runtime and project. What a
 /// registration from a moved shell left behind before registrations stopped
 /// comparing the directory between two named sessions. One of them stays
-/// ([`keeper`]); the daemon retires the others into it when nothing would be
-/// lost.
+/// ([`keeper`]): it answers the session's registrations and is the one a
+/// reader shows; the offline identity repair reconciles the others.
 pub fn same_live_session(a: &AgentRecord, b: &AgentRecord) -> bool {
     a.id != b.id
         && a.status.is_live()
@@ -89,30 +89,6 @@ pub fn keeper<'a>(
         )
     };
     records.into_iter().min_by(|a, b| rank(a).cmp(&rank(b)))
-}
-
-/// Why a live duplicate cannot be retired into its keeper, or nothing when it
-/// can: it must be an external local session nobody else runs (not managed,
-/// contained, paned, restorable or restartable) and nothing may deliver input
-/// through it, since a receiver or binding owns the order of what it offered.
-/// A provider usage block it reported must be resolved first, as the offline
-/// repair requires: the fold carries the kept record's availability only.
-/// Leases, waits, subscribers and the queue are the daemon's to check.
-pub fn retirable_duplicate(record: &AgentRecord) -> Result<(), &'static str> {
-    if !resumable(record) {
-        return Err("a managed, remote or restorable record is its owner's to retire");
-    }
-    if receives_input(record) {
-        return Err("input is delivered through this record");
-    }
-    if record
-        .provider_availability
-        .as_ref()
-        .is_some_and(|availability| availability.issue.is_some())
-    {
-        return Err("resolve provider availability before folding this record");
-    }
-    Ok(())
 }
 
 /// An input binding, or a receiver reporting for the record's current
@@ -339,6 +315,38 @@ pub fn relaunch_check(ended: &AgentRecord, launch: &crate::AgentSpec) -> Result<
     Ok(())
 }
 
+/// Whether a terminal that resumes this record's conversation comes back
+/// under it — by its hooks registration ([`resumed_session`]) or a keyed
+/// contact — so that a plain `claude --resume` or `codex resume` takes
+/// back its queue: it names a plain conversation id and works in an
+/// absolute checkout of a project, and nobody else's process runs it (not
+/// supervised, contained, paned, restored or bound). Anything else would
+/// come back as a fresh record beside the one holding the queue.
+pub fn resumes_from_a_terminal(record: &AgentRecord) -> bool {
+    resumable(record)
+        && session_id(record).is_some_and(plain_session_id)
+        && record.project.is_some()
+        && record
+            .spec
+            .workdir
+            .as_ref()
+            .is_some_and(|path| path.is_absolute())
+}
+
+/// Whether the daemon can bring this record back under its own id once it
+/// has ended ([`relaunch_check`]'s conditions on the record itself): a
+/// Claude Code session on this host, outside a container, with no input
+/// binding, a plain conversation id and a checkout to resume in. Managed
+/// or not; that is what `agentdocker reconnect` and Reconnect here do.
+pub fn relaunches_here(record: &AgentRecord) -> bool {
+    record.host == "local"
+        && record.container.is_none()
+        && record.input_binding.is_none()
+        && record.spec.runtime == "claude-code"
+        && session_id(record).is_some_and(plain_session_id)
+        && record.spec.workdir.is_some()
+}
+
 /// A record whose process is nobody else's to run: not supervised,
 /// restored, contained or paned, and on this host.
 fn resumable(record: &AgentRecord) -> bool {
@@ -511,11 +519,10 @@ mod tests {
 
     /// Of one session's records the one a transport holds stays, then one
     /// input is delivered through, then the first registered; order of the
-    /// list never picks it. A record input is delivered through, or one
-    /// somebody else runs, is never the one retired.
+    /// list never picks it.
     #[test]
     fn the_keeper_is_what_delivers_input_or_registered_first() {
-        let mut first = record("b-first", Some("session"));
+        let first = record("b-first", Some("session"));
         let mut second = record("a-second", Some("session"));
         second.created_at = first.created_at + chrono::Duration::minutes(35);
         let ids = |kept: Option<&AgentRecord>| kept.map(|r| r.id.to_string());
@@ -539,29 +546,14 @@ mod tests {
             ids(keeper([&first, &second], |_| false)),
             Some("a-second".into())
         );
-        assert!(retirable_duplicate(&first).is_ok());
-        assert!(retirable_duplicate(&second).is_err());
         // A receiver report from an earlier process of the record does not
         // count: it delivers nothing now.
         second.input_delivery.as_mut().unwrap().process_started_at =
             second.created_at - chrono::Duration::days(1);
-        assert!(retirable_duplicate(&second).is_ok());
         assert_eq!(
             ids(keeper([&first, &second], |_| false)),
             Some("b-first".into())
         );
-        // A usage limit it reported would be lost with it: resolved first.
-        let mut limited = first.clone();
-        limited.provider_availability = Some(crate::ProviderAvailability {
-            process_started_at: limited.process_started_at.unwrap(),
-            observed_at: limited.created_at,
-            issue: Some(crate::ProviderIssue::local(crate::ProviderIssueKind::Usage)),
-            cleared_observation: None,
-            retries: 0,
-        });
-        assert!(retirable_duplicate(&limited).is_err());
-        first.managed = true;
-        assert!(retirable_duplicate(&first).is_err());
         assert!(keeper(std::iter::empty(), |_| false).is_none());
     }
 
@@ -800,5 +792,37 @@ mod tests {
         for bad in ["", "-x", "a b", "a;b", &"x".repeat(129)] {
             assert!(!plain_session_id(bad), "{bad:?}");
         }
+        // What readiness offers follows these checks: the daemon relaunches
+        // exactly the records `relaunch_check` accepts a launch for, managed
+        // ones too, and a plain resumed terminal takes back only a record
+        // nobody else's process runs.
+        let mut supervised = ended.clone();
+        supervised.managed = true;
+        for (record, relaunches) in [
+            (&ended, true),
+            (&supervised, true),
+            (&bound, false),
+            (&nameless, false),
+            (&odd, false),
+            (&other, false),
+        ] {
+            assert_eq!(relaunches_here(record), relaunches, "{}", record.id);
+            assert_eq!(
+                relaunch_check(record, &launch()).is_ok(),
+                relaunches,
+                "{}",
+                record.id
+            );
+        }
+        assert!(resumes_from_a_terminal(&ended));
+        for record in [&supervised, &bound, &nameless, &odd] {
+            assert!(!resumes_from_a_terminal(record), "{}", record.id);
+        }
+        let mut codex = ended.clone();
+        codex.spec.runtime = "codex".into();
+        assert!(resumes_from_a_terminal(&codex), "a terminal Codex too");
+        let mut placeless = ended.clone();
+        placeless.project = None;
+        assert!(!resumes_from_a_terminal(&placeless));
     }
 }

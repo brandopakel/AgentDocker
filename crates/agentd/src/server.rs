@@ -194,6 +194,10 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
             write(&mut writer, &refusal).await?;
             continue;
         }
+        if let Some(refusal) = daemon.authenticate_verdict(peer, &mut request).await {
+            write(&mut writer, &refusal).await?;
+            continue;
+        }
         // Streaming requests own the connection until it closes.
         match request {
             Request::Subscribe { agent, topics } => {

@@ -16,7 +16,7 @@ What each document is for.
 - [Architecture](ARCHITECTURE.md) — the model, the wire protocol, events, storage and semantics.
 - [Claude channel input](CLAUDE-CHANNEL-INPUT.md) — live messages into a Claude Code session; consent, receipts, reconnect.
 - [Codex input](CODEX-INPUT.md) — the native Codex queue and receiver; hooks, receipts, recovery.
-- [Remote connector](REMOTE-CONNECTOR.md) — agents that work inside a browser, through the opt-in MCP connector.
+- [Remote connector](REMOTE-CONNECTOR.md) — clients of a person's Claude or ChatGPT account, through the opt-in MCP connector.
 - [Iced design](ICED-DESIGN.md) — the desktop's interaction contracts and how they are validated.
 - [Container engines](CONTAINER-ENGINES.md) — the optional Docker/Podman addition and how it is verified.
 - [Windows port](WINDOWS-PORT.md) — what runs on Windows and what does not.

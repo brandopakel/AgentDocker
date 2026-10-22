@@ -1,6 +1,8 @@
-//! Compact send-time warnings belong to the draft destination they answered.
+//! Compact send-time warnings belong to the draft destination they answered,
+//! and every readiness the app shows is the one decision
+//! (`agentdocker_core::readiness`): its words, its tone and its one fix.
 use super::{
-    Message,
+    App, Message,
     icons::{Icon, icon},
     messages::look::{link, status_line},
     shell::{DeliveryTarget, TextDraft},
@@ -8,10 +10,50 @@ use super::{
     view::{small, tip},
 };
 use crate::controls::{Kind, button as action, custom_sized};
+use agentdocker_core::readiness::{Fix, State};
 use iced::{
     Element, Fill, Font,
     widget::{column, container, row, scrollable, text},
 };
+
+/// What a session's readiness dot says: the one decision, or one of the
+/// app's own two facts about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Readiness {
+    /// The daemon is not connected: nothing current to say.
+    Unavailable,
+    /// A ready receiver with words queued that no receipt names yet: they
+    /// wait on the provider to take them, whatever an earlier receipt says.
+    Sending,
+    Decided(State),
+}
+
+impl Readiness {
+    /// Its words: the decision's own, the same as `ps` and a send result.
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Unavailable => "Readiness unavailable",
+            Self::Sending => "Sent · waiting for the agent to take it",
+            Self::Decided(state) => state.label(),
+        }
+    }
+
+    /// Its tone, by the state, never by the words: green while it takes
+    /// messages, the accent while words wait for it, cyan while it waits
+    /// for a prompt or a check-in, amber when something stands in the way,
+    /// faint when it has ended or nothing is known.
+    pub(super) fn tone(self, c: Colors) -> iced::Color {
+        match self {
+            Self::Decided(State::Ready { .. }) => c.green,
+            Self::Sending => c.accent,
+            Self::Decided(State::WaitsForPrompt | State::AwaitsCheckIn) => c.cyan,
+            Self::Decided(
+                State::ProviderBlocked(_) | State::Paused | State::Silent | State::Unreachable,
+            ) => c.amber,
+            Self::Decided(State::Ended) | Self::Unavailable => c.faint,
+        }
+    }
+}
 
 pub(super) fn notice(
     draft: &TextDraft,
@@ -82,7 +124,7 @@ fn notice_content(
         for recipient in &report.details {
             details = details.push(
                 row![
-                    text(format!("{} · {}", recipient.name, recipient.issue.label()))
+                    text(format!("{} · {}", recipient.name, recipient.label()))
                         .size(13)
                         .font(weight(iced::font::Weight::Medium))
                         .width(Fill),
@@ -130,69 +172,73 @@ fn notice_content(
     Some(body.into())
 }
 
-/// How to get a session that cannot take messages taking them again, in
-/// as few words as do it: for Claude Code, the one command to paste (its
-/// folder, its conversation, the channel) with a copy button; for Codex,
-/// the way to a session that takes them live; for the rest, one line.
-pub(super) fn reconnect(
-    agent: &agentdocker_core::AgentRecord,
-    agents: &[agentdocker_core::AgentRecord],
-    key: &str,
-    c: Colors,
-) -> Option<Element<'static, Message>> {
-    let blocked = agentdocker_core::provider_block(agent, agents)
-        .and_then(|(_, state)| state.issue.as_ref())
-        .map(|issue| issue.kind);
-    let issue =
-        agentdocker_core::RecipientReadiness::for_agent(agent, chrono::Utc::now(), blocked)?;
-    let hint = small(issue.hint(), c);
-    let restart = matches!(
-        issue.issue,
-        agentdocker_core::SendIssue::NoReceiver
-            | agentdocker_core::SendIssue::ReceiverSilent
-            | agentdocker_core::SendIssue::Unreachable
-            | agentdocker_core::SendIssue::SessionEnded
-    );
-    // The hint says a command when `resumable` does; the command is shown
-    // on the same condition, so the two never disagree.
-    let command = (restart && issue.resumable)
-        .then(|| agentdocker_core::send_readiness::claude_resume_command(agent, cfg!(windows)))
-        .flatten();
-    if let Some(command) = command {
-        return Some(
-            column![
-                command_well(format!("reconnect-copy-{key}-{}", agent.id), command, c),
-                hint
-            ]
-            .spacing(6)
-            .into(),
-        );
+impl App {
+    /// How to get a session that cannot take messages taking them again:
+    /// the one fix the readiness decision names, in as few words as do it.
+    /// An ended Claude Code session this window can bring back gets the
+    /// **Reconnect here** button that does it; a fix that is a command
+    /// (the Claude resume, the setup, the Codex resume) is the command to
+    /// paste, whole, with a copy button; a Codex that waits for its prompt
+    /// gets the way to a live one; anything else, one line. Never two
+    /// actions for one fix.
+    pub(super) fn fix_view(
+        &self,
+        agent: &agentdocker_core::AgentRecord,
+        key: &str,
+        c: Colors,
+    ) -> Option<Element<'static, Message>> {
+        if agent.spec.runtime == agentdocker_core::HUMAN_RUNTIME {
+            return None;
+        }
+        let decision = self.readiness_decision(agent);
+        if !decision.state.needs_attention() {
+            return None;
+        }
+        if self.reconnects_here(agent) {
+            let reconnecting = self.shell.reconnecting.as_deref() == Some(agent.id.as_str());
+            return Some(action(
+                format!("reconnect-{}", agent.id),
+                if reconnecting {
+                    "Reconnecting…"
+                } else {
+                    "Reconnect here"
+                },
+                (!reconnecting && !self.shell.launching && self.connected.is_ok())
+                    .then(|| Message::Reconnect(agent.id.to_string())),
+                false,
+            ));
+        }
+        let hint = small(decision.hint(), c);
+        if let Some(command) = decision.command(&agent.spec.runtime) {
+            return Some(
+                column![
+                    command_well(format!("reconnect-copy-{key}-{}", agent.id), command, c),
+                    hint
+                ]
+                .spacing(6)
+                .into(),
+            );
+        }
+        if decision.fix == Fix::LaunchLive
+            && let Some(project) = agent.project.as_ref().map(|p| p.root.clone())
+        {
+            return Some(
+                row![
+                    hint.width(Fill),
+                    action(
+                        format!("reconnect-launch-{key}-{}", agent.id),
+                        "Start a live Codex",
+                        Some(Message::LaunchIn(project, "codex".into())),
+                        false
+                    ),
+                ]
+                .spacing(8)
+                .align_y(iced::Center)
+                .into(),
+            );
+        }
+        Some(hint.into())
     }
-    if agent.spec.runtime == "codex"
-        && matches!(
-            issue.issue,
-            agentdocker_core::SendIssue::NoReceiver
-                | agentdocker_core::SendIssue::ReceiverSilent
-                | agentdocker_core::SendIssue::Unreachable
-        )
-        && let Some(project) = agent.project.as_ref().map(|p| p.root.clone())
-    {
-        return Some(
-            row![
-                hint.width(Fill),
-                action(
-                    format!("reconnect-launch-{key}-{}", agent.id),
-                    "Start a live Codex",
-                    Some(Message::LaunchIn(project, "codex".into())),
-                    false
-                ),
-            ]
-            .spacing(8)
-            .align_y(iced::Center)
-            .into(),
-        );
-    }
-    Some(hint.into())
 }
 
 /// A command to paste, the way an approval shows one: a prompt mark, the
@@ -250,19 +296,26 @@ mod tests {
     use super::*;
     use agentdocker_core::{AgentRecord, AgentSpec, AgentStatus};
 
+    /// An absolute checkout on every platform.
+    const CHECKOUT: &str = if cfg!(windows) {
+        r"C:\work\orchard"
+    } else {
+        "/work/orchard"
+    };
+
     fn session(runtime: &str) -> AgentRecord {
         let mut agent = AgentRecord::new(
             AgentSpec {
                 name: format!("{runtime}-1"),
                 runtime: runtime.into(),
-                workdir: Some("/work/orchard".into()),
+                workdir: Some(CHECKOUT.into()),
                 ..Default::default()
             },
             false,
             chrono::Utc::now() - chrono::Duration::minutes(10),
         );
         agent.status = AgentStatus::Running;
-        agent.project = Some(agentdocker_core::ProjectRef::directory("/work/orchard"));
+        agent.project = Some(agentdocker_core::ProjectRef::directory(CHECKOUT));
         agent
             .spec
             .labels
@@ -270,14 +323,44 @@ mod tests {
         agent
     }
 
-    /// A Claude session that cannot be woken shows the one command to
+    fn app(agents: Vec<AgentRecord>) -> App {
+        let (tx, _commands) = super::super::queue::channel();
+        let (_messages, rx) = std::sync::mpsc::sync_channel(super::super::MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        app.agents = agents;
+        app
+    }
+
+    fn claude_installed(app: &mut App) {
+        app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
+            name: "claude-code".into(),
+            vendor: "fixture".into(),
+            label: "Claude Code".into(),
+            cli: Some("/fixture/claude".into()),
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: agentdocker_core::runtime::Wiring::Wired,
+            hooks: agentdocker_core::runtime::Wiring::Wired,
+            hooks_missing: vec![],
+            shell: agentdocker_core::runtime::Wiring::Unsupported,
+            running: 0,
+        }];
+    }
+
+    /// A live Claude session that cannot be woken shows the one command to
     /// paste, whole, with a copy button, and one short line; no paragraph
-    /// of instructions.
+    /// of instructions and no second action.
     #[test]
     fn a_claude_session_shows_its_command_and_a_copy_button() {
         let agent = session("claude-code");
+        let mut app = app(vec![agent.clone()]);
+        claude_installed(&mut app);
         let c = Colors::new(false);
-        let view = seen(reconnect(&agent, std::slice::from_ref(&agent), "inspector", c).unwrap());
+        let view = seen(app.fix_view(&agent, "inspector", c).unwrap());
         let command =
             agentdocker_core::send_readiness::claude_resume_command(&agent, cfg!(windows)).unwrap();
         assert!(view.reads(&command), "the whole command, as it is copied");
@@ -287,6 +370,70 @@ mod tests {
         assert_eq!((copy.1.as_str(), copy.3), ("Copy command", true));
         assert!(view.reads("Quit it, then run this in a terminal."));
         assert!(!view.reads("Copy instructions") && !view.reads("After saving work"));
+        assert!(
+            view.control(&format!("reconnect-{}", agent.id)).is_none(),
+            "one action: the command, not a button that waits too"
+        );
+    }
+
+    /// Ended, the window brings it back itself: **Reconnect here** is the
+    /// one action, with no command beside it. Where the window cannot (no
+    /// Claude Code here), the command is.
+    #[test]
+    fn an_ended_claude_session_has_one_action_reconnect_here() {
+        let mut agent = session("claude-code");
+        agent.status = AgentStatus::Exited { code: Some(0) };
+        let mut app = app(vec![agent.clone()]);
+        claude_installed(&mut app);
+        let c = Colors::new(false);
+        let view = seen(app.fix_view(&agent, "inspector", c).unwrap());
+        let button = view
+            .control(&format!("reconnect-{}", agent.id))
+            .expect("Reconnect here");
+        assert_eq!((button.1.as_str(), button.3), ("Reconnect here", true));
+        assert!(
+            view.controls
+                .iter()
+                .all(|c| !c.0.starts_with("reconnect-copy")),
+            "no command beside the button"
+        );
+        app.runtimes.clear();
+        let view = seen(app.fix_view(&agent, "inspector", c).unwrap());
+        assert!(view.control(&format!("reconnect-{}", agent.id)).is_none());
+        assert!(view.reads("Run this in a terminal to bring it back."));
+        // One AgentDocker supervised comes back through the daemon, never
+        // a plain resume that would leave its queue behind: the button
+        // here, and `agentdocker reconnect` where the window cannot.
+        let mut managed = agent.clone();
+        managed.managed = true;
+        managed.spec.tty = true;
+        app.agents = vec![managed.clone()];
+        let view = seen(app.fix_view(&managed, "inspector", c).unwrap());
+        assert!(view.reads(&format!("agentdocker reconnect {}", managed.id)));
+        assert!(!view.reads("claude --resume"));
+        claude_installed(&mut app);
+        let view = seen(app.fix_view(&managed, "inspector", c).unwrap());
+        assert!(view.control(&format!("reconnect-{}", managed.id)).is_some());
+    }
+
+    /// A Claude session nothing of which reached AgentDocker is set up
+    /// first: the resume alone would fail without the MCP entry.
+    #[test]
+    fn an_unreachable_claude_session_is_set_up_first() {
+        let mut agent = session("claude-code");
+        agent.process_started_at = agent.started_at.or(Some(agent.created_at));
+        let app = app(vec![agent.clone()]);
+        assert_eq!(
+            app.readiness_decision(&agent).state,
+            agentdocker_core::readiness::State::Unreachable
+        );
+        let view = seen(app.fix_view(&agent, "tools", Colors::new(false)).unwrap());
+        assert!(view.reads("agentdocker setup claude-code"));
+        assert!(view.reads("Run this, then restart it."));
+        assert!(
+            !view.reads("claude --resume"),
+            "one fix, not the resume too"
+        );
     }
 
     /// A Codex session says when it takes messages and offers the session
@@ -294,14 +441,10 @@ mod tests {
     #[test]
     fn a_codex_session_offers_a_live_one_instead_of_instructions() {
         let agent = session("codex");
+        let app = app(vec![agent.clone()]);
         let view = seen(
-            reconnect(
-                &agent,
-                std::slice::from_ref(&agent),
-                "inspector",
-                Colors::new(true),
-            )
-            .unwrap(),
+            app.fix_view(&agent, "inspector", Colors::new(true))
+                .unwrap(),
         );
         assert!(view.reads("It takes messages at its next prompt."));
         assert_eq!(
@@ -318,14 +461,67 @@ mod tests {
         );
     }
 
+    /// The panels, the composer's dot and a send's details render the one
+    /// decision: the same label, the same short line for its fix, and the
+    /// tone by its state, whatever the words.
+    #[test]
+    fn every_surface_of_the_app_renders_the_one_decision() {
+        use agentdocker_core::readiness::State;
+        let mut browser = session("claude-browser");
+        browser.process_started_at = None;
+        browser.spec.labels.insert(
+            agentdocker_core::agent::CONNECTOR_LABEL.into(),
+            "true".into(),
+        );
+        let mut unreachable = session("codex");
+        unreachable.process_started_at = Some(unreachable.created_at);
+        let agents = vec![
+            session("claude-code"),
+            session("codex"),
+            session("custom"),
+            browser,
+            unreachable,
+        ];
+        let app = app(agents.clone());
+        let c = Colors::new(false);
+        for agent in &agents {
+            let decision = app.readiness_decision(agent);
+            assert_eq!(
+                app.input_readiness(agent),
+                Readiness::Decided(decision.state)
+            );
+            let readiness =
+                agentdocker_core::RecipientReadiness::for_agent(agent, chrono::Utc::now(), None)
+                    .unwrap();
+            assert_eq!(readiness.label(), decision.state.label());
+            assert_eq!(readiness.fix.as_ref(), Some(&decision.fix));
+            let view = seen(app.fix_view(agent, "tools", c).unwrap());
+            assert!(view.reads(decision.hint()), "{}", agent.spec.name);
+            if let Some(command) = decision.command(&agent.spec.runtime) {
+                assert!(view.reads(&command), "{}", agent.spec.name);
+            }
+        }
+        assert_eq!(
+            app.input_readiness(&agents[3]).label(),
+            "Waits until it checks in",
+            "a browser agent, in the words its messages say"
+        );
+        assert_eq!(
+            Readiness::Decided(State::AwaitsCheckIn).tone(c),
+            Readiness::Decided(State::WaitsForPrompt).tone(c)
+        );
+        assert_eq!(Readiness::Decided(State::Unreachable).tone(c), c.amber);
+        assert_eq!(
+            Readiness::Decided(State::Ready { receiving: true }).tone(c),
+            c.green
+        );
+    }
+
     /// Start a live Codex opens the launch form in the session's own
     /// project, not the one on view (Tools lists every project's sessions).
     #[test]
     fn a_live_codex_starts_in_the_sessions_own_project() {
-        let (tx, _commands) = super::super::queue::channel();
-        let (_messages, rx) = std::sync::mpsc::sync_channel(super::super::MESSAGE_CAPACITY);
-        let mut app = super::super::App::bare(tx, rx);
-        app.connected = Ok(());
+        let mut app = app(Vec::new());
         for root in ["/work/a", "/work/b"] {
             app.shell.catalog.projects.push(crate::catalog::Entry {
                 project: agentdocker_core::ProjectRef::directory(root),
@@ -351,7 +547,8 @@ mod tests {
         );
     }
 
-    /// Delivery details are one line per session and the way to it.
+    /// Delivery details are one line per session and the way to it, in the
+    /// decision's words.
     #[test]
     fn delivery_details_are_one_line_per_session() {
         let agent = session("claude-code");
@@ -372,7 +569,7 @@ mod tests {
             )
             .unwrap(),
         );
-        assert!(view.reads("claude-code-1 · "));
+        assert!(view.reads("claude-code-1 · Messages may wait for its next prompt"));
         assert!(
             view.control(&format!("delivery-session-session-s-{}", agent.id))
                 .is_some()

@@ -120,10 +120,27 @@ pub enum RuleFieldKind {
     Value,
 }
 
+/// A card's words as the editor took them, or as it last saved them: a
+/// save sends only what differs from these, so it never puts back what
+/// somebody else changed on a field the person left alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct CardWords {
+    pub title: String,
+    pub description: String,
+    pub acceptance: String,
+    pub due: String,
+    pub blocker: String,
+    pub tags: String,
+}
+
 /// The open card's fields as the person edits them; saved on CardSave.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct CardDraft {
     pub task: Option<agentdocker_core::TaskId>,
+    /// Which opening of the editor this is: a save's reply advances the
+    /// baseline only of the draft that sent it, never of a later opening.
+    pub generation: u64,
+    pub base: CardWords,
     pub title: String,
     pub description: String,
     pub acceptance: String,
@@ -2053,7 +2070,11 @@ impl App {
                     self.card = None;
                 } else {
                     self.card = None;
-                    self.shell.card_draft = self.draft_of(&task);
+                    let generation = self.shell.card_draft.generation + 1;
+                    self.shell.card_draft = super::shell::CardDraft {
+                        generation,
+                        ..self.draft_of(&task)
+                    };
                     self.send(Cmd::TaskDetail(task.clone()));
                     self.task_open = Some(task);
                 }
@@ -2064,6 +2085,7 @@ impl App {
                     assignee: Some(assignee.map(|a| a.to_string()).unwrap_or_default()),
                     ..Default::default()
                 },
+                draft: None,
             }),
             Message::TaskArchive(task) => self.send(Cmd::TaskArchive(task)),
             Message::TasksMore => self.request_more_tasks(),
@@ -2215,6 +2237,7 @@ impl App {
                         blocked_by: None,
                         tags: None,
                         plan: Some(plan.unwrap_or_default()),
+                        expected_updated_at: None,
                     });
                 }
             }
@@ -2625,6 +2648,7 @@ impl App {
                             priority: Some(priority),
                             ..Default::default()
                         },
+                        draft: None,
                     });
                 }
             }
@@ -2636,6 +2660,7 @@ impl App {
                             size: Some(size.map(|s| s.as_str().to_owned()).unwrap_or_default()),
                             ..Default::default()
                         },
+                        draft: None,
                     });
                 }
             }
@@ -2643,7 +2668,12 @@ impl App {
                 if let Some(task) = self.task_open.clone()
                     && let Some(change) = self.card_change(&task)
                 {
-                    self.send(Cmd::TaskEdit { task, change });
+                    let draft = Some(self.shell.card_draft.generation);
+                    self.send(Cmd::TaskEdit {
+                        task,
+                        change,
+                        draft,
+                    });
                 }
             }
             Message::CardCommentSend => {
@@ -6200,6 +6230,122 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The card editor sends only what the person changed, so a field
+    /// somebody else changed meanwhile is left alone; after a save goes
+    /// through, the next sends only what changed since; one that failed
+    /// leaves its fields to send again.
+    #[test]
+    fn a_card_save_sends_only_what_the_person_changed() {
+        let (mut app, requests, messages) = app();
+        app.connected = Ok(());
+        let id = agentdocker_core::TaskId::from("aaaaaaaaaaaa".to_owned());
+        let words = CardWords {
+            title: "Port the parser".into(),
+            description: "old words".into(),
+            acceptance: String::new(),
+            due: String::new(),
+            blocker: String::new(),
+            tags: "parser".into(),
+        };
+        app.shell.card_draft = CardDraft {
+            task: Some(id.clone()),
+            generation: 1,
+            title: words.title.clone(),
+            description: words.description.clone(),
+            acceptance: words.acceptance.clone(),
+            due: words.due.clone(),
+            blocker: words.blocker.clone(),
+            tags: words.tags.clone(),
+            base: words,
+            comment: String::new(),
+        };
+        app.task_open = Some(id.clone());
+        let saved = |requests: &CommandReceiver| {
+            requests
+                .try_iter()
+                .find_map(|c| match c {
+                    Cmd::TaskEdit { change, .. } => Some(change),
+                    _ => None,
+                })
+                .expect("a save")
+        };
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Description,
+            "new words".into(),
+        ));
+        let _ = app.update(Message::CardSave);
+        let change = saved(&requests);
+        assert_eq!(change.description.as_deref(), Some("new words"));
+        assert!(
+            change.title.is_none() && change.tags.is_none() && change.acceptance.is_none(),
+            "nothing the person left alone: {change:?}"
+        );
+        messages
+            .send(Msg::CardEdited(id.clone(), change, Some(1), Ok(())))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Acceptance,
+            "tests pass".into(),
+        ));
+        let _ = app.update(Message::CardSave);
+        let change = saved(&requests);
+        assert_eq!(change.acceptance.as_deref(), Some("tests pass"));
+        assert!(
+            change.description.is_none(),
+            "the first save is not sent again"
+        );
+        messages
+            .send(Msg::CardEdited(
+                id.clone(),
+                change,
+                Some(1),
+                Err("refused".into()),
+            ))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::CardSave);
+        let change = saved(&requests);
+        assert_eq!(
+            change.acceptance.as_deref(),
+            Some("tests pass"),
+            "a save that failed is sent again"
+        );
+
+        // The card is closed and opened again before that save answers:
+        // the reply belongs to the earlier opening and moves nothing of
+        // the new one, so its untouched title is never sent.
+        let reopened = CardWords {
+            title: "Port the parser".into(),
+            ..CardWords::default()
+        };
+        app.shell.card_draft = CardDraft {
+            task: Some(id.clone()),
+            generation: 2,
+            title: reopened.title.clone(),
+            base: reopened,
+            ..CardDraft::default()
+        };
+        let mut retitled = change;
+        retitled.title = Some("Rewrite the parser".into());
+        messages
+            .send(Msg::CardEdited(id.clone(), retitled, Some(1), Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.shell.card_draft.base.title, "Port the parser");
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Description,
+            "newer words".into(),
+        ));
+        let _ = app.update(Message::CardSave);
+        let change = saved(&requests);
+        assert_eq!(change.description.as_deref(), Some("newer words"));
+        assert!(
+            change.title.is_none(),
+            "the later opening's untouched title is not sent"
+        );
     }
 
     /// A card's draft is the project's: text typed for one board waits
@@ -9789,6 +9935,7 @@ fn update_links(task: agentdocker_core::TaskId, links: Vec<agentdocker_core::Lin
         blocked_by: None,
         tags: None,
         plan: None,
+        expected_updated_at: None,
     }
 }
 

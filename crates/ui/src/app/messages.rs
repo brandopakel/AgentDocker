@@ -1073,20 +1073,6 @@ impl App {
             || self.agent_live(&destination)
     }
 
-    /// The tone of a recipient's readiness line: green while it is taking
-    /// messages, the accent while words wait for it to take them, amber
-    /// when it is paused, silent or held by its provider, quiet otherwise.
-    fn readiness_tone(status: &str, c: Colors) -> iced::Color {
-        match status {
-            "Receiving messages" | "Ready for messages" => c.green,
-            "Sent · waiting for the agent to take it" => c.accent,
-            "Messages may wait for its next prompt" | "Session ended" | "Readiness unavailable" => {
-                c.faint
-            }
-            _ => c.amber,
-        }
-    }
-
     /// The composer under a conversation or a thread: one frame with the
     /// draft over a footer of key hints and the send action, the names
     /// `@` offers floating over it, and under it one line per state — the
@@ -1299,8 +1285,8 @@ impl App {
             // in its name, beside the way to put it right.
             let mut line = row![super::view::status_dot(
                 format!("input-readiness-{key}"),
-                Self::readiness_tone(readiness, c),
-                readiness,
+                readiness.tone(c),
+                readiness.label(),
                 c
             )]
             .spacing(6)

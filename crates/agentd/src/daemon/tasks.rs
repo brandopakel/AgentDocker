@@ -20,6 +20,7 @@ mod memory_mirror;
 mod plans;
 mod roles;
 mod rules;
+mod verdicts;
 
 const DOCUMENT: &str = "task";
 const BOARD: &str = "board";
@@ -1373,6 +1374,24 @@ impl Daemon {
         if let Err(response) = Self::agent_hold(&state, &task, &actor) {
             return *response;
         }
+        // An edit made against an older reading never writes over a newer one.
+        if change
+            .expected_updated_at
+            .is_some_and(|seen| seen != task.updated_at)
+        {
+            return Response::error(
+                ErrorCode::Conflict,
+                format!(
+                    "{} changed since it was read (it was updated at {}); read it again and redo the edit",
+                    if task.key.is_empty() {
+                        task.id.as_str()
+                    } else {
+                        task.key.as_str()
+                    },
+                    task.updated_at.to_rfc3339()
+                ),
+            );
+        }
         // A holder named by id, name or prefix, or `me`; the empty string
         // takes the card away from whoever holds it.
         let assignee = match change.assignee.as_deref().map(str::trim) {
@@ -2127,6 +2146,8 @@ impl Daemon {
 /// What an update asks to change, as the request says it.
 #[derive(Default)]
 pub(super) struct TaskChange {
+    /// When given, the card must not have changed since this moment.
+    pub expected_updated_at: Option<DateTime<Utc>>,
     pub title: Option<String>,
     pub acceptance: Option<String>,
     pub assignee: Option<String>,
@@ -2357,6 +2378,7 @@ mod tests {
                 blocked_by: None,
                 tags: None,
                 plan: None,
+                expected_updated_at: None,
             })
             .await
         else {
@@ -2381,6 +2403,7 @@ mod tests {
                 blocked_by: None,
                 tags: None,
                 plan: None,
+                expected_updated_at: None,
             })
             .await
         else {
@@ -2610,6 +2633,7 @@ mod tests {
                 blocked_by: None,
                 tags: None,
                 plan: None,
+                expected_updated_at: None,
             })
             .await
         else {
@@ -2979,6 +3003,7 @@ mod tests {
                 blocked_by: None,
                 tags: None,
                 plan: None,
+                expected_updated_at: None,
             })
             .await
         else {
@@ -3408,6 +3433,7 @@ mod tests {
                     blocked_by: Some(vec![foreign.clone()]),
                     tags: None,
                     plan: None,
+                    expected_updated_at: None,
                 })
                 .await,
             Response::Error {
@@ -3556,6 +3582,93 @@ mod tests {
                 code: ErrorCode::StorageUnavailable,
                 ..
             }
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_edit_against_an_older_reading_is_a_conflict() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        register(&daemon, "alice", &work).await;
+        daemon
+            .handle(Request::Me {
+                workdir: Some(work.clone()),
+            })
+            .await;
+        let card = match daemon
+            .handle(Request::TaskCreate {
+                from: HUMAN.to_owned(),
+                project: Some(work.display().to_string()),
+                title: "first title".to_owned(),
+                acceptance: "it works".to_owned(),
+                column: None,
+                links: Vec::new(),
+                board: None,
+                lane: None,
+                description: String::new(),
+                priority: None,
+                size: None,
+                due: None,
+                external_blocker: String::new(),
+                parent: None,
+                blocked_by: Vec::new(),
+                tags: Vec::new(),
+                plan: None,
+            })
+            .await
+        {
+            Response::Task { task } => task,
+            other => panic!("{other:?}"),
+        };
+        let edit = |title: &str, seen: Option<chrono::DateTime<Utc>>| Request::TaskUpdate {
+            agent: HUMAN.into(),
+            task: card.id.to_string(),
+            title: Some(title.into()),
+            acceptance: None,
+            assignee: None,
+            links: None,
+            description: None,
+            priority: None,
+            size: None,
+            due: None,
+            external_blocker: None,
+            parent: None,
+            blocked_by: None,
+            tags: None,
+            plan: None,
+            expected_updated_at: seen,
+        };
+        let edited = match daemon
+            .handle(edit("second title", Some(card.updated_at)))
+            .await
+        {
+            Response::Task { task } => task,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(edited.title, "second title");
+        // The same older reading again: the card has changed since.
+        match daemon
+            .handle(edit("third title", Some(card.updated_at)))
+            .await
+        {
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            } => {}
+            other => panic!("{other:?}"),
+        }
+        // Without a reading, or with the current one, the edit goes through.
+        assert!(matches!(
+            daemon
+                .handle(edit("fourth title", Some(edited.updated_at)))
+                .await,
+            Response::Task { .. }
+        ));
+        assert!(matches!(
+            daemon.handle(edit("fifth title", None)).await,
+            Response::Task { .. }
         ));
     }
 }

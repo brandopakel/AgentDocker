@@ -4,7 +4,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, AgentRecord, InputReadiness, MessageId, ProviderIssueKind};
+use crate::{AgentId, AgentRecord, MessageId, ProviderIssueKind};
 
 /// One recipient of a message and how far it got.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +46,8 @@ pub enum State {
     Unreachable,
     /// Queued for a session nothing wakes: it takes it at its next prompt.
     WaitingForPrompt,
-    /// Queued for a browser agent, which reads only when it checks in.
+    /// Queued for a browser agent, or a session away for hours, which
+    /// reads only when it checks in.
     WaitsForCheckIn,
     /// Queued for a session whose receiver is live.
     WaitingToTake,
@@ -88,22 +89,18 @@ impl State {
         let Some(agent) = agent else {
             return Self::Gone;
         };
-        if !agent.status.is_live() {
-            return Self::Ended;
-        }
-        if blocked.is_some() {
-            return Self::Blocked;
-        }
-        if agent.via_connector() {
-            return Self::WaitsForCheckIn;
-        }
-        match InputReadiness::for_agent(agent, now) {
-            InputReadiness::SessionEnded => Self::Ended,
-            InputReadiness::Unreachable => Self::Unreachable,
-            InputReadiness::Unverified => Self::WaitingForPrompt,
-            InputReadiness::Paused => Self::Paused,
-            InputReadiness::Stale => Self::Silent,
-            InputReadiness::AwaitingFirstReceipt | InputReadiness::Verified => Self::WaitingToTake,
+        // Why it still waits is the one readiness decision, said here in
+        // the words under a message.
+        use crate::readiness::State as Readiness;
+        match crate::readiness::decide(agent, now, blocked).state {
+            Readiness::Ended => Self::Ended,
+            Readiness::ProviderBlocked(_) => Self::Blocked,
+            Readiness::Paused => Self::Paused,
+            Readiness::Silent => Self::Silent,
+            Readiness::Unreachable => Self::Unreachable,
+            Readiness::AwaitsCheckIn => Self::WaitsForCheckIn,
+            Readiness::WaitsForPrompt => Self::WaitingForPrompt,
+            Readiness::Ready { .. } => Self::WaitingToTake,
         }
     }
 
@@ -213,6 +210,24 @@ mod tests {
         assert_eq!(
             State::of(Some(&browser), &queued, None, now),
             State::WaitsForCheckIn
+        );
+        // A session known by its key alone and away for hours reads when
+        // it is back, as the readiness decision says.
+        let mut away = live("codex");
+        away.spec
+            .labels
+            .insert("session_id".into(), "thread".into());
+        away.session_contact = Some(crate::agent::SessionContact {
+            adapter: crate::AdapterKind::Hooks,
+            observed_at: now - crate::agent::SESSION_PRESENCE - chrono::Duration::minutes(1),
+        });
+        assert_eq!(
+            State::of(Some(&away), &queued, None, now),
+            State::WaitsForCheckIn
+        );
+        assert_eq!(
+            crate::readiness::decide(&away, now, None).state,
+            crate::readiness::State::AwaitsCheckIn
         );
         assert!(State::Shown.reached() && !State::WaitingForPrompt.reached());
         let newer: State = serde_json::from_str("\"read_by_human\"").unwrap();

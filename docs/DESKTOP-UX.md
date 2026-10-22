@@ -17,21 +17,27 @@ limits. **Details** beside it (read aloud as *Delivery details*) lists them, one
 line each with what stands in the way and **Open**; the fix is in the session's
 panel. These are the facts when the message was queued, not a receipt.
 
-A session's panel says how to get it taking messages in as few words as do it.
-A Claude Code session shows the one command to paste — into its own folder, its
-own conversation, with the AgentDocker channel — whole, on a step of tone with a
+A session's panel says how to get it taking messages in as few words as do it:
+the one fix AgentDocker decided for it, the same one `ps --input-details` and a
+send's warning name, and one action for it, never two. A live Claude Code
+session shows the one command to paste — into its own folder, its own
+conversation, with the AgentDocker channel — whole, on a step of tone with a
 copy button that copies exactly it, and one line (*Quit it, then run this in a
-terminal.*); once it has ended, **Reconnect here** does the same in a pane of the
-window. A Codex session in a terminal takes messages at its next prompt and
-nothing can wake it there, so its panel says so and offers **Start a live Codex**
-(the launch form, for Codex in this project). Any other session gets one line.
+terminal.*). A Claude Code session nothing of which has reached AgentDocker
+shows `agentdocker setup claude-code` instead (*Run this, then restart it.*):
+without setup the resume command would fail. A Codex session in a terminal
+takes messages at its next prompt and nothing can wake it there, so its panel
+says so and offers **Start a live Codex** (the launch form, for Codex in this
+project); one that never reached AgentDocker shows `codex resume` with its
+conversation when it is known. Any other session gets one line.
 The details stay with that conversation or thread even if you switch while
 sending. In a small pane the feedback scrolls below the input, keeping typing
 and Send visible while every delivery action remains reachable.
-Session **Details** and expanded tool connection details show current
-reconnect guidance too. Nothing is restarted or resent by opening these controls.
-For a Claude Code session the guidance has the button beside it: **Reconnect
-here** asks the daemon to bring the session back under its own record — its
+Session **Details** and expanded tool connection details show the same fix.
+Nothing is restarted or resent by opening these controls.
+Once a Claude Code session has ended, its fix is **Reconnect here**, on its row
+in the Earlier group and in its **Details**, in place of the command: it asks
+the daemon to bring the session back under its own record — its
 own tool with `--resume` and its conversation, in its own checkout, with the
 AgentDocker channel, under its name — so what was queued for it, its aliases,
 questions and cards stay its own; the daemon checks the launch against the
@@ -39,13 +45,12 @@ record and refuses when the process is back, a checkout differs or somebody is
 attached, and the reason appears as the page's alert line. When the list shows the
 session running, its pane opens in this window and Claude's own consent prompt
 appears there for you to accept; a session that ends at once stays in the list
-with its exit. Until the session's terminal process has ended the button waits,
-with a faint dot beside it whose tooltip says why (*Exit the session in its
-terminal first*): the app does not exit
-a session it does not own, and resuming a conversation a live process still
-holds would start a second one. One press is one resume; a second press while
-the first is unanswered does nothing. Nothing is sent or acknowledged on the
-session's behalf; the CLI recipe stays beside it as the alternative.
+with its exit. A live session gets the command instead, because resuming a
+conversation a live process still holds would start a second one, and the app
+does not exit a session it does not own; where Claude Code is not installed
+here, an ended session gets the command too. One press is one resume; a second
+press while the first is unanswered does nothing. Nothing is sent or
+acknowledged on the session's behalf.
 
 ## Projects
 
@@ -74,7 +79,7 @@ state, problems first, named while there are one or two in a state and counted
 beyond that; pointing at it lists each one's own line. The states are *answered*, *delivered*,
 *received by the model*, *shown to its session, not confirmed*, or why it still
 waits — *nothing connects its session to AgentDocker*, *waiting for its next
-prompt*, *waits until it checks in* (a browser agent), *delivery paused*, *session ended before taking it*. Nothing says
+prompt*, *waits until it checks in* (a browser agent, or a session away for hours), *delivery paused*, *session ended before taking it*. Nothing says
 *read*: the daemon cannot know it. **Agents** opens the
 session list and **Board** the project's cards. **More** opens a menu of History,
 Files in use, Usage, AgentDocker commands and the project's Pin and Forget; the tab takes the name of the screen on view and is underlined only
@@ -215,10 +220,13 @@ also keeps the full setup controls.
 A vendor's browser extension (Claude, ChatGPT) has its own Tools row, whose
 state dot says on the pointer and to a reader
 **Installed in Chrome · its sessions reach here only through the connector,
-which is not running**, or **… · the connector is ready; add it in Claude and
-its sessions appear here** while `agentdocker connector` serves on this
-machine, or, once a browser agent has joined, **… · one browser agent
-connected through the connector** — with the browser, profile and version of
+which is not running**, or **… · the connector is ready; add it to your Claude
+account and its clients appear here** while `agentdocker connector` serves on
+this machine, or, once a consent has made an agent, **… · clients of your
+Claude account reach here as one agent through the connector** (a consent is
+the account's: the side panel, the apps and a terminal reaching the account's
+connectors all come in as that agent, and nothing tells them apart) — with
+the browser, profile and version of
 each copy under **Details**, and the connector: its MCP
 URL, whose tooltip says where in the vendor's settings to add it, and the
 pairing code the consent page asks for (one consent each; the page then asks
@@ -503,8 +511,10 @@ when its PID and process birth time both match. Separate registrations are never
 merged by display name. Two live records for one provider session — the same
 process (PID and birth time), tool, project and session id — are one row and one count everywhere (the project's live count, the
 sessions list, a project's agents, Needs you), under the record that stays,
-until the daemon folds the other into it. A browser agent that came in through
-the connector has no process here; it counts as live while it is heard from
+which is also the one the session's registrations reach. An agent that came in through
+the connector is named for it — its tool reads **Claude (connector)** or
+**ChatGPT (connector)**, not the browser extension, since any client of the
+account may be calling — and has no process here; it counts as live while it is heard from
 and, after an hour without a tool call, sits under **Earlier**, *not
 connected* in its row's spoken name and its panel's standing tooltip. A conversation or session that only loads the connector is not
 using it. It is still registered, messages still wait for it, and its next
@@ -772,9 +782,9 @@ spoken name carry the state and the version. The dot says **Receiving messages**
 delivery bound to a live session. **Connected · messages wait for its next prompt**
 requires recent MCP or hook contact and no input route at all — the session
 is in touch, but nothing reaches it while it is idle — and activity and
-configuration alone cannot establish it; a session whose receiver is paused
-reads **Connected · messages paused** and one whose delivery has stopped
-reporting **Connected · not heard from recently**, since a prompt does not
+configuration alone cannot establish it; a session whose receiver is paused,
+or whose provider is blocked, reads **Connected · messages paused** and one
+whose delivery has stopped reporting **Connected · not heard from recently**, since a prompt does not
 release what such a route holds. Other states distinguish **Needs setup · missing …** (which says
 what: the MCP entry, the hooks, or the one or two hook events setup requires,
 for example *StopFailure hook*), **Setup needs review**, **Configured ·
@@ -786,9 +796,13 @@ Version, Command, Browser, URL, Code — and each live session as its name with
 a readiness dot and MCP and Hooks contact dots, plus **Review setup**,
 **Check connections** and **Setup history**; an incomplete inventory is the
 alert mark; **Other tools (n)** expands
-the inventory. Delivery, a session's readiness dot, distinguishes **Ready for messages** (nothing taken
-yet), **Receiving messages**, **Not receiving messages** and **Not heard from
-recently**; with words queued behind current delivery that no receipt names it
+the inventory. Delivery, a session's readiness dot, says the same words as `ps`
+and a send's warning: **Ready for messages** (nothing taken
+yet), **Receiving messages**, **Not receiving messages**, **Not heard from
+recently**, **Messages may wait for its next prompt**, **Waits until it checks
+in** (a browser agent, or a session away for hours), **Can't receive
+messages**, **Session ended** or the provider's limit, in a tone that follows
+the state; with words queued behind current delivery that no receipt names it
 reads **Sent · waiting for the agent to take it**, since an earlier receipt says nothing about them
 (a message still in the queue with a receipt from the current process counts
 as delivered). The session
