@@ -5387,17 +5387,29 @@ async fn print_activity(client: &Client, activity: &[AgentActivity]) {
                 Activity::Working { since } | Activity::Idle { since } => {
                     (String::new(), Some(*since))
                 }
-                Activity::Waiting { since, reason } => (
-                    match reason {
-                        Some(agentdocker_core::WaitReason::Permission) => {
-                            "for permission, in its terminal"
+                Activity::Waiting {
+                    since,
+                    reason,
+                    judged,
+                } => (
+                    match (reason, judged) {
+                        (Some(reason), Some(judged)) => format!(
+                            "{}, in its terminal (judged from its screen, {})",
+                            format::judged_errand(*reason),
+                            judged.percent()
+                        ),
+                        (None, Some(judged)) => format!(
+                            "for you, in its terminal (judged from its screen, {})",
+                            judged.percent()
+                        ),
+                        (Some(agentdocker_core::WaitReason::Permission), None) => {
+                            "for permission, in its terminal".into()
                         }
-                        Some(agentdocker_core::WaitReason::Question) => {
-                            "for an answer, in its terminal"
+                        (Some(agentdocker_core::WaitReason::Question), None) => {
+                            "for an answer, in its terminal".into()
                         }
-                        _ => "for you, in its terminal",
-                    }
-                    .into(),
+                        _ => "for you, in its terminal".into(),
+                    },
                     Some(*since),
                 ),
                 Activity::Unknown => ("no fresh activity reports".into(), None),

@@ -158,6 +158,12 @@ mod tests {
         let waiting = Activity::Waiting {
             since: now,
             reason: None,
+            judged: None,
+        };
+        let judged = Activity::Waiting {
+            since: now,
+            reason: Some(crate::WaitReason::Draft),
+            judged: Some(crate::Judged { permille: 900 }),
         };
         let idle = Activity::Idle { since: now };
         let blocked = Activity::Blocked {
@@ -172,6 +178,11 @@ mod tests {
         assert_eq!(
             Standing::of(live(&waiting)),
             Standing::NeedsYou(Need::Prompt)
+        );
+        assert_eq!(
+            Standing::of(live(&judged)),
+            Standing::NeedsYou(Need::Prompt),
+            "a wait read from the screen needs the person as one reported does"
         );
         // A question beats everything, even a turn in progress.
         assert_eq!(

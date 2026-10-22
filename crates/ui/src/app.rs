@@ -2173,7 +2173,9 @@ impl App {
             EventKind::InboxAcknowledged { .. } | EventKind::MessagesCaughtUp { .. } => {
                 self.send(Cmd::Activity)
             }
-            EventKind::AgentActivityReported { .. } => {
+            EventKind::AgentActivityReported { .. }
+            | EventKind::AgentJudgedNeedsYou { .. }
+            | EventKind::AgentJudgmentCleared { .. } => {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
@@ -7670,6 +7672,7 @@ pub(crate) mod tests {
         let waiting = || Activity::Waiting {
             since: now,
             reason: None,
+            judged: None,
         };
 
         // A turn that stops to ask the person is waiting, not done; and
@@ -7716,6 +7719,7 @@ pub(crate) mod tests {
         let waiting = Activity::Waiting {
             since: Utc::now() - chrono::Duration::hours(1),
             reason: Some(agentdocker_core::WaitReason::Permission),
+            judged: None,
         };
         let fresh = BTreeMap::from([
             (id.clone(), waiting.clone()),
@@ -7800,6 +7804,7 @@ pub(crate) mod tests {
         let waiting = || Activity::Waiting {
             since: now,
             reason: Some(agentdocker_core::WaitReason::Permission),
+            judged: None,
         };
 
         step(&mut app, &id, working());
@@ -7876,6 +7881,7 @@ pub(crate) mod tests {
             Activity::Waiting {
                 since: Utc::now(),
                 reason: Some(agentdocker_core::WaitReason::Permission),
+                judged: None,
             },
         )]);
         app.note_completions(&fresh);
@@ -7939,6 +7945,7 @@ pub(crate) mod tests {
         let waiting = || Activity::Waiting {
             since: now,
             reason: None,
+            judged: None,
         };
         let post = format!("post window.{id}");
         let withdraw = format!("withdraw window.{id}");

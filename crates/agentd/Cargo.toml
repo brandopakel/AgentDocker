@@ -26,6 +26,7 @@ base64.workspace = true
 sha2.workspace = true
 hmac.workspace = true
 ureq.workspace = true
+vt100.workspace = true
 uuid.workspace = true
 tokio.workspace = true
 tracing.workspace = true

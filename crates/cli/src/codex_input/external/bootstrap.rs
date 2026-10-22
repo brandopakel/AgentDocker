@@ -347,6 +347,7 @@ mod tests {
                             native_codex: false,
                             ..ExperimentalConfig::default()
                         }),
+                        judge: None,
                     },
                     other => panic!("unexpected request {other:?}"),
                 };

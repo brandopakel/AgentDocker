@@ -244,10 +244,17 @@ pub enum Activity {
     /// prompt or a question the provider put in its own terminal. Only
     /// the person can move it on, from there. `reason` says which, when
     /// the adapter could tell.
+    ///
+    /// Or, when the opt-in judge is on, read that way from its quiet
+    /// screen: `judged` then says so and how sure the judge was. A
+    /// judgment only ever raises working, idle or unknown to this; it
+    /// never stands over another state (see `crate::judgment::raise`).
     Waiting {
         since: DateTime<Utc>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<WaitReason>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        judged: Option<Judged>,
     },
     /// Not running any more.
     Finished,
@@ -290,9 +297,26 @@ pub enum WaitReason {
     Permission,
     /// A question or a choice it put to the person.
     Question,
+    /// Words typed at its prompt and never sent. Only the judge reads
+    /// this, from the screen; no adapter reports it.
+    Draft,
     /// A kind this build does not know, from a newer adapter.
     #[serde(other)]
     Other,
+}
+
+/// A wait read from the agent's screen by the opt-in judge rather than
+/// reported by its adapter: how sure the judge was, in thousandths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Judged {
+    pub permille: u16,
+}
+
+impl Judged {
+    /// `92%`, for a person.
+    pub fn percent(self) -> String {
+        format!("{}%", (u32::from(self.permille.min(1000)) + 5) / 10)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +354,7 @@ impl ActivityObservation {
             ReportedActivity::Waiting => Activity::Waiting {
                 since: self.observed_at,
                 reason: self.reason,
+                judged: None,
             },
         })
     }
@@ -394,7 +419,8 @@ mod tests {
             observation.current(now + chrono::Duration::hours(2)),
             Some(Activity::Waiting {
                 since: now,
-                reason: Some(WaitReason::Permission)
+                reason: Some(WaitReason::Permission),
+                judged: None,
             })
         );
         assert_eq!(observation.current(now + chrono::Duration::hours(12)), None);
@@ -405,7 +431,8 @@ mod tests {
         assert_eq!(
             Activity::Waiting {
                 since: now,
-                reason: None
+                reason: None,
+                judged: None,
             }
             .label(),
             "waiting"
@@ -437,7 +464,8 @@ mod tests {
             read.current(now),
             Some(Activity::Waiting {
                 since: now,
-                reason: Some(WaitReason::Other)
+                reason: Some(WaitReason::Other),
+                judged: None,
             })
         );
     }

@@ -383,9 +383,25 @@ impl State {
         wait::deadlock(requester, resource, &holders, &waits)
     }
 
+    /// What one agent is doing, from what the daemon recorded — and,
+    /// where the opt-in judge read its quiet screen as waiting on the
+    /// person, raised to that. A judgment only raises working, idle or
+    /// unknown; it never stands over anything else.
+    pub(super) fn activity_of(&self, record: &AgentRecord, now: DateTime<Utc>) -> Activity {
+        let recorded = self.recorded_activity_of(record, now);
+        match record.judged.as_ref().filter(|j| j.stands_for(record)) {
+            Some(judgment) => agentdocker_core::judgment::raise(recorded, judgment),
+            None => recorded,
+        }
+    }
+
     /// What one agent is doing, from what the daemon recorded rather
     /// than from anything it printed.
-    pub(super) fn activity_of(&self, record: &AgentRecord, now: DateTime<Utc>) -> Activity {
+    pub(super) fn recorded_activity_of(
+        &self,
+        record: &AgentRecord,
+        now: DateTime<Utc>,
+    ) -> Activity {
         if !record.status.is_live() {
             return Activity::Finished;
         }

@@ -395,6 +395,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                     let _ = daemon.scan_agents().await;
                 }
                 daemon.reload_webhooks().await;
+                daemon.judge_screens();
             }
             if ticks.is_multiple_of(60) {
                 daemon.run_board_rules();

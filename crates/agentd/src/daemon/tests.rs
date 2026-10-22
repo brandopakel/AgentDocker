@@ -4003,7 +4003,8 @@ async fn a_wait_keeps_what_it_is_for_through_the_store() {
         state.activity_of(record, now + Duration::minutes(30)),
         Activity::Waiting {
             since: now,
-            reason: Some(WaitReason::Permission)
+            reason: Some(WaitReason::Permission),
+            judged: None,
         }
     );
 }

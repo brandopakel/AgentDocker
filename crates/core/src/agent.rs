@@ -388,6 +388,13 @@ pub struct AgentRecord {
     /// have been injected. Cleared as messages leave the queue.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub legacy_offers: std::collections::BTreeMap<crate::MessageId, DateTime<Utc>>,
+    /// The opt-in judge read its quiet screen as waiting on the person:
+    /// what for, how sure, and which screen of which process. It raises
+    /// the agent's activity while it stands and never lowers it; a change
+    /// of screen, a report from the agent's own adapter or another
+    /// process ends it (see [`crate::judgment`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judged: Option<crate::judgment::ScreenJudgment>,
 }
 
 /// The label an agent's roles are kept in (`role=reviewer`, or
@@ -727,6 +734,7 @@ impl AgentRecord {
             session_contact: None,
             input_binding: None,
             legacy_offers: Default::default(),
+            judged: None,
         }
     }
 }

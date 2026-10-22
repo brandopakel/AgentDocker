@@ -190,6 +190,9 @@ pub struct Session {
     pub input: mpsc::Sender<Vec<u8>>,
     resize: mpsc::Sender<(u16, u16)>,
     scrollback: Arc<std::sync::Mutex<VecDeque<u8>>>,
+    /// The window size last asked for, so the screen can be drawn as the
+    /// agent drew it; a terminal nobody sized is the classic 80 by 24.
+    size: Arc<std::sync::Mutex<(u16, u16)>>,
 }
 
 impl Session {
@@ -198,7 +201,25 @@ impl Session {
     pub fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
         self.resize
             .try_send((cols, rows))
-            .map_err(|_| std::io::Error::other("terminal is not accepting resizes"))
+            .map_err(|_| std::io::Error::other("terminal is not accepting resizes"))?;
+        if cols > 0 && rows > 0 {
+            *self
+                .size
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = (cols, rows);
+        }
+        Ok(())
+    }
+
+    /// What the agent printed lately, as bytes, and the window it printed
+    /// into: enough to draw its screen as it stands.
+    pub fn screen(&self) -> (Vec<u8>, (u16, u16)) {
+        let bytes = lock_scrollback(&self.scrollback).iter().copied().collect();
+        let size = *self
+            .size
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (bytes, size)
     }
 
     /// What to show now, and what comes next, taken together under one
@@ -530,6 +551,7 @@ impl Spawned {
             input,
             resize,
             scrollback: scrollback.clone(),
+            size: Arc::new(std::sync::Mutex::new((80, 24))),
         });
         self.keystrokes = Some(keystrokes);
         self.resizes = Some(resizes);

@@ -472,6 +472,28 @@ pub mod tmux {
             .map_err(|_| io::Error::other("tmux reported a pane pid that is not a number"))
     }
 
+    /// What a pane shows now, as plain text: its visible screen, one line
+    /// per row, without escapes (`capture-pane -p` without `-e`). Read for
+    /// the opt-in judge, only for a pane an agent registered from.
+    pub fn capture(pane: &str) -> io::Result<String> {
+        if !pane.starts_with('%') || !pane[1..].bytes().all(|b| b.is_ascii_digit()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a pane is named by its id, `%` and a number",
+            ));
+        }
+        let output = Command::new("tmux")
+            .args(["capture-pane", "-p", "-t", pane])
+            .stdin(std::process::Stdio::null())
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "tmux could not capture pane {pane}"
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
     /// Ask tmux one thing about one pane.
     fn describe_pane(pane: &str, format: &str) -> io::Result<String> {
         let output = Command::new("tmux")
@@ -542,6 +564,16 @@ pub mod tmux {
         fn a_pane_needs_a_command() {
             let err = new_session("x", Path::new("/tmp"), &BTreeMap::new(), &[]).unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
+
+        /// Only a pane id is captured: a target that names a session, a
+        /// window or anything argument-shaped is refused before tmux runs.
+        #[test]
+        fn only_a_pane_id_is_captured() {
+            for target in ["", "%", "main", "main:1.0", "%3x", "-t", "%1 %2"] {
+                let err = capture(target).unwrap_err();
+                assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{target}");
+            }
         }
     }
 }

@@ -789,6 +789,7 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                     pid,
                     executable,
                     experimental,
+                    judge,
                 }) => {
                     println!(
                         "daemon    agentd {version} up {} at {}{}",
@@ -808,6 +809,9 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                                 .join(agentdocker_core::config::FILE_NAME)
                                 .display()
                         );
+                    }
+                    if let Some(judge) = judge {
+                        println!("judge     {} ([judge] in agentd.toml)", judge.summary());
                     }
                     match restricted {
                         Some(path) => println!("container {}", path.display()),

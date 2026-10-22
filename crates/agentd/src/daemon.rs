@@ -56,6 +56,7 @@ pub mod humans;
 mod images;
 mod inbox;
 mod journal;
+mod judge;
 mod launch;
 mod leases;
 mod panes;
@@ -307,6 +308,11 @@ pub struct Daemon {
     scanning: std::sync::atomic::AtomicBool,
     /// A memory mirror run is under way; the next waits for the next tick.
     mirroring: std::sync::atomic::AtomicBool,
+    /// The opt-in judge's screens, budget and status, off the state lock;
+    /// never held across an await or with another lock.
+    judge: Mutex<judge::Judge>,
+    /// A judge pass is under way; the next waits for the next tick.
+    judging: std::sync::atomic::AtomicBool,
     scan_finished: Notify,
     /// How session owners are run: as processes of the daemon binary, or
     /// in-process where no daemon binary is on hand (tests).
@@ -1623,6 +1629,8 @@ impl Daemon {
             watcher_flush: Mutex::new(None),
             scanning: std::sync::atomic::AtomicBool::new(false),
             mirroring: std::sync::atomic::AtomicBool::new(false),
+            judge: Mutex::new(judge::Judge::default()),
+            judging: std::sync::atomic::AtomicBool::new(false),
             owner_mode: supervisor::OwnerMode::detect(),
             webhooks: Mutex::new(webhooks::Sinks::default()),
             held: Mutex::new(None),
@@ -2023,6 +2031,7 @@ impl Daemon {
                 pid: Some(std::process::id()),
                 executable: agentdocker_host::procinfo::executable_path().ok(),
                 experimental: Some(crate::config::experimental(&self.home)),
+                judge: Some(self.judge_status()),
             },
             Request::DaemonProcess => {
                 let state = lock(&self.state);

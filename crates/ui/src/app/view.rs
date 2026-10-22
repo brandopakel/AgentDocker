@@ -16,6 +16,26 @@ use iced::{
     widget::{Space, column, container, row, scrollable, text},
 };
 
+/// What a session stopped for the person waits for, as a predicate: what
+/// its adapter said, or — read from its quiet screen by the opt-in judge —
+/// what it seems to want.
+pub(super) fn waiting_errand(
+    reason: Option<agentdocker_core::WaitReason>,
+    judged: bool,
+) -> &'static str {
+    use agentdocker_core::WaitReason::{Draft, Permission, Question};
+    match (reason, judged) {
+        (Some(Permission), false) => "wants permission",
+        (Some(Question), false) => "has a question",
+        (Some(Draft), false) => "has an unsent draft",
+        (_, false) => "is waiting for you",
+        (Some(Permission), true) => "seems to want permission",
+        (Some(Question), true) => "seems to have a question",
+        (Some(Draft), true) => "seems to have an unsent draft",
+        (_, true) => "seems to be waiting for you",
+    }
+}
+
 pub(super) fn heading<'a>(value: impl Into<String>, size: u32) -> iced::widget::Text<'a> {
     text(value.into())
         .size(size)
@@ -1022,13 +1042,16 @@ impl App {
             match self.activity.get(&id) {
                 None | Some(Activity::Unknown) => "running".to_owned(),
                 Some(Activity::Waiting {
-                    reason: Some(agentdocker_core::WaitReason::Permission),
+                    reason,
+                    judged: Some(judged),
                     ..
-                }) => "wants permission".to_owned(),
+                }) => format!("{} · {}", waiting_errand(*reason, true), judged.percent()),
                 Some(Activity::Waiting {
-                    reason: Some(agentdocker_core::WaitReason::Question),
+                    reason: Some(reason),
                     ..
-                }) => "has a question".to_owned(),
+                }) if *reason != agentdocker_core::WaitReason::Other => {
+                    waiting_errand(Some(*reason), false).to_owned()
+                }
                 Some(Activity::Waiting { .. }) => "waiting for you".to_owned(),
                 Some(activity) => activity.label().to_owned(),
             }
