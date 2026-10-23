@@ -27,8 +27,14 @@ const HOOK_MARK: &str = "# agentdocker: witness hook";
 /// What a post-commit hook that was already there is renamed to; ours runs
 /// it after reporting.
 pub(super) const CHAINED: &str = "post-commit.agentdocker-chained";
-/// Hooks larger than this are not read for the mark: not ours.
-const HOOK_BYTES: u64 = 64 * 1024;
+/// A hook already there is read whole, up to this, to tell whether it is
+/// ours; a larger one is left alone.
+const HOOK_BYTES: u64 = 1024 * 1024;
+/// The file in the hooks folder installers lock in turn, across threads
+/// and processes, for the whole look, move and write.
+const HOOK_LOCK: &str = "post-commit.agentdocker-lock";
+/// How long an installer waits for another to finish with the folder.
+const HOOK_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 fn hash(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
@@ -65,7 +71,8 @@ pub(super) fn hook_script(cli: &Path) -> String {
          \tAGENTDOCKER_NO_AUTOSTART=1 \"$cli\" report-commit --witness \"$witness\" </dev/null >/dev/null 2>&1 || :\n\
          fi\n\
          chained=\"${{0%/*}}/{CHAINED}\"\n\
-         if [ -x \"$chained\" ]; then\n\
+         # Never one of ours under that name: it would run itself for ever.\n\
+         if [ -x \"$chained\" ] && ! grep -qF '{HOOK_MARK}' \"$chained\" 2>/dev/null; then\n\
          \texec \"$chained\" \"$@\"\n\
          fi\n\
          exit 0\n",
@@ -94,44 +101,107 @@ fn write_executable(path: &Path, text: &str, new: bool) -> std::io::Result<()> {
     file.sync_all()
 }
 
-/// Put our post-commit hook in `hooks`. One already there that is ours is
-/// brought up to date; any other is kept, renamed to [`CHAINED`], and run
-/// by ours after it reports — unless a hook is chained already, when
-/// nothing is changed and the reason is said.
+/// Take the hooks folder's installer lock, waiting a while for another
+/// installer, in this process or another, to finish.
+fn hook_lock(hooks: &Path) -> Result<agentdocker_host::lock::Lock, String> {
+    let path = hooks.join(HOOK_LOCK);
+    let deadline = std::time::Instant::now() + HOOK_LOCK_WAIT;
+    loop {
+        match agentdocker_host::lock::try_exclusive(&path) {
+            Ok(Some(lock)) => return Ok(lock),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(None) => {
+                return Err("another installer held the hooks folder too long".to_owned());
+            }
+            Err(error) => return Err(format!("the hooks folder's lock: {error}")),
+        }
+    }
+}
+
+/// A hook's contents, read through any link: `None` when it is larger than
+/// [`HOOK_BYTES`].
+fn read_hook(hook: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    std::fs::File::open(hook)?
+        .take(HOOK_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= HOOK_BYTES).then_some(bytes))
+}
+
+/// Put our post-commit hook in `hooks`, under the folder's installer lock
+/// so that installers one after another each see what the last one left.
+/// A hook there that is ours (it carries [`HOOK_MARK`]) is brought up to
+/// date and never chained; any other is kept, moved to [`CHAINED`] by a
+/// link that never replaces a file there, and run by ours after it
+/// reports. A hook that cannot be read whole, or another hook beside one
+/// already chained, is left as it is, and the reason said.
 pub(super) fn install_hook(hooks: &Path, script: &str) -> Result<(), String> {
+    use std::io::ErrorKind;
     let failed = |what: &str, error: std::io::Error| format!("{what}: {error}");
     std::fs::create_dir_all(hooks).map_err(|e| failed("the hooks folder", e))?;
+    let _lock = hook_lock(hooks)?;
     let hook = hooks.join("post-commit");
-    let existing = match std::fs::symlink_metadata(&hook) {
-        Ok(meta) => Some(meta),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(failed("the post-commit hook", error)),
-    };
-    let Some(meta) = existing else {
-        return write_executable(&hook, script, true).map_err(|e| failed("the hook", e));
-    };
-    let text = (meta.is_file() && meta.len() <= HOOK_BYTES)
-        .then(|| std::fs::read_to_string(&hook).ok())
-        .flatten();
-    if let Some(text) = text.filter(|text| text.contains(HOOK_MARK)) {
-        if text == script {
-            return Ok(());
-        }
-        // Ours, from another build: replaced whole, by a rename, so a
-        // commit running it meanwhile reads one or the other.
-        let fresh = hooks.join("post-commit.agentdocker-new");
-        write_executable(&fresh, script, false).map_err(|e| failed("the hook", e))?;
-        return std::fs::rename(&fresh, &hook).map_err(|e| failed("the hook", e));
-    }
     let chained = hooks.join(CHAINED);
-    if std::fs::symlink_metadata(&chained).is_ok() {
-        return Err(format!(
-            "{} is not AgentDocker's and {CHAINED} is there too; neither was changed",
-            hook.display()
-        ));
+    // Twice at most: a hook written meanwhile by something that takes no
+    // lock is looked at again rather than written over.
+    for _ in 0..2 {
+        match std::fs::symlink_metadata(&hook) {
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                match write_executable(&hook, script, true) {
+                    Ok(()) => return Ok(()),
+                    Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(failed("the hook", error)),
+                }
+            }
+            Err(error) => return Err(failed("the post-commit hook", error)),
+        }
+        let Some(bytes) = read_hook(&hook).map_err(|e| failed("the post-commit hook", e))? else {
+            return Err(format!(
+                "{} is too large to tell whether it is AgentDocker's; nothing was changed",
+                hook.display()
+            ));
+        };
+        let mark = HOOK_MARK.as_bytes();
+        if bytes.windows(mark.len()).any(|w| w == mark) {
+            if bytes == script.as_bytes() {
+                return Ok(());
+            }
+            // Ours, from another build: replaced whole, by a rename, so a
+            // commit running it meanwhile reads one or the other.
+            let fresh = hooks.join("post-commit.agentdocker-new");
+            write_executable(&fresh, script, false).map_err(|e| failed("the hook", e))?;
+            return std::fs::rename(&fresh, &hook).map_err(|e| failed("the hook", e));
+        }
+        // Theirs: linked under the chained name, which fails rather than
+        // replace a file already there, and only then unlinked here.
+        match std::fs::hard_link(&hook, &chained) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                return Err(format!(
+                    "{} is not AgentDocker's and {CHAINED} is there too; neither was changed",
+                    hook.display()
+                ));
+            }
+            Err(error) => return Err(failed("the existing hook", error)),
+        }
+        if let Err(error) = std::fs::remove_file(&hook) {
+            let _ = std::fs::remove_file(&chained);
+            return Err(failed("the existing hook", error));
+        }
+        match write_executable(&hook, script, true) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(failed("the hook", error)),
+        }
     }
-    std::fs::rename(&hook, &chained).map_err(|e| failed("the existing hook", e))?;
-    write_executable(&hook, script, true).map_err(|e| failed("the hook", e))
+    Err(format!(
+        "{} kept changing while the hook was installed; it was left as it is",
+        hook.display()
+    ))
 }
 
 /// Write the witness file into a worktree's own git directory, readable by

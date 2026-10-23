@@ -735,6 +735,129 @@ fn installing_never_loses_a_hook() {
     );
 }
 
+/// Install from `count` threads at once, released together.
+fn install_at_once(hooks: &Path, script: &str, count: usize) -> Vec<Result<(), String>> {
+    let start = Arc::new(std::sync::Barrier::new(count));
+    let installers: Vec<_> = (0..count)
+        .map(|_| {
+            let (hooks, script, start) = (hooks.to_path_buf(), script.to_owned(), start.clone());
+            std::thread::spawn(move || {
+                start.wait();
+                install_hook(&hooks, &script)
+            })
+        })
+        .collect();
+    installers.into_iter().map(|i| i.join().unwrap()).collect()
+}
+
+/// Installers at once over the person's hook: each succeeds, theirs is
+/// kept whole under the chained name, and ours is the hook, never chained.
+#[test]
+fn installers_at_once_keep_the_person_s_hook_whole() {
+    let script = hook_script(Path::new("/usr/local/bin/agentdocker"));
+    let theirs = "#!/bin/sh\necho theirs\n";
+    for _ in 0..20 {
+        let tmp = tempfile::tempdir().unwrap();
+        let hooks = tmp.path().join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        std::fs::write(hooks.join("post-commit"), theirs).unwrap();
+        make_executable(&hooks.join("post-commit"));
+        for result in install_at_once(&hooks, &script, 8) {
+            assert_eq!(result, Ok(()));
+        }
+        assert_eq!(
+            std::fs::read_to_string(hooks.join("post-commit")).unwrap(),
+            script
+        );
+        let chained = std::fs::read_to_string(hooks.join(CHAINED)).unwrap();
+        assert_eq!(chained, theirs);
+        assert!(!chained.contains(HOOK_MARK));
+    }
+}
+
+/// Installers at once with no hook there: each succeeds, the one hook is
+/// ours, and nothing is chained.
+#[test]
+fn installers_at_once_with_no_hook_all_succeed() {
+    let script = hook_script(Path::new("/usr/local/bin/agentdocker"));
+    for _ in 0..20 {
+        let tmp = tempfile::tempdir().unwrap();
+        let hooks = tmp.path().join("hooks");
+        for result in install_at_once(&hooks, &script, 8) {
+            assert_eq!(result, Ok(()));
+        }
+        assert_eq!(
+            std::fs::read_to_string(hooks.join("post-commit")).unwrap(),
+            script
+        );
+        assert!(!hooks.join(CHAINED).exists());
+    }
+}
+
+/// A hook carrying the mark is ours, whatever else it says or however it
+/// is reached: brought up to date in place, never chained.
+#[test]
+fn a_hook_with_the_mark_is_never_chained() {
+    let script = hook_script(Path::new("/usr/local/bin/agentdocker"));
+    let older = hook_script(Path::new("/opt/agentdocker"));
+    let edited = format!("#!/bin/sh\necho edited\n{HOOK_MARK}\n");
+    for before in [older.as_str(), edited.as_str()] {
+        let tmp = tempfile::tempdir().unwrap();
+        let hooks = tmp.path().join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        std::fs::write(hooks.join("post-commit"), before).unwrap();
+        install_hook(&hooks, &script).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(hooks.join("post-commit")).unwrap(),
+            script
+        );
+        assert!(!hooks.join(CHAINED).exists(), "{before}");
+    }
+    #[cfg(unix)]
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let hooks = tmp.path().join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let elsewhere = tmp.path().join("kept-elsewhere");
+        std::fs::write(&elsewhere, &older).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, hooks.join("post-commit")).unwrap();
+        install_hook(&hooks, &script).unwrap();
+        assert!(!hooks.join(CHAINED).exists(), "a link to ours is ours");
+        assert_eq!(
+            std::fs::read_to_string(hooks.join("post-commit")).unwrap(),
+            script
+        );
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), older);
+    }
+}
+
+/// Should a copy of ours ever stand under the chained name, a commit still
+/// ends: ours does not run another of its own.
+#[cfg(unix)]
+#[test]
+fn a_chained_copy_of_ours_never_loops() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (cli, log) = logging_cli(tmp.path());
+    let repo = tmp.path().join("repo");
+    repository(&repo, "main");
+    let script = hook_script(&cli);
+    let hooks = repo.join(".git/hooks");
+    for name in ["post-commit", CHAINED] {
+        std::fs::write(hooks.join(name), &script).unwrap();
+        make_executable(&hooks.join(name));
+    }
+    let argv: Vec<String> = ["git", "commit", "-q", "--allow-empty", "-m", "ends"]
+        .map(str::to_owned)
+        .to_vec();
+    let output =
+        agentdocker_host::command::run(&repo, &argv, std::time::Duration::from_secs(20)).unwrap();
+    assert!(output.success, "{}", output.text);
+    assert!(
+        runs(&log).is_empty(),
+        "no witness file in the main checkout"
+    );
+}
+
 /// The daemon's own commit in a witnessed worktree runs the hook too; the
 /// report it sends while the commit is in flight records nothing, and the
 /// commit path records the commit once, as the agent's that asked.
