@@ -5258,6 +5258,7 @@ async fn an_agent_says_which_multiplexer_it_lives_in_and_the_daemon_keeps_it() {
         kind: "tmux".to_owned(),
         session: Some("work".to_owned()),
         pane: Some("%3".to_owned()),
+        socket: Some("/private/tmp/tmux-501/default".to_owned()),
         evidence: Evidence::Environment,
     };
     let Response::Agent { agent } = daemon

@@ -62,6 +62,7 @@ pub fn from_ancestry(pid: u32, by_pid: &BTreeMap<u32, Process>) -> Option<Sessio
                 kind: kind.to_owned(),
                 session: None,
                 pane: None,
+                socket: None,
                 evidence: Evidence::Ancestry,
             });
         }
@@ -332,6 +333,9 @@ pub mod tmux {
         pub session: String,
         /// The process tmux started, which is the agent.
         pub pid: u32,
+        /// The server's socket, so the pane is addressed there and nowhere
+        /// else; `None` when tmux would not say.
+        pub socket: Option<String>,
     }
 
     /// `new-session -e`, which is how the agent is told its own id,
@@ -440,6 +444,9 @@ pub mod tmux {
         let pid = pane_pid(&id)?;
         Ok(Pane {
             session: describe_pane(&id, "#{session_name}").unwrap_or_else(|_| session.to_owned()),
+            socket: describe_pane(&id, "#{socket_path}")
+                .ok()
+                .filter(|socket| socket.starts_with('/')),
             id,
             pid,
         })
@@ -472,10 +479,30 @@ pub mod tmux {
             .map_err(|_| io::Error::other("tmux reported a pane pid that is not a number"))
     }
 
-    /// What a pane shows now, as plain text: its visible screen, one line
-    /// per row, without escapes (`capture-pane -p` without `-e`). Read for
-    /// the opt-in judge, only for a pane an agent registered from.
-    pub fn capture(pane: &str) -> io::Result<String> {
+    /// The most a capture may take, unless the caller says otherwise.
+    pub const CAPTURE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// What a pane shows now, as plain text — its visible screen, one line
+    /// per row, without escapes (`capture-pane -p` without `-e`) — read
+    /// only when the pane provably holds the agent it is read for.
+    ///
+    /// The pane is addressed at `socket` (`tmux -S`), the server the agent
+    /// was told it lives in, never at whichever server this process would
+    /// select: pane ids are per server, and two servers each have a `%0`.
+    /// Its process (`#{pane_pid}`) must satisfy `holds` — the caller's
+    /// proof that the agent is that process or descends from it — both
+    /// before the capture and after it, unchanged, so a pane replaced or a
+    /// server restarted in between is refused rather than read. Every tmux
+    /// run is `program` (`tmux`, or a stand-in in tests) as a child of its
+    /// own with a deadline of `deadline`, killed and reaped past it, its
+    /// output bounded.
+    pub fn capture_bound(
+        program: &Path,
+        socket: &Path,
+        pane: &str,
+        holds: impl Fn(u32) -> bool,
+        deadline: std::time::Duration,
+    ) -> io::Result<String> {
         let number = pane.strip_prefix('%').unwrap_or_default();
         if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
             return Err(io::Error::new(
@@ -483,16 +510,48 @@ pub mod tmux {
                 "a pane is named by its id, `%` and a number",
             ));
         }
-        let output = Command::new("tmux")
-            .args(["capture-pane", "-p", "-t", pane])
-            .stdin(std::process::Stdio::null())
-            .output()?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "tmux could not capture pane {pane}"
-            )));
+        if !socket.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a tmux server is named by its socket's absolute path",
+            ));
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        let run = |args: &[&str]| -> io::Result<String> {
+            let mut argv = vec![
+                program.display().to_string(),
+                "-S".to_owned(),
+                socket.display().to_string(),
+            ];
+            argv.extend(args.iter().map(|arg| (*arg).to_owned()));
+            let output = crate::command::run(Path::new("/"), &argv, deadline)?;
+            if !output.success {
+                return Err(io::Error::other(format!(
+                    "tmux could not reach pane {pane} at its server"
+                )));
+            }
+            Ok(output.stdout)
+        };
+        let pid = |text: String| -> io::Result<u32> {
+            text.trim()
+                .parse()
+                .map_err(|_| io::Error::other("tmux reported a pane pid that is not a number"))
+        };
+        let before = pid(run(&["display-message", "-p", "-t", pane, "#{pane_pid}"])?)?;
+        if !holds(before) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the pane does not hold the agent's process",
+            ));
+        }
+        let text = run(&["capture-pane", "-p", "-t", pane])?;
+        let after = pid(run(&["display-message", "-p", "-t", pane, "#{pane_pid}"])?)?;
+        if after != before {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the pane changed hands while it was read",
+            ));
+        }
+        Ok(text)
     }
 
     /// Ask tmux one thing about one pane.
@@ -567,14 +626,84 @@ pub mod tmux {
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         }
 
-        /// Only a pane id is captured: a target that names a session, a
-        /// window or anything argument-shaped is refused before tmux runs.
+        /// Only a pane id at an absolute socket is captured: a target that
+        /// names a session, a window or anything argument-shaped, or a
+        /// server named any other way, is refused before tmux runs.
         #[test]
-        fn only_a_pane_id_is_captured() {
+        fn only_a_pane_id_at_a_named_server_is_captured() {
+            let never = |_| panic!("nothing is asked of tmux");
+            let tmux = Path::new("/nonexistent/tmux");
+            let socket = Path::new("/tmp/tmux-test/default");
             for target in ["", "%", "main", "main:1.0", "%3x", "-t", "%1 %2"] {
-                let err = capture(target).unwrap_err();
+                let err = capture_bound(tmux, socket, target, never, CAPTURE_DEADLINE).unwrap_err();
                 assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{target}");
             }
+            let err = capture_bound(tmux, Path::new("default"), "%0", never, CAPTURE_DEADLINE)
+                .unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
+
+        /// A tmux that never answers is killed at the deadline and its
+        /// process reaped, and a pane whose process is not the agent's is
+        /// refused before anything is captured.
+        #[cfg(unix)]
+        #[test]
+        fn a_capture_is_bounded_and_bound_to_the_agents_process() {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let stand_in = |name: &str, body: &str| {
+                let path = dir.path().join(name);
+                std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+                path
+            };
+            let socket = dir.path().join("server");
+            let marker = dir.path().join("hung");
+            let hanging = stand_in(
+                "hanging",
+                &format!("echo $$ > {}; exec sleep 30", marker.display()),
+            );
+            let started = std::time::Instant::now();
+            let err = capture_bound(
+                &hanging,
+                &socket,
+                "%0",
+                |_| true,
+                std::time::Duration::from_millis(300),
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("timed out"), "{err}");
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            let hung: u32 = std::fs::read_to_string(&marker)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            assert!(!crate::procinfo::alive(hung), "killed and reaped");
+
+            // A stand-in that says the pane holds process 4242, and records
+            // whether a capture was asked for.
+            let captured = dir.path().join("captured");
+            let answering = stand_in(
+                "answering",
+                &format!(
+                    "case \"$3\" in display-message) echo 4242;; capture-pane) touch {}; echo screen;; esac",
+                    captured.display()
+                ),
+            );
+            let err = capture_bound(&answering, &socket, "%0", |pid| pid == 1, CAPTURE_DEADLINE)
+                .unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+            assert!(!captured.exists(), "nothing was captured");
+            let text = capture_bound(
+                &answering,
+                &socket,
+                "%0",
+                |pid| pid == 4242,
+                CAPTURE_DEADLINE,
+            )
+            .unwrap();
+            assert_eq!(text.trim(), "screen");
         }
     }
 }

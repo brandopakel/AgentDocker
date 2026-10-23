@@ -30,6 +30,13 @@ pub struct Session {
     /// The pane or window inside that session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<String>,
+    /// The tmux server, by the socket it listens on (the first part of
+    /// `TMUX`). Pane ids are per server — two servers each have a `%0` —
+    /// so a pane is only ever addressed at this socket (`tmux -S`), never
+    /// at whatever server the caller's own environment selects. `None`
+    /// for other multiplexers and where it was not told.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket: Option<String>,
     /// How we know: `environment` is what the multiplexer told its own
     /// child; `ancestry` is one seen between the agent and its shell.
     pub evidence: Evidence,
@@ -70,12 +77,23 @@ pub fn from_environment(env: &BTreeMap<String, String>) -> Option<Session> {
     let get = |key: &str| env.get(key).map(String::as_str).filter(|v| !v.is_empty());
 
     // tmux sets TMUX to `<socket>,<pid>,<session>` and TMUX_PANE to the
-    // pane id. The pane is what a person needs to attach to.
+    // pane id. The pane is what a person needs to attach to; the socket
+    // is which server that pane id belongs to (a socket path may itself
+    // hold a comma, so the two fields are taken from the right).
+    let socket = get("TMUX").and_then(|tmux| {
+        let mut fields = tmux.rsplitn(3, ',');
+        let (_session, _pid) = (fields.next(), fields.next());
+        fields
+            .next()
+            .filter(|socket| socket.starts_with('/'))
+            .map(str::to_owned)
+    });
     if let Some(pane) = get("TMUX_PANE") {
         return Some(Session {
             kind: "tmux".to_owned(),
             session: get("TMUX").and_then(|tmux| tmux.rsplit(',').next().map(str::to_owned)),
             pane: Some(pane.to_owned()),
+            socket,
             evidence: Evidence::Environment,
         });
     }
@@ -84,6 +102,7 @@ pub fn from_environment(env: &BTreeMap<String, String>) -> Option<Session> {
             kind: "tmux".to_owned(),
             session: get("TMUX").and_then(|tmux| tmux.rsplit(',').next().map(str::to_owned)),
             pane: None,
+            socket,
             evidence: Evidence::Environment,
         });
     }
@@ -93,6 +112,7 @@ pub fn from_environment(env: &BTreeMap<String, String>) -> Option<Session> {
             kind: "zellij".to_owned(),
             session: Some(session.to_owned()),
             pane: get("ZELLIJ_PANE_ID").map(str::to_owned),
+            socket: None,
             evidence: Evidence::Environment,
         });
     }
@@ -101,6 +121,7 @@ pub fn from_environment(env: &BTreeMap<String, String>) -> Option<Session> {
             kind: "zellij".to_owned(),
             session: None,
             pane: get("ZELLIJ_PANE_ID").map(str::to_owned),
+            socket: None,
             evidence: Evidence::Environment,
         });
     }
@@ -111,6 +132,7 @@ pub fn from_environment(env: &BTreeMap<String, String>) -> Option<Session> {
             kind: "screen".to_owned(),
             session: Some(sty.to_owned()),
             pane: get("WINDOW").map(str::to_owned),
+            socket: None,
             evidence: Evidence::Environment,
         });
     }
@@ -127,6 +149,7 @@ pub fn from_environment(env: &BTreeMap<String, String>) -> Option<Session> {
             kind: "herdr".to_owned(),
             session: herdr_session.map(str::to_owned),
             pane: herdr_pane.map(str::to_owned),
+            socket: None,
             evidence: Evidence::Environment,
         });
     }
@@ -154,8 +177,19 @@ mod tests {
         assert_eq!(session.kind, "tmux");
         assert_eq!(session.pane.as_deref(), Some("%3"));
         assert_eq!(session.session.as_deref(), Some("work"));
+        assert_eq!(
+            session.socket.as_deref(),
+            Some("/private/tmp/tmux-501/default"),
+            "the server the pane id belongs to"
+        );
         assert_eq!(session.evidence, Evidence::Environment);
         assert_eq!(session.describe(), "tmux:%3");
+        let comma =
+            from_environment(&env(&[("TMUX", "/tmp/a,b/sock,99,1"), ("TMUX_PANE", "%0")])).unwrap();
+        assert_eq!(comma.socket.as_deref(), Some("/tmp/a,b/sock"));
+        let relative =
+            from_environment(&env(&[("TMUX", "sock,99,1"), ("TMUX_PANE", "%0")])).unwrap();
+        assert_eq!(relative.socket, None, "only an absolute socket is a server");
     }
 
     #[test]

@@ -227,6 +227,7 @@ impl State {
             kind: "tmux".to_owned(),
             session: Some(pane.session.clone()),
             pane: Some(pane.id.clone()),
+            socket: pane.socket.clone(),
             evidence: agentdocker_core::multiplexer::Evidence::Environment,
         });
         agent.status = AgentStatus::Running;
@@ -289,6 +290,7 @@ mod tests {
                 id: "%42".into(),
                 session: "owned-pane".into(),
                 pid: 42,
+                socket: None,
             };
             assert!(matches!(
                 state.commit_pane_start(&before.id, &pane, Some(Utc::now())),

@@ -317,6 +317,9 @@ pub struct Daemon {
     judge: Mutex<judge::Judge>,
     /// A judge pass is under way; the next waits for the next tick.
     judging: std::sync::atomic::AtomicBool,
+    /// The judge's own read of the file and key is under way, apart from
+    /// any pass, so a switch-off is seen while a pass waits on an answer.
+    judge_watching: std::sync::atomic::AtomicBool,
     scan_finished: Notify,
     /// How session owners are run: as processes of the daemon binary, or
     /// in-process where no daemon binary is on hand (tests).
@@ -1635,6 +1638,7 @@ impl Daemon {
             mirroring: std::sync::atomic::AtomicBool::new(false),
             judge: Mutex::new(judge::Judge::default()),
             judging: std::sync::atomic::AtomicBool::new(false),
+            judge_watching: std::sync::atomic::AtomicBool::new(false),
             owner_mode: supervisor::OwnerMode::detect(),
             webhooks: Mutex::new(webhooks::Sinks::default()),
             held: Mutex::new(None),

@@ -41,6 +41,12 @@ use crate::owner::Launch;
 /// child. The launch gate's own deadline is shorter.
 const OWNER_READY_WITHIN: Duration = Duration::from_secs(10);
 
+/// The largest window a managed agent's screen is drawn at, whatever a
+/// client asks the terminal to be: drawing allocates every cell at once,
+/// and the judge reads only the bottom lines at the real width.
+pub(crate) const SCREEN_COLS: u16 = 500;
+pub(crate) const SCREEN_ROWS: u16 = 200;
+
 /// What a client attaching late is shown before the live stream: enough
 /// to see where the agent got to, not its whole history — the log has
 /// that.
@@ -191,7 +197,8 @@ pub struct Session {
     resize: mpsc::Sender<(u16, u16)>,
     scrollback: Arc<std::sync::Mutex<VecDeque<u8>>>,
     /// The window size last asked for, so the screen can be drawn as the
-    /// agent drew it; a terminal nobody sized is the classic 80 by 24.
+    /// agent drew it, bounded by [`SCREEN_COLS`] and [`SCREEN_ROWS`]; a
+    /// terminal nobody sized is the classic 80 by 24.
     size: Arc<std::sync::Mutex<(u16, u16)>>,
 }
 
@@ -206,7 +213,8 @@ impl Session {
             *self
                 .size
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = (cols, rows);
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                (cols.min(SCREEN_COLS), rows.min(SCREEN_ROWS));
         }
         Ok(())
     }
