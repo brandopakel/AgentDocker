@@ -172,6 +172,11 @@ pub(in crate::daemon) struct Judge {
     tmux: PathBuf,
     /// Screens read, for tests that prove none is read while off.
     reads: u64,
+    /// A test's hold on a positive answer between its generation check and
+    /// its record: the pass meets the first barrier, then waits on the
+    /// second.
+    #[cfg(test)]
+    pause: Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>,
 }
 
 impl Default for Judge {
@@ -195,6 +200,8 @@ impl Default for Judge {
             capture_deadline: multiplexer::tmux::CAPTURE_DEADLINE,
             tmux: PathBuf::from("tmux"),
             reads: 0,
+            #[cfg(test)]
+            pause: None,
         }
     }
 }
@@ -213,9 +220,12 @@ impl Judge {
     /// Forget everything watched and the setup: nothing is kept while off,
     /// and nothing a pass still holds is current any more.
     fn stop(&mut self, setting: Setting) {
-        if self.running.take().is_some() || self.fingerprint.take().is_some() {
-            self.generation += 1;
-        }
+        // Both go, whatever either held: a fingerprint left behind would
+        // make the same section and key, turned on again, look unchanged
+        // and never start a setup.
+        self.running = None;
+        self.fingerprint = None;
+        self.generation += 1;
         self.setting = setting;
         self.screens.clear();
         self.calls.clear();
@@ -489,16 +499,18 @@ impl Daemon {
         )
         .await
         .unwrap_or_else(|_| Err("judge: the configuration read did not complete".into()));
-        let (stopped, announced, running) = {
+        // What this read changed, if anything: the generation it made and
+        // whether the judge is on under it, and a reason to say once.
+        let (changed, notice, announced, running) = {
             let mut judge = lock(&self.judge);
-            let mut stopped = None;
+            let (mut changed, mut notice) = (None, None);
             if ticket > judge.reads_applied {
                 judge.reads_applied = ticket;
                 match &read {
                     Ok(Some((config, key))) => {
                         let fingerprint: [u8; 32] =
                             Sha256::digest(format!("{config:?}\n{key}").as_bytes()).into();
-                        if judge.fingerprint != Some(fingerprint) {
+                        if judge.fingerprint != Some(fingerprint) || judge.running.is_none() {
                             judge.generation += 1;
                             judge.fingerprint = Some(fingerprint);
                             judge.running = Some(Arc::new(Setup {
@@ -506,6 +518,7 @@ impl Daemon {
                                 key: key.clone(),
                                 generation: judge.generation,
                             }));
+                            changed = Some((judge.generation, true));
                         }
                         judge.setting = Setting::On {
                             judgments: config.judgments.clone(),
@@ -515,11 +528,12 @@ impl Daemon {
                     }
                     Ok(None) => {
                         judge.stop(Setting::Off);
-                        stopped = Some(None);
+                        changed = Some((judge.generation, false));
                     }
                     Err(reason) => {
                         judge.stop(Setting::Unusable(reason.clone()));
-                        stopped = Some(Some(reason.clone()));
+                        changed = Some((judge.generation, false));
+                        notice = Some(reason.clone());
                     }
                 }
             }
@@ -528,20 +542,48 @@ impl Daemon {
                 .is_some()
                 .then(|| judge.announce(Instant::now()))
                 .flatten();
-            (stopped, announced, judge.running.clone())
+            (changed, notice, announced, judge.running.clone())
         };
-        match stopped {
-            Some(Some(reason)) => {
-                self.config_notice(reason);
-                self.clear_standing();
-            }
-            Some(None) => self.clear_standing(),
-            None => {}
+        if let Some(notice) = notice {
+            self.config_notice(notice);
+        }
+        if let Some((generation, on)) = changed {
+            self.judge_sync(generation, on);
         }
         if let Some(event) = announced {
             self.emit(event);
         }
         running
+    }
+
+    /// Bring the state lock's view of the judge to `generation`, unless it
+    /// has seen a later one already. Turned off, every standing judgment
+    /// comes off in the same hold: a judgment is recorded only under the
+    /// generation this lock holds (`record_judgment`), so once a stop has
+    /// cleared here, nothing judged before it can be written after.
+    fn judge_sync(&self, generation: u64, on: bool) {
+        let mut state = lock(&self.state);
+        if generation <= state.judge_generation {
+            return;
+        }
+        state.judge_generation = generation;
+        state.judge_on = on;
+        if on {
+            return;
+        }
+        let standing: Vec<(AgentId, String)> = state
+            .registry
+            .all()
+            .filter_map(|record| {
+                record
+                    .judged
+                    .as_ref()
+                    .map(|j| (record.id.clone(), j.screen.clone()))
+            })
+            .collect();
+        for (agent, screen) in standing {
+            state.clear_judgment(&agent, &screen, "judge_off");
+        }
     }
 
     fn judge_current(&self, generation: u64) -> bool {
@@ -813,6 +855,11 @@ impl Daemon {
                             screen: screen.digest.clone(),
                             model,
                         };
+                        if !self.judge_current(setup.generation) {
+                            break;
+                        }
+                        #[cfg(test)]
+                        self.judge_pause().await;
                         self.record_judgment(&screen.agent, judged, setup.generation);
                     }
                 }
@@ -833,6 +880,17 @@ impl Daemon {
         }
     }
 
+    /// Where a test holds a positive answer after its generation check
+    /// and before its record.
+    #[cfg(test)]
+    async fn judge_pause(&self) {
+        let pause = lock(&self.judge).pause.clone();
+        if let Some((reached, resume)) = pause {
+            reached.wait().await;
+            resume.wait().await;
+        }
+    }
+
     /// A screen asked about is not asked about again until it changes.
     fn settle(&self, agent: &AgentId, screen: &str) {
         if let Some(watched) = lock(&self.judge).screens.get_mut(agent)
@@ -843,14 +901,17 @@ impl Daemon {
     }
 
     /// Keep a promotion on the agent's record, if it still applies: the
-    /// setup it was asked under still in force, the same live process,
+    /// setup it was asked under still in force by the state lock, the same live process,
     /// nothing reported by its adapter since the screen was read, and
     /// working, idle or unknown by its record.
     fn record_judgment(&self, agent: &AgentId, judgment: ScreenJudgment, generation: u64) -> bool {
-        if !self.judge_current(generation) {
+        let mut state = lock(&self.state);
+        // Checked in the same hold as the write: a stop syncs and clears
+        // under this lock, so it either came first and this writes nothing,
+        // or comes after and clears what this writes.
+        if !state.judge_on || state.judge_generation != generation {
             return false;
         }
-        let mut state = lock(&self.state);
         let Some(mut record) = state.registry.get(agent).cloned() else {
             return false;
         };
@@ -898,8 +959,15 @@ impl Daemon {
     /// Take a judgment off an agent's record, if it is still the one
     /// judged from `screen`.
     fn clear_judgment(&self, agent: &AgentId, screen: &str, reason: &str) {
-        let mut state = lock(&self.state);
-        let Some(mut record) = state.registry.get(agent).cloned() else {
+        lock(&self.state).clear_judgment(agent, screen, reason);
+    }
+}
+
+impl State {
+    /// Take a judgment off an agent's record, if it is still the one
+    /// judged from `screen`, with its event, in the caller's hold.
+    fn clear_judgment(&mut self, agent: &AgentId, screen: &str, reason: &str) {
+        let Some(mut record) = self.registry.get(agent).cloned() else {
             return;
         };
         if record.judged.as_ref().is_none_or(|j| j.screen != screen) {
@@ -913,7 +981,7 @@ impl Daemon {
             },
             Utc::now(),
         );
-        let _ = state.transition(
+        let _ = self.transition(
             "screen judgment cleared",
             event,
             |store, event| store.agent_transition(&record, event),
@@ -923,24 +991,6 @@ impl Daemon {
                 }
             },
         );
-    }
-
-    /// Off, or unable to run: every standing judgment comes off, since
-    /// nothing watches those screens any more.
-    fn clear_standing(&self) {
-        let standing: Vec<(AgentId, String)> = lock(&self.state)
-            .registry
-            .all()
-            .filter_map(|record| {
-                record
-                    .judged
-                    .as_ref()
-                    .map(|j| (record.id.clone(), j.screen.clone()))
-            })
-            .collect();
-        for (agent, screen) in standing {
-            self.clear_judgment(&agent, &screen, "judge_off");
-        }
     }
 }
 
@@ -1530,6 +1580,72 @@ mod tests {
         assert_eq!(promotions(&mut events), 0);
         stop(&daemon, &first).await;
         stop(&daemon, &second).await;
+    }
+
+    /// Off for exactly one read, then the same section and key on again:
+    /// a new generation with a setup of its own, and screens are judged.
+    #[tokio::test]
+    async fn the_same_setup_turned_off_once_and_on_again_judges_again() {
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.97, 0.1, 0.0, 0.0]);
+        configure(&dir, &url, "");
+        let file = dir.path().join(agentdocker_core::config::FILE_NAME);
+        let on = std::fs::read_to_string(&file).unwrap();
+        let daemon = open(&dir);
+        let first = daemon.judge_setup().await.expect("on");
+        std::fs::remove_file(&file).unwrap();
+        assert!(daemon.judge_setup().await.is_none(), "off for one read");
+        {
+            let judge = lock(&daemon.judge);
+            assert!(judge.running.is_none() && judge.fingerprint.is_none());
+        }
+        std::fs::write(&file, on).unwrap();
+        let again = daemon.judge_setup().await.expect("on again");
+        assert!(again.generation > first.generation, "a fresh generation");
+        assert!(lock(&daemon.judge).running.is_some());
+        let agent = showing(&daemon, &dir, "again", DIALOG).await;
+        daemon.judge_once().await;
+        assert_eq!(calls(&fake), 1, "a new screen is judged");
+        assert!(record(&daemon, &agent).judged.is_some());
+        stop(&daemon, &agent).await;
+    }
+
+    /// A positive answer held after its generation check and before its
+    /// record, while the judge is switched off and every standing judgment
+    /// cleared: once let go it records nothing and announces nothing.
+    #[tokio::test]
+    async fn a_switch_off_between_the_check_and_the_record_wins() {
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.98, 0.1, 0.0, 0.0]);
+        configure(&dir, &url, "");
+        let daemon = open(&dir);
+        let mut events = daemon.subscribe_events();
+        let agent = showing(&daemon, &dir, "held", DIALOG).await;
+        let (reached, resume) = (
+            Arc::new(tokio::sync::Barrier::new(2)),
+            Arc::new(tokio::sync::Barrier::new(2)),
+        );
+        lock(&daemon.judge).pause = Some((reached.clone(), resume.clone()));
+        let pass = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { daemon.judge_once().await })
+        };
+        reached.wait().await;
+        assert_eq!(calls(&fake), 1, "the answer is back and checked");
+        std::fs::remove_file(dir.path().join(agentdocker_core::config::FILE_NAME)).unwrap();
+        assert!(
+            daemon.judge_setup().await.is_none(),
+            "switched off and cleared"
+        );
+        resume.wait().await;
+        pass.await.unwrap();
+        assert!(
+            record(&daemon, &agent).judged.is_none(),
+            "nothing persisted"
+        );
+        assert_eq!(promotions(&mut events), 0, "nothing announced");
+        assert_eq!(daemon.judge_status(), JudgeStatus::Off);
+        stop(&daemon, &agent).await;
     }
 
     /// A tmux that never answers is given up on at the capture's deadline:

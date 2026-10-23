@@ -532,6 +532,13 @@ struct State {
     /// Empty means everything is allowed, which is what no file means.
     host_policy: policies::Loaded,
     project_policies: HashMap<PathBuf, policies::Loaded>,
+    /// The screen judge's generation and whether it is on, as this lock
+    /// sees them. A judgment is recorded only under the generation in
+    /// force here, and a stop clears every standing judgment in the same
+    /// hold that records it, so nothing judged under an earlier setup is
+    /// written after a stop has cleared (see `judge.rs`).
+    judge_generation: u64,
+    judge_on: bool,
 }
 
 struct JournalRing {
@@ -1631,6 +1638,8 @@ impl Daemon {
                 notifier: None,
                 host_policy: policies::Loaded::default(),
                 project_policies: HashMap::new(),
+                judge_generation: 0,
+                judge_on: false,
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
