@@ -260,7 +260,9 @@ Without fresh provider observations or recent coordination, activity is unknown.
 Recent coordination can establish working; an explicit provider stop produces
 provisional idle that expires or is superseded by newer activity. An agent
 with no hooks of its own in a herdr pane takes herdr's word instead, for as
-long as herdr keeps saying it. Process presence, provider configuration and
+long as herdr keeps saying it; a Codex whose conversation runs in Codex's
+shared app-server takes that server's word the same way, ahead of herdr's.
+Process presence, provider configuration and
 observed activity are separate facts.
 See [messaging](ARCHITECTURE.md#messaging).
 
@@ -1071,7 +1073,11 @@ Current behaviour that the sections above do not already state, by area.
   later, `$CODEX_HOME/app-server-control/app-server-control.sock`), the daemon
   reads each conversation's status there: one stopped for an approval or a
   question shows as waiting for you, one running a turn as working, a quiet
-  one as idle. A terminal resumed with `codex resume <thread>` is also fed at
+  one as idle. That is the server's word, not the agent's: while the server
+  keeps saying it, the agent's own tools calling in do not make a quiet or
+  waiting Codex read as working, and where herdr also follows its pane, the
+  server's word wins. `agentdocker events` marks these `(Codex server)`.
+  A terminal resumed with `codex resume <thread>` is also fed at
   idle through that server's own queue, with the same exact receipts as any
   Codex receiver. Without the socket nothing changes. `agentdocker
   codex-threads` lists what that server has loaded, read-only
