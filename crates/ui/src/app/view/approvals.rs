@@ -2239,6 +2239,7 @@ mod tests {
             reported_at: now,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         let (asker_id, ended_id) = (asker.id.to_string(), ended.id.to_string());
         app.agents.extend([asker, ended]);

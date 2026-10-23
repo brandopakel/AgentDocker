@@ -235,6 +235,7 @@ fn ps_does_not_hide_a_quota_block_from_an_ended_session_outside_its_rows() {
         pause_reason: None,
         received: None,
         received_at: None,
+        typing_until: None,
     });
     let mut source = receiver.clone();
     source.id = "hidden-source".into();

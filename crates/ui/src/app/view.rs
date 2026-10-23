@@ -4643,6 +4643,7 @@ mod tests {
             reported_at: now,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         assert_eq!(app.input_readiness(&agent).label(), "Ready for messages");
         // Words queued behind a current receiver that no receipt covers are

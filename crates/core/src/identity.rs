@@ -541,6 +541,7 @@ mod tests {
             reported_at: second.created_at,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         assert_eq!(
             ids(keeper([&first, &second], |_| false)),

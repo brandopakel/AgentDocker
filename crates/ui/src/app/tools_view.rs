@@ -457,10 +457,11 @@ impl App {
             .iter()
             .map(|agent| self.readiness_decision(agent).state)
             .collect();
+        // A receiver holding input for the person's typing is a ready one.
         let ready = self.connected.is_ok()
             && states
                 .iter()
-                .any(|state| matches!(state, State::Ready { .. }));
+                .any(|state| matches!(state, State::Ready { .. } | State::HeldForTyping));
         let missing =
             installed && (runtime.mcp == Wiring::Missing || runtime.hooks == Wiring::Missing);
         // A session whose delivery is held — its receiver paused, or its
@@ -2562,6 +2563,7 @@ mod tests {
             reported_at,
             received: None,
             received_at: None,
+            typing_until: None,
         };
         agent.input_delivery = Some(delivery(false, now));
         assert_eq!(

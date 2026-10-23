@@ -40,13 +40,15 @@ impl Readiness {
     }
 
     /// Its tone, by the state, never by the words: positive while it takes
-    /// messages, the accent while words wait for it or it waits for a
-    /// prompt or a check-in, attention when something stands in the way,
+    /// messages, the accent while words wait for it, for the person to
+    /// stop typing in its terminal, or for a prompt or a check-in,
+    /// attention when something stands in the way,
     /// quiet when it has ended or nothing is known.
     pub(super) fn tone(self) -> Tone {
         match self {
             Self::Decided(State::Ready { .. }) => Tone::Positive,
-            Self::Sending | Self::Decided(State::WaitsForPrompt | State::AwaitsCheckIn) => {
+            Self::Sending
+            | Self::Decided(State::HeldForTyping | State::WaitsForPrompt | State::AwaitsCheckIn) => {
                 Tone::Info
             }
             Self::Decided(
@@ -60,7 +62,9 @@ impl Readiness {
         match self {
             Self::Decided(State::Ready { .. }) => Some(Icon::Check),
             Self::Sending => Some(Icon::ArrowUp),
-            Self::Decided(State::WaitsForPrompt | State::AwaitsCheckIn) => Some(Icon::Clock),
+            Self::Decided(State::HeldForTyping | State::WaitsForPrompt | State::AwaitsCheckIn) => {
+                Some(Icon::Clock)
+            }
             Self::Decided(State::ProviderBlocked(_)) => Some(Icon::Hourglass),
             Self::Decided(State::Paused) => Some(Icon::Pause),
             Self::Decided(State::Silent | State::Unreachable) => Some(Icon::Alert),

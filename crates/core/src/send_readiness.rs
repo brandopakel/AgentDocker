@@ -140,7 +140,9 @@ impl RecipientReadiness {
             State::Silent => SendIssue::ReceiverSilent,
             State::Unreachable => SendIssue::Unreachable,
             State::AwaitsCheckIn | State::WaitsForPrompt => SendIssue::NoReceiver,
-            State::Ready { .. } => return None,
+            // Nothing for the sender to do: it goes in once the person
+            // stops typing.
+            State::Ready { .. } | State::HeldForTyping => return None,
         };
         Some(Self {
             agent: agent.id.clone(),
@@ -536,6 +538,7 @@ mod tests {
                 pause_reason: None,
                 received: None,
                 received_at: None,
+                typing_until: None,
             });
             assert_eq!(issue(&agent, None), None);
             assert_eq!(

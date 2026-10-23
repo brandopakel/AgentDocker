@@ -9145,6 +9145,7 @@ mod tests {
             reported_at: now,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         app.agents.push(paused);
         // Already selected, review folded: exactly the screenshot's state.

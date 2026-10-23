@@ -16,6 +16,7 @@ mod session_identity;
 mod terminal;
 pub mod threads;
 mod transport;
+mod typing_hold;
 
 use crate::client::Client;
 use agentdocker_core::{
@@ -31,6 +32,9 @@ use tokio::{
     time::{interval, timeout},
 };
 use transport::Provider;
+
+/// How often the idle bridge looks at its queue.
+const POLL: Duration = Duration::from_millis(500);
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -376,24 +380,53 @@ async fn session(
     )
     .await?;
     println!("Codex ready. Send a message here or from AgentDocker.");
-    let mut poll = interval(Duration::from_millis(500));
+    let mut poll = interval(POLL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut heartbeat = interval(Duration::from_secs(30));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut stdin = BufReader::new(tokio::io::stdin());
-    let mut input = terminal::Input::new(terminal_editing);
-    let mut input_open = agent.spec.tty || agent.spec.in_pane;
-    let mut terminal_suspended = false;
+    let mut keyboard = terminal::Keyboard::new(
+        BufReader::new(tokio::io::stdin()),
+        terminal_editing,
+        agent.spec.tty || agent.spec.in_pane,
+    );
     let mut turn: Option<String> = None;
     let mut turn_failures = availability::TurnFailures::default();
     let mut refused_steering: Option<String> = None;
     let mut request_ids = std::collections::HashSet::new();
     let mut file_reviews = file_changes::Reviews::default();
     let mut secrets = secret_requests::Session::new(agent)?;
+    let mut typing = typing_hold::Guard::new(
+        human.clone(),
+        chrono::Duration::from_std(POLL).expect("a half second"),
+        chrono::Utc::now,
+    );
     // Interactive routes require the bounded editor to own terminal echo.
     // Non-terminal or unsupported interactive handles keep refusing.
-    let secret_input = experimental(client).await.secret_input && (!input_open || terminal_editing);
+    let secret_input =
+        experimental(client).await.secret_input && (!keyboard.open || terminal_editing);
     loop {
+        // Lines the person ended, queued in the order they were typed,
+        // including any ended while the bridge waited on another call.
+        while let Some(text) = keyboard.next_line() {
+            ensure!(
+                matches!(
+                    call(
+                        client,
+                        Request::Send {
+                            from: HUMAN.into(),
+                            to: agent.id.to_string(),
+                            kind: "chat".into(),
+                            payload: json!({"text":text}),
+                            reply_to: None,
+                            links: Vec::new()
+                        }
+                    )
+                    .await?,
+                    Response::Sent { .. }
+                ),
+                "message was not queued"
+            );
+        }
         tokio::select! {
             event = question_events.next() => { requests::observe(ledger, &event?)?; }
             _ = heartbeat.tick() => {
@@ -409,7 +442,7 @@ async fn session(
                     ensure!(request_ids.len() < 10_000 && request_ids.insert(key), "Codex repeated a request ID or exceeded the request history bound");
                     let response = if secret_input && secret_requests::contains_secret(&event) {
                         let response = secrets.open(client, ledger, &human, &thread, turn.as_deref(), &event).await?;
-                        terminal_suspended |= ledger.record().secret_review.is_some();
+                        keyboard.suspended |= ledger.record().secret_review.is_some();
                         response
                     } else {
                         requests::open(client, ledger, &human, &thread, turn.as_deref(), event, &mut file_reviews).await?
@@ -498,37 +531,36 @@ async fn session(
                     _ => (),
                 }
             }
-            line = async {
-                if terminal_suspended {
-                    terminal::discard(&mut stdin).await.map(|()| None)
-                } else { input.read(&mut stdin).await }
-            }, if input_open => {
-                if terminal_suspended {
-                    if line.is_err() { input_open = false; }
+            line = keyboard.read(), if keyboard.open => {
+                if keyboard.suspended {
+                    if line.is_err() { keyboard.open = false; }
                     else if ledger.record().secret_review.is_none() {
-                        terminal_suspended = false;
+                        keyboard.suspended = false;
                         println!("Terminal input resumed; your earlier draft is preserved.");
                     }
                     continue;
                 }
-                match line {
-                    Ok(Some(text)) => {
-                        ensure!(matches!(call(client, Request::Send { from: HUMAN.into(), to: agent.id.to_string(),
-                            kind: "chat".into(), payload: json!({"text":text}), reply_to: None, links: Vec::new() }).await?, Response::Sent { .. }), "message was not queued");
-                    }
-                    Ok(None) => (),
-                    Err(error) => { input_open = false; eprintln!("Terminal input closed: {error}"); }
-                }
+                keyboard.take(line);
             }
             _ = poll.tick() => {
-                secrets.poll(client, provider, ledger).await?;
-                let messages = requests::poll(client, provider, ledger).await?;
+                // The terminal is read while these calls are in flight, so a
+                // line begun meanwhile is seen by the typing guard below.
+                let messages = keyboard.during(async {
+                    secrets.poll(client, provider, ledger).await?;
+                    requests::poll(client, provider, ledger).await
+                }).await?;
                 if ledger.record().reviews.is_empty() && ledger.record().secret_review.is_none() {
                 if let Some(message) = messages.first() {
                     if let Some(active) = turn.as_deref() {
                         if refused_steering.as_deref() == Some(active)
                             || ledger.record().steering.is_some()
                             || !ledger.record().attempt.as_ref().is_some_and(|a| a.acknowledged) {
+                            continue;
+                        }
+                        // Anyone else's words wait while the person types
+                        // here, at the head of the queue, and go once they
+                        // stop. Nothing is awaited between this and the steer.
+                        if typing.hold(client, &mut keyboard, agent, message).await {
                             continue;
                         }
                         let input = ledger.prepare_steering(message, active)?;
@@ -568,9 +600,21 @@ async fn session(
                         // stale queue head may just have been acknowledged.
                         continue;
                     }
-                    preflight(provider, &ledger.record().binding.cwd).await?;
+                    // A turn started now would print into the person's
+                    // unfinished line: anyone else's words wait for them to
+                    // stop, checked before the start's own calls and again
+                    // after them, with the terminal read throughout.
+                    let cwd = ledger.record().binding.cwd.clone();
+                    if !typing.ready_to_start(client, &mut keyboard, agent, message,
+                        async {
+                            preflight(provider, &cwd).await?;
+                            activity(client, agent.id.as_str(), ReportedActivity::Working).await
+                        },
+                        activity(client, agent.id.as_str(), ReportedActivity::Idle),
+                    ).await? {
+                        continue;
+                    }
                     let input = ledger.prepare_bound(message, Some(mcp_origin.clone()))?;
-                    activity(client, agent.id.as_str(), ReportedActivity::Working).await?;
                     let result = match provider.request("turn/start", json!({"threadId":thread,"clientUserMessageId":message.id,
                         "input":[{"type":"text","text":input,"text_elements":[]}]})).await {
                         Ok(result) => result,

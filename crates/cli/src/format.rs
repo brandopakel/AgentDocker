@@ -235,6 +235,11 @@ pub fn event_line(event: &Event) -> String {
                 if delivery.paused { "paused" } else { "updated" }
             )
         }
+        EventKind::InputHeldForTyping { agent, until } => format!(
+            "input held       {} while the person types, until {}",
+            agent.short(),
+            clock(*until)
+        ),
         EventKind::InputBound {
             agent,
             controller,
