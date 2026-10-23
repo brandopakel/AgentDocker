@@ -424,6 +424,30 @@ pub fn raise(activity: Activity, judgment: &ScreenJudgment) -> Activity {
     }
 }
 
+/// Whether the judge runs, as `judge_status_changed` says it: the state
+/// alone, without the calls and model `ping` adds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgeState {
+    Off,
+    On,
+    Unusable,
+    /// A state this build does not know, from a newer daemon.
+    #[serde(other)]
+    Unknown,
+}
+
+impl JudgeState {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+            Self::Unusable => "unusable",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// How the judge stands, as `ping` reports it and `daemon status` prints.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -747,6 +771,19 @@ mod tests {
         assert_eq!(Judgment::parse("screens"), Some(Judgment::Screens));
         assert_eq!(Judgment::parse("summaries"), None);
         assert_eq!(Judgment::Screens.as_str(), "screens");
+    }
+
+    #[test]
+    fn the_judge_state_reads_as_a_word_and_tolerates_newer_ones() {
+        for state in [JudgeState::Off, JudgeState::On, JudgeState::Unusable] {
+            let text = serde_json::to_string(&state).unwrap();
+            assert_eq!(text, format!("\"{}\"", state.word()));
+            assert_eq!(serde_json::from_str::<JudgeState>(&text).unwrap(), state);
+        }
+        assert_eq!(
+            serde_json::from_str::<JudgeState>("\"paused\"").unwrap(),
+            JudgeState::Unknown
+        );
     }
 
     #[test]

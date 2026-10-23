@@ -37,7 +37,9 @@ use std::time::{Duration as StdDuration, Instant};
 use super::*;
 use agentdocker_core::Activity;
 use agentdocker_core::config::JudgeConfig;
-use agentdocker_core::judgment::{self, JudgeStatus, Outcome, ScreenJudgment, Thresholds};
+use agentdocker_core::judgment::{
+    self, JudgeState, JudgeStatus, Outcome, ScreenJudgment, Thresholds,
+};
 use agentdocker_core::multiplexer::Evidence;
 use sha2::{Digest, Sha256};
 
@@ -499,8 +501,8 @@ impl Daemon {
         )
         .await
         .unwrap_or_else(|_| Err("judge: the configuration read did not complete".into()));
-        // What this read changed, if anything: the generation it made and
-        // whether the judge is on under it, and a reason to say once.
+        // What this read changed, if anything: the generation it made, how
+        // the judge stands under it and why, and a reason to say once.
         let (changed, notice, announced, running) = {
             let mut judge = lock(&self.judge);
             let (mut changed, mut notice) = (None, None);
@@ -518,7 +520,7 @@ impl Daemon {
                                 key: key.clone(),
                                 generation: judge.generation,
                             }));
-                            changed = Some((judge.generation, true));
+                            changed = Some((judge.generation, JudgeState::On, None));
                         }
                         judge.setting = Setting::On {
                             judgments: config.judgments.clone(),
@@ -528,11 +530,12 @@ impl Daemon {
                     }
                     Ok(None) => {
                         judge.stop(Setting::Off);
-                        changed = Some((judge.generation, false));
+                        changed = Some((judge.generation, JudgeState::Off, None));
                     }
                     Err(reason) => {
                         judge.stop(Setting::Unusable(reason.clone()));
-                        changed = Some((judge.generation, false));
+                        changed =
+                            Some((judge.generation, JudgeState::Unusable, Some(reason.clone())));
                         notice = Some(reason.clone());
                     }
                 }
@@ -547,8 +550,8 @@ impl Daemon {
         if let Some(notice) = notice {
             self.config_notice(notice);
         }
-        if let Some((generation, on)) = changed {
-            self.judge_sync(generation, on);
+        if let Some((generation, status, reason)) = changed {
+            self.judge_sync(generation, status, reason);
         }
         if let Some(event) = announced {
             self.emit(event);
@@ -557,18 +560,27 @@ impl Daemon {
     }
 
     /// Bring the state lock's view of the judge to `generation`, unless it
-    /// has seen a later one already. Turned off, every standing judgment
-    /// comes off in the same hold: a judgment is recorded only under the
-    /// generation this lock holds (`record_judgment`), so once a stop has
-    /// cleared here, nothing judged before it can be written after.
-    fn judge_sync(&self, generation: u64, on: bool) {
+    /// has seen a later one already. A change of how it stands — on, off,
+    /// or unusable and why — is announced as `judge_status_changed` in the
+    /// same hold, so the events keep the order of the generations; a read
+    /// that leaves it as it was announces nothing, though a stop makes a
+    /// new generation every time. Turned off, every standing judgment
+    /// comes off in that hold too: a judgment is recorded only under the
+    /// generation this lock holds while the judge is on (`record_judgment`),
+    /// so once a stop has cleared here, nothing judged before it can be
+    /// written after.
+    fn judge_sync(&self, generation: u64, status: JudgeState, reason: Option<String>) {
         let mut state = lock(&self.state);
         if generation <= state.judge_generation {
             return;
         }
         state.judge_generation = generation;
-        state.judge_on = on;
-        if on {
+        if (state.judge_status, state.judge_reason.as_ref()) != (status, reason.as_ref()) {
+            state.judge_status = status;
+            state.judge_reason = reason.clone();
+            state.emit(EventKind::JudgeStatusChanged { status, reason });
+        }
+        if status == JudgeState::On {
             return;
         }
         let standing: Vec<(AgentId, String)> = state
@@ -909,7 +921,7 @@ impl Daemon {
         // Checked in the same hold as the write: a stop syncs and clears
         // under this lock, so it either came first and this writes nothing,
         // or comes after and clears what this writes.
-        if !state.judge_on || state.judge_generation != generation {
+        if state.judge_status != JudgeState::On || state.judge_generation != generation {
             return false;
         }
         let Some(mut record) = state.registry.get(agent).cloned() else {
@@ -1581,6 +1593,76 @@ mod tests {
         assert_eq!(promotions(&mut events), 0);
         stop(&daemon, &first).await;
         stop(&daemon, &second).await;
+    }
+
+    fn statuses(
+        events: &mut tokio::sync::broadcast::Receiver<Event>,
+    ) -> Vec<(JudgeState, Option<String>)> {
+        let mut said = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::JudgeStatusChanged { status, reason } = event.kind {
+                said.push((status, reason));
+            }
+        }
+        said
+    }
+
+    /// How the judge stands is announced when it changes, and only then:
+    /// on, off, unusable with why — never the key or the address — and
+    /// nothing for a read that leaves it as it was, however many there are.
+    #[tokio::test]
+    async fn a_change_of_standing_is_announced_once() {
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.1, 0.1, 0.0, 0.0]);
+        let daemon = open(&dir);
+        let mut events = daemon.subscribe_events();
+        let file = dir.path().join(agentdocker_core::config::FILE_NAME);
+
+        daemon.judge_setup().await;
+        daemon.judge_setup().await;
+        assert!(
+            statuses(&mut events).is_empty(),
+            "off from the start says nothing"
+        );
+
+        configure(&dir, &url, "");
+        daemon.judge_setup().await;
+        daemon.judge_setup().await;
+        assert_eq!(statuses(&mut events), [(JudgeState::On, None)]);
+
+        configure(&dir, &url, "calls_per_minute = 2\n");
+        daemon.judge_setup().await;
+        assert!(statuses(&mut events).is_empty(), "another setup, still on");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let key = dir.path().join("typesafe.key");
+            std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+            daemon.judge_setup().await;
+            daemon.judge_setup().await;
+            daemon.judge_setup().await;
+            let said = statuses(&mut events);
+            assert_eq!(said.len(), 1, "{said:?}");
+            assert_eq!(said[0].0, JudgeState::Unusable);
+            let reason = said[0].1.clone().unwrap();
+            assert!(reason.contains("0600"), "{reason}");
+            assert!(!reason.contains(KEY) && !reason.contains(&url), "{reason}");
+            std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+            daemon.judge_setup().await;
+            assert_eq!(statuses(&mut events), [(JudgeState::On, None)]);
+        }
+
+        std::fs::remove_file(&file).unwrap();
+        for _ in 0..3 {
+            daemon.judge_setup().await;
+        }
+        assert_eq!(
+            statuses(&mut events),
+            [(JudgeState::Off, None)],
+            "a stop on every disabled read, one announcement"
+        );
+        assert_eq!(calls(&fake), 0);
     }
 
     /// Off for exactly one read, then the same section and key on again:

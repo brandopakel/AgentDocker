@@ -646,6 +646,15 @@ pub enum EventKind {
         agent: AgentId,
         reason: String,
     },
+    /// The judge was turned on or off, or cannot run: `status` is `on`,
+    /// `off` or `unusable`, and `reason` says why it cannot, in words that
+    /// name neither the key nor the address. Said only when that changes,
+    /// never for a read that leaves it as it was.
+    JudgeStatusChanged {
+        status: crate::judgment::JudgeState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     /// The judge's calls to its model failed: why in a word
     /// (`unauthorized`, `refused`, `rate_limited`, `unavailable`,
     /// `unreachable`, `timeout`, `malformed`) and how many failed since the

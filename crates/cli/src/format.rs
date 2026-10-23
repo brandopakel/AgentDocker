@@ -238,6 +238,10 @@ pub fn event_line(event: &Event) -> String {
         EventKind::AgentJudgmentCleared { agent, reason } => {
             format!("judgment cleared   {} {reason}", agent.short())
         }
+        EventKind::JudgeStatusChanged { status, reason } => match reason {
+            Some(reason) => format!("judge status   {}: {reason}", status.word()),
+            None => format!("judge status   {}", status.word()),
+        },
         EventKind::JudgeFailed { reason, failures } => {
             format!("judge failed   {reason}, {failures} calls")
         }
@@ -1603,6 +1607,20 @@ mod tests {
                 failures: 3,
             })
             .ends_with("judge failed   timeout, 3 calls")
+        );
+        assert!(
+            line(EventKind::JudgeStatusChanged {
+                status: agentdocker_core::judgment::JudgeState::On,
+                reason: None,
+            })
+            .ends_with("judge status   on")
+        );
+        assert!(
+            line(EventKind::JudgeStatusChanged {
+                status: agentdocker_core::judgment::JudgeState::Unusable,
+                reason: Some("judge: key_file must be mode 0600".into()),
+            })
+            .ends_with("judge status   unusable: judge: key_file must be mode 0600")
         );
     }
 

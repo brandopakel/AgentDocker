@@ -915,6 +915,7 @@ a file only you can read, and name it in `~/.agentdocker/agentd.toml`:
 ```sh
 mkdir -p ~/.config/agentdocker
 (umask 077; cat > ~/.config/agentdocker/typesafe.key)   # paste the key, then Ctrl-D
+chmod 600 ~/.config/agentdocker/typesafe.key   # umask covers only a new file
 ```
 
 ```toml
@@ -934,12 +935,16 @@ reads the file every few seconds, so no restart is needed. To turn it **off**,
 delete the `[judge]` section or empty `judgments`; every wait it judged is
 taken off at once.
 
-**What is sent, and to whom.** For each quiet screen, once until it changes:
-one request to TypeSafe (`https://api.typesafe.ai/v1/systemone`, or the `url`
-you set) carrying the screen's last 30 lines as text, a fixed sentence saying
-they are a coding agent's terminal, and four yes/no questions — is an approval
+**What is sent, and to whom.** For each quiet screen, one request to TypeSafe
+(`https://api.typesafe.ai/v1/systemone`, or the `url` you set) carrying the
+screen's last 30 lines as text, a fixed sentence saying they are a coding
+agent's terminal, and four yes/no questions — is an approval
 prompt open, is the agent asking you something, is work still running, is
-there a message typed and not sent. Your key goes in the request's
+there a message typed and not sent. Once a screen is answered it is not sent
+again until it changes. A call that failed for a reason that may pass (no
+connection, a timeout, a busy or unavailable service, a key not accepted) is
+tried again after a minute; one the service refused, or answered in a shape
+AgentDocker cannot read, is not. Your key goes in the request's
 `Authorization` header and nowhere else. Nothing else is sent: no agent name
 or id, no project, no path, nothing but what is on those 30 lines — which can
 be anything the agent printed, so turn it on only for work you are content to
