@@ -42,6 +42,9 @@ jobs:
           BUILD_TARGET: ${{ matrix.target }}
         run: |
           cargo build --locked --release --target "$BUILD_TARGET" -p agentdocker --bins
+          # agentd is agentdocker under the daemon's name: a hard link, which
+          # the archive keeps as one file under both names.
+          python3 scripts/daemon_link.py "target/${BUILD_TARGET}/release"
           binaries="agentdocker agentd"
           mkdir dist
           # shellcheck disable=SC2086  # the binary list is deliberately split

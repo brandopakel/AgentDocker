@@ -57,12 +57,35 @@ class DesktopPackaging(unittest.TestCase):
                 (ROOT / "crates/ui/src/fonts/LICENSE-IBMPlexSans.txt").read_bytes())
             for name in PACKAGE.BINARIES:
                 self.assertEqual(bundle.extractfile("agentdocker-desktop/bin/" + name).read(), (self.binaries / name).read_bytes())
+            # Installers, earlier ones included, refuse link entries: agentd
+            # is stored whole and linked again when installed.
+            self.assertTrue(all(member.isreg() or member.isdir() for member in bundle.getmembers()))
             metadata = json.load(bundle.extractfile("agentdocker-desktop/build.json"))
             self.assertEqual(metadata["binary_sha256"], self.manifest["binary_sha256"])
             self.assertEqual(metadata["state_schema"], self.manifest["state_schema"])
             self.assertEqual(metadata["installation_lock"], 1)
             self.assertEqual(metadata["launcher_redirect"], 1)
         self.assertEqual(result["artifacts"][archive.name], PACKAGE.sha256(archive))
+        # The payload directory holds the executable once, under both names.
+        payload = self.output / "agentdocker-desktop/bin"
+        self.assertTrue((payload / "agentd").samefile(payload / "agentdocker"))
+
+    def test_the_daemon_is_agentdocker_under_another_name(self):
+        # Built from agentdocker alone: no agentd beside it is needed.
+        (self.binaries / "agentd").unlink()
+        del self.manifest["binary_sha256"]["agentd"]
+        self.save_manifest()
+        result = PACKAGE.package(self.args)
+        self.assertEqual(result["binary_sha256"]["agentd"], result["binary_sha256"]["agentdocker"])
+        payload = self.output / "agentdocker-desktop/bin"
+        self.assertTrue((payload / "agentd").samefile(payload / "agentdocker"))
+
+    def test_a_separate_daemon_binary_never_publishes(self):
+        self.manifest["binary_sha256"]["agentd"] = "d" * 64
+        self.save_manifest()
+        with self.assertRaisesRegex(ValueError, "separate daemon"):
+            PACKAGE.package(self.args)
+        self.assertFalse(self.output.exists())
 
     def test_invalid_lifetime_pin_contract_never_publishes(self):
         for pin in [True, "1", -1, 2]:
@@ -81,20 +104,32 @@ class DesktopPackaging(unittest.TestCase):
             self.assertFalse(self.output.exists())
 
     def test_changed_binary_never_publishes(self):
-        (self.binaries / "agentd").write_bytes(b"substituted")
+        (self.binaries / "agentdocker").write_bytes(b"substituted")
         with self.assertRaisesRegex(ValueError, "changed after"):
             PACKAGE.package(self.args)
         self.assertFalse(self.output.exists())
 
     def test_oversized_payload_never_publishes(self):
-        executable = self.binaries / "agentd"
+        executable = self.binaries / "agentdocker"
         with executable.open("ab") as file:
             file.truncate(101 * 1024 ** 2)
-        self.manifest["binary_sha256"]["agentd"] = PACKAGE.sha256(executable)
+        for name in ("agentdocker", "agentd"):
+            self.manifest["binary_sha256"][name] = PACKAGE.sha256(executable)
         self.save_manifest()
         with self.assertRaisesRegex(ValueError, "payload exceeds"):
             PACKAGE.package(self.args)
         self.assertFalse(self.output.exists())
+
+    def test_the_payload_counts_the_daemon_link_once(self):
+        # 60 MiB under two names is within the 100 MiB budget: one file.
+        executable = self.binaries / "agentdocker"
+        with executable.open("ab") as file:
+            file.truncate(60 * 1024 ** 2)
+        for name in ("agentdocker", "agentd"):
+            self.manifest["binary_sha256"][name] = PACKAGE.sha256(executable)
+        self.save_manifest()
+        result = PACKAGE.package(self.args)
+        self.assertLess(result["size"]["payload_bytes"], 61 * 1024 ** 2)
 
     def test_oversized_download_is_rejected_even_with_a_small_payload(self):
         archive = self.binaries / "fixture.zip"

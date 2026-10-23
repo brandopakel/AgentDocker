@@ -6,15 +6,16 @@
 //! and shapes the lanes; an agent pulls from the pull source and the card
 //! says who has it.
 //!
-//! Nothing here is prose. A card's face is its key, its title and marks:
-//! a red edge for high priority, a clock tinted by its due day, a mark
-//! when it waits on something, a dot per tag, and the holder's mark with
-//! its standing; the words for each are its tooltip and the card's
-//! spoken name. Every control the pointer drags has a button beside it
-//! the keyboard and the workflow driver press.
+//! Nothing here is prose. A card's face is its key, its title and its
+//! chips: when it is due, that it waits on something, its tags by name in
+//! their colours, and the holder's mark with its standing chip, or *Ready
+//! to pull*; a red edge is high priority, said in the card's spoken name.
+//! Every control the pointer drags has a button beside it the keyboard and
+//! the workflow driver press.
+use super::chip::{Chip, Tone};
 use super::icons::{Icon, icon};
 use super::style::{Colors, RADIUS_MD, alpha, identity, mix, weight};
-use super::view::{count_chip, dot, first_line, said, standing_glyph, status_dot, tip};
+use super::view::{count_chip, dot, first_line, said, standing_chip, tip};
 use super::*;
 use crate::controls::{
     Kind, button as action, custom_sized, ghost, input_enabled, input_submitting, primary,
@@ -45,6 +46,65 @@ fn lane_tone(kind: Column, c: Colors) -> iced::Color {
         Column::Blocked => c.red,
         Column::Cancelled => c.faint,
     }
+}
+
+/// A lane's tone on a chip: quiet before and after the work, the accent
+/// while it is ready or under way, attention in review, positive done,
+/// alert blocked.
+fn lane_chip_tone(kind: Column) -> Tone {
+    match kind {
+        Column::Backlog | Column::Cancelled => Tone::Neutral,
+        Column::Ready | Column::InProgress => Tone::Info,
+        Column::Review => Tone::Attention,
+        Column::Done => Tone::Positive,
+        Column::Blocked => Tone::Alert,
+    }
+}
+
+/// Where a card stands, as a chip: its lane's glyph and name.
+fn lane_chip(id: impl Into<String>, kind: Column, name: impl Into<String>) -> Chip {
+    Chip::new(id, Some(lane_glyph(kind)), name, lane_chip_tone(kind))
+}
+
+/// When a card is due, as a chip: *Overdue* and *Due today* in their
+/// tones, a later day as its date; the date is the detail of the first two.
+pub(super) fn due_chip(
+    id: impl Into<String>,
+    due: chrono::NaiveDate,
+    today: chrono::NaiveDate,
+) -> Chip {
+    let date = due.format("%b %-d").to_string();
+    match board::due_state(due, today) {
+        DueState::Overdue => {
+            Chip::new(id, Some(Icon::Clock), "Overdue", Tone::Alert).detail(format!("Due {date}"))
+        }
+        DueState::Today => Chip::new(id, Some(Icon::Clock), "Due today", Tone::Attention)
+            .detail(format!("Due {date}")),
+        DueState::Later => Chip::new(id, Some(Icon::Clock), format!("Due {date}"), Tone::Neutral),
+    }
+}
+
+/// A tag as a chip: its colour as a swatch and its name, so a tag is read,
+/// not matched by colour.
+pub(super) fn tag_chip<'a>(name: &str, color: iced::Color, c: Colors) -> Element<'a, Message> {
+    let (wash, ink) = c.chip(Tone::Neutral);
+    container(
+        row![
+            dot(color, 6.0, c),
+            text(name.to_owned())
+                .size(11)
+                .line_height(iced::Pixels(14.0))
+                .color(ink)
+                .wrapping(iced::widget::text::Wrapping::None),
+        ]
+        .spacing(4)
+        .align_y(Center),
+    )
+    .padding([0, 7])
+    .height(super::chip::HEIGHT)
+    .align_y(iced::alignment::Vertical::Center)
+    .style(move |_| c.pill(wash, ink))
+    .into()
 }
 
 /// A lane's glyph: a ring that fills as work moves right, as Linear
@@ -945,19 +1005,29 @@ impl App {
         });
         let lapsed = |held: bool| !held && task.column.working();
         let today = chrono::Local::now().date_naive();
-        let mut marks = row![].spacing(5).align_y(Center);
+        // The foot is one line of chips that wraps in a narrow lane.
+        let mut foot = row![].spacing(5).align_y(Center);
         let mut words: Vec<String> = Vec::new();
         if let Some(due) = task.due {
-            let (tone, state) = match board::due_state(due, today) {
-                DueState::Overdue => (c.red, "overdue"),
-                DueState::Today => (c.amber, "due today"),
-                DueState::Later => (c.faint, "due"),
+            let state = match board::due_state(due, today) {
+                DueState::Overdue => "overdue",
+                DueState::Today => "due today",
+                DueState::Later => "due",
             };
-            marks = marks.push(icon(Icon::Clock, tone, 12.0));
+            foot = foot.push(due_chip(format!("task-due-{id}"), due, today).view(c));
             words.push(format!("{state} {}", due.format("%b %-d")));
         }
         if !task.external_blocker.trim().is_empty() || !task.blocked_by.is_empty() {
-            marks = marks.push(icon(Icon::Hourglass, c.amber, 12.0));
+            let mut waiting = Chip::new(
+                format!("task-waiting-{id}"),
+                Some(Icon::Hourglass),
+                "Waiting",
+                Tone::Attention,
+            );
+            if !task.external_blocker.trim().is_empty() {
+                waiting = waiting.detail(first_line(&task.external_blocker, 120));
+            }
+            foot = foot.push(waiting.view(c));
             words.push("waiting on something".into());
         }
         if task.priority == Priority::High {
@@ -967,41 +1037,55 @@ impl App {
             words.push(format!("size {}", size.as_str()));
         }
         for tag in task.tags.iter().take(4) {
-            marks = marks.push(dot(self.tag_color(tag, c), 6.0, c));
+            foot = foot.push(tag_chip(tag, self.tag_color(tag, c), c));
+        }
+        if task.tags.len() > 4 {
+            foot = foot.push(count_chip(task.tags.len() - 4, false, c));
         }
         if !task.tags.is_empty() {
             words.push(task.tags.join(", "));
         }
-        let mut foot = row![container(marks).width(Fill)]
-            .spacing(6)
-            .align_y(Center);
         match &holder {
             Some((name, held, agent)) => {
                 let record = self.agents.iter().find(|r| r.id.as_str() == *agent);
-                let standing: Element<'_, Message> = if lapsed(*held) {
-                    tip(icon(Icon::Alert, c.amber, 11.0), "Not being worked on", c)
-                } else {
-                    match record {
-                        Some(record) => standing_glyph(self.standing(record), c),
-                        None => dot(c.faint, 6.0, c),
-                    }
-                };
-                let mut who = row![
-                    standing,
-                    tip(self.agent_mark_for(agent, name, 16.0, c), name.clone(), c),
-                ]
-                .spacing(4)
-                .align_y(Center);
-                if let Some(chip) = record.and_then(|r| self.pull_request_chip(r, c)) {
-                    who = who.push(chip);
+                // Who holds it, and where they stand; a lapsed hold says
+                // so in its own chip.
+                foot = foot.push(tip(
+                    self.agent_mark_for(agent, name, 16.0, c),
+                    name.clone(),
+                    c,
+                ));
+                if lapsed(*held) {
+                    foot = foot.push(super::chip::chip(
+                        format!("task-holder-{id}"),
+                        Some(Icon::Alert),
+                        "Not being worked on",
+                        Tone::Attention,
+                        c,
+                    ));
+                } else if let Some(record) = record {
+                    foot = foot.push(standing_chip(
+                        format!("task-holder-{id}"),
+                        self.standing(record),
+                        c,
+                    ));
                 }
-                foot = foot.push(who);
+                if let Some(chip) = record.and_then(|r| self.pull_request_chip(r, c)) {
+                    foot = foot.push(chip);
+                }
             }
             None if lane.slug == board.pull_source => {
-                foot = foot.push(tip(dot(c.accent, 6.0, c), "Ready to pull", c));
+                foot = foot.push(super::chip::chip(
+                    format!("task-ready-{id}"),
+                    None,
+                    "Ready to pull",
+                    Tone::Info,
+                    c,
+                ));
             }
             None => {}
         }
+        let foot = foot.wrap().vertical_spacing(4);
         let dense = self.shell.board_dense;
         let mut head = column![
             text(task.key.clone())
@@ -1387,12 +1471,12 @@ impl App {
                                         .font(iced::Font::MONOSPACE)
                                         .color(c.faint),
                                     text(first_line(&other.title, 80)).size(12),
-                                    status_dot(
+                                    lane_chip(
                                         format!("related-{}", other.id),
-                                        lane_tone(other.column, c),
-                                        other.column.label(),
-                                        c
-                                    ),
+                                        other.column,
+                                        other.column.label()
+                                    )
+                                    .view(c),
                                 ]
                                 .spacing(6)
                                 .align_y(Center),
@@ -1419,13 +1503,7 @@ impl App {
                     row![
                         tip(
                             self.agent_mark_for(&comment.author, &name, 18.0, c),
-                            format!(
-                                "{name} · {}",
-                                comment
-                                    .created_at
-                                    .with_timezone(&chrono::Local)
-                                    .format("%a %-d %b, %H:%M")
-                            ),
+                            format!("{name} · {}", crate::clock::moment(comment.created_at)),
                             c
                         ),
                         container(words).width(Fill),
@@ -1463,11 +1541,7 @@ impl App {
                     ]
                     .spacing(6)
                     .align_y(Center),
-                    entry
-                        .at
-                        .with_timezone(&chrono::Local)
-                        .format("%a %-d %b, %H:%M")
-                        .to_string(),
+                    crate::clock::moment(entry.at),
                     c,
                 ));
             }
@@ -1582,22 +1656,20 @@ impl App {
             let lane = board.lane_of(task);
             let mut marks = row![].spacing(6).align_y(Center);
             if task.priority == Priority::High {
-                marks = marks.push(tip(icon(Icon::Alert, c.red, 12.0), "High priority", c));
-            }
-            if let Some(due) = task.due {
-                let tone = match board::due_state(due, today) {
-                    DueState::Overdue => c.red,
-                    DueState::Today => c.amber,
-                    DueState::Later => c.faint,
-                };
-                marks = marks.push(tip(
-                    icon(Icon::Clock, tone, 12.0),
-                    due.format("%b %-d").to_string(),
+                marks = marks.push(super::chip::chip(
+                    format!("task-row-priority-{}", task.id),
+                    Some(Icon::Alert),
+                    "High priority",
+                    Tone::Alert,
                     c,
                 ));
             }
+            if let Some(due) = task.due {
+                marks =
+                    marks.push(due_chip(format!("task-row-due-{}", task.id), due, today).view(c));
+            }
             for tag in task.tags.iter().take(4) {
-                marks = marks.push(tip(dot(self.tag_color(tag, c), 6.0, c), tag.clone(), c));
+                marks = marks.push(tag_chip(tag, self.tag_color(tag, c), c));
             }
             let holder: Element<'_, Message> = match &task.assignee {
                 Some(agent) => {
@@ -1622,11 +1694,12 @@ impl App {
                             .color(c.faint)
                     )
                     .width(64),
-                    tip(
-                        icon(lane_glyph(lane.category), lane_tone(lane.category, c), 13.0),
-                        lane.name.clone(),
-                        c
-                    ),
+                    lane_chip(
+                        format!("task-row-lane-{}", task.id),
+                        lane.category,
+                        lane.name.clone()
+                    )
+                    .view(c),
                     container(text(first_line(&task.title, 140)).size(13)).width(Fill),
                     marks,
                     holder,
@@ -2191,5 +2264,77 @@ impl App {
             .spacing(8)
             .width(Fill)
             .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::view::testing::seen;
+
+    /// A card's face says its states in chips: tags by name in their
+    /// colours, its due day in words, and *Ready to pull* while nobody
+    /// holds it in the pull lane. A To-do row's Done says what it does.
+    #[test]
+    fn a_card_says_its_tags_and_states_in_words() {
+        let (commands, _requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        let project = agentdocker_core::ProjectRef::directory("/work/orchard");
+        let board = agentdocker_core::Board::from_template(
+            project.id(),
+            board::MAIN,
+            "Main",
+            "classic",
+            "ORC",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let mut card = Task::new(
+            project.id(),
+            "Ship it",
+            "",
+            Some(Column::Ready),
+            "user",
+            Vec::new(),
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        card.tags = vec!["frontend".into(), "urgent".into()];
+        let today = chrono::Local::now().date_naive();
+        card.due = Some(today);
+        let c = Colors::new(false);
+        let view = seen(app.card(&card, &board, false, c));
+        for words in ["frontend", "urgent", "Due today", "Ready to pull"] {
+            assert!(
+                view.texts.iter().any(|t| t == words),
+                "{words} is printed: {:?}",
+                view.texts
+            );
+        }
+        assert_eq!(
+            view.control(&format!("task-ready-{}", card.id)).unwrap().1,
+            "Ready to pull"
+        );
+        assert_eq!(
+            due_chip("d", today - chrono::Duration::days(2), today).words,
+            "Overdue"
+        );
+        assert_eq!(
+            due_chip("d", today + chrono::Duration::days(3), today).tone,
+            Tone::Neutral
+        );
+        assert_eq!(
+            lane_chip("l", Column::Review, "Review").tone,
+            Tone::Attention
+        );
+
+        let row = seen(app.todo_row(&card, c));
+        let done = row
+            .control(&format!("todo-done-{}", card.id))
+            .expect("the Done button");
+        assert_eq!(done.1, format!("Done: {}", card.handle()));
+        assert!(row.texts.iter().any(|t| t == "Done"), "the word is shown");
     }
 }

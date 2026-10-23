@@ -3,6 +3,7 @@
 //! (`agentdocker_core::readiness`): its words, its tone and its one fix.
 use super::{
     App, Message,
+    chip::{Chip, Tone},
     icons::{Icon, icon},
     messages::look::{link, status_line},
     shell::{DeliveryTarget, TextDraft},
@@ -16,7 +17,7 @@ use iced::{
     widget::{column, container, row, scrollable, text},
 };
 
-/// What a session's readiness dot says: the one decision, or one of the
+/// What a session's readiness chip says: the one decision, or one of the
 /// app's own two facts about it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Readiness {
@@ -38,20 +39,39 @@ impl Readiness {
         }
     }
 
-    /// Its tone, by the state, never by the words: green while it takes
-    /// messages, the accent while words wait for it, cyan while it waits
-    /// for a prompt or a check-in, amber when something stands in the way,
-    /// faint when it has ended or nothing is known.
-    pub(super) fn tone(self, c: Colors) -> iced::Color {
+    /// Its tone, by the state, never by the words: positive while it takes
+    /// messages, the accent while words wait for it or it waits for a
+    /// prompt or a check-in, attention when something stands in the way,
+    /// quiet when it has ended or nothing is known.
+    pub(super) fn tone(self) -> Tone {
         match self {
-            Self::Decided(State::Ready { .. }) => c.green,
-            Self::Sending => c.accent,
-            Self::Decided(State::WaitsForPrompt | State::AwaitsCheckIn) => c.cyan,
+            Self::Decided(State::Ready { .. }) => Tone::Positive,
+            Self::Sending | Self::Decided(State::WaitsForPrompt | State::AwaitsCheckIn) => {
+                Tone::Info
+            }
             Self::Decided(
                 State::ProviderBlocked(_) | State::Paused | State::Silent | State::Unreachable,
-            ) => c.amber,
-            Self::Decided(State::Ended) | Self::Unavailable => c.faint,
+            ) => Tone::Attention,
+            Self::Decided(State::Ended) | Self::Unavailable => Tone::Neutral,
         }
+    }
+
+    fn glyph(self) -> Option<Icon> {
+        match self {
+            Self::Decided(State::Ready { .. }) => Some(Icon::Check),
+            Self::Sending => Some(Icon::ArrowUp),
+            Self::Decided(State::WaitsForPrompt | State::AwaitsCheckIn) => Some(Icon::Clock),
+            Self::Decided(State::ProviderBlocked(_)) => Some(Icon::Hourglass),
+            Self::Decided(State::Paused) => Some(Icon::Pause),
+            Self::Decided(State::Silent | State::Unreachable) => Some(Icon::Alert),
+            Self::Decided(State::Ended) | Self::Unavailable => None,
+        }
+    }
+
+    /// Its chip: the label, in its tone, the same on the session's panel,
+    /// the composer and the tool's sessions.
+    pub(super) fn chip(self, id: impl Into<String>) -> Chip {
+        Chip::new(id, self.glyph(), self.label(), self.tone())
     }
 }
 
@@ -461,7 +481,7 @@ mod tests {
         );
     }
 
-    /// The panels, the composer's dot and a send's details render the one
+    /// The panels, the composer's chip and a send's details render the one
     /// decision: the same label, the same short line for its fix, and the
     /// tone by its state, whatever the words.
     #[test]
@@ -507,14 +527,29 @@ mod tests {
             "a browser agent, in the words its messages say"
         );
         assert_eq!(
-            Readiness::Decided(State::AwaitsCheckIn).tone(c),
-            Readiness::Decided(State::WaitsForPrompt).tone(c)
+            Readiness::Decided(State::AwaitsCheckIn).tone(),
+            Readiness::Decided(State::WaitsForPrompt).tone()
         );
-        assert_eq!(Readiness::Decided(State::Unreachable).tone(c), c.amber);
         assert_eq!(
-            Readiness::Decided(State::Ready { receiving: true }).tone(c),
-            c.green
+            Readiness::Decided(State::Unreachable).tone(),
+            Tone::Attention
         );
+        let receiving = Readiness::Decided(State::Ready { receiving: true }).chip("r");
+        assert_eq!(
+            (receiving.words.as_str(), receiving.tone),
+            ("Receiving messages", Tone::Positive)
+        );
+        // The chip is the decision's own words, named by them.
+        for agent in &agents {
+            let readiness = app.input_readiness(agent);
+            let view = seen(readiness.chip("readiness").view(c));
+            assert_eq!(
+                view.control("readiness").unwrap().1,
+                readiness.label(),
+                "{}",
+                agent.spec.name
+            );
+        }
     }
 
     /// Start a live Codex opens the launch form in the session's own

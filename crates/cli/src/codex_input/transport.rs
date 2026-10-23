@@ -212,6 +212,24 @@ impl Provider {
         })
     }
 
+    /// Attach to the profile's shared app-server through its control socket.
+    /// Like a loopback observer, this connection answers no server request,
+    /// and closing it ends only this connection.
+    #[cfg(unix)]
+    pub async fn connect_control(socket: &Path) -> Result<Self> {
+        Ok(Self {
+            child: None,
+            remote: Some(websocket::Remote::connect_control(socket).await?),
+            input: None,
+            output: None,
+            frame: Vec::new(),
+            pending: VecDeque::new(),
+            pending_bytes: 0,
+            sequence: 0,
+            emission: None,
+        })
+    }
+
     pub fn record_emissions(
         &mut self,
         client: crate::client::Client,

@@ -34,9 +34,16 @@ right-click it and choose **Open** once, or
 `xattr -dr com.apple.quarantine ~/Applications/AgentDocker.app`. From a checkout:
 
 ```sh
-cargo install --path crates/cli --locked   # agentdocker + agentd
+cargo install --path crates/cli --locked   # agentdocker, which is also the daemon
 cargo install --path crates/ui  --locked   # the desktop app
 ```
+
+`agentdocker` and `agentd` are one executable: invoked as `agentd` it is the
+daemon, and packages ship `agentd` as a link to `agentdocker`. A `cargo install`
+makes only `agentdocker`; the daemon still starts on demand, as
+`agentdocker daemon run`. `agentdocker daemon install` names `agentd` in the
+service it writes, so add the link first:
+`ln -s agentdocker "$(dirname "$(command -v agentdocker)")/agentd"`.
 
 The Linux desktop archive needs a graphical session and its native display
 libraries (X11/XCB, keyboard, rendering and fonts); the archive does not install
@@ -480,6 +487,7 @@ each one by pid.
 | `logs <agent>` | An agent's captured output, at most 16 MiB kept per agent (the newest 8 MiB and the 8 MiB before them); `-f` to follow, `--compress` for an rtk view |
 | `validation <id>` | The retained log of one validation; `--compress` for an rtk view |
 | `events` | The daemon's event stream; `[[webhooks]]` in `agentd.toml` posts a signed copy of chosen kinds to an address you name (see [webhooks](ARCHITECTURE.md#events)) |
+| `webhook deliveries <name>` | A webhook sink's latest attempts to post, oldest first: the event, which attempt, whether it was delivered, will be retried (and when) or was given up, the receiver's status code or a word for why there was none, and how long it took; `--limit` (up to 200), `--json` |
 | `ping` | Check the daemon is reachable |
 
 ### Start, adopt and stop
@@ -581,7 +589,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `worktree-create --branch <name> [--from <ref>]` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours |
+| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]…` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
 | `worktree-diff` | Tracked changes in an agent's checkout |
 | `worktree-remove <agent>` | Remove an ended session's own worktree once its branch is merged or no longer wanted; the worktree must be clean, and the branch is deleted only when git considers it merged |
 | `review-branch <agent>` | What an agent's branch would bring to the branch in the project's main checkout: commits, files and lines, and what stops a merge now (uncommitted work, uncommitted changes in the main checkout, conflicts, held files); `--patch` prints the diff, `--json` the whole review |
@@ -745,7 +753,8 @@ despite sibling edits, stays fresh while the directory baseline is retained.
 An own edit clears only when its current identity matches recorded evidence.
 Unknown or expired evidence requires a reread; a watcher flush alone cannot
 prove that all operating-system events arrived. In a folder removed from the desktop's project list the
-hooks do nothing at all until it is added back. `PreToolUse` takes a lease on the
+hooks do nothing at all until it is listed again: added back, or one of its
+sessions opened in the desktop. `PreToolUse` takes a lease on the
 file about to be edited and `Stop` gives those edit leases back when the
 turn ends; a lease the session claimed itself — a worktree, a branch, the
 build campaign — is not touched until the session releases it, its TTL runs
@@ -1031,6 +1040,17 @@ Current behaviour that the sections above do not already state, by area.
   its messages reach it at its next prompt. It cannot be woken while idle; a
   Codex launched from AgentDocker can.
 
+- **Codex's shared app-server says where a terminal Codex stands.** Where
+  Codex runs its terminals' conversations in its shared app-server (0.162 and
+  later, `$CODEX_HOME/app-server-control/app-server-control.sock`), the daemon
+  reads each conversation's status there: one stopped for an approval or a
+  question shows as waiting for you, one running a turn as working, a quiet
+  one as idle. A terminal resumed with `codex resume <thread>` is also fed at
+  idle through that server's own queue, with the same exact receipts as any
+  Codex receiver. Without the socket nothing changes. `agentdocker
+  codex-threads` lists what that server has loaded, read-only
+  ([Codex input](CODEX-INPUT.md#terminals-in-codexs-shared-app-server)).
+
 
 - **Your own terminal's Codex can be the reviewer.** `agentdocker codex`
   starts Codex in the terminal you are in, through AgentDocker's launcher:
@@ -1206,20 +1226,23 @@ Current behaviour that the sections above do not already state, by area.
   from the command line). Offered only where Codex offers it.
 
 
-- **Text only where it is a name.** The desktop says state with marks, dots,
-  rings and meters, named for screen readers and in tooltips; it has no
+- **Every state in a word.** The desktop says each state with a labelled
+  chip — an icon and its word (*Needs you*, *Working*, *Idle*, *Delivered*,
+  *Receiving messages*, *4m left*), healthy states too — with the fix, when
+  there is one, as a button beside it; a tooltip only adds detail. It has no
   sentences under headings, empty-state captions, key footers or section
   intros. It is set in IBM Plex Sans, with an ink primary action.
 
 
 - **A quieter, neutral desktop.** The sidebar is neutral, one step off the
   page, in both appearances; colour is kept for state and the one primary
-  action. Every agent row is one line that leads with one glyph for where the
-  agent stands — the same function decides it in the chat, the session list
-  and the rail — and prints a word only when it calls for you. The project
+  action. Every agent row is one line with a chip for where the agent stands
+  — the same function decides it in the chat, the session list and the
+  rail. The project
   header keeps **Launch agent…** as its one labelled button; Pause, the
   terminal and Open in are icons named in their tooltips. A project's rail row
-  shows its loudest agent's glyph and a number only for agents that need you.
+  shows its loudest agent's chip, counting the agents that need you when more
+  than one does.
   **Launch agent…** starts from what the agent should work on, sent as its
   first message; its name and arguments are under **More options**.
   Command/Ctrl+Shift+U goes to the next agent that needs you. The
@@ -1238,15 +1261,16 @@ Current behaviour that the sections above do not already state, by area.
 
 
 - An agent's row, in a project's chat and in the session list, shows its
-  branch's pull request as one chip — **#<n>** and a tick, a dot or a cross
-  for its checks, or **#<n> merged** — that opens it in the browser. It is
+  branch's pull request as one chip — **#<n>** and its checks in a word
+  (**Passed**, **Running**, **Failed**, **Merged**) — that opens it in the
+  browser. It is
   read with your signed-in `gh` every two minutes and when the window regains
   focus; without `gh`, on a default branch or off GitHub there is no chip.
-  Every agent row leads with one glyph for where the agent stands (amber:
-  needs you; red: failed; muted dot: working; accent dot: finished since you
-  looked; nothing: idle), the same in the chat, the session list and the
-  rail. An agent that finished while you were not looking keeps its accent
-  dot until you open it or its project.
+  Every agent row says where the agent stands in a chip (**Needs you**,
+  **Failed**, **Working**, **Finished**, **Running**, **Idle** — only when its
+  tool reported it quiet), the same in the chat, the
+  session list and the rail. An agent that finished while you were not
+  looking keeps its **Finished** chip until you open it or its project.
 
 - **Open in…** (the code icon beside the terminal icon in a project's header) opens the project
   in an editor installed on this computer — Visual Studio Code, Cursor,
@@ -1281,6 +1305,13 @@ Current behaviour that the sections above do not already state, by area.
 - The dock icon counts the questions waiting on you, across projects, and
   Command/Ctrl+N opens Launch agent.
 
+- **Back and Forward** are the two arrows beside the mark at the top of the
+  sidebar, and Command/Ctrl+[ and Command/Ctrl+] (or the mouse's side
+  buttons): they go through the places you went in this window — a
+  project's screens, the session, card, thread or conversation open on them —
+  as a browser does, passing over a project, session or card that is gone.
+  Pointing at one says where it goes.
+
 - The desktop app ships as `AgentDocker.app` on macOS, with its own icon,
   so the Dock and the app switcher name it properly. `agentdocker ui`
   first launches a matching sibling `agentdocker-ui`, then falls back to the
@@ -1310,6 +1341,17 @@ Current behaviour that the sections above do not already state, by area.
   name the projects and a key file under `[memory.supermemory]` in
   `agentd.toml` (off unless you turn it on; the hosted service is
   Supermemory's, on its terms).
+- **How Supermemory forms memories from the copy.** Two optional lines
+  under `[memory.supermemory]`, neither sent unless you write it:
+  `dreaming = "dynamic"` (related memories are grouped before Supermemory
+  learns from them) or `dreaming = "instant"` (each is learned from at
+  once, which Supermemory bills as one more operation per memory), and
+  `supporting_context = "…"`, up to 1500 characters of background that
+  guides what it learns. With `dreaming` set, a memory counts as copied
+  only once Supermemory says its memories are formed. A longer context or
+  another `dreaming` word stops the mirror with a notice naming the limit
+  or the two words. Leave both out for a server of your own that does not
+  take them.
 
 
 ### Remote connector

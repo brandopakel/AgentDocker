@@ -134,7 +134,10 @@ it stays in the shell history afterwards.
 
 Homebrew has two kinds of thing and we need both. A **formula** installs
 commands — `agentdocker` and `agentd`, plus the daemon as a Homebrew service.
-CLI archives contain only the two commands. A **cask** installs an
+CLI archives contain only the two commands, which are one executable: `agentd`
+is a hard link to `agentdocker`, the daemon when invoked by that name
+([one executable](ARCHITECTURE.md#one-executable)), and the archive holds it
+once. A **cask** installs an
 application, which is what `AgentDocker.app` is: Homebrew puts it in
 `/Applications` and knows how to take it away again.
 
@@ -168,7 +171,7 @@ publishing a cask. Unsigned prereleases leave the stable tap unchanged.
 | Route | Command | What it installs | Updated by |
 | --- | --- | --- | --- |
 | Desktop, direct download | `curl -fsSL …/install.sh \| sh` (default on macOS; `AGENTDOCKER_INSTALL=desktop` on Linux) | Downloads the verified desktop archive and runs the app's own installer from inside it: retained versions with rollback, launchers in `~/.local/bin`, the app in Applications | `agentdocker desktop update` |
-| Commands, direct download | `AGENTDOCKER_INSTALL=cli` with the same script (default on Linux) | The two commands copied into `~/.local/bin`; refuses to write over links a managed installation owns | Run the script again |
+| Commands, direct download | `AGENTDOCKER_INSTALL=cli` with the same script (default on Linux) | The two commands into `~/.local/bin`, `agentd` a hard link to `agentdocker`; refuses to write over links a managed installation owns | Run the script again |
 | Homebrew cask | `brew install --cask brandopakel/tap/agentdocker-app` | The app in `/Applications` with its commands linked into Homebrew's bin | `brew upgrade --cask agentdocker-app` |
 | Homebrew formula | `brew install brandopakel/tap/agentdocker` | The two commands and an optional `brew services` daemon | `brew upgrade agentdocker` |
 | Local build | `make install` / `agentdocker desktop install --from` | The same managed installation as the desktop route | `agentdocker desktop update` or another local install |
@@ -245,7 +248,10 @@ recovery was needed.
 
 The Windows packaging path targets `x86_64-pc-windows-msvc`. It builds a ZIP
 with `agentdocker-ui.exe`, `agentdocker.exe` and `agentd.exe` together in the
-`AgentDocker` folder, build metadata, licenses and opening instructions. The
+`AgentDocker` folder, build metadata, licenses and opening instructions.
+`agentd.exe` is a byte-identical copy of `agentdocker.exe`, the daemon when
+invoked by that name: a ZIP holds no links, and Windows installs keep it a
+copy. The
 packager checks native-build hashes again after copying and the PE x64 executable
 headers before publishing the directory. The manifest and sidecar checksum
 identify the exact archive; the preview is unsigned, without Authenticode.

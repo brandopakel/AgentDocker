@@ -8,11 +8,13 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 mod board;
+mod chip;
 mod forms;
 mod icons;
 mod logos;
 mod messages;
 mod naming;
+mod navigation;
 mod palette;
 pub(crate) mod panes;
 mod plans;
@@ -1203,8 +1205,13 @@ impl App {
                             let id = id.clone();
                             self.shell.attach_when_listed = None;
                             if running {
-                                self.attach(id, self.wake.clone());
-                                self.screen = Screen::Terminal;
+                                // The person's launch or reconnect, finished:
+                                // a move of theirs, which Back undoes.
+                                let wake = self.wake.clone();
+                                self.navigating(true, |app| {
+                                    app.attach(id, wake);
+                                    app.screen = Screen::Terminal;
+                                });
                             }
                         }
                     }
@@ -2077,6 +2084,10 @@ impl App {
                 // The card that changed flashes once; an open one is read
                 // again in full.
                 self.flashes.insert(task.clone(), Instant::now());
+                // An archived card is no place to go back to.
+                if let EventKind::TaskArchived { task, .. } = &event.kind {
+                    self.shell.history.forget_card(task);
+                }
                 if self.task_open.as_ref() == Some(task) {
                     self.send(Cmd::TaskDetail(task.clone()));
                 }
@@ -7518,7 +7529,7 @@ pub(crate) mod tests {
             let mut project = ProjectRef::directory(root);
             project.fingerprint = Some(name.into());
             agent.project = Some(project.clone());
-            app.shell.catalog.remember(project, false);
+            app.shell.catalog.remember(project, false).unwrap();
             agents.push(agent);
         }
         let (worker, other) = (agents[0].clone(), agents[1].clone());

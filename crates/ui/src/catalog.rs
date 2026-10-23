@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-const MAX_PROJECTS: usize = 512;
+/// How many projects the list holds, and how many removed folders.
+pub const MAX_PROJECTS: usize = 512;
 const MAX_STATE_BYTES: u64 = 2 * 1024 * 1024;
 /// Dismissed notices are per process generation; the oldest go first.
 const MAX_DISMISSED: usize = 256;
@@ -60,6 +61,41 @@ pub struct Dismissed {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
 }
+
+/// Why a project was left off the list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The folder is not an absolute path, so no project.
+    Relative,
+    /// `/` or the home folder, where a session runs when nobody chose a
+    /// folder: a project only when the person adds (pins) it.
+    Broad,
+    /// A folder the person removed from the list: discovery does not bring
+    /// it back.
+    Removed,
+    /// The list already holds [`MAX_PROJECTS`] projects.
+    Full,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Relative => f.write_str("Project folders must be absolute"),
+            Self::Broad => f.write_str(
+                "The filesystem root and the home folder are projects only when you add them",
+            ),
+            Self::Removed => f.write_str(
+                "This folder was removed from the project list; add it again to list it",
+            ),
+            Self::Full => write!(
+                f,
+                "The project list is full ({MAX_PROJECTS} projects); forget an old project first"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for Refusal {}
 
 impl Catalog {
     pub fn load(home: &Path) -> anyhow::Result<Self> {
@@ -152,19 +188,51 @@ impl Catalog {
                 .any(|e| e.pinned && e.project.root == root)
     }
 
-    pub fn remember(&mut self, project: ProjectRef, pin: bool) -> bool {
+    /// Whether a session in this folder is one of the Other sessions rather
+    /// than a project's: `/` or the home folder unless pinned, or a folder
+    /// that is not an absolute path.
+    pub fn projectless(&self, root: &Path) -> bool {
+        !root.is_absolute() || self.broad_unpinned(root)
+    }
+
+    /// List a project found through an agent, or pin one the person added
+    /// (`pin`). `Ok` says whether the list changed; `Err` says why the
+    /// project was left off it. Discovery never lists a folder the person
+    /// removed; adding it again does.
+    pub fn remember(&mut self, project: ProjectRef, pin: bool) -> Result<bool, Refusal> {
+        self.list(project, pin, pin)
+    }
+
+    /// List the project of a session the person opened. Going there is
+    /// asking for it, so a folder they removed comes back to the list
+    /// (not pinned) and its sessions are coordinated again. `/`, the home
+    /// folder and a relative folder are still no project, and a full list
+    /// still has no room.
+    pub fn visit(&mut self, project: ProjectRef) -> Result<bool, Refusal> {
+        self.list(project, false, true)
+    }
+
+    /// `restore`: whether a folder the person removed comes back. It does
+    /// only once it is sure of a place, so a refusal leaves it removed.
+    fn list(&mut self, project: ProjectRef, pin: bool, restore: bool) -> Result<bool, Refusal> {
         if !project.root.is_absolute() {
-            return false;
+            return Err(Refusal::Relative);
         }
         // Discovery never makes `/` or the home folder a project; the
         // person still can, by adding it.
         if !pin && is_broad(&project.root) {
-            return false;
+            return Err(Refusal::Broad);
         }
-        if pin {
+        let removed = self.hidden.contains(&project.root);
+        if removed && !restore {
+            return Err(Refusal::Removed);
+        }
+        let listed = self.projects.iter().any(|p| p.project.root == project.root);
+        if !listed && self.projects.len() >= MAX_PROJECTS {
+            return Err(Refusal::Full);
+        }
+        if removed {
             self.hidden.retain(|h| h != &project.root);
-        } else if self.hidden.contains(&project.root) {
-            return false;
         }
         if let Some(entry) = self
             .projects
@@ -178,10 +246,7 @@ impl Catalog {
                 entry.project.worktree = None;
             }
             entry.pinned |= pin;
-            return *entry != before;
-        }
-        if self.projects.len() >= MAX_PROJECTS {
-            return false;
+            return Ok(removed || *entry != before);
         }
         let mut project = project;
         project.worktree = None;
@@ -193,7 +258,7 @@ impl Catalog {
         self.sort_projects();
         // Discovery changes the catalog, not the user's selection. None is the
         // explicit All projects view and must survive new arrivals.
-        true
+        Ok(true)
     }
 
     pub fn selected(&self) -> Option<&Entry> {
@@ -280,18 +345,10 @@ impl Catalog {
     }
 
     pub fn pin(&mut self, project: ProjectRef) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.projects.len() < MAX_PROJECTS
-                || self.projects.iter().any(|e| e.project.root == project.root),
-            "The workspace holds at most 512 projects; forget an old project first"
-        );
-        anyhow::ensure!(
-            project.root.is_absolute(),
-            "Project folders must be absolute"
-        );
+        let root = project.root.clone();
+        self.remember(project, true)?;
         self.unassigned = false;
-        self.selected = Some(project.root.clone());
-        self.remember(project, true);
+        self.selected = Some(root);
         Ok(())
     }
 
@@ -380,8 +437,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = |name: &str| ProjectRef::directory(dir.path().join(name));
         let mut catalog = Catalog::default();
-        catalog.remember(project("alpha"), false);
-        catalog.remember(project("beta"), false);
+        catalog.remember(project("alpha"), false).unwrap();
+        catalog.remember(project("beta"), false).unwrap();
         assert!(catalog.selected.is_none());
         assert!(!catalog.unassigned);
         let state = dir.path().join("state");
@@ -389,11 +446,11 @@ mod tests {
         catalog.save(&state).unwrap();
         assert_eq!(Catalog::load(&state).unwrap(), catalog);
         catalog.selected = Some(project("alpha").root);
-        catalog.remember(project("gamma"), false);
+        catalog.remember(project("gamma"), false).unwrap();
         assert_eq!(catalog.selected, Some(project("alpha").root));
         catalog.selected = None;
         catalog.unassigned = true;
-        catalog.remember(project("delta"), false);
+        catalog.remember(project("delta"), false).unwrap();
         assert!(catalog.selected.is_none());
         assert!(catalog.unassigned);
     }
@@ -470,9 +527,15 @@ mod tests {
         let gone = dir.path().join("gone");
         let pinned_gone = dir.path().join("pinned-gone");
         let mut catalog = Catalog::default();
-        catalog.remember(ProjectRef::directory(existing.clone()), false);
-        catalog.remember(ProjectRef::directory(gone.clone()), false);
-        catalog.remember(ProjectRef::directory(pinned_gone.clone()), true);
+        catalog
+            .remember(ProjectRef::directory(existing.clone()), false)
+            .unwrap();
+        catalog
+            .remember(ProjectRef::directory(gone.clone()), false)
+            .unwrap();
+        catalog
+            .remember(ProjectRef::directory(pinned_gone.clone()), true)
+            .unwrap();
         catalog.selected = Some(gone.clone());
         assert!(catalog.forget_missing());
         let roots: Vec<_> = catalog
@@ -490,16 +553,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = |name: &str| ProjectRef::directory(dir.path().join(name));
         let mut catalog = Catalog::default();
-        catalog.remember(project("alpha"), false);
-        catalog.remember(project("beta"), false);
+        catalog.remember(project("alpha"), false).unwrap();
+        catalog.remember(project("beta"), false).unwrap();
         catalog.selected = Some(project("alpha").root);
         assert!(catalog.remove(&project("alpha").root).unwrap());
         assert_eq!(catalog.projects.len(), 1);
         assert_eq!(catalog.selected, Some(project("beta").root));
         // Discovery does not bring it back; adding it does.
-        assert!(!catalog.remember(project("alpha"), false));
+        assert_eq!(
+            catalog.remember(project("alpha"), false),
+            Err(Refusal::Removed)
+        );
         assert_eq!(catalog.projects.len(), 1);
-        assert!(catalog.remember(project("alpha"), true));
+        assert_eq!(catalog.remember(project("alpha"), true), Ok(true));
         assert!(catalog.hidden.is_empty());
         // A chosen name sorts and saves; the folder's name is no label.
         assert!(catalog.rename(&project("beta").root, "  zed  "));
@@ -518,25 +584,25 @@ mod tests {
             agentdocker_host::coordination::roots(&home),
             [project("alpha").root]
         );
-        assert!(catalog.remember(project("alpha"), true));
+        assert_eq!(catalog.remember(project("alpha"), true), Ok(true));
         catalog.save(&home).unwrap();
         catalog.sync_exclusions(&home).unwrap();
         assert!(agentdocker_host::coordination::roots(&home).is_empty());
         catalog.remove(&project("alpha").root).unwrap();
         // Two folders called the same are told apart by name.
-        catalog.remember(project("nested/zed"), true);
+        catalog.remember(project("nested/zed"), true).unwrap();
         assert_eq!(catalog.shared_names().len(), 1);
         // The hidden list is bounded like the list itself: at the bound a
         // removal is refused and the project stays, and nothing removed
         // earlier comes back.
         for i in 0..MAX_PROJECTS - 1 {
             let folder = project(&format!("gone-{i}"));
-            catalog.remember(folder.clone(), false);
+            catalog.remember(folder.clone(), false).unwrap();
             catalog.remove(&folder.root).unwrap();
         }
         assert_eq!(catalog.hidden.len(), MAX_PROJECTS);
         let one_more = project("one-more");
-        catalog.remember(one_more.clone(), false);
+        catalog.remember(one_more.clone(), false).unwrap();
         assert!(catalog.remove(&one_more.root).is_err());
         assert!(
             catalog
@@ -553,6 +619,70 @@ mod tests {
             label: None,
         });
         assert!(catalog.remove(&project("gone-0").root).unwrap());
+    }
+
+    /// Each refusal says which case it is. Opening a session's project
+    /// brings back a folder the person removed, unpinned; `/`, the home
+    /// folder and a relative folder are still no project; and only a list
+    /// at its limit is full, which leaves a removed folder removed.
+    #[test]
+    fn a_refusal_says_why_and_a_visit_brings_a_removed_folder_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = |name: &str| ProjectRef::directory(dir.path().join(name));
+        let home = std::env::home_dir().unwrap();
+        let mut catalog = Catalog::default();
+        let relative = ProjectRef::directory("relative/folder");
+        assert_eq!(
+            catalog.remember(relative.clone(), false),
+            Err(Refusal::Relative)
+        );
+        assert_eq!(catalog.visit(relative), Err(Refusal::Relative));
+        assert_eq!(
+            catalog.visit(ProjectRef::directory(&home)),
+            Err(Refusal::Broad)
+        );
+        assert_eq!(
+            catalog.visit(ProjectRef::directory("/")),
+            Err(Refusal::Broad)
+        );
+        assert!(catalog.projects.is_empty());
+
+        catalog.remember(project("alpha"), false).unwrap();
+        assert!(catalog.remove(&project("alpha").root).unwrap());
+        assert_eq!(
+            catalog.remember(project("alpha"), false),
+            Err(Refusal::Removed),
+            "discovery leaves a removed folder off"
+        );
+        assert_eq!(catalog.visit(project("alpha")), Ok(true));
+        assert!(catalog.hidden.is_empty());
+        assert_eq!(catalog.projects.len(), 1);
+        assert!(!catalog.projects[0].pinned, "back, not pinned");
+        assert_eq!(catalog.visit(project("alpha")), Ok(false), "already listed");
+
+        assert!(catalog.remove(&project("alpha").root).unwrap());
+        for i in 0..MAX_PROJECTS {
+            catalog.remember(project(&format!("p-{i}")), false).unwrap();
+        }
+        assert_eq!(
+            catalog.remember(project("one-more"), false),
+            Err(Refusal::Full)
+        );
+        assert_eq!(catalog.visit(project("alpha")), Err(Refusal::Full));
+        assert!(catalog.pin(project("alpha")).is_err());
+        assert_eq!(
+            catalog.hidden,
+            [project("alpha").root],
+            "no room: it stays removed"
+        );
+        assert_eq!(
+            catalog.visit(project("p-0")),
+            Ok(false),
+            "listed: no room needed"
+        );
+        let error = catalog.pin(project("one-more")).unwrap_err().to_string();
+        assert!(error.contains("full (512 projects)"), "{error}");
+        assert!(error.contains("forget an old project"), "{error}");
     }
 
     #[test]
@@ -580,7 +710,7 @@ mod tests {
         catalog.pin(resolve(&project).unwrap()).unwrap();
         let mut discovered = agentdocker_host::project::discover(&project);
         discovered.fingerprint = Some("from-daemon".into());
-        catalog.remember(discovered.clone(), false);
+        catalog.remember(discovered.clone(), false).unwrap();
         assert_eq!(catalog.projects.len(), 1);
         assert!(catalog.projects[0].pinned);
         assert_eq!(catalog.selected().unwrap().project.id(), discovered.id());
@@ -605,7 +735,7 @@ mod tests {
         catalog.pin(resolve(&alias).unwrap()).unwrap();
         let mut worktree = agentdocker_host::project::discover(&root);
         worktree.worktree = Some(dir.path().join("checkout"));
-        catalog.remember(worktree, false);
+        catalog.remember(worktree, false).unwrap();
         assert_eq!(catalog.projects.len(), 1);
         assert!(catalog.projects[0].project.worktree.is_none());
     }
@@ -642,8 +772,14 @@ mod tests {
     fn the_root_and_home_are_not_projects_unless_pinned() {
         let home = std::env::home_dir().unwrap();
         let mut catalog = Catalog::default();
-        assert!(!catalog.remember(ProjectRef::directory("/"), false));
-        assert!(!catalog.remember(ProjectRef::directory(&home), false));
+        assert_eq!(
+            catalog.remember(ProjectRef::directory("/"), false),
+            Err(Refusal::Broad)
+        );
+        assert_eq!(
+            catalog.remember(ProjectRef::directory(&home), false),
+            Err(Refusal::Broad)
+        );
         assert!(catalog.projects.is_empty());
         assert!(catalog.broad_unpinned(Path::new("/")));
         assert!(
@@ -651,7 +787,10 @@ mod tests {
             "a folder in home is a project"
         );
         // The person can still make one a project, by adding (pinning) it.
-        assert!(catalog.remember(ProjectRef::directory(&home), true));
+        assert_eq!(
+            catalog.remember(ProjectRef::directory(&home), true),
+            Ok(true)
+        );
         assert!(!catalog.broad_unpinned(&home));
         // Saved unpinned entries from before are dropped on load.
         let dir = tempfile::tempdir().unwrap();

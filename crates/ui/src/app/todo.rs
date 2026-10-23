@@ -1,7 +1,8 @@
 //! To-do: every project's open cards that are somebody's to do here —
 //! the person's, the agents', and the ones the person filed that nobody
-//! holds — grouped by project, each a row: a circle that ticks it done,
-//! its key and title, and its holder. A row opens its card on its board.
+//! holds — grouped by project, each a row: a **Done** button that ticks
+//! it done, its key and title, its chips, and its holder. A row opens its
+//! card on its board.
 use super::icons::{Icon, icon};
 use super::style::Colors;
 use super::view::{first_line, said, tip};
@@ -101,7 +102,7 @@ impl App {
         page.into()
     }
 
-    fn todo_row(&self, task: &Task, c: Colors) -> Element<'_, Message> {
+    pub(super) fn todo_row(&self, task: &Task, c: Colors) -> Element<'_, Message> {
         let connected = self.connected.is_ok();
         let root = self
             .shell
@@ -113,19 +114,17 @@ impl App {
         let today = chrono::Local::now().date_naive();
         let mut marks = row![].spacing(6).align_y(Center);
         if task.priority == agentdocker_core::Priority::High {
-            marks = marks.push(tip(icon(Icon::Alert, c.red, 12.0), "High priority", c));
-        }
-        if let Some(due) = task.due {
-            let tone = match agentdocker_core::board::due_state(due, today) {
-                agentdocker_core::board::DueState::Overdue => c.red,
-                agentdocker_core::board::DueState::Today => c.amber,
-                agentdocker_core::board::DueState::Later => c.faint,
-            };
-            marks = marks.push(tip(
-                icon(Icon::Clock, tone, 12.0),
-                due.format("%b %-d").to_string(),
+            marks = marks.push(super::chip::chip(
+                format!("todo-priority-{}", task.id),
+                Some(Icon::Alert),
+                "High priority",
+                super::chip::Tone::Alert,
                 c,
             ));
+        }
+        if let Some(due) = task.due {
+            marks = marks
+                .push(super::board::due_chip(format!("todo-due-{}", task.id), due, today).view(c));
         }
         let holder: Element<'_, Message> = match &task.assignee {
             Some(agent) => {
@@ -134,19 +133,24 @@ impl App {
             }
             None => Space::new().width(16).into(),
         };
-        let tick = tip(
-            custom_sized(
-                format!("todo-done-{}", task.id),
-                format!("Done: {}", task.handle()),
-                container(icon(Icon::Ring, c.muted, 15.0)).center(18),
-                connected.then(|| Message::TodoDone(task.id.clone())),
-                false,
-                Kind::Ghost,
-                [3, 3],
-                iced::Length::Shrink,
-            ),
-            "Done",
-            c,
+        // Done says what it does: a tick and the word.
+        let tick = custom_sized(
+            format!("todo-done-{}", task.id),
+            format!("Done: {}", task.handle()),
+            row![
+                icon(Icon::Check, c.muted, 11.0),
+                text("Done")
+                    .size(12)
+                    .line_height(iced::Pixels(16.0))
+                    .font(super::style::weight(iced::font::Weight::Medium)),
+            ]
+            .spacing(5)
+            .align_y(Center),
+            connected.then(|| Message::TodoDone(task.id.clone())),
+            false,
+            Kind::Secondary,
+            [3, 8],
+            iced::Length::Shrink,
         );
         let open = custom_sized(
             format!("todo-{}", task.id),
