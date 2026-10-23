@@ -4,12 +4,15 @@
 //! Reaching an agent that runs outside AgentDocker is two steps: inside a
 //! multiplexer (tmux, herdr), choose its pane; then bring forward the
 //! application its terminal is in, selecting the exact tab where that
-//! application can (Terminal and iTerm, by the tab's terminal device).
+//! application can (Terminal and iTerm, by the tab's terminal device). An
+//! agent that turns out to run under AgentDocker itself is not another
+//! application to bring forward: the app shows it in its own terminal.
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agentdocker_core::multiplexer::Session;
 use agentdocker_core::terminal::Host;
+use agentdocker_host::terminal::Reach;
 
 #[derive(Clone, Debug)]
 pub enum Request {
@@ -25,10 +28,23 @@ pub enum Request {
     },
 }
 
-/// What was brought forward, for the status line.
-pub fn open(request: Request) -> Result<String, String> {
+/// Where an agent was found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Opened {
+    /// Shown in another application, as the status line says it.
+    Shown(String),
+    /// It runs under AgentDocker itself, in the session whose process is
+    /// `pid`: the app shows that session's own terminal.
+    InApp { pid: u32 },
+}
+
+/// What was brought forward, for the status line, or the session of the
+/// app's own that holds the agent.
+pub fn open(request: Request) -> Result<Opened, String> {
     match request {
-        Request::Project(path) => open_project(&path).map(|()| "Terminal opened".to_owned()),
+        Request::Project(path) => {
+            open_project(&path).map(|()| Opened::Shown("Terminal opened".to_owned()))
+        }
         Request::Agent {
             pid,
             started_at,
@@ -49,6 +65,9 @@ pub fn open(request: Request) -> Result<String, String> {
 }
 
 const ENDED: &str = "This agent has ended. Its old terminal was not opened.";
+
+/// An agent under AgentDocker that no session of the app shows.
+pub const IN_AGENTDOCKER: &str = "This agent runs inside AgentDocker, not in another app's terminal, and none of its sessions shows it.";
 
 fn run(root: &Path, args: Vec<String>, timeout: Duration) -> Result<String, String> {
     let output = agentdocker_host::command::run(root, &args, timeout)
@@ -143,7 +162,7 @@ fn open_agent(
     started_at: chrono::DateTime<chrono::Utc>,
     session: Option<&Session>,
     provider_session: Option<&str>,
-) -> Result<String, String> {
+) -> Result<Opened, String> {
     // Inside a multiplexer the agent's own ancestry ends at its server;
     // the window to bring forward is the one the multiplexer's client is
     // in, once the agent's pane is chosen.
@@ -160,22 +179,44 @@ fn open_agent(
         }
         _ => (pid, None),
     };
-    let host = agentdocker_host::terminal::of_process(reach).ok_or(
-        "This agent's terminal could not be found. It may run inside another app; use that app to continue.",
-    )?;
+    let found = agentdocker_host::terminal::reach_process(reach);
     if agentdocker_host::procinfo::start_time(pid) != Some(started_at) {
         return Err(ENDED.into());
     }
+    let host = match found {
+        Reach::Host(host) => host,
+        // Under AgentDocker's own daemon or app (a multiplexer's client
+        // included, its pane now chosen): no other window holds it, and
+        // the app shows the session it runs in.
+        Reach::AgentDocker { child } => return Ok(Opened::InApp { pid: child }),
+        Reach::Unknown => {
+            return Err(
+                "This agent's terminal could not be found. It may run inside another app; use that app to continue."
+                    .into(),
+            );
+        }
+    };
     let shown = focus(&host, pane.is_some())?;
-    Ok(match pane {
+    Ok(Opened::Shown(match pane {
         Some(pane) => format!("{shown} · {pane}"),
         None => shown,
-    })
+    }))
+}
+
+/// A host that names AgentDocker itself is never brought forward: the
+/// person is already in it, and saying so would be no answer.
+fn another_app(host: &Host) -> Result<(), String> {
+    if host.is_agentdocker() {
+        Err(IN_AGENTDOCKER.into())
+    } else {
+        Ok(())
+    }
 }
 
 /// Bring the host forward, on its exact tab where it can select one.
 #[cfg(target_os = "macos")]
 fn focus(host: &Host, _pane_chosen: bool) -> Result<String, String> {
+    another_app(host)?;
     let script = match host.kind.as_str() {
         "terminal" => Some(FOCUS_TERMINAL),
         "iterm2" => Some(FOCUS_ITERM),
@@ -220,6 +261,7 @@ fn focus(host: &Host, _pane_chosen: bool) -> Result<String, String> {
 /// chosen multiplexer pane is still where the agent now shows.
 #[cfg(not(target_os = "macos"))]
 fn focus(host: &Host, pane_chosen: bool) -> Result<String, String> {
+    another_app(host)?;
     if pane_chosen {
         Ok(format!("Showing it in {}", host.name))
     } else {
@@ -598,6 +640,35 @@ mod tests {
         assert!(!permission_refused(
             "Could not open the terminal: Error: The original terminal was not found in Terminal."
         ));
+    }
+
+    /// A host naming AgentDocker, as a record kept from before the walk
+    /// passed over AgentDocker's own programs may, is refused before
+    /// anything is activated: never *Brought AgentDocker forward*.
+    #[test]
+    fn agentdocker_itself_is_never_brought_forward() {
+        let kept = Host {
+            kind: "app".into(),
+            name: "AgentDocker".into(),
+            app: Some(PathBuf::from("/Applications/AgentDocker.app")),
+            tty: Some("/dev/ttys005".into()),
+        };
+        for pane_chosen in [false, true] {
+            assert_eq!(
+                focus(&kept, pane_chosen).unwrap_err(),
+                IN_AGENTDOCKER,
+                "{pane_chosen}"
+            );
+        }
+        assert!(
+            another_app(&Host {
+                kind: "terminal".into(),
+                name: "Terminal".into(),
+                app: Some(PathBuf::from("/System/Applications/Utilities/Terminal.app")),
+                tty: Some("/dev/ttys005".into()),
+            })
+            .is_ok()
+        );
     }
 
     #[test]

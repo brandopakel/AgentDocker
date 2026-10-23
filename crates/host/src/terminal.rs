@@ -5,45 +5,140 @@
 //! ancestor's executable and the process's own terminal device.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
-use agentdocker_core::terminal::{Host, classify, device};
+use agentdocker_core::terminal::{Host, Own, bundle_of, classify, device, own};
 
 use crate::procinfo::{self, Process};
 
-/// The host of `pid`'s terminal: its nearest ancestor that is a terminal
-/// application or an application bundle, with `pid`'s own terminal
-/// device. A multiplexer server is not a host and usually has no parent
-/// but launchd, so an agent inside one has none here; it is reached
-/// through the multiplexer's client instead. Walking stops at pid 1, at a
-/// missing parent, or after enough steps that a cycle cannot spin.
-pub fn of(pid: u32, by_pid: &BTreeMap<u32, Process>) -> Option<Host> {
-    let mut current = by_pid.get(&pid)?.ppid;
+/// Where a walk up a process's parents ends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// The application its terminal is in, outside AgentDocker.
+    Host(Host),
+    /// AgentDocker itself: its daemon (a session owner included) or its
+    /// app is an ancestor, so the process runs in AgentDocker's own
+    /// terminal or in none. `child` is the process AgentDocker started on
+    /// the way down, the one a managed session records as its own.
+    AgentDocker { child: u32 },
+    /// Nothing on the way up says: the walk met pid 1 or a missing parent,
+    /// or ran out of steps.
+    Unknown,
+}
+
+/// Walk up from `pid` to where its terminal is, reading each ancestor's
+/// executable with `executable_of` and asking `ours` whether a bundle not
+/// named `AgentDocker.app` is AgentDocker's all the same. AgentDocker's CLI
+/// and helpers are passed over to the terminal they run in; its daemon or
+/// app ends the walk as [`Reach::AgentDocker`]; the nearest other ancestor
+/// that is a terminal application or an application bundle is the host,
+/// without a terminal device (the caller reads `pid`'s own). A
+/// multiplexer server is not a host and usually has no parent but launchd,
+/// so an agent inside one has none here; it is reached through the
+/// multiplexer's client instead. An ancestor whose executable cannot be
+/// read is passed over. Walking stops at pid 1, at a missing parent, or
+/// after enough steps that a cycle cannot spin.
+pub fn walk(
+    pid: u32,
+    by_pid: &BTreeMap<u32, Process>,
+    executable_of: impl Fn(u32) -> Option<PathBuf>,
+    ours: impl Fn(&Path) -> bool,
+) -> Reach {
+    let Some(mut current) = by_pid.get(&pid).map(|process| process.ppid) else {
+        return Reach::Unknown;
+    };
+    let mut child = pid;
     for _ in 0..32 {
         if current <= 1 {
-            return None;
+            return Reach::Unknown;
         }
-        if let Some(mut host) = procinfo::executable_path_of(current)
-            .ok()
-            .and_then(|executable| classify(&executable))
-        {
-            host.tty = device_of(pid);
-            return Some(host);
+        let process = by_pid.get(&current);
+        if let Some(executable) = executable_of(current) {
+            let argv = process.map_or(&[][..], |process| process.argv.as_slice());
+            match own(&executable, argv, &ours) {
+                Some(Own::Daemon | Own::App) => return Reach::AgentDocker { child },
+                Some(Own::Cli) => {}
+                None => {
+                    if let Some(host) = classify(&executable) {
+                        return Reach::Host(host);
+                    }
+                }
+            }
         }
-        current = by_pid.get(&current)?.ppid;
+        let Some(process) = process else {
+            return Reach::Unknown;
+        };
+        (child, current) = (current, process.ppid);
     }
-    None
+    Reach::Unknown
+}
+
+/// [`walk`] over the kernel's executables, with `pid`'s own terminal
+/// device on the host it finds.
+pub fn reach(pid: u32, by_pid: &BTreeMap<u32, Process>) -> Reach {
+    match walk(
+        pid,
+        by_pid,
+        |ancestor| procinfo::executable_path_of(ancestor).ok(),
+        ours,
+    ) {
+        Reach::Host(mut host) => {
+            host.tty = device_of(pid);
+            Reach::Host(host)
+        }
+        other => other,
+    }
+}
+
+/// The host of `pid`'s terminal outside AgentDocker, by [`reach`]: `None`
+/// when AgentDocker itself runs it or nothing on the way up says.
+pub fn of(pid: u32, by_pid: &BTreeMap<u32, Process>) -> Option<Host> {
+    match reach(pid, by_pid) {
+        Reach::Host(host) => Some(host),
+        Reach::AgentDocker { .. } | Reach::Unknown => None,
+    }
+}
+
+/// [`reach`], reading the process table itself; [`Reach::Unknown`] when it
+/// cannot be read.
+pub fn reach_process(pid: u32) -> Reach {
+    let Ok(processes) = procinfo::processes() else {
+        return Reach::Unknown;
+    };
+    let by_pid: BTreeMap<u32, Process> = processes
+        .into_iter()
+        .map(|process| (process.pid, process))
+        .collect();
+    reach(pid, &by_pid)
 }
 
 /// [`of`], reading the process table itself.
 pub fn of_process(pid: u32) -> Option<Host> {
-    let by_pid: BTreeMap<u32, Process> = procinfo::processes()
-        .ok()?
-        .into_iter()
-        .map(|process| (process.pid, process))
-        .collect();
-    of(pid, &by_pid)
+    match reach_process(pid) {
+        Reach::Host(host) => Some(host),
+        Reach::AgentDocker { .. } | Reach::Unknown => None,
+    }
+}
+
+/// Whether `bundle` is AgentDocker's under any name: the bundle this
+/// process runs from, or one whose `Contents/MacOS` holds AgentDocker's
+/// CLI. A bundle named `AgentDocker.app` needs no asking.
+pub fn ours(bundle: &Path) -> bool {
+    static RUNNING: OnceLock<Option<PathBuf>> = OnceLock::new();
+    let running = RUNNING.get_or_init(|| {
+        let executable = std::env::current_exe().ok()?;
+        let executable = std::fs::canonicalize(&executable).unwrap_or(executable);
+        bundle_of(&executable).map(|(bundle, _)| bundle)
+    });
+    let resolved = std::fs::canonicalize(bundle).unwrap_or_else(|_| bundle.to_owned());
+    running.as_deref() == Some(resolved.as_path())
+        || bundle
+            .join("Contents")
+            .join("MacOS")
+            .join(crate::program::Role::Cli.file_name())
+            .is_file()
 }
 
 /// The terminal device `pid` reads and writes, as `ps` reports it, or
@@ -242,5 +337,175 @@ mod tests {
         // 900_002 does not exist as a real process, so its executable
         // cannot be read; the walk reaches pid 1 and gives up.
         assert_eq!(of(900_001, &table), None);
+    }
+
+    /// A staged process table: each process's pid, parent, executable and
+    /// arguments, from the agent up.
+    type Chain<'a, S> = &'a [(u32, u32, S, &'a str)];
+
+    fn walked<S: AsRef<str>>(chain: Chain<'_, S>, ours: impl Fn(&Path) -> bool) -> Reach {
+        let table: BTreeMap<u32, Process> = chain
+            .iter()
+            .map(|(pid, ppid, _, words)| {
+                let argv = words.split(' ').map(str::to_owned).collect();
+                (
+                    *pid,
+                    Process {
+                        pid: *pid,
+                        ppid: *ppid,
+                        argv,
+                    },
+                )
+            })
+            .collect();
+        let executables: BTreeMap<u32, PathBuf> = chain
+            .iter()
+            .map(|(pid, _, executable, _)| (*pid, PathBuf::from(executable.as_ref())))
+            .collect();
+        walk(
+            chain[0].0,
+            &table,
+            |pid| executables.get(&pid).cloned(),
+            ours,
+        )
+    }
+
+    const TERMINAL: &str = "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal";
+    const ITERM: &str = "/Applications/iTerm.app/Contents/MacOS/iTerm2";
+    const APPLICATIONS: &str = "/Applications/AgentDocker.app/Contents/MacOS";
+    const VERSIONED: &str = "/Users/me/.local/share/agentdocker/desktop/versions/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f/AgentDocker.app/Contents/MacOS";
+
+    /// `agentdocker codex` in a terminal: Codex under the CLI's wrapper
+    /// under the CLI, in a login shell of `host`.
+    fn codex_in(bundle: &str, host: &str) -> Vec<(u32, u32, String, &'static str)> {
+        vec![
+            (500, 501, "/opt/homebrew/bin/codex".to_owned(), "codex"),
+            (
+                501,
+                502,
+                format!("{bundle}/agentdocker"),
+                "agentdocker codex",
+            ),
+            (
+                502,
+                503,
+                format!("{bundle}/agentdocker"),
+                "agentdocker codex",
+            ),
+            (503, 504, "/bin/zsh".to_owned(), "-zsh"),
+            (504, 505, "/usr/bin/login".to_owned(), "login -pf me"),
+            (505, 1, host.to_owned(), "Terminal"),
+        ]
+    }
+
+    fn host_kind(reach: Reach) -> Option<(String, String)> {
+        match reach {
+            Reach::Host(host) => Some((host.kind, host.name)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn the_walk_passes_agentdockers_own_cli_to_the_real_terminal() {
+        for bundle in [APPLICATIONS, VERSIONED] {
+            let chain = codex_in(bundle, TERMINAL);
+            assert_eq!(
+                host_kind(walked(&chain, |_| false)),
+                Some(("terminal".into(), "Terminal".into())),
+                "{bundle}"
+            );
+            let chain = codex_in(bundle, ITERM);
+            assert_eq!(
+                host_kind(walked(&chain, |_| false)),
+                Some(("iterm2".into(), "iTerm".into())),
+                "{bundle}"
+            );
+        }
+        // A copy under another name is passed over too, once the
+        // filesystem says it is AgentDocker's: by its own helper's name it
+        // would otherwise be an application of its own.
+        let renamed = "/Applications/Copied.app/Contents/MacOS";
+        let mut chain = codex_in(renamed, TERMINAL);
+        chain[1].2 = format!("{renamed}/helper");
+        chain[2].2 = format!("{renamed}/helper");
+        assert_eq!(
+            host_kind(walked(&chain, |bundle| bundle
+                == Path::new("/Applications/Copied.app"))),
+            Some(("terminal".into(), "Terminal".into()))
+        );
+        assert_eq!(
+            host_kind(walked(&chain, |_| false)),
+            Some(("app".into(), "Copied".into()))
+        );
+    }
+
+    #[test]
+    fn a_session_under_agentdockers_daemon_or_app_has_no_other_host() {
+        // A managed session: the agent under its session owner, under
+        // launchd.
+        for owner in [
+            (format!("{VERSIONED}/agentd"), "agentd --session-owner"),
+            (
+                format!("{VERSIONED}/agentdocker"),
+                "agentdocker daemon run --session-owner",
+            ),
+        ] {
+            let chain = [
+                (600, 601, "/opt/homebrew/bin/codex", "codex"),
+                (601, 1, owner.0.as_str(), owner.1),
+            ];
+            assert_eq!(
+                walked(&chain, |_| false),
+                Reach::AgentDocker { child: 600 },
+                "{}",
+                owner.1
+            );
+        }
+        // The daemon started by hand in a terminal is still the end of the
+        // walk: what it runs is not in that terminal's tab. The child
+        // named is the one the daemon started, under any wrapper.
+        let chain = [
+            (700, 701, "/opt/homebrew/bin/codex", "codex"),
+            (
+                701,
+                702,
+                "/Users/me/.local/bin/agentdocker",
+                "agentdocker codex",
+            ),
+            (702, 703, "/Users/me/src/target/debug/agentd", "agentd"),
+            (703, 704, "/bin/zsh", "-zsh"),
+            (704, 705, "/usr/bin/login", "login -pf me"),
+            (705, 1, TERMINAL, "Terminal"),
+        ];
+        assert_eq!(walked(&chain, |_| false), Reach::AgentDocker { child: 701 });
+        // Started by the app itself.
+        let chain = [
+            (800, 801, "/opt/homebrew/bin/codex", "codex"),
+            (
+                801,
+                1,
+                "/Applications/AgentDocker.app/Contents/MacOS/agentdocker-ui",
+                "agentdocker-ui",
+            ),
+        ];
+        assert_eq!(walked(&chain, |_| false), Reach::AgentDocker { child: 800 });
+        // Only launchd above it: nothing says where it is.
+        let chain = [
+            (900, 901, "/opt/homebrew/bin/codex", "codex"),
+            (901, 1, "/bin/zsh", "-zsh"),
+        ];
+        assert_eq!(walked(&chain, |_| false), Reach::Unknown);
+    }
+
+    #[test]
+    fn a_bundle_holding_agentdockers_cli_is_agentdockers() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("Renamed.app");
+        let macos = bundle.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        assert!(!ours(&bundle));
+        std::fs::write(macos.join(crate::program::Role::Cli.file_name()), b"cli").unwrap();
+        assert!(ours(&bundle));
+        assert!(!ours(&root.path().join("Elsewhere.app")));
     }
 }

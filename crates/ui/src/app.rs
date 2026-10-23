@@ -2359,7 +2359,7 @@ impl App {
         if agent.managed {
             return agent.spec.tty.then(|| "in AgentDocker".to_owned());
         }
-        match (&agent.session, &agent.terminal) {
+        match (&agent.session, Self::other_app(agent)) {
             (Some(session), _) => Some(format!("in {}", session.describe())),
             (None, Some(host)) => Some(format!("in {}", host.describe())),
             (None, None) => None,
@@ -2371,13 +2371,34 @@ impl App {
         if agent.managed {
             return "Open terminal".to_owned();
         }
-        match (&agent.session, &agent.terminal) {
+        match (&agent.session, Self::other_app(agent)) {
             (Some(session), _) if session.kind == "tmux" || session.kind == "herdr" => {
                 format!("Go to {} pane", session.kind)
             }
             (_, Some(host)) => format!("Go to {}", host.name),
             _ => "Open original terminal".to_owned(),
         }
+    }
+
+    /// The application an agent recorded its terminal in, unless that
+    /// names AgentDocker itself: a record kept from before the walk passed
+    /// over AgentDocker's own programs may, and the person is already
+    /// here. Going there finds the terminal afresh.
+    fn other_app(agent: &AgentRecord) -> Option<&agentdocker_core::terminal::Host> {
+        agent
+            .terminal
+            .as_ref()
+            .filter(|host| !host.is_agentdocker())
+    }
+
+    /// The live session the app runs with a terminal of its own whose
+    /// process is `pid`: where an agent found under AgentDocker itself
+    /// shows.
+    fn in_app_session(&self, pid: u32) -> Option<String> {
+        self.agents
+            .iter()
+            .find(|a| a.managed && a.spec.tty && a.status.is_live() && a.pid == Some(pid))
+            .map(|a| a.id.to_string())
     }
 
     /// The names of the current snapshot of records.

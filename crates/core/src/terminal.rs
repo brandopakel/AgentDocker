@@ -7,6 +7,12 @@
 //! host I/O and live in `agentdocker-host::terminal`. Nothing here guesses:
 //! an executable outside every known host and every application bundle is
 //! not a host, and the walk moves on to its parent.
+//!
+//! AgentDocker's own programs are never a host ([`own`]): the CLI (an
+//! `agentdocker codex` wrapper, say) runs in whatever terminal started it,
+//! so the walk carries on past it; what runs under the daemon or the
+//! desktop app is in AgentDocker's own terminal or in none, so the walk
+//! ends there with no other application to go to.
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +54,110 @@ impl Host {
     /// than only the application brought forward.
     pub fn selects_tab(&self) -> bool {
         matches!(self.kind.as_str(), "terminal" | "iterm2") && self.tty.is_some()
+    }
+
+    /// Whether this names AgentDocker itself, as a record kept from before
+    /// the walk passed over AgentDocker's own programs may: never another
+    /// application to go to.
+    pub fn is_agentdocker(&self) -> bool {
+        self.app.as_deref().is_some_and(agentdocker_bundle)
+            || (self.kind == "app" && self.name.eq_ignore_ascii_case(BUNDLE))
+    }
+}
+
+/// The application bundle AgentDocker ships as, without `.app`.
+pub const BUNDLE: &str = "AgentDocker";
+
+/// One of AgentDocker's own programs, met on the walk up an agent's
+/// parents. None of them is a host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Own {
+    /// The CLI (`agentdocker codex`, a hook, the MCP server) or another
+    /// helper of AgentDocker's that is not the app: it runs in the terminal
+    /// that started it, so the walk carries on past it.
+    Cli,
+    /// The daemon, as `agentd` or `agentdocker daemon run`, and the session
+    /// owners it starts the same way: what runs under it is in
+    /// AgentDocker's own terminal or in none, never in a terminal of the
+    /// daemon's own ancestors.
+    Daemon,
+    /// The desktop app (`agentdocker-ui`): what it starts is AgentDocker's
+    /// too.
+    App,
+}
+
+/// The CLI's file name; the daemon (`agentd`) is a link to it.
+const CLI: &str = "agentdocker";
+/// The daemon's file name.
+const DAEMON: &str = "agentd";
+/// The desktop app's file name, the bundle's own executable.
+const APP: &str = "agentdocker-ui";
+
+/// Which of AgentDocker's own programs `executable` runs, invoked with
+/// `argv`, if it is one: a file named `agentdocker`, `agentd` or
+/// `agentdocker-ui` wherever it is installed, or anything inside an
+/// `AgentDocker.app` bundle or a bundle `ours` says is AgentDocker's (one
+/// renamed or copied, which only the filesystem can tell). The daemon run
+/// under the CLI's name is told apart by its `daemon run` arguments.
+pub fn own(executable: &Path, argv: &[String], ours: impl Fn(&Path) -> bool) -> Option<Own> {
+    let in_bundle = bundle_of(executable)
+        .is_some_and(|(bundle, _)| agentdocker_bundle(&bundle) || ours(&bundle));
+    let daemon_run = matches!(
+        argv.get(1..3),
+        Some([daemon, run]) if daemon == "daemon" && run == "run"
+    );
+    if named(executable, DAEMON) {
+        Some(Own::Daemon)
+    } else if named(executable, APP) {
+        Some(Own::App)
+    } else if named(executable, CLI) || in_bundle {
+        Some(if daemon_run { Own::Daemon } else { Own::Cli })
+    } else {
+        None
+    }
+}
+
+/// Whether `bundle` is named `AgentDocker.app`, in any case.
+pub fn agentdocker_bundle(bundle: &Path) -> bool {
+    bundle
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(&format!("{BUNDLE}.app")))
+}
+
+/// The outermost application bundle in `executable`'s path, with its name
+/// without `.app`: on macOS, the application the executable belongs to.
+pub fn bundle_of(executable: &Path) -> Option<(PathBuf, &str)> {
+    let mut bundle = PathBuf::new();
+    for component in executable.components() {
+        bundle.push(component);
+        if let Some(name) = component
+            .as_os_str()
+            .to_str()
+            .and_then(|part| part.strip_suffix(".app"))
+        {
+            return Some((bundle, name));
+        }
+    }
+    None
+}
+
+/// Whether `path`'s file is `program` (with `.exe`, in any case, on
+/// Windows).
+fn named(path: &Path, program: &str) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if cfg!(windows) {
+        let stem = name
+            .len()
+            .checked_sub(4)
+            .filter(|&cut| name.is_char_boundary(cut))
+            .filter(|&cut| name[cut..].eq_ignore_ascii_case(".exe"))
+            .map_or(name, |cut| &name[..cut]);
+        stem.eq_ignore_ascii_case(program)
+    } else {
+        name == program
     }
 }
 
@@ -102,18 +212,14 @@ const EXECUTABLES: &[(&str, &str, &str)] = &[
 /// application bundle in its path (a helper inside `Visual Studio
 /// Code.app/Contents/Frameworks/…` is Visual Studio Code); elsewhere a
 /// known terminal emulator's executable. `None` for a shell, `login`, a
-/// multiplexer or anything else outside both, so the walk carries on.
+/// multiplexer or anything else outside both, so the walk carries on, and
+/// for AgentDocker's own programs by their names ([`own`]), which are never
+/// a host.
 pub fn classify(executable: &Path) -> Option<Host> {
-    let mut bundle = PathBuf::new();
-    for component in executable.components() {
-        bundle.push(component);
-        let Some(name) = component
-            .as_os_str()
-            .to_str()
-            .and_then(|part| part.strip_suffix(".app"))
-        else {
-            continue;
-        };
+    if own(executable, &[], |_| false).is_some() {
+        return None;
+    }
+    if let Some((bundle, name)) = bundle_of(executable) {
         let kind = BUNDLES
             .iter()
             .find(|(known, _)| *known == name.to_ascii_lowercase())
@@ -203,6 +309,125 @@ mod tests {
         assert_eq!(
             (other.kind.as_str(), other.name.as_str()),
             ("app", "Claude")
+        );
+    }
+
+    /// Where AgentDocker installs itself: the bundle in Applications, the
+    /// managed installation's versioned bundle, and its programs outside a
+    /// bundle.
+    const VERSIONED: &str = "/Users/me/.local/share/agentdocker/desktop/versions/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f/AgentDocker.app";
+
+    fn argv(words: &str) -> Vec<String> {
+        words.split(' ').map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn agentdockers_own_programs_are_never_a_host() {
+        for path in [
+            "/Applications/AgentDocker.app/Contents/MacOS/agentdocker".to_owned(),
+            "/Applications/AgentDocker.app/Contents/MacOS/agentd".to_owned(),
+            "/Applications/AgentDocker.app/Contents/MacOS/agentdocker-ui".to_owned(),
+            "/Applications/AgentDocker.app/Contents/MacOS/some-helper".to_owned(),
+            format!("{VERSIONED}/Contents/MacOS/agentdocker"),
+            format!("{VERSIONED}/Contents/MacOS/agentd"),
+            "/Applications/AgentDocker copy.app/Contents/MacOS/agentdocker".to_owned(),
+            "/Users/me/.local/bin/agentdocker".to_owned(),
+            "/usr/local/bin/agentd".to_owned(),
+            "/home/me/src/target/debug/agentdocker-ui".to_owned(),
+        ] {
+            assert_eq!(host(&path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn own_programs_tell_the_cli_from_the_daemon_and_the_app() {
+        let none = |_: &Path| false;
+        let at = |file: &str| format!("{VERSIONED}/Contents/MacOS/{file}");
+        let own_at = |path: &str, words: &str| own(Path::new(path), &argv(words), none);
+        // The CLI, an `agentdocker codex` wrapper among its uses, is passed
+        // through; the daemon and its session owners, under either name,
+        // and the app are AgentDocker itself.
+        assert_eq!(
+            own_at(&at("agentdocker"), "agentdocker codex"),
+            Some(Own::Cli)
+        );
+        assert_eq!(
+            own_at(&at("agentd"), "agentd --session-owner"),
+            Some(Own::Daemon)
+        );
+        assert_eq!(
+            own_at(&at("agentdocker"), "agentdocker daemon run --session-owner"),
+            Some(Own::Daemon)
+        );
+        assert_eq!(
+            own_at(&at("agentdocker-ui"), "agentdocker-ui"),
+            Some(Own::App)
+        );
+        assert_eq!(own_at(&at("some-helper"), "some-helper"), Some(Own::Cli));
+        assert_eq!(
+            own_at("/Users/me/.cargo/bin/agentd", "agentd"),
+            Some(Own::Daemon)
+        );
+        assert_eq!(
+            own_at("/Users/me/.local/bin/agentdocker", "agentdocker codex"),
+            Some(Own::Cli)
+        );
+        // A bundle under another name is AgentDocker's only when the
+        // filesystem says so.
+        let renamed = Path::new("/Applications/Renamed.app/Contents/MacOS/helper");
+        assert_eq!(own(renamed, &[], none), None);
+        assert_eq!(
+            own(renamed, &[], |bundle| bundle
+                == Path::new("/Applications/Renamed.app")),
+            Some(Own::Cli)
+        );
+        // Anything else is not AgentDocker's, whatever it is asked to run.
+        for (path, words) in [
+            ("/bin/zsh", "-zsh"),
+            ("/usr/bin/login", "login -pf me"),
+            ("/opt/homebrew/bin/codex", "codex daemon run"),
+            (
+                "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+                "Terminal",
+            ),
+        ] {
+            assert_eq!(own_at(path, words), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn a_host_naming_agentdocker_is_never_another_application() {
+        let kept = Host {
+            kind: "app".into(),
+            name: "AgentDocker".into(),
+            app: Some(PathBuf::from(VERSIONED)),
+            tty: Some("/dev/ttys005".into()),
+        };
+        assert!(kept.is_agentdocker());
+        assert!(
+            Host {
+                app: None,
+                ..kept.clone()
+            }
+            .is_agentdocker()
+        );
+        assert!(
+            Host {
+                name: "Agentdocker".into(),
+                app: Some(PathBuf::from("/Applications/agentdocker.APP")),
+                ..kept
+            }
+            .is_agentdocker()
+        );
+        let terminal =
+            host("/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal").unwrap();
+        assert!(!terminal.is_agentdocker());
+        assert!(!agentdocker_bundle(Path::new(
+            "/Applications/AgentDocker Beta.app"
+        )));
+        assert_eq!(
+            bundle_of(Path::new(&format!("{VERSIONED}/Contents/MacOS/agentd"))),
+            Some((PathBuf::from(VERSIONED), "AgentDocker"))
         );
     }
 
