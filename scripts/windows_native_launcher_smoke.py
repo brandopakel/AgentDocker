@@ -36,8 +36,33 @@ class RecoveryComplete(Exception):
     """A separate bounded recovery scenario completed its own native cleanup."""
 
 
+READY = 'native input ready: '
+
+
+def logged_readiness(logs):
+    """The agent a launch said it is ready for, in its own launcher.log.
+
+    `logs` maps each launch log that is new since the launch began to its
+    text. Once Codex has the terminal the launcher writes nothing there, so
+    readiness is a line in this log, never a banner on the screen. More than
+    one new launch log is ambiguous.
+    """
+    assert len(logs) <= 1, 'more than one new launch log: ' + ', '.join(sorted(map(str, logs)))
+    for text in logs.values():
+        for line in text.splitlines():
+            _, found, agent = line.partition(READY)
+            if found and agent.strip():
+                return agent.strip()
+    return None
+
+
+def terminal_carries_readiness(text):
+    """Whether the launcher wrote its readiness over the provider's screen."""
+    return 'native input ready' in text or 'AgentDocker native input' in text
+
+
 def canonical_reopen(descriptor, generation, ledger, agent, thread, receipts):
-    """Check durable identity; ConPTY may interleave the ready banner with redraws."""
+    """Check durable identity, never what ConPTY happens to show."""
     provider = descriptor.get('provider')
     return (descriptor.get('version') == 1 and 'birth' not in descriptor
             and isinstance(provider, dict) and provider.get('session') == thread
@@ -241,6 +266,25 @@ def main():
              refused.returncode != 0 and 'cannot start dedicated Codex server' in refused.stderr
              and not list((receiver.home / 'codex-native').glob('*/capability'))
              and not report['requests'])
+
+        def launch_logs():
+            return set((receiver.home / 'codex-native').glob('*/launcher.log'))
+
+        def readiness(previous_logs):
+            """This launch's readiness: its own launcher.log, the one not in `previous_logs`."""
+            def ready():
+                assert terminal.isalive(), 'automatic launcher exited: ' + ''.join(output)[-2000:]
+                return logged_readiness({log: read_shared_file(log).decode('utf-8')
+                                         for log in launch_logs() - previous_logs})
+            return ready
+
+        def quiet(name, agent):
+            """Readiness is the launch log's line for `agent`; the terminal never shows it."""
+            step(name + ' readiness is in its launch log, never on the terminal',
+                 agent == receiver.agent and not terminal_carries_readiness(''.join(output)))
+
+        # The refused attempt above left its own launch directory and log.
+        previous_logs = launch_logs()
         terminal = PtyProcess.spawn([str(receiver.cli), '--socket', receiver.socket, 'codex-native',
                     '--program', str(codex), '--profile', str(profile), '--cwd', str(repo), '--name', 'native-auto-fixture'],
                     cwd=str(repo), env=receiver.env, dimensions=(40, 160), backend=Backend.ConPTY)
@@ -260,14 +304,12 @@ def main():
                 if not closing.is_set(): report['reader_errors'].append(str(error))
         reader = threading.Thread(target=drain, daemon=True); reader.start()
 
-        def ready():
-            assert terminal.isalive(), 'automatic launcher exited: ' + ''.join(output)[-2000:]
-            return 'AgentDocker native input ready:' in ''.join(output)
-        wait(ready, 60)
+        ready_for = wait(readiness(previous_logs), 60)
         records = list((receiver.home / 'codex-native').glob('*/server.json')); assert len(records) == 1
         record = records[0]; descriptor = json.loads(record.read_text(encoding='utf-8'))
         ledgers = list((receiver.home / 'codex-queue').glob('*/delivery.json')); assert len(ledgers) == 1
         receiver.ledger_path = ledgers[0]; receiver.agent = receiver.ledger()['binding']['agent']
+        quiet('first launch', ready_for)
         receiver.peer = receiver.rpc({'op': 'register', 'spec': {'name': 'native-auto-peer'}, 'pid': None})['agent']['id']
         report['descriptor'] = descriptor
         report['receiver_generation'] = descriptor['provider']
@@ -348,19 +390,22 @@ def main():
         assert receiver.daemon.poll() is None, 'private daemon must survive provider reopen'
         close_console()
         (out / 'first-terminal.txt').write_text(''.join(output), encoding='utf-8')
+        quiet('whole first launch', ready_for)
         old_descriptor = descriptor
         report['first_mcp_output'] = report.pop('mcp_output')
         report['mcp_requested'] = False
         queued = receiver.send(reopen_text)
         report['queued_while_provider_down'] = queued
         output.clear(); closing.clear()
+        previous_logs = launch_logs()
         terminal = PtyProcess.spawn([str(receiver.cli), '--socket', receiver.socket, 'codex-native',
                     '--program', str(codex), '--profile', str(profile), '--cwd', str(repo),
                     '--name', 'native-auto-resumed', '--resume', thread],
                     cwd=str(repo), env=receiver.env, dimensions=(40, 160), backend=Backend.ConPTY)
         launcher = psutil.Process(terminal.pid); owned.append(launcher)
         reader = threading.Thread(target=drain, daemon=True); reader.start()
-        wait(ready, 65)
+        ready_for = wait(readiness(previous_logs), 65)
+        quiet('reopen', ready_for)
         step('reopen binds the original canonical agent without a new prompt',
              receiver.binding()['provider']['session'] == thread
              and receiver.ledger()['binding']['agent'] == receiver.agent)
@@ -406,12 +451,14 @@ def main():
         step('resumed terminal exits natively and revokes its capability',
              not terminal.isalive() and not Path(descriptor['token_file']).exists())
         close_console()
+        quiet('whole reopen', ready_for)
         # Prompt-free reopens terminate each exact product participant while
         # an independent host preserves ConPTY. Console teardown cannot mask
         # either owner-death containment or frontend EOF cleanup.
         for probe_key, target in [('front_end_exit', 'frontend'), ('owner_exit', 'owner'),
                                   ('console_close', 'console')]:
             previous_records = set((receiver.home / 'codex-native').glob('*/server.json'))
+            previous_logs = launch_logs()
             output.clear(); closing.clear()
             pid_file, release_file = root / (probe_key + '.pid'), root / ('release-' + probe_key)
             # A Windows venv python.exe redirects through another process.
@@ -428,7 +475,7 @@ def main():
             launcher = psutil.Process(int(pid_file.read_text(encoding='ascii'))); owned.append(launcher)
             assert launcher.ppid() == console_host.pid
             assert Path(launcher.exe()).resolve() == receiver.cli.resolve()
-            wait(ready, 65)
+            ready_for = wait(readiness(previous_logs), 65)
             records = set((receiver.home / 'codex-native').glob('*/server.json')) - previous_records
             assert len(records) == 1
             descriptor = json.loads(records.pop().read_text(encoding='utf-8'))
@@ -437,7 +484,9 @@ def main():
             report.setdefault('reopen_probes', {})[probe_key] = {
                 'descriptor': descriptor, 'generation': generation,
                 'ledger_binding': ledger['binding'], 'attempt': ledger['attempt'],
-                'completed': ledger['completed'], 'ready_prefix_observed': ready()}
+                'completed': ledger['completed'], 'ready_logged_for': ready_for,
+                'terminal_carried_readiness': terminal_carries_readiness(''.join(output))}
+            quiet(target + ' exit probe', ready_for)
             step(target + ' exit probe reopens the same canonical provider without input',
                  canonical_reopen(descriptor, generation, ledger, receiver.agent, thread, [first, second]))
             descendants = launcher.children(recursive=True); owned.extend(descendants)
@@ -534,6 +583,7 @@ def main():
                 assert console_host.wait(timeout=10) == 0
             close_console()
             (out / (probe_key + '-terminal.txt')).write_text(''.join(output), encoding='utf-8')
+            quiet('whole ' + target + ' exit probe', ready_for)
         step('private provider configuration is unchanged', (profile / 'config.toml').read_text(encoding='utf-8') == config)
         report['result'] = 'passed'
     except RecoveryComplete:
@@ -546,7 +596,7 @@ def main():
         if channel is not None: channel.close()
         if receiver is not None:
             for directory in (receiver.home / 'codex-native').glob('*'):
-                for name in ['server.log', 'receiver.log', 'server.json']:
+                for name in ['server.log', 'receiver.log', 'launcher.log', 'server.json']:
                     path = directory / name
                     if path.is_file() and path.stat().st_size <= 2 * 1024 * 1024:
                         (out / (directory.name + '-' + name)).write_bytes(path.read_bytes())
