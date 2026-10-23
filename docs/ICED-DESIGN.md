@@ -34,6 +34,17 @@ Closing the window waits for the current preference changes. Corrupt or unsafe
 preferences are preserved and reported instead of overwritten. Existing `ui.json`
 appearance preferences are read when no new appearance has been saved.
 
+## Words on screen
+
+Every screen is cut to what a person acts on: a name, a state chip, a value
+and the controls. Taglines, helper text, explanatory subtext and secondary
+labels are cut, always. A screen or space that needs one of them to make sense
+has a layout problem, and the layout is what changes — a clearer grouping,
+order or control name — never an added line of explanation. Detail that is
+only sometimes wanted lives behind the one door the screen already has
+(Details, a chip's detail, a menu), not under every row. A state is a chip,
+never a colour to be learnt or a word on the pointer alone.
+
 ## Navigation and visual decisions
 
 Shared chat is the default project workspace.
