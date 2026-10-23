@@ -156,7 +156,7 @@ class WindowsDesktopPackaging(unittest.TestCase):
         return {"result": "passed", "source_commit": self.manifest["source_commit"],
                 "receiver_binary_sha256": dict(self.manifest["binary_sha256"]),
                 "scratch_removed": True, "cleanup_errors": [], "reader_errors": [],
-                "forced_processes": [], "steps": [{"passed": True} for _ in range(22)],
+                "forced_processes": [], "steps": [{"passed": True} for _ in range(32)],
                 "front_end_exit": {"pid": 4, "birth": 40, "frontend_exit_code": 15,
                                    "target": {"pid": 4, "birth": 40},
                                    "watched": [{"pid": n, "birth": n * 10} for n in (1, 2, 3)],
@@ -296,7 +296,7 @@ class WindowsDesktopPackaging(unittest.TestCase):
 
     def queued_recovery_report(self, mode):
         native = self.automatic_report()
-        native.update(steps=[{"passed": True} for _ in range(9)],
+        native.update(steps=[{"passed": True} for _ in range(10)],
                       descriptor={"provider": {"session": "thread"}},
                       recovery_processes=[{"pid": n, "birth": n * 10} for n in range(1, 5)],
                       recovery_remaining=[], requests=[])
