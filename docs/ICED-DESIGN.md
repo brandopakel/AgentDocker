@@ -368,9 +368,10 @@ control does, its id or its accessible label:
   tooltips; its **Save** is the card's one filled action. History is one row
   grammar in one card: an icon tile per journal kind, the line, a muted line
   of kind, branch and short sha, the time at the right. Usage leads with
-  range and grouping as segmented controls and four totals, then one framed
-  table with sentence-case headers and right-aligned numbers (a share bar
-  from 1180 points wide).
+  its name, then range and grouping as segmented controls, and four totals,
+  then one framed table with sentence-case headers and right-aligned numbers
+  (a share bar from 1180 points wide); no line under the name and no
+  legend, since a marked count says what its mark means on its tooltip.
 - **Messages** (`app/messages.rs`, helpers in `app/messages/look.rs`). The
   conversation list is the project chats — each project's chat on its project
   monogram, named for the project, opening that project's Chat — then, under
@@ -405,7 +406,9 @@ control does, its id or its accessible label:
   spoken *Send*), the whole frame showing focus; the keys are in the field's
   spoken name. Lines under it say the error, the queued state with
   **Details** and recoveries, and the recipient's readiness is its chip
-  beside **Connection**. Mention offers float above it. The thread is headed by
+  beside **Connection**. Mention offers float above it, the names alone with
+  no heading. A field that cannot send names why in a word (*Session ended*,
+  *Read only*). The thread is headed by
   the channel glyph, where it is on the pointer, and quotes
   its parent on the accent rail; the new-conversation form is a card listing
   the agents a direct message can go to. Loading is a *Loading…* chip. A question put to every agent
@@ -443,8 +446,8 @@ control does, its id or its accessible label:
   pane has a header (agent over its folder in mono, a *Live*, *Scrolled back*
   or *Ended* chip and a small Detach) above the grid on its palette's ground,
   and no key footer;
-  Commands is a panel
-  with an amber `$` prompt. Installation leads with one update row: the
+  Commands is its name over a panel with an amber `$` prompt, a **Command**
+  field and nothing under it until a command has output. Installation leads with one update row: the
   state's icon on a disc, the version, the state's chip (*Update available*,
   *You have the newest release*, *No update published yet*; what to do its
   detail), then **Later**
@@ -471,8 +474,8 @@ control does, its id or its accessible label:
   requests), plain-word Deny. Consent and form-safety wording are Accept's
   and Submit's tooltips, a required form field an asterisk with what it takes
   on the pointer, and an encoded domain the alert mark. **Needs you** is one
-  card headed by its chip (*Needs you · n*, or *To get started* when it
-  offers Connect and Set up), its rows the asker (with a *Session ended*
+  card headed by its chip (*Needs you · n*; with nothing waiting it offers
+  Connect and Set up, a tool and its control to a row, with no heading), its rows the asker (with a *Session ended*
   chip once its session has ended, or the errand's chip — *Wants
   permission*, *Has a question*, *Waiting for you* — for a wait at its own
   terminal), the ask on one line, the time-left chip and **Answer** as an

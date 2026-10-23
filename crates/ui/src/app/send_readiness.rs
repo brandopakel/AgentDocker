@@ -166,10 +166,7 @@ fn notice_content(
         }
         if report.omitted() > 0 {
             details = details.push(small(
-                format!(
-                    "{} more sessions need attention. Check their Connection details in Tools.",
-                    report.omitted()
-                ),
+                format!("{} more sessions need attention", report.omitted()),
                 c,
             ));
         }
@@ -614,5 +611,19 @@ mod tests {
                 .is_some()
         );
         assert!(!view.reads("Copy instructions") && !view.reads("After saving work"));
+        // Sessions past the listed ones are a count, with no directions.
+        let mut more = draft.readiness.clone().unwrap();
+        more.needs_attention += 3;
+        draft.readiness = Some(more);
+        let view = seen(
+            notice(
+                &draft,
+                DeliveryTarget::Session("s".into()),
+                Colors::new(false),
+            )
+            .unwrap(),
+        );
+        assert!(view.reads("3 more sessions need attention"));
+        assert!(!view.reads("Connection details in Tools"));
     }
 }

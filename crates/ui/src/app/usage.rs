@@ -3,9 +3,12 @@
 //! where samples said; the report's own range, retention, gaps and
 //! collection state sit under the table, and the overhead AgentDocker
 //! injected is "not measured" until it is, never a zero.
+use super::chip::{Tone, chip};
 use super::icons::{Icon, icon};
 use super::style::{Colors, weight};
-use super::view::{empty, eyebrow, heading, icon_tile, logo_tile, note, rule, segmented, small};
+use super::view::{
+    empty, eyebrow, heading, icon_tile, logo_tile, note, rule, segmented, small, tip,
+};
 use super::*;
 use crate::controls::{Kind, custom};
 use agentdocker_core::usage::report::{CollectionState, CounterReports, Group, Report, Row};
@@ -153,6 +156,31 @@ pub fn total(report: &Report, pick: Pick) -> CounterReport {
     }
 }
 
+/// What a count's coverage mark means, for the count's tooltip: `~` some
+/// samples did not say, `—` none did. A complete count has no mark and
+/// nothing to add.
+fn mark_meaning(shown: &str) -> Option<&'static str> {
+    if shown == "—" {
+        Some("Not reported")
+    } else if shown.ends_with('~') {
+        Some("Partial coverage")
+    } else {
+        None
+    }
+}
+
+/// A count as drawn, with what its mark means on the pointer.
+fn marked<'a>(
+    shown: String,
+    content: impl Into<Element<'a, Message>>,
+    c: Colors,
+) -> Element<'a, Message> {
+    match mark_meaning(&shown) {
+        Some(meaning) => tip(content, meaning, c),
+        None => content.into(),
+    }
+}
+
 /// [`counter`] in three figures, with the same coverage marks.
 pub fn compact_counter(report: &CounterReport) -> String {
     match (report.sum, report.coverage) {
@@ -289,23 +317,9 @@ impl App {
             .as_ref()
             .filter(|(p, _)| *p == project)
             .map(|(_, r)| r);
-        let window = WINDOWS
-            .iter()
-            .find(|(key, _)| *key == since)
-            .map_or("Last 24 hours", |(_, label)| *label);
-        let summary = match report {
-            Some(report) if !report.rows.is_empty() => {
-                let (one, many) = group_noun(report.by);
-                let n = report.rows.len();
-                format!("{window} · {n} {}", if n == 1 { one } else { many })
-            }
-            _ => window.to_owned(),
-        };
-        let title = column![
-            heading("Usage", 18),
-            note(format!("{summary} · tokens the providers reported"), c)
-        ]
-        .spacing(2);
+        // The name, then the window and the grouping it is read by: the
+        // tracks say which, so nothing under the name repeats them.
+        let title = heading("Usage", 18);
         let header: Element<'_, Message> = if compact {
             column![title, row![windows, groups].spacing(8).wrap()]
                 .spacing(12)
@@ -322,7 +336,13 @@ impl App {
         }
         let Some(report) = report else {
             if self.usage_error.is_none() {
-                page = page.push(note("Reading…", c));
+                page = page.push(chip(
+                    "usage-reading",
+                    Some(Icon::Ring),
+                    "Reading…",
+                    Tone::Neutral,
+                    c,
+                ));
             }
             return page.into();
         };
@@ -330,8 +350,8 @@ impl App {
             page = page.push(if collection_off(report) {
                 empty(None, c)
             } else {
-                // The range it covers is said once, with the notes below.
-                text("No usage in this window")
+                // The range it covers is said once, in the lines below.
+                text("No usage")
                     .size(15)
                     .font(weight(iced::font::Weight::Medium))
                     .into()
@@ -366,7 +386,7 @@ impl App {
         bars: bool,
         c: Colors,
     ) -> Element<'_, Message> {
-        let legend = small("~ partial coverage · — not reported", c).color(c.faint);
+        // No legend: what a count's mark means is on the count itself.
         let rows = ranked(report);
         if compact {
             let mut entries = column![].width(Fill);
@@ -393,10 +413,10 @@ impl App {
                 let mut counts = row![].spacing(0);
                 for (label, pick) in COUNTERS {
                     counts = counts.push(
-                        column![
-                            small(label, c),
-                            text(counter(pick(&row_.counters))).size(13).color(c.text),
-                        ]
+                        column![small(label, c), {
+                            let shown = counter(pick(&row_.counters));
+                            marked(shown.clone(), text(shown).size(13).color(c.text), c)
+                        }]
                         .spacing(2)
                         .width(124)
                         .padding(iced::Padding {
@@ -408,14 +428,10 @@ impl App {
                 entry = entry.push(counts.wrap());
                 entries = entries.push(container(entry).padding([12, 14]));
             }
-            return column![
-                container(entries)
-                    .width(Fill)
-                    .style(move |_| c.card_style()),
-                legend
-            ]
-            .spacing(8)
-            .into();
+            return container(entries)
+                .width(Fill)
+                .style(move |_| c.card_style())
+                .into();
         }
         let (_, many) = group_noun(report.by);
         let head = |label: &str, width: f32| {
@@ -448,15 +464,11 @@ impl App {
                 container(self.usage_row(row_, report.by, bars.then_some(all), c)).padding([9, 0]),
             );
         }
-        column![
-            container(table)
-                .padding([2, 16])
-                .width(Fill)
-                .style(move |_| c.card_style()),
-            legend
-        ]
-        .spacing(8)
-        .into()
+        container(table)
+            .padding([2, 16])
+            .width(Fill)
+            .style(move |_| c.card_style())
+            .into()
     }
 
     fn usage_key(&self, row_: &Row) -> String {
@@ -522,7 +534,7 @@ impl App {
         c: Colors,
     ) -> Element<'_, Message> {
         let cell = |value: String, width: f32| {
-            container(text(value).size(13).color(c.text))
+            container(marked(value.clone(), text(value).size(13).color(c.text), c))
                 .width(width)
                 .align_x(iced::alignment::Horizontal::Right)
         };
@@ -608,10 +620,14 @@ fn kpis<'a>(report: &Report, compact: bool, c: Colors) -> Element<'a, Message> {
                     .size(12)
                     .font(weight(iced::font::Weight::Medium))
                     .color(c.muted),
-                text(value)
-                    .size(22)
-                    .font(weight(iced::font::Weight::Semibold))
-                    .color(c.text),
+                marked(
+                    value.clone(),
+                    text(value)
+                        .size(22)
+                        .font(weight(iced::font::Weight::Semibold))
+                        .color(c.text),
+                    c
+                ),
             ]
             .spacing(6),
         )
@@ -1028,5 +1044,71 @@ mod tests {
         assert!(range_line(&measured).contains("the current hour is still filling"));
         measured.coverage.source_gaps = 2;
         assert!(range_line(&measured).contains("2 gap(s)"));
+    }
+
+    /// Words on screen: Usage is its name and its two tracks, with no line
+    /// under the name; reading is a chip; a window with nothing is *No
+    /// usage*; and no legend sits under the table, since a marked count
+    /// says what its mark means on its own tooltip.
+    #[test]
+    fn the_usage_screen_is_its_name_its_tracks_and_marked_counts() {
+        use crate::app::view::testing::seen;
+        let (tx, _commands) = queue::channel();
+        let (_messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        let project = agentdocker_core::ProjectRef::directory("/fixture/usage");
+        let root = project.root.display().to_string();
+        app.shell.catalog.remember(project.clone(), true).unwrap();
+        app.shell.catalog.selected = Some(project.root.clone());
+        let c = Colors::new(false);
+
+        let view = seen(app.usage_view(c));
+        assert_eq!(
+            view.control("usage-reading").map(|c| c.1.as_str()),
+            Some("Reading…"),
+            "reading is a state, said in a chip"
+        );
+        assert!(view.texts.iter().any(|t| t == "Usage"));
+        assert!(view.control("usage-since-24h").is_some());
+        assert!(!view.reads("tokens the providers reported"));
+        assert!(!view.reads("Last 24 hours ·"));
+
+        app.usage = Some((
+            root.clone(),
+            report(Vec::new(), CollectionState::CaughtUp, Some(1)),
+        ));
+        let view = seen(app.usage_view(c));
+        assert!(view.texts.iter().any(|t| t == "No usage"));
+        assert!(!view.reads("in this window"));
+
+        let counter = |sum: Option<u64>, coverage| CounterReport {
+            sum,
+            known_samples: sum.map_or(0, |_| 1),
+            coverage,
+        };
+        let row = Row {
+            key: Some("model-a".into()),
+            samples: 2,
+            counters: CounterReports {
+                input_tokens: counter(Some(900), Coverage::Partial),
+                cache_read_input_tokens: counter(None, Coverage::Unknown),
+                cache_write_input_tokens: counter(None, Coverage::Unknown),
+                output_tokens: counter(Some(40), Coverage::Complete),
+                reasoning_output_tokens: counter(None, Coverage::Unknown),
+            },
+        };
+        let mut read = report(vec![row], CollectionState::CaughtUp, Some(1));
+        read.by = Group::Model;
+        app.usage = Some((root, read));
+        let view = seen(app.usage_view(c));
+        assert!(view.texts.iter().any(|t| t == "900~"));
+        assert!(view.texts.iter().any(|t| t == "—"));
+        assert!(!view.reads("partial coverage"), "no legend");
+        assert!(!view.reads("not reported"), "no legend");
+        assert_eq!(mark_meaning("900~"), Some("Partial coverage"));
+        assert_eq!(mark_meaning("12.4K~"), Some("Partial coverage"));
+        assert_eq!(mark_meaning("—"), Some("Not reported"));
+        assert_eq!(mark_meaning("1,234"), None, "a complete count adds nothing");
     }
 }

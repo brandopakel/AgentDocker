@@ -1139,16 +1139,9 @@ impl App {
                 .take(6)
                 .collect();
             if !matches.is_empty() {
-                let mut rows = column![
-                    container(
-                        text("Mention")
-                            .size(11)
-                            .font(weight(iced::font::Weight::Medium))
-                            .color(c.faint)
-                    )
-                    .padding([4, 8])
-                ]
-                .spacing(1);
+                // The names alone: each row's `@name` says what picking it
+                // does.
+                let mut rows = column![].spacing(1);
                 for agent in matches {
                     let id = agent.id.as_str();
                     let completed = complete_mention(&text_now, &agent.spec.name);
@@ -1614,11 +1607,11 @@ impl App {
         }
         let destination = self.conversation_destination(&key);
         let can_send = self.conversation_can_send(&key);
+        // The field names what it does, or why it does nothing: in a
+        // word, since its name is all a disabled field says.
         let placeholder = match summary.kind {
-            ConversationKind::Dm if destination.is_none() => {
-                "A conversation between two agents; you are not in it".to_owned()
-            }
-            ConversationKind::Dm if !can_send => "This session has ended".to_owned(),
+            ConversationKind::Dm if destination.is_none() => "Read only".to_owned(),
+            ConversationKind::Dm if !can_send => "Session ended".to_owned(),
             _ => format!("Message {label}"),
         };
         // The conversation's own composer, whatever thread is open beside
@@ -1727,11 +1720,11 @@ impl App {
         let key = self.shell.conversation.clone().unwrap_or_default();
         let can_send = self.conversation_can_send(&key);
         let placeholder = if can_send {
-            "Reply in thread"
+            "Reply"
         } else if self.conversation_destination(&key).is_some() {
-            "This session has ended"
+            "Session ended"
         } else {
-            "This conversation is read-only"
+            "Read only"
         };
         column![
             container(header).padding(iced::Padding {
@@ -2266,6 +2259,63 @@ mod tests {
             app.shell.conversation_drafts[conversation].text,
             "kept draft"
         );
+    }
+
+    /// Words on screen: a composer's field is named for what it does, or
+    /// in a word for why it cannot: *Message …*, *Session ended*, *Read
+    /// only*, and a thread's *Reply* — never a sentence.
+    #[test]
+    fn a_field_that_cannot_send_says_why_in_a_word() {
+        use crate::app::view::testing::seen;
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        app.conversations_supported = Some(true);
+        let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
+        human.id = AgentId::from("human-id");
+        let mut worker = record("worker", "codex", Some(1));
+        worker.id = AgentId::from("worker");
+        let mut other = record("other", "codex", Some(2));
+        other.id = AgentId::from("other");
+        app.agents = vec![human, worker, other];
+        let c = Colors::new(false);
+        let field = |app: &App, prefix: &str| -> String {
+            let view = seen(app.messages_pane(c));
+            view.controls
+                .iter()
+                .find(|control| control.0.starts_with(prefix))
+                .map(|control| control.1.clone())
+                .unwrap_or_else(|| panic!("a field {prefix}…"))
+        };
+        let direct = agentdocker_core::ConversationId::dm("human-id", "worker").to_string();
+        app.shell.conversation = Some(direct.clone());
+        app.history.insert(direct.clone(), Vec::new());
+        assert!(field(&app, "reply-worker").starts_with("Message "));
+        app.agents[1].status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        assert!(field(&app, "reply-worker").starts_with("Session ended "));
+        let pair = agentdocker_core::ConversationId::dm("worker", "other").to_string();
+        app.shell.conversation = Some(pair.clone());
+        app.history.insert(pair, Vec::new());
+        assert!(field(&app, "reply-").starts_with("Read only "));
+        app.shell.conversation = Some(direct);
+        app.agents[1].status = agentdocker_core::AgentStatus::Running;
+        app.shell.thread = Some(MessageId::from("root".to_owned()));
+        let thread = seen(app.thread_pane(c));
+        let reply = thread
+            .control("reply-thread-root")
+            .expect("the thread's field");
+        assert!(reply.1.starts_with("Reply "), "{}", reply.1);
+        for view in [thread, seen(app.messages_pane(c))] {
+            for gone in [
+                "Reply in thread",
+                "This session has ended",
+                "you are not in it",
+                "read-only",
+            ] {
+                assert!(!view.reads(gone), "{gone}");
+            }
+        }
     }
 
     /// The list reads by stable names: a pair of agents as its two names,

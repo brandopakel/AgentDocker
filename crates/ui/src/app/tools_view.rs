@@ -994,23 +994,15 @@ impl App {
                     })
                 };
                 // Each route's contact as a chip: *MCP · recent*, *Hooks ·
-                // none*.
+                // none*. The words are all there is to say.
                 let contact = |name: &str, seen: bool| {
-                    Chip::new(
+                    chip(
                         format!("contact-{name}-{}", agent.id),
                         seen.then_some(Icon::Check),
                         format!("{name} · {}", if seen { "recent" } else { "none" }),
                         if seen { Tone::Positive } else { Tone::Neutral },
+                        c,
                     )
-                    .detail(format!(
-                        "{name}: {}",
-                        if seen {
-                            "recent contact"
-                        } else {
-                            "no recent contact"
-                        }
-                    ))
-                    .view(c)
                 };
                 let readiness = self.input_readiness(agent);
                 let mut entry = column![
@@ -1214,22 +1206,30 @@ impl App {
             && matches!(phase.as_str(), "prepared" | "applying")
             && any
             && plan_id.is_some();
-        let (state_word, glyph, tone) = match phase.as_str() {
+        // The state is the chip's word; what loads a saved change is its
+        // detail.
+        let (state_word, glyph, tone, next) = match phase.as_str() {
             "applied" if shell_plan => (
-                "Saved; open a new terminal to load it",
+                "Saved",
                 Some(Icon::Check),
                 Tone::Positive,
+                Some("Open a new terminal to load it"),
             ),
             "applied" => (
-                "Saved; start a fresh session to load it",
+                "Saved",
                 Some(Icon::Check),
                 Tone::Positive,
+                Some("Start a fresh session to load it"),
             ),
-            "undone" => ("Undone", None, Tone::Neutral),
-            "applying" => ("Applying…", Some(Icon::Ring), Tone::Info),
-            _ if !any => ("Nothing to change", None, Tone::Neutral),
-            _ => ("Waiting for you", Some(Icon::Alert), Tone::Attention),
+            "undone" => ("Undone", None, Tone::Neutral, None),
+            "applying" => ("Applying…", Some(Icon::Ring), Tone::Info, None),
+            _ if !any => ("Nothing to change", None, Tone::Neutral, None),
+            _ => ("Waiting for you", Some(Icon::Alert), Tone::Attention, None),
         };
+        let mut state_chip = Chip::new("setup-state", glyph, state_word, tone);
+        if let Some(next) = next {
+            state_chip = state_chip.detail(next);
+        }
         let mut buttons = row![ghost(
             "close-setup",
             "Close",
@@ -1253,12 +1253,9 @@ impl App {
             ));
         }
         let footer = container(
-            row![
-                container(chip("setup-state", glyph, state_word, tone, c)).width(Fill),
-                buttons
-            ]
-            .spacing(12)
-            .align_y(Center),
+            row![container(state_chip.view(c)).width(Fill), buttons]
+                .spacing(12)
+                .align_y(Center),
         )
         .padding([9, 12])
         .width(Fill)
@@ -1645,16 +1642,9 @@ impl App {
         let quiet = mix(ink, ground, 0.25);
         let prompt = prompt_ink(palette);
         let size = self.settings.terminal_size;
-        let mut title_row = row![
-            column![
-                heading("AgentDocker commands", 16),
-                note("Run an AgentDocker command in this project.", c)
-            ]
-            .spacing(2)
-            .width(Fill)
-        ]
-        .spacing(12)
-        .align_y(Center);
+        let mut title_row = row![heading("AgentDocker commands", 16).width(Fill)]
+            .spacing(12)
+            .align_y(Center);
         if self.console_running > 0 {
             title_row = title_row.push(status_word("Running", c.accent, c));
         }
@@ -1663,7 +1653,7 @@ impl App {
                 text("$").size(15).font(Font::MONOSPACE).color(c.amber),
                 input(
                     "console-command",
-                    "A command, e.g. ps, leases or journal",
+                    "Command",
                     &self.console_input,
                     Message::ConsoleInput
                 ),
@@ -1691,14 +1681,10 @@ impl App {
             .align_y(Center),
         )
         .padding([10, 12]);
+        // The entry alone until a command has said something: the output
+        // takes its place under it then.
         let mut panel = column![entry].width(Fill);
-        if self.console_output.is_empty() {
-            panel = panel.push(rule(c)).push(
-                container(small("Output appears here.", c))
-                    .padding([12, 14])
-                    .width(Fill),
-            );
-        } else {
+        if !self.console_output.is_empty() {
             // Each command line is the prompt in the palette's yellow and
             // the command in its ink; what the command said follows in a
             // quieter ink. Text widgets, not rich text: the output is what
@@ -2738,5 +2724,119 @@ mod tests {
         runtime.hooks_missing.clear();
         assert!(!app.tool_state(&runtime).outdated);
         assert!(!app.tool_needs_action(&runtime));
+    }
+
+    /// Words on screen: Commands is its name, a field named Command and,
+    /// once something ran, the output; no line under the name, no example
+    /// in the field, nothing standing in for output that is not there.
+    #[test]
+    fn the_console_is_its_name_a_command_field_and_output_once_there_is_some() {
+        use crate::app::view::testing::seen;
+        let (tx, _commands) = crate::app::queue::channel();
+        let (_sender, rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::bare(tx, rx);
+        let c = Colors::new(false);
+        let view = seen(app.console_view(c));
+        assert!(view.reads("AgentDocker commands"));
+        assert_eq!(view.control("console-command").unwrap().1, "Command");
+        for gone in [
+            "Run an AgentDocker command in this project",
+            "e.g.",
+            "Output appears here",
+        ] {
+            assert!(!view.reads(gone), "{gone}");
+        }
+        app.console_output = "$ ps\nnothing is running\n".into();
+        let view = seen(app.console_view(c));
+        assert!(view.reads("nothing is running"));
+    }
+
+    /// An applied setup's chip says the state in a word, what loads it in
+    /// its detail; a session's contact chips say all there is to say and
+    /// carry no tooltip that repeats them.
+    #[test]
+    fn a_saved_setup_is_a_word_and_contact_chips_add_no_tooltip() {
+        use crate::app::view::testing::seen;
+        use agentdocker_core::{AdapterContact, AdapterKind, AgentRecord, AgentSpec, AgentStatus};
+        let (tx, _commands) = crate::app::queue::channel();
+        let (_sender, rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::bare(tx, rx);
+        app.connected = Ok(());
+        let c = Colors::new(false);
+        let plan = |channel: &str| {
+            serde_json::json!({
+                "id": "plan-fixture",
+                "phase": "applied",
+                "changes": [{
+                    "runtime": "codex",
+                    "channel": channel,
+                    "action": "add",
+                    "path": "/fixture/config.toml",
+                }],
+            })
+        };
+        for (channel, next) in [
+            ("mcp", "Start a fresh session to load it"),
+            ("shell", "Open a new terminal to load it"),
+        ] {
+            let view = seen(app.setup_view(&plan(channel), c));
+            let state = view.control("setup-state").expect("the state chip");
+            assert_eq!(state.1, "Saved");
+            assert_eq!(state.2.as_deref(), Some(next));
+            assert!(!view.reads("Saved;"));
+        }
+
+        let runtime = RuntimeInfo {
+            name: "codex".into(),
+            vendor: "fixture".into(),
+            label: "Codex".into(),
+            cli: Some("/fixture/codex".into()),
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: Wiring::Wired,
+            hooks: Wiring::Wired,
+            hooks_missing: vec![],
+            shell: Wiring::Unsupported,
+            running: 1,
+        };
+        let now = Utc::now();
+        let birth = now - chrono::Duration::minutes(5);
+        let mut agent = AgentRecord::new(
+            AgentSpec {
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            birth,
+        );
+        agent.status = AgentStatus::Running;
+        agent.process_started_at = Some(birth);
+        agent.adapter_contacts.insert(
+            AdapterKind::Mcp,
+            AdapterContact {
+                process_started_at: birth,
+                observed_at: now,
+            },
+        );
+        let id = agent.id.to_string();
+        app.agents = vec![agent];
+        app.runtimes = vec![runtime];
+        app.shell.connection_details = Some("codex".into());
+        let view = seen(app.connections(c));
+        let mcp = view
+            .control(&format!("contact-MCP-{id}"))
+            .expect("the MCP contact chip");
+        assert_eq!((mcp.1.as_str(), mcp.2.as_deref()), ("MCP · recent", None));
+        let hooks = view
+            .control(&format!("contact-Hooks-{id}"))
+            .expect("the hooks contact chip");
+        assert_eq!(
+            (hooks.1.as_str(), hooks.2.as_deref()),
+            ("Hooks · none", None)
+        );
+        assert!(!view.reads("recent contact"));
     }
 }
