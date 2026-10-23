@@ -48,9 +48,9 @@ impl Readiness {
         match self {
             Self::Decided(State::Ready { .. }) => Tone::Positive,
             Self::Sending
-            | Self::Decided(
-                State::HeldForTyping | State::WaitsForPrompt | State::AwaitsCheckIn,
-            ) => Tone::Info,
+            | Self::Decided(State::HeldForTyping | State::WaitsForPrompt | State::AwaitsCheckIn) => {
+                Tone::Info
+            }
             Self::Decided(
                 State::ProviderBlocked(_) | State::Paused | State::Silent | State::Unreachable,
             ) => Tone::Attention,
@@ -62,9 +62,9 @@ impl Readiness {
         match self {
             Self::Decided(State::Ready { .. }) => Some(Icon::Check),
             Self::Sending => Some(Icon::ArrowUp),
-            Self::Decided(
-                State::HeldForTyping | State::WaitsForPrompt | State::AwaitsCheckIn,
-            ) => Some(Icon::Clock),
+            Self::Decided(State::HeldForTyping | State::WaitsForPrompt | State::AwaitsCheckIn) => {
+                Some(Icon::Clock)
+            }
             Self::Decided(State::ProviderBlocked(_)) => Some(Icon::Hourglass),
             Self::Decided(State::Paused) => Some(Icon::Pause),
             Self::Decided(State::Silent | State::Unreachable) => Some(Icon::Alert),

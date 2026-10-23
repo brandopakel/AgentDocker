@@ -140,7 +140,10 @@ impl State {
             Self::Received => "Received",
             Self::Shown => "Shown",
             Self::Unreachable => "Can't receive",
-            Self::WaitingForPrompt | Self::WaitsForCheckIn | Self::WaitingToTake => "Waiting",
+            Self::WaitingForPrompt
+            | Self::WaitsForCheckIn
+            | Self::WaitingToTake
+            | Self::HeldForTyping => "Waiting",
             Self::Paused => "Paused",
             Self::Blocked => "Provider blocked",
             Self::Silent => "Not heard from",
