@@ -265,6 +265,7 @@ async fn activity(client: &Client, agent: &str, activity: ReportedActivity) -> R
                         activity,
                         observed_at: chrono::Utc::now(),
                         reason: None,
+                        source: None,
                     }
                 }
             )

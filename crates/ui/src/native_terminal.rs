@@ -411,16 +411,10 @@ mod herdr {
 
     #[cfg(any(unix, test))]
     pub(super) fn pane_holding(reply: &str, id: &str) -> Option<String> {
-        let value: serde_json::Value = serde_json::from_str(reply.trim()).ok()?;
-        let mut holding = value["result"]["panes"]
-            .as_array()?
-            .iter()
-            .filter(|pane| pane["agent_session"]["value"].as_str() == Some(id))
-            .filter_map(|pane| pane["pane_id"].as_str());
-        match (holding.next(), holding.next()) {
-            (Some(pane), None) => Some(pane.to_owned()),
-            _ => None,
-        }
+        use agentdocker_core::multiplexer::herdr;
+        herdr::holding(&herdr::panes(reply).ok()?, [id])
+            .remove(id)
+            .map(|held| held.pane)
     }
 
     /// One request and its one-line answer, over herdr's Unix socket.
@@ -443,22 +437,10 @@ mod herdr {
         Ok(reply)
     }
 
-    /// herdr's API socket: the default session's, or a named session's.
+    /// herdr's API socket: the default session's, or a named session's,
+    /// under the person's home (where herdr puts it, not AgentDocker's).
     pub(super) fn socket(session: Option<&str>) -> Option<PathBuf> {
-        let base = agentdocker_host::dirs::home().join(".config").join("herdr");
-        match session {
-            None => Some(base.join("herdr.sock")),
-            Some(name)
-                if !name.is_empty()
-                    && name
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-                    && !name.starts_with('.') =>
-            {
-                Some(base.join("sessions").join(name).join("herdr.sock"))
-            }
-            Some(_) => None,
-        }
+        agentdocker_host::multiplexer::herdr_socket(session)
     }
 
     /// One `pane.focus` request: newline-delimited JSON over herdr's
@@ -607,7 +589,7 @@ mod tests {
 
     #[test]
     fn herdr_sockets_follow_its_session_names_and_refuse_paths() {
-        let base = agentdocker_host::dirs::home().join(".config/herdr");
+        let base = std::env::home_dir().unwrap().join(".config/herdr");
         assert_eq!(herdr::socket(None), Some(base.join("herdr.sock")));
         assert_eq!(
             herdr::socket(Some("backend")),

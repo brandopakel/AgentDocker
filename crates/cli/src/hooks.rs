@@ -497,6 +497,7 @@ async fn report_hook_completion<B: Backend>(
                     activity,
                     observed_at: chrono::Utc::now(),
                     reason,
+                    source: None,
                 },
             })
             .await

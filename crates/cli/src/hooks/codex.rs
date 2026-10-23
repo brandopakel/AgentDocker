@@ -216,6 +216,7 @@ async fn finish_report<B: Backend>(
                 activity,
                 observed_at,
                 reason: None,
+                source: None,
             },
         })
         .await?
@@ -252,6 +253,7 @@ async fn report_keyed<B: Backend>(
                 activity,
                 observed_at,
                 reason: None,
+                source: None,
             },
         })
         .await?
@@ -607,6 +609,7 @@ async fn deliver<B: Backend>(
                         activity: ReportedActivity::Working,
                         observed_at: Utc::now(),
                         reason: None,
+                        source: None,
                     },
                 }),
             )
