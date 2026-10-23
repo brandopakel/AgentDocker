@@ -1196,7 +1196,7 @@ An agent can stop for the person without saying so: a provider with no lifecycle
 ```toml
 [judge]
 judgments = ["screens"]                      # the one judgment this build knows
-key_file = "/Users/you/.config/agentdocker/typesafe.key"   # absolute, a regular file of yours, mode 0600
+key_file = "/absolute/path/to/typesafe.key"   # absolute, a regular file of yours, mode 0600
 # model = "jev-1.13.0"                       # the default: a versioned model, not an alias that moves
 # url = "https://api.typesafe.ai/v1/systemone"   # the default; https, or http only to 127.0.0.1, ::1 or localhost
 # calls_per_minute = 6                       # the default, 1–60
