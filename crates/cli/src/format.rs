@@ -996,6 +996,16 @@ fn single_line(text: &str) -> String {
         .collect()
 }
 
+/// One `seed_build` directory's line under `worktree-create`: `target:
+/// cloned`, `node_modules: skipped (the source checkout has no such
+/// directory)`.
+pub fn seeded(seed: &agentdocker_core::seed::Seeded) -> String {
+    match &seed.note {
+        Some(note) => format!("{}: {} ({note})", seed.dir, seed.outcome),
+        None => format!("{}: {}", seed.dir, seed.outcome),
+    }
+}
+
 /// A token count as the report knows it: the sum when every sample in
 /// the row said, the sum marked `~` when some did not, `—` when none
 /// did. A number never stands where the report has none.
@@ -1375,6 +1385,25 @@ pub fn webhook_attempt_row(attempt: &agentdocker_core::WebhookAttempt) -> Vec<St
 
 #[cfg(test)]
 mod tests {
+    /// Each seed is one line: the directory, what became of it, and why
+    /// when there is a reason.
+    #[test]
+    fn a_seed_line_names_the_directory_its_outcome_and_any_reason() {
+        use agentdocker_core::seed::{Outcome, Seeded};
+        let line = |dir: &str, outcome, note: Option<&str>| {
+            super::seeded(&Seeded {
+                dir: dir.into(),
+                outcome,
+                note: note.map(str::to_owned),
+            })
+        };
+        assert_eq!(line("target", Outcome::Cloned, None), "target: cloned");
+        assert_eq!(
+            line("node_modules", Outcome::Skipped, Some("not there")),
+            "node_modules: skipped (not there)"
+        );
+    }
+
     /// A delivery attempt reads as one row: the status code when the
     /// receiver answered, the word for why when it did not, a dash for a
     /// retry that is not due, and the delivery's short id.

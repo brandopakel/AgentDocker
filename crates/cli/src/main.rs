@@ -113,6 +113,12 @@ enum Command {
         /// Start point: a branch, tag or commit (default: this session's HEAD).
         #[arg(long)]
         from: Option<String>,
+        /// A directory of this checkout to seed the new one with, such as
+        /// `target` or `node_modules` (repeatable): cloned copy-on-write
+        /// where the filesystem can (APFS, reflink), else copied; not on
+        /// Windows yet.
+        #[arg(long = "seed-build", value_name = "DIR")]
+        seed_build: Vec<String>,
     },
     /// Commit this agent's checkout, journaled and attributed to it
     Commit {
@@ -2312,6 +2318,7 @@ async fn run() -> Result<()> {
             path,
             branch,
             from,
+            seed_build,
         } => {
             match client
                 .call(&Request::WorktreeCreate {
@@ -2319,10 +2326,18 @@ async fn run() -> Result<()> {
                     path,
                     branch,
                     from,
+                    seed_build,
                 })
                 .await?
             {
-                Response::Worktree { path, .. } => println!("{}", path.display()),
+                Response::Worktree { path, seeded, .. } => {
+                    // The path alone on stdout, for `cd "$(…)"`; what
+                    // became of each seed on stderr.
+                    println!("{}", path.display());
+                    for line in seeded.iter().map(format::seeded) {
+                        eprintln!("{line}");
+                    }
+                }
                 _ => bail!("unexpected worktree response"),
             }
         }
