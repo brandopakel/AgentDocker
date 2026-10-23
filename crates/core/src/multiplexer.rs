@@ -19,6 +19,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+pub mod herdr;
+
 /// Where an agent lives, when that is somebody else's terminal.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {

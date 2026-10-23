@@ -332,6 +332,14 @@ impl State {
         observation: agentdocker_core::ActivityObservation,
         now: DateTime<Utc>,
     ) -> Response {
+        // A client reports what it saw itself; who else observed is the
+        // daemon's to say, and only the daemon reads herdr.
+        if observation.source.is_some() {
+            return Response::error(
+                ErrorCode::Invalid,
+                "an activity report names no source: only the daemon observes for an agent",
+            );
+        }
         if observation.current(now).is_none() {
             return Response::error(
                 ErrorCode::Invalid,
@@ -342,7 +350,28 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        let mut record = self.registry.get(&id).expect("resolved agent").clone();
+        self.record_activity(&id, observation, now)
+    }
+
+    /// Record an observation of `id`'s activity — its adapter's, or one the
+    /// daemon made — and say so with `agent_activity_reported`.
+    pub(super) fn record_activity(
+        &mut self,
+        id: &AgentId,
+        observation: agentdocker_core::ActivityObservation,
+        now: DateTime<Utc>,
+    ) -> Response {
+        if observation.current(now).is_none() {
+            return Response::error(
+                ErrorCode::Invalid,
+                "activity observation is stale or in the future",
+            );
+        }
+        let Some(record) = self.registry.get(id) else {
+            return Response::error(ErrorCode::NotFound, "no such agent");
+        };
+        let id = id.clone();
+        let mut record = record.clone();
         if !record.status.is_live() {
             return Response::error(
                 ErrorCode::Invalid,
@@ -358,7 +387,10 @@ impl State {
         }
         // Preserve the observation's age. Using receipt time here would let a
         // delayed idle report fall back to "working" after its own expiry.
-        record.last_seen = record.last_seen.max(observation.observed_at);
+        // What another observer saw is not the agent's own contact.
+        if observation.source.is_none() {
+            record.last_seen = record.last_seen.max(observation.observed_at);
+        }
         record.reported_activity = Some(observation.clone());
         let event = agentdocker_core::Event::new(
             agentdocker_core::EventKind::AgentActivityReported {
@@ -432,13 +464,14 @@ impl State {
         // its own turns and says when the next one starts. Contact between
         // them is its MCP server polling for messages, which is presence, not
         // work: counting it turned every idle report into "working" within
-        // seconds, and a finished turn was never seen to finish.
-        let reports_turns = record
-            .adapter_contacts
-            .get(&agentdocker_core::AdapterKind::Hooks)
-            .is_some_and(|hooks| Some(hooks.process_started_at) == record.process_started_at);
+        // seconds, and a finished turn was never seen to finish. The same
+        // holds while herdr, watching its terminal, says what it is doing:
+        // that observation stands over contact until it expires, and past
+        // it contact counts again, since herdr is no longer saying.
+        let reports_turns = reports_turns(record);
         if let Some(observation) = &record.reported_activity
             && (reports_turns
+                || (observation.source.is_some() && observation.current(now).is_some())
                 || record.last_seen <= observation.observed_at
                 || record.last_seen == record.created_at)
         {
@@ -457,6 +490,15 @@ impl State {
             Activity::Unknown
         }
     }
+}
+
+/// Whether the agent's lifecycle hooks have run in its current process, so
+/// that it reports its own turns.
+pub(super) fn reports_turns(record: &AgentRecord) -> bool {
+    record
+        .adapter_contacts
+        .get(&agentdocker_core::AdapterKind::Hooks)
+        .is_some_and(|hooks| Some(hooks.process_started_at) == record.process_started_at)
 }
 
 impl Daemon {
