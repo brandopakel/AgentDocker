@@ -17,16 +17,25 @@ use std::path::Path;
 /// Held for as long as the value lives; dropping it releases the lock.
 #[derive(Debug)]
 pub struct Lock {
-    _file: File,
+    /// The locked file, until `into_fd` gives it away.
+    file: Option<File>,
 }
 
 impl Lock {
+    fn held(file: File) -> Self {
+        Self { file: Some(file) }
+    }
+
     /// Whether `path` still names the file this lock is held on. A lock
     /// is on a file, not a name: one taken on a file that was unlinked
     /// between its open and its lock excludes nobody who opens the path
     /// afterwards, so a holder whose file went takes the lock again.
     pub fn is_at(&self, path: &Path) -> io::Result<bool> {
-        let ours = same_file::Handle::from_file(self._file.try_clone()?)?;
+        let file = self
+            .file
+            .as_ref()
+            .expect("a lock keeps its file until it is dropped or given away");
+        let ours = same_file::Handle::from_file(file.try_clone()?)?;
         match same_file::Handle::from_path(path) {
             Ok(there) => Ok(there == ours),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -36,10 +45,32 @@ impl Lock {
 
     /// The lock as a bare descriptor: `flock` locks travel with the open
     /// file, so a process that receives this descriptor holds the lock for
-    /// as long as it keeps it open.
+    /// as long as it keeps it open. Unlike dropping the lock, dropping the
+    /// descriptor only closes it, so a copy another process received keeps
+    /// the lock.
     #[cfg(unix)]
-    pub fn into_fd(self) -> std::os::fd::OwnedFd {
-        self._file.into()
+    pub fn into_fd(mut self) -> std::os::fd::OwnedFd {
+        self.file
+            .take()
+            .expect("a lock keeps its file until it is dropped or given away")
+            .into()
+    }
+}
+
+impl Drop for Lock {
+    /// Release the lock now. A `flock` lock belongs to the open file, which
+    /// a child forked by any thread of this process shares until its exec
+    /// closes the close-on-exec descriptor: closing ours alone would leave
+    /// the lock held through that window, which a loaded machine stretches
+    /// from microseconds to many milliseconds, and the next owner, even this
+    /// process reopening the record it just let go of, would be refused.
+    /// Unlocking explicitly releases it whoever else still shares the file.
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(file) = &self.file {
+            // SAFETY: `flock` only reads the descriptor and the flags.
+            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+        }
     }
 }
 
@@ -56,7 +87,7 @@ pub fn try_exclusive(path: &Path) -> io::Result<Option<Lock>> {
     // SAFETY: `flock` only reads the descriptor and the flags.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc == 0 {
-        return Ok(Some(Lock { _file: file }));
+        return Ok(Some(Lock::held(file)));
     }
     let err = io::Error::last_os_error();
     match err.raw_os_error() {
@@ -94,7 +125,7 @@ fn exclusive_file(file: File) -> io::Result<Option<Lock>> {
         )
     };
     if locked != 0 {
-        return Ok(Some(Lock { _file: file }));
+        return Ok(Some(Lock::held(file)));
     }
     let error = io::Error::last_os_error();
     if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
@@ -111,7 +142,7 @@ pub fn try_shared(path: &Path) -> io::Result<Option<Lock>> {
     let file = crate::dirs::private_file(path, true, false)?;
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
     if rc == 0 {
-        return Ok(Some(Lock { _file: file }));
+        return Ok(Some(Lock::held(file)));
     }
     let error = io::Error::last_os_error();
     match error.raw_os_error() {
@@ -141,7 +172,7 @@ pub fn try_shared(path: &Path) -> io::Result<Option<Lock>> {
         )
     };
     if locked != 0 {
-        return Ok(Some(Lock { _file: file }));
+        return Ok(Some(Lock::held(file)));
     }
     let error = io::Error::last_os_error();
     if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
@@ -157,7 +188,7 @@ pub fn try_exclusive_existing(path: &Path) -> io::Result<Option<Lock>> {
     let file = crate::dirs::private_file(path, false, false)?;
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc == 0 {
-        return Ok(Some(Lock { _file: file }));
+        return Ok(Some(Lock::held(file)));
     }
     let error = io::Error::last_os_error();
     match error.raw_os_error() {
@@ -201,17 +232,7 @@ mod tests {
         let reader = try_shared(&path).unwrap().unwrap();
         assert!(try_exclusive_existing(&path).unwrap().is_none());
         drop(reader);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if try_exclusive_existing(&path).unwrap().is_some() {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "reader lock never released"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        assert!(try_exclusive_existing(&path).unwrap().is_some());
     }
 
     #[test]
@@ -223,17 +244,87 @@ mod tests {
         // locks are per open file description, not per process.
         assert!(try_exclusive(&path).unwrap().is_none());
         drop(held);
-        // A child forked by another test in this process (git, `true`)
-        // inherits our descriptor until it execs and CLOEXEC closes it, so
-        // the release can lag by that window. Nothing here bypasses the
-        // lock; wait it out rather than race it.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if try_exclusive(&path).unwrap().is_some() {
-                break;
+        // At once, even when a child another test forked (git, `true`)
+        // still shares our descriptor until its exec closes it.
+        assert!(try_exclusive(&path).unwrap().is_some());
+    }
+
+    /// A child forked by any thread shares every open file of this process,
+    /// a lock's among them, until its exec. A lock dropped in that window,
+    /// exclusive or shared, is released at once all the same, so whoever
+    /// takes it next (the same process reopening a record it just let go
+    /// of, say) is not refused for as long as the child takes to exec.
+    #[cfg(unix)]
+    #[test]
+    fn dropping_releases_a_lock_a_forked_child_still_shares() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("owner.lock");
+        type Take = fn(&Path) -> io::Result<Option<Lock>>;
+        for take in [try_exclusive as Take, try_shared] {
+            let held = take(&path).unwrap().expect("nobody else holds it");
+            let child = ForkedHolder::fork();
+            drop(held);
+            let retaken = try_exclusive(&path).unwrap();
+            drop(child);
+            assert!(retaken.is_some(), "the forked child kept a dropped lock");
+        }
+        let given = try_exclusive(&path).unwrap().unwrap().into_fd();
+        assert!(
+            try_exclusive(&path).unwrap().is_none(),
+            "a lock given away as a descriptor stays held by it"
+        );
+        drop(given);
+    }
+
+    /// A forked child holding a copy of every descriptor this process had
+    /// open, as a child of `Command::spawn` does between its fork and its
+    /// exec, until this is dropped (or for ten seconds at most).
+    #[cfg(unix)]
+    struct ForkedHolder {
+        pid: libc::pid_t,
+        release: Option<std::io::PipeWriter>,
+    }
+
+    #[cfg(unix)]
+    impl ForkedHolder {
+        fn fork() -> Self {
+            use std::os::fd::AsRawFd;
+            // Close-on-exec, so no program another thread starts meanwhile
+            // can keep the child waiting.
+            let (wait, release) = std::io::pipe().unwrap();
+            let (wait_fd, release_fd) = (wait.as_raw_fd(), release.as_raw_fd());
+            // SAFETY: the child only closes, polls and exits, each
+            // async-signal-safe, as a child of a threaded process must.
+            let pid = unsafe { libc::fork() };
+            if pid == 0 {
+                // SAFETY: as above; `ready` outlives the poll on it.
+                unsafe {
+                    libc::close(release_fd);
+                    let mut ready = libc::pollfd {
+                        fd: wait_fd,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    libc::poll(&mut ready, 1, 10_000);
+                    libc::_exit(0);
+                }
             }
-            assert!(std::time::Instant::now() < deadline, "lock never released");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            assert!(pid > 0, "fork: {}", std::io::Error::last_os_error());
+            drop(wait);
+            Self {
+                pid,
+                release: Some(release),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ForkedHolder {
+        fn drop(&mut self) {
+            // The end of the pipe ends the child's wait; it is ours to reap.
+            drop(self.release.take());
+            // SAFETY: waits for this holder's own child only.
+            unsafe { libc::waitpid(self.pid, std::ptr::null_mut(), 0) };
         }
     }
 }
