@@ -391,6 +391,7 @@ mod tests {
         let file = FileProgress {
             cursor: scanned.cursor,
             stop: scanned.stop,
+            verified_at: None,
         };
         let samples: Vec<_> = scanned
             .samples

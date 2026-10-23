@@ -37,6 +37,11 @@ struct Contribution {
 pub(crate) struct FileProgress {
     pub cursor: reader::Cursor,
     pub stop: reader::Stop,
+    /// When the collector last rehashed this cursor's whole accepted prefix.
+    /// Absent before the first such proof, and in progress written before
+    /// it was kept: either way the next pass schedules a whole proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<DateTime<Utc>>,
 }
 
 pub(crate) struct Ingest<'a> {
@@ -654,6 +659,7 @@ mod tests {
         FileProgress {
             cursor: reader::Cursor::capture(&path, reader::Runtime::Codex).unwrap(),
             stop: reader::Stop::Complete,
+            verified_at: None,
         }
     }
 

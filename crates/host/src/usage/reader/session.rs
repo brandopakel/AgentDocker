@@ -1,5 +1,7 @@
-//! Ephemeral prefix verification across bounded passes. No transcript bytes are
-//! serialized. A restart verifies the retained prefix again before parsing.
+//! Bounded prefix verification across passes. No transcript bytes are
+//! serialized. A whole proof rehashes every accepted byte; a session resuming
+//! exactly the generation its cursor was proven under rehashes only the last
+//! accepted record, and the collector schedules whole proofs for those files.
 use super::*;
 
 pub struct Preparation {
@@ -14,6 +16,10 @@ pub struct Session {
     line: Vec<u8>,
     ready: bool,
     replay_parser: bool,
+    /// The proof started at byte zero: every accepted byte is rehashed.
+    whole: bool,
+    /// The last complete record hashed by this proof, as an anchor.
+    last_record: Option<Anchor>,
 }
 
 impl Session {
@@ -25,13 +31,36 @@ impl Session {
     }
 
     /// Use the collector's already captured high-water mark for this generation.
+    /// The proof rehashes every accepted byte of `previous`.
     pub fn at_snapshot(captured: Cursor, previous: Option<&Cursor>) -> Result<Self, Error> {
+        Self::start(captured, previous, false)
+    }
+
+    /// Like `at_snapshot`, except when `captured` reports exactly the
+    /// generation `previous` was proven under: the same file identity, length
+    /// and change metadata (on Unix the inode change time, which no writer can
+    /// set). The proof then rehashes only the last accepted record, from its
+    /// retained anchor, and must reproduce the whole-prefix digest. Any other
+    /// case, including a cursor without an anchor, takes a whole proof.
+    ///
+    /// Metadata cannot rule out a same-length rewrite inside one timestamp
+    /// tick, so this is not a substitute for a whole proof: the caller must
+    /// still schedule one for every file within a bounded interval.
+    pub fn at_unchanged_snapshot(
+        captured: Cursor,
+        previous: Option<&Cursor>,
+    ) -> Result<Self, Error> {
+        Self::start(captured, previous, true)
+    }
+
+    fn start(captured: Cursor, previous: Option<&Cursor>, unchanged: bool) -> Result<Self, Error> {
         let runtime = captured.runtime;
         // Versions 3 through 6 have the same prefix proof, but their parsers skipped
         // releases counted since: patch versions checked by version 6, and by
         // version 7 releases beyond the compatibility floor. Verify that proof
         // before replay; an upgrade must not hide a changed or truncated source.
         let replay_parser = previous.is_some_and(|previous| matches!(previous.version, 3..=6));
+        let mut anchor = None;
         let cursor = if let Some(previous) = previous {
             if (previous.version != CURSOR_VERSION && !replay_parser)
                 || previous.runtime != runtime
@@ -44,6 +73,11 @@ impl Session {
             {
                 return Err(Error::Changed);
             }
+            if unchanged && !replay_parser && previous.generation == captured.generation {
+                anchor = previous
+                    .last_record
+                    .filter(|last| last.offset < previous.offset);
+            }
             let mut cursor = previous.clone();
             if cursor.generation != captured.generation {
                 cursor.quarantined_at_budget = None;
@@ -55,12 +89,20 @@ impl Session {
         };
         Ok(Self {
             cursor,
-            checked: 0,
-            prefix: [0; 32],
+            checked: anchor.map_or(0, |last| last.offset),
+            prefix: anchor.map_or([0; 32], |last| last.prefix_digest),
             line: Vec::new(),
             ready: false,
             replay_parser,
+            whole: anchor.is_none(),
+            last_record: None,
         })
+    }
+
+    /// Whether this session's proof rehashes every accepted byte, rather than
+    /// only the last record of an unchanged generation.
+    pub fn proves_whole_prefix(&self) -> bool {
+        self.whole
     }
 
     /// At most the chosen byte allowance (up to 16 MiB) and a cooperative
@@ -97,6 +139,10 @@ impl Session {
             reader.consume(count);
             self.checked += count as u64;
             if self.line.last() == Some(&b'\n') {
+                self.last_record = Some(Anchor {
+                    offset: self.checked - self.line.len() as u64,
+                    prefix_digest: self.prefix,
+                });
                 self.prefix = record_digest(self.prefix, &self.line);
                 self.line.clear();
             }
@@ -113,12 +159,19 @@ impl Session {
             self.ready = false;
             return Err(Error::Changed);
         }
+        if self.ready {
+            // The proof hashed at least the last record whenever the prefix is
+            // not empty, so this anchor matches the one the scan retained, and
+            // a cursor written before anchors existed gains one here.
+            self.cursor.last_record = self.last_record;
+        }
         if self.ready && self.replay_parser {
             self.cursor.version = CURSOR_VERSION;
             self.cursor.offset = 0;
             self.cursor.prefix_digest = [0; 32];
             self.cursor.codex = Codex::default();
             self.cursor.quarantined_at_budget = None;
+            self.cursor.last_record = None;
             self.checked = 0;
             self.prefix = [0; 32];
             self.replay_parser = false;
@@ -378,5 +431,203 @@ mod tests {
             Session::open(&path, Runtime::Claude, Some(&last)),
             Err(Error::Changed)
         ));
+    }
+
+    /// Prove a session's prefix, returning the bytes it rehashed.
+    fn prove(session: &mut Session, path: &Path) -> Result<u64, Error> {
+        let mut bytes = 0;
+        for _ in 0..64 {
+            let progress = session.prepare_next(path, 1024 * 1024, Duration::from_millis(100))?;
+            bytes += progress.bytes_read;
+            if progress.ready {
+                return Ok(bytes);
+            }
+        }
+        panic!("a bounded fixture proof did not finish")
+    }
+
+    /// Parse a file to its end the way the collector does, returning the
+    /// retained cursor and the number of samples.
+    fn collect(path: &Path, previous: Option<&Cursor>) -> (Cursor, usize) {
+        let mut session = Session::open(path, Runtime::Claude, previous).unwrap();
+        prove(&mut session, path).unwrap();
+        let mut samples = 0;
+        for _ in 0..256 {
+            let batch = session.scan(path, Budget::default()).unwrap();
+            session.validate(path, &batch.cursor).unwrap();
+            samples += batch.samples.len();
+            if batch.stop == Stop::Complete {
+                return (batch.cursor, samples);
+            }
+        }
+        panic!("a bounded fixture scan did not finish")
+    }
+
+    #[test]
+    fn an_unchanged_generation_rehashes_only_its_last_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("unchanged.jsonl");
+        let text: String = (0..400).map(row).collect();
+        std::fs::write(&path, &text).unwrap();
+        let (cursor, samples) = collect(&path, None);
+        assert_eq!(samples, 400);
+        // The anchor is retained in the durable cursor, never transcript text.
+        let saved = serde_json::to_string(&cursor).unwrap();
+        assert!(!saved.contains("private"));
+        let restored: Cursor = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored, cursor);
+
+        let captured = Cursor::capture(&path, Runtime::Claude).unwrap();
+        let mut session =
+            Session::at_unchanged_snapshot(captured.clone(), Some(&restored)).unwrap();
+        assert!(!session.proves_whole_prefix());
+        assert_eq!(prove(&mut session, &path).unwrap(), row(399).len() as u64);
+        let batch = session.scan(&path, Budget::default()).unwrap();
+        assert_eq!(batch.stop, Stop::Complete);
+        assert!(batch.samples.is_empty() && batch.gaps.is_empty());
+        assert_eq!(batch.bytes_read, 1, "only the restored boundary byte");
+        assert_eq!(batch.validation_bytes_read, 0);
+        assert_eq!(batch.cursor, cursor);
+        session.validate(&path, &batch.cursor).unwrap();
+
+        // The ordinary constructor still rehashes every accepted byte.
+        let mut whole = Session::at_snapshot(captured, Some(&restored)).unwrap();
+        assert!(whole.proves_whole_prefix());
+        assert_eq!(prove(&mut whole, &path).unwrap(), text.len() as u64);
+    }
+
+    #[test]
+    fn an_append_takes_a_whole_proof_and_parses_only_the_new_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("growing.jsonl");
+        let text: String = (0..50).map(row).collect();
+        std::fs::write(&path, &text).unwrap();
+        let (cursor, _) = collect(&path, None);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(row(50).as_bytes())
+            .unwrap();
+        let captured = Cursor::capture(&path, Runtime::Claude).unwrap();
+        assert!(!cursor.same_generation(&captured));
+        let mut session = Session::at_unchanged_snapshot(captured, Some(&cursor)).unwrap();
+        assert!(
+            session.proves_whole_prefix(),
+            "growth changes the metadata, so it is no evidence for the old prefix"
+        );
+        assert_eq!(prove(&mut session, &path).unwrap(), text.len() as u64);
+        let batch = session.scan(&path, Budget::default()).unwrap();
+        assert_eq!(batch.stop, Stop::Complete);
+        assert_eq!(batch.samples.len(), 1);
+        assert_eq!(batch.bytes_read, 1 + row(50).len() as u64);
+        assert_eq!(batch.validation_bytes_read, row(50).len() as u64);
+        // The new cursor anchors on the appended record, so the next unchanged
+        // generation rehashes that record alone.
+        let captured = Cursor::capture(&path, Runtime::Claude).unwrap();
+        let mut next = Session::at_unchanged_snapshot(captured, Some(&batch.cursor)).unwrap();
+        assert!(!next.proves_whole_prefix());
+        assert_eq!(prove(&mut next, &path).unwrap(), row(50).len() as u64);
+    }
+
+    #[test]
+    fn unchanged_metadata_cannot_hide_truncation_replacement_or_a_changed_last_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("source.jsonl");
+        let write = |rows: &[usize]| {
+            std::fs::write(&path, rows.iter().map(|id| row(*id)).collect::<String>()).unwrap();
+        };
+        write(&[0, 1, 2]);
+        let (cursor, _) = collect(&path, None);
+        let unchanged = |cursor: &Cursor| {
+            Session::at_unchanged_snapshot(
+                Cursor::capture(&path, Runtime::Claude).unwrap(),
+                Some(cursor),
+            )
+        };
+
+        // A rewrite that moves the change metadata takes a whole proof, which
+        // finds it. (Set the time: a coarse clock could repeat the old one.)
+        write(&[9, 1, 2]);
+        filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(1, 0)).unwrap();
+        let mut rewritten = unchanged(&cursor).unwrap();
+        assert!(rewritten.proves_whole_prefix());
+        assert!(matches!(prove(&mut rewritten, &path), Err(Error::Changed)));
+
+        // A filesystem reporting indistinguishable metadata for a rewrite of
+        // the last record: the last-record proof still fails.
+        write(&[0, 1, 9]);
+        let mut forged = cursor.clone();
+        forged.generation = Generation::capture(&File::open(&path).unwrap()).unwrap();
+        let mut tail = unchanged(&forged).unwrap();
+        assert!(!tail.proves_whole_prefix());
+        assert!(matches!(prove(&mut tail, &path), Err(Error::Changed)));
+
+        // The same for an earlier record is the case metadata cannot reveal:
+        // the last-record proof passes, and only a whole proof finds it. The
+        // collector schedules one for every unchanged file within a bound.
+        write(&[9, 1, 2]);
+        let mut forged = cursor.clone();
+        forged.generation = Generation::capture(&File::open(&path).unwrap()).unwrap();
+        prove(&mut unchanged(&forged).unwrap(), &path).unwrap();
+        let mut whole = Session::at_snapshot(
+            Cursor::capture(&path, Runtime::Claude).unwrap(),
+            Some(&forged),
+        )
+        .unwrap();
+        assert!(matches!(prove(&mut whole, &path), Err(Error::Changed)));
+
+        // Truncation and replacement fail before any byte is read.
+        write(&[0, 1, 2]);
+        let (cursor, _) = collect(&path, None);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(row(0).len() as u64)
+            .unwrap();
+        assert!(matches!(unchanged(&cursor), Err(Error::Changed)));
+        write(&[0, 1, 2]);
+        let (cursor, _) = collect(&path, None);
+        let replacement = temp.path().join("replacement.jsonl");
+        std::fs::write(&replacement, [0, 1, 2].map(row).concat()).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        assert!(matches!(unchanged(&cursor), Err(Error::Changed)));
+    }
+
+    #[test]
+    fn a_cursor_without_an_anchor_takes_one_whole_proof_and_gains_its_anchor() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("older.jsonl");
+        let text: String = (0..20).map(row).collect();
+        std::fs::write(&path, &text).unwrap();
+        let (cursor, _) = collect(&path, None);
+        let mut value = serde_json::to_value(&cursor).unwrap();
+        assert!(
+            value
+                .as_object_mut()
+                .unwrap()
+                .remove("last_record")
+                .is_some()
+        );
+        let older: Cursor = serde_json::from_value(value).unwrap();
+        assert_ne!(older, cursor);
+        let captured = Cursor::capture(&path, Runtime::Claude).unwrap();
+        let mut session = Session::at_unchanged_snapshot(captured, Some(&older)).unwrap();
+        assert!(session.proves_whole_prefix());
+        assert_eq!(prove(&mut session, &path).unwrap(), text.len() as u64);
+        let batch = session.scan(&path, Budget::default()).unwrap();
+        assert_eq!(batch.cursor, cursor, "the proof restores the anchor");
+        // Empty prefixes carry no anchor and need no bytes.
+        let empty = temp.path().join("empty.jsonl");
+        std::fs::write(&empty, "").unwrap();
+        let (cursor, _) = collect(&empty, None);
+        assert!(cursor.last_record.is_none());
+        let mut session = Session::at_unchanged_snapshot(
+            Cursor::capture(&empty, Runtime::Claude).unwrap(),
+            Some(&cursor),
+        )
+        .unwrap();
+        assert_eq!(prove(&mut session, &empty).unwrap(), 0);
     }
 }

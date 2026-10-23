@@ -305,6 +305,7 @@ impl Daemon {
         &self,
         key: &str,
         batch: &reader::Batch,
+        verified_at: Option<DateTime<Utc>>,
         collection: &Collection,
         config: &UsageConfig,
         finished_job: Option<usize>,
@@ -326,6 +327,7 @@ impl Daemon {
         let progress = FileProgress {
             cursor: batch.cursor.clone(),
             stop: batch.stop,
+            verified_at,
         };
         let result = state.commit_produced(
             "usage accounting",
@@ -448,10 +450,38 @@ struct Tally {
     files: u64,
     /// Accepted-prefix bytes rehashed before parsing (`Preparation::bytes_read`).
     proof_bytes: u64,
+    /// Proofs that rehashed a whole accepted prefix (including an empty one).
+    whole_proofs: u64,
+    /// Of those, the ones the schedule chose for an unchanged generation.
+    scheduled_proofs: u64,
+    /// Proofs of an unchanged generation that rehashed only its last record.
+    last_record_proofs: u64,
     /// Parser bytes, including the restored boundary byte (`Batch::bytes_read`).
     parsed_bytes: u64,
     /// Proposal rechecks before commit (`Batch::validation_bytes_read`).
     validation_bytes: u64,
+}
+
+/// When an unchanged file's whole accepted prefix is rehashed again. A file
+/// whose identity, length or change metadata moved always takes a whole
+/// proof; one that reports exactly the generation it was proven under
+/// rehashes only its last record, until its last whole proof is `interval`
+/// old. Scheduled whole proofs take at most `allowance` bytes of accepted
+/// prefix per pass (always at least one file), so the cost of re-proving an
+/// unchanged corpus is spread over passes rather than paid every pass.
+#[derive(Clone, Copy, Debug)]
+struct ProofSchedule {
+    interval: Duration,
+    allowance: u64,
+}
+
+impl Default for ProofSchedule {
+    fn default() -> Self {
+        Self {
+            interval: Duration::hours(1),
+            allowance: 64 * 1024 * 1024,
+        }
+    }
 }
 
 fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) -> Tally {
@@ -461,12 +491,24 @@ fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) -> Tally {
 // A bounded page allowance also lets restart trials stop at a committed frontier
 // without killing a process while it owns the coordination mutex.
 fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, pages: usize) -> Tally {
+    collect_scheduled(weak, config, pages, ProofSchedule::default())
+}
+
+fn collect_scheduled(
+    weak: &Weak<Daemon>,
+    config: &UsageConfig,
+    pages: usize,
+    schedule: ProofSchedule,
+) -> Tally {
     let started = std::time::Instant::now();
     let mut tally = Tally::default();
-    collect_pass(weak, config, pages, &mut tally);
+    collect_pass(weak, config, pages, schedule, &mut tally);
     tracing::debug!(
         files = tally.files,
         proof_bytes = tally.proof_bytes,
+        whole_proofs = tally.whole_proofs,
+        scheduled_proofs = tally.scheduled_proofs,
+        last_record_proofs = tally.last_record_proofs,
         parsed_bytes = tally.parsed_bytes,
         validation_bytes = tally.validation_bytes,
         elapsed_ms = started.elapsed().as_millis() as u64,
@@ -475,7 +517,13 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, pages: 
     tally
 }
 
-fn collect_pass(weak: &Weak<Daemon>, config: &UsageConfig, mut pages: usize, tally: &mut Tally) {
+fn collect_pass(
+    weak: &Weak<Daemon>,
+    config: &UsageConfig,
+    mut pages: usize,
+    schedule: ProofSchedule,
+    tally: &mut Tally,
+) {
     let Ok(sources) = roots(config) else {
         return;
     };
@@ -624,6 +672,8 @@ fn collect_pass(weak: &Weak<Daemon>, config: &UsageConfig, mut pages: usize, tal
     }
     let mut after = None;
     let mut deferred = false;
+    // Accepted-prefix bytes of the whole proofs scheduled so far this pass.
+    let mut scheduled_bytes: u64 = 0;
     loop {
         if pages == 0 {
             return;
@@ -659,25 +709,51 @@ fn collect_pass(weak: &Weak<Daemon>, config: &UsageConfig, mut pages: usize, tal
             return;
         };
         let previous = old.as_ref().map(|old| &old.cursor);
-        let mut prepare =
-            |previous: Option<&reader::Cursor>| -> Result<reader::Session, reader::Error> {
-                let mut session = reader::Session::at_snapshot(captured.clone(), previous)?;
-                loop {
-                    let progress = session.prepare_next(
-                        &source.path,
-                        4 * 1024 * 1024,
-                        std::time::Duration::from_millis(100),
-                    )?;
-                    tally.proof_bytes += progress.bytes_read;
-                    if progress.ready {
-                        return Ok(session);
-                    }
-                    if !alive_wait(weak, 1) {
-                        return Err(reader::Error::ValidationIncomplete);
-                    }
-                }
+        // An unchanged generation proves only its last record unless its
+        // whole proof is due and this pass's allowance has room for it.
+        let unchanged = previous.is_some_and(|previous| previous.same_generation(&captured));
+        let due = old.as_ref().is_none_or(|old| {
+            old.verified_at
+                .is_none_or(|at| Utc::now().signed_duration_since(at) >= schedule.interval)
+        });
+        let offset = previous.map_or(0, reader::Cursor::offset);
+        let scheduled = unchanged
+            && due
+            && (scheduled_bytes == 0
+                || scheduled_bytes.saturating_add(offset) <= schedule.allowance);
+        if scheduled {
+            scheduled_bytes = scheduled_bytes.saturating_add(offset);
+            tally.scheduled_proofs += 1;
+        }
+        let mut prepare = |previous: Option<&reader::Cursor>,
+                           trust_unchanged: bool|
+         -> Result<reader::Session, reader::Error> {
+            let mut session = if trust_unchanged {
+                reader::Session::at_unchanged_snapshot(captured.clone(), previous)?
+            } else {
+                reader::Session::at_snapshot(captured.clone(), previous)?
             };
-        let (mut session, mut previous_offset) = match prepare(previous) {
+            loop {
+                let progress = session.prepare_next(
+                    &source.path,
+                    4 * 1024 * 1024,
+                    std::time::Duration::from_millis(100),
+                )?;
+                tally.proof_bytes += progress.bytes_read;
+                if progress.ready {
+                    if session.proves_whole_prefix() {
+                        tally.whole_proofs += 1;
+                    } else {
+                        tally.last_record_proofs += 1;
+                    }
+                    return Ok(session);
+                }
+                if !alive_wait(weak, 1) {
+                    return Err(reader::Error::ValidationIncomplete);
+                }
+            }
+        };
+        let (mut session, mut previous_offset) = match prepare(previous, unchanged && !scheduled) {
             Ok(session) => {
                 let offset = session.offset();
                 (session, offset)
@@ -704,7 +780,7 @@ fn collect_pass(weak: &Weak<Daemon>, config: &UsageConfig, mut pages: usize, tal
                 }
                 // Retry once from the captured generation. If the file changed
                 // after discovery, even the empty prefix refuses it this pass.
-                let Ok(session) = prepare(None) else {
+                let Ok(session) = prepare(None, false) else {
                     if !finish_failed_job(weak, &mut collection, job_id, &[]) {
                         return;
                     }
@@ -712,6 +788,13 @@ fn collect_pass(weak: &Weak<Daemon>, config: &UsageConfig, mut pages: usize, tal
                 };
                 (session, 0)
             }
+        };
+        // A whole proof dates this file's next scheduled one; a last-record
+        // proof keeps the date of the whole proof it relies on.
+        let verified_at = if session.proves_whole_prefix() {
+            Some(Utc::now())
+        } else {
+            old.as_ref().and_then(|old| old.verified_at)
         };
         // Parsing is off-lock, but samples, gaps and the cursor commit together
         // under the coordination mutex. A full 4,096-record reader batch can
@@ -791,8 +874,14 @@ fn collect_pass(weak: &Weak<Daemon>, config: &UsageConfig, mut pages: usize, tal
             let Some(daemon) = weak.upgrade() else {
                 return;
             };
-            let committed =
-                daemon.usage_batch(&key, &batch, &next, config, finished.then_some(job_id));
+            let committed = daemon.usage_batch(
+                &key,
+                &batch,
+                verified_at,
+                &next,
+                config,
+                finished.then_some(job_id),
+            );
             drop(daemon);
             if !committed {
                 return;
@@ -1666,5 +1755,223 @@ mod tests {
                 .count(),
             events
         );
+    }
+
+    fn append(path: &Path, text: &str) {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
+    }
+
+    fn last_line(text: &str) -> u64 {
+        text.lines().last().unwrap().len() as u64 + 1
+    }
+
+    /// Edit each saved file progress, with no daemon open on the home.
+    fn edit_progress(home: &Path, edit: impl Fn(&Path, &mut serde_json::Value)) {
+        let conn = crate::sqlite_fixture::open(home.join("state.db")).unwrap();
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT key,json FROM usage_files")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        for (key, json) in rows {
+            let (_, path): (reader::Runtime, PathBuf) = serde_json::from_str(&key).unwrap();
+            let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            edit(&path, &mut value);
+            conn.execute(
+                "UPDATE usage_files SET json=?1 WHERE key=?2",
+                rusqlite::params![value.to_string(), key],
+            )
+            .unwrap();
+        }
+    }
+
+    fn reopen(home: &Path) -> Arc<Daemon> {
+        Arc::new(Daemon::open(home.to_owned(), home.join("sock")).unwrap())
+    }
+
+    #[tokio::test]
+    async fn unchanged_files_are_not_rehashed_and_appends_parse_only_new_bytes() {
+        let (temp, daemon, config, root) = fixture();
+        let texts: Vec<String> = ["a", "b", "c"]
+            .iter()
+            .map(|name| {
+                let text: String = (0..100)
+                    .map(|n| record(&format!("{name}-{n}"), 1))
+                    .collect();
+                std::fs::write(root.join(format!("{name}.jsonl")), &text).unwrap();
+                text
+            })
+            .collect();
+        let total: u64 = texts.iter().map(|text| text.len() as u64).sum();
+        let lasts: Vec<u64> = texts.iter().map(|text| last_line(text)).collect();
+        let first = collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!(
+            (first.files, first.whole_proofs, first.proof_bytes),
+            (3, 3, 0)
+        );
+        assert!(first.parsed_bytes >= total);
+        assert_eq!(query(&daemon).await.rows[0].samples, 300);
+
+        // A later generation of the unchanged corpus rehashes each file's
+        // last record and reads one boundary byte; nothing is parsed again.
+        let second = collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!(second.files, 3);
+        assert_eq!((second.whole_proofs, second.last_record_proofs), (0, 3));
+        assert_eq!(second.proof_bytes, lasts.iter().sum::<u64>());
+        assert_eq!(second.parsed_bytes, 3);
+        assert_eq!(second.validation_bytes, 0);
+        let report = query(&daemon).await;
+        assert_eq!(report.rows[0].samples, 300);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(300));
+        assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+        assert_eq!(report.coverage.collection.discovery_generation, Some(2));
+        assert_eq!(report.coverage.source_gaps, 0);
+
+        // An append moves that file's metadata: its whole prefix is proven
+        // again, and only the appended bytes are parsed.
+        let extra = record("b-new", 5);
+        append(&root.join("b.jsonl"), &extra);
+        let third = collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!((third.whole_proofs, third.last_record_proofs), (1, 2));
+        assert_eq!(
+            third.proof_bytes,
+            texts[1].len() as u64 + lasts[0] + lasts[2]
+        );
+        assert_eq!(third.parsed_bytes, 3 + extra.len() as u64);
+        assert_eq!(third.validation_bytes, extra.len() as u64);
+        let report = query(&daemon).await;
+        assert_eq!(report.rows[0].samples, 301);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(305));
+
+        // The proof dates and anchors are durable: a restarted daemon
+        // neither rehashes the corpus nor counts anything twice.
+        drop(daemon);
+        let daemon = reopen(temp.path());
+        let fourth = collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!((fourth.whole_proofs, fourth.last_record_proofs), (0, 3));
+        assert_eq!(fourth.proof_bytes, lasts[0] + last_line(&extra) + lasts[2]);
+        let report = query(&daemon).await;
+        assert_eq!(report.rows[0].samples, 301);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(305));
+        assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+        assert_eq!(report.coverage.source_gaps, 0);
+    }
+
+    #[tokio::test]
+    async fn scheduled_whole_proofs_find_a_rewrite_metadata_cannot_show() {
+        let (temp, daemon, config, root) = fixture();
+        let texts: Vec<String> = ["a", "b", "c"]
+            .iter()
+            .map(|name| {
+                let text: String = (0..20).map(|n| record(&format!("{name}-{n}"), 1)).collect();
+                std::fs::write(root.join(format!("{name}.jsonl")), &text).unwrap();
+                text
+            })
+            .collect();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!(query(&daemon).await.rows[0].samples, 60);
+        drop(daemon);
+
+        // Rewrite an earlier record in place, at the same length, and make
+        // the saved generation match the new metadata, as a filesystem whose
+        // timestamps did not move would report.
+        let path = root.join("a.jsonl");
+        let rewritten = texts[0].replacen("\"a-5\"", "\"z-5\"", 1);
+        assert_eq!(rewritten.len(), texts[0].len());
+        std::fs::write(&path, &rewritten).unwrap();
+        let generation =
+            serde_json::to_value(reader::Cursor::capture(&path, reader::Runtime::Claude).unwrap())
+                .unwrap()["generation"]
+                .clone();
+        edit_progress(temp.path(), |source, value| {
+            if source == path {
+                value["cursor"]["generation"] = generation.clone();
+            }
+        });
+        let daemon = reopen(temp.path());
+        let missed = collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!((missed.whole_proofs, missed.last_record_proofs), (0, 3));
+        let report = query(&daemon).await;
+        assert_eq!(report.rows[0].samples, 60, "the last record still matches");
+        assert_eq!(report.coverage.source_gaps, 0);
+        drop(daemon);
+
+        // Once whole proofs are due, the allowance paces them, one file per
+        // pass here, and the rewritten file's proof finds the change: an
+        // explicit gap and a rescan that counts the new response once.
+        edit_progress(temp.path(), |_, value| {
+            value["verified_at"] = serde_json::json!(Utc::now() - Duration::hours(2));
+        });
+        let daemon = reopen(temp.path());
+        let schedule = ProofSchedule {
+            interval: Duration::hours(1),
+            allowance: 1,
+        };
+        for _ in 0..3 {
+            let pass = collect_scheduled(&Arc::downgrade(&daemon), &config, usize::MAX, schedule);
+            assert_eq!(pass.scheduled_proofs, 1);
+            assert!(pass.whole_proofs >= 1);
+            assert_eq!(pass.last_record_proofs, 2);
+        }
+        let report = query(&daemon).await;
+        assert_eq!(report.rows[0].samples, 61);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(61));
+        assert_eq!(report.coverage.source_gaps, 1);
+        let settled = collect_scheduled(&Arc::downgrade(&daemon), &config, usize::MAX, schedule);
+        assert_eq!((settled.scheduled_proofs, settled.whole_proofs), (0, 0));
+        assert_eq!(settled.last_record_proofs, 3);
+        assert_eq!(query(&daemon).await.rows[0].samples, 61);
+    }
+
+    #[tokio::test]
+    async fn truncated_and_replaced_files_leave_gaps_without_recounting() {
+        let (temp, daemon, config, root) = fixture();
+        let texts: Vec<String> = ["a", "b"]
+            .iter()
+            .map(|name| {
+                let text: String = (0..10).map(|n| record(&format!("{name}-{n}"), 1)).collect();
+                std::fs::write(root.join(format!("{name}.jsonl")), &text).unwrap();
+                text
+            })
+            .collect();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!(query(&daemon).await.rows[0].samples, 20);
+
+        let kept: usize = texts[0].lines().take(5).map(|line| line.len() + 1).sum();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(root.join("a.jsonl"))
+            .unwrap()
+            .set_len(kept as u64)
+            .unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(report.rows[0].samples, 20);
+        assert_eq!(report.coverage.source_gaps, 1);
+
+        let replacement = temp.path().join("replacement.jsonl");
+        std::fs::write(&replacement, format!("{}{}", texts[1], record("b-new", 4))).unwrap();
+        std::fs::rename(&replacement, root.join("b.jsonl")).unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(report.rows[0].samples, 21);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(24));
+        assert_eq!(report.coverage.source_gaps, 2);
+
+        drop(daemon);
+        let daemon = reopen(temp.path());
+        let settled = collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!((settled.whole_proofs, settled.last_record_proofs), (0, 2));
+        let report = query(&daemon).await;
+        assert_eq!(report.rows[0].samples, 21);
+        assert_eq!(report.coverage.source_gaps, 2);
+        assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
     }
 }
