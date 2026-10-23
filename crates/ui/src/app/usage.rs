@@ -1,14 +1,14 @@
 //! Usage: the tokens the providers reported for the project's sessions,
-//! and — beside every total — what it covers. A count is shown only
-//! where samples said; the report's own range, retention, gaps and
-//! collection state sit under the table, and the overhead AgentDocker
-//! injected is "not measured" until it is, never a zero.
-use super::chip::{Tone, chip};
+//! and — on every total — what it covers. A count is shown only where
+//! samples said; what the totals do not cover (the current hour, retention,
+//! gaps) is each total's tooltip, where collection stands is a chip beside
+//! the tracks, and the overhead AgentDocker injected, in that chip's
+//! detail, is "not measured" until it is, never a zero. Nothing sits under
+//! the table.
+use super::chip::{Chip, Tone, chip};
 use super::icons::{Icon, icon};
 use super::style::{Colors, weight};
-use super::view::{
-    empty, eyebrow, heading, icon_tile, logo_tile, note, rule, segmented, small, tip,
-};
+use super::view::{empty, eyebrow, icon_tile, logo_tile, note, rule, segmented, small, tip};
 use super::*;
 use crate::controls::{Kind, custom};
 use agentdocker_core::usage::report::{CollectionState, CounterReports, Group, Report, Row};
@@ -46,35 +46,50 @@ pub fn collection_off(report: &Report) -> bool {
     report.coverage.collection.enabled == Some(false)
 }
 
-/// One line on where collection stands.
-pub fn collection_line(report: &Report) -> String {
+/// Where collection stands, as its chip beside the tracks: the state in
+/// its word; how far it has got, over how many roots, and the overhead
+/// AgentDocker injected its detail.
+pub fn collection_chip(report: &Report) -> Chip {
     let collection = &report.coverage.collection;
-    let state = match collection.state {
-        CollectionState::Unknown if collection_off(report) => "off".to_owned(),
+    let ago = |at| agentdocker_core::journal::ago(chrono::Utc::now(), at);
+    let (word, glyph, tone, progress) = match collection.state {
+        CollectionState::Unknown if collection_off(report) => {
+            ("Collection off", None, Tone::Neutral, None)
+        }
         CollectionState::Unknown
             if collection.enabled == Some(true) && collection.discovery_generation.is_none() =>
         {
-            "starting".to_owned()
+            ("Collection starting", Some(Icon::Ring), Tone::Info, None)
         }
-        CollectionState::Unknown => "unknown".to_owned(),
-        CollectionState::Scanning => match collection.pending_files {
-            Some(pending) => format!("scanning, {pending} file(s) to read"),
-            None => "scanning".to_owned(),
-        },
-        CollectionState::CaughtUp => match collection.completed_at {
-            Some(at) => format!(
-                "caught up {}",
-                agentdocker_core::journal::ago(chrono::Utc::now(), at)
-            ),
-            None => "caught up".to_owned(),
-        },
+        CollectionState::Unknown => ("Collection unknown", None, Tone::Neutral, None),
+        CollectionState::Scanning => (
+            "Collection scanning",
+            Some(Icon::Ring),
+            Tone::Info,
+            collection
+                .pending_files
+                .map(|pending| format!("{pending} file(s) to read")),
+        ),
+        CollectionState::CaughtUp => (
+            "Collection caught up",
+            Some(Icon::Check),
+            Tone::Positive,
+            collection
+                .completed_at
+                .map(|at| format!("Caught up {}", ago(at))),
+        ),
     };
     let roots = collection.scope.roots.len();
-    if roots == 0 {
-        format!("Collection: {state}")
-    } else {
-        format!("Collection: {state} · {roots} root(s)")
-    }
+    let detail = [
+        progress,
+        (roots > 0).then(|| format!("{roots} root(s)")),
+        Some(overhead_line(report)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n");
+    Chip::new("usage-collection", glyph, word, tone).detail(detail)
 }
 
 /// One line on the overhead: measured, bytes only, or not yet.
@@ -96,37 +111,32 @@ pub fn overhead_line(report: &Report) -> String {
     format!("{line}{}", overhead.coverage_suffix())
 }
 
-/// One line on the range the totals cover and what may be missing.
-pub fn range_line(report: &Report) -> String {
-    let mut line = format!(
-        "{} to {}",
-        report.effective_since.format("%b %-d %H:%M"),
-        report.effective_until.format("%b %-d %H:%M")
-    );
-    if report.coverage.includes_current_hour {
-        line.push_str(" · the current hour is still filling");
+/// What the totals do not cover, one caveat a line, for the totals'
+/// tooltips: the current hour still filling, history kept only since a
+/// day, gaps in the sources, the tracking limit. The range itself is the
+/// window track's. `None` when the totals are whole.
+pub fn coverage_line(report: &Report) -> Option<String> {
+    let coverage = &report.coverage;
+    let mut caveats = Vec::new();
+    if coverage.includes_current_hour {
+        caveats.push("The current hour is still filling".to_owned());
     }
-    if report.coverage.history_truncated {
-        line.push_str(&format!(
-            " · retained since {}",
-            report.coverage.retained_since.format("%b %-d")
+    if coverage.history_truncated {
+        caveats.push(format!(
+            "Retained since {}",
+            coverage.retained_since.format("%b %-d")
         ));
     }
-    if report.coverage.source_gaps > 0 {
-        line.push_str(&format!(
-            " · {} gap(s) in the sources: lower bounds",
-            report.coverage.source_gaps
+    if coverage.source_gaps > 0 {
+        caveats.push(format!(
+            "{} gap(s) in the sources: lower bounds",
+            coverage.source_gaps
         ));
     }
-    if report
-        .coverage
-        .tracking
-        .as_ref()
-        .is_some_and(|t| t.capacity_gap)
-    {
-        line.push_str(" · tracking storage limit reached; some records were not counted");
+    if coverage.tracking.as_ref().is_some_and(|t| t.capacity_gap) {
+        caveats.push("Tracking storage limit reached; some records were not counted".to_owned());
     }
-    line
+    (!caveats.is_empty()).then(|| caveats.join("\n"))
 }
 
 /// One counter summed over every row, with the coverage the rows give it
@@ -179,6 +189,13 @@ fn marked<'a>(
         Some(meaning) => tip(content, meaning, c),
         None => content.into(),
     }
+}
+
+/// A total's tooltip: what its mark means, then what the totals do not
+/// cover; `None` when it is whole and complete.
+fn total_detail(shown: &str, caveats: Option<&str>) -> Option<String> {
+    let lines: Vec<&str> = mark_meaning(shown).into_iter().chain(caveats).collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// [`counter`] in three figures, with the same coverage marks.
@@ -317,18 +334,23 @@ impl App {
             .as_ref()
             .filter(|(p, _)| *p == project)
             .map(|(_, r)| r);
-        // The name, then the window and the grouping it is read by: the
-        // tracks say which, so nothing under the name repeats them.
-        let title = heading("Usage", 18);
+        // No heading: the More tab names the screen. The window and the
+        // grouping it is read by are the tracks, and where collection
+        // stands is a chip beside them, its detail how far it has got and
+        // the overhead AgentDocker injected.
+        let collection = report.map(|report| collection_chip(report).view(c));
         let header: Element<'_, Message> = if compact {
-            column![title, row![windows, groups].spacing(8).wrap()]
-                .spacing(12)
-                .into()
+            let mut header = row![windows, groups].spacing(8);
+            if let Some(collection) = collection {
+                header = header.push(collection);
+            }
+            header.align_y(Center).wrap().into()
         } else {
-            row![title.width(Fill), windows, groups]
-                .spacing(10)
-                .align_y(Center)
-                .into()
+            let mut header = row![windows, groups].spacing(10).align_y(Center);
+            if let Some(collection) = collection {
+                header = header.push(Space::new().width(Fill)).push(collection);
+            }
+            header.into()
         };
         let mut page = column![header].spacing(16).width(Fill);
         if let Some(error) = &self.usage_error {
@@ -350,7 +372,6 @@ impl App {
             page = page.push(if collection_off(report) {
                 empty(None, c)
             } else {
-                // The range it covers is said once, in the lines below.
                 text("No usage")
                     .size(15)
                     .font(weight(iced::font::Weight::Medium))
@@ -364,14 +385,6 @@ impl App {
                 c,
             ));
         }
-        page = page.push(
-            column![
-                small(range_line(report), c).color(c.faint),
-                small(collection_line(report), c).color(c.faint),
-                small(overhead_line(report), c).color(c.faint),
-            ]
-            .spacing(4),
-        );
         page.into()
     }
 
@@ -613,21 +626,23 @@ fn choice<'a>(
 /// output, each in three figures with its coverage mark. Two by two when
 /// the table has become cards.
 fn kpis<'a>(report: &Report, compact: bool, c: Colors) -> Element<'a, Message> {
+    let caveats = coverage_line(report);
     let tile = |label: &str, value: String| -> Element<'a, Message> {
+        let figure = text(value.clone())
+            .size(22)
+            .font(weight(iced::font::Weight::Semibold))
+            .color(c.text);
+        let figure: Element<'a, Message> = match total_detail(&value, caveats.as_deref()) {
+            Some(detail) => tip(figure, detail, c),
+            None => figure.into(),
+        };
         container(
             column![
                 text(label.to_owned())
                     .size(12)
                     .font(weight(iced::font::Weight::Medium))
                     .color(c.muted),
-                marked(
-                    value.clone(),
-                    text(value)
-                        .size(22)
-                        .font(weight(iced::font::Weight::Semibold))
-                        .color(c.text),
-                    c
-                ),
+                figure,
             ]
             .spacing(6),
         )
@@ -738,15 +753,16 @@ mod tests {
         assert!(old["coverage"].get("tracking").is_none());
         let old: Report = serde_json::from_value(old).unwrap();
         assert!(old.coverage.tracking.is_none());
-        assert!(!range_line(&old).contains("storage limit"));
+        assert!(!coverage_line(&old).unwrap().contains("storage limit"));
         report.coverage.tracking = Some(agentdocker_core::usage::report::Tracking {
             logical_bytes: 1024,
             capacity_bytes: 1024,
             capacity_gap: true,
         });
         assert!(
-            range_line(&report)
-                .contains("tracking storage limit reached; some records were not counted")
+            coverage_line(&report)
+                .unwrap()
+                .contains("Tracking storage limit reached; some records were not counted")
         );
     }
 
@@ -1021,19 +1037,32 @@ mod tests {
         assert_eq!(thousands(0), "0");
         assert_eq!(thousands(10_000_000), "10,000,000");
 
+        let words = |report: &Report| collection_chip(report).words;
         let mut off = report(Vec::new(), CollectionState::Unknown, None);
         assert!(!collection_off(&off));
-        assert_eq!(collection_line(&off), "Collection: starting");
+        assert_eq!(words(&off), "Collection starting");
         off.coverage.collection.enabled = None;
         assert!(!collection_off(&off));
-        assert_eq!(collection_line(&off), "Collection: unknown");
+        assert_eq!(words(&off), "Collection unknown");
         off.coverage.collection.enabled = Some(false);
         assert!(collection_off(&off));
-        assert_eq!(collection_line(&off), "Collection: off");
+        assert_eq!(words(&off), "Collection off");
         assert_eq!(overhead_line(&off), "Overhead: not measured yet");
-        let scanning = report(Vec::new(), CollectionState::Scanning, Some(3));
+        assert_eq!(
+            collection_chip(&off).detail.as_deref(),
+            Some("Overhead: not measured yet"),
+            "the overhead is the collection chip's detail"
+        );
+        let mut scanning = report(Vec::new(), CollectionState::Scanning, Some(3));
         assert!(!collection_off(&scanning));
-        assert_eq!(collection_line(&scanning), "Collection: scanning");
+        assert_eq!(words(&scanning), "Collection scanning");
+        scanning.coverage.collection.pending_files = Some(4);
+        assert!(
+            collection_chip(&scanning)
+                .detail
+                .unwrap()
+                .starts_with("4 file(s) to read\n")
+        );
         let mut measured = report(Vec::new(), CollectionState::CaughtUp, Some(4));
         measured.overhead.injected_bytes = Some(2_048);
         measured.overhead.known_events = 7;
@@ -1041,17 +1070,26 @@ mod tests {
             overhead_line(&measured),
             "Overhead: 2,048 bytes injected by AgentDocker over 7 known event(s); tokens not estimated; instrumentation coverage unknown"
         );
-        assert!(range_line(&measured).contains("the current hour is still filling"));
+        assert!(
+            coverage_line(&measured)
+                .unwrap()
+                .contains("The current hour is still filling")
+        );
         measured.coverage.source_gaps = 2;
-        assert!(range_line(&measured).contains("2 gap(s)"));
+        assert!(coverage_line(&measured).unwrap().contains("2 gap(s)"));
+        measured.coverage.includes_current_hour = false;
+        measured.coverage.source_gaps = 0;
+        assert_eq!(coverage_line(&measured), None, "whole totals add nothing");
     }
 
-    /// Words on screen: Usage is its name and its two tracks, with no line
-    /// under the name; reading is a chip; a window with nothing is *No
-    /// usage*; and no legend sits under the table, since a marked count
-    /// says what its mark means on its own tooltip.
+    /// Words on screen: Usage is its two tracks and a collection chip,
+    /// with no heading (the More tab names it); reading is a chip; a
+    /// window with nothing is *No usage*; nothing sits under the table:
+    /// a marked count says what its mark means on its own tooltip, the
+    /// totals carry what they do not cover, and collection and overhead
+    /// are the chip and its detail.
     #[test]
-    fn the_usage_screen_is_its_name_its_tracks_and_marked_counts() {
+    fn the_usage_screen_is_its_tracks_a_collection_chip_and_marked_counts() {
         use crate::app::view::testing::seen;
         let (tx, _commands) = queue::channel();
         let (_messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
@@ -1069,7 +1107,10 @@ mod tests {
             Some("Reading…"),
             "reading is a state, said in a chip"
         );
-        assert!(view.texts.iter().any(|t| t == "Usage"));
+        assert!(
+            !view.texts.iter().any(|t| t == "Usage"),
+            "the More tab names the screen"
+        );
         assert!(view.control("usage-since-24h").is_some());
         assert!(!view.reads("tokens the providers reported"));
         assert!(!view.reads("Last 24 hours ·"));
@@ -1081,6 +1122,14 @@ mod tests {
         let view = seen(app.usage_view(c));
         assert!(view.texts.iter().any(|t| t == "No usage"));
         assert!(!view.reads("in this window"));
+        assert_eq!(
+            view.control("usage-collection").map(|c| c.1.as_str()),
+            Some("Collection caught up"),
+            "where collection stands is a chip beside the tracks"
+        );
+        for gone in ["Collection:", "Overhead:", " to "] {
+            assert!(!view.texts.iter().any(|t| t.contains(gone)), "{gone}");
+        }
 
         let counter = |sum: Option<u64>, coverage| CounterReport {
             sum,
@@ -1110,5 +1159,10 @@ mod tests {
         assert_eq!(mark_meaning("12.4K~"), Some("Partial coverage"));
         assert_eq!(mark_meaning("—"), Some("Not reported"));
         assert_eq!(mark_meaning("1,234"), None, "a complete count adds nothing");
+        assert_eq!(
+            total_detail("900~", Some("The current hour is still filling")).as_deref(),
+            Some("Partial coverage\nThe current hour is still filling")
+        );
+        assert_eq!(total_detail("1,234", None), None);
     }
 }

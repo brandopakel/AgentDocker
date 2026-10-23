@@ -1402,8 +1402,9 @@ impl App {
                     c,
                 ),
             ),
+            // The section is Installation; its row is what Manage opens.
             setting(
-                "Installation",
+                "Versions",
                 custom(
                     "installation",
                     "Manage installation and retained versions",
@@ -1642,45 +1643,42 @@ impl App {
         let quiet = mix(ink, ground, 0.25);
         let prompt = prompt_ink(palette);
         let size = self.settings.terminal_size;
-        let mut title_row = row![heading("AgentDocker commands", 16).width(Fill)]
-            .spacing(12)
-            .align_y(Center);
+        // No heading: the More tab names the screen. A command running is
+        // said beside the button that runs another.
+        let mut line = row![
+            text("$").size(15).font(Font::MONOSPACE).color(c.amber),
+            input(
+                "console-command",
+                "Command",
+                &self.console_input,
+                Message::ConsoleInput
+            ),
+            ghost(
+                "previous-command",
+                "Previous",
+                (!self.console_history.is_empty()).then_some(Message::Recall(true)),
+            ),
+            ghost(
+                "next-command",
+                "Next",
+                (!self.console_history.is_empty()).then_some(Message::Recall(false)),
+            ),
+        ]
+        .spacing(8)
+        .align_y(Center);
         if self.console_running > 0 {
-            title_row = title_row.push(status_word("Running", c.accent, c));
+            line = line.push(status_word("Running", c.accent, c));
         }
-        let entry = container(
-            row![
-                text("$").size(15).font(Font::MONOSPACE).color(c.amber),
-                input(
-                    "console-command",
-                    "Command",
-                    &self.console_input,
-                    Message::ConsoleInput
-                ),
-                ghost(
-                    "previous-command",
-                    "Previous",
-                    (!self.console_history.is_empty()).then_some(Message::Recall(true)),
-                ),
-                ghost(
-                    "next-command",
-                    "Next",
-                    (!self.console_history.is_empty()).then_some(Message::Recall(false)),
-                ),
-                primary(
-                    "run-command",
-                    if self.console_running > 0 {
-                        "Run another command"
-                    } else {
-                        "Run command"
-                    },
-                    (!self.console_input.trim().is_empty()).then_some(Message::RunConsole),
-                ),
-            ]
-            .spacing(8)
-            .align_y(Center),
-        )
-        .padding([10, 12]);
+        line = line.push(primary(
+            "run-command",
+            if self.console_running > 0 {
+                "Run another command"
+            } else {
+                "Run command"
+            },
+            (!self.console_input.trim().is_empty()).then_some(Message::RunConsole),
+        ));
+        let entry = container(line).padding([10, 12]);
         // The entry alone until a command has said something: the output
         // takes its place under it then.
         let mut panel = column![entry].width(Fill);
@@ -1767,7 +1765,7 @@ impl App {
                 .style(move |_| fill_style(ground, iced::border::bottom(RADIUS_LG - 1.0))),
             );
         }
-        column![title_row, frame(panel, c)].spacing(14).into()
+        frame(panel, c)
     }
 
     /// Installation: whether there is an update, the versions here, what
@@ -2726,18 +2724,21 @@ mod tests {
         assert!(!app.tool_needs_action(&runtime));
     }
 
-    /// Words on screen: Commands is its name, a field named Command and,
-    /// once something ran, the output; no line under the name, no example
-    /// in the field, nothing standing in for output that is not there.
+    /// Words on screen: Commands is a field named Command and, once
+    /// something ran, the output; no heading (the More tab names it), no
+    /// example in the field, nothing standing in for output not there.
     #[test]
-    fn the_console_is_its_name_a_command_field_and_output_once_there_is_some() {
+    fn the_console_is_a_command_field_and_output_once_there_is_some() {
         use crate::app::view::testing::seen;
         let (tx, _commands) = crate::app::queue::channel();
         let (_sender, rx) = std::sync::mpsc::channel();
         let mut app = crate::app::App::bare(tx, rx);
         let c = Colors::new(false);
         let view = seen(app.console_view(c));
-        assert!(view.reads("AgentDocker commands"));
+        assert!(
+            !view.texts.iter().any(|t| t == "AgentDocker commands"),
+            "the More tab names the screen"
+        );
         assert_eq!(view.control("console-command").unwrap().1, "Command");
         for gone in [
             "Run an AgentDocker command in this project",
@@ -2838,5 +2839,23 @@ mod tests {
             ("Hooks · none", None)
         );
         assert!(!view.reads("recent contact"));
+    }
+
+    /// Settings says each name once: the Installation group heads its
+    /// rows, and the row that opens the Installation screen is Versions.
+    #[test]
+    fn settings_say_each_name_once() {
+        use crate::app::view::testing::seen;
+        let (tx, _commands) = crate::app::queue::channel();
+        let (_sender, rx) = std::sync::mpsc::channel();
+        let app = crate::app::App::bare(tx, rx);
+        let view = seen(app.settings_view(Colors::new(false)));
+        let count = |words: &str| view.texts.iter().filter(|t| *t == words).count();
+        assert_eq!(count("Installation"), 1, "{:?}", view.texts);
+        assert_eq!(count("Versions"), 1);
+        assert_eq!(
+            view.control("installation").map(|c| c.1.as_str()),
+            Some("Manage installation and retained versions")
+        );
     }
 }

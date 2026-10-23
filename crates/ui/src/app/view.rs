@@ -2034,16 +2034,7 @@ impl App {
                     true,
                 ));
         }
-        items = items.push(menu_separator(c)).push(
-            container(
-                text(shorten_home(&path))
-                    .size(11.5)
-                    .font(Font::MONOSPACE)
-                    .color(c.faint)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            )
-            .padding([4, 8]),
-        );
+        // The folder is the row mark's tooltip; the menu is its actions.
         menu(items, c)
     }
 
@@ -5238,8 +5229,8 @@ mod tests {
     /// Words on screen: the restart strip is its question and what it
     /// costs as counts, with nothing said to reassure; the rename field's
     /// placeholder is the name an emptied field goes back to, with no line
-    /// saying so; the launch form's field is named Task, not asked for in
-    /// a sentence.
+    /// saying so, and the menu has no path at its foot; the launch form's
+    /// field is named Task, not asked for in a sentence.
     #[test]
     fn the_strip_the_rename_and_the_launch_form_carry_no_helper_lines() {
         use super::super::view::testing::seen;
@@ -5308,6 +5299,12 @@ mod tests {
                 .is_some()
         );
         assert!(!menu.reads("Empty goes back"));
+        // The folder is the row mark's tooltip, not the menu's foot.
+        assert!(!menu.texts.iter().any(|t| t.contains("/fixture/alpha")));
+        app.shell.project_rename = None;
+        let menu = seen(app.project_menu(&entry, c));
+        assert!(menu.control(&format!("project-remove-{key}")).is_some());
+        assert!(!menu.texts.iter().any(|t| t.contains("/fixture/alpha")));
 
         app.shell.catalog.selected = Some(project.root.clone());
         app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {

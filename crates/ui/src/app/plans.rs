@@ -61,14 +61,20 @@ impl App {
                 .into()
         };
         let read = workspace.map(|w| &w.memory);
+        // A daemon from before memory: the state as a chip, the fix its
+        // detail.
         if read == Some(&super::MemoryRead::Unsupported) {
             return card(
                 column![
                     header,
-                    super::view::small(
-                        "This AgentDocker keeps no project memory; update it to keep one.",
-                        c
-                    ),
+                    Chip::new(
+                        "memory-unsupported",
+                        Some(Icon::Alert),
+                        "No project memory",
+                        Tone::Attention,
+                    )
+                    .detail("Update AgentDocker to keep one")
+                    .view(c),
                 ]
                 .spacing(6),
             );
@@ -419,5 +425,19 @@ mod tests {
         ] {
             assert!(!view.reads(gone), "{gone}");
         }
+        // A daemon from before memory: a chip, the fix its detail.
+        app.workspaces
+            .values_mut()
+            .for_each(|w| w.memory = super::super::MemoryRead::Unsupported);
+        let view = seen(app.plans_view(Colors::new(false)));
+        let state = view
+            .control("memory-unsupported")
+            .expect("the state is a chip");
+        assert_eq!(
+            (state.1.as_str(), state.2.as_deref()),
+            ("No project memory", Some("Update AgentDocker to keep one"))
+        );
+        assert!(!view.reads("keeps no project memory"));
+        assert!(view.control("memory-draft").is_none());
     }
 }

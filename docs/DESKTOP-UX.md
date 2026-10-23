@@ -518,7 +518,7 @@ own words to keep and search; a saved search is asked again whenever its
 project comes back into view or a memory changes, and one that could not
 be sent is sent on the next tick. A memory an agent keeps appears at once; a
 read that fails says so over what was shown; an AgentDocker from before
-memory says it keeps none. An agent pulls the
+memory shows a *No project memory* chip, updating AgentDocker its detail. An agent pulls the
 next ready card with `pull_task` (or names one), and the board shows it in
 progress under that agent at once; two agents never get one card, and a
 card that waits on an open card is skipped. When the person moves, hands or
@@ -613,9 +613,10 @@ Project tabs provide:
   project's root, and a thin meter of the time left (*4m left* on its
   tooltip) that turns amber under one fifth.
 - **More → AgentDocker commands:** the real bundled `agentdocker` CLI in the selected project folder:
-  a **Command** field and **Run command**, with the output under them once a
-  command has said something. It keeps command history and output with a
-  bounded execution deadline.
+  a **Command** field and **Run command** (with *Running* beside it while a
+  command runs), and the output under them once a command has said
+  something; no heading, since the More tab names the screen. It keeps
+  command history and output with a bounded execution deadline.
 - **More → Usage:** the tokens the providers reported for this project's
   sessions over the last 24 hours, 7 or 30 days, one row per agent, model,
   provider or hour (largest first; hours in time order), under four totals —
@@ -623,14 +624,19 @@ Project tabs provide:
   bar per row: input, cache read, cache write, output and reasoning
   tokens, each shown only where samples said (`~` where some did not, `—`
   where none did; the mark's meaning is the count's tooltip, with no legend)
-  and never as an invented zero. The heading is the name alone: the window
-  and the grouping are the two tracks beside it. A window with nothing
-  reported reads *No usage*. Under the table: the range
-  actually answered, whether the current hour is still filling, retention
-  and gaps in the sources, where collection stands, and the overhead
-  AgentDocker injected — *not measured yet* until it is. Collection is off
-  until `agentd.toml` enables it; the screen then shows the empty mark and
-  *Collection: off* in the lines under it rather than an empty table. A failed read keeps the last report with the failure beside
+  and never as an invented zero. There is no heading (the More tab names
+  the screen): the window and the grouping are the two tracks, which are
+  the range, and beside them a chip says where collection stands
+  (*Collection caught up*, *Collection scanning*, *Collection starting*,
+  *Collection off*), with how far it has got, over how many roots, and the
+  overhead AgentDocker injected — *not measured yet* until it is — as its
+  detail. What the totals do not cover — the current hour still filling,
+  history retained only since a day, gaps in the sources (lower bounds), the
+  tracking storage limit — is each total's tooltip, after what its mark
+  means. Nothing sits under the table. A window with nothing reported reads
+  *No usage*. Collection is off until `agentd.toml` enables it; the screen
+  then shows the empty mark and the *Collection off* chip rather than an
+  empty table. A failed read keeps the last report with the failure beside
   it. The screen follows the project on view: choosing another project (or
   forgetting the current one, which selects another) reads that project's
   usage at once, and a screen opened while the daemon was away asks the
@@ -948,7 +954,7 @@ request the older service has never heard of reads *The background service is
 older than this app…* instead of the service's parser error, and no screen
 shows raw error codes or Rust debug output.
 
-Settings → Installation → **Manage** (read aloud *Manage installation and
+Settings → Installation → Versions → **Manage** (read aloud *Manage installation and
 retained versions*) opens the screen that previews installation, rollback,
 cleanup and launcher removal. Apply is tied to the reviewed payload or cleanup
 plan and refuses stale inputs. Running versions and agents remain protected by

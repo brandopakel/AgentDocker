@@ -224,7 +224,7 @@ control does, its id or its accessible label:
   menus take the keyboard's focus the same way.
   Iced runs operations over overlays too, so the popup's controls are
   focusable, carry accessibility nodes and are found by the workflow driver.
-  The project row's **⋯** menu (Rename…, Pin, Remove from list, the path),
+  The project row's **⋯** menu (Rename…, Pin, Remove from list),
   the **More** tab's menu (History, Files in use, Usage, AgentDocker commands,
   then Pin and Forget project, the screen on view ticked) and the
   **Launch agent** split button's menu of installed tools all float this way.
@@ -367,11 +367,14 @@ control does, its id or its accessible label:
   lane's foot. An open card's moves are icon buttons named in their
   tooltips; its **Save** is the card's one filled action. History is one row
   grammar in one card: an icon tile per journal kind, the line, a muted line
-  of kind, branch and short sha, the time at the right. Usage leads with
-  its name, then range and grouping as segmented controls, and four totals,
-  then one framed table with sentence-case headers and right-aligned numbers
-  (a share bar from 1180 points wide); no line under the name and no
-  legend, since a marked count says what its mark means on its tooltip.
+  of kind, branch and short sha, the time at the right. Usage has no
+  heading (the More tab names it): it leads with range and grouping as
+  segmented controls and the collection chip (its progress and the
+  overhead its detail), then four totals, then one framed table with
+  sentence-case headers and right-aligned numbers (a share bar from 1180
+  points wide); nothing under the table and no legend, since a marked count
+  says what its mark means on its tooltip and a total also what the totals
+  do not cover.
 - **Messages** (`app/messages.rs`, helpers in `app/messages/look.rs`). The
   conversation list is the project chats — each project's chat on its project
   monogram, named for the project, opening that project's Chat — then, under
@@ -446,8 +449,9 @@ control does, its id or its accessible label:
   pane has a header (agent over its folder in mono, a *Live*, *Scrolled back*
   or *Ended* chip and a small Detach) above the grid on its palette's ground,
   and no key footer;
-  Commands is its name over a panel with an amber `$` prompt, a **Command**
-  field and nothing under it until a command has output. Installation leads with one update row: the
+  Commands is a panel with no heading (the More tab names it), an amber `$`
+  prompt, a **Command** field, *Running* beside **Run command** while one
+  runs, and nothing under it until a command has output. Installation leads with one update row: the
   state's icon on a disc, the version, the state's chip (*Update available*,
   *You have the newest release*, *No update published yet*; what to do its
   detail), then **Later**
