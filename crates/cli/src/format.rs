@@ -1618,6 +1618,7 @@ mod tests {
                         activity: agentdocker_core::ReportedActivity::Waiting,
                         observed_at: chrono::Utc::now(),
                         reason: Some(agentdocker_core::WaitReason::Other),
+                        detail: None,
                         source,
                     },
                 },

@@ -418,6 +418,7 @@ pub fn raise(activity: Activity, judgment: &ScreenJudgment) -> Activity {
             judged: Some(Judged {
                 permille: judgment.permille.min(1000),
             }),
+            detail: None,
         },
         other => other,
     }
@@ -682,6 +683,7 @@ mod tests {
                 since: at(1),
                 reason: Some(WaitReason::Question),
                 judged: None,
+                detail: None,
             },
             Activity::Finished,
         ]
@@ -699,7 +701,8 @@ mod tests {
                         Activity::Waiting {
                             since: at(0),
                             reason: Some(WaitReason::Permission),
-                            judged: Some(Judged { permille: 960 })
+                            judged: Some(Judged { permille: 960 }),
+                            detail: None,
                         }
                     )
                 }

@@ -112,6 +112,18 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
             state.preedit = Default::default();
         }
         match event {
+            // A press anywhere else takes the keyboard away, as it does
+            // from a text field: the caret goes, and typing goes nowhere
+            // until the terminal is pressed (or tabbed to) again.
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if !cursor.is_over(bounds) && state.focus.focused =>
+            {
+                state.focus.focused = false;
+                state.focus.by_pointer = false;
+                state.preedit = Default::default();
+                shell.request_redraw();
+                shell.publish(Message::Blurred);
+            }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
                 if cursor.is_over(bounds) =>
             {
@@ -123,7 +135,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
                         self.size,
                     ));
                 }
-                shell.publish(Message::Focus("terminal".into()));
+                shell.publish(Message::Pressed("terminal".into()));
                 shell.request_redraw();
                 shell.capture_event();
             }
@@ -600,6 +612,59 @@ mod tests {
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
             mouse::Cursor::Unavailable,
             clipboard,
+        );
+    }
+
+    /// A press outside the terminal takes the keyboard from it, as from a
+    /// field: no caret, and keys typed next reach it no more. A press on it
+    /// asks for the keyboard back, by the pointer.
+    #[test]
+    fn a_press_elsewhere_takes_the_keyboard_from_the_terminal() {
+        let terminal = fixture();
+        let mut element: iced::Element<'_, Message> = Display {
+            terminal: &terminal,
+            palette: &crate::theme::PALETTES[0],
+            size: 10.0,
+            height: 336.0,
+        }
+        .into();
+        let mut tree = Tree::new(&element);
+        tree.state.downcast_mut::<State>().focus.focused = true;
+        let mut clipboard = MemoryClipboard::default();
+        let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let messages = update(
+            &mut element,
+            &mut tree,
+            press.clone(),
+            mouse::Cursor::Available(Point::new(10.0, 400.0)),
+            &mut clipboard,
+        );
+        assert!(
+            matches!(messages.as_slice(), [Message::Blurred]),
+            "{messages:?}"
+        );
+        assert!(!tree.state.downcast_ref::<State>().focus.focused);
+        let typed = update(
+            &mut element,
+            &mut tree,
+            key(
+                keyboard::Key::Character("a".into()),
+                keyboard::Modifiers::empty(),
+            ),
+            mouse::Cursor::Unavailable,
+            &mut clipboard,
+        );
+        assert!(typed.is_empty(), "{typed:?}");
+        let messages = update(
+            &mut element,
+            &mut tree,
+            press,
+            mouse::Cursor::Available(Point::new(10.0, 10.0)),
+            &mut clipboard,
+        );
+        assert!(
+            matches!(messages.as_slice(), [Message::Pressed(id)] if id == "terminal"),
+            "{messages:?}"
         );
     }
 

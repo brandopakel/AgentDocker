@@ -258,6 +258,7 @@ impl Daemon {
             activity,
             observed_at: now,
             reason,
+            detail: None,
             source: None,
         };
         if matches!(
@@ -300,6 +301,7 @@ impl Daemon {
                     activity: ReportedActivity::Idle,
                     observed_at: now.max(at + chrono::Duration::milliseconds(1)),
                     reason: None,
+                    detail: None,
                     source: None,
                 },
                 now,

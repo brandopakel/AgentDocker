@@ -13,6 +13,10 @@
 //! | `Stop`             | release every lease with the transcript's last message as the journal summary; block once when messages wait |
 //! | `StopFailure`      | retain queued work and report the provider interruption without releasing leases or waking the model |
 //! | `SessionEnd`       | release every lease and deregister                                     |
+//! | `Notification`     | a permission prompt or question dialog: the session waits for the person |
+//! | `PermissionRequest` | the session waits for the person's permission, with the tool and one line of what for; never answered |
+//! | `SubagentStart`, `SubagentStop` | the session's own activity: working while a subagent runs; never an agent of its own |
+//! | `CwdChanged`       | read the session's branch and commit again from where its shell went  |
 //!
 //! The hook never breaks a session: if agentd is unreachable it prints a
 //! note to stderr and exits 0, and Claude Code carries on as if the hook
@@ -188,6 +192,9 @@ pub struct HookInput {
     /// The session's JSONL transcript; its tail is the `Stop` summary.
     #[serde(default)]
     pub transcript_path: Option<PathBuf>,
+    /// Where a `CwdChanged` moved the session's shell to.
+    #[serde(default)]
+    pub new_cwd: Option<PathBuf>,
     /// Work a `Stop` leaves running: a shell, a subagent, a monitor or a
     /// workflow the session started in the background. Only each task's
     /// status is read.
@@ -361,6 +368,10 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             Ok(())
         }
         HookCommand::ClaudeCode(opts) => {
+            // When the event happened, near enough: an asynchronous hook's
+            // report can land after the next event's, and the daemon keeps
+            // the later observation by this time, not by arrival.
+            let observed_at = chrono::Utc::now();
             // Fail open all the way down: an unreadable or malformed event is
             // reported on stderr and Claude Code carries on.
             let input = match read_event() {
@@ -423,26 +434,7 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             // Lifecycle observations are independent of coordination output:
             // an older daemon or failed activity report cannot discard a
             // lease denial or acknowledge undelivered messages.
-            let waiting = (input.hook_event_name == "Notification")
-                .then(|| wait_for_person(&input))
-                .flatten();
-            let activity = match input.hook_event_name.as_str() {
-                "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => {
-                    Some(agentdocker_core::ReportedActivity::Working)
-                }
-                "Stop" if output.as_ref().is_some_and(|v| v["decision"] == "block") => {
-                    Some(agentdocker_core::ReportedActivity::Working)
-                }
-                // Background work it started keeps a session working.
-                "Stop" if background_work(&input) => {
-                    Some(agentdocker_core::ReportedActivity::Working)
-                }
-                "Stop" => Some(agentdocker_core::ReportedActivity::Idle),
-                "Notification" if waiting.is_some() => {
-                    Some(agentdocker_core::ReportedActivity::Waiting)
-                }
-                _ => None,
-            };
+            let observed = observation(&input, output.as_ref());
             let mut emitted_bytes = 0;
             if let Some(output) = output {
                 let bytes = format!("{output}\n");
@@ -463,8 +455,14 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             {
                 let _ = tokio::time::timeout_at(deadline, async {
                     if let Some(agent) = session_agent(&client, &input).await? {
-                        report_hook_completion(&client, &agent, activity, waiting, emitted_bytes)
-                            .await?;
+                        report_hook_completion(
+                            &client,
+                            &agent,
+                            observed,
+                            observed_at,
+                            emitted_bytes,
+                        )
+                        .await?;
                     }
                     Ok::<_, anyhow::Error>(())
                 })
@@ -475,11 +473,131 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
     }
 }
 
+/// What a hook saw of its session's turn: the activity, and for a wait
+/// what for and, when the event said, what about.
+#[derive(Debug, PartialEq)]
+struct Observed {
+    activity: agentdocker_core::ReportedActivity,
+    reason: Option<agentdocker_core::WaitReason>,
+    detail: Option<String>,
+}
+
+impl From<agentdocker_core::ReportedActivity> for Observed {
+    fn from(activity: agentdocker_core::ReportedActivity) -> Self {
+        Self {
+            activity,
+            reason: None,
+            detail: None,
+        }
+    }
+}
+
+/// What one Claude Code event says of its session's turn, given what the
+/// hook answered (`output`); none when it says nothing.
+///
+/// A subagent's events are its session's: `SubagentStart` and the
+/// subagent's own tool calls are the session working. `SubagentStop` says
+/// nothing of the session's turn, which its own next event tells, unless
+/// it leaves background work running, which keeps the session working as
+/// it does at `Stop`. `PermissionRequest` is the dialog as it opens: the
+/// session waits for the person, for the tool and one line of what for,
+/// and the hook never answers it.
+fn observation(input: &HookInput, output: Option<&Value>) -> Option<Observed> {
+    use agentdocker_core::ReportedActivity::{Idle, Waiting, Working};
+    let activity = match input.hook_event_name.as_str() {
+        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "SubagentStart" => Working,
+        "Stop" if output.is_some_and(|v| v["decision"] == "block") => Working,
+        // Background work it started keeps a session working.
+        "Stop" | "SubagentStop" if background_work(input) => Working,
+        "Stop" => Idle,
+        "Notification" => {
+            return Some(Observed {
+                activity: Waiting,
+                reason: Some(wait_for_person(input)?),
+                detail: None,
+            });
+        }
+        "PermissionRequest" => {
+            return Some(Observed {
+                activity: Waiting,
+                reason: Some(agentdocker_core::WaitReason::Permission),
+                detail: permission_detail(input),
+            });
+        }
+        _ => return None,
+    };
+    Some(activity.into())
+}
+
+/// The one line a permission prompt's wait carries, `<Tool>: <what>`, as
+/// [`agentdocker_core::wait::wait_detail`] keeps it — the same gate the
+/// daemon puts every detail through, so what it keeps is exactly this.
+/// What the tool was given, for the tools whose argument may show: a shell
+/// command (which shows its program and, for a few programs, their own
+/// subcommands, never another argument), the file an edit or a read names
+/// (from the session's directory when it is under it), the address a fetch
+/// goes to. Every other tool — a search, whose query is free text, an MCP
+/// tool — is its name alone. Whatever reads like a secret is judged on the
+/// whole of what the tool was given, before anything is shortened for
+/// display, and leaves the tool alone. None without a tool name.
+fn permission_detail(input: &HookInput) -> Option<String> {
+    use agentdocker_core::memory::secret_like;
+    use agentdocker_core::wait::wait_detail;
+    let tool: String = wait_detail(input.tool_name.as_deref()?)?
+        .chars()
+        .take(48)
+        .collect();
+    let field = |name: &str| {
+        input
+            .tool_input
+            .as_ref()
+            .and_then(|value| value.get(name))
+            .and_then(Value::as_str)
+            .filter(|text| !secret_like(text))
+    };
+    let about: Option<String> = match tool.as_str() {
+        "Bash" | "PowerShell" => field("command").map(str::to_owned),
+        "Edit" | "Write" | "MultiEdit" | "Read" | "NotebookEdit" => field("file_path")
+            .or_else(|| field("notebook_path"))
+            .map(|path| shown_path(path, input.cwd.as_deref())),
+        "WebFetch" => field("url").map(str::to_owned),
+        _ => None,
+    };
+    let first = about
+        .as_deref()
+        .and_then(|about| about.lines().map(str::trim).find(|line| !line.is_empty()));
+    let line = match first {
+        Some(about) => format!("{tool}: {about}"),
+        None => tool.clone(),
+    };
+    wait_detail(&line).or(Some(tool))
+}
+
+/// A path as a permission line shows it: from `cwd` when it is under it,
+/// and its end, where the file's name is, when it is long. Only for a path
+/// already judged whole: shortening can cut a secret down to something
+/// that no longer reads like one.
+fn shown_path(path: &str, cwd: Option<&Path>) -> String {
+    let relative = cwd
+        .and_then(|cwd| Path::new(path).strip_prefix(cwd).ok())
+        .filter(|rest| !rest.as_os_str().is_empty())
+        .map(|rest| rest.display().to_string())
+        .unwrap_or_else(|| path.to_owned());
+    const KEEP: usize = 80;
+    let count = relative.chars().count();
+    if count <= KEEP {
+        relative
+    } else {
+        let tail: String = relative.chars().skip(count - (KEEP - 1)).collect();
+        format!("…{tail}")
+    }
+}
+
 async fn report_hook_completion<B: Backend>(
     backend: &B,
     agent: &AgentRecord,
-    activity: Option<agentdocker_core::ReportedActivity>,
-    reason: Option<agentdocker_core::WaitReason>,
+    observed: Option<Observed>,
+    observed_at: chrono::DateTime<chrono::Utc>,
     emitted_bytes: usize,
 ) -> Result<()> {
     crate::input_status::adapter_contact(
@@ -489,14 +607,20 @@ async fn report_hook_completion<B: Backend>(
         agentdocker_core::AdapterKind::Hooks,
     )
     .await;
-    let status = if let Some(activity) = activity {
+    let status = if let Some(Observed {
+        activity,
+        reason,
+        detail,
+    }) = observed
+    {
         backend
             .call(Request::ReportActivity {
                 agent: agent.id.to_string(),
                 observation: agentdocker_core::ActivityObservation {
                     activity,
-                    observed_at: chrono::Utc::now(),
+                    observed_at,
                     reason,
+                    detail,
                     source: None,
                 },
             })
@@ -984,6 +1108,20 @@ pub async fn claude_code<B: Backend>(
                         agent: me.id.to_string(),
                     })
                     .await?;
+            }
+            Ok(None)
+        }
+        // The session's shell went somewhere else — a `cd`, a worktree it
+        // entered. Its branch and commit are read again from there, as the
+        // next prompt or tool result would. Its record keeps the directory
+        // it was launched in: following the shell made one session two
+        // agents. A subagent's move says nothing of the session's.
+        "CwdChanged" => {
+            if input.agent_id.is_none()
+                && let Some(me) = session_agent(backend, input).await?
+                && let Some(directory) = input.new_cwd.as_deref().or(input.cwd.as_deref())
+            {
+                report_vcs_at(backend, &me, directory).await;
             }
             Ok(None)
         }
@@ -1610,7 +1748,13 @@ fn parent_of(pid: u32) -> Option<(u32, String)> {
 /// Two file reads, no `git` process; the daemon ignores an unchanged
 /// state, and any failure is silent because it is only an observation.
 async fn report_vcs<B: Backend>(backend: &B, me: &AgentRecord, input: &HookInput) {
-    let Some(vcs) = input.cwd.as_deref().and_then(agentdocker_host::vcs::state) else {
+    if let Some(directory) = input.cwd.as_deref() {
+        report_vcs_at(backend, me, directory).await;
+    }
+}
+
+async fn report_vcs_at<B: Backend>(backend: &B, me: &AgentRecord, directory: &Path) {
+    let Some(vcs) = agentdocker_host::vcs::state(directory) else {
         return;
     };
     let _ = backend
@@ -2024,7 +2168,12 @@ pub(super) fn merge_hooks(settings: &mut Value, command: &str, runtime: &str) ->
             .or_insert_with(|| json!([]))
             .as_array_mut()
             .with_context(|| format!("`hooks.{event}` must be an array"))?;
-        if runtime == "claude-code" && *event == "StopFailure" {
+        // Report-only events run asynchronously: what such a hook prints
+        // is ignored, so it never answers for the session (a permission
+        // dialog is the person's) and never holds it up.
+        let asynchronous = runtime == "claude-code"
+            && agentdocker_core::runtime::CLAUDE_CODE_ASYNC_HOOKS.contains(event);
+        if asynchronous {
             for entry in entries.iter_mut() {
                 if let Some(hooks) = entry["hooks"].as_array_mut() {
                     for hook in hooks.iter_mut().filter(|hook| managed(hook)) {
@@ -2101,7 +2250,7 @@ pub(super) fn merge_hooks(settings: &mut Value, command: &str, runtime: &str) ->
         let mut entry = json!({
             "hooks": [{ "type": "command", "command": command, "timeout": timeout }]
         });
-        if runtime == "claude-code" && *event == "StopFailure" {
+        if asynchronous {
             entry["hooks"][0]["async"] = json!(true);
         }
         if let Some(matcher) = matcher {
@@ -2584,6 +2733,296 @@ mod tests {
         assert!(matches!(backend.requests()[1], Request::ReleaseAll { .. }));
     }
 
+    /// What each event says of its session's turn. A permission dialog is
+    /// a wait for the person, with what it is for; a subagent starting is
+    /// its session working, and one finishing says nothing unless it leaves
+    /// background work running; a change of directory is no turn at all.
+    #[test]
+    fn each_event_says_what_it_can_of_its_session() {
+        use agentdocker_core::ReportedActivity::{Idle, Waiting, Working};
+        use agentdocker_core::WaitReason;
+        let mut asked = input("PermissionRequest");
+        asked.tool_name = Some("Bash".into());
+        asked.tool_input = Some(json!({"command": "cargo test -p core\necho done"}));
+        assert_eq!(
+            observation(&asked, None),
+            Some(Observed {
+                activity: Waiting,
+                reason: Some(WaitReason::Permission),
+                detail: Some("Bash: cargo test".into()),
+            })
+        );
+        // Inside a subagent the dialog is still the session's to answer.
+        asked.agent_id = Some("child".into());
+        assert_eq!(observation(&asked, None).unwrap().activity, Waiting);
+        let mut started = input("SubagentStart");
+        started.agent_id = Some("child".into());
+        assert_eq!(observation(&started, None), Some(Working.into()));
+        let mut finished = input("SubagentStop");
+        finished.agent_id = Some("child".into());
+        assert_eq!(observation(&finished, None), None);
+        finished.background_tasks = Some(vec![BackgroundTask {
+            status: "completed".into(),
+        }]);
+        assert_eq!(observation(&finished, None), None);
+        finished.background_tasks = Some(vec![BackgroundTask {
+            status: "running".into(),
+        }]);
+        assert_eq!(observation(&finished, None), Some(Working.into()));
+        assert_eq!(observation(&input("CwdChanged"), None), None);
+        assert_eq!(observation(&input("Stop"), None), Some(Idle.into()));
+        assert_eq!(
+            observation(&input("Stop"), Some(&json!({"decision": "block"}))),
+            Some(Working.into())
+        );
+        let mut idle = input("Notification");
+        idle.notification_type = Some("idle_prompt".into());
+        assert_eq!(observation(&idle, None), None);
+        idle.notification_type = Some("permission_prompt".into());
+        assert_eq!(
+            observation(&idle, None),
+            Some(Observed {
+                activity: Waiting,
+                reason: Some(WaitReason::Permission),
+                detail: None,
+            })
+        );
+    }
+
+    /// A permission line names the tool and, where its input says so in
+    /// a word, what for — never anything that reads like a credential,
+    /// never an address's query or user, never a control character.
+    #[test]
+    fn a_permission_line_says_what_for_and_keeps_no_secret() {
+        let ask = |tool: &str, value: Value| {
+            let mut event = input("PermissionRequest");
+            event.cwd = Some(PathBuf::from("/work/repo"));
+            event.tool_name = Some(tool.into());
+            event.tool_input = Some(value);
+            permission_detail(&event)
+        };
+        assert_eq!(
+            ask(
+                "Bash",
+                json!({"command": "git push origin main\n# and more"})
+            )
+            .as_deref(),
+            Some("Bash: git push")
+        );
+        for command in [
+            "curl -H 'Authorization: Bearer abc' https://example.invalid",
+            "mysql --password=hunter2",
+            "export GITHUB_TOKEN=abc",
+            "echo ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        ] {
+            assert_eq!(
+                ask("Bash", json!({"command": command})).as_deref(),
+                Some("Bash"),
+                "{command}"
+            );
+        }
+        assert_eq!(
+            ask("Edit", json!({"file_path": "/work/repo/src/lib.rs"})).as_deref(),
+            Some("Edit: src/lib.rs")
+        );
+        assert_eq!(
+            ask("Write", json!({"file_path": "/elsewhere/notes.md"})).as_deref(),
+            Some("Write: /elsewhere/notes.md")
+        );
+        let deep = format!("/work/repo/{}/file.rs", "nested/".repeat(30));
+        let line = ask("Read", json!({"file_path": deep})).unwrap();
+        assert!(
+            line.starts_with("Read: …") && line.ends_with("/file.rs"),
+            "{line}"
+        );
+        assert_eq!(
+            ask(
+                "WebFetch",
+                json!({"url": "https://user:pw@example.invalid/a/b?token=x#frag"})
+            )
+            .as_deref(),
+            Some("WebFetch: https://example.invalid/a/b")
+        );
+        // A search's query or pattern is free text: never shown.
+        for (tool, value) in [
+            ("Grep", json!({"pattern": "hunter2"})),
+            ("Glob", json!({"pattern": "**/hunter2*"})),
+            ("WebSearch", json!({"query": "alice hunter2"})),
+        ] {
+            assert_eq!(ask(tool, value).as_deref(), Some(tool));
+        }
+        assert_eq!(
+            ask("mcp__agentdocker__claim", json!({"resource": "path:/x"})).as_deref(),
+            Some("mcp__agentdocker__claim")
+        );
+        // A program shows no arguments unless it is one whose leading
+        // words are its own subcommands; control characters never show.
+        assert_eq!(
+            ask("Bash\u{202E}\n", json!({"command": "ls -la"})).as_deref(),
+            Some("Bash: ls")
+        );
+        assert_eq!(
+            ask("Bash", json!({"command": "cargo\u{0007} test -p core"})).as_deref(),
+            Some("Bash: cargo test")
+        );
+        let mut nothing = input("PermissionRequest");
+        nothing.tool_input = Some(json!({"command": "ls"}));
+        assert_eq!(permission_detail(&nothing), None);
+    }
+
+    /// A password in an ordinary command — in a position only the program
+    /// knows, after `-u` or `-a`, attached to `-p`, before an address's
+    /// host — never reaches the line, and so never the report the hook
+    /// sends, which is what the daemon keeps on the record and announces in
+    /// its event.
+    #[tokio::test]
+    async fn a_password_in_a_command_never_leaves_the_hook() {
+        for (command, shown) in [
+            ("smbclient //server/share hunter2", "Bash: smbclient"),
+            ("isql localdb alice hunter2", "Bash: isql"),
+            ("mysql -u alice db hunter2", "Bash: mysql"),
+            ("tool run hunter2", "Bash: tool"),
+            ("redis-cli -a hunter2 ping", "Bash: redis-cli"),
+            (
+                "curl -u alice:hunter2 https://example.invalid",
+                "Bash: curl",
+            ),
+            (
+                "curl https://alice:hunter2@example.invalid/data",
+                "Bash: curl",
+            ),
+            ("mysql -phunter2 -e SELECT", "Bash: mysql"),
+            (
+                "curl --user alice:hunter2 https://example.invalid",
+                "Bash: curl",
+            ),
+            ("mysql -uroot -phunter2", "Bash: mysql"),
+            ("tool 'alice:hunter2'", "Bash: tool"),
+            ("cargo login hunter2", "Bash: cargo"),
+            ("git config somename hunter2", "Bash: git"),
+            ("cargo run hunter2", "Bash: cargo run"),
+            ("cargo run -- alice hunter2", "Bash: cargo run"),
+            ("npm run deploy hunter2", "Bash: npm run"),
+            ("go run main.go hunter2", "Bash: go run"),
+            ("yarn deploy hunter2", "Bash: yarn"),
+            ("make deploy PASSWORD=hunter2", "Bash"),
+            ("make deploy hunter2", "Bash: make"),
+            ("PGPASSWORD=hunter2 psql", "Bash"),
+        ] {
+            let mut event = input("PermissionRequest");
+            event.tool_name = Some("Bash".into());
+            event.tool_input = Some(json!({"command": command}));
+            let observed = observation(&event, None);
+            assert_eq!(
+                observed.as_ref().and_then(|o| o.detail.as_deref()),
+                Some(shown),
+                "{command}"
+            );
+            let backend = Mock::with(vec![Response::Ok, Response::Ok]);
+            let session = agent("claude-fixture", true);
+            report_hook_completion(&backend, &session, observed, Utc::now(), 0)
+                .await
+                .unwrap();
+            let sent = serde_json::to_string(&backend.requests()).unwrap();
+            assert!(sent.contains("report_activity"), "{sent}");
+            assert!(
+                !sent.contains("hunter2") && !sent.contains("alice:"),
+                "{command}: {sent}"
+            );
+        }
+    }
+
+    /// A secret early in a long path is judged on the whole path, before
+    /// the line keeps only the path's end, which would cut it down to
+    /// something that no longer reads like one.
+    #[test]
+    fn a_secret_in_a_long_path_is_judged_before_the_path_is_shortened() {
+        let path = format!(
+            "ghp_abcdefghijklmnopqrstuvwxyz0123456789/{}f",
+            "segment/".repeat(6)
+        );
+        let shortened = shown_path(&path, None);
+        assert!(
+            !agentdocker_core::memory::secret_like(&shortened),
+            "{shortened}"
+        );
+        for tool in ["Read", "Edit", "Write"] {
+            let mut event = input("PermissionRequest");
+            event.tool_name = Some(tool.into());
+            event.tool_input = Some(json!({"file_path": path}));
+            assert_eq!(permission_detail(&event).as_deref(), Some(tool));
+        }
+        let mut fetch = input("PermissionRequest");
+        fetch.tool_name = Some("WebFetch".into());
+        fetch.tool_input = Some(json!({
+            "url": "https://example.invalid/a?t=ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+        }));
+        assert_eq!(permission_detail(&fetch).as_deref(), Some("WebFetch"));
+    }
+
+    /// The events that only report never answer, never register anything
+    /// and never take the session's messages: a subagent is its session's
+    /// activity, not an agent of its own, and the dialog is the person's.
+    #[tokio::test]
+    async fn report_only_events_answer_nothing_and_register_nothing() {
+        for event in ["PermissionRequest", "SubagentStart", "SubagentStop"] {
+            for subagent in [None, Some("child")] {
+                let mut ev = input(event);
+                ev.agent_id = subagent.map(str::to_owned);
+                ev.tool_name = Some("Bash".into());
+                ev.tool_input = Some(json!({"command": "ls"}));
+                let backend = Mock::with(vec![]);
+                assert!(
+                    claude_code(&backend, &ev, &opts()).await.unwrap().is_none(),
+                    "{event}"
+                );
+                assert!(backend.requests().is_empty(), "{event}");
+            }
+        }
+        let mut moved = input("CwdChanged");
+        moved.agent_id = Some("child".into());
+        let backend = Mock::with(vec![]);
+        assert!(
+            claude_code(&backend, &moved, &opts())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            backend.requests().is_empty(),
+            "a subagent's move is its own"
+        );
+    }
+
+    /// A change of directory reads the branch and commit again from where
+    /// the shell went, and leaves the record's checkout alone.
+    #[tokio::test]
+    async fn a_change_of_directory_reads_the_checkout_again() {
+        if host_pid().is_none() {
+            return;
+        }
+        let checkout = tempfile::tempdir().unwrap();
+        std::fs::create_dir(checkout.path().join(".git")).unwrap();
+        let head = "0123456789abcdef0123456789abcdef01234567";
+        std::fs::write(checkout.path().join(".git/HEAD"), format!("{head}\n")).unwrap();
+        let me = agent("claude-01234567", true);
+        let backend = Mock::with(vec![Response::Agent { agent: me.clone() }, Response::Ok]);
+        let mut moved = input("CwdChanged");
+        moved.new_cwd = Some(checkout.path().to_path_buf());
+        assert!(
+            claude_code(&backend, &moved, &opts())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let requests = backend.requests();
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert!(
+            matches!(&requests[1], Request::Report { agent, vcs: Some(vcs) }
+            if agent == me.id.as_str() && vcs.head.as_deref() == Some(head) && vcs.branch.is_none())
+        );
+    }
+
     #[tokio::test]
     async fn completed_hook_output_is_counted_even_when_activity_transport_fails() {
         use agentdocker_core::usage::emission::Emission;
@@ -2620,8 +3059,8 @@ mod tests {
         let error = report_hook_completion(
             &backend,
             &session,
-            Some(agentdocker_core::ReportedActivity::Idle),
-            None,
+            Some(agentdocker_core::ReportedActivity::Idle.into()),
+            chrono::Utc::now(),
             123,
         )
         .await
@@ -2651,9 +3090,15 @@ mod tests {
                     "activity refused",
                 ),
             ]);
-            report_hook_completion(&backend, &session, activity, None, 0)
-                .await
-                .unwrap();
+            report_hook_completion(
+                &backend,
+                &session,
+                activity.map(Observed::from),
+                chrono::Utc::now(),
+                0,
+            )
+            .await
+            .unwrap();
             let calls = backend.requests();
             assert!(
                 matches!(&calls[0], Request::ReportAdapter { agent, contact, .. }
@@ -3980,7 +4425,10 @@ mod tests {
         let mention =
             json!({"hooks":[{"type":"command", "command":"echo 'agentdocker hook claude-code'"}]});
         let mut settings = json!({"hooks":{"Stop":[mention.clone()]}});
-        assert_eq!(merge_claude_code_hooks(&mut settings, &command).unwrap(), 8);
+        assert_eq!(
+            merge_claude_code_hooks(&mut settings, &command).unwrap(),
+            agentdocker_core::runtime::CLAUDE_CODE_HOOKS.len()
+        );
         assert_eq!(settings["hooks"]["Stop"][0], mention);
         let file = tmp.path().join(".claude/settings.json");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -4012,9 +4460,10 @@ mod tests {
         let other = json!({"type":"command", "command":"user-check"});
         let mut settings =
             json!({"hooks":{"PreToolUse":[{"matcher":"Edit", "hooks":[own, other.clone()]}]}});
+        // One added for each event but the repaired one, and the repair.
         assert_eq!(
             merge_hooks(&mut settings, "agentdocker hook codex", "codex").unwrap(),
-            8
+            agentdocker_core::runtime::CODEX_ACTIVITY_HOOKS.len()
         );
         let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(entries[0]["matcher"], "Edit");
@@ -4105,11 +4554,16 @@ mod tests {
         let added =
             merge_claude_code_hooks(&mut settings, "/usr/local/bin/agentdocker hook claude-code")
                 .unwrap();
-        assert_eq!(added, 8);
-        assert_eq!(
-            settings["hooks"]["StopFailure"][0]["hooks"][0]["async"],
-            true
-        );
+        assert_eq!(added, agentdocker_core::runtime::CLAUDE_CODE_HOOKS.len());
+        // What only reports runs asynchronously, so its output can never
+        // answer a dialog or hold the session up; the rest does not.
+        for (event, _) in agentdocker_core::runtime::CLAUDE_CODE_HOOKS {
+            assert_eq!(
+                settings["hooks"][event][0]["hooks"][0]["async"] == true,
+                agentdocker_core::runtime::CLAUDE_CODE_ASYNC_HOOKS.contains(event),
+                "{event}"
+            );
+        }
         assert_eq!(settings["permissions"]["allow"][0], "Bash(ls)");
         let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 2);

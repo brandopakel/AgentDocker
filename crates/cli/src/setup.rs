@@ -132,6 +132,12 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
         if spec.hooks {
             match runtime.hooks {
                 Wiring::Wired => eprintln!("{}: hooks already installed", runtime.name),
+                _ if dry_run && runtime.hooks_outdated() => eprintln!(
+                    "{}: hooks outdated; would add {} in {}",
+                    runtime.name,
+                    runtime.hooks_missing.join(", "),
+                    agentdocker_host::runtimes::hook_config_path(spec, &roots).display()
+                ),
                 _ if dry_run => eprintln!(
                     "{}: would install hooks in {}",
                     runtime.name,

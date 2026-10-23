@@ -62,6 +62,7 @@ impl Status {
             activity,
             observed_at: now,
             reason,
+            detail: None,
             source: Some(ActivitySource::Herdr),
         })
     }

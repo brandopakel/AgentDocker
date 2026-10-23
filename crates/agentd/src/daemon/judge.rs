@@ -1280,6 +1280,7 @@ mod tests {
                 since: record(&daemon, &agent).judged.unwrap().since,
                 reason: Some(agentdocker_core::WaitReason::Permission),
                 judged: Some(agentdocker_core::Judged { permille: 960 }),
+                detail: None,
             }
         );
         let judged = record(&daemon, &agent).judged.unwrap();

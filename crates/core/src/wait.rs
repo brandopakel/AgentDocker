@@ -243,7 +243,8 @@ pub enum Activity {
     /// Stopped for the person, by its adapter's report: a permission
     /// prompt or a question the provider put in its own terminal. Only
     /// the person can move it on, from there. `reason` says which, when
-    /// the adapter could tell.
+    /// the adapter could tell, and `detail` what the prompt is about in
+    /// one short line (see [`wait_detail`]).
     ///
     /// Or, when the opt-in judge is on, read that way from its quiet
     /// screen: `judged` then says so and how sure the judge was. A
@@ -255,6 +256,7 @@ pub enum Activity {
         reason: Option<WaitReason>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         judged: Option<Judged>,
+        detail: Option<String>,
     },
     /// Not running any more.
     Finished,
@@ -276,7 +278,9 @@ impl Activity {
 }
 
 /// Explicit adapter observations; process liveness and MCP configuration are
-/// not turn observations. No prompts, tool arguments or transcripts are stored.
+/// not turn observations. No prompts or transcripts are stored, and of a
+/// tool's arguments only a permission prompt's one bounded line
+/// ([`ActivityObservation::detail`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportedActivity {
@@ -288,8 +292,8 @@ pub enum ReportedActivity {
 }
 
 /// What a provider stopped for the person for, as its adapter read the
-/// provider's own event kind. Only the kind is kept, never the prompt's
-/// words.
+/// provider's own event kind. The kind, never the prompt's words; what
+/// the prompt is about travels separately, as a bounded detail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitReason {
@@ -340,6 +344,12 @@ pub struct ActivityObservation {
     /// predating it ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<WaitReason>,
+    /// For a wait, what it is about in one short line — the tool a
+    /// permission prompt is for and a summary of its input — as
+    /// [`wait_detail`] leaves it. Only a wait carries one. A daemon
+    /// predating it ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     /// Who observed it, when not the agent's own adapter; `None` for a
     /// report the agent's hooks, MCP server or CLI made. Only the daemon
     /// sets it. A daemon predating it ignores it.
@@ -347,7 +357,337 @@ pub struct ActivityObservation {
     pub source: Option<ActivitySource>,
 }
 
+/// The most characters a wait's detail keeps.
+pub const WAIT_DETAIL_CHARS: usize = 120;
+
+/// How long after a detailed wait a plain one for the same reason is
+/// taken for the same prompt. Claude Code says a permission prompt twice:
+/// its `PermissionRequest` hook as the dialog opens, with the tool and its
+/// input, and a `Notification` six seconds later, without them.
+pub const WAIT_DETAIL_CARRY_SECS: i64 = 60;
+
+/// `text` as a wait's detail is kept and shown: one line, `<Tool>: <what>`
+/// or a tool alone, never worth a secret. The one gate every detail passes,
+/// the hooks adapter's and any other client's alike, so a client that
+/// sends a raw command gets exactly the hook's treatment.
+///
+/// Its first line, without control or invisible formatting characters,
+/// runs of spaces as one. None when that whole line reads like a credential
+/// ([`crate::memory::secret_like`]), judged before anything is cut. Then
+/// what follows the tool's name is kept only where that tool's argument is
+/// known to be safe to show, and free text never is:
+/// - a file tool's path ([`PATH_TOOLS`]) and `WebFetch`'s address, up to a
+///   flag that takes a credential or a `user:password@host`, every address
+///   reduced to scheme, host and path ([`scrubbed`]);
+/// - a shell command ([`SHELL_TOOLS`]) as [`command_detail`] reduces it:
+///   its program alone, or a few programs' own subcommands;
+/// - any other tool — a search (`Grep`, `Glob`, `WebSearch`), whose query
+///   or pattern is free text a short plain password slips through, an MCP
+///   tool, one this build does not know — as its name alone.
+///
+/// A line with no tool is read as a command. Cut to [`WAIT_DETAIL_CHARS`]
+/// with an ellipsis.
+pub fn wait_detail(text: &str) -> Option<String> {
+    let line = text
+        .split(['\n', '\r'])
+        .map(|line| {
+            line.chars()
+                .map(|c| if c.is_whitespace() { ' ' } else { c })
+                .filter(|c| !c.is_control() && !invisible(*c))
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .find(|line| !line.is_empty())?;
+    if crate::memory::secret_like(&line) {
+        return None;
+    }
+    let mut kept = match line.split_once(": ").filter(|(tool, _)| tool_name(tool)) {
+        Some((tool, what)) => {
+            let what = if PATH_TOOLS.contains(&tool) || tool == "WebFetch" {
+                Some(scrubbed(what))
+            } else if SHELL_TOOLS.contains(&tool) {
+                command_detail(what)
+            } else {
+                None
+            };
+            match what.filter(|what| !what.is_empty()) {
+                Some(what) => format!("{tool}: {what}"),
+                None => tool.to_owned(),
+            }
+        }
+        None => command_detail(&line)?,
+    };
+    if kept.chars().count() > WAIT_DETAIL_CHARS {
+        kept = kept.chars().take(WAIT_DETAIL_CHARS - 1).collect::<String>();
+        kept = kept.trim_end().to_owned();
+        kept.push('…');
+    }
+    Some(kept)
+}
+
+/// The tools whose argument is a file's path.
+pub const PATH_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "Read", "NotebookEdit"];
+
+/// The tools whose argument is a shell command.
+pub const SHELL_TOOLS: &[&str] = &["Bash", "PowerShell"];
+
+/// Whether what precedes `: ` in a detail is a tool's name.
+fn tool_name(word: &str) -> bool {
+    !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c))
+}
+
+/// The words of `line` before the first that may carry a credential: a
+/// flag that takes one ([`credential_flag`]) or a `user:password@host`
+/// outside an address. An address keeps only its scheme, host and path
+/// ([`address`]).
+fn scrubbed(line: &str) -> String {
+    let mut kept: Vec<String> = Vec::new();
+    for word in line.split(' ') {
+        if credential_flag(word) || userinfo(word) {
+            break;
+        }
+        kept.push(if word.contains("://") {
+            address(word)
+        } else {
+            word.to_owned()
+        });
+    }
+    kept.join(" ")
+}
+
+/// Words that, anywhere in a command, say a credential is in it or near
+/// it: such a command is never shown.
+pub const CREDENTIAL_WORDS: &[&str] = &[
+    "password",
+    "passwd",
+    "passphrase",
+    "secret",
+    "token",
+    "apikey",
+    "api_key",
+    "api-key",
+    "authorization",
+    "bearer",
+    "credential",
+    "private_key",
+    "private-key",
+];
+
+/// Parts of a flag's name that say its value is a credential, or names
+/// whose it is: `--user`, `--password`, `--header`, `--token`, `--key`,
+/// `-Credential`…
+const CREDENTIAL_FLAG_PARTS: &[&str] = &[
+    "user", "pass", "pwd", "token", "key", "auth", "header", "cookie", "secret", "cred", "bearer",
+    "login", "session", "cert", "identity",
+];
+
+/// Single-letter flags that commonly take a credential or its holder:
+/// `-u user:password`, `-p<password>`, `-P`, `-H 'Authorization: …'`,
+/// `-k`/`-K` keys. In a cluster or with a value attached, any of them.
+const CREDENTIAL_FLAG_LETTERS: &[char] = &['u', 'p', 'P', 'H', 'k', 'K'];
+
+/// The programs a detail may show one word of besides their name, and
+/// the words: each program's own subcommands, written out literally. A
+/// word in that place is shown only when it is exactly one of these, and
+/// nothing after it ever is — what follows a subcommand may be a value the
+/// person supplies and the program passes on (`cargo run -- <args>`, `npm
+/// run <script> <args>`, `go run <file> <args>`), and neither a word's
+/// shape nor its position can tell a subcommand from a value. Every other
+/// program is shown alone: an argument in an unknown position may be a
+/// password (`smbclient //server/share <password>`, `isql <dsn> <user>
+/// <password>`). Kept small on purpose.
+const SUBCOMMANDS: &[(&str, &[&str])] = &[
+    (
+        "cargo",
+        &[
+            "build", "check", "clippy", "test", "run", "fmt", "doc", "bench", "install", "update",
+            "add", "remove", "tree", "metadata", "nextest",
+        ],
+    ),
+    (
+        "git",
+        &[
+            "status", "diff", "log", "show", "add", "commit", "push", "pull", "fetch", "merge",
+            "rebase", "checkout", "switch", "branch", "stash", "worktree", "reset", "restore",
+            "tag", "remote", "clone", "init",
+        ],
+    ),
+    (
+        "go",
+        &["build", "test", "run", "vet", "mod", "get", "install"],
+    ),
+    (
+        "npm",
+        &[
+            "install", "ci", "test", "run", "build", "add", "remove", "exec",
+        ],
+    ),
+    (
+        "pnpm",
+        &[
+            "install", "ci", "test", "run", "build", "add", "remove", "exec",
+        ],
+    ),
+    (
+        "yarn",
+        &[
+            "install", "ci", "test", "run", "build", "add", "remove", "exec",
+        ],
+    ),
+];
+
+/// Whether `word` is a flag that takes, or is, a credential: a long name
+/// with a [`CREDENTIAL_FLAG_PARTS`] part (`--password=…` by its name), or
+/// a single-dash flag with a [`CREDENTIAL_FLAG_LETTERS`] letter
+/// (`-phunter2`, `-uroot`).
+fn credential_flag(word: &str) -> bool {
+    let Some(flag) = word.strip_prefix('-') else {
+        return false;
+    };
+    let name = flag.split('=').next().unwrap_or_default();
+    let long = name.strip_prefix('-');
+    let bare = long.unwrap_or(name);
+    if bare.is_empty() {
+        return false;
+    }
+    let lower = bare.to_ascii_lowercase();
+    CREDENTIAL_FLAG_PARTS
+        .iter()
+        .any(|part| lower.contains(part))
+        || (long.is_none() && bare.chars().any(|c| CREDENTIAL_FLAG_LETTERS.contains(&c)))
+}
+
+/// Whether `word`, outside an address, has a user and password before an
+/// `@`: `alice:hunter2@host`.
+fn userinfo(word: &str) -> bool {
+    !word.contains("://")
+        && word
+            .rsplit_once('@')
+            .is_some_and(|(before, _)| before.contains(':'))
+}
+
+/// An address without what may carry a credential: the user and password
+/// before the host, the query and the fragment.
+pub fn address(url: &str) -> String {
+    let url = url.split(['?', '#']).next().unwrap_or_default();
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_owned();
+    };
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    format!("{scheme}://{host}{path}")
+}
+
+/// Whether `word` is plain enough to show as it is: letters, digits and
+/// the punctuation of paths, versions and names, nothing a shell would
+/// expand, quote or split on.
+fn plain_word(word: &str) -> bool {
+    !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._/~+,:%@-".contains(c))
+}
+
+/// A shell command as a wait's detail may show it: an allowlist, with
+/// arguments left out by default.
+///
+/// Nothing at all when the command reads like a secret or names a
+/// [`CREDENTIAL_WORDS`] word. Otherwise the program of its first line — by
+/// its name, without its directory, `NAME=value` assignments before it
+/// skipped unseen — and, for the few programs in [`SUBCOMMANDS`], the word
+/// that directly follows it when that word is exactly one of the program's
+/// own subcommands. Nothing after that, ever. A program a shell could not
+/// read plainly, or a flag in the program's place, shows nothing.
+pub fn command_detail(command: &str) -> Option<String> {
+    let lower = command.to_ascii_lowercase();
+    if crate::memory::secret_like(command) || CREDENTIAL_WORDS.iter().any(|w| lower.contains(w)) {
+        return None;
+    }
+    let line = command
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    let mut words = line.split_whitespace().skip_while(|word| assignment(word));
+    let program = words
+        .next()
+        .filter(|word| !word.starts_with('-') && plain_word(word) && !userinfo(word))?;
+    let name = program.rsplit('/').find(|part| !part.is_empty())?;
+    let known = name.strip_suffix(".exe").unwrap_or(name);
+    let subcommand = SUBCOMMANDS
+        .iter()
+        .find(|(program, _)| *program == known)
+        .and_then(|(_, subcommands)| {
+            let word = words.next()?;
+            subcommands.iter().find(|subcommand| **subcommand == word)
+        });
+    Some(match subcommand {
+        Some(subcommand) => format!("{name} {subcommand}"),
+        None => name.to_owned(),
+    })
+}
+
+/// `NAME=value` before a program: an environment assignment.
+fn assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        name.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// Characters that change how the text around them reads without showing
+/// themselves: bidirectional controls, zero-width marks and joiners, the
+/// soft hyphen, the byte-order mark.
+fn invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
+}
+
 impl ActivityObservation {
+    /// The observation as the daemon keeps it after `previous`: a detail
+    /// only on a wait, and only as [`wait_detail`] leaves it; and a plain
+    /// wait — one that said nothing of what it is about — for the same
+    /// reason that follows a detailed one within [`WAIT_DETAIL_CARRY_SECS`]
+    /// keeps that detail, since it is the same prompt said again without
+    /// it. A wait whose detail was left out (it read like a secret) is a
+    /// prompt of its own and carries nothing over.
+    pub fn settled(mut self, previous: Option<&ActivityObservation>) -> Self {
+        if self.activity != ReportedActivity::Waiting {
+            self.detail = None;
+            return self;
+        }
+        let plain = self.detail.is_none();
+        self.detail = self.detail.as_deref().and_then(wait_detail);
+        if plain
+            && let Some(previous) = previous.filter(|previous| {
+                previous.activity == ReportedActivity::Waiting
+                    && previous.reason == self.reason
+                    && previous.observed_at <= self.observed_at
+                    && self.observed_at - previous.observed_at
+                        <= chrono::Duration::seconds(WAIT_DETAIL_CARRY_SECS)
+            })
+        {
+            self.detail = previous.detail.clone();
+        }
+        self
+    }
+
     /// A missed hook must not leave a permanent working/idle assertion. Long
     /// silent turns become unknown until another provider event arrives.
     /// A wait for the person is silent by nature and may last as long as
@@ -375,6 +715,7 @@ impl ActivityObservation {
                 since: self.observed_at,
                 reason: self.reason,
                 judged: None,
+                detail: self.detail.clone(),
             },
         })
     }
@@ -409,6 +750,7 @@ mod tests {
                 activity,
                 observed_at: now,
                 reason: None,
+                detail: None,
                 source: None,
             };
             assert!(observation.current(now).is_some());
@@ -435,6 +777,7 @@ mod tests {
             activity: ReportedActivity::Waiting,
             observed_at: now,
             reason: Some(WaitReason::Permission),
+            detail: None,
             source: None,
         };
         assert_eq!(
@@ -443,6 +786,7 @@ mod tests {
                 since: now,
                 reason: Some(WaitReason::Permission),
                 judged: None,
+                detail: None,
             })
         );
         assert_eq!(observation.current(now + chrono::Duration::hours(12)), None);
@@ -455,6 +799,7 @@ mod tests {
                 since: now,
                 reason: None,
                 judged: None,
+                detail: None,
             }
             .label(),
             "waiting"
@@ -488,8 +833,259 @@ mod tests {
                 since: now,
                 reason: Some(WaitReason::Other),
                 judged: None,
+                detail: None,
             })
         );
+    }
+
+    /// A detail is one short line the person can read: the first line
+    /// with text, no control or invisible formatting characters, spaces
+    /// collapsed, cut with an ellipsis — and nothing at all when it reads
+    /// like a credential.
+    #[test]
+    fn a_wait_detail_is_one_bounded_printable_line_and_never_a_secret() {
+        assert_eq!(
+            wait_detail("Bash: git push\u{202E} origin\tmain\nrm -rf /").as_deref(),
+            Some("Bash: git push")
+        );
+        assert_eq!(
+            wait_detail("\n  \nEdit: src/lib.rs").as_deref(),
+            Some("Edit: src/lib.rs")
+        );
+        assert_eq!(wait_detail("\u{200B}\u{0007}\n \r"), None);
+        let long = format!("Read: {}", "a ".repeat(200));
+        let cut = wait_detail(&long).unwrap();
+        assert_eq!(cut.chars().count(), WAIT_DETAIL_CHARS);
+        assert!(cut.ends_with('…'));
+        for secret in [
+            "Bash: curl -H 'token: ghp_abcdefghijklmnopqrstuvwxyz0123456789'",
+            "Bash: export KEY=x9Fk2LmQ7vR3tY8wZ1aB4cD6eG0hJ5nP",
+        ] {
+            assert_eq!(wait_detail(secret), None, "{secret}");
+        }
+    }
+
+    /// A command shows its program and, for a few programs, one word more
+    /// when it is exactly one of their own subcommands — nothing after it,
+    /// ever: an argument in an unknown position may be a password, flagged
+    /// or not, and what follows a subcommand may be a value the program
+    /// passes on. Neither shape nor position can tell.
+    #[test]
+    fn a_command_shows_its_program_and_only_known_subcommands() {
+        for (command, shown) in [
+            // Positional passwords, which no credential word or shape gives
+            // away.
+            ("smbclient //server/share hunter2", "smbclient"),
+            ("isql localdb alice hunter2", "isql"),
+            ("mysql -u alice db hunter2", "mysql"),
+            ("mysql db hunter2", "mysql"),
+            ("tool run hunter2", "tool"),
+            ("redis-cli -a hunter2 ping", "redis-cli"),
+            // Flagged ones and passwords in addresses.
+            ("curl -u alice:hunter2 https://example.invalid", "curl"),
+            ("curl --user=alice:hunter2 https://example.invalid", "curl"),
+            ("curl https://alice:hunter2@example.invalid/data", "curl"),
+            ("mysql -phunter2 -e SELECT", "mysql"),
+            ("mysql -uroot -phunter2", "mysql"),
+            ("sshpass -p hunter2 ssh host", "sshpass"),
+            ("scp alice:hunter2@host:/f .", "scp"),
+            ("psql postgresql://alice:hunter2@db/app", "psql"),
+            ("DB_PASS=hunter2 psql -h db", "psql"),
+            ("tool 'alice:hunter2'", "tool"),
+            ("echo hunter2 | sudo -S true", "echo"),
+            ("docker login -u alice hunter2", "docker"),
+            ("Get-Item -Path C:/hunter2", "Get-Item"),
+            ("/opt/tools/smbclient //server/share hunter2", "smbclient"),
+            // A known program's own subcommand, and nothing after it.
+            ("cargo run hunter2", "cargo run"),
+            ("cargo run -- alice hunter2", "cargo run"),
+            ("cargo nextest run -p hunter2", "cargo nextest"),
+            ("npm run deploy hunter2", "npm run"),
+            ("pnpm exec tool hunter2", "pnpm exec"),
+            ("go run main.go hunter2", "go run"),
+            ("yarn deploy hunter2", "yarn"),
+            ("yarn run deploy hunter2", "yarn run"),
+            ("make deploy DB_PASS=hunter2", "make"),
+            ("make deploy hunter2", "make"),
+            ("git push origin main", "git push"),
+            ("git config somename hunter2", "git"),
+            ("git hunter2", "git"),
+            (
+                "git clone https://alice:hunter2@example.invalid/o/r.git",
+                "git clone",
+            ),
+            ("git -C /work status", "git"),
+            ("git checkout Hunter2", "git checkout"),
+            ("/usr/bin/git status", "git status"),
+            ("cargo test -p core", "cargo test"),
+            ("cargo login hunter2", "cargo"),
+            ("cargo.exe build --release", "cargo.exe build"),
+            ("npm run build", "npm run"),
+            ("yarn npm login hunter2", "yarn"),
+            ("go test ./...", "go test"),
+            ("Cargo Run hunter2", "Cargo"),
+            ("rm -rf target", "rm"),
+            ("./scripts/verify.sh check", "verify.sh"),
+        ] {
+            assert_eq!(command_detail(command).as_deref(), Some(shown), "{command}");
+            assert!(!shown.contains("hunter2"), "{command}");
+        }
+        for command in [
+            "PGPASSWORD=hunter2 psql",
+            "curl -H 'Authorization: Bearer abc' https://example.invalid",
+            "export GITHUB_TOKEN=abc",
+            "echo ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            "ls\nexport KEY=x9Fk2LmQ7vR3tY8wZ1aB4cD6eG0hJ5nP",
+            "'quoted program' arg",
+            "-u alice:hunter2",
+            "   \n  ",
+        ] {
+            assert_eq!(command_detail(command), None, "{command}");
+        }
+    }
+
+    /// Whoever sends a detail, it gets the hooks adapter's treatment: what
+    /// follows a shell tool or no tool at all is reduced as a command, a
+    /// path or an address keeps nothing of a credential, and a search, an
+    /// MCP tool or an unknown one shows its name alone — its query or
+    /// pattern is free text.
+    #[test]
+    fn any_detail_gets_the_hooks_treatment() {
+        for (sent, kept) in [
+            ("Bash: redis-cli -a hunter2 ping", Some("Bash: redis-cli")),
+            (
+                "Bash: smbclient //server/share hunter2",
+                Some("Bash: smbclient"),
+            ),
+            (
+                "PowerShell: isql localdb alice hunter2",
+                Some("PowerShell: isql"),
+            ),
+            (
+                "Bash: curl -u alice:hunter2 https://example.invalid",
+                Some("Bash: curl"),
+            ),
+            (
+                "Bash: curl https://alice:hunter2@example.invalid/data?k=v",
+                Some("Bash: curl"),
+            ),
+            ("Bash: mysql -phunter2 -e SELECT", Some("Bash: mysql")),
+            ("Bash: PGPASSWORD=hunter2 psql", Some("Bash")),
+            ("Bash: git push origin main", Some("Bash: git push")),
+            ("Bash: cargo run hunter2", Some("Bash: cargo run")),
+            (
+                "PowerShell: npm run deploy hunter2",
+                Some("PowerShell: npm run"),
+            ),
+            ("cargo run hunter2", Some("cargo run")),
+            ("Bash: rm -rf target", Some("Bash: rm")),
+            ("Bash", Some("Bash")),
+            ("redis-cli -a hunter2 ping", Some("redis-cli")),
+            (
+                "mcp__fixture__run: tool run hunter2",
+                Some("mcp__fixture__run"),
+            ),
+            ("Edit: src/lib.rs", Some("Edit: src/lib.rs")),
+            ("Read: alice:hunter2@host/f", Some("Read")),
+            (
+                "WebFetch: https://alice:hunter2@example.invalid/a?k=v",
+                Some("WebFetch: https://example.invalid/a"),
+            ),
+            ("Grep: fn main", Some("Grep")),
+            ("Grep: hunter2", Some("Grep")),
+            ("Grep: password=hunter2", Some("Grep")),
+            ("Glob: **/hunter2*", Some("Glob")),
+            ("WebSearch: alice hunter2", Some("WebSearch")),
+            ("ToolSearch: hunter2", Some("ToolSearch")),
+            ("-u alice:hunter2", None),
+        ] {
+            assert_eq!(wait_detail(sent).as_deref(), kept, "{sent}");
+        }
+    }
+
+    /// Claude Code says a permission prompt twice: as the dialog opens,
+    /// with what it is for, and six seconds later without. The second keeps
+    /// the first's detail; anything else replaces it, and only a wait
+    /// carries one at all.
+    #[test]
+    fn a_plain_wait_after_a_detailed_one_keeps_its_detail() {
+        let now = now();
+        let observation =
+            |activity, seconds: i64, reason, detail: Option<&str>| ActivityObservation {
+                activity,
+                observed_at: now + chrono::Duration::seconds(seconds),
+                reason,
+                detail: detail.map(str::to_owned),
+                source: None,
+            };
+        let permission = Some(WaitReason::Permission);
+        let asked = observation(
+            ReportedActivity::Waiting,
+            0,
+            permission,
+            Some("Bash: cargo test\nsecond line"),
+        )
+        .settled(None);
+        assert_eq!(asked.detail.as_deref(), Some("Bash: cargo test"));
+        let again =
+            observation(ReportedActivity::Waiting, 6, permission, None).settled(Some(&asked));
+        assert_eq!(again.detail.as_deref(), Some("Bash: cargo test"));
+        assert_eq!(
+            again.current(again.observed_at),
+            Some(Activity::Waiting {
+                since: again.observed_at,
+                reason: permission,
+                judged: None,
+                detail: Some("Bash: cargo test".into())
+            })
+        );
+        // Another prompt, a question, or one long after is not the same.
+        let other = observation(ReportedActivity::Waiting, 7, permission, Some("Edit: a.rs"))
+            .settled(Some(&asked));
+        assert_eq!(other.detail.as_deref(), Some("Edit: a.rs"));
+        let question = observation(
+            ReportedActivity::Waiting,
+            6,
+            Some(WaitReason::Question),
+            None,
+        )
+        .settled(Some(&asked));
+        assert_eq!(question.detail, None);
+        let late = observation(
+            ReportedActivity::Waiting,
+            WAIT_DETAIL_CARRY_SECS + 1,
+            permission,
+            None,
+        )
+        .settled(Some(&asked));
+        assert_eq!(late.detail, None);
+        let working =
+            observation(ReportedActivity::Working, 8, None, Some("Bash: ls")).settled(Some(&asked));
+        assert_eq!(working.detail, None);
+        let after_work =
+            observation(ReportedActivity::Waiting, 9, permission, None).settled(Some(&working));
+        assert_eq!(after_work.detail, None);
+        let secret = observation(
+            ReportedActivity::Waiting,
+            10,
+            permission,
+            Some("Bash: echo sk-abcdefghijklmnopqrstuvwxyz"),
+        )
+        .settled(None);
+        assert_eq!(secret.detail, None);
+        let secret_after = observation(
+            ReportedActivity::Waiting,
+            11,
+            permission,
+            Some("Bash: echo sk-abcdefghijklmnopqrstuvwxyz"),
+        )
+        .settled(Some(&asked));
+        assert_eq!(secret_after.detail, None, "its own prompt, said unseen");
+        // Older readers and writers: no field, no change.
+        let plain = serde_json::json!({"activity": "waiting", "observed_at": now});
+        let read: ActivityObservation = serde_json::from_value(plain.clone()).unwrap();
+        assert_eq!(read.detail, None);
+        assert_eq!(serde_json::to_value(&read).unwrap(), plain);
     }
 
     /// A wait herdr reported holds only while herdr keeps renewing it, so
@@ -502,6 +1098,7 @@ mod tests {
             activity: ReportedActivity::Waiting,
             observed_at: now,
             reason: Some(WaitReason::Other),
+            detail: None,
             source: Some(ActivitySource::Herdr),
         };
         assert!(

@@ -583,14 +583,18 @@ impl App {
             };
             // What for, when its adapter could tell: a permission to give
             // and a question to answer are different errands, and its chip
-            // says which. A wait the opt-in judge read from its quiet screen
-            // says so on a second chip, with how sure it was: never only on
-            // the pointer.
-            let (reason, judged) = match self.activity.get(id.as_str()) {
-                Some(agentdocker_core::Activity::Waiting { reason, judged, .. }) => {
-                    (*reason, *judged)
-                }
-                _ => (None, None),
+            // says which; what the prompt is about, when its hooks said,
+            // follows the name. A wait the opt-in judge read from its quiet
+            // screen says so on a second chip, with how sure it was: never
+            // only on the pointer.
+            let (reason, judged, detail) = match self.activity.get(id.as_str()) {
+                Some(agentdocker_core::Activity::Waiting {
+                    reason,
+                    judged,
+                    detail,
+                    ..
+                }) => (*reason, *judged, detail.clone()),
+                _ => (None, None, None),
             };
             let (glyph, word) = match reason {
                 Some(agentdocker_core::WaitReason::Permission) => {
@@ -604,12 +608,13 @@ impl App {
                 "{} in its terminal",
                 super::waiting_errand(reason, judged.is_some())
             );
-            let sentence = match judged {
-                Some(judged) => format!(
+            let sentence = match (judged, &detail) {
+                (Some(judged), _) => format!(
                     "{name} {what}, judged from its screen, {} likely",
                     judged.percent()
                 ),
-                None => format!("{name} {what}"),
+                (None, Some(detail)) => format!("{name} {what}: {detail}"),
+                (None, None) => format!("{name} {what}"),
             };
             let errand = super::super::chip::chip(
                 format!("needs-you-errand-{id}"),
@@ -642,7 +647,7 @@ impl App {
                 spoken(
                     format!("needs-you-line-waiting-{id}"),
                     sentence,
-                    waiting_words(name, Some(errand), None, narrow, c),
+                    waiting_words(name, Some(errand), detail, narrow, c),
                 ),
                 None,
                 compact(
@@ -2422,6 +2427,7 @@ mod tests {
                     since: Utc::now(),
                     reason,
                     judged,
+                    detail: None,
                 },
             );
             let view = seen(app.needs_you(Colors::new(true)).expect("a waiting session"));
@@ -2449,6 +2455,24 @@ mod tests {
                 .expect("its terminal");
             assert_eq!(go.1, "Go to Terminal");
         }
+        // What the prompt is about, when its hooks said, follows the errand.
+        app.activity.insert(
+            id.clone(),
+            agentdocker_core::Activity::Waiting {
+                since: Utc::now(),
+                reason: Some(agentdocker_core::WaitReason::Permission),
+                judged: None,
+                detail: Some("Bash: cargo test".into()),
+            },
+        );
+        let view = seen(app.needs_you(Colors::new(true)).expect("a waiting session"));
+        let line = view
+            .control(&format!("needs-you-line-waiting-{id}"))
+            .expect("the session");
+        assert_eq!(
+            line.1,
+            "builder wants permission in its terminal: Bash: cargo test"
+        );
     }
 
     /// Needs you reads each row as one sentence and keeps its action's id.

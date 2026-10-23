@@ -56,6 +56,9 @@ pub enum Status {
     Disabled,
     Unverified,
     Incomplete,
+    /// Installed by an earlier version: our command is wired for some of
+    /// the events this version expects and not for the rest.
+    Outdated,
     ExecutableMissing,
     ExecutableAvailable,
 }
@@ -260,12 +263,29 @@ fn hooks(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
     }
     let mut checks = Vec::new();
     if !hooks_configuration_matches_for(&value, marker, spec.name) {
-        checks.push(Check::new(
-            "hooks",
-            Some(&path),
-            Status::Incomplete,
-            "Required hook events or matchers are missing",
-        ));
+        let missing = super::missing_hook_events(&value, marker, spec.name);
+        // Some of our events wired and some not is an earlier version's
+        // set, which setup brings up to date; none of them is a setup
+        // that never happened or was taken apart.
+        if !missing.is_empty() && missing.len() < super::hook_events(spec.name).len() {
+            checks.push(Check::new(
+                "hooks",
+                Some(&path),
+                Status::Outdated,
+                &format!(
+                    "Hooks installed by an earlier version lack {}; run `agentdocker setup {}`",
+                    missing.join(", "),
+                    spec.name
+                ),
+            ));
+        } else {
+            checks.push(Check::new(
+                "hooks",
+                Some(&path),
+                Status::Incomplete,
+                "Required hook events or matchers are missing",
+            ));
+        }
     }
     let mut commands = std::collections::BTreeSet::new();
     if let Some(events) = value["hooks"].as_object() {
@@ -600,6 +620,62 @@ mod tests {
         assert_eq!(
             super::super::hooks_wiring(spec("claude-code"), &roots.home, "agentdocker"),
             agentdocker_core::runtime::Wiring::Missing
+        );
+    }
+
+    /// An earlier version's set — our command on some of the events, not
+    /// on the ones this version added — is outdated, and says which and
+    /// how to bring it up to date; none of them is still incomplete.
+    #[test]
+    fn an_earlier_versions_hook_set_is_outdated() {
+        let (_temporary, roots) = machine();
+        let command = "agentdocker hook claude-code";
+        let added = [
+            "PermissionRequest",
+            "SubagentStart",
+            "SubagentStop",
+            "CwdChanged",
+        ];
+        let mut events = serde_json::Map::new();
+        for (event, matcher) in CLAUDE_CODE_HOOKS {
+            if added.contains(event) {
+                continue;
+            }
+            let mut entry = json!({"hooks":[{"type":"command", "command":command}]});
+            if let Some(matcher) = matcher {
+                entry["matcher"] = json!(matcher);
+            }
+            events.insert((*event).into(), json!([entry]));
+        }
+        let path = roots.home.join(".claude/settings.json");
+        std::fs::create_dir(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, json!({"hooks":events}).to_string()).unwrap();
+        let checks = hooks(spec("claude-code"), &roots, "agentdocker");
+        assert_eq!(checks[0].status, Status::Outdated);
+        assert!(
+            checks[0]
+                .detail
+                .contains("PermissionRequest, SubagentStart, SubagentStop, CwdChanged"),
+            "{}",
+            checks[0].detail
+        );
+        assert!(checks[0].detail.contains("agentdocker setup claude-code"));
+        assert_eq!(
+            serde_json::to_value(Status::Outdated).unwrap(),
+            json!("outdated")
+        );
+        let info = super::super::inspect(spec("claude-code"), &roots, "agentdocker").unwrap();
+        assert!(info.hooks_outdated());
+        assert_eq!(info.hooks_missing, added);
+        std::fs::write(
+            &path,
+            json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}})
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            hooks(spec("claude-code"), &roots, "agentdocker")[0].status,
+            Status::Incomplete
         );
     }
 

@@ -850,6 +850,15 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> R
             .iter()
             .find(|spec| spec.name == runtime.name)
             .context("missing runtime specification")?;
+        // An earlier version's hooks are said to be outdated, with what
+        // this plan adds to them, rather than as hooks never set up.
+        if runtime.hooks_outdated() {
+            plan.notes.push(format!(
+                "{}: hooks outdated, installed by an earlier version without {}; this plan adds them",
+                runtime.label,
+                runtime.hooks_missing.join(", ")
+            ));
+        }
         if let Some(step) = delegated_mcp(spec, runtime, roots, executable)? {
             plan.delegated.push(step);
         }
@@ -1390,7 +1399,8 @@ pub async fn run(
         json!({"daemon_reachable": reachable, "daemon": diagnostic,
             "runtimes": inventory.iter().filter(|runtime| names.is_empty() || names.contains(&runtime.name)).map(|runtime| json!({
                 "name":runtime.name, "installed":runtime.installed(), "mcp_configuration":runtime.mcp,
-                "hooks_configuration":runtime.hooks, "provider_round_trip":"not_tested"
+                "hooks_configuration":runtime.hooks, "hooks_outdated":runtime.hooks_outdated(),
+                "hooks_missing":runtime.hooks_missing, "provider_round_trip":"not_tested"
                 , "checks":agentdocker_core::runtime::RUNTIMES.iter()
                     .find(|spec| spec.name == runtime.name)
                     .map(|spec| runtimes::health::inspect(spec, &roots, "agentdocker"))
@@ -1821,6 +1831,57 @@ mod tests {
             "explicit hooks preview remains available"
         );
         assert!(preview.delegated.is_empty());
+    }
+
+    /// Hooks an earlier version installed are outdated: the plan says so,
+    /// naming what it adds, and adds exactly those events, leaving the rest
+    /// of the file as it was.
+    #[test]
+    fn setup_calls_an_earlier_versions_hooks_outdated_and_adds_the_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let names = vec!["claude-code".into()];
+        let executable = tmp.path().join("agentdocker");
+        let command = runtimes::claude_hook_command(&executable).unwrap();
+        let added = [
+            "PermissionRequest",
+            "SubagentStart",
+            "SubagentStop",
+            "CwdChanged",
+        ];
+        let mut events = serde_json::Map::new();
+        for (event, matcher) in agentdocker_core::runtime::CLAUDE_CODE_HOOKS {
+            if added.contains(event) {
+                continue;
+            }
+            let mut entry = json!({"hooks": [{"type": "command", "command": command}]});
+            if let Some(matcher) = matcher {
+                entry["matcher"] = json!(matcher);
+            }
+            events.insert((*event).to_owned(), json!([entry]));
+        }
+        let settings = roots.home.join(".claude/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(&settings, json!({"hooks": events}).to_string()).unwrap();
+        let plan = prepare(&roots, &names, &executable, false).unwrap();
+        assert!(
+            plan.notes.iter().any(|note| note
+                == "Claude Code: hooks outdated, installed by an earlier version without \
+                    PermissionRequest, SubagentStart, SubagentStop, CwdChanged; this plan adds them"),
+            "{:?}",
+            plan.notes
+        );
+        let change = plan
+            .changes
+            .iter()
+            .find(|change| change.channel == "hooks")
+            .unwrap();
+        let after: Value = serde_json::from_str(change.after.as_deref().unwrap()).unwrap();
+        for event in added {
+            assert_eq!(after["hooks"][event][0]["hooks"][0]["command"], command);
+            assert_eq!(after["hooks"][event][0]["hooks"][0]["async"], true);
+        }
+        assert_eq!(after["hooks"]["Stop"], json!(events["Stop"]));
     }
 
     /// Turn the stub `claude` into one that writes what the real

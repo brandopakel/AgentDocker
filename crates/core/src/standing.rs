@@ -182,11 +182,13 @@ mod tests {
             since: now,
             reason: None,
             judged: None,
+            detail: None,
         };
         let judged = Activity::Waiting {
             since: now,
             reason: Some(crate::WaitReason::Draft),
             judged: Some(crate::Judged { permille: 900 }),
+            detail: None,
         };
         let idle = Activity::Idle { since: now };
         let blocked = Activity::Blocked {

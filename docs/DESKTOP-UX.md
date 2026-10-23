@@ -136,7 +136,12 @@ details. An agent AgentDocker started opens its terminal inside the app. One
 started elsewhere is found where it runs: in a tmux or herdr pane, that pane is
 selected first; then, on macOS, its Terminal or iTerm tab is brought forward
 (macOS asks once to let AgentDocker control that app), and any other host —
-Ghostty, an editor's terminal, a JetBrains IDE — is brought to the front. Ghostty
+Ghostty, an editor's terminal, a JetBrains IDE — is brought to the front. One
+started through AgentDocker's own command in a terminal (`agentdocker codex` in
+Terminal) is in that terminal, not in AgentDocker: its action reads **Go to
+Terminal** and selects its tab. One found running under AgentDocker itself opens
+in the app's own terminal for the session that holds it, and the app says so when
+none does; AgentDocker is never offered as the place to go, nor brought forward. Ghostty
 is not asked for the agent's tab: its scripting names each terminal's
 folder but no tty or process, and a folder is not an identity (an agent can work
 in another folder than its tab reports, and that folder can be another tab's). The
@@ -210,7 +215,12 @@ permission prompt or question in their own terminal, each the agent's name
 with a chip for the errand — **Wants permission**, **Has a question**, or
 **Waiting for you** when its hooks did not say which — read aloud as *Claude
 Code wants permission in its terminal*, *has a question in its terminal* or
-*is waiting for you in its terminal*; **Go to Terminal** takes you there. A
+*is waiting for you in its terminal*. A permission prompt whose hooks said
+what it is for shows that one line after the name in the quiet ink, clipped to
+the row (*Bash: cargo test*, *Edit: src/lib.rs*), and the spoken line ends with
+it (*… wants permission in its terminal: Bash: cargo test*); it is never an
+answer, and nothing that reads like a secret is shown. **Go to Terminal** takes
+you there. A
 session the opt-in screen judge read as waiting from its quiet screen, rather
 than one its hooks reported, reads the same way with a second chip beside the
 errand, **Judged · 87%** (its detail: read from its quiet screen, how likely,
@@ -855,8 +865,13 @@ whose delivery has stopped reporting **Not heard from recently**, both
 *Connected*, since a prompt does not release what such a route holds. Other
 states distinguish **Needs setup** (whose detail says what is missing: the MCP
 entry, the hooks, or the one or two hook events setup requires, for example
-*StopFailure hook*), **Setup needs review**, **Waiting for contact**
-(*Configured*), **Integration unavailable** and **Not installed**.
+*StopFailure hook*), **Hooks outdated** (hooks an earlier version installed;
+its detail names the events they lack, for example *CwdChanged hook*; said
+even while a session is connected through them, with **Set up** offered, and
+Details reads Hooks *Outdated* — a paused or silent delivery keeps its own chip
+and carries the outdated hooks in its detail, still with **Set up**), **Setup
+needs review**, **Waiting for contact** (*Configured*), **Integration
+unavailable** and **Not installed**.
 Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
 [CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md). Missing supported setup offers
 **Set up**. **Details** holds the facts the tool has — MCP, Hooks, Shell,
@@ -942,15 +957,35 @@ and notarization; locally signed builds are explicit previews.
 
 ## Keyboard and terminal
 
-- Tab and Shift-Tab move between controls; Enter/Space activate a focused button.
-  The focus ring is the keyboard's: a click focuses a control without one, and
-  the next key that moves or uses the focus (Tab, an arrow, Home, End, the page
-  keys, Enter, Space or a character) shows it on whatever is focused; a
-  modifier, a Command or Control shortcut, or Escape does not. A click anywhere
-  else takes the focus away, and Escape closes a project's menu.
+- Tab and Shift-Tab move between controls; Enter/Space activate a focused
+  button, once, and not when a field before it already took the key. One
+  control has the focus at a time.
+- The focus ring is the keyboard's. A click focuses a control without one,
+  wherever the click moves it (a row that opens a session, a list that a new
+  session reorders under the click), and without scrolling it. Only a key
+  that moves or uses the focus — Tab, F6, an arrow, Enter or Space — shows it
+  on whatever is focused; a modifier, a Command, Control or Option shortcut,
+  Escape, a letter (the board's keys are letters) or a key that only scrolls
+  does not. A press on a label inside a row, a status chip say, is the row's;
+  a chip never takes the focus. A focused button that becomes unavailable
+  lets the focus go.
+- A click anywhere else takes the focus away: from a button, from a field
+  (whose draft stays) and from the terminal, which then takes no typing until
+  it is pressed again. A click in a field's words puts the caret there.
+- Escape or a press outside closes a menu that floats over the page. Opened
+  from the keyboard, a menu (a project's **⋯**, **More**, **Launch agent**'s
+  tools, **Open in…**, **Roles**, **Model** and **Effort**) takes the focus to
+  its first entry; Escape, or an entry chosen with Enter or Space that closes
+  the menu, gives the focus back, ringed, to the control that opened it.
+  Opened or closed by a click, a menu leaves no ring anywhere.
+- **Launch agent…** takes the focus into its task field as it opens; nothing
+  under the dialog's scrim keeps the focus or answers keys.
+- A message's **Reply** shows under the pointer or the keyboard's focus; a
+  click on it does not keep it showing once the pointer has left.
 - Command/Ctrl+1–4 switch Projects, Inbox, Tools and Settings.
 - Command/Ctrl+[ goes back and Command/Ctrl+] forward, from a text field too;
-  so do a keyboard's Back and Forward keys and the mouse's side buttons. On
+  so do a keyboard's Back and Forward keys and the mouse's side buttons, and
+  the rail's arrows, which like any click leave no ring behind. On
   Linux and Windows, Ctrl+[ and Ctrl+] in an agent's terminal stay the
   terminal's (Escape and detach); the keyboard's Back and Forward keys still
   go back and forward there.

@@ -23,6 +23,26 @@ pub const CLAUDE_CODE_HOOKS: &[(&str, Option<&str>)] = &[
     ("SessionEnd", None),
     // A permission prompt or question dialog: the session waits for the person.
     ("Notification", None),
+    // The permission dialog as it opens, with the tool it is for: observed,
+    // never answered.
+    ("PermissionRequest", None),
+    // A subagent of the session starting and finishing: the session's own
+    // activity, never an agent of its own.
+    ("SubagentStart", None),
+    ("SubagentStop", None),
+    // The session's shell changed directory: its branch is read again.
+    ("CwdChanged", None),
+];
+
+/// The Claude Code events whose hooks run asynchronously: their output and
+/// exit status are ignored, so they never answer for the session and never
+/// delay it. Everything they do is report.
+pub const CLAUDE_CODE_ASYNC_HOOKS: &[&str] = &[
+    "StopFailure",
+    "PermissionRequest",
+    "SubagentStart",
+    "SubagentStop",
+    "CwdChanged",
 ];
 
 /// Activity observations plus prompt/tool/Stop inbox delivery. MCP also
@@ -36,7 +56,24 @@ pub const CODEX_ACTIVITY_HOOKS: &[(&str, Option<&str>)] = &[
     ("PostCompact", None),
     ("Stop", None),
     ("Interrupt", None),
+    // The conversation ending: a plain terminal session leaves with it.
+    ("SessionEnd", None),
+    // A subagent of the conversation starting and finishing: the
+    // conversation's own activity, never an agent of its own.
+    ("SubagentStart", None),
+    ("SubagentStop", None),
 ];
+
+/// The hook events AgentDocker's adapter expects a runtime to have
+/// installed, with the matcher each needs; empty for a runtime without
+/// one.
+pub fn hook_events(runtime: &str) -> &'static [(&'static str, Option<&'static str>)] {
+    match runtime {
+        "codex" => CODEX_ACTIVITY_HOOKS,
+        "claude-code" => CLAUDE_CODE_HOOKS,
+        _ => &[],
+    }
+}
 
 /// How a runtime registers MCP servers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -439,6 +476,22 @@ impl RuntimeInfo {
     pub fn in_browser(&self) -> bool {
         spec(&self.name).is_some_and(RuntimeSpec::in_browser)
     }
+
+    /// The hooks were installed, but by an earlier version: our command is
+    /// wired for some of the events this version expects and not for the
+    /// rest (`hooks_missing`). Running setup for the runtime again adds
+    /// them. Missing every event is not outdated — that is hooks never set
+    /// up, or disabled.
+    pub fn hooks_outdated(&self) -> bool {
+        self.hooks == Wiring::Missing
+            && !self.hooks_missing.is_empty()
+            && self.hooks_missing.len() < hook_events(&self.name).len()
+    }
+
+    /// What fixes outdated hooks: setup for this runtime again.
+    pub fn hooks_fix(&self) -> String {
+        format!("agentdocker setup {}", self.name)
+    }
 }
 
 impl RuntimeSpec {
@@ -497,5 +550,50 @@ mod tests {
         assert!(spec("claude-browser").unwrap().in_browser());
         assert!(spec("chatgpt-browser").unwrap().in_browser());
         assert!(!spec("claude-code").unwrap().in_browser());
+    }
+
+    /// Hooks an earlier version installed lack only the events this one
+    /// added: that is outdated, fixed by setup for the runtime. None of
+    /// them is hooks never set up, and all of them wired is current.
+    #[test]
+    fn a_partly_wired_hook_set_is_outdated() {
+        let mut runtime = RuntimeInfo {
+            name: "claude-code".into(),
+            vendor: "Anthropic".into(),
+            label: "Claude Code".into(),
+            cli: None,
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: Wiring::Wired,
+            hooks: Wiring::Missing,
+            shell: Wiring::Unsupported,
+            hooks_missing: vec!["PermissionRequest".into(), "CwdChanged".into()],
+            running: 0,
+        };
+        assert!(runtime.hooks_outdated());
+        assert_eq!(runtime.hooks_fix(), "agentdocker setup claude-code");
+        runtime.hooks_missing = hook_events("claude-code")
+            .iter()
+            .map(|(event, _)| (*event).to_owned())
+            .collect();
+        assert!(!runtime.hooks_outdated(), "never set up");
+        runtime.hooks_missing.clear();
+        assert!(!runtime.hooks_outdated());
+        runtime.hooks = Wiring::Wired;
+        assert!(!runtime.hooks_outdated());
+        runtime.name = "codex".into();
+        runtime.hooks = Wiring::Missing;
+        runtime.hooks_missing = vec!["SessionEnd".into()];
+        assert!(runtime.hooks_outdated());
+        assert_eq!(runtime.hooks_fix(), "agentdocker setup codex");
+        // Every event the adapter answers is one it installs, and the
+        // asynchronous ones are among them.
+        for event in CLAUDE_CODE_ASYNC_HOOKS {
+            assert!(CLAUDE_CODE_HOOKS.iter().any(|(e, _)| e == event), "{event}");
+        }
+        assert!(hook_events("opencode").is_empty());
     }
 }

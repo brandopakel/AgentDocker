@@ -265,6 +265,9 @@ agentdocker hook install claude-code          # writes ./.claude/settings.json (
 | `UserPromptSubmit`, `PostToolUse` | delivers messages from other agents as context, as they arrive; a prompt also carries new journal entries |
 | `Stop` | releases every lease, quoting the model's last message as the journal summary; if messages arrived while it was working, blocks the stop so the model reads them first (`--no-wake` disables) |
 | `SessionEnd` | releases and deregisters |
+| `Notification`, `PermissionRequest` | marks the session waiting for you; a permission prompt carries one line of what it is for (the tool and, say, the command's program and, for a few tools, one known subcommand, never its arguments, or a file's path; a search shows the tool alone) to Needs you — observed only, never answered |
+| `SubagentStart`, `SubagentStop` | keeps the session working while its subagents run; a subagent is never an agent of its own |
+| `CwdChanged` | reads the session's branch and commit again from where its shell went |
 
 The hook fails open: if `agentd` isn't running, Claude Code carries on as if the hook weren't there.
 

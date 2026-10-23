@@ -289,11 +289,33 @@ impl overlay::Overlay<Message, iced::Theme, iced::Renderer> for Popup<'_, '_> {
         if (outside_press || escape)
             && let Some(dismiss) = &self.on_dismiss
         {
+            // Said first, while the menu is still open: Escape gives the
+            // focus back to the control that opened it from the keyboard;
+            // a press elsewhere is the pointer's, and gives nothing back.
+            shell.publish(if escape {
+                Message::MenuEscaped
+            } else {
+                Message::MenuPressedAway
+            });
             shell.publish(dismiss.clone());
             if escape {
                 shell.capture_event();
                 return;
             }
+        }
+        // Enter or Space on the entry that has the focus chooses it. Said
+        // before the entry's own message, so that when the choice closes
+        // the menu the focus goes back to whatever opened it.
+        if let Event::Keyboard(keyboard::Event::KeyPressed {
+            key, repeat: false, ..
+        }) = event
+            && (matches!(
+                key,
+                keyboard::Key::Named(keyboard::key::Named::Enter | keyboard::key::Named::Space)
+            ) || matches!(key, keyboard::Key::Character(c) if c.as_str() == " "))
+            && super::focused_within(self.tree, false)
+        {
+            shell.publish(Message::MenuChosen);
         }
         self.content.as_widget_mut().update(
             self.tree,

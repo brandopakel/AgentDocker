@@ -265,6 +265,7 @@ async fn a_client_report_cannot_name_a_source() {
                 activity: ReportedActivity::Idle,
                 observed_at: Utc::now(),
                 reason: None,
+                detail: None,
                 source: Some(ActivitySource::Herdr),
             },
         })
@@ -512,6 +513,7 @@ mod socket {
                     since: observation(&daemon, &agent.id).unwrap().observed_at,
                     reason: Some(WaitReason::Other),
                     judged: None,
+                    detail: None,
                 }
         })
         .await;

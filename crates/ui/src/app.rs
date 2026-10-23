@@ -11,6 +11,8 @@ mod board;
 mod chip;
 mod forms;
 mod icons;
+#[cfg(test)]
+mod interaction;
 mod logos;
 mod messages;
 mod naming;
@@ -2361,7 +2363,7 @@ impl App {
         if agent.managed {
             return agent.spec.tty.then(|| "in AgentDocker".to_owned());
         }
-        match (&agent.session, &agent.terminal) {
+        match (&agent.session, Self::other_app(agent)) {
             (Some(session), _) => Some(format!("in {}", session.describe())),
             (None, Some(host)) => Some(format!("in {}", host.describe())),
             (None, None) => None,
@@ -2373,13 +2375,45 @@ impl App {
         if agent.managed {
             return "Open terminal".to_owned();
         }
-        match (&agent.session, &agent.terminal) {
+        match (&agent.session, Self::other_app(agent)) {
             (Some(session), _) if session.kind == "tmux" || session.kind == "herdr" => {
                 format!("Go to {} pane", session.kind)
             }
             (_, Some(host)) => format!("Go to {}", host.name),
             _ => "Open original terminal".to_owned(),
         }
+    }
+
+    /// The application an agent recorded its terminal in, unless that
+    /// names AgentDocker itself: a record kept from before the walk passed
+    /// over AgentDocker's own programs may, and the person is already
+    /// here. Going there finds the terminal afresh.
+    fn other_app(agent: &AgentRecord) -> Option<&agentdocker_core::terminal::Host> {
+        agent
+            .terminal
+            .as_ref()
+            .filter(|host| !host.is_agentdocker())
+    }
+
+    /// The live session the app runs with a terminal of its own whose
+    /// process is `pid`, born at `started_at`: where an agent found under
+    /// AgentDocker itself shows. A record of another process given the
+    /// same number since is not it.
+    fn in_app_session(
+        &self,
+        pid: u32,
+        started_at: chrono::DateTime<chrono::Utc>,
+    ) -> Option<String> {
+        self.agents
+            .iter()
+            .find(|a| {
+                a.managed
+                    && a.spec.tty
+                    && a.status.is_live()
+                    && a.pid == Some(pid)
+                    && a.process_started_at == Some(started_at)
+            })
+            .map(|a| a.id.to_string())
     }
 
     /// The names of the current snapshot of records.
@@ -4947,7 +4981,9 @@ pub(crate) fn extension_words(extension: &agentdocker_core::runtime::InstalledEx
 }
 
 /// What "needs setup" is missing, for the Tools row: the MCP entry, the
-/// hooks, or the one or two hook events a release began to require.
+/// hooks, or the one or two hook events a release began to require. Hooks
+/// an earlier version installed, with the MCP entry in place, are
+/// outdated rather than missing: Set up adds what they lack.
 pub(crate) fn missing_setup(runtime: &agentdocker_core::runtime::RuntimeInfo) -> String {
     use agentdocker_core::runtime::Wiring;
     let mut parts = Vec::new();
@@ -4966,6 +5002,7 @@ pub(crate) fn missing_setup(runtime: &agentdocker_core::runtime::RuntimeInfo) ->
         });
     }
     match parts.as_slice() {
+        [hooks] if runtime.hooks_outdated() => format!("Hooks outdated · missing {hooks}"),
         [] => "Needs setup".to_owned(),
         [one] => format!("Needs setup · missing {one}"),
         [a, b] => format!("Needs setup · missing {a} and {b}"),
@@ -5425,18 +5462,24 @@ pub(crate) mod tests {
         };
         assert_eq!(
             missing_setup(&runtime),
-            "Needs setup · missing StopFailure hook"
+            "Hooks outdated · missing StopFailure hook"
         );
         runtime.hooks_missing = vec!["Stop".into(), "StopFailure".into()];
         assert_eq!(
             missing_setup(&runtime),
-            "Needs setup · missing Stop and StopFailure hooks"
+            "Hooks outdated · missing Stop and StopFailure hooks"
         );
         runtime.hooks_missing = vec!["Stop".into(), "StopFailure".into(), "SessionEnd".into()];
         assert_eq!(
             missing_setup(&runtime),
-            "Needs setup · missing Stop and 2 more hooks"
+            "Hooks outdated · missing Stop and 2 more hooks"
         );
+        runtime.mcp = Wiring::Missing;
+        assert_eq!(
+            missing_setup(&runtime),
+            "Needs setup · missing MCP entry and Stop and 2 more hooks"
+        );
+        runtime.mcp = Wiring::Wired;
         runtime.hooks_missing = agentdocker_host::runtimes::hook_events("claude-code")
             .iter()
             .map(|(e, _)| e.to_string())
@@ -7686,6 +7729,7 @@ pub(crate) mod tests {
             since: now,
             reason: None,
             judged: None,
+            detail: None,
         };
 
         // A turn that stops to ask the person is waiting, not done; and
@@ -7733,6 +7777,7 @@ pub(crate) mod tests {
             since: Utc::now() - chrono::Duration::hours(1),
             reason: Some(agentdocker_core::WaitReason::Permission),
             judged: None,
+            detail: None,
         };
         let fresh = BTreeMap::from([
             (id.clone(), waiting.clone()),
@@ -7818,6 +7863,7 @@ pub(crate) mod tests {
             since: now,
             reason: Some(agentdocker_core::WaitReason::Permission),
             judged: None,
+            detail: None,
         };
 
         step(&mut app, &id, working());
@@ -7895,6 +7941,7 @@ pub(crate) mod tests {
                 since: Utc::now(),
                 reason: Some(agentdocker_core::WaitReason::Permission),
                 judged: None,
+                detail: None,
             },
         )]);
         app.note_completions(&fresh);
@@ -7959,6 +8006,7 @@ pub(crate) mod tests {
             since: now,
             reason: None,
             judged: None,
+            detail: None,
         };
         let post = format!("post window.{id}");
         let withdraw = format!("withdraw window.{id}");

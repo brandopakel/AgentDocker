@@ -3976,38 +3976,244 @@ async fn a_quiet_agent_is_unknown_and_a_finished_one_is_finished() {
 }
 
 /// What a wait is for travels with the report, into the store and out
-/// of the agent's activity, so the app can say which errand it is.
+/// of the agent's activity, so the app can say which errand it is — and
+/// what it is about: the one line its adapter sent, made printable and
+/// bounded here whoever sent it, kept through the prompt's second, plain
+/// report, and dropped when it reads like a secret.
 #[tokio::test]
 async fn a_wait_keeps_what_it_is_for_through_the_store() {
     use agentdocker_core::{ActivityObservation, ReportedActivity, WaitReason};
     let dir = TempDir::new().unwrap();
     let daemon = open(&dir);
     let agent = register(&daemon, "waiting-fixture", None).await;
-    let now = Utc::now();
+    let now = Utc::now() - Duration::seconds(30);
     let waiting = ActivityObservation {
         activity: ReportedActivity::Waiting,
         observed_at: now,
         reason: Some(WaitReason::Permission),
+        detail: Some("Bash: cargo\u{202E} test\nrm -rf target".into()),
         source: None,
     };
+    let mut events = daemon.subscribe_events();
     let mut state = lock(&daemon.state);
     assert!(matches!(
         state.report_activity(agent.id.as_str(), waiting.clone(), now),
         Response::Ok
     ));
+    let kept = ActivityObservation {
+        detail: Some("Bash: cargo test".into()),
+        ..waiting.clone()
+    };
     assert_eq!(
         state.store.load_agents().unwrap()[0].reported_activity,
-        Some(waiting)
+        Some(kept.clone())
     );
+    match events.try_recv().unwrap().kind {
+        EventKind::AgentActivityReported { observation, .. } => assert_eq!(observation, kept),
+        other => panic!("unexpected event {other:?}"),
+    }
     let record = state.registry.get(&agent.id).unwrap();
+    let detailed = Activity::Waiting {
+        since: now,
+        reason: Some(WaitReason::Permission),
+        judged: None,
+        detail: Some("Bash: cargo test".into()),
+    };
     assert_eq!(
         state.activity_of(record, now + Duration::minutes(30)),
+        detailed
+    );
+    // Its notification six seconds on says the same prompt again, plainly.
+    let again = now + Duration::seconds(6);
+    let plain = ActivityObservation {
+        observed_at: again,
+        detail: None,
+        ..waiting.clone()
+    };
+    assert!(matches!(
+        state.report_activity(agent.id.as_str(), plain, again),
+        Response::Ok
+    ));
+    let record = state.registry.get(&agent.id).unwrap();
+    assert_eq!(
+        state.activity_of(record, again),
         Activity::Waiting {
-            since: now,
+            since: again,
             reason: Some(WaitReason::Permission),
+            detail: Some("Bash: cargo test".into()),
             judged: None,
         }
     );
+    let later = now + Duration::seconds(7);
+    let secret = ActivityObservation {
+        observed_at: later,
+        detail: Some("Bash: curl -u ghp_abcdefghijklmnopqrstuvwxyz0123456789".into()),
+        ..waiting
+    };
+    assert!(matches!(
+        state.report_activity(agent.id.as_str(), secret, later),
+        Response::Ok
+    ));
+    let record = state.registry.get(&agent.id).unwrap();
+    assert_eq!(
+        state.activity_of(record, later),
+        Activity::Waiting {
+            since: later,
+            reason: Some(WaitReason::Permission),
+            judged: None,
+            detail: None,
+        }
+    );
+}
+
+/// A password in an ordinary command never reaches the record or its
+/// event: not from the hooks adapter, nor from any other client sending
+/// the command whole, which gets the same treatment — the program, and for
+/// a few programs one literal subcommand, nothing after — whether the
+/// password is flagged, in an address, in a position only the program
+/// knows, or a value a known subcommand passes on.
+#[tokio::test]
+async fn a_password_in_a_wait_detail_is_never_kept_or_announced() {
+    use agentdocker_core::wait::command_detail;
+    use agentdocker_core::{ActivityObservation, ReportedActivity, WaitReason};
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let agent = register(&daemon, "secret-detail-fixture", None).await;
+    let mut events = daemon.subscribe_events();
+    let start = Utc::now() - Duration::seconds(90);
+    let commands = [
+        ("smbclient //server/share hunter2", "smbclient"),
+        ("isql localdb alice hunter2", "isql"),
+        ("mysql -u alice db hunter2", "mysql"),
+        ("tool run hunter2", "tool"),
+        ("redis-cli -a hunter2 ping", "redis-cli"),
+        ("curl -u alice:hunter2 https://example.invalid", "curl"),
+        ("curl https://alice:hunter2@example.invalid/data", "curl"),
+        ("mysql -phunter2 -e SELECT", "mysql"),
+        ("curl --user=alice:hunter2 https://example.invalid", "curl"),
+        ("mysql -uroot -phunter2", "mysql"),
+        ("cargo run hunter2", "cargo run"),
+        ("cargo run -- alice hunter2", "cargo run"),
+        ("npm run deploy hunter2", "npm run"),
+        ("go run main.go hunter2", "go run"),
+        ("yarn deploy hunter2", "yarn"),
+        ("make deploy hunter2", "make"),
+    ];
+    let details = commands.iter().flat_map(|(command, shown)| {
+        assert_eq!(
+            command_detail(command).as_deref(),
+            Some(*shown),
+            "{command}"
+        );
+        [
+            (format!("Bash: {command}"), format!("Bash: {shown}")),
+            (
+                format!("PowerShell: {command}"),
+                format!("PowerShell: {shown}"),
+            ),
+            (format!("Bash: {shown}"), format!("Bash: {shown}")),
+        ]
+    });
+    for (step, (detail, shown)) in details.enumerate() {
+        let at = start + Duration::seconds(step as i64);
+        let mut state = lock(&daemon.state);
+        assert!(matches!(
+            state.report_activity(
+                agent.id.as_str(),
+                ActivityObservation {
+                    activity: ReportedActivity::Waiting,
+                    observed_at: at,
+                    reason: Some(WaitReason::Permission),
+                    detail: Some(detail.clone()),
+                    source: None,
+                },
+                at,
+            ),
+            Response::Ok
+        ));
+        let stored = serde_json::to_string(&state.store.load_agents().unwrap()).unwrap();
+        let kept = state
+            .registry
+            .get(&agent.id)
+            .unwrap()
+            .reported_activity
+            .clone();
+        drop(state);
+        let event = events.try_recv().unwrap().kind;
+        let announced = serde_json::to_string(&event).unwrap();
+        for text in [&stored, &announced] {
+            assert!(
+                !text.contains("hunter2") && !text.contains("alice"),
+                "{detail}: {text}"
+            );
+        }
+        // What is kept and announced is what the hook would have sent.
+        assert_eq!(kept.and_then(|o| o.detail), Some(shown.clone()), "{detail}");
+        match event {
+            EventKind::AgentActivityReported { observation, .. } => {
+                assert_eq!(observation.detail, Some(shown), "{detail}");
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+    }
+}
+
+/// A search's query or pattern is free text, where a short plain password
+/// slips past every check: whoever sends it, the record and its event keep
+/// the search tool's name alone.
+#[tokio::test]
+async fn a_search_detail_keeps_only_the_tool_name() {
+    use agentdocker_core::{ActivityObservation, ReportedActivity, WaitReason};
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let agent = register(&daemon, "search-detail-fixture", None).await;
+    let mut events = daemon.subscribe_events();
+    let start = Utc::now() - Duration::seconds(60);
+    for (step, (sent, tool)) in [
+        ("Grep: hunter2", "Grep"),
+        ("WebSearch: alice hunter2", "WebSearch"),
+        ("Glob: **/hunter2*", "Glob"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let at = start + Duration::seconds(step as i64);
+        let mut state = lock(&daemon.state);
+        assert!(matches!(
+            state.report_activity(
+                agent.id.as_str(),
+                ActivityObservation {
+                    activity: ReportedActivity::Waiting,
+                    observed_at: at,
+                    reason: Some(WaitReason::Permission),
+                    detail: Some(sent.into()),
+                    source: None,
+                },
+                at,
+            ),
+            Response::Ok
+        ));
+        let stored = state.store.load_agents().unwrap();
+        let stored = stored.iter().find(|a| a.id == agent.id).unwrap();
+        assert_eq!(
+            stored
+                .reported_activity
+                .as_ref()
+                .and_then(|o| o.detail.as_deref()),
+            Some(tool),
+            "{sent}"
+        );
+        assert!(!serde_json::to_string(stored).unwrap().contains("hunter2"));
+        drop(state);
+        let event = events.try_recv().unwrap().kind;
+        assert!(!serde_json::to_string(&event).unwrap().contains("hunter2"));
+        match event {
+            EventKind::AgentActivityReported { observation, .. } => {
+                assert_eq!(observation.detail.as_deref(), Some(tool), "{sent}");
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+    }
 }
 
 #[tokio::test]
@@ -4021,12 +4227,14 @@ async fn provider_activity_is_ordered_expires_and_commits_with_its_event() {
         activity: ReportedActivity::Working,
         observed_at: now - Duration::seconds(2),
         reason: None,
+        detail: None,
         source: None,
     };
     let idle = ActivityObservation {
         activity: ReportedActivity::Idle,
         observed_at: now - Duration::seconds(1),
         reason: None,
+        detail: None,
         source: None,
     };
     let mut events = daemon.subscribe_events();
@@ -4672,6 +4880,7 @@ async fn failed_activity_write_publishes_no_state_or_event() {
                 activity: agentdocker_core::ReportedActivity::Working,
                 observed_at: Utc::now(),
                 reason: None,
+                detail: None,
                 source: None,
             },
         })
@@ -4707,6 +4916,7 @@ async fn delayed_idle_report_cannot_become_work_when_it_expires() {
             activity: agentdocker_core::ReportedActivity::Idle,
             observed_at: now - Duration::seconds(299),
             reason: None,
+            detail: None,
             source: None,
         },
         now,
@@ -4754,6 +4964,7 @@ async fn polling_does_not_turn_a_hooked_agents_idle_report_into_work() {
             activity: agentdocker_core::ReportedActivity::Idle,
             observed_at: now - Duration::seconds(20),
             reason: None,
+            detail: None,
             source: None,
         },
         now,

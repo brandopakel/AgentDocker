@@ -3,8 +3,10 @@ use crate::{accessibility::Semantic, app::Message};
 use iced::advanced::Renderer as _;
 mod composer;
 mod popover;
+mod reveal;
 pub use composer::{composer, framed_composer};
 pub use popover::popover;
+pub use reveal::hover;
 
 /// Scroll ancestors just enough to reveal the newly focused control, or,
 /// given a `target`, the container carrying that id. Revealing a target
@@ -166,12 +168,13 @@ use iced::advanced::{
 };
 use iced::{Border, Element, Event, Length, Rectangle, Size, keyboard, mouse};
 
-/// Whether a key press moves or uses the focus: Tab, the arrows, Home,
-/// End, the page keys, Enter, Space or a plain character. A modifier on its
-/// own, a Command or Control shortcut, and Escape do not.
+/// Whether a key press is the keyboard moving or using the focus: Tab, F6,
+/// an arrow, Enter or Space. A modifier on its own, a Command or Control
+/// shortcut, Escape, a letter (the board's own keys are letters) and the
+/// keys that only scroll do not.
 fn navigates(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> bool {
     use keyboard::key::Named;
-    if modifiers.command() || modifiers.control() {
+    if modifiers.command() || modifiers.control() || modifiers.alt() {
         return false;
     }
     match key {
@@ -183,15 +186,121 @@ fn navigates(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> bool {
                 | Named::ArrowDown
                 | Named::ArrowLeft
                 | Named::ArrowRight
-                | Named::Home
-                | Named::End
-                | Named::PageUp
-                | Named::PageDown
                 | Named::Enter
                 | Named::Space
         ),
-        keyboard::Key::Character(_) => true,
+        keyboard::Key::Character(c) => c.as_str() == " ",
         keyboard::Key::Unidentified => false,
+    }
+}
+
+/// Focus the control with this id the way a click does: without its
+/// ring, whatever widget state the control has by the time the operation
+/// runs — the click may have moved it, opening something or reordering a
+/// list, and a moved control starts from fresh state. A target that
+/// already has the focus keeps it as it is, so a text field keeps the
+/// caret and the selection the click just made. Everything else loses
+/// the focus: one thing has it at a time.
+pub fn focus_by_pointer(id: impl Into<String>) -> iced::Task<Message> {
+    iced::advanced::widget::operate(PointerFocus(widget::Id::from(id.into()))).discard()
+}
+struct PointerFocus(widget::Id);
+impl Operation for PointerFocus {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+    fn custom(&mut self, id: Option<&widget::Id>, _: Rectangle, state: &mut dyn std::any::Any) {
+        if id == Some(&self.0)
+            && let Some(focus) = state.downcast_mut::<Focus>()
+        {
+            focus.by_pointer = true;
+        }
+    }
+    fn focusable(
+        &mut self,
+        id: Option<&widget::Id>,
+        _: Rectangle,
+        state: &mut dyn widget::operation::Focusable,
+    ) {
+        if id == Some(&self.0) {
+            if !state.is_focused() {
+                state.focus();
+            }
+        } else {
+            state.unfocus();
+        }
+    }
+}
+
+/// Move the focus to the next control (or the previous one), as Tab and
+/// F6 do, leaving nothing else focused. Iced's own step unfocuses only the
+/// control it steps from, so a second focus — a field that focused itself
+/// under a dialog, say — would otherwise stay, ringed, wherever it was.
+pub fn step_focus(forward: bool) -> iced::Task<Message> {
+    iced::advanced::widget::operate(Count {
+        forward,
+        total: 0,
+        focused: None,
+    })
+    .discard()
+}
+/// The first pass of [`step_focus`]: how many focusables, and which one
+/// has the focus (the last, when more than one does).
+struct Count {
+    forward: bool,
+    total: usize,
+    focused: Option<usize>,
+}
+impl Operation for Count {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+    fn focusable(
+        &mut self,
+        _: Option<&widget::Id>,
+        _: Rectangle,
+        state: &mut dyn widget::operation::Focusable,
+    ) {
+        if state.is_focused() {
+            self.focused = Some(self.total);
+        }
+        self.total += 1;
+    }
+    fn finish(&self) -> widget::operation::Outcome<()> {
+        // As Iced steps: from nothing to the first (or the last), and past
+        // either end to nothing, so the next step starts over.
+        let target = match (self.focused, self.forward) {
+            (None, true) => (self.total > 0).then_some(0),
+            (None, false) => self.total.checked_sub(1),
+            (Some(focused), true) => (focused + 1 < self.total).then_some(focused + 1),
+            (Some(focused), false) => focused.checked_sub(1),
+        };
+        widget::operation::Outcome::Chain(Box::new(Step { target, current: 0 }))
+    }
+}
+/// The second pass of [`step_focus`]: focus the target, unfocus the rest.
+struct Step {
+    target: Option<usize>,
+    current: usize,
+}
+impl Operation for Step {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+    fn focusable(
+        &mut self,
+        _: Option<&widget::Id>,
+        _: Rectangle,
+        state: &mut dyn widget::operation::Focusable,
+    ) {
+        if self.target == Some(self.current) {
+            if !state.is_focused() {
+                state.focus();
+            }
+        } else {
+            state.unfocus();
+        }
+        self.current += 1;
     }
 }
 
@@ -234,19 +343,59 @@ impl<'a> From<Control<'a>> for Element<'a, Message> {
         Self::new(control)
     }
 }
+impl Control<'_> {
+    /// Whether the keyboard can reach it: an enabled button.
+    fn focusable(&self) -> bool {
+        self.button && self.semantic.action.is_some()
+    }
+    /// Whether a press on it moves the focus to it: an enabled button, or
+    /// a field that takes typing. A label — a chip, a status, words read
+    /// as one — never does, so a press on one inside a row is the row's.
+    fn takes_press(&self) -> bool {
+        use accesskit::Role;
+        self.focusable()
+            || (matches!(
+                self.semantic.role,
+                Role::TextInput | Role::MultilineTextInput | Role::PasswordInput
+            ) && self.semantic.change.is_some())
+    }
+}
+
+/// Whether a control in `tree` has the focus — the keyboard's only, when
+/// `ringed`.
+pub(crate) fn focused_within(tree: &Tree, ringed: bool) -> bool {
+    (tree.tag == tree::Tag::of::<Focus>() && {
+        let focus = tree.state.downcast_ref::<Focus>();
+        if ringed {
+            focus.ringed()
+        } else {
+            focus.focused
+        }
+    }) || tree
+        .children
+        .iter()
+        .any(|child| focused_within(child, ringed))
+}
 impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<Focus>()
     }
     fn state(&self) -> tree::State {
-        tree::State::new(Focus::default())
+        // Fresh state already belongs to this control: a focus given to it
+        // before the next rebuild is its own, not a stranger's to drop.
+        tree::State::new(Focus {
+            id: Some(self.semantic.id.clone()),
+            ..Focus::default()
+        })
     }
     fn children(&self) -> Vec<Tree> {
         vec![Tree::new(&self.content)]
     }
     fn diff(&self, tree: &mut Tree) {
         let state = tree.state.downcast_mut::<Focus>();
-        if state.id.as_deref() != Some(self.semantic.id.as_str()) {
+        // Another control's state, or a control that can no longer be
+        // pressed: neither keeps a focus, or a ring, nothing can move on.
+        if state.id.as_deref() != Some(self.semantic.id.as_str()) || !self.focusable() {
             state.focused = false;
             state.by_pointer = false;
             state.id = Some(self.semantic.id.clone());
@@ -275,12 +424,12 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
     ) {
         let id = widget::Id::from(self.semantic.id.clone());
         operation.custom(Some(&id), layout.bounds(), &mut self.semantic);
-        if self.button && self.semantic.action.is_some() {
-            operation.focusable(
-                Some(&id),
-                layout.bounds(),
-                tree.state.downcast_mut::<Focus>(),
-            );
+        if self.focusable() {
+            let focus = tree.state.downcast_mut::<Focus>();
+            // The focus itself as well, for the operations that need to
+            // know where it came from: a click's carries no ring.
+            operation.custom(Some(&id), layout.bounds(), focus);
+            operation.focusable(Some(&id), layout.bounds(), focus);
         }
         self.content
             .as_widget_mut()
@@ -323,29 +472,39 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
             shell.request_redraw();
             shell.publish(Message::Blurred);
         }
-        if self.semantic.role != accesskit::Role::Button || self.semantic.action.is_some() {
-            if matches!(
+        // A press on it: the focus comes here, by the pointer. The
+        // operation that moves it runs after the view is rebuilt, and marks
+        // whatever state this control has then.
+        if self.takes_press()
+            && matches!(
                 event,
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-            ) && cursor.is_over(layout.bounds())
-            {
-                state.by_pointer = true;
-                shell.publish(Message::Focus(self.semantic.id.clone()));
+            )
+            && cursor.is_over(layout.bounds())
+        {
+            state.by_pointer = true;
+            shell.publish(Message::Pressed(self.semantic.id.clone()));
+        }
+        // Enter or Space presses a focused button, once — unless a widget
+        // before it in the window already took the key (a field sending on
+        // Enter, say): one key, one action.
+        if state.focused
+            && !shell.is_event_captured()
+            && let Some(action) = self.semantic.action.clone().filter(|_| self.button)
+            && let Event::Keyboard(keyboard::Event::KeyPressed { key, repeat, .. }) = event
+            && (matches!(
+                key,
+                keyboard::Key::Named(keyboard::key::Named::Enter | keyboard::key::Named::Space)
+            ) || matches!(key, keyboard::Key::Character(c) if c.as_str() == " "))
+        {
+            if !repeat {
+                // The keyboard pressed it, said first: a menu it opens was
+                // opened from the keyboard, whatever the pointer did before.
+                shell.publish(Message::KeyPressedControl);
+                shell.publish(action);
             }
-            if self.button
-                && state.focused
-                && let Event::Keyboard(keyboard::Event::KeyPressed { key, repeat, .. }) = event
-                && (matches!(
-                    key,
-                    keyboard::Key::Named(keyboard::key::Named::Enter | keyboard::key::Named::Space)
-                ) || matches!(key,keyboard::Key::Character(c) if c.as_str()==" "))
-            {
-                if !repeat {
-                    shell.publish(self.semantic.action.clone().unwrap());
-                }
-                shell.capture_event();
-                return;
-            }
+            shell.capture_event();
+            return;
         }
         self.content.as_widget_mut().update(
             &mut tree.children[0],
@@ -377,7 +536,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
             cursor,
             viewport,
         );
-        if self.button && tree.state.downcast_ref::<Focus>().ringed() {
+        if self.focusable() && tree.state.downcast_ref::<Focus>().ringed() {
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: layout.bounds(),
@@ -1053,8 +1212,18 @@ mod tests {
                     &mut shell,
                     &Rectangle::with_size(Size::new(400.0, 100.0)),
                 );
-                assert_eq!(messages.len(), expected);
-                assert!(messages.iter().all(|m| matches!(m, Message::ShowAdd)));
+                // The keyboard says it pressed the button, then the action.
+                if expected == 1 {
+                    assert!(
+                        matches!(
+                            messages.as_slice(),
+                            [Message::KeyPressedControl, Message::ShowAdd]
+                        ),
+                        "{messages:?}"
+                    );
+                } else {
+                    assert!(messages.is_empty(), "{messages:?}");
+                }
             }
         }
     }
@@ -1091,7 +1260,7 @@ mod tests {
         let click = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
         let clicked = update(&mut element, &mut tree, &click);
         assert!(
-            matches!(clicked.as_slice(), [Message::Focus(id)] if id == "add"),
+            matches!(clicked.as_slice(), [Message::Pressed(id)] if id == "add"),
             "a click asks for the focus"
         );
         tree.state.downcast_mut::<Focus>().focus();
@@ -1113,7 +1282,8 @@ mod tests {
         tree.state.downcast_mut::<Focus>().focus();
         assert!(!tree.state.downcast_ref::<Focus>().ringed());
 
-        // A modifier, a shortcut or Escape after a click shows no ring.
+        // A modifier, a shortcut, Escape, a letter (the board's own keys)
+        // or a key that only scrolls, after a click, shows no ring.
         for (key, modifiers) in [
             (
                 keyboard::Key::Named(keyboard::key::Named::Shift),
@@ -1122,6 +1292,14 @@ mod tests {
             (
                 keyboard::Key::Character("4".into()),
                 keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT,
+            ),
+            (
+                keyboard::Key::Character("n".into()),
+                keyboard::Modifiers::empty(),
+            ),
+            (
+                keyboard::Key::Named(keyboard::key::Named::PageDown),
+                keyboard::Modifiers::empty(),
             ),
             (
                 keyboard::Key::Named(keyboard::key::Named::Escape),
@@ -1178,6 +1356,329 @@ mod tests {
             "the app hears it, to tell assistive technology: {messages:?}"
         );
     }
+    /// The keys that show the ring are the ones that move or use the
+    /// focus, and only those.
+    #[test]
+    fn only_the_keyboard_moving_or_using_the_focus_shows_the_ring() {
+        use keyboard::key::Named;
+        let plain = keyboard::Modifiers::empty();
+        for key in [
+            Named::Tab,
+            Named::F6,
+            Named::ArrowUp,
+            Named::ArrowDown,
+            Named::ArrowLeft,
+            Named::ArrowRight,
+            Named::Enter,
+            Named::Space,
+        ] {
+            assert!(navigates(&keyboard::Key::Named(key), plain), "{key:?}");
+            assert!(navigates(
+                &keyboard::Key::Named(key),
+                keyboard::Modifiers::SHIFT
+            ));
+        }
+        assert!(navigates(&keyboard::Key::Character(" ".into()), plain));
+        for key in [
+            keyboard::Key::Named(Named::Escape),
+            keyboard::Key::Named(Named::Shift),
+            keyboard::Key::Named(Named::Home),
+            keyboard::Key::Named(Named::PageUp),
+            keyboard::Key::Character("v".into()),
+            keyboard::Key::Character("/".into()),
+            keyboard::Key::Unidentified,
+        ] {
+            assert!(!navigates(&key, plain), "{key:?}");
+        }
+        for modifiers in [
+            keyboard::Modifiers::COMMAND,
+            keyboard::Modifiers::CTRL,
+            keyboard::Modifiers::ALT,
+        ] {
+            assert!(!navigates(&keyboard::Key::Named(Named::Tab), modifiers));
+        }
+    }
+
+    /// Lay out `element` in a 400 by 300 window with fresh state.
+    fn laid_out(element: &mut Element<'_, Message>) -> (Tree, layout::Node) {
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, 14.0.into());
+        let mut tree = Tree::new(&*element);
+        let node = element.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(400.0, 300.0)),
+        );
+        (tree, node)
+    }
+    /// Run an operation on a laid-out element, and the ones it chains.
+    fn run(
+        element: &mut Element<'_, Message>,
+        tree: &mut Tree,
+        node: &layout::Node,
+        operation: Box<dyn Operation>,
+    ) {
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, 14.0.into());
+        let mut next = Some(operation);
+        while let Some(mut operation) = next.take() {
+            element
+                .as_widget_mut()
+                .operate(tree, Layout::new(node), &renderer, operation.as_mut());
+            if let widget::operation::Outcome::Chain(chained) = operation.finish() {
+                next = Some(chained);
+            }
+        }
+    }
+    /// Each button's focus, in order: (focused, ringed).
+    fn focuses(tree: &Tree) -> Vec<(bool, bool)> {
+        tree.children
+            .iter()
+            .map(|child| {
+                let focus = child.state.downcast_ref::<Focus>();
+                (focus.focused, focus.ringed())
+            })
+            .collect()
+    }
+    fn three() -> Element<'static, Message> {
+        iced::widget::column![
+            button("one", "One", Some(Message::ShowAdd), false),
+            button("two", "Two", Some(Message::ShowAdd), false),
+            button("three", "Three", Some(Message::ShowAdd), false),
+        ]
+        .into()
+    }
+
+    /// A control's fresh widget state is its own: the focus an operation
+    /// gives it before the next rebuild survives that rebuild. (It used to
+    /// be dropped there, as if it were another control's, which lost the
+    /// focus Enter had just put into a menu.)
+    #[test]
+    fn a_focus_given_to_fresh_state_survives_the_next_rebuild() {
+        let mut element = three();
+        let (mut tree, node) = laid_out(&mut element);
+        run(
+            &mut element,
+            &mut tree,
+            &node,
+            Box::new(widget::operation::focusable::focus::<()>(widget::Id::from(
+                "two",
+            ))),
+        );
+        element.as_widget().diff(&mut tree);
+        assert_eq!(
+            focuses(&tree),
+            [(false, false), (true, true), (false, false)]
+        );
+    }
+
+    /// The pointer's focus is marked on whatever state the control has when
+    /// the operation runs — fresh state, after a click that moved it,
+    /// included — and nothing else keeps a focus.
+    #[test]
+    fn the_pointer_focus_is_quiet_wherever_the_control_now_is() {
+        let mut element = three();
+        let (mut tree, node) = laid_out(&mut element);
+        tree.children[0].state.downcast_mut::<Focus>().focused = true;
+        run(
+            &mut element,
+            &mut tree,
+            &node,
+            Box::new(PointerFocus(widget::Id::from("three"))),
+        );
+        assert_eq!(
+            focuses(&tree),
+            [(false, false), (false, false), (true, false)]
+        );
+        // A key that moves or uses the focus shows the ring again.
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, 14.0.into());
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        element.as_widget_mut().update(
+            &mut tree,
+            &press(keyboard::Key::Named(keyboard::key::Named::ArrowDown), false),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(Size::new(400.0, 300.0)),
+        );
+        assert_eq!(focuses(&tree)[2], (true, true));
+    }
+
+    /// A text field the click has already focused keeps its caret and its
+    /// selection: the pointer's focus does not focus it again, which would
+    /// put the caret at the end of the draft.
+    #[test]
+    fn the_pointer_focus_leaves_a_focused_field_as_the_click_left_it() {
+        #[derive(Default)]
+        struct Field {
+            focused: bool,
+            focus_calls: usize,
+        }
+        impl widget::operation::Focusable for Field {
+            fn is_focused(&self) -> bool {
+                self.focused
+            }
+            fn focus(&mut self) {
+                self.focused = true;
+                self.focus_calls += 1;
+            }
+            fn unfocus(&mut self) {
+                self.focused = false;
+            }
+        }
+        let id = widget::Id::from("draft");
+        let mut operation = PointerFocus(id.clone());
+        let mut clicked = Field {
+            focused: true,
+            ..Field::default()
+        };
+        operation.focusable(Some(&id), Rectangle::default(), &mut clicked);
+        assert!(clicked.focused);
+        assert_eq!(clicked.focus_calls, 0, "already focused: left alone");
+        let mut moved = Field::default();
+        operation.focusable(Some(&id), Rectangle::default(), &mut moved);
+        assert!(moved.focused, "fresh state is focused");
+        let mut other = Field {
+            focused: true,
+            ..Field::default()
+        };
+        operation.focusable(
+            Some(&widget::Id::from("elsewhere")),
+            Rectangle::default(),
+            &mut other,
+        );
+        assert!(!other.focused, "one focus at a time");
+    }
+
+    /// Tab steps from the focus to the next control, and leaves nothing
+    /// else focused: a second focus — a field that focused itself where a
+    /// click could not reach the rest — is not left behind with a ring.
+    #[test]
+    fn tab_leaves_one_focus_even_where_two_were() {
+        let mut element = three();
+        let (mut tree, node) = laid_out(&mut element);
+        for at in [0, 1] {
+            tree.children[at].state.downcast_mut::<Focus>().focused = true;
+        }
+        run(
+            &mut element,
+            &mut tree,
+            &node,
+            Box::new(Count {
+                forward: true,
+                total: 0,
+                focused: None,
+            }),
+        );
+        assert_eq!(
+            focuses(&tree),
+            [(false, false), (false, false), (true, true)]
+        );
+        // Past the end, nothing; then the first again. Backwards likewise.
+        for (forward, expected) in [
+            (true, [(false, false), (false, false), (false, false)]),
+            (true, [(true, true), (false, false), (false, false)]),
+            (false, [(false, false), (false, false), (false, false)]),
+            (false, [(false, false), (false, false), (true, true)]),
+            (false, [(false, false), (true, true), (false, false)]),
+        ] {
+            run(
+                &mut element,
+                &mut tree,
+                &node,
+                Box::new(Count {
+                    forward,
+                    total: 0,
+                    focused: None,
+                }),
+            );
+            assert_eq!(focuses(&tree), expected, "forward={forward}");
+        }
+    }
+
+    /// A focused control that can no longer be pressed lets the focus go,
+    /// and its ring with it: nothing could move a focus on from there.
+    #[test]
+    fn a_control_that_becomes_disabled_loses_its_focus_and_ring() {
+        let enabled = button("reconnect", "Reconnect here", Some(Message::ShowAdd), false);
+        let mut tree = Tree::new(&enabled);
+        tree.state.downcast_mut::<Focus>().focused = true;
+        enabled.as_widget().diff(&mut tree);
+        assert!(tree.state.downcast_ref::<Focus>().focused);
+        let disabled = button("reconnect", "Reconnecting…", None, false);
+        disabled.as_widget().diff(&mut tree);
+        assert!(!tree.state.downcast_ref::<Focus>().focused);
+    }
+
+    /// One key, one action: Enter that a widget before the button already
+    /// took (a field sending its words) does not press the button too.
+    #[test]
+    fn a_key_already_taken_does_not_press_a_focused_button() {
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, 14.0.into());
+        let mut element = button("add", "Add project", Some(Message::ShowAdd), false);
+        let (mut tree, node) = laid_out(&mut element);
+        tree.state.downcast_mut::<Focus>().focused = true;
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        shell.capture_event();
+        element.as_widget_mut().update(
+            &mut tree,
+            &press(keyboard::Key::Named(keyboard::key::Named::Enter), false),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(Size::new(400.0, 300.0)),
+        );
+        drop(shell);
+        assert!(messages.is_empty(), "{messages:?}");
+    }
+
+    /// A label inside a row — a status chip, say — is read, not pressed:
+    /// a press on it is the row's, which takes the pointer's focus.
+    #[test]
+    fn a_press_on_a_label_in_a_row_is_the_rows() {
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, 14.0.into());
+        let chip: Element<'_, Message> = Control {
+            content: iced::widget::Space::new().width(60).height(16).into(),
+            semantic: Semantic {
+                role: accesskit::Role::Label,
+                ..Semantic::button("chip".into(), "Running".into(), None)
+            },
+            button: false,
+        }
+        .into();
+        let mut element = custom(
+            "row",
+            "A session",
+            chip,
+            Some(Message::ShowAdd),
+            false,
+            Kind::Quiet,
+            [0, 0],
+        );
+        let (mut tree, node) = laid_out(&mut element);
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        element.as_widget_mut().update(
+            &mut tree,
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            Layout::new(&node),
+            mouse::Cursor::Available(iced::Point::new(5.0, 5.0)),
+            &renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(Size::new(400.0, 300.0)),
+        );
+        drop(shell);
+        assert!(
+            matches!(messages.as_slice(), [Message::Pressed(id)] if id == "row"),
+            "{messages:?}"
+        );
+    }
+
     #[test]
     fn reordering_session_controls_does_not_transfer_keyboard_focus_to_another_agent() {
         let first = button("session-one", "First", Some(Message::ShowAdd), false);

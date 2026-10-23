@@ -1007,7 +1007,7 @@ impl App {
             },
             ..c.overlay_style()
         });
-        iced::widget::hover(
+        crate::controls::hover(
             base,
             container(reply)
                 .width(Fill)

@@ -3,6 +3,12 @@
 //! PreToolUse the file paths an `apply_patch` names are read from the tool
 //! input and leased, and a patch on a file another agent holds is refused.
 //! Only those paths leave this process; the tool input itself never does.
+//!
+//! A subagent's start and stop are its conversation's activity, never an
+//! agent of their own; `SessionEnd` ends a plain terminal session as Claude
+//! Code's does, and leaves every other kind to its own lifecycle. The
+//! `turn_id` Codex adds to turn-scoped events is not read: nothing here is
+//! kept between hooks to compare it with.
 
 use std::path::PathBuf;
 
@@ -40,6 +46,20 @@ impl Input {
     fn is_root(&self) -> bool {
         self.agent_id.is_none() && self.agent_type.is_none()
     }
+
+    /// Whether the event is the root conversation's to report. A
+    /// subagent's start and stop name the subagent (`agent_id`,
+    /// `agent_type`) but are its parent's events, with the parent's
+    /// session: they report the parent's activity and nothing else.
+    fn speaks_for_root(&self) -> bool {
+        self.is_root() || subagent_event(&self.hook_event_name)
+    }
+}
+
+/// A subagent starting or finishing: the parent conversation's activity,
+/// never a receiver's start, an inbox read or an agent of its own.
+fn subagent_event(event: &str) -> bool {
+    matches!(event, "SubagentStart" | "SubagentStop")
 }
 
 pub(super) fn activity(event: &str) -> Option<ReportedActivity> {
@@ -47,6 +67,11 @@ pub(super) fn activity(event: &str) -> Option<ReportedActivity> {
         "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PreCompact" | "PostCompact" => {
             Some(ReportedActivity::Working)
         }
+        // The conversation is at work while its subagents run, and takes a
+        // finished one's result next; its own Stop says when it is done.
+        // Between them the subagents' own hooks are theirs, not the
+        // conversation's, so these keep a long multi-agent turn reported.
+        "SubagentStart" | "SubagentStop" => Some(ReportedActivity::Working),
         // Stop is a stop attempt: another hook can continue the turn. A later
         // tool/prompt report supersedes it, and every observation expires.
         "Stop" | "Interrupt" => Some(ReportedActivity::Idle),
@@ -61,7 +86,7 @@ pub(super) async fn report<B: Backend>(
     process_started_at: chrono::DateTime<Utc>,
     observed_at: chrono::DateTime<Utc>,
 ) -> Result<Option<AgentRecord>> {
-    if !input.is_root() {
+    if !input.speaks_for_root() {
         return Ok(None);
     }
     let activity = activity(&input.hook_event_name);
@@ -84,8 +109,12 @@ pub(super) async fn report<B: Backend>(
         })
         .await?
     {
-        Response::Agent { agent } => agent,
-        Response::Error {
+        Response::Agent { agent } if agent.status.is_live() => agent,
+        // A namesake that has ended — this process's conversation before a
+        // `/clear` ended it, or an earlier process that had this pid — is
+        // history, not this session: register as if there were none.
+        Response::Agent { .. }
+        | Response::Error {
             code: agentdocker_core::ErrorCode::NotFound,
             ..
         } => {
@@ -182,7 +211,7 @@ async fn finish_report<B: Backend>(
     observed_at: chrono::DateTime<Utc>,
 ) -> Result<Option<AgentRecord>> {
     ensure!(
-        input.is_root()
+        input.speaks_for_root()
             && agent.status.is_live()
             && agent.pid == Some(pid)
             && agent.process_started_at == Some(process_started_at)
@@ -216,6 +245,7 @@ async fn finish_report<B: Backend>(
                 activity,
                 observed_at,
                 reason: None,
+                detail: None,
                 source: None,
             },
         })
@@ -237,7 +267,7 @@ async fn report_keyed<B: Backend>(
     observed_at: chrono::DateTime<Utc>,
 ) -> Result<Option<AgentRecord>> {
     ensure!(
-        input.is_root()
+        input.speaks_for_root()
             && agent.status.is_live()
             && agent.keyed_only()
             && agent.spec.labels.get("session_id") == Some(&input.session_id),
@@ -253,6 +283,7 @@ async fn report_keyed<B: Backend>(
                 activity,
                 observed_at,
                 reason: None,
+                detail: None,
                 source: None,
             },
         })
@@ -284,14 +315,19 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     // stdin is a provider-owned pipe. Poll before every read, with bounded
     // retained bytes; a malformed or never-closed stream cannot hang a turn.
     let input = read_input(0, std::time::Duration::from_secs(1))?;
-    if !input.is_root() {
+    if !input.speaks_for_root() {
         return Ok(());
     }
     // A folder the person took off AgentDocker's list is left alone.
     if agentdocker_host::coordination::excluded(&agentdocker_host::dirs::home(), &input.cwd) {
         return Ok(());
     }
-    if activity(&input.hook_event_name).is_none() && input.hook_event_name != "SessionStart" {
+    if activity(&input.hook_event_name).is_none()
+        && !matches!(
+            input.hook_event_name.as_str(),
+            "SessionStart" | "SessionEnd"
+        )
+    {
         return Ok(());
     }
     let observed_at = Utc::now();
@@ -328,6 +364,22 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     }
     let started_at =
         agentdocker_host::procinfo::start_time(pid).context("cannot verify Codex process birth")?;
+    if input.hook_event_name == "SessionEnd" {
+        // Only a plain terminal session leaves with its conversation. One
+        // whose hooks run in the shared app-server has a receiver or a key
+        // of its own, and a launched one its supervisor: their lifecycle is
+        // theirs, and nothing is registered or attached just to end it.
+        if !plain_codex_host(&table, pid) {
+            return Ok(());
+        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(4),
+            end_session(client, &input, pid, started_at),
+        )
+        .await
+        .context("session end exceeded the four-second hook budget")??;
+        return Ok(());
+    }
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
     let mut emission_agent = None;
     // A terminal conversation's hooks deliver through its queue directly: the
@@ -382,6 +434,12 @@ pub(super) async fn run(client: &Client) -> Result<()> {
             report(client, &input, pid, started_at, observed_at).await?
         };
         emission_agent = agent.as_ref().map(|a| a.id.to_string());
+        // A subagent's start and stop report and nothing more: what a hook
+        // answers there reaches the subagent, and the conversation's inbox
+        // and receiver are its own root events' to serve.
+        if subagent_event(&input.hook_event_name) {
+            return Ok(Delivery::empty());
+        }
         if input.hook_event_name == "PreToolUse"
             && let Some(agent) = &agent
             && let Some(denied) = claim_edits(client, &input, agent).await?
@@ -442,6 +500,93 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     .await
     .context("coordination exceeded the four-second hook budget")??;
     deliver(client, emission_agent.as_deref(), delivery, 1, deadline).await
+}
+
+/// Whether the hook's host is a `codex` command itself, its hooks run
+/// under it: not the shared or a dedicated app-server, whose conversations
+/// have their own receivers and keys.
+fn plain_codex_host(table: &[agentdocker_host::procinfo::Process], pid: u32) -> bool {
+    table.iter().find(|p| p.pid == pid).is_some_and(|p| {
+        agentdocker_host::procinfo::runtime_of(&p.argv) == Some("codex")
+            && !agentdocker_host::procinfo::detached_codex_app_server(&p.argv)
+            && !p.argv.iter().any(|arg| arg == "app-server")
+    })
+}
+
+/// Whether `agent` is this hook's plain terminal session: the record its
+/// hooks keep for this very process (pid, birth, checkout, conversation),
+/// launched by nobody, known by more than its key, with no input receiver
+/// bound to it — a binding is made before the receiver's first report —
+/// and none that has reported for this process. Those others keep their
+/// own lifecycle.
+fn plain_session(
+    agent: &AgentRecord,
+    input: &Input,
+    pid: u32,
+    process_started_at: chrono::DateTime<Utc>,
+    checkout: &std::path::Path,
+) -> bool {
+    agent.status.is_live()
+        && !agent.managed
+        && !agent.keyed_only()
+        && !agentdocker_host::provider_input::is_codex_input(agent)
+        && agent.input_binding.is_none()
+        && agent.pid == Some(pid)
+        && agent.process_started_at == Some(process_started_at)
+        && agent.spec.runtime == "codex"
+        && agent.spec.labels.get("session_id") == Some(&input.session_id)
+        && agent
+            .spec
+            .workdir
+            .as_ref()
+            .and_then(|p| p.canonicalize().ok())
+            .as_deref()
+            == Some(checkout)
+        && agent
+            .input_delivery
+            .as_ref()
+            .is_none_or(|delivery| Some(delivery.process_started_at) != agent.process_started_at)
+}
+
+/// A plain terminal session's conversation ended: give back every lease
+/// it holds and leave, as Claude Code's `SessionEnd` does. Nothing for a
+/// record that is not that session; nothing is registered to end it. True
+/// when it left.
+async fn end_session<B: Backend>(
+    backend: &B,
+    input: &Input,
+    pid: u32,
+    process_started_at: chrono::DateTime<Utc>,
+) -> Result<bool> {
+    if !input.is_root() || input.hook_event_name != "SessionEnd" {
+        return Ok(false);
+    }
+    let Ok(checkout) = input.cwd.canonicalize() else {
+        return Ok(false);
+    };
+    let agent = match backend
+        .call(Request::Inspect {
+            agent: format!("codex-{pid}"),
+        })
+        .await?
+    {
+        Response::Agent { agent } => agent,
+        _ => return Ok(false),
+    };
+    if !plain_session(&agent, input, pid, process_started_at, &checkout) {
+        return Ok(false);
+    }
+    super::release_held(backend, &agent, None, false).await?;
+    match backend
+        .call(Request::Deregister {
+            agent: agent.id.to_string(),
+        })
+        .await?
+    {
+        Response::Agent { .. } | Response::Ok => Ok(true),
+        Response::Error { message, .. } => bail!("deregistration refused: {message}"),
+        _ => bail!("unexpected deregistration response"),
+    }
 }
 
 /// Lease the files a Codex patch is about to change, as the Claude Code hook
@@ -609,6 +754,7 @@ async fn deliver<B: Backend>(
                         activity: ReportedActivity::Working,
                         observed_at: Utc::now(),
                         reason: None,
+                        detail: None,
                         source: None,
                     },
                 }),
@@ -1184,6 +1330,237 @@ mod tests {
         let backend = Mock::with(vec![Response::Agent { agent: record }]);
         assert!(report(&backend, &other, 42, now, now).await.is_err());
         assert_eq!(backend.requests().len(), 1);
+    }
+
+    fn session_record(checkout: &std::path::Path, now: chrono::DateTime<Utc>) -> AgentRecord {
+        let mut record = AgentRecord::new(
+            AgentSpec {
+                name: "codex-42".into(),
+                runtime: "codex".into(),
+                workdir: Some(checkout.to_owned()),
+                labels: [("session_id".into(), "fixture".into())].into(),
+                ..AgentSpec::default()
+            },
+            false,
+            now,
+        );
+        record.pid = Some(42);
+        record.process_started_at = Some(now);
+        record.status = agentdocker_core::AgentStatus::Running;
+        record
+    }
+
+    /// A subagent's start and stop carry the subagent's own `agent_id` and
+    /// `agent_type` but the parent's session: they report the parent's
+    /// activity, on the parent's record, and do nothing else — no inbox,
+    /// no receiver, no record of their own.
+    #[tokio::test]
+    async fn a_subagent_starting_or_stopping_is_its_conversation_at_work() {
+        assert_eq!(activity("SubagentStart"), Some(ReportedActivity::Working));
+        assert_eq!(activity("SubagentStop"), Some(ReportedActivity::Working));
+        assert_eq!(activity("SessionEnd"), None);
+        let checkout = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let record = session_record(checkout.path(), now);
+        for event in ["SubagentStart", "SubagentStop"] {
+            let input: Input = serde_json::from_value(json!({
+                "hook_event_name": event, "session_id": "fixture", "cwd": checkout.path(),
+                "agent_id": "child", "agent_type": "worker", "turn_id": "turn-1",
+                "model": "fixture", "permission_mode": "default",
+            }))
+            .unwrap();
+            assert!(!input.is_root() && input.speaks_for_root());
+            let backend = Mock::with(vec![
+                Response::Agent {
+                    agent: record.clone(),
+                },
+                Response::Ok,
+                Response::Ok,
+            ]);
+            let reported = report(&backend, &input, 42, now, now)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(reported.id, record.id);
+            let calls = backend.requests();
+            assert_eq!(calls.len(), 3, "{event}: {calls:?}");
+            assert!(
+                !calls
+                    .iter()
+                    .any(|call| matches!(call, Request::Register { .. }))
+            );
+            assert!(
+                matches!(&calls[2], Request::ReportActivity { agent, observation }
+                if agent == record.id.as_str() && observation.activity == ReportedActivity::Working)
+            );
+            let delivery = prepare(&backend, &input, record.id.to_string())
+                .await
+                .unwrap();
+            assert_eq!(delivery.output, json!({}));
+            assert!(delivery.acknowledgement.is_none());
+            assert_eq!(backend.requests().len(), 3, "the inbox is not read");
+        }
+    }
+
+    /// A plain terminal session ends with its conversation: every lease
+    /// back, and the record leaves. A launched session, one with a
+    /// receiver of its own, another conversation or another process keeps
+    /// its own lifecycle, and nothing is registered to end anything.
+    #[tokio::test]
+    async fn session_end_ends_only_a_plain_terminal_session() {
+        let checkout = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let record = session_record(checkout.path(), now);
+        let end: Input = serde_json::from_value(json!({
+            "hook_event_name": "SessionEnd", "session_id": "fixture", "cwd": checkout.path(),
+            "reason": "other", "transcript_path": null,
+        }))
+        .unwrap();
+        let mut ended = record.clone();
+        ended.status = agentdocker_core::AgentStatus::Exited { code: None };
+        let backend = Mock::with(vec![
+            Response::Agent {
+                agent: record.clone(),
+            },
+            Response::Leases { leases: vec![] },
+            Response::Agent { agent: ended },
+        ]);
+        assert!(end_session(&backend, &end, 42, now).await.unwrap());
+        let calls = backend.requests();
+        assert_eq!(calls.len(), 3);
+        assert!(matches!(&calls[0], Request::Inspect { agent } if agent == "codex-42"));
+        assert!(
+            matches!(&calls[1], Request::ReleaseAll { agent, only_automatic: false, .. }
+            if agent == record.id.as_str())
+        );
+        assert!(matches!(&calls[2], Request::Deregister { agent } if agent == record.id.as_str()));
+
+        let mut managed = record.clone();
+        managed.managed = true;
+        let mut received = record.clone();
+        received.input_delivery = Some(agentdocker_core::InputDelivery {
+            process_started_at: now,
+            paused: false,
+            pause_reason: None,
+            reported_at: now,
+            received: None,
+            received_at: None,
+            typing_until: None,
+        });
+        let mut other_session = record.clone();
+        other_session
+            .spec
+            .labels
+            .insert("session_id".into(), "another".into());
+        let mut other_process = record.clone();
+        other_process.process_started_at = Some(now - chrono::Duration::hours(1));
+        let mut finished = record.clone();
+        finished.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        // A receiver binds before it first reports: bound, with no
+        // delivery report yet, is still a receiver's session.
+        let mut bound = record.clone();
+        bound.input_binding = Some(agentdocker_core::InputBinding {
+            provider: agentdocker_core::ProviderGeneration {
+                process: agentdocker_core::ProcessIdentity {
+                    pid: 42,
+                    started_at: now,
+                },
+                session: "fixture".into(),
+                profile: "/profile".into(),
+            },
+            controller: agentdocker_core::ProcessIdentity {
+                pid: 43,
+                started_at: now,
+            },
+            controller_since: now,
+            token_sha256: "fixture".into(),
+            bound_at: now,
+            controller_generations: 1,
+            uncertain: vec![],
+            launch: None,
+            restart: Default::default(),
+        });
+        assert!(bound.input_delivery.is_none());
+        for kept in [
+            managed,
+            received,
+            bound,
+            other_session,
+            other_process,
+            finished,
+        ] {
+            let backend = Mock::with(vec![Response::Agent { agent: kept }]);
+            assert!(!end_session(&backend, &end, 42, now).await.unwrap());
+            assert_eq!(backend.requests().len(), 1, "only the lookup");
+        }
+        let backend = Mock::with(vec![Response::error(
+            agentdocker_core::ErrorCode::NotFound,
+            "no such agent",
+        )]);
+        assert!(!end_session(&backend, &end, 42, now).await.unwrap());
+        assert_eq!(backend.requests().len(), 1);
+        // A subagent's event is never its conversation's end.
+        let mut child = input("SessionEnd");
+        child.agent_id = Some("child".into());
+        let backend = Mock::default();
+        assert!(!end_session(&backend, &child, 42, now).await.unwrap());
+        assert!(backend.requests().is_empty());
+    }
+
+    /// After `/clear` ended a terminal conversation its record has left;
+    /// the next conversation in the same process registers afresh rather
+    /// than being refused for its ended namesake.
+    #[tokio::test]
+    async fn an_ended_namesake_does_not_stop_the_next_conversation_registering() {
+        let checkout = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let mut ended = session_record(checkout.path(), now);
+        ended.status = agentdocker_core::AgentStatus::Exited { code: None };
+        let mut next = session_record(checkout.path(), now);
+        next.spec.labels.insert("session_id".into(), "next".into());
+        let backend = Mock::with(vec![
+            Response::Agent { agent: ended },
+            Response::Agent {
+                agent: next.clone(),
+            },
+            Response::Ok,
+        ]);
+        let start = Input {
+            session_id: "next".into(),
+            cwd: checkout.path().to_owned(),
+            ..input("SessionStart")
+        };
+        let registered = report(&backend, &start, 42, now, now)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(registered.id, next.id);
+        assert!(
+            matches!(&backend.requests()[1], Request::Register { spec, pid: Some(42), .. }
+            if spec.labels.get("session_id").is_some_and(|s| s == "next"))
+        );
+    }
+
+    #[test]
+    fn only_a_codex_command_is_a_plain_terminal_host() {
+        use agentdocker_host::procinfo::Process;
+        let host = |args: &[&str]| {
+            vec![Process {
+                pid: 42,
+                ppid: 1,
+                argv: args.iter().map(|s| s.to_string()).collect(),
+            }]
+        };
+        assert!(plain_codex_host(&host(&["codex"]), 42));
+        assert!(plain_codex_host(&host(&["codex", "--no-alt-screen"]), 42));
+        for shared in [
+            vec!["codex", "app-server", "--managed-daemon"],
+            vec!["codex", "app-server", "--listen", "ws://127.0.0.1:1"],
+            vec!["python3", "trial.py"],
+        ] {
+            assert!(!plain_codex_host(&host(&shared), 42), "{shared:?}");
+        }
+        assert!(!plain_codex_host(&host(&["codex"]), 7));
     }
 
     #[tokio::test]
