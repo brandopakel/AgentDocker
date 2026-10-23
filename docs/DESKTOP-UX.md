@@ -238,7 +238,8 @@ A project's row in the rail shows its loudest agent's chip — *Needs you*
 counts the agents that need you when more than one does (*Needs you · 2*) —
 and its name in semibold when something there is new; how many agents run is
 not shown on the row, since it is not a reason to look (the project tile's
-tooltip gives the folder and how many are live or new). A project with no
+tooltip, and its accessible name, give the folder and how many are live or
+new; the row's ⋯ menu does not repeat the folder). A project with no
 live agent shows no chip. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
@@ -623,7 +624,8 @@ Project tabs provide:
   input, cache read, cache write and output — and, on a wide window, a share
   bar per row: input, cache read, cache write, output and reasoning
   tokens, each shown only where samples said (`~` where some did not, `—`
-  where none did; the mark's meaning is the count's tooltip, with no legend)
+  where none did; the mark's meaning is the count's tooltip and, for a
+  screen reader, its value, with no legend)
   and never as an invented zero. There is no heading (the More tab names
   the screen): the window and the grouping are the two tracks, which are
   the range, and beside them a chip says where collection stands
@@ -632,8 +634,8 @@ Project tabs provide:
   overhead AgentDocker injected — *not measured yet* until it is — as its
   detail. What the totals do not cover — the current hour still filling,
   history retained only since a day, gaps in the sources (lower bounds), the
-  tracking storage limit — is each total's tooltip, after what its mark
-  means. Nothing sits under the table. A window with nothing reported reads
+  tracking storage limit — is each total's tooltip and accessible value,
+  after what its mark means. Nothing sits under the table. A window with nothing reported reads
   *No usage*. Collection is off until `agentd.toml` enables it; the screen
   then shows the empty mark and the *Collection off* chip rather than an
   empty table. A failed read keeps the last report with the failure beside

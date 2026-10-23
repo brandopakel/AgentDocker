@@ -373,8 +373,9 @@ control does, its id or its accessible label:
   overhead its detail), then four totals, then one framed table with
   sentence-case headers and right-aligned numbers (a share bar from 1180
   points wide); nothing under the table and no legend, since a marked count
-  says what its mark means on its tooltip and a total also what the totals
-  do not cover.
+  says what its mark means on its tooltip and as its accessible value (a
+  `Label` node named by the count, as a chip's detail is), and a total
+  also what the totals do not cover.
 - **Messages** (`app/messages.rs`, helpers in `app/messages/look.rs`). The
   conversation list is the project chats — each project's chat on its project
   monogram, named for the project, opening that project's Chat — then, under

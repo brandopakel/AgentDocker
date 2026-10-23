@@ -1624,7 +1624,14 @@ impl App {
         .spacing(1)
         .width(Fill);
         let label = container(label).width(Fill).clip(true);
-        let mut content = row![hint(monogram(&name, &seed, 20.0, r), hint_text, c), label]
+        // The mark says the same to a reader as on the pointer: the folder
+        // is said nowhere else in the rail or the row's menu.
+        let mark = said(
+            format!("project-mark-{}", path.display()),
+            hint_text.clone(),
+            monogram(&name, &seed, 20.0, r),
+        );
+        let mut content = row![hint(mark, hint_text, c), label]
             .spacing(6)
             .width(Fill)
             .align_y(Center);
@@ -5299,8 +5306,17 @@ mod tests {
                 .is_some()
         );
         assert!(!menu.reads("Empty goes back"));
-        // The folder is the row mark's tooltip, not the menu's foot.
+        // The folder is the row mark's, on the pointer and to a reader,
+        // not the menu's foot.
         assert!(!menu.texts.iter().any(|t| t.contains("/fixture/alpha")));
+        let shared = std::collections::BTreeSet::new();
+        let row = seen(app.project_row(&entry, &shared, true, c));
+        assert_eq!(
+            row.control(&format!("project-mark-{key}"))
+                .map(|m| m.1.as_str()),
+            Some("/fixture/alpha"),
+            "the mark names its folder without the pointer"
+        );
         app.shell.project_rename = None;
         let menu = seen(app.project_menu(&entry, c));
         assert!(menu.control(&format!("project-remove-{key}")).is_some());

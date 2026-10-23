@@ -10,7 +10,8 @@ use super::icons::{Icon, icon};
 use super::style::{Colors, weight};
 use super::view::{empty, eyebrow, icon_tile, logo_tile, note, rule, segmented, small, tip};
 use super::*;
-use crate::controls::{Kind, custom};
+use crate::accessibility::Semantic;
+use crate::controls::{Control, Kind, custom};
 use agentdocker_core::usage::report::{CollectionState, CounterReports, Group, Report, Row};
 use agentdocker_core::usage::{CounterReport, Coverage};
 use iced::{
@@ -179,16 +180,37 @@ fn mark_meaning(shown: &str) -> Option<&'static str> {
     }
 }
 
-/// A count as drawn, with what its mark means on the pointer.
-fn marked<'a>(
+/// A count as drawn, said whole: when it has more to say than its
+/// figure, it is a node of its own named by the count, whose value is
+/// that detail — what its mark means and, for a total, what the totals do
+/// not cover — as a chip's is, and the same words are on the pointer. A
+/// complete, whole count is its text alone.
+fn counted<'a>(
+    id: String,
     shown: String,
+    detail: Option<String>,
     content: impl Into<Element<'a, Message>>,
     c: Colors,
 ) -> Element<'a, Message> {
-    match mark_meaning(&shown) {
-        Some(meaning) => tip(content, meaning, c),
-        None => content.into(),
+    let Some(detail) = detail else {
+        return content.into();
+    };
+    let node: Element<'a, Message> = Control {
+        content: content.into(),
+        semantic: Semantic {
+            role: accesskit::Role::Label,
+            value: Some(detail.clone()),
+            ..Semantic::button(id, shown, None)
+        },
+        button: false,
     }
+    .into();
+    tip(node, detail, c)
+}
+
+/// A counter's name as part of a node id: `Cache read` is `cache-read`.
+fn slug(label: &str) -> String {
+    label.to_lowercase().replace(' ', "-")
 }
 
 /// A total's tooltip: what its mark means, then what the totals do not
@@ -428,7 +450,13 @@ impl App {
                     counts = counts.push(
                         column![small(label, c), {
                             let shown = counter(pick(&row_.counters));
-                            marked(shown.clone(), text(shown).size(13).color(c.text), c)
+                            counted(
+                                format!("usage-count-{index}-{}", slug(label)),
+                                shown.clone(),
+                                mark_meaning(&shown).map(str::to_owned),
+                                text(shown).size(13).color(c.text),
+                                c,
+                            )
                         }]
                         .spacing(2)
                         .width(124)
@@ -474,7 +502,8 @@ impl App {
                 table = table.push(rule(c));
             }
             table = table.push(
-                container(self.usage_row(row_, report.by, bars.then_some(all), c)).padding([9, 0]),
+                container(self.usage_row(index, row_, report.by, bars.then_some(all), c))
+                    .padding([9, 0]),
             );
         }
         container(table)
@@ -541,15 +570,22 @@ impl App {
 
     fn usage_row(
         &self,
+        index: usize,
         row_: &Row,
         by: Group,
         share_of: Option<u64>,
         c: Colors,
     ) -> Element<'_, Message> {
-        let cell = |value: String, width: f32| {
-            container(marked(value.clone(), text(value).size(13).color(c.text), c))
-                .width(width)
-                .align_x(iced::alignment::Horizontal::Right)
+        let cell = |label: &str, value: String, width: f32| {
+            container(counted(
+                format!("usage-count-{index}-{}", slug(label)),
+                value.clone(),
+                mark_meaning(&value).map(str::to_owned),
+                text(value).size(13).color(c.text),
+                c,
+            ))
+            .width(width)
+            .align_x(iced::alignment::Horizontal::Right)
         };
         let mut line = row![
             row![
@@ -593,8 +629,8 @@ impl App {
                 .width(SAMPLES)
                 .align_x(iced::alignment::Horizontal::Right),
         );
-        for (_, pick) in COUNTERS {
-            line = line.push(cell(counter(pick(&row_.counters)), NUMBER));
+        for (label, pick) in COUNTERS {
+            line = line.push(cell(label, counter(pick(&row_.counters)), NUMBER));
         }
         line.into()
     }
@@ -628,14 +664,16 @@ fn choice<'a>(
 fn kpis<'a>(report: &Report, compact: bool, c: Colors) -> Element<'a, Message> {
     let caveats = coverage_line(report);
     let tile = |label: &str, value: String| -> Element<'a, Message> {
-        let figure = text(value.clone())
-            .size(22)
-            .font(weight(iced::font::Weight::Semibold))
-            .color(c.text);
-        let figure: Element<'a, Message> = match total_detail(&value, caveats.as_deref()) {
-            Some(detail) => tip(figure, detail, c),
-            None => figure.into(),
-        };
+        let figure = counted(
+            format!("usage-total-{}", slug(label)),
+            value.clone(),
+            total_detail(&value, caveats.as_deref()),
+            text(value)
+                .size(22)
+                .font(weight(iced::font::Weight::Semibold))
+                .color(c.text),
+            c,
+        );
         container(
             column![
                 text(label.to_owned())
@@ -1149,12 +1187,64 @@ mod tests {
         };
         let mut read = report(vec![row], CollectionState::CaughtUp, Some(1));
         read.by = Group::Model;
+        read.coverage.source_gaps = 2;
         app.usage = Some((root, read));
         let view = seen(app.usage_view(c));
         assert!(view.texts.iter().any(|t| t == "900~"));
         assert!(view.texts.iter().any(|t| t == "—"));
         assert!(!view.reads("partial coverage"), "no legend");
         assert!(!view.reads("not reported"), "no legend");
+        // Without the pointer, a reader hears each marked count with what
+        // its mark means, and each total with what the totals do not cover:
+        // in the cards a narrow window draws and in the wide table alike.
+        let said = |view: &crate::app::view::testing::Seen, id: &str| {
+            let node = view
+                .control(id)
+                .unwrap_or_else(|| panic!("a node for {id}"));
+            (node.1.clone(), node.2.clone().unwrap_or_default())
+        };
+        let mut at = |width: f32| {
+            app.shell.width = width;
+            app.panes.window_width(width);
+            seen(app.usage_view(c))
+        };
+        let (narrow, wide) = (at(800.0), at(1600.0));
+        assert!(narrow.texts.iter().any(|t| t == "2 samples"), "cards");
+        assert!(wide.texts.iter().any(|t| t == "Samples"), "the table");
+        for view in [&narrow, &wide] {
+            assert_eq!(
+                said(view, "usage-count-0-input"),
+                ("900~".to_owned(), "Partial coverage".to_owned())
+            );
+            assert_eq!(
+                said(view, "usage-count-0-cache-read"),
+                ("—".to_owned(), "Not reported".to_owned())
+            );
+            assert!(
+                view.control("usage-count-0-output").is_none(),
+                "a complete count is its text alone"
+            );
+            let (count, input) = said(view, "usage-total-input");
+            assert_eq!(count, "900~");
+            assert_eq!(
+                input,
+                "Partial coverage\nThe current hour is still filling\n2 gap(s) in the sources: lower bounds"
+            );
+            assert_eq!(
+                said(view, "usage-total-output"),
+                (
+                    "40".to_owned(),
+                    "The current hour is still filling\n2 gap(s) in the sources: lower bounds"
+                        .to_owned()
+                ),
+                "a complete total still carries what the totals do not cover"
+            );
+            assert_eq!(
+                said(view, "usage-total-cache-write").1.lines().next(),
+                Some("Not reported")
+            );
+        }
+
         assert_eq!(mark_meaning("900~"), Some("Partial coverage"));
         assert_eq!(mark_meaning("12.4K~"), Some("Partial coverage"));
         assert_eq!(mark_meaning("—"), Some("Not reported"));
