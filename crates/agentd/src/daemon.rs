@@ -55,6 +55,7 @@ mod contests;
 mod conversations;
 mod discovery;
 mod handoff;
+pub(crate) mod herdr;
 pub mod humans;
 mod images;
 mod inbox;

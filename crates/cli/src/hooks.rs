@@ -621,6 +621,7 @@ async fn report_hook_completion<B: Backend>(
                     observed_at,
                     reason,
                     detail,
+                    source: None,
                 },
             })
             .await

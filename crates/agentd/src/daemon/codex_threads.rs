@@ -259,6 +259,7 @@ impl Daemon {
             observed_at: now,
             reason,
             detail: None,
+            source: None,
         };
         if matches!(
             state.report_activity(id.as_str(), observation, now),
@@ -301,6 +302,7 @@ impl Daemon {
                     observed_at: now.max(at + chrono::Duration::milliseconds(1)),
                     reason: None,
                     detail: None,
+                    source: None,
                 },
                 now,
             );

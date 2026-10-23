@@ -1050,6 +1050,7 @@ impl<B: Backend> McpServer<B> {
                         observed_at: chrono::Utc::now(),
                         reason: None,
                         detail: None,
+                        source: None,
                     },
                 })
                 .await

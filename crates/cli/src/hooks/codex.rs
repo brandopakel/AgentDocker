@@ -246,6 +246,7 @@ async fn finish_report<B: Backend>(
                 observed_at,
                 reason: None,
                 detail: None,
+                source: None,
             },
         })
         .await?
@@ -283,6 +284,7 @@ async fn report_keyed<B: Backend>(
                 observed_at,
                 reason: None,
                 detail: None,
+                source: None,
             },
         })
         .await?
@@ -753,6 +755,7 @@ async fn deliver<B: Backend>(
                         observed_at: Utc::now(),
                         reason: None,
                         detail: None,
+                        source: None,
                     },
                 }),
             )
@@ -1442,6 +1445,7 @@ mod tests {
             reported_at: now,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         let mut other_session = record.clone();
         other_session

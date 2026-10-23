@@ -3992,6 +3992,7 @@ async fn a_wait_keeps_what_it_is_for_through_the_store() {
         observed_at: now,
         reason: Some(WaitReason::Permission),
         detail: Some("Bash: cargo\u{202E} test\nrm -rf target".into()),
+        source: None,
     };
     let mut events = daemon.subscribe_events();
     let mut state = lock(&daemon.state);
@@ -4121,6 +4122,7 @@ async fn a_password_in_a_wait_detail_is_never_kept_or_announced() {
                     observed_at: at,
                     reason: Some(WaitReason::Permission),
                     detail: Some(detail.clone()),
+                    source: None,
                 },
                 at,
             ),
@@ -4182,6 +4184,7 @@ async fn a_search_detail_keeps_only_the_tool_name() {
                     observed_at: at,
                     reason: Some(WaitReason::Permission),
                     detail: Some(sent.into()),
+                    source: None,
                 },
                 at,
             ),
@@ -4222,12 +4225,14 @@ async fn provider_activity_is_ordered_expires_and_commits_with_its_event() {
         observed_at: now - Duration::seconds(2),
         reason: None,
         detail: None,
+        source: None,
     };
     let idle = ActivityObservation {
         activity: ReportedActivity::Idle,
         observed_at: now - Duration::seconds(1),
         reason: None,
         detail: None,
+        source: None,
     };
     let mut events = daemon.subscribe_events();
     {
@@ -4873,6 +4878,7 @@ async fn failed_activity_write_publishes_no_state_or_event() {
                 observed_at: Utc::now(),
                 reason: None,
                 detail: None,
+                source: None,
             },
         })
         .await;
@@ -4908,6 +4914,7 @@ async fn delayed_idle_report_cannot_become_work_when_it_expires() {
             observed_at: now - Duration::seconds(299),
             reason: None,
             detail: None,
+            source: None,
         },
         now,
     );
@@ -4955,6 +4962,7 @@ async fn polling_does_not_turn_a_hooked_agents_idle_report_into_work() {
             observed_at: now - Duration::seconds(20),
             reason: None,
             detail: None,
+            source: None,
         },
         now,
     );

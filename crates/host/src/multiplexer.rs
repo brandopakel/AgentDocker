@@ -112,6 +112,36 @@ pub fn environment(pid: u32) -> Option<BTreeMap<String, String>> {
     platform::environment(pid)
 }
 
+/// herdr's API socket for a session, where herdr puts it: under the
+/// person's own home, `~/.config/herdr/herdr.sock` for the default
+/// session and `~/.config/herdr/sessions/<name>/herdr.sock` for a named
+/// one. `None` where there is no home, or for a name that is not a plain
+/// session name (empty, hidden, or a path), which names no socket.
+///
+/// A server started on a socket of its own (`HERDR_SOCKET_PATH`) is not
+/// followed: only the session's name is recorded with an agent.
+pub fn herdr_socket(session: Option<&str>) -> Option<std::path::PathBuf> {
+    let base = std::env::home_dir()?.join(".config").join("herdr");
+    herdr_socket_in(&base, session)
+}
+
+/// [`herdr_socket`] under a given herdr directory.
+pub fn herdr_socket_in(base: &Path, session: Option<&str>) -> Option<std::path::PathBuf> {
+    match session {
+        None => Some(base.join("herdr.sock")),
+        Some(name)
+            if !name.is_empty()
+                && !name.starts_with('.')
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)) =>
+        {
+            Some(base.join("sessions").join(name).join("herdr.sock"))
+        }
+        Some(_) => None,
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod platform {
     use super::*;
@@ -192,6 +222,32 @@ mod tests {
         assert_eq!(session.kind, "tmux");
         assert_eq!(session.evidence, Evidence::Ancestry, "weaker, and said so");
         assert_eq!(session.describe(), "tmux (ancestry)");
+    }
+
+    /// herdr's sockets live under the person's home, not AgentDocker's,
+    /// and only a plain session name reaches one.
+    #[test]
+    fn herdr_sockets_follow_its_session_names_and_refuse_paths() {
+        let base = Path::new("/home/me/.config/herdr");
+        assert_eq!(
+            herdr_socket_in(base, None).as_deref(),
+            Some(Path::new("/home/me/.config/herdr/herdr.sock"))
+        );
+        assert_eq!(
+            herdr_socket_in(base, Some("backend")).as_deref(),
+            Some(Path::new(
+                "/home/me/.config/herdr/sessions/backend/herdr.sock"
+            ))
+        );
+        for name in ["", "../x", "a/b", ".hidden", "a b", ".."] {
+            assert_eq!(herdr_socket_in(base, Some(name)), None, "{name:?}");
+        }
+        if let Some(home) = std::env::home_dir() {
+            assert_eq!(
+                herdr_socket(None),
+                Some(home.join(".config/herdr/herdr.sock"))
+            );
+        }
     }
 
     #[test]

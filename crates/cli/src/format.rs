@@ -205,8 +205,13 @@ pub fn event_line(event: &Event) -> String {
             format!("{} cancelled question {question}", agent.short())
         }
         EventKind::AgentActivityReported { agent, observation } => {
+            let by = match observation.source {
+                Some(agentdocker_core::ActivitySource::Herdr) => " (herdr)",
+                Some(agentdocker_core::ActivitySource::Other) => " (observed)",
+                None => "",
+            };
             format!(
-                "activity reported   {} {:?}",
+                "activity reported   {} {:?}{by}",
                 agent.short(),
                 observation.activity
             )
@@ -1535,6 +1540,29 @@ mod tests {
         let text = super::event_line(&event);
         assert!(!text.chars().any(char::is_control));
         assert!(text.contains("\\n"));
+    }
+
+    /// What herdr said of an agent is shown as herdr's, not as the
+    /// agent's own report.
+    #[test]
+    fn an_activity_herdr_observed_says_so() {
+        let line = |source| {
+            super::event_line(&agentdocker_core::Event::new(
+                agentdocker_core::EventKind::AgentActivityReported {
+                    agent: "a1b2c3d4e5f6".into(),
+                    observation: agentdocker_core::ActivityObservation {
+                        activity: agentdocker_core::ReportedActivity::Waiting,
+                        observed_at: chrono::Utc::now(),
+                        reason: Some(agentdocker_core::WaitReason::Other),
+                        detail: None,
+                        source,
+                    },
+                },
+                chrono::Utc::now(),
+            ))
+        };
+        assert!(line(None).ends_with(" Waiting"));
+        assert!(line(Some(agentdocker_core::ActivitySource::Herdr)).ends_with(" Waiting (herdr)"));
     }
 
     #[test]
