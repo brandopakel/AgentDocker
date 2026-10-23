@@ -831,6 +831,53 @@ fn a_hook_with_the_mark_is_never_chained() {
     }
 }
 
+/// Bringing an older hook of ours up to date writes nothing through a
+/// link somebody left in the hooks folder, under the name an earlier build
+/// used for its new copy or any other: the file it points at is unchanged,
+/// and the hook is a plain file holding our script.
+#[cfg(unix)]
+#[test]
+fn updating_our_hook_writes_through_no_link() {
+    let tmp = tempfile::tempdir().unwrap();
+    let hooks = tmp.path().join("hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    std::fs::write(
+        hooks.join("post-commit"),
+        hook_script(Path::new("/opt/agentdocker")),
+    )
+    .unwrap();
+    let sentinel = tmp.path().join("sentinel");
+    std::fs::write(&sentinel, "untouched\n").unwrap();
+    let planted = hooks.join("post-commit.agentdocker-new");
+    std::os::unix::fs::symlink(&sentinel, &planted).unwrap();
+    let script = hook_script(Path::new("/usr/local/bin/agentdocker"));
+    install_hook(&hooks, &script).unwrap();
+    assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "untouched\n");
+    let hook = hooks.join("post-commit");
+    assert!(std::fs::symlink_metadata(&hook).unwrap().is_file());
+    assert_eq!(std::fs::read_to_string(&hook).unwrap(), script);
+    assert!(
+        std::fs::symlink_metadata(&planted).unwrap().is_symlink(),
+        "the planted link is left alone"
+    );
+    // Whatever name it is given, a new file is never opened through what
+    // is already there.
+    let error = write_executable(&planted, &script).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "untouched\n");
+    // Nor is the installers' lock taken through a link.
+    std::fs::remove_file(hooks.join(HOOK_LOCK)).unwrap();
+    std::os::unix::fs::symlink(&sentinel, hooks.join(HOOK_LOCK)).unwrap();
+    assert!(install_hook(&hooks, &script).is_err());
+    assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "untouched\n");
+    let left: Vec<String> = std::fs::read_dir(&hooks)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("post-commit.agentdocker-new."))
+        .collect();
+    assert!(left.is_empty(), "no new copy left behind: {left:?}");
+}
+
 /// Should a copy of ours ever stand under the chained name, a commit still
 /// ends: ours does not run another of its own.
 #[cfg(unix)]

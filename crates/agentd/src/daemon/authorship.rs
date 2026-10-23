@@ -80,31 +80,54 @@ pub(super) fn hook_script(cli: &Path) -> String {
     )
 }
 
-/// Write `text` to `path` as an executable file: a new one, or replacing
-/// the file there.
-fn write_executable(path: &Path, text: &str, new: bool) -> std::io::Result<()> {
+/// Write `text` to `path` as a new executable file, fsynced. The path
+/// must name nothing yet: an existing file or symlink there is never
+/// opened, let alone followed (`O_EXCL`, and `O_NOFOLLOW` where there is
+/// one). What was created is removed again when the write fails.
+fn write_executable(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut options = std::fs::OpenOptions::new();
-    options.write(true);
-    if new {
-        options.create_new(true);
-    } else {
-        options.create(true).truncate(true);
-    }
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o755);
+        options.mode(0o755).custom_flags(nix::libc::O_NOFOLLOW);
     }
     let mut file = options.open(path)?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()
+    let written = file
+        .write_all(text.as_bytes())
+        .and_then(|()| file.sync_all());
+    if written.is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+    written
+}
+
+/// Replace `hook` whole with `text`: written to a new file under a name
+/// nobody can have put anything at beforehand, then renamed over it, so a
+/// commit running the hook meanwhile reads one or the other. The new file
+/// is removed again when anything fails.
+fn replace_executable(hooks: &Path, hook: &Path, text: &str) -> std::io::Result<()> {
+    let fresh = hooks.join(format!(
+        "post-commit.agentdocker-new.{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    write_executable(&fresh, text)?;
+    std::fs::rename(&fresh, hook).inspect_err(|_| {
+        let _ = std::fs::remove_file(&fresh);
+    })
 }
 
 /// Take the hooks folder's installer lock, waiting a while for another
 /// installer, in this process or another, to finish.
 fn hook_lock(hooks: &Path) -> Result<agentdocker_host::lock::Lock, String> {
     let path = hooks.join(HOOK_LOCK);
+    // The lock opens its file by name; a link there would have it create
+    // or open a file elsewhere.
+    if std::fs::symlink_metadata(&path).is_ok_and(|meta| !meta.is_file()) {
+        return Err(format!("{} is not a plain file", path.display()));
+    }
     let deadline = std::time::Instant::now() + HOOK_LOCK_WAIT;
     loop {
         match agentdocker_host::lock::try_exclusive(&path) {
@@ -151,7 +174,7 @@ pub(super) fn install_hook(hooks: &Path, script: &str) -> Result<(), String> {
         match std::fs::symlink_metadata(&hook) {
             Ok(_) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                match write_executable(&hook, script, true) {
+                match write_executable(&hook, script) {
                     Ok(()) => return Ok(()),
                     Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
                     Err(error) => return Err(failed("the hook", error)),
@@ -170,11 +193,8 @@ pub(super) fn install_hook(hooks: &Path, script: &str) -> Result<(), String> {
             if bytes == script.as_bytes() {
                 return Ok(());
             }
-            // Ours, from another build: replaced whole, by a rename, so a
-            // commit running it meanwhile reads one or the other.
-            let fresh = hooks.join("post-commit.agentdocker-new");
-            write_executable(&fresh, script, false).map_err(|e| failed("the hook", e))?;
-            return std::fs::rename(&fresh, &hook).map_err(|e| failed("the hook", e));
+            // Ours, from another build: replaced whole.
+            return replace_executable(hooks, &hook, script).map_err(|e| failed("the hook", e));
         }
         // Theirs: linked under the chained name, which fails rather than
         // replace a file already there, and only then unlinked here.
@@ -192,10 +212,16 @@ pub(super) fn install_hook(hooks: &Path, script: &str) -> Result<(), String> {
             let _ = std::fs::remove_file(&chained);
             return Err(failed("the existing hook", error));
         }
-        match write_executable(&hook, script, true) {
+        match write_executable(&hook, script) {
             Ok(()) => return Ok(()),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(failed("the hook", error)),
+            Err(error) => {
+                // Theirs goes back where it was, so it still runs.
+                if std::fs::hard_link(&chained, &hook).is_ok() {
+                    let _ = std::fs::remove_file(&chained);
+                }
+                return Err(failed("the hook", error));
+            }
         }
     }
     Err(format!(
