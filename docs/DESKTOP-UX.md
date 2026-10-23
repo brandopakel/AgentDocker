@@ -110,8 +110,8 @@ recipient's own line, which is also the chip's accessible value. Those lines
 say *answered*, *delivered*, *received by the model*, *shown to its session,
 not confirmed*, or why it still waits — *nothing connects its session to
 AgentDocker*, *waiting for its next prompt*, *waits until it checks in* (a
-browser agent, or a session away for hours), *delivery paused*, *session ended
-before taking it*. Nothing says *read*: the daemon cannot know it. **Agents** opens the
+browser agent, or a session away for hours), *waiting for you to stop typing
+in its terminal*, *delivery paused*, *session ended before taking it*. Nothing says *read*: the daemon cannot know it. **Agents** opens the
 session list and **Board** the project's cards. **More** opens a menu of History,
 Files in use, Usage, AgentDocker commands and the project's Pin and Forget; the tab takes the name of the screen on view and is underlined only
 while one of those screens is open. **Pause…**, the project terminal and
@@ -868,7 +868,10 @@ the inventory. Delivery, a session's readiness chip, says the same words as `ps`
 and a send's warning: **Ready for messages** (nothing taken
 yet), **Receiving messages**, **Not receiving messages**, **Not heard from
 recently**, **Messages may wait for its next prompt**, **Waits until it checks
-in** (a browser agent, or a session away for hours), **Can't receive
+in** (a browser agent, or a session away for hours), **Waiting for the person
+to stop typing** (a live Codex whose terminal you are typing a line in holds
+another sender's message until you have stopped for three seconds or pressed
+Enter; nothing is typed over your line), **Can't receive
 messages**, **Session ended** or the provider's limit, in a tone that follows
 the state (positive while it takes them, the accent while words or the
 session wait, amber when something stands in the way, quiet once ended); with words queued behind current delivery that no receipt names it

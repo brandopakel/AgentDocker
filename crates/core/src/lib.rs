@@ -87,14 +87,15 @@ pub use policy::{Policy, Ruling};
 pub mod editor;
 pub mod multiplexer;
 pub mod terminal;
+pub mod typing;
 
 pub mod contest;
 pub use contest::{Contest, ContestId, Entry, Measure, Metric, Standing};
 
 pub mod wait;
 pub use wait::{
-    Activity, ActivityObservation, AgentActivity, Blocked, Judged, ReportedActivity, WaitQueue,
-    WaitReason, Waiter,
+    Activity, ActivityObservation, ActivitySource, AgentActivity, Blocked, Judged,
+    ReportedActivity, WaitQueue, WaitReason, Waiter,
 };
 
 pub mod standing;

@@ -34,6 +34,9 @@ pub enum State {
     /// A current receiver; `receiving` once a receipt from this process
     /// says one was taken.
     Ready { receiving: bool },
+    /// A current receiver holding its next input while the person types in
+    /// its terminal ([`crate::typing`]); it takes it once they stop.
+    HeldForTyping,
 }
 
 impl State {
@@ -49,13 +52,15 @@ impl State {
             Self::WaitsForPrompt => "Messages may wait for its next prompt",
             Self::Ready { receiving: false } => "Ready for messages",
             Self::Ready { receiving: true } => "Receiving messages",
+            Self::HeldForTyping => "Waiting for the person to stop typing",
         }
     }
 
     /// Whether a message sent now needs the sender's attention: anything
-    /// but a ready receiver.
+    /// but a ready receiver, or one that takes it once the person stops
+    /// typing.
     pub fn needs_attention(self) -> bool {
-        !matches!(self, Self::Ready { .. })
+        !matches!(self, Self::Ready { .. } | Self::HeldForTyping)
     }
 }
 
@@ -193,6 +198,17 @@ fn state(
             State::AwaitsCheckIn
         }
         InputReadiness::Unverified => State::WaitsForPrompt,
+        // A ready receiver that is holding its input for the person's
+        // typing says so: what was sent waits on them, not on it.
+        InputReadiness::AwaitingFirstReceipt | InputReadiness::Verified
+            if agent.input_delivery.as_ref().is_some_and(|delivery| {
+                delivery
+                    .held_for_typing(agent.process_started_at, now)
+                    .is_some()
+            }) =>
+        {
+            State::HeldForTyping
+        }
         InputReadiness::AwaitingFirstReceipt => State::Ready { receiving: false },
         InputReadiness::Verified => State::Ready { receiving: true },
     }
@@ -228,7 +244,7 @@ fn fix(agent: &AgentRecord, state: State) -> Fix {
     };
     let runtime = agent.spec.runtime.as_str();
     match state {
-        State::Ready { .. } => Fix::None,
+        State::Ready { .. } | State::HeldForTyping => Fix::None,
         State::ProviderBlocked(_) => Fix::WaitForProvider,
         State::Paused => Fix::ReviewDelivery,
         State::AwaitsCheckIn => Fix::WaitForCheckIn,
@@ -289,6 +305,7 @@ impl Decision {
             (Fix::WaitForCheckIn, _) => "It takes messages when it checks in.",
             (Fix::None, State::Ended) => "Its messages wait until it is resumed.",
             (Fix::None, State::Ready { .. }) => "It takes messages now.",
+            (Fix::None, State::HeldForTyping) => "It takes them once the person stops typing.",
             (Fix::None, _) => "Its plugin wakes it; without it, at its next turn.",
             (Fix::Other, _) => "Check it in AgentDocker before sending again.",
         }
@@ -369,6 +386,7 @@ pub(crate) fn why(state: State, runtime: &str) -> String {
             other => format!("A {other} session cannot be woken by a message."),
         },
         State::Ready { .. } => "It takes messages now.".into(),
+        State::HeldForTyping => "The person is typing in its terminal; what was sent waits until they stop, then goes in.".into(),
     }
 }
 
@@ -381,7 +399,7 @@ mod tests {
     };
 
     const RUNTIMES: [&str; 5] = ["claude-code", "codex", "opencode", "custom", "gemini-cli"];
-    const STATES: [&str; 8] = [
+    const STATES: [&str; 9] = [
         "ended",
         "provider_blocked",
         "paused",
@@ -390,6 +408,7 @@ mod tests {
         "awaits_check_in",
         "waits_for_prompt",
         "ready",
+        "held_for_typing",
     ];
 
     /// An absolute checkout on every platform.
@@ -448,6 +467,7 @@ mod tests {
             reported_at,
             received: None,
             received_at: None,
+            typing_until: None,
         };
         let now = birth + chrono::Duration::minutes(5);
         let mut block = None;
@@ -477,6 +497,11 @@ mod tests {
             }
             "waits_for_prompt" => contact(&mut agent),
             "ready" => agent.input_delivery = Some(delivery(false, now)),
+            "held_for_typing" => {
+                let mut held = delivery(false, now);
+                held.typing_until = Some(now + crate::typing::QUIET);
+                agent.input_delivery = Some(held);
+            }
             other => panic!("no such state {other}"),
         }
         (agent, now, block)
@@ -507,11 +532,12 @@ mod tests {
                         "unreachable" => State::Unreachable,
                         "awaits_check_in" => State::AwaitsCheckIn,
                         "waits_for_prompt" => State::WaitsForPrompt,
+                        "held_for_typing" => State::HeldForTyping,
                         _ => State::Ready { receiving: false },
                     };
                     assert_eq!(decision.state, expected_state, "{runtime} {name} {known}");
                     let expected = match (expected_state, runtime, known) {
-                        (State::Ready { .. }, ..) => Fix::None,
+                        (State::Ready { .. } | State::HeldForTyping, ..) => Fix::None,
                         (State::ProviderBlocked(_), ..) => Fix::WaitForProvider,
                         (State::Paused, ..) => Fix::ReviewDelivery,
                         (State::AwaitsCheckIn, ..) => Fix::WaitForCheckIn,
@@ -674,6 +700,32 @@ mod tests {
                 .guidance("claude-code", &waiting.id)
                 .contains("--claude-channel"),
             "the daemon's relaunch brings its own MCP entry"
+        );
+    }
+
+    /// A hold for the person's typing shows only while it lasts, only on
+    /// a receiver that is otherwise ready, and asks nothing of the sender.
+    #[test]
+    fn a_hold_for_typing_shows_while_it_lasts_and_yields_to_what_stands_in_the_way() {
+        let (held, now, _) = session("codex", "held_for_typing", true);
+        let until = now + crate::typing::QUIET;
+        assert_eq!(decide(&held, now, None).state, State::HeldForTyping);
+        assert_eq!(
+            decide(&held, until, None).state,
+            State::Ready { receiving: false },
+            "it lapses by itself"
+        );
+        assert_eq!(
+            decide(&held, now, Some(ProviderIssueKind::Usage)).state,
+            State::ProviderBlocked(ProviderIssueKind::Usage)
+        );
+        let mut paused = held.clone();
+        paused.input_delivery.as_mut().unwrap().paused = true;
+        assert_eq!(decide(&paused, now, None).state, State::Paused);
+        assert!(RecipientReadiness::for_agent(&held, now, None).is_none());
+        assert_eq!(
+            State::HeldForTyping.label(),
+            "Waiting for the person to stop typing"
         );
     }
 

@@ -3988,6 +3988,7 @@ async fn a_wait_keeps_what_it_is_for_through_the_store() {
         activity: ReportedActivity::Waiting,
         observed_at: now,
         reason: Some(WaitReason::Permission),
+        source: None,
     };
     let mut state = lock(&daemon.state);
     assert!(matches!(
@@ -4020,11 +4021,13 @@ async fn provider_activity_is_ordered_expires_and_commits_with_its_event() {
         activity: ReportedActivity::Working,
         observed_at: now - Duration::seconds(2),
         reason: None,
+        source: None,
     };
     let idle = ActivityObservation {
         activity: ReportedActivity::Idle,
         observed_at: now - Duration::seconds(1),
         reason: None,
+        source: None,
     };
     let mut events = daemon.subscribe_events();
     {
@@ -4361,6 +4364,117 @@ async fn input_delivery_persists_receipts_and_pause_without_inventing_delivery()
     );
 }
 
+/// A receiver's hold for the person's typing is shown while it lasts, is
+/// believed for one quiet window at most, outlives a heartbeat, and ends
+/// when what it held is received.
+#[tokio::test]
+async fn a_hold_for_typing_shows_until_its_input_is_received() {
+    use agentdocker_core::{InputReceipt, InputReport, ReceivedInput, readiness, typing};
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let mut receiver = register(&daemon, "typing-hold", None).await;
+    let generation = Utc::now() - Duration::minutes(1);
+    receiver.spec.runtime = "claude-code".into();
+    receiver.process_started_at = Some(generation);
+    {
+        let mut state = lock(&daemon.state);
+        state.store.upsert_agent(&receiver).unwrap();
+        *state.registry.get_mut(&receiver.id).unwrap() = receiver.clone();
+    }
+    let Response::Sent { message, .. } = send(&daemon, "user", "typing-hold").await else {
+        panic!("not queued")
+    };
+    let request = |seconds: i64, report| Request::ReportInput {
+        agent: receiver.id.to_string(),
+        process_started_at: generation,
+        observed_at: generation + Duration::seconds(seconds),
+        report,
+        token: None,
+    };
+    let delivery = |daemon: &Arc<Daemon>| {
+        lock(&daemon.state)
+            .registry
+            .get(&receiver.id)
+            .unwrap()
+            .input_delivery
+            .clone()
+            .unwrap()
+    };
+    let mut events = daemon.subscribe_events();
+    assert!(matches!(
+        daemon.handle(request(1, InputReport::Ready)).await,
+        Response::Ok
+    ));
+    let _ = events.try_recv();
+    // Longer than one keystroke can hold, or already over: refused.
+    let observed = generation + Duration::seconds(2);
+    for until in [
+        observed + typing::QUIET + Duration::milliseconds(1),
+        observed,
+    ] {
+        assert!(matches!(
+            daemon
+                .handle(request(2, InputReport::HeldForTyping { until }))
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+    }
+    let until = observed + typing::QUIET;
+    assert!(matches!(
+        daemon
+            .handle(request(2, InputReport::HeldForTyping { until }))
+            .await,
+        Response::Ok
+    ));
+    assert_eq!(
+        events.try_recv().unwrap().kind,
+        EventKind::InputHeldForTyping {
+            agent: receiver.id.clone(),
+            until
+        }
+    );
+    let held = lock(&daemon.state)
+        .registry
+        .get(&receiver.id)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        readiness::decide(&held, observed, None).state,
+        readiness::State::HeldForTyping
+    );
+    assert_eq!(
+        readiness::decide(&held, until, None).state,
+        readiness::State::Ready { receiving: false },
+        "a hold nobody renews lapses at its time"
+    );
+    // A heartbeat during the hold leaves it standing.
+    assert!(matches!(
+        daemon.handle(request(3, InputReport::Ready)).await,
+        Response::Ok
+    ));
+    assert_eq!(delivery(&daemon).typing_until, Some(until));
+    // What it held went in: the receipt ends the hold.
+    assert!(matches!(
+        daemon
+            .handle(request(
+                4,
+                InputReport::Received {
+                    input: ReceivedInput {
+                        messages: vec![message],
+                        receipt: InputReceipt::ClaudeChannel,
+                    },
+                }
+            ))
+            .await,
+        Response::Ok
+    ));
+    assert_eq!(delivery(&daemon).typing_until, None);
+    assert!(delivery(&daemon).received.is_some());
+}
+
 #[tokio::test]
 async fn equal_input_observations_allow_exact_retries_but_reject_conflicting_state() {
     use agentdocker_core::{InputReceipt, InputReport, ReceivedInput};
@@ -4558,6 +4672,7 @@ async fn failed_activity_write_publishes_no_state_or_event() {
                 activity: agentdocker_core::ReportedActivity::Working,
                 observed_at: Utc::now(),
                 reason: None,
+                source: None,
             },
         })
         .await;
@@ -4592,6 +4707,7 @@ async fn delayed_idle_report_cannot_become_work_when_it_expires() {
             activity: agentdocker_core::ReportedActivity::Idle,
             observed_at: now - Duration::seconds(299),
             reason: None,
+            source: None,
         },
         now,
     );
@@ -4638,6 +4754,7 @@ async fn polling_does_not_turn_a_hooked_agents_idle_report_into_work() {
             activity: agentdocker_core::ReportedActivity::Idle,
             observed_at: now - Duration::seconds(20),
             reason: None,
+            source: None,
         },
         now,
     );
@@ -8081,6 +8198,7 @@ async fn send_readiness_reports_only_queued_recipients_and_never_receipts() {
             pause_reason: None,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         let agent = state.registry.get_mut(&unbound.id).unwrap();
         agent.spec.runtime = "claude-code".into();

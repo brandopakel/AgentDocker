@@ -139,6 +139,14 @@ pub enum EventKind {
         agent: AgentId,
         delivery: crate::InputDelivery,
     },
+    /// The agent's receiver is holding its next input while the person
+    /// types in its terminal, and decides again at `until`
+    /// ([`crate::typing`]). The hold ends with a receipt, a pause or the
+    /// time passing.
+    InputHeldForTyping {
+        agent: AgentId,
+        until: DateTime<Utc>,
+    },
     /// An external controller became the sole consumer of the agent's
     /// queued input, or resumed a binding it held before.
     InputBound {
@@ -964,6 +972,10 @@ mod tests {
             EventKind::WorktreeCreated {
                 agent: AgentId::from("a1b2c3"),
                 path: std::path::PathBuf::from("/tmp/w"),
+            },
+            EventKind::InputHeldForTyping {
+                agent: AgentId::from("a1b2c3"),
+                until: DateTime::from_timestamp(1_700_000_003, 0).unwrap(),
             },
         ] {
             let text = serde_json::to_string(&kind).unwrap();

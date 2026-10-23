@@ -258,8 +258,10 @@ session list.
 
 Without fresh provider observations or recent coordination, activity is unknown.
 Recent coordination can establish working; an explicit provider stop produces
-provisional idle that expires or is superseded by newer activity. Process
-presence, provider configuration and observed activity are separate facts.
+provisional idle that expires or is superseded by newer activity. An agent
+with no hooks of its own in a herdr pane takes herdr's word instead, for as
+long as herdr keeps saying it. Process presence, provider configuration and
+observed activity are separate facts.
 See [messaging](ARCHITECTURE.md#messaging).
 
 A Claude Code session you start in a terminal sees messages only at its next
@@ -539,6 +541,14 @@ limit, reviewing a paused delivery, or the agent's own read of its inbox. `agent
 session's initial prompt, and once its receiver is back, queued delivery offers
 the same unacknowledged message again. Provider limits remain separate from receiver
 health. When the daemon does not report readiness, `send` prints `recipient input readiness unavailable from this daemon` rather than imply that every recipient can wake.
+
+While you type a line in a live Codex's terminal (one started with
+`--codex-input` or Launch agent), a message from anyone else waits until you
+have stopped for three seconds or pressed Enter, so it never starts a turn that
+prints over your line; your own messages never wait. Meanwhile its INPUT reads
+**Waiting for the person to stop typing** and `events` shows `input held`.
+AgentDocker types no message into any other terminal or multiplexer pane:
+other sessions take messages through their provider's own input.
 
 For an existing Claude session with no channel, save the current work, exit that
 Claude session, and either press **Reconnect here** on its row or in the app's
@@ -1352,6 +1362,15 @@ Current behaviour that the sections above do not already state, by area.
   the dock icon, and `agentdocker activity` shows it `waiting`. It needs the
   `Notification` hook, so run `agentdocker setup claude-code` to add it to an
   existing install.
+
+- An agent with no AgentDocker hooks of its own — Codex without them, Gemini,
+  another CLI — that runs in a herdr pane shows what herdr says of that pane:
+  working, *waiting for you* when herdr marks it blocked, and idle when it is
+  idle or done. The pane is the one holding the agent's own session, so it is
+  followed when the pane moves, and herdr must know that session (its
+  integration for the agent, `herdr integration install <agent>`); herdr's
+  default and named sessions are read, and nothing is ever sent to herdr.
+  `agentdocker events` marks these `(herdr)`.
 
 - Clicking an agent in a project's chat goes to its terminal: the tab in
   Terminal or iTerm it runs in, its tmux or herdr pane, or the editor or app
