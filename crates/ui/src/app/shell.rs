@@ -313,11 +313,23 @@ pub(super) struct State {
     /// there, on the selected row and while its menu is open.
     pub rail_hover: Option<PathBuf>,
     /// The control a pointer (or assistive technology) last pressed,
-    /// until a key is pressed. A menu opened from that control was opened
+    /// until a key is pressed — one the app hears, or Enter or Space that a
+    /// control takes (`Message::KeyPressedControl`). A menu opened from that
+    /// control was opened
     /// by pointer and keeps the focus where it is; opened from the
     /// keyboard, the menu takes the focus to its first entry, since menus
     /// float above the page and would otherwise be last in the Tab order.
     pub pressed: Option<String>,
+    /// The control that opened the menu on screen from the keyboard, which
+    /// took the focus into the menu: Escape, or an entry chosen with Enter
+    /// or Space that closes the menu, gives it back there. A pointer press
+    /// anywhere forgets it, and so does the menu closing any other way.
+    pub menu_opener: Option<String>,
+    /// An entry of the open menu was just chosen from the keyboard, and
+    /// which layers were already open over the page when it was: a dialog
+    /// the menu sits in does not stop the focus going back to the opener;
+    /// one the choice opens does.
+    pub menu_chosen: Option<Layers>,
     /// The project being renamed, and the name so far.
     pub project_rename: Option<(PathBuf, String)>,
     /// The conversation open in Inbox: one agent, or every agent at once.
@@ -1277,9 +1289,27 @@ pub enum Message {
     WindowScale(f32),
     NativeAccessibility(Result<usize, String>),
     Captured(window::Screenshot),
+    /// Give the control with this id the focus, from the keyboard,
+    /// assistive technology or the app itself: it shows its ring.
     Focus(String),
+    /// The pointer pressed the control with this id: it takes the focus
+    /// without a ring, wherever the press has moved it.
+    Pressed(String),
     /// A click away from a focused control took its focus.
     Blurred,
+    /// Escape closed the menu that floats over the page: the focus goes
+    /// back to the control that opened it, when the keyboard opened it.
+    MenuEscaped,
+    /// Enter or Space chose the open menu's focused entry: if the choice
+    /// closes the menu, the focus goes back to the control that opened it
+    /// from the keyboard.
+    MenuChosen,
+    /// A press outside the open menu closed it: the pointer has moved on,
+    /// and the focus goes back nowhere.
+    MenuPressedAway,
+    /// Enter or Space pressed the focused control, said before what it
+    /// does: the keyboard, not the pointer, is in charge.
+    KeyPressedControl,
     Accessibility(crate::accessibility::Snapshot),
     // command palette
     /// Open the command palette, or close it: ⌘K / Control+K, the rail's
@@ -1312,6 +1342,25 @@ pub enum Message {
 /// other, and every frame paints the whole window, so the wakes that
 /// arrive while this waits are folded into the one it sends.
 const WAKE_SETTLE: Duration = Duration::from_millis(40);
+/// The layers that can open over the page and take the focus.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Layers {
+    /// The launch dialog.
+    pub launch: bool,
+    /// The command palette.
+    pub palette: bool,
+}
+
+/// Give the focus back to a menu's opener, from the keyboard: ringed, and
+/// scrolled into view.
+fn focus_opener(opener: String) -> Task<Message> {
+    iced::widget::operation::focus(iced::advanced::widget::Id::from(opener))
+        .chain(crate::controls::reveal_focus())
+        .chain(crate::accessibility::collect())
+}
+
+/// The launch dialog's task field, which takes the focus when it opens.
+pub(super) const LAUNCH_PROMPT: &str = "launch-prompt";
 
 async fn notifications(mut output: iced::futures::channel::mpsc::Sender<Message>) {
     use iced::futures::SinkExt;
@@ -1493,12 +1542,34 @@ impl App {
         ])
     }
 
+    /// The layers open over the page.
+    fn layers(&self) -> Layers {
+        Layers {
+            launch: self.shell.launch,
+            palette: self.shell.palette.open,
+        }
+    }
+
+    /// Whether a menu floats over the page.
+    fn menu_open(&self) -> bool {
+        self.shell.more
+            || self.shell.launch_menu
+            || self.shell.project_menu.is_some()
+            || self.shell.editor_menu.is_some()
+            || self.shell.roles_menu.is_some()
+            || self.shell.launch_choice_menu.is_some()
+    }
+
     /// Focus a menu's first entry when the menu was opened from the
-    /// keyboard; a pointer-opened menu leaves the focus alone.
-    fn menu_focus(&self, trigger: &str, first: String) -> Task<Message> {
+    /// keyboard, remembering where to give it back; a pointer-opened menu
+    /// leaves the focus alone.
+    fn menu_focus(&mut self, trigger: &str, first: String) -> Task<Message> {
+        self.shell.menu_chosen = None;
         if self.shell.pressed.as_deref() == Some(trigger) {
+            self.shell.menu_opener = None;
             return Task::none();
         }
+        self.shell.menu_opener = Some(trigger.to_owned());
         iced::widget::operation::focus(iced::advanced::widget::Id::from(first))
             .chain(crate::controls::reveal_focus())
             .chain(crate::accessibility::collect())
@@ -2450,7 +2521,20 @@ impl App {
                     {
                         self.send(Cmd::Palette(root));
                     }
+                    // From the keyboard, the focus goes to its first entry:
+                    // the first role, or Edit roles… while there is none.
+                    let first = self
+                        .agents
+                        .iter()
+                        .find(|a| a.id.as_str() == agent)
+                        .and_then(|a| self.palette_for(a))
+                        .and_then(|palette| palette.first().map(|def| def.role.clone()))
+                        .map_or_else(
+                            || "roles-edit".to_owned(),
+                            |role| format!("role-pick-{agent}-{role}"),
+                        );
                     self.shell.roles_menu = Some(agent);
+                    tasks.push(self.menu_focus("session-roles", first));
                 }
                 self.shell.roles_editing = false;
                 self.shell.role_delete = None;
@@ -3587,6 +3671,13 @@ impl App {
                 if self.shell.launch {
                     self.shell.selected = None;
                     self.shell.session_filter = super::sessions::Filter::Current;
+                    // The dialog takes the focus, into its task field: what
+                    // had it is under the scrim now, and must not answer
+                    // the keys typed here.
+                    let focus = iced::widget::operation::focus(iced::advanced::widget::Id::from(
+                        LAUNCH_PROMPT,
+                    ))
+                    .chain(crate::accessibility::collect());
                     // The form lives on Chat and Agents; from Board or
                     // History, Launch agent… goes to Agents to show it.
                     if !matches!(self.screen, Screen::Chat | Screen::Agents) {
@@ -3594,8 +3685,9 @@ impl App {
                         // it; it is opened again on arrival.
                         let task = self.update(Message::Navigate(Screen::Agents));
                         self.shell.launch = true;
-                        return Task::batch([task, self.refresh_codex_trust()]);
+                        return Task::batch([task, self.refresh_codex_trust(), focus]);
                     }
+                    tasks.push(focus);
                 }
                 tasks.push(self.refresh_codex_trust());
             }
@@ -3701,7 +3793,18 @@ impl App {
                     self.settle_effort();
                 }
             }
-            Message::LaunchChoiceMenu(menu) => self.shell.launch_choice_menu = menu,
+            Message::LaunchChoiceMenu(menu) => {
+                self.shell.launch_choice_menu = menu;
+                if let Some(which) = menu {
+                    let key = match which {
+                        ChoiceMenu::Model => "model",
+                        ChoiceMenu::Effort => "effort",
+                    };
+                    tasks.push(
+                        self.menu_focus(&format!("launch-{key}"), format!("launch-{key}-default")),
+                    );
+                }
+            }
             Message::LaunchModel(model) => {
                 self.shell.launch_model = model;
                 self.shell.launch_choice_menu = None;
@@ -4072,13 +4175,9 @@ impl App {
                 use keyboard::{Key, key::Named};
                 match key {
                     Key::Named(Named::Tab | Named::F6) => tasks.push(
-                        (if modifiers.shift() {
-                            iced::widget::operation::focus_previous()
-                        } else {
-                            iced::widget::operation::focus_next()
-                        })
-                        .chain(crate::controls::reveal_focus())
-                        .chain(crate::accessibility::collect()),
+                        crate::controls::step_focus(!modifiers.shift())
+                            .chain(crate::controls::reveal_focus())
+                            .chain(crate::accessibility::collect()),
                     ),
                     Key::Named(Named::Escape) => {
                         self.shell.pending_notification = None;
@@ -4186,6 +4285,29 @@ impl App {
                     .chain(crate::controls::reveal_focus())
                     .chain(crate::accessibility::collect())
             }),
+            Message::MenuEscaped => {
+                if let Some(opener) = self.shell.menu_opener.take() {
+                    tasks.push(focus_opener(opener));
+                }
+            }
+            Message::MenuChosen => {
+                self.shell.menu_chosen = self.shell.menu_opener.is_some().then(|| self.layers());
+            }
+            Message::MenuPressedAway => {
+                self.shell.menu_opener = None;
+                self.shell.menu_chosen = None;
+            }
+            // Enter or Space pressed a focused control: the keyboard is in
+            // charge, whatever the pointer pressed last, so a menu it opens
+            // takes the focus.
+            Message::KeyPressedControl => self.shell.pressed = None,
+            // Not revealed, as the keyboard's focus is: the pointer is on
+            // it, and scrolling now would move it from under the click.
+            Message::Pressed(id) => tasks.push({
+                self.shell.menu_opener = None;
+                self.shell.pressed = Some(id.clone());
+                crate::controls::focus_by_pointer(id).chain(crate::accessibility::collect())
+            }),
             Message::Accessibility(snapshot) => {
                 if let Some(scenario) = self.smoke.as_mut().and_then(|s| s.scenario.as_mut()) {
                     scenario.snapshot = snapshot.clone();
@@ -4211,6 +4333,22 @@ impl App {
             // Tools, settings and installation
             Message::UpdateLater => {
                 self.desktop.later = self.desktop.update_available().map(str::to_owned);
+            }
+        }
+        // A menu the keyboard opened, closed by an entry chosen from the
+        // keyboard, gives the focus back to its opener — unless the choice
+        // opened a dialog or the palette, which takes it; a dialog the menu
+        // sits in does not. Closed any other way, there is nothing to give
+        // back.
+        if !self.menu_open() {
+            let chosen = self.shell.menu_chosen.take();
+            let now = self.layers();
+            if let Some(opener) = self.shell.menu_opener.take()
+                && let Some(before) = chosen
+                && !(now.launch && !before.launch)
+                && !(now.palette && !before.palette)
+            {
+                tasks.push(focus_opener(opener));
             }
         }
         // Catalog removal and missing-folder cleanup can choose another
@@ -6270,7 +6408,7 @@ mod tests {
     fn a_menu_opened_by_pointer_keeps_focus_and_navigation_closes_the_launch_menu() {
         let (mut app, _commands, _messages) = app();
         // A pointer press on the trigger marks it; a key press forgets it.
-        let _ = app.update(Message::Focus("project-more".into()));
+        let _ = app.update(Message::Pressed("project-more".into()));
         assert_eq!(app.shell.pressed.as_deref(), Some("project-more"));
         let _ = app.update(Message::More);
         assert!(app.shell.more);

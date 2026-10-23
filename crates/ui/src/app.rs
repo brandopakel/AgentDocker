@@ -11,6 +11,8 @@ mod board;
 mod chip;
 mod forms;
 mod icons;
+#[cfg(test)]
+mod interaction;
 mod logos;
 mod messages;
 mod naming;
