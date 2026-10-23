@@ -17,6 +17,15 @@ fn app() -> App {
     app
 }
 
+/// An absolute folder for a fixture project, on every platform.
+fn fixture_root(name: &str) -> String {
+    if cfg!(windows) {
+        format!(r"C:\work\{name}")
+    } else {
+        format!("/work/{name}")
+    }
+}
+
 fn session(app: &mut App, name: &str, root: &str) -> String {
     let mut agent = AgentRecord::new(
         AgentSpec {
@@ -58,9 +67,9 @@ fn centre(bounds: iced::Rectangle) -> iced::Point {
 fn a_clicked_session_row_that_moves_is_focused_without_a_ring() {
     for tap in [true, false] {
         let mut app = app();
-        session(&mut app, "kestrel", "/work/minio-lab");
-        session(&mut app, "heron", "/work/keel");
-        let id = session(&mut app, "osprey", "/work/minio-lab");
+        session(&mut app, "kestrel", &fixture_root("minio-lab"));
+        session(&mut app, "heron", &fixture_root("keel"));
+        let id = session(&mut app, "osprey", &fixture_root("minio-lab"));
         assert!(app.all_projects());
         let mut window = window(&app);
         let row = window
@@ -90,13 +99,13 @@ fn a_clicked_session_row_that_moves_is_focused_without_a_ring() {
 #[test]
 fn selecting_a_session_in_a_project_leaves_no_ring() {
     let mut app = app();
-    let id = session(&mut app, "kestrel", "/work/minio-lab");
-    session(&mut app, "heron", "/work/minio-lab");
+    let id = session(&mut app, "kestrel", &fixture_root("minio-lab"));
+    session(&mut app, "heron", &fixture_root("minio-lab"));
     app.shell
         .catalog
-        .remember(ProjectRef::directory("/work/minio-lab"), false)
+        .remember(ProjectRef::directory(fixture_root("minio-lab")), false)
         .unwrap();
-    let _ = app.update(Message::SelectProject("/work/minio-lab".into()));
+    let _ = app.update(Message::SelectProject(fixture_root("minio-lab").into()));
     app.screen = Screen::Agents;
     assert!(!app.all_projects());
     let mut window = window(&app);
@@ -124,7 +133,7 @@ fn selecting_a_session_in_a_project_leaves_no_ring() {
 #[test]
 fn a_row_clicked_while_a_new_session_pushes_it_down_shows_no_ring() {
     let mut app = app();
-    let root = "/work/minio-lab";
+    let root = &fixture_root("minio-lab");
     let first = session(&mut app, "kestrel", root);
     let clicked = session(&mut app, "heron", root);
     session(&mut app, "osprey", root);
@@ -188,12 +197,9 @@ fn named(key: iced::keyboard::key::Named) -> iced::keyboard::Key {
 fn escape_gives_a_keyboard_opened_menu_back_to_its_opener() {
     use iced::keyboard::key::Named;
     let mut app = app();
-    project_page(&mut app, "/work/keel");
+    project_page(&mut app, &fixture_root("keel"));
     let mut window = window(&app);
     window.deliver(&mut app, vec![Message::Focus("project-more".into())]);
-    // Any key the app hears ends a pointer's claim on the trigger.
-    window.key(&mut app, named(Named::Shift));
-    assert_eq!(app.shell.pressed, None);
     window.key(&mut app, named(Named::Enter));
     assert!(app.shell.more, "Enter opened the menu");
     let ringed = |id: &str| {
@@ -221,7 +227,7 @@ fn a_pointer_opened_menu_closes_leaving_no_ring() {
     use iced::keyboard::key::Named;
     for escape in [true, false] {
         let mut app = app();
-        project_page(&mut app, "/work/keel");
+        project_page(&mut app, &fixture_root("keel"));
         let mut window = window(&app);
         let more = window.bounds(&app, "project-more").expect("the More tab");
         window.tap(&mut app, more.center());
@@ -248,10 +254,9 @@ fn a_pointer_opened_menu_closes_leaving_no_ring() {
 fn a_keyboard_opened_menu_closed_by_the_pointer_leaves_no_ring() {
     use iced::keyboard::key::Named;
     let mut app = app();
-    project_page(&mut app, "/work/keel");
+    project_page(&mut app, &fixture_root("keel"));
     let mut window = window(&app);
     window.deliver(&mut app, vec![Message::Focus("project-more".into())]);
-    window.key(&mut app, named(Named::Shift));
     window.key(&mut app, named(Named::Enter));
     assert!(app.shell.more);
     window.tap(&mut app, iced::Point::new(1395.0, 895.0));
@@ -266,7 +271,7 @@ fn a_keyboard_opened_menu_closed_by_the_pointer_leaves_no_ring() {
 #[test]
 fn a_click_in_a_field_keeps_the_caret_where_it_was_put() {
     let mut app = app();
-    session(&mut app, "kestrel", "/work/keel");
+    session(&mut app, "kestrel", &fixture_root("keel"));
     app.shell.search = "hello world".into();
     let mut window = window(&app);
     let field = window.bounds(&app, "session-search").expect("the search");
@@ -282,8 +287,8 @@ fn a_click_in_a_field_keeps_the_caret_where_it_was_put() {
 #[test]
 fn the_launch_dialog_takes_the_focus_from_the_page_under_it() {
     let mut app = app();
-    session(&mut app, "kestrel", "/work/keel");
-    project_page(&mut app, "/work/keel");
+    session(&mut app, "kestrel", &fixture_root("keel"));
+    project_page(&mut app, &fixture_root("keel"));
     let mut window = window(&app);
     let filter = window
         .bounds(&app, "sessions-attention")
@@ -310,9 +315,9 @@ fn the_launch_dialog_takes_the_focus_from_the_page_under_it() {
 fn a_press_on_a_half_hidden_row_does_not_scroll_the_list() {
     let mut app = app();
     let ids: Vec<String> = (0..40)
-        .map(|n| session(&mut app, &format!("worker-{n}"), "/work/keel"))
+        .map(|n| session(&mut app, &format!("worker-{n}"), &fixture_root("keel")))
         .collect();
-    project_page(&mut app, "/work/keel");
+    project_page(&mut app, &fixture_root("keel"));
     let mut window = window(&app);
     let bottom = app.shell.height / app.scale_factor() - 24.0;
     let (id, row) = ids
@@ -341,7 +346,6 @@ fn ringed(id: &str) -> [Focused; 1] {
 /// Focus `id` from the keyboard, as Tab would leave it.
 fn keyboard_focus(window: &mut Window, app: &mut App, id: &str) {
     window.deliver(app, vec![Message::Focus(id.into())]);
-    window.key(app, named(iced::keyboard::key::Named::Shift));
     assert_eq!(window.focused(app), ringed(id));
 }
 
@@ -351,7 +355,7 @@ fn keyboard_focus(window: &mut Window, app: &mut App, id: &str) {
 fn enter_on_a_menu_entry_gives_the_focus_back_to_its_opener() {
     use iced::keyboard::key::Named;
     let mut app = app();
-    project_page(&mut app, "/work/keel");
+    project_page(&mut app, &fixture_root("keel"));
     let mut window = window(&app);
     keyboard_focus(&mut window, &mut app, "project-more");
     window.key(&mut app, named(Named::Enter));
@@ -369,7 +373,7 @@ fn enter_on_a_menu_entry_gives_the_focus_back_to_its_opener() {
 fn the_roles_menu_takes_and_gives_back_the_keyboards_focus() {
     use iced::keyboard::key::Named;
     let mut app = app();
-    let root = "/work/orchard";
+    let root = &fixture_root("orchard");
     let id = session(&mut app, "reviewer-one", root);
     project_page(&mut app, root);
     app.palettes_asked.insert(root.into());
@@ -415,8 +419,8 @@ fn the_launch_choice_menus_take_the_focus_only_from_the_keyboard() {
 #[test]
 fn back_and_forward_by_the_pointer_leave_no_ring() {
     let mut app = app();
-    let id = session(&mut app, "kestrel", "/work/keel");
-    project_page(&mut app, "/work/keel");
+    let id = session(&mut app, "kestrel", &fixture_root("keel"));
+    project_page(&mut app, &fixture_root("keel"));
     let mut window = window(&app);
     let row = window
         .bounds(&app, &format!("session-{id}"))
@@ -441,4 +445,101 @@ fn back_and_forward_by_the_pointer_leave_no_ring() {
         assert!(focused.iter().all(|f| !f.ringed), "{arrow}: {focused:?}");
     }
     assert_eq!(app.shell.selected.as_deref(), Some(id.as_str()));
+}
+
+/// A menu opened by a click and closed with Escape, opened again with
+/// Enter straight away, is the keyboard's: Enter takes the focus into it,
+/// though Escape and Enter were both taken by controls and the app's own
+/// key handling never heard them.
+#[test]
+fn enter_after_a_click_and_escape_opens_the_menu_for_the_keyboard() {
+    use iced::keyboard::key::Named;
+    let mut app = app();
+    project_page(&mut app, &fixture_root("keel"));
+    let mut window = window(&app);
+    let more = window.bounds(&app, "project-more").expect("the More tab");
+    window.tap(&mut app, more.center());
+    assert!(app.shell.more, "the click opened it");
+    window.key(&mut app, named(Named::Escape));
+    assert!(!app.shell.more, "Escape closed it");
+    window.key(&mut app, named(Named::Enter));
+    assert!(app.shell.more, "Enter opened it again");
+    assert_eq!(window.focused(&app), ringed("project-tab-Journal"));
+    assert_eq!(app.shell.menu_opener.as_deref(), Some("project-more"));
+}
+
+/// Model and Effort sit inside the launch dialog: a choice made from the
+/// keyboard, with Enter or Space, gives the focus back to the chip that
+/// opened the menu — the dialog was open before the choice, so it does not
+/// count as a layer the choice opened.
+#[test]
+fn a_keyboard_choice_in_the_launch_dialog_returns_to_its_chip() {
+    use agentdocker_core::model_choice::{ModelChoices, ModelOption};
+    use iced::keyboard::key::Named;
+    for (key, chooses) in [("model", Named::Enter), ("effort", Named::Space)] {
+        let mut app = app();
+        project_page(&mut app, &fixture_root("keel"));
+        let _ = app.update(Message::ShowLaunch);
+        assert!(app.shell.launch);
+        app.shell.launch_runtime = Some("claude-code".into());
+        app.shell.launch_choices = Some((
+            "claude-code".into(),
+            ModelChoices {
+                default_model: Some("a".into()),
+                default_effort: Some("low".into()),
+                models: vec![ModelOption {
+                    id: "a".into(),
+                    name: "A".into(),
+                    efforts: vec!["low".into(), "high".into()],
+                }],
+                efforts: vec![],
+            },
+        ));
+        let mut window = window(&app);
+        let chip = format!("launch-{key}");
+        keyboard_focus(&mut window, &mut app, &chip);
+        window.key(&mut app, named(Named::Enter));
+        assert!(app.shell.launch_choice_menu.is_some(), "{key}: opened");
+        assert_eq!(window.focused(&app), ringed(&format!("{chip}-default")));
+        window.key(&mut app, named(chooses));
+        assert_eq!(app.shell.launch_choice_menu, None, "{key}: chosen");
+        assert!(app.shell.launch, "the dialog stays");
+        assert_eq!(window.focused(&app), ringed(&chip), "{key}");
+    }
+}
+
+/// A keyboard choice that opens a dialog leaves the focus to the dialog:
+/// **Launch agent**'s menu, opened from the keyboard, launches with the
+/// chosen tool into the dialog's task field, not back to the menu's button
+/// under the scrim.
+#[test]
+fn a_keyboard_choice_that_opens_the_dialog_leaves_the_focus_there() {
+    use iced::keyboard::key::Named;
+    let mut app = app();
+    app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
+        name: "claude-code".into(),
+        vendor: "fixture".into(),
+        label: runtime_label("claude-code"),
+        cli: Some("/fixture/provider".into()),
+        version: None,
+        apps: vec![],
+        extensions: vec![],
+        incomplete: vec![],
+        config_dir: None,
+        mcp: agentdocker_core::runtime::Wiring::Missing,
+        hooks: agentdocker_core::runtime::Wiring::Missing,
+        hooks_missing: vec![],
+        shell: agentdocker_core::runtime::Wiring::Unsupported,
+        running: 0,
+    }];
+    project_page(&mut app, &fixture_root("keel"));
+    let mut window = window(&app);
+    keyboard_focus(&mut window, &mut app, "launch-menu");
+    window.key(&mut app, named(Named::Enter));
+    assert!(app.shell.launch_menu);
+    assert_eq!(window.focused(&app), ringed("launch-with-claude-code"));
+    window.key(&mut app, named(Named::Enter));
+    assert!(app.shell.launch, "the choice opened the dialog");
+    assert_eq!(window.focused(&app), [], "the task field has the focus");
+    assert_eq!(app.shell.menu_opener, None);
 }

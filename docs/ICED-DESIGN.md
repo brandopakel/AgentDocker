@@ -209,14 +209,18 @@ control does, its id or its accessible label:
   a press anywhere on an open menu — its padding, a separator, a line of
   text — stays in it rather than reaching the control beneath. A menu opened
   from the keyboard takes the focus to its first entry (`shell::State::
-  pressed` tells a pointer-opened menu, which leaves the focus alone), since
-  overlays come last in the Tab order, and remembers its opener
-  (`shell::State::menu_opener`). The popup says how it closes, ahead of the
-  menu's own message: `Message::MenuEscaped` gives the focus back to the
-  opener; `Message::MenuChosen` (Enter or Space on its focused entry) does
-  so once the choice has closed the menu, unless it opened the launch
-  dialog or the palette; `Message::MenuPressedAway` and any pointer press
-  forget the opener. The roles menu and the launch dialog's Model and Effort
+  pressed` tells a pointer-opened menu, which leaves the focus alone; Enter
+  or Space that a control takes says `Message::KeyPressedControl` before its
+  action, so a menu reopened from the keyboard after a click is the
+  keyboard's), since overlays come last in the Tab order, and remembers its
+  opener (`shell::State::menu_opener`). The popup says how it closes, ahead
+  of the menu's own message: `Message::MenuEscaped` gives the focus back to
+  the opener; `Message::MenuChosen` (Enter or Space on its focused entry)
+  does so once the choice has closed the menu, unless the choice opened the
+  launch dialog or the palette (`shell::Layers`: a dialog the menu sits in,
+  as Model and Effort sit in the launch dialog, was open before it and does
+  not count); `Message::MenuPressedAway` and any pointer press forget the
+  opener. The roles menu and the launch dialog's Model and Effort
   menus take the keyboard's focus the same way.
   Iced runs operations over overlays too, so the popup's controls are
   focusable, carry accessibility nodes and are found by the workflow driver.
@@ -755,8 +759,11 @@ a time:
 (`view::testing::Window`: events, the messages they publish, the rebuild, then
 the operations), with taps whose press and release arrive together and clicks
 a frame apart: a session row that moves, a row pushed down by a new session,
-a half-hidden row, a field's caret, menus opened and closed each way, the
-roles and choice menus, the launch dialog, and Back and Forward. Widget tests
+a half-hidden row, a field's caret, menus opened and closed each way (a
+click, Escape, then Enter included, with no other key between), the roles
+menu, the Model and Effort menus inside the launch dialog, a choice that
+opens the dialog, and Back and Forward. Fixture projects sit at absolute
+roots on every platform. Widget tests
 in `controls` cover the keys, fresh state, the pointer and Tab operations, a
 disabled control, a captured key and a label in a row.
 Text inputs use Iced's native input-method support. Message and answer composers

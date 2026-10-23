@@ -498,6 +498,9 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
             ) || matches!(key, keyboard::Key::Character(c) if c.as_str() == " "))
         {
             if !repeat {
+                // The keyboard pressed it, said first: a menu it opens was
+                // opened from the keyboard, whatever the pointer did before.
+                shell.publish(Message::KeyPressedControl);
                 shell.publish(action);
             }
             shell.capture_event();
@@ -1209,8 +1212,18 @@ mod tests {
                     &mut shell,
                     &Rectangle::with_size(Size::new(400.0, 100.0)),
                 );
-                assert_eq!(messages.len(), expected);
-                assert!(messages.iter().all(|m| matches!(m, Message::ShowAdd)));
+                // The keyboard says it pressed the button, then the action.
+                if expected == 1 {
+                    assert!(
+                        matches!(
+                            messages.as_slice(),
+                            [Message::KeyPressedControl, Message::ShowAdd]
+                        ),
+                        "{messages:?}"
+                    );
+                } else {
+                    assert!(messages.is_empty(), "{messages:?}");
+                }
             }
         }
     }

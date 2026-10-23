@@ -313,7 +313,9 @@ pub(super) struct State {
     /// there, on the selected row and while its menu is open.
     pub rail_hover: Option<PathBuf>,
     /// The control a pointer (or assistive technology) last pressed,
-    /// until a key is pressed. A menu opened from that control was opened
+    /// until a key is pressed — one the app hears, or Enter or Space that a
+    /// control takes (`Message::KeyPressedControl`). A menu opened from that
+    /// control was opened
     /// by pointer and keeps the focus where it is; opened from the
     /// keyboard, the menu takes the focus to its first entry, since menus
     /// float above the page and would otherwise be last in the Tab order.
@@ -323,8 +325,11 @@ pub(super) struct State {
     /// or Space that closes the menu, gives it back there. A pointer press
     /// anywhere forgets it, and so does the menu closing any other way.
     pub menu_opener: Option<String>,
-    /// An entry of the open menu was just chosen from the keyboard.
-    pub menu_chosen: bool,
+    /// An entry of the open menu was just chosen from the keyboard, and
+    /// which layers were already open over the page when it was: a dialog
+    /// the menu sits in does not stop the focus going back to the opener;
+    /// one the choice opens does.
+    pub menu_chosen: Option<Layers>,
     /// The project being renamed, and the name so far.
     pub project_rename: Option<(PathBuf, String)>,
     /// The conversation open in Inbox: one agent, or every agent at once.
@@ -1302,6 +1307,9 @@ pub enum Message {
     /// A press outside the open menu closed it: the pointer has moved on,
     /// and the focus goes back nowhere.
     MenuPressedAway,
+    /// Enter or Space pressed the focused control, said before what it
+    /// does: the keyboard, not the pointer, is in charge.
+    KeyPressedControl,
     Accessibility(crate::accessibility::Snapshot),
     // command palette
     /// Open the command palette, or close it: ⌘K / Control+K, the rail's
@@ -1334,6 +1342,15 @@ pub enum Message {
 /// other, and every frame paints the whole window, so the wakes that
 /// arrive while this waits are folded into the one it sends.
 const WAKE_SETTLE: Duration = Duration::from_millis(40);
+/// The layers that can open over the page and take the focus.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Layers {
+    /// The launch dialog.
+    pub launch: bool,
+    /// The command palette.
+    pub palette: bool,
+}
+
 /// Give the focus back to a menu's opener, from the keyboard: ringed, and
 /// scrolled into view.
 fn focus_opener(opener: String) -> Task<Message> {
@@ -1525,6 +1542,14 @@ impl App {
         ])
     }
 
+    /// The layers open over the page.
+    fn layers(&self) -> Layers {
+        Layers {
+            launch: self.shell.launch,
+            palette: self.shell.palette.open,
+        }
+    }
+
     /// Whether a menu floats over the page.
     fn menu_open(&self) -> bool {
         self.shell.more
@@ -1539,7 +1564,7 @@ impl App {
     /// keyboard, remembering where to give it back; a pointer-opened menu
     /// leaves the focus alone.
     fn menu_focus(&mut self, trigger: &str, first: String) -> Task<Message> {
-        self.shell.menu_chosen = false;
+        self.shell.menu_chosen = None;
         if self.shell.pressed.as_deref() == Some(trigger) {
             self.shell.menu_opener = None;
             return Task::none();
@@ -4265,11 +4290,17 @@ impl App {
                     tasks.push(focus_opener(opener));
                 }
             }
-            Message::MenuChosen => self.shell.menu_chosen = self.shell.menu_opener.is_some(),
+            Message::MenuChosen => {
+                self.shell.menu_chosen = self.shell.menu_opener.is_some().then(|| self.layers());
+            }
             Message::MenuPressedAway => {
                 self.shell.menu_opener = None;
-                self.shell.menu_chosen = false;
+                self.shell.menu_chosen = None;
             }
+            // Enter or Space pressed a focused control: the keyboard is in
+            // charge, whatever the pointer pressed last, so a menu it opens
+            // takes the focus.
+            Message::KeyPressedControl => self.shell.pressed = None,
             // Not revealed, as the keyboard's focus is: the pointer is on
             // it, and scrolling now would move it from under the click.
             Message::Pressed(id) => tasks.push({
@@ -4306,14 +4337,16 @@ impl App {
         }
         // A menu the keyboard opened, closed by an entry chosen from the
         // keyboard, gives the focus back to its opener — unless the choice
-        // opened a dialog or the palette, which takes it. Closed any other
-        // way, there is nothing to give back.
+        // opened a dialog or the palette, which takes it; a dialog the menu
+        // sits in does not. Closed any other way, there is nothing to give
+        // back.
         if !self.menu_open() {
-            let chosen = std::mem::take(&mut self.shell.menu_chosen);
+            let chosen = self.shell.menu_chosen.take();
+            let now = self.layers();
             if let Some(opener) = self.shell.menu_opener.take()
-                && chosen
-                && !self.shell.launch
-                && !self.shell.palette.open
+                && let Some(before) = chosen
+                && !(now.launch && !before.launch)
+                && !(now.palette && !before.palette)
             {
                 tasks.push(focus_opener(opener));
             }
