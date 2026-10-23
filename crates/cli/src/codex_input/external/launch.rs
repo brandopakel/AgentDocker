@@ -4,7 +4,7 @@ mod lifetime;
 mod log_reader;
 
 use super::{birth::Witness, bootstrap, ledger::Binding, remote};
-use crate::{client::Client, codex_input::transport::birth::BirthObserver};
+use crate::{client::Client, codex_input::transport::birth::BirthObserver, console::Console};
 use agentdocker_core::{AgentSpec, ProcessIdentity, ProviderGeneration, Request, Response};
 use agentdocker_host::{dirs, procinfo, provider_input};
 use anyhow::{Context, Result, bail, ensure};
@@ -388,7 +388,12 @@ impl Startup<'_> {
         terminal
     }
 
-    async fn witness(&self, server: &mut Child, tui: &mut Option<Child>) -> Result<Binding> {
+    async fn witness(
+        &self,
+        server: &mut Child,
+        tui: &mut Option<Child>,
+        console: &mut Console,
+    ) -> Result<Binding> {
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut observer = loop {
             ensure!(
@@ -407,6 +412,12 @@ impl Startup<'_> {
                 .spawn()
                 .context("cannot start native Codex terminal")?,
         );
+        // The terminal is Codex's from here until it has been retired: a
+        // line written under its screen lands in its composer. Whatever this
+        // process has to say meanwhile goes to the launch's log.
+        console
+            .hand_over()
+            .context("cannot keep launcher output off the Codex terminal")?;
         let terminal = tui.as_mut().context("native terminal unavailable")?;
         let thread = timeout(Duration::from_secs(45), async {
             loop {
@@ -559,6 +570,10 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         .context("cannot contain native lifetime owner processes")?;
     let home = dirs::home();
     let directory = owner.directory.clone();
+    // Opened before anything starts, so a launch that could not keep its
+    // own output off Codex's screen never starts Codex.
+    let mut console = Console::open(&directory.join("launcher.log"))
+        .context("cannot open the native launch log")?;
     let token = uuid::Uuid::new_v4().simple().to_string();
     // Own cleanup before the first fallible write/spawn. A startup failure must
     // not leave the capability behind before the normal shutdown path exists.
@@ -618,7 +633,7 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         _ = stop_signal() => Ok(()),
         result = lifetime::disconnected(&mut owner.stream) => result,
         result = async {
-            let mut binding = startup.witness(&mut server,&mut tui).await?;
+            let mut binding = startup.witness(&mut server, &mut tui, &mut console).await?;
             let prior = if resume.is_some() {
                 super::preflight(&binding).await?;
                 super::resume::predecessor(&client, &binding).await?
@@ -633,7 +648,9 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
             } else {
                 receiver = Some(bind(&client,&binding,&directory).await?);
             }
-            eprintln!("AgentDocker native input ready: {}",binding.agent);
+            // Codex has the screen: readiness is the INPUT column's, the
+            // app's and this log's to show, never a line under Codex's.
+            console.say(format_args!("native input ready: {}", binding.agent));
             let terminal = tui.as_mut().context("native terminal unavailable")?;
             wait_terminal(terminal, &mut server, &mut receiver).await
         } => result,
@@ -643,6 +660,13 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
     if let Some(child) = tui.as_mut() {
         cleanup = cleanup.and(retire(child).await);
     }
+    // Codex has ended: the terminal is this launch's again, for the errors
+    // that follow.
+    cleanup = cleanup.and(
+        console
+            .take_back()
+            .context("cannot give the launcher its terminal back"),
+    );
     if let Some(child) = receiver.as_mut() {
         cleanup = cleanup.and(retire(child).await);
     }

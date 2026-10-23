@@ -11,6 +11,7 @@ mod attach;
 mod client;
 mod codex_input;
 mod connector;
+mod console;
 mod desktop;
 mod emission;
 mod format;

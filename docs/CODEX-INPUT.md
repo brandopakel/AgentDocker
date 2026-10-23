@@ -867,7 +867,8 @@ thread identity. Thread/session IDs, canonical checkout, live generations and al
 empty state checks remain required.
 
 `AGENTDOCKER_TRACE_NATIVE_STARTUP=1` optionally records fixed startup refusal
-stages (launcher generation/child ancestry, empty-thread metadata or queue). It
+stages (launcher generation/child ancestry, empty-thread metadata or queue) in
+the launcher's and the receiver's own logs (below), never on the terminal. It
 does not log arguments, capability contents or environment values and does not
 change admission or retry a submitted message.
 
@@ -916,6 +917,19 @@ happens before admission, and provider descendants cannot autostart a shared
 daemon inside the job. A retained private kernel delete-on-close file handle
 revokes the capability even when console closure prevents either Rust cleanup
 path from running.
+
+Nothing AgentDocker writes reaches the terminal while the TUI has it. A line
+written under a full-screen program lands on whatever row it is drawing, its
+composer as often as not, where its redraws eat part of it. From the moment the
+TUI is started until it has been retired, the owner's own standard output and
+error are the launch directory's private `launcher.log`: what the launcher says,
+any startup trace, and anything else the owner writes there, a panic message
+included. Readiness is one line in that log (`native input ready: <agent>`); a
+person sees it as the INPUT column of `agentdocker ps` and in the app, never as a
+line on the terminal. The receiver the launcher starts writes to `receiver.log`
+in the same directory with stdout and stdin closed, and the server's stderr goes
+to `server.log`. A refusal before the TUI starts, and cleanup errors once it has
+ended, are printed on the terminal as before.
 
 The launcher retires its own children on exit, revokes its capability and retains
 bounded private server diagnostics. Capability cleanup is owned before fallible
