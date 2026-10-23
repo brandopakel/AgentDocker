@@ -1,7 +1,6 @@
-//! The pieces chat is drawn from: marks with a presence dot, a tinted
-//! row with an accent rail, group headers with a chevron and a guide
-//! rail, dividers, a notice line and one-line status. Presentation only;
-//! what each one says is decided by the screens that use them.
+//! The pieces chat is drawn from: a tinted row with an accent rail,
+//! dividers, the notice disc, a link and one-line status. Presentation
+//! only; what each one says is decided by the screens that use them.
 use super::super::icons::{Icon, icon};
 use super::super::style::{Colors, RADIUS_SM, mix, weight};
 use super::super::view::dot;
@@ -11,41 +10,6 @@ use iced::{
     Color, Element, Fill,
     widget::{Space, container, row, stack, text},
 };
-
-/// A mark with a presence dot at its lower right: the dot sits in a ring
-/// of `ring` (whatever the mark is drawn on) so it reads apart from the
-/// tile. `size` is the mark's.
-pub(in crate::app) fn with_presence<'a>(
-    mark: Element<'a, Message>,
-    size: f32,
-    tone: Option<Color>,
-    ring: Color,
-) -> Element<'a, Message> {
-    let Some(tone) = tone else {
-        return mark;
-    };
-    let dot_size = if size >= 28.0 { 10.0 } else { 8.0 };
-    let outer = size + 2.0;
-    let marker =
-        container(Space::new().width(dot_size).height(dot_size)).style(move |_| container::Style {
-            background: Some(tone.into()),
-            border: iced::Border {
-                color: ring,
-                width: 2.0,
-                radius: 999.0.into(),
-            },
-            ..Default::default()
-        });
-    stack![
-        container(mark).width(outer).height(outer),
-        container(marker)
-            .width(outer)
-            .height(outer)
-            .align_right(outer)
-            .align_bottom(outer),
-    ]
-    .into()
-}
 
 /// A row with an optional tint behind it and an optional accent rail
 /// down its left edge: unread, the open thread's message, the one a
@@ -121,7 +85,8 @@ pub(in crate::app) fn count_divider<'a>(label: String, c: Colors) -> Element<'a,
 }
 
 /// A small glyph on a round raised disc, centred in a column `column`
-/// wide so it lines up with the marks of the messages around it.
+/// wide so it lines up with the marks of the messages around it: the mark
+/// of what AgentDocker says, whose name is printed beside it.
 pub(in crate::app) fn disc<'a>(glyph: Icon, column: f32, c: Colors) -> Element<'a, Message> {
     container(
         container(icon(glyph, c.faint, 12.0))

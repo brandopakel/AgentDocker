@@ -23,7 +23,9 @@ impl RunningDaemon {
         let log =
             agentdocker_host::dirs::private_file(&home.with_extension("daemon.log"), true, true)
                 .unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_agentd"))
+        // The executable is the daemon as `agentdocker daemon run`.
+        let child = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
+            .args(["daemon", "run"])
             // The harness acts as the person from wherever it runs,
             // an agent's session included.
             .env("AGENTDOCKER_PERSON_CHECK", "off")
@@ -110,7 +112,9 @@ fn build_info_reports_compiled_contract_without_opening_state() {
     let output = agentdocker_host::command::run(
         tmp.path(),
         &[
-            env!("CARGO_BIN_EXE_agentd").to_owned(),
+            env!("CARGO_BIN_EXE_agentdocker").to_owned(),
+            "daemon".into(),
+            "run".into(),
             "--build-info".into(),
             "--home".into(),
             home.display().to_string(),
@@ -734,8 +738,19 @@ fn restored_first_instruction_can_coordinate_and_its_first_edit_is_observed() {
 fn service_install_preview_does_not_create_state_or_write_service_files() {
     let tmp = tempfile::tempdir_in("/tmp").unwrap();
     let home = tmp.path().join("not-created");
+    // A service names `agentd`: here, a link to this executable on PATH, in
+    // Cargo's own target directory so it can be a hard link.
+    let bin = tempfile::Builder::new()
+        .prefix("service-bin-")
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .unwrap();
+    let agentd = bin.path().join("agentd");
+    if std::fs::hard_link(env!("CARGO_BIN_EXE_agentdocker"), &agentd).is_err() {
+        std::fs::copy(env!("CARGO_BIN_EXE_agentdocker"), &agentd).unwrap();
+    }
     let result = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
         .args(["daemon", "install", "--dry-run"])
+        .env("PATH", bin.path())
         .env("AGENTDOCKER_HOME", &home)
         .env("AGENTDOCKER_SOCKET", tmp.path().join("host.sock"))
         .stdin(Stdio::null())

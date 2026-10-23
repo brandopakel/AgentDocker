@@ -473,6 +473,7 @@ mod tests {
             cwd: home.clone(),
             executable: home.join("codex"),
             remote: None,
+            control: false,
         };
         let mut ledger = Ledger::open(&home, binding.clone(), None).unwrap();
         let message = Envelope::new(
@@ -530,6 +531,7 @@ mod tests {
             cwd: home.clone(),
             executable: home.join("codex"),
             remote: None,
+            control: false,
         };
         let message = Envelope::new(
             "peer",

@@ -20,6 +20,9 @@ pub const LAUNCHER_REDIRECT_FORMAT: u32 = if cfg!(windows) { 2 } else { 1 };
 /// A visible macOS application is an intact signed copy. Its entrypoints run
 /// the selected immutable release before parsing commands or starting services.
 /// Ownership is outside the signed bundle, in the installer's existing record.
+/// The entrypoint is the one invoked, by name: `agentd` and `agentdocker` are
+/// one file, and [`crate::procinfo::executable_path`] spells it as invoked, so
+/// the release's file of that name is executed with the same arguments.
 pub fn redirect_managed_launcher() -> io::Result<()> {
     #[cfg(windows)]
     {
@@ -375,23 +378,32 @@ pub fn activated_daemon(executable: &Path) -> Option<PathBuf> {
     (!target.starts_with(running)).then_some(target)
 }
 
-/// The `agentd` a client starts when no daemon answers. A client from a
+/// The daemon a client starts when no daemon answers. A client from a
 /// managed release that is no longer the activated one starts the activated
 /// release's daemon: an app left open across `desktop install` must not
 /// bring its own older daemon back once the old one stops. Otherwise the
-/// `agentd` beside the client, so a build in `target/` starts the matching
-/// daemon, else `agentd` on `PATH`.
-pub fn daemon_to_start(client: Option<&Path>) -> PathBuf {
-    let name = format!("agentd{}", std::env::consts::EXE_SUFFIX);
-    client
-        .and_then(|me| {
-            activated_daemon(me).or_else(|| {
-                me.parent()
-                    .map(|dir| dir.join(&name))
-                    .filter(|sibling| sibling.is_file())
-            })
-        })
-        .unwrap_or_else(|| PathBuf::from(name))
+/// daemon of the `agentdocker` beside the client, so a build in `target/`
+/// starts the matching daemon: its `agentd` link when that is the same
+/// program, else `agentdocker daemon run` — never a separate `agentd` left
+/// from an earlier build. Without an `agentdocker` beside it, an `agentd`
+/// there; else `agentd` on `PATH`.
+pub fn daemon_to_start(client: Option<&Path>) -> crate::program::Invocation {
+    use crate::program::{Invocation, Role};
+    let Some(me) = client else {
+        return Invocation::plain(PathBuf::from(Role::Daemon.file_name()));
+    };
+    if let Some(activated) = activated_daemon(me) {
+        return Invocation::plain(activated);
+    }
+    let cli = me.with_file_name(Role::Cli.file_name());
+    if cli.is_file() {
+        return crate::program::invocation(&cli, Role::Daemon);
+    }
+    let daemon = me.with_file_name(Role::Daemon.file_name());
+    if daemon.is_file() {
+        return Invocation::plain(daemon);
+    }
+    Invocation::plain(PathBuf::from(Role::Daemon.file_name()))
 }
 
 pub fn pin_path(root: &Path, id: &str) -> io::Result<PathBuf> {
@@ -594,8 +606,9 @@ mod tests {
     fn the_activated_daemon_is_the_other_release_under_current() {
         use std::os::unix::fs::symlink;
         let (temp, root, executable) = fixture();
+        // Release A's daemon is its CLI under the daemon's name.
         let running = executable.with_file_name("agentd");
-        std::fs::write(&running, "release a").unwrap();
+        std::fs::hard_link(&executable, &running).unwrap();
         let versions = root.join("versions");
         let b = versions.join("b".repeat(64)).join("payload");
         std::fs::create_dir_all(b.join("bin")).unwrap();
@@ -624,7 +637,10 @@ mod tests {
         // A client of the active release starts the daemon beside it.
         let client = executable.with_file_name("agentdocker-ui");
         std::fs::write(&client, "release a").unwrap();
-        assert_eq!(daemon_to_start(Some(&client)), running);
+        assert_eq!(
+            daemon_to_start(Some(&client)),
+            crate::program::Invocation::plain(running.clone())
+        );
         // B activated: that is the reload target, resolved to its real path.
         let gen_b = generations.join("2");
         std::fs::create_dir_all(&gen_b).unwrap();
@@ -643,20 +659,43 @@ mod tests {
         // A client still open from release A starts B's daemon, not its own.
         assert_eq!(
             daemon_to_start(Some(&client)),
-            std::fs::canonicalize(&expected).unwrap()
+            crate::program::Invocation::plain(std::fs::canonicalize(&expected).unwrap())
         );
         // An unmanaged daemon has no activated release to speak of.
         let elsewhere = temp.path().join("agentd");
         std::fs::write(&elsewhere, "checkout build").unwrap();
         assert_eq!(activated_daemon(&elsewhere), None);
-        // An unmanaged client starts its sibling, and with none, `agentd`
-        // on PATH.
-        let checkout_client = temp.path().join("agentdocker");
-        assert_eq!(daemon_to_start(Some(&checkout_client)), elsewhere);
+        // An unmanaged client with no CLI beside it starts the `agentd`
+        // there, and with none, `agentd` on PATH.
+        let checkout_client = temp.path().join("agentdocker-ui");
+        let plain = crate::program::Invocation::plain;
+        assert_eq!(
+            daemon_to_start(Some(&checkout_client)),
+            plain(elsewhere.clone())
+        );
         let lone = temp.path().join("lone").join("agentdocker");
         let bare = PathBuf::from(format!("agentd{}", std::env::consts::EXE_SUFFIX));
-        assert_eq!(daemon_to_start(Some(&lone)), bare);
-        assert_eq!(daemon_to_start(None), bare);
+        assert_eq!(daemon_to_start(Some(&lone)), plain(bare.clone()));
+        assert_eq!(daemon_to_start(None), plain(bare));
+        // Beside this build's CLI, an `agentd` left from an earlier build is
+        // another program: the CLI runs the daemon itself. Its link is the
+        // same program, and starts it under the daemon's name.
+        let cli = temp.path().join("agentdocker");
+        std::fs::write(&cli, "this build").unwrap();
+        assert_eq!(
+            daemon_to_start(Some(&checkout_client)),
+            crate::program::Invocation {
+                program: cli.clone(),
+                args: vec!["daemon".into(), "run".into()],
+            }
+        );
+        std::fs::remove_file(&elsewhere).unwrap();
+        std::fs::hard_link(&cli, &elsewhere).unwrap();
+        assert_eq!(
+            daemon_to_start(Some(&checkout_client)),
+            plain(elsewhere.clone())
+        );
+        assert_eq!(daemon_to_start(Some(&cli)), plain(elsewhere));
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

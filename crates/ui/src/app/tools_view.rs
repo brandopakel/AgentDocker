@@ -4,8 +4,10 @@
 //!
 //! They share one grammar. A card holds rows separated by hairlines; a
 //! row is a title over one quiet line on the left and a single control on
-//! the right. Status is a dot and a word. A screen has at most one filled
-//! action, and a row only gets one when it is the row that needs doing.
+//! the right. A state is a chip — an icon and its word — with its fix
+//! beside it. A screen has at most one filled action, and a row only gets
+//! one when it is the row that needs doing.
+use super::chip::{Chip, Tone, chip, sentence};
 use super::icons::{Icon, icon};
 use super::style::{Colors, RADIUS_LG, RADIUS_MD, RADIUS_SM, UI, alpha, mix, weight};
 use super::view::{
@@ -431,12 +433,14 @@ struct ToolState<'a> {
     unverified: bool,
     missing: bool,
     sessions: Vec<&'a AgentRecord>,
-    tone: iced::Color,
-    word: String,
+    /// The tool's state as the row's chip: the part of its words that is
+    /// the state, the rest (connected, configured, installed, what is
+    /// missing) and the version its detail.
+    chip: Chip,
 }
 
 impl App {
-    fn tool_state<'a>(&'a self, runtime: &RuntimeInfo, c: Colors) -> ToolState<'a> {
+    fn tool_state<'a>(&'a self, runtime: &RuntimeInfo) -> ToolState<'a> {
         let expanded = self.shell.connection_details.as_deref() == Some(runtime.name.as_str());
         let installed = runtime.installed();
         let reporting = self.tool_reports(&runtime.name);
@@ -477,40 +481,95 @@ impl App {
         // the session while it is idle, so messages wait for its next
         // prompt; with a route that is paused or silent, they wait for
         // that to be put right.
-        let (tone, word) = if ready {
-            (c.green, "Receiving messages".to_owned())
+        // The chip says the state; what comes before it in the full words
+        // (connected, configured, installed) or after it (what is
+        // missing, where the browser agent comes from) is its detail.
+        let (glyph, tone, word, lead_is_state) = if ready {
+            (
+                Some(Icon::Check),
+                Tone::Positive,
+                "Receiving messages".to_owned(),
+                true,
+            )
         } else if reporting && paused {
-            (c.amber, "Connected · messages paused".to_owned())
+            (
+                Some(Icon::Pause),
+                Tone::Attention,
+                "Connected · messages paused".to_owned(),
+                false,
+            )
         } else if reporting && stale {
-            (c.amber, "Connected · not heard from recently".to_owned())
+            (
+                Some(Icon::Alert),
+                Tone::Attention,
+                "Connected · not heard from recently".to_owned(),
+                false,
+            )
         } else if reporting {
             (
-                c.cyan,
+                Some(Icon::Clock),
+                Tone::Info,
                 "Connected · messages wait for its next prompt".to_owned(),
+                false,
             )
         } else if !installed {
-            (c.faint, "Not installed".to_owned())
+            (None, Tone::Neutral, "Not installed".to_owned(), true)
         } else if runtime.in_browser() {
             // No session of it appears unless one came in through the
             // connector: say which here, where the person comes to ask
             // why their browser agent is or is not listed.
             (
+                None,
                 if sessions.is_empty() {
-                    c.faint
+                    Tone::Neutral
                 } else {
-                    c.green
+                    Tone::Positive
                 },
                 super::in_browser_word(runtime, sessions.len(), self.connector.as_ref()),
+                true,
             )
         } else if !supported {
-            (c.faint, "Installed · integration unavailable".to_owned())
+            (
+                None,
+                Tone::Neutral,
+                "Installed · integration unavailable".to_owned(),
+                false,
+            )
         } else if unverified {
-            (c.amber, "Setup needs review".to_owned())
+            (
+                Some(Icon::Alert),
+                Tone::Attention,
+                "Setup needs review".to_owned(),
+                true,
+            )
         } else if missing {
-            (c.amber, super::missing_setup(runtime))
+            (
+                Some(Icon::Alert),
+                Tone::Attention,
+                super::missing_setup(runtime),
+                true,
+            )
         } else {
-            (c.cyan, "Configured · waiting for contact".to_owned())
+            (
+                Some(Icon::Clock),
+                Tone::Info,
+                "Configured · waiting for contact".to_owned(),
+                false,
+            )
         };
+        let (state, rest) = match word.split_once(" · ") {
+            Some((head, tail)) if lead_is_state => (head.to_owned(), Some(sentence(tail))),
+            Some((head, tail)) => (sentence(tail), Some(head.to_owned())),
+            None => (word.clone(), None),
+        };
+        let version = runtime.version.clone();
+        let detail = [rest, version]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let chip =
+            Chip::new(format!("tool-state-{}", runtime.name), glyph, state, tone).detail(detail);
         ToolState {
             expanded,
             installed,
@@ -519,8 +578,7 @@ impl App {
             unverified,
             missing,
             sessions,
-            tone,
-            word,
+            chip,
         }
     }
 
@@ -528,12 +586,14 @@ impl App {
     /// open, then one card with a row per tool.
     pub(super) fn connections(&self, c: Colors) -> Element<'_, Message> {
         let mut page = column![].spacing(16).width(Fill);
-        // Busy is a ring, a failure one line beside the alert mark.
+        // Busy is a chip, a failure one line beside the alert mark.
         if self.setup_busy {
-            page = page.push(super::view::said(
+            page = page.push(chip(
                 "setup-busy",
+                Some(Icon::Ring),
                 "Checking…",
-                icon(Icon::Ring, c.accent, 14.0),
+                Tone::Info,
+                c,
             ));
         }
         if let Some(error) = &self.shell.setup_error {
@@ -562,7 +622,7 @@ impl App {
         let mut rows: Vec<Element<'_, Message>> = runtimes
             .into_iter()
             .map(|runtime| {
-                let needs = self.tool_needs_action(runtime, c);
+                let needs = self.tool_needs_action(runtime);
                 let lead = needs && !led;
                 led |= needs;
                 self.tool_row(runtime, lead, c)
@@ -626,20 +686,21 @@ impl App {
                 .map(|plan| -> Element<'_, Message> {
                     let id = field(plan, "id");
                     let phase = field(plan, "phase");
-                    let tone = match phase.as_str() {
-                        "applied" => c.green,
-                        "prepared" | "applying" => c.accent,
-                        _ => c.faint,
+                    let (glyph, tone) = match phase.as_str() {
+                        "applied" => (Some(Icon::Check), Tone::Positive),
+                        "prepared" | "applying" => (None, Tone::Info),
+                        _ => (None, Tone::Neutral),
                     };
                     container(custom(
                         format!("saved-setup-{id}"),
                         format!("{phase} · {id}"),
                         row![
                             mono(short_id(&id).to_owned(), 12, c.text).width(Fill),
-                            super::view::status_dot(
+                            chip(
                                 format!("saved-setup-phase-{id}"),
+                                glyph,
+                                sentence(&phase),
                                 tone,
-                                phase.clone(),
                                 c
                             ),
                             icon(Icon::ChevronRight, c.faint, 13.0)
@@ -661,8 +722,8 @@ impl App {
     }
 
     /// Whether a tool's row offers Set up.
-    fn tool_needs_action(&self, runtime: &RuntimeInfo, c: Colors) -> bool {
-        let state = self.tool_state(runtime, c);
+    fn tool_needs_action(&self, runtime: &RuntimeInfo) -> bool {
+        let state = self.tool_state(runtime);
         state.installed
             && state.supported
             && (state.missing || state.unverified)
@@ -679,21 +740,12 @@ impl App {
         c: Colors,
     ) -> Element<'a, Message> {
         let narrow = self.narrow();
-        let state = self.tool_state(runtime, c);
-        let version = runtime
-            .version
-            .as_deref()
-            .map(|v| format!(" · {v}"))
-            .unwrap_or_default();
-        let needs_action = self.tool_needs_action(runtime, c);
-        // The state is a dot beside the name; its words show when the dot
-        // is pointed at.
-        let status = super::view::status_dot(
-            format!("tool-state-{}", runtime.name),
-            state.tone,
-            format!("{}{version}", state.word),
-            c,
-        );
+        let state = self.tool_state(runtime);
+        let needs_action = self.tool_needs_action(runtime);
+        // The state is a chip after the name, with Set up beside it when
+        // that is the fix; the rest of its words and the version are the
+        // chip's detail.
+        let status = state.chip.clone().view(c);
         let mut trailing = row![].spacing(6).align_y(Center);
         if needs_action {
             let id = format!("setup-{}", runtime.name);
@@ -719,7 +771,7 @@ impl App {
         }
         head = head.push(
             row![text(runtime.label.clone()).size(14).font(MEDIUM), status]
-                .spacing(4)
+                .spacing(8)
                 .align_y(Center)
                 .width(Fill),
         );
@@ -839,10 +891,11 @@ impl App {
                 None => {
                     facts.push((
                         "Connector".into(),
-                        super::view::status_dot(
+                        chip(
                             format!("connector-off-{}", runtime.name),
-                            c.faint,
+                            None,
                             "Not running",
+                            Tone::Neutral,
                             c,
                         ),
                     ));
@@ -914,20 +967,24 @@ impl App {
                         self.connected.is_ok() && contact.current_for(agent.process_started_at, now)
                     })
                 };
+                // Each route's contact as a chip: *MCP · recent*, *Hooks ·
+                // none*.
                 let contact = |name: &str, seen: bool| {
-                    super::view::status_dot(
+                    Chip::new(
                         format!("contact-{name}-{}", agent.id),
-                        if seen { c.green } else { c.faint },
-                        format!(
-                            "{name}: {}",
-                            if seen {
-                                "recent contact"
-                            } else {
-                                "no recent contact"
-                            }
-                        ),
-                        c,
+                        seen.then_some(Icon::Check),
+                        format!("{name} · {}", if seen { "recent" } else { "none" }),
+                        if seen { Tone::Positive } else { Tone::Neutral },
                     )
+                    .detail(format!(
+                        "{name}: {}",
+                        if seen {
+                            "recent contact"
+                        } else {
+                            "no recent contact"
+                        }
+                    ))
+                    .view(c)
                 };
                 let readiness = self.input_readiness(agent);
                 let mut entry = column![
@@ -936,12 +993,9 @@ impl App {
                             .size(13)
                             .font(MEDIUM)
                             .width(Fill),
-                        super::view::status_dot(
-                            format!("tool-session-readiness-{}", agent.id),
-                            readiness.tone(c),
-                            readiness.label(),
-                            c
-                        )
+                        readiness
+                            .chip(format!("tool-session-readiness-{}", agent.id))
+                            .view(c)
                     ]
                     .spacing(12)
                     .align_y(Center),
@@ -949,7 +1003,7 @@ impl App {
                         contact("MCP", seen(agentdocker_core::AdapterKind::Mcp)),
                         contact("Hooks", seen(agentdocker_core::AdapterKind::Hooks))
                     ]
-                    .spacing(16)
+                    .spacing(6)
                     .wrap()
                 ]
                 .spacing(6);
@@ -1041,13 +1095,15 @@ impl App {
                     field(check, "detail")
                 ));
             }
-            // Checked is a tick; a problem the alert mark, with what is
-            // wrong on the pointer and in its name.
+            // Checked is a chip; a problem the alert chip, its first line
+            // printed and all of them its detail.
             let mark: Element<'_, Message> = if problems.is_empty() {
-                super::view::said(
+                chip(
                     format!("health-ok-{label}"),
+                    Some(Icon::Check),
                     "Configuration checked",
-                    icon(Icon::Check, c.green, 14.0),
+                    Tone::Positive,
+                    c,
                 )
             } else {
                 super::view::alert_mark(format!("health-{label}"), problems.join("\n"), c)
@@ -1083,7 +1139,7 @@ impl App {
             .iter()
             .any(|change| field(change, "channel") == "shell");
         // The card is named for what it sets up; its state is the
-        // footer's dot.
+        // footer's chip.
         let title_text = match &tool {
             Some(_) if shell_plan => "Shell".to_owned(),
             Some(tool) => tool.clone(),
@@ -1132,13 +1188,21 @@ impl App {
             && matches!(phase.as_str(), "prepared" | "applying")
             && any
             && plan_id.is_some();
-        let (state_word, tone) = match phase.as_str() {
-            "applied" if shell_plan => ("Saved; open a new terminal to load it", c.green),
-            "applied" => ("Saved; start a fresh session to load it", c.green),
-            "undone" => ("Undone", c.faint),
-            "applying" => ("Applying…", c.accent),
-            _ if !any => ("Nothing to change", c.faint),
-            _ => ("Waiting for you", c.amber),
+        let (state_word, glyph, tone) = match phase.as_str() {
+            "applied" if shell_plan => (
+                "Saved; open a new terminal to load it",
+                Some(Icon::Check),
+                Tone::Positive,
+            ),
+            "applied" => (
+                "Saved; start a fresh session to load it",
+                Some(Icon::Check),
+                Tone::Positive,
+            ),
+            "undone" => ("Undone", None, Tone::Neutral),
+            "applying" => ("Applying…", Some(Icon::Ring), Tone::Info),
+            _ if !any => ("Nothing to change", None, Tone::Neutral),
+            _ => ("Waiting for you", Some(Icon::Alert), Tone::Attention),
         };
         let mut buttons = row![ghost(
             "close-setup",
@@ -1164,7 +1228,7 @@ impl App {
         }
         let footer = container(
             row![
-                container(super::view::status_dot("setup-state", tone, state_word, c)).width(Fill),
+                container(chip("setup-state", glyph, state_word, tone, c)).width(Fill),
                 buttons
             ]
             .spacing(12)
@@ -1449,11 +1513,11 @@ impl App {
         let ended = matches!(terminal.status(), Status::Ended(_));
         let scrolled = terminal.scrolled_back();
         let (tone, word) = if ended {
-            (c.faint, "Ended")
+            (Tone::Neutral, "Ended")
         } else if scrolled {
-            (c.amber, "Scrolled back")
+            (Tone::Attention, "Scrolled back")
         } else {
-            (c.green, "Live")
+            (Tone::Positive, "Live")
         };
         let workdir = self
             .agents
@@ -1479,7 +1543,7 @@ impl App {
                 .clip(true),
             );
         }
-        let mut controls = row![text(word).size(12).font(MEDIUM).color(tone)]
+        let mut controls = row![chip("terminal-state", None, word, tone, c)]
             .spacing(10)
             .align_y(Center);
         if scrolled {
@@ -1502,15 +1566,9 @@ impl App {
             Kind::Secondary,
             [4, 10],
         ));
-        let mut pane = column![
-            container(
-                row![dot(tone, 8.0, c), who, controls]
-                    .spacing(10)
-                    .align_y(Center)
-            )
-            .padding([10, 14])
-        ]
-        .width(Fill);
+        let mut pane =
+            column![container(row![who, controls].spacing(10).align_y(Center)).padding([10, 14])]
+                .width(Fill);
         if let Status::Ended(reason) = terminal.status() {
             pane = pane.push(
                 container(text(reason).size(13).color(c.amber))
@@ -1825,7 +1883,7 @@ impl App {
                 action("desktop-update-check", "Check for updates", message, false)
             }
         };
-        let (glyph, tone, headline, mut sentence, mut actions) = match available {
+        let (glyph, tone, state_tone, headline, sentence, mut actions) = match available {
             Some(version) => {
                 let download = p
                     .preview("update")
@@ -1847,6 +1905,7 @@ impl App {
                 (
                     Icon::Download,
                     c.accent,
+                    Some(Tone::Info),
                     format!("Update available — {version}"),
                     if consent {
                         format!(
@@ -1868,6 +1927,7 @@ impl App {
                     Some(u) if u["published"] == false => (
                         Icon::Check,
                         c.faint,
+                        Some(Tone::Neutral),
                         "No update published yet".to_owned(),
                         match installed {
                             Some(version) => format!(
@@ -1880,6 +1940,7 @@ impl App {
                     Some(u) => (
                         Icon::Check,
                         c.green,
+                        Some(Tone::Positive),
                         "You have the newest release".to_owned(),
                         match installed {
                             Some(version) => {
@@ -1892,6 +1953,7 @@ impl App {
                     None => (
                         Icon::Download,
                         c.muted,
+                        None,
                         "Updates".to_owned(),
                         "Checks the published release feed. A check downloads nothing.".to_owned(),
                         actions,
@@ -1899,38 +1961,57 @@ impl App {
                 }
             }
         };
-        if p.update_check_error {
-            sentence = "Couldn’t reach the release feed. Try again.".to_owned();
-        }
         if p.checking_updates {
-            actions = actions.push(super::view::said(
+            actions = actions.push(chip(
                 "update-checking",
+                Some(Icon::Ring),
                 "Checking…",
-                icon(Icon::Ring, c.accent, 14.0),
+                Tone::Info,
+                c,
             ));
         }
-        // The disc says the state; its words are its tooltip and name, and
-        // the line beside it is the version alone.
-        let version_line = headline
-            .rsplit_once(" — ")
-            .map(|(_, version)| version.to_owned())
-            .or_else(|| installed.map(|v| v.to_string()))
-            .unwrap_or_default();
-        let disc = super::view::tip(
-            super::view::said(
-                "update-state",
-                format!("{headline}. {sentence}"),
-                container(icon(glyph, tone, 18.0))
-                    .center(36)
-                    .style(move |_| c.dot(alpha(tone, if c.dark { 0.16 } else { 0.12 }))),
+        // The disc is the state's icon; the version and the state's chip
+        // beside it say it, what to do about it the chip's detail.
+        let (word, version_line) = match headline.split_once(" — ") {
+            Some((word, version)) => (word.to_owned(), version.to_owned()),
+            None => (
+                headline.clone(),
+                installed.map(|v| v.to_string()).unwrap_or_default(),
             ),
-            sentence.clone(),
-            c,
-        );
+        };
+        let disc: Element<'_, Message> = container(icon(glyph, tone, 18.0))
+            .center(36)
+            .style(move |_| c.dot(alpha(tone, if c.dark { 0.16 } else { 0.12 })))
+            .into();
         let mut words = row![text(version_line).size(14).font(MEDIUM)]
-            .spacing(6)
+            .spacing(8)
             .align_y(Center)
             .width(Fill);
+        // Nothing checked yet: no state, and what a check does is the
+        // disc's tooltip.
+        let disc = match state_tone {
+            Some(state) => {
+                words = words.push(
+                    Chip::new("update-state", None, word, state)
+                        .detail(sentence)
+                        .view(c),
+                );
+                disc
+            }
+            None => super::view::tip(disc, sentence, c),
+        };
+        if p.update_check_error {
+            words = words.push(
+                Chip::new(
+                    "update-feed-unreachable",
+                    Some(Icon::Alert),
+                    "Couldn’t reach the release feed",
+                    Tone::Attention,
+                )
+                .detail("Try again.")
+                .view(c),
+            );
+        }
         if update.is_some_and(|u| u["state_schema_change"] == true) {
             words = words.push(super::view::alert_mark(
                 "update-schema-change",
@@ -1996,10 +2077,11 @@ impl App {
         }
         match status {
             Some(installation) if installation.is_null() => rows.push(
-                container(super::view::status_dot(
+                container(chip(
                     "installation-none",
-                    c.faint,
-                    "No managed installation at this prefix.",
+                    None,
+                    "No managed installation at this prefix",
+                    Tone::Neutral,
                     c,
                 ))
                 .padding([10, 16])
@@ -2459,13 +2541,20 @@ mod tests {
                 observed_at: now,
             },
         );
+        // The chip is the state; what it is connected or configured as is
+        // its detail.
         let word = |app: &mut crate::app::App, agent: &AgentRecord| {
             app.agents = vec![agent.clone()];
-            app.tool_state(&runtime, Colors::new(false)).word
+            let chip = app.tool_state(&runtime).chip;
+            (chip.words, chip.detail)
         };
+        let connected = Some("Connected".to_owned());
         assert_eq!(
             word(&mut app, &agent),
-            "Connected · messages wait for its next prompt"
+            (
+                "Messages wait for its next prompt".to_owned(),
+                connected.clone()
+            )
         );
         let delivery = |paused: bool, reported_at| InputDelivery {
             process_started_at: birth,
@@ -2477,7 +2566,10 @@ mod tests {
             typing_until: None,
         };
         agent.input_delivery = Some(delivery(false, now));
-        assert_eq!(word(&mut app, &agent), "Receiving messages");
+        assert_eq!(
+            word(&mut app, &agent),
+            ("Receiving messages".to_owned(), None)
+        );
         agent.provider_availability = Some(ProviderAvailability {
             process_started_at: birth,
             observed_at: now,
@@ -2487,16 +2579,37 @@ mod tests {
         });
         assert_eq!(
             word(&mut app, &agent),
-            "Connected · messages paused",
+            ("Messages paused".to_owned(), connected.clone()),
             "a provider block holds delivery whatever the receiver says"
         );
         agent.provider_availability = None;
         agent.input_delivery = Some(delivery(true, now));
-        assert_eq!(word(&mut app, &agent), "Connected · messages paused");
+        assert_eq!(
+            word(&mut app, &agent),
+            ("Messages paused".to_owned(), connected.clone())
+        );
         agent.input_delivery = Some(delivery(false, birth));
         assert_eq!(
             word(&mut app, &agent),
-            "Connected · not heard from recently"
+            ("Not heard from recently".to_owned(), connected)
+        );
+        // Drawn, the row's chip is named by its words, the version in its
+        // detail; a missing entry is the state, and which one its detail.
+        let mut versioned = runtime.clone();
+        versioned.version = Some("0.9.1".into());
+        let view = crate::app::view::testing::seen(
+            app.tool_state(&versioned).chip.view(Colors::new(true)),
+        );
+        let node = view.control("tool-state-codex").expect("the tool's chip");
+        assert_eq!(node.1, "Not heard from recently");
+        assert_eq!(node.2.as_deref(), Some("Connected · 0.9.1"));
+        app.agents.clear();
+        let mut missing = runtime.clone();
+        missing.mcp = Wiring::Missing;
+        let chip = app.tool_state(&missing).chip;
+        assert_eq!(
+            (chip.words.as_str(), chip.detail.as_deref(), chip.tone),
+            ("Needs setup", Some("Missing MCP entry"), Tone::Attention)
         );
     }
 }

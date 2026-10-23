@@ -23,7 +23,7 @@ class BenchmarkCampaign(unittest.TestCase):
             cargo = binary / "cargo"
             cargo.write_text("#!/usr/bin/env python3\nimport json, os, pathlib, sys\n"
                 "root = pathlib.Path(os.environ['CARGO_TARGET_DIR']) / 'release'\n"
-                "for flag, name, path in [('--bin', 'agentd', root / 'agentd'), "
+                "for flag, name, path in [('--bin', 'agentdocker', root / 'agentdocker'), "
                 "('--example', 'socket_load', root / 'examples/socket_load')]:\n"
                 "    if flag in sys.argv:\n"
                 "        print(json.dumps({'reason': 'compiler-artifact', 'target': {'name': name}, 'executable': str(path)}))\n")
@@ -31,7 +31,7 @@ class BenchmarkCampaign(unittest.TestCase):
             build = root / "custom build"
             target = build / "release/examples"
             target.mkdir(parents=True)
-            (target.parent / "agentd").write_text("fixture daemon")
+            (target.parent / "agentdocker").write_text("fixture daemon")
             workload = target / "socket_load"
             workload.write_text("#!/bin/sh\n[ \"$1\" = \"$CARGO_TARGET_DIR/release/agentd\" ] || exit 8\n"
                                 "printf '%s %s\\n' \"$2\" \"$4\" >> calls\n"

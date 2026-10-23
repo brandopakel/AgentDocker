@@ -262,7 +262,11 @@ jobs:
           cache-on-failure: true
       - name: Build the shared-server receiver candidate
         if: inputs.receiver_acceptance
-        run: cargo build --locked --release -p agentdocker --bins
+        run: |
+          cargo build --locked --release -p agentdocker --bins
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          python scripts/daemon_link.py target/release
+          if ($LASTEXITCODE -ne 0) { throw "daemon link failed" }
       - name: Prepare pinned provider and native terminal dependencies
         run: |
           python -m pip install --disable-pip-version-check pywinpty==3.0.5 psutil==7.0.0 websockets==15.0.1

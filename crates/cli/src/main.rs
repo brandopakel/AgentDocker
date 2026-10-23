@@ -1,4 +1,8 @@
-//! `agentdocker`: command-line client for `agentd`.
+//! `agentdocker`: command-line client for `agentd`, and `agentd` itself.
+//!
+//! One executable is both programs. Invoked as `agentd` (the link packages
+//! ship beside `agentdocker`), or as `agentdocker daemon run`, it is the
+//! daemon; otherwise the CLI. See [`agentdocker_host::program`].
 // The MCP tool schemas are one `json!` each; the board's are deep.
 #![recursion_limit = "256"]
 
@@ -113,6 +117,12 @@ enum Command {
         /// Start point: a branch, tag or commit (default: this session's HEAD).
         #[arg(long)]
         from: Option<String>,
+        /// A directory of this checkout to seed the new one with, such as
+        /// `target` or `node_modules` (repeatable): cloned copy-on-write
+        /// where the filesystem can (APFS, reflink), else copied; not on
+        /// Windows yet.
+        #[arg(long = "seed-build", value_name = "DIR")]
+        seed_build: Vec<String>,
     },
     /// Commit this agent's checkout, journaled and attributed to it
     Commit {
@@ -435,6 +445,8 @@ enum Command {
     Memory(MemoryArgs),
     /// A project's files, kept beside the work and linked to cards.
     File(FileArgs),
+    /// The webhook sinks in agentd.toml: what each attempt to post came to.
+    Webhook(WebhookArgs),
     /// Ask the other members of a channel to review this agent's work.
     ReviewRequest {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -814,6 +826,10 @@ enum Command {
     /// Review retained Codex input and explicitly confirm readback or start its queued entry.
     #[command(hide = true)]
     CodexQueueResolve(codex_input::external::resolve::Args),
+    /// The conversations Codex's shared app-server has loaded, read through
+    /// its control socket, with each one's status and AgentDocker record.
+    #[command(hide = true)]
+    CodexThreads(codex_input::threads::Args),
     /// Start the agents in an Agentfile.toml that are not already running.
     Up {
         /// Agentfile to read (default: ./Agentfile.toml).
@@ -1046,6 +1062,29 @@ enum MemoryAction {
         memory: String,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         from: Option<String>,
+    },
+}
+
+#[derive(clap::Args)]
+struct WebhookArgs {
+    #[command(subcommand)]
+    action: WebhookAction,
+}
+
+#[derive(Subcommand)]
+enum WebhookAction {
+    /// A sink's newest delivery attempts, oldest first: the event, which
+    /// attempt, what came of it, the status code or why there was none,
+    /// how long it took and when the next is due.
+    Deliveries {
+        /// The sink's `name` in agentd.toml.
+        webhook: String,
+        /// How many attempts, at most (1–200).
+        #[arg(long, default_value_t = agentdocker_core::webhook::LOG_LIMIT)]
+        limit: usize,
+        /// The attempts as JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -2023,6 +2062,14 @@ const MAIN_STACK: usize = 32 << 20;
 /// answer by its class (see [`client::exit_code`]), anything else as
 /// unexpected. The words go to stderr as they always did.
 fn main() {
+    if let Some(arguments) = daemon_arguments(std::env::args_os().collect()) {
+        // What the separate `agentd` binary did: its error, and status 1.
+        if let Err(error) = agentd::main_from(arguments) {
+            eprintln!("Error: {error:?}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(error) = agentd::initialize_storage_platform() {
         eprintln!("Error: {error:#}");
         std::process::exit(client::exit_code_for(&error));
@@ -2046,6 +2093,26 @@ fn main() {
         }
         Err(panic) => std::panic::resume_unwind(panic),
     }
+}
+
+/// The daemon's own command line when this process is to run the daemon:
+/// every argument when it was invoked as `agentd`, and those after `run`
+/// for `agentdocker daemon run`, under that name for its usage text.
+/// `None` runs the CLI.
+fn daemon_arguments(mut arguments: Vec<std::ffi::OsString>) -> Option<Vec<std::ffi::OsString>> {
+    let invoked = arguments.first().cloned().unwrap_or_default();
+    if agentdocker_host::program::Role::invoked_as(&invoked)
+        == agentdocker_host::program::Role::Daemon
+    {
+        return Some(arguments);
+    }
+    if arguments.get(1).is_some_and(|word| word == "daemon")
+        && arguments.get(2).is_some_and(|word| word == "run")
+    {
+        arguments.splice(0..3, ["agentdocker daemon run".into()]);
+        return Some(arguments);
+    }
+    None
 }
 
 async fn run() -> Result<()> {
@@ -2287,6 +2354,7 @@ async fn run() -> Result<()> {
             path,
             branch,
             from,
+            seed_build,
         } => {
             match client
                 .call(&Request::WorktreeCreate {
@@ -2294,10 +2362,18 @@ async fn run() -> Result<()> {
                     path,
                     branch,
                     from,
+                    seed_build,
                 })
                 .await?
             {
-                Response::Worktree { path, .. } => println!("{}", path.display()),
+                Response::Worktree { path, seeded, .. } => {
+                    // The path alone on stdout, for `cd "$(…)"`; what
+                    // became of each seed on stderr.
+                    println!("{}", path.display());
+                    for line in seeded.iter().map(format::seeded) {
+                        eprintln!("{line}");
+                    }
+                }
                 _ => bail!("unexpected worktree response"),
             }
         }
@@ -2728,6 +2804,32 @@ async fn run() -> Result<()> {
                 }
             }
         }
+        Command::Webhook(args) => match args.action {
+            WebhookAction::Deliveries {
+                webhook,
+                limit,
+                json,
+            } => {
+                let response = client
+                    .call(&Request::WebhookDeliveries {
+                        webhook: webhook.clone(),
+                        limit: Some(limit),
+                    })
+                    .await?;
+                let Response::WebhookDeliveries { attempts, .. } = response else {
+                    bail!("unexpected response");
+                };
+                if json {
+                    print_json(&attempts)?;
+                } else if attempts.is_empty() {
+                    println!("no delivery to {webhook} has been attempted yet");
+                } else {
+                    let rows: Vec<Vec<String>> =
+                        attempts.iter().map(format::webhook_attempt_row).collect();
+                    format::table(format::WEBHOOK_ATTEMPT_HEADERS, &rows);
+                }
+            }
+        },
         Command::Memory(args) => {
             let here = || -> Result<String> { Ok(std::env::current_dir()?.display().to_string()) };
             let list = |memories: &[agentdocker_core::memory::Memory]| {
@@ -4803,6 +4905,7 @@ async fn run() -> Result<()> {
         Command::CodexQueueResolve(args) => {
             codex_input::external::resolve::run(client, args).await?
         }
+        Command::CodexThreads(args) => codex_input::threads::run(&client, args).await?,
         Command::Up { file, names } => teams::up(&client, file.as_deref(), &names).await?,
         Command::Down { file, names, force } => {
             teams::down(&client, file.as_deref(), &names, force).await?;

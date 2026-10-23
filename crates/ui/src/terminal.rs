@@ -129,6 +129,24 @@ impl Terminal {
         }
     }
 
+    /// A terminal for `agent` that no session serves, for the window's
+    /// tests.
+    #[cfg(test)]
+    pub(crate) fn unserved(agent: &str) -> Self {
+        Self {
+            agent: agent.into(),
+            shared: Shared {
+                parser: Arc::new(Mutex::new(vt100::Parser::new(24, 80, SCROLLBACK))),
+                status: Arc::new(Mutex::new(Status::Attached)),
+                connection: Arc::new(Mutex::new(Connection::default())),
+                input: Arc::new(Input::default()),
+            },
+            input_notice: None,
+            size: DEFAULT_SIZE,
+            scrollback: 0,
+        }
+    }
+
     pub fn status(&self) -> Status {
         lock(&self.shared.status).clone()
     }
@@ -691,18 +709,7 @@ mod tests {
     }
 
     fn unserved_terminal() -> Terminal {
-        Terminal {
-            agent: "owned-fixture".into(),
-            shared: Shared {
-                parser: Arc::new(Mutex::new(vt100::Parser::new(24, 80, SCROLLBACK))),
-                status: Arc::new(Mutex::new(Status::Attached)),
-                connection: Arc::new(Mutex::new(Connection::default())),
-                input: Arc::new(Input::default()),
-            },
-            input_notice: None,
-            size: DEFAULT_SIZE,
-            scrollback: 0,
-        }
+        Terminal::unserved("owned-fixture")
     }
 
     #[test]

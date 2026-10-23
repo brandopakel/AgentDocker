@@ -129,6 +129,26 @@ impl State {
         }
     }
 
+    /// The state in a word or two, for the chip under the message; the
+    /// [`label`](Self::label) is its detail. States that differ only in why
+    /// a message still waits share *Waiting*, and the two that end without
+    /// the message taken share *Not delivered*.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Answered => "Answered",
+            Self::Delivered => "Delivered",
+            Self::Received => "Received",
+            Self::Shown => "Shown",
+            Self::Unreachable => "Can't receive",
+            Self::WaitingForPrompt | Self::WaitsForCheckIn | Self::WaitingToTake => "Waiting",
+            Self::Paused => "Paused",
+            Self::Blocked => "Provider blocked",
+            Self::Silent => "Not heard from",
+            Self::Ended | Self::Gone => "Not delivered",
+            Self::Unknown => "Unknown",
+        }
+    }
+
     /// Whether it can change no further: answered, or the agent can no
     /// longer take it.
     pub fn settled(self) -> bool {
@@ -255,6 +275,8 @@ mod tests {
             State::WaitingToTake
         );
         assert!(State::Shown.reached() && !State::WaitingForPrompt.reached());
+        assert_eq!(State::WaitsForCheckIn.word(), "Waiting");
+        assert_eq!(State::Gone.word(), State::Ended.word());
         let newer: State = serde_json::from_str("\"read_by_human\"").unwrap();
         assert_eq!(newer, State::Unknown);
     }

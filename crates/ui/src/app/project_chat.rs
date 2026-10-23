@@ -2,7 +2,7 @@
 use super::icons::{Icon, icon};
 use super::messages::look::link;
 use super::style::{Colors, weight};
-use super::view::{agent_mark, dot, hint, rule, standing_glyph};
+use super::view::{agent_mark, dot, hint, rule, standing_chip};
 use super::*;
 use crate::controls::{Kind, custom, custom_sized};
 use iced::{
@@ -217,8 +217,8 @@ impl App {
             let standing = self.standing(agent);
             let attention = standing.calls_for_attention();
             let status = self.chat_agent_status(agent);
+            // The name is cut before the chip is: the state always shows.
             let who = row![
-                standing_glyph(standing, c),
                 agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 20.0, c),
                 container(hint(
                     text(name.clone())
@@ -235,6 +235,7 @@ impl App {
                 ))
                 .width(Fill)
                 .clip(true),
+                standing_chip(format!("chat-standing-{id}"), standing, c),
             ]
             .spacing(8)
             .align_y(Center);
@@ -336,7 +337,6 @@ impl App {
             );
             let standing = self.standing(agent);
             let who = row![
-                standing_glyph(standing, c),
                 agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 18.0, c),
                 text(name)
                     .size(12.5)
@@ -346,6 +346,7 @@ impl App {
                     } else {
                         iced::font::Weight::Normal
                     })),
+                standing_chip(format!("chat-strip-standing-{id}"), standing, c),
             ]
             .spacing(6)
             .align_y(Center);
@@ -416,7 +417,7 @@ mod tests {
         for name in ["alpha", "beta"] {
             let mut project = ProjectRef::directory(format!("/fixture/{name}"));
             project.fingerprint = Some(name.to_owned());
-            app.shell.catalog.remember(project, false);
+            app.shell.catalog.remember(project, false).unwrap();
         }
         let _ = app.update(Message::SelectProject("/fixture/alpha".into()));
         assert_eq!(app.screen, Screen::Chat);
@@ -465,7 +466,8 @@ mod tests {
             for path in [&alpha, &beta] {
                 app.shell
                     .catalog
-                    .remember(ProjectRef::directory(path), false);
+                    .remember(ProjectRef::directory(path), false)
+                    .unwrap();
             }
             let _ = app.update(Message::SelectProject(alpha.clone()));
             let old = app.shell.conversation.clone().unwrap();
