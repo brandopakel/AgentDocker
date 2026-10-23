@@ -1071,10 +1071,12 @@ Current behaviour that the sections above do not already state, by area.
   later, `$CODEX_HOME/app-server-control/app-server-control.sock`), the daemon
   reads each conversation's status there: one stopped for an approval or a
   question shows as waiting for you, one running a turn as working, a quiet
-  one as idle. A terminal resumed with `codex resume <thread>` is also fed at
-  idle through that server's own queue, with the same exact receipts as any
-  Codex receiver. Without the socket nothing changes. `agentdocker
-  codex-threads` lists what that server has loaded, read-only
+  one as idle. A terminal resumed with `codex resume <thread>` is also fed
+  through that server, with the same exact receipts as any Codex receiver: a
+  message that arrives while it works goes into the running turn, one that
+  arrives while it waits for you waits too, and otherwise it goes at idle
+  through that server's own queue. Without the socket nothing changes.
+  `agentdocker codex-threads` lists what that server has loaded, read-only
   ([Codex input](CODEX-INPUT.md#terminals-in-codexs-shared-app-server)).
 
 

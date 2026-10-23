@@ -59,6 +59,15 @@ pub(super) async fn find(
                     &entry["item"],
                     attempt,
                 )? {
+                    // A steered input is received only by the turn it was
+                    // steered into; anywhere else is a contradiction to inspect.
+                    ensure!(
+                        attempt
+                            .steer
+                            .as_ref()
+                            .is_none_or(|steer| steer.turn == receipt.turn),
+                        "the steered input appeared in another turn; retained for inspection"
+                    );
                     ensure!(
                         found.is_none(),
                         "multiple provider receipts match one native queue input"
@@ -215,6 +224,7 @@ mod tests {
     fn hook_receipt_requires_exact_context_and_provider_ids() {
         let mut attempt = Attempt {
             start: None,
+            steer: None,
             message: "message".into(),
             input: "native input".into(),
             queued: None,
@@ -262,6 +272,7 @@ mod tests {
     fn queue_acceptance_matches_the_entire_input_and_client_id() {
         let attempt = Attempt {
             start: None,
+            steer: None,
             message: "original".into(),
             input: "full input".into(),
             queued: None,

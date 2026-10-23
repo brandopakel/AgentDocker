@@ -93,6 +93,20 @@ impl QueuedStart {
     }
 }
 
+/// An input offered into the shared server's running turn with `turn/steer`,
+/// recorded before the request so a lost answer is reconciled, never repeated.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Steer {
+    /// The turn named as `expectedTurnId`: the only turn whose user item
+    /// can be this input's receipt.
+    pub turn: String,
+    /// The server answered naming that same turn. The receipt still comes
+    /// only from the turn's own user item, which may follow later.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accepted: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Attempt {
@@ -105,6 +119,10 @@ pub(super) struct Attempt {
     pub hook: Option<HookOffer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<QueuedStart>,
+    /// Absent from every ledger written before steering, so those read back
+    /// unchanged; a receiver that does not know it refuses a ledger that has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer: Option<Steer>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -280,6 +298,63 @@ impl Ledger {
     }
 
     pub fn prepare(&mut self, envelope: &Envelope, anchor: Option<String>) -> Result<()> {
+        self.prepare_offer(envelope, anchor, None)
+    }
+
+    /// Record the input before it is steered into `turn`, the shared
+    /// server's running turn. One offer is outstanding at a time.
+    pub fn prepare_steer(
+        &mut self,
+        envelope: &Envelope,
+        anchor: Option<String>,
+        turn: &str,
+    ) -> Result<()> {
+        ensure!(
+            self.record.binding.control,
+            "only the shared server's conversations are steered"
+        );
+        self.prepare_offer(
+            envelope,
+            anchor,
+            Some(Steer {
+                turn: turn.into(),
+                accepted: false,
+            }),
+        )
+    }
+
+    /// The server answered the steer naming the same turn.
+    pub fn steer_accepted(&mut self) -> Result<()> {
+        let mut next = self.record.clone();
+        let steer = next
+            .attempt
+            .as_mut()
+            .and_then(|attempt| attempt.steer.as_mut())
+            .context("no steered input")?;
+        steer.accepted = true;
+        self.save(next)
+    }
+
+    /// The server refused the steer with its own word that nothing was
+    /// submitted: the input is dropped and its message stays queued.
+    pub fn reject_steer(&mut self) -> Result<()> {
+        let attempt = self.record.attempt.as_ref().context("no steered input")?;
+        ensure!(
+            attempt.steer.as_ref().is_some_and(|steer| !steer.accepted)
+                && attempt.receipt.is_none(),
+            "an accepted or received steer cannot be refused"
+        );
+        let mut next = self.record.clone();
+        next.attempt = None;
+        self.save(next)
+    }
+
+    fn prepare_offer(
+        &mut self,
+        envelope: &Envelope,
+        anchor: Option<String>,
+        steer: Option<Steer>,
+    ) -> Result<()> {
         ensure!(
             self.record.attempt.is_none(),
             "native input attempt is already pending"
@@ -306,6 +381,7 @@ impl Ledger {
             hook: None,
             start: None,
             anchor,
+            steer,
         });
         self.save(next)
     }
@@ -335,7 +411,10 @@ impl Ledger {
             .as_mut()
             .context("no native input to hand off")?;
         ensure!(
-            attempt.hook.is_none() && attempt.receipt.is_none() && attempt.start.is_none(),
+            attempt.hook.is_none()
+                && attempt.receipt.is_none()
+                && attempt.start.is_none()
+                && attempt.steer.is_none(),
             "native input was already offered"
         );
         attempt.hook = Some(HookOffer {
@@ -747,6 +826,23 @@ impl Record {
                         && (start.turn.is_none() || start.may_have_transmitted())
                         && start.turn.as_deref().is_none_or(valid_id),
                     "invalid queued start intent"
+                );
+            }
+            if let Some(steer) = &attempt.steer {
+                ensure!(
+                    binding.control
+                        && valid_id(&steer.turn)
+                        && attempt.queued.is_none()
+                        && attempt.hook.is_none()
+                        && attempt.start.is_none(),
+                    "invalid steered input"
+                );
+                ensure!(
+                    attempt
+                        .receipt
+                        .as_ref()
+                        .is_none_or(|receipt| receipt.turn == steer.turn),
+                    "a steered input's receipt must be in the turn it was steered into"
                 );
             }
             if let Some(receipt) = &attempt.receipt {
@@ -1172,6 +1268,133 @@ mod tests {
         let control = serde_json::to_value(&binding).unwrap();
         assert_eq!(control["control"], true);
         assert_eq!(serde_json::from_value::<Binding>(control).unwrap(), binding);
+    }
+
+    fn peer_message(text: &str) -> Envelope {
+        Envelope::new(
+            "peer",
+            Destination::parse("agent"),
+            "chat",
+            serde_json::json!({ "text": text }),
+            None,
+            chrono::Utc::now(),
+        )
+    }
+
+    /// A steer is written down before it is offered and survives a restart
+    /// unanswered; once answered it cannot be called refused; and only the
+    /// user item in the turn it named is its receipt.
+    #[test]
+    fn a_steered_input_is_recorded_before_its_offer_and_received_only_in_its_turn() {
+        let home = tempfile::tempdir().unwrap();
+        let message = peer_message("steer fixture");
+        let mut plain = Ledger::open(home.path(), binding(home.path()), None).unwrap();
+        assert!(
+            plain.prepare_steer(&message, None, "turn-a").is_err(),
+            "only the shared server's conversations are steered"
+        );
+        drop(plain);
+        let home = tempfile::tempdir().unwrap();
+        let mut bound = binding(home.path());
+        bound.control = true;
+        let mut ledger = Ledger::open(home.path(), bound.clone(), None).unwrap();
+        ledger
+            .prepare_steer(&message, Some("history-boundary".into()), "turn-a")
+            .unwrap();
+        assert!(
+            ledger.prepare(&peer_message("next"), None).is_err(),
+            "one offer"
+        );
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), bound.clone(), None).unwrap();
+        let attempt = ledger.record.attempt.clone().unwrap();
+        assert_eq!(
+            attempt.steer,
+            Some(Steer {
+                turn: "turn-a".into(),
+                accepted: false
+            })
+        );
+        assert_eq!(attempt.anchor.as_deref(), Some("history-boundary"));
+        assert!(
+            ledger
+                .offer_hook("hook", input(&message).unwrap(), None)
+                .is_err(),
+            "a steered input is never offered again by a hook"
+        );
+        assert!(ledger.queued("native-entry").is_err(), "nor queued");
+        ledger.steer_accepted().unwrap();
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), bound.clone(), None).unwrap();
+        assert!(
+            ledger
+                .record
+                .attempt
+                .as_ref()
+                .unwrap()
+                .steer
+                .as_ref()
+                .unwrap()
+                .accepted
+        );
+        assert!(
+            ledger.reject_steer().is_err(),
+            "an answered steer is not refused"
+        );
+        let receipt = |turn: &str| Receipt {
+            thread: "thread".into(),
+            turn: turn.into(),
+            item: "user-item".into(),
+        };
+        assert!(
+            ledger.received(receipt("turn-b")).is_err(),
+            "another turn's item is not this steer's receipt"
+        );
+        ledger.received(receipt("turn-a")).unwrap();
+        ledger.acknowledge().unwrap();
+        assert!(ledger.record.attempt.is_none());
+        assert!(
+            ledger.prepare_steer(&message, None, "turn-a").is_err(),
+            "a received message is never offered again"
+        );
+        assert!(ledger.prepare(&message, None).is_err());
+    }
+
+    /// The server's refusal of a steer proves nothing was submitted: the
+    /// input is dropped and the same message can go by the native queue.
+    #[test]
+    fn a_refused_steer_leaves_the_message_for_the_native_queue() {
+        let home = tempfile::tempdir().unwrap();
+        let mut bound = binding(home.path());
+        bound.control = true;
+        let message = peer_message("refused fixture");
+        let mut ledger = Ledger::open(home.path(), bound.clone(), None).unwrap();
+        assert!(ledger.reject_steer().is_err(), "nothing to refuse");
+        ledger.prepare(&message, None).unwrap();
+        assert!(
+            ledger.reject_steer().is_err(),
+            "a queued input is not a steer"
+        );
+        ledger.queued("native-entry").unwrap();
+        ledger
+            .received(Receipt {
+                thread: "thread".into(),
+                turn: "turn-1".into(),
+                item: "item-1".into(),
+            })
+            .unwrap();
+        ledger.acknowledge().unwrap();
+        let second = peer_message("second");
+        ledger.prepare_steer(&second, None, "turn-2").unwrap();
+        ledger.reject_steer().unwrap();
+        assert!(ledger.record.attempt.is_none());
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), bound, None).unwrap();
+        ledger.prepare(&second, None).unwrap();
+        let attempt = ledger.record.attempt.as_ref().unwrap();
+        assert!(attempt.steer.is_none());
+        let text = std::fs::read_to_string(ledger.file.path()).unwrap();
+        assert!(!text.contains("\"steer\""), "{text}");
     }
 
     #[test]

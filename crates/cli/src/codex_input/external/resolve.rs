@@ -92,6 +92,7 @@ fn preview(ledger: &Ledger) -> Result<Value> {
                 "queued_submission": attempt.queued,
                 "start_confirmation": if attempt.start.as_ref().is_none_or(|s| !s.may_have_transmitted()) { ledger.start_confirmation().ok() } else { None },
                 "start_intent": attempt.start,
+                "steered": attempt.steer,
             }))
         })
         .transpose()?;
