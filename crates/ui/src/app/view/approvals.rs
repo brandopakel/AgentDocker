@@ -11,153 +11,61 @@
 //! reason as detail lines, and a footer whose actions step down in weight —
 //! one solid Allow, an outline Review, Deny in plain words.
 //!
-//! Who is waiting is one card: a header with a dot, a title and a count,
-//! then a row per item — who, the ask in one line, the time left and one
-//! outline button — with hairlines between. Time left is a small ring
-//! drawn on the canvas and kept between frames; nothing here animates.
+//! Who is waiting is one card: a header chip (*Needs you · n*), then a
+//! row per item — who, the ask in one line, the time left and one outline
+//! button — with hairlines between. Time left is a chip in words (*4m
+//! left*), refreshed by the window's two-second sweep; nothing here
+//! animates.
+use super::super::chip::{Chip, Tone};
 use super::*;
 use crate::accessibility::Semantic;
 use crate::controls::Control;
 use agentdocker_core::{QuestionOption, QuestionPresentation};
-use iced::widget::canvas::{self, Geometry, LineCap, Path, Stroke};
 use iced::widget::{Space, column, container, row, scrollable, text};
 use iced::{Center, Element, Fill, Font};
-use std::cell::Cell;
 
 /// Below this share of its window, time left is said in red.
 const URGENT: f32 = 0.2;
-/// How finely a ring's arc moves: a 64th of a turn. The sweep that keeps
-/// time left honest runs every two seconds; a ring repaints only when its
-/// arc visibly moved.
-const RING_STEPS: f32 = 64.0;
 /// How many waiting items show before "Show N more".
 const SHOWN: usize = 3;
 
-/// The tone of time left: amber while there is room, red near the end.
-pub(super) fn window_tone(left: f32, c: Colors) -> iced::Color {
-    if left < URGENT { c.red } else { c.amber }
-}
-
-/// Time left as a ring: a faint track and an arc in the tone, clockwise
-/// from twelve o'clock.
-struct Ring {
-    step: u16,
-    tone: iced::Color,
-    track: iced::Color,
-}
-
-/// A ring's geometry, kept between frames like a glyph's: redrawn only
-/// when its step or its inks change.
-#[derive(Default)]
-struct RingCache {
-    geometry: canvas::Cache,
-    drawn: Cell<Option<(u16, iced::Color, iced::Color)>>,
-}
-
-impl RingCache {
-    /// Notes what is about to be drawn; clears the geometry and answers
-    /// `true` when it differs from what the cache holds.
-    fn refresh(&self, key: (u16, iced::Color, iced::Color)) -> bool {
-        if self.drawn.get() == Some(key) {
-            return false;
-        }
-        self.geometry.clear();
-        self.drawn.set(Some(key));
-        true
+/// The tone of time left: attention while there is room, alert near the
+/// end.
+pub(super) fn window_tone(left: f32) -> Tone {
+    if left < URGENT {
+        Tone::Alert
+    } else {
+        Tone::Attention
     }
 }
 
-impl canvas::Program<Message> for Ring {
-    type State = RingCache;
-
-    fn draw(
-        &self,
-        state: &RingCache,
-        renderer: &iced::Renderer,
-        _theme: &iced::Theme,
-        bounds: iced::Rectangle,
-        _cursor: iced::mouse::Cursor,
-    ) -> Vec<Geometry> {
-        state.refresh((self.step, self.tone, self.track));
-        vec![state.geometry.draw(renderer, bounds.size(), |frame| {
-            let size = bounds.width.min(bounds.height);
-            let width = (size / 7.0).clamp(1.5, 2.5);
-            let center = frame.center();
-            let radius = (size - width) / 2.0;
-            frame.stroke(
-                &Path::circle(center, radius),
-                Stroke::default().with_color(self.track).with_width(width),
-            );
-            if self.step > 0 {
-                let start = -std::f32::consts::FRAC_PI_2;
-                let sweep = f32::from(self.step) / RING_STEPS * std::f32::consts::TAU;
-                let arc = Path::new(|b| {
-                    b.arc(canvas::path::Arc {
-                        center,
-                        radius,
-                        start_angle: iced::Radians(start),
-                        end_angle: iced::Radians(start + sweep),
-                    });
-                });
-                frame.stroke(
-                    &arc,
-                    Stroke::default()
-                        .with_color(self.tone)
-                        .with_width(width)
-                        .with_line_cap(LineCap::Round),
-                );
-            }
-        })]
+/// How long is left to answer, as a chip: *4m left*, red in the last
+/// fifth of its window, or *Expired*.
+pub(super) fn time_left_chip(
+    id: impl Into<String>,
+    question: &Question,
+    now: chrono::DateTime<Utc>,
+) -> Chip {
+    let secs = (question.expires_at - now).num_seconds();
+    if secs <= 0 {
+        return Chip::new(id, Some(Icon::Clock), "Expired", Tone::Neutral);
     }
+    let left = remaining_fraction(question.asked_at, question.expires_at, now);
+    Chip::new(
+        id,
+        Some(Icon::Clock),
+        format!("{} left", super::super::span(secs)),
+        window_tone(left),
+    )
 }
 
-/// How much of something is left, as a ring of `size` points.
-pub(super) fn ring<'a>(
-    fraction: f32,
-    tone: iced::Color,
-    size: f32,
-    c: Colors,
-) -> Element<'a, Message> {
-    let step = (fraction.clamp(0.0, 1.0) * RING_STEPS).round() as u16;
-    canvas::Canvas::new(Ring {
-        step,
-        tone,
-        track: alpha(c.text, if c.dark { 0.16 } else { 0.13 }),
-    })
-    .width(size)
-    .height(size)
-    .into()
-}
-
-/// How long is left to answer: a ring, its words ("4m left") when it is
-/// pointed at, or the word Expired.
+/// A question's time left, drawn.
 pub(super) fn time_left<'a>(
     question: &Question,
     now: chrono::DateTime<Utc>,
     c: Colors,
 ) -> Element<'a, Message> {
-    let secs = (question.expires_at - now).num_seconds();
-    // An empty faint ring is over; a filling one says how long is left.
-    // Either way the words are its tooltip and its name.
-    let (left, tone, words) = if secs <= 0 {
-        (0.0, c.faint, "Expired".to_owned())
-    } else {
-        let left = remaining_fraction(question.asked_at, question.expires_at, now);
-        (
-            left,
-            window_tone(left, c),
-            format!("{} left", super::super::span(secs)),
-        )
-    };
-    super::tip(
-        super::said(
-            format!("time-left-{}", question.id),
-            words.clone(),
-            container(ring(left, tone, 14.0, c)).padding(3),
-        ),
-        words,
-        c,
-    )
+    time_left_chip(format!("time-left-{}", question.id), question, now).view(c)
 }
 
 /// Words drawn in two weights and read as one sentence. Text inside a
@@ -446,15 +354,13 @@ fn detail<'a>(
     .into()
 }
 
-/// An answer on its way: a ring, named Sending.
+/// An answer on its way: the *Sending* chip.
 fn sending_mark<'a>(id: &MessageId, c: Colors) -> Element<'a, Message> {
-    super::tip(
-        super::said(
-            format!("sending-{id}"),
-            "Sending",
-            container(icon(Icon::Ring, c.faint, 14.0)).padding(3),
-        ),
+    super::super::chip::chip(
+        format!("sending-{id}"),
+        Some(Icon::Ring),
         "Sending",
+        Tone::Neutral,
         c,
     )
 }
@@ -509,8 +415,8 @@ fn waiting_row<'a>(
         .into()
 }
 
-/// Who and what, in one line: the subject in the label weight, an aside
-/// in the faint ink, the rest in the quiet ink and clipped to the line.
+/// Who and what, in one line: the subject in the label weight, a chip
+/// after it, the rest in the quiet ink and clipped to the line.
 fn waiting_words<'a>(
     subject: String,
     mark: Option<Element<'a, Message>>,
@@ -518,16 +424,17 @@ fn waiting_words<'a>(
     narrow: bool,
     c: Colors,
 ) -> Element<'a, Message> {
-    let mut who = row![].spacing(6).align_y(Center);
-    if let Some(mark) = mark {
-        who = who.push(mark);
-    }
-    who = who.push(
+    let mut who = row![
         text(subject)
             .size(13)
             .font(weight(iced::font::Weight::Medium))
-            .wrapping(iced::widget::text::Wrapping::None),
-    );
+            .wrapping(iced::widget::text::Wrapping::None)
+    ]
+    .spacing(6)
+    .align_y(Center);
+    if let Some(mark) = mark {
+        who = who.push(mark);
+    }
     let Some(predicate) = predicate else {
         return who.into();
     };
@@ -636,7 +543,15 @@ impl App {
                     sentence,
                     waiting_words(
                         name,
-                        (!live).then(|| icon(Icon::Leave, c.faint, 12.0)),
+                        (!live).then(|| {
+                            super::super::chip::chip(
+                                format!("needs-you-ended-{}", question.id),
+                                Some(Icon::Leave),
+                                "Session ended",
+                                Tone::Neutral,
+                                c,
+                            )
+                        }),
                         Some(what),
                         narrow,
                         c,
@@ -667,19 +582,31 @@ impl App {
                 None => self.display_name(agent),
             };
             // What for, when its adapter could tell: a permission to give
-            // and a question to answer are different errands.
-            // The errand is its glyph; the words are the row's name, and
-            // what the prompt is about, when its hooks said, follows it.
-            let (what, glyph) = match self.activity.get(id.as_str()) {
+            // and a question to answer are different errands, and its chip
+            // says which; what the prompt is about, when its hooks said,
+            // follows the name.
+            let (what, glyph, word) = match self.activity.get(id.as_str()) {
                 Some(agentdocker_core::Activity::Waiting {
                     reason: Some(agentdocker_core::WaitReason::Permission),
                     ..
-                }) => ("wants permission in its terminal", Icon::Shield),
+                }) => (
+                    "wants permission in its terminal",
+                    Icon::Shield,
+                    "Wants permission",
+                ),
                 Some(agentdocker_core::Activity::Waiting {
                     reason: Some(agentdocker_core::WaitReason::Question),
                     ..
-                }) => ("has a question in its terminal", Icon::Question),
-                _ => ("is waiting for you in its terminal", Icon::Hourglass),
+                }) => (
+                    "has a question in its terminal",
+                    Icon::Question,
+                    "Has a question",
+                ),
+                _ => (
+                    "is waiting for you in its terminal",
+                    Icon::Hourglass,
+                    "Waiting for you",
+                ),
             };
             let detail = match self.activity.get(id.as_str()) {
                 Some(agentdocker_core::Activity::Waiting { detail, .. }) => detail.clone(),
@@ -689,11 +616,18 @@ impl App {
                 Some(detail) => format!("{name} {what}: {detail}"),
                 None => format!("{name} {what}"),
             };
+            let errand = super::super::chip::chip(
+                format!("needs-you-errand-{id}"),
+                Some(glyph),
+                word,
+                Tone::Attention,
+                c,
+            );
             rows.push(waiting_row(
                 spoken(
                     format!("needs-you-line-waiting-{id}"),
                     sentence,
-                    waiting_words(name, Some(icon(glyph, c.amber, 13.0)), detail, narrow, c),
+                    waiting_words(name, Some(errand), detail, narrow, c),
                 ),
                 None,
                 compact(
@@ -771,23 +705,24 @@ impl App {
             return None;
         }
         let total = rows.len();
-        // The card's head is its dot and, when something waits, how many;
-        // its name is said, not drawn.
-        let mut header = row![dot(if guidance { c.cyan } else { c.amber }, 7.0, c)]
-            .spacing(8)
-            .align_y(Center);
-        if !guidance {
-            header = header.push(count_chip(total, true, c));
+        // The card's head is its chip: what it is and, when something
+        // waits, how many.
+        let header = if guidance {
+            Chip::new(
+                "needs-you-header",
+                Some(Icon::Play),
+                "To get started",
+                Tone::Info,
+            )
+        } else {
+            Chip::new(
+                "needs-you-header",
+                Some(Icon::Alert),
+                format!("Needs you · {total}"),
+                Tone::Attention,
+            )
         }
-        let header = spoken(
-            "needs-you-header".to_owned(),
-            if guidance {
-                "To get started".to_owned()
-            } else {
-                format!("Needs you, {total}")
-            },
-            header,
-        );
+        .view(c);
         let mut list = column![container(header).padding([10, 16]).width(Fill)].width(Fill);
         let shown = if self.shell.needs_you_expanded {
             total
@@ -2059,7 +1994,20 @@ mod tests {
         let before = seen(app.question_card(&question, Colors::new(false)));
         assert!(before.reads("https://xn--bcher-kva.example/consent?state=fixture"));
         assert!(before.reads("xn--bcher-kva.example"));
-        assert!(before.reads("This address uses an encoded international domain name. Check it carefully before opening."));
+        // The warning prints its head; all of it is the chip's detail.
+        let warning = before
+            .control("encoded-domain-url")
+            .expect("the encoded-domain chip");
+        assert_eq!(
+            warning.1,
+            "This address uses an encoded international domain name"
+        );
+        assert_eq!(
+            warning.2.as_deref(),
+            Some(
+                "This address uses an encoded international domain name. Check it carefully before opening."
+            )
+        );
         assert!(before.control("copy-question-url-url").unwrap().3);
         for (index, label) in ["Accept", "Decline", "Cancel"].iter().enumerate() {
             assert_eq!(
@@ -2508,34 +2456,46 @@ mod tests {
             .control("needs-you-answer-ask")
             .expect("the row's action");
         assert_eq!((answer.1.as_str(), answer.3), ("Answer", true));
-        assert!(view.reads("Needs you"));
+        assert_eq!(
+            view.control("needs-you-header").unwrap().1,
+            "Needs you · 1",
+            "the card is headed by its chip and its count"
+        );
+        let left = &view.control("time-left-ask").unwrap().1;
         assert!(
-            view.reads("left"),
-            "the ring is named with the time left, its words on the pointer"
+            left == "9m left" || left == "10m left",
+            "time left is a chip's words: {left}"
+        );
+        assert!(
+            view.texts.iter().any(|t| t == left),
+            "printed, not found on the pointer"
         );
     }
 
     #[test]
-    fn a_ring_is_redrawn_only_when_its_step_or_its_inks_change() {
-        let cache = RingCache::default();
-        let (amber, red, track) = (
-            iced::Color::from_rgb(0.9, 0.7, 0.3),
-            iced::Color::from_rgb(0.9, 0.4, 0.4),
-            iced::Color::from_rgba(1.0, 1.0, 1.0, 0.16),
+    fn time_left_is_a_chip_that_turns_red_in_the_last_fifth() {
+        assert_eq!(window_tone(0.5), Tone::Attention);
+        assert_eq!(window_tone(0.2), Tone::Attention);
+        assert_eq!(window_tone(0.19), Tone::Alert);
+        let now = Utc::now();
+        let question = |asked: i64, expires: i64| Question {
+            id: MessageId::from("q".to_owned()),
+            from: "asker".into(),
+            to: agentdocker_core::Destination::Broadcast,
+            text: "Which route?".into(),
+            presentation: None,
+            asked_at: now - chrono::Duration::seconds(asked),
+            expires_at: now + chrono::Duration::seconds(expires),
+        };
+        let early = time_left_chip("t", &question(60, 240), now);
+        assert_eq!(
+            (early.words.as_str(), early.tone),
+            ("4m left", Tone::Attention)
         );
-        assert!(cache.refresh((40, amber, track)), "first draw");
-        assert!(!cache.refresh((40, amber, track)), "nothing moved");
-        assert!(cache.refresh((39, amber, track)), "the arc moved a step");
-        assert!(cache.refresh((39, red, track)), "the tone changed");
-        assert!(!cache.refresh((39, red, track)));
-    }
-
-    #[test]
-    fn time_left_turns_red_in_the_last_fifth() {
-        let c = Colors::new(true);
-        assert_eq!(window_tone(0.5, c), c.amber);
-        assert_eq!(window_tone(0.2, c), c.amber);
-        assert_eq!(window_tone(0.19, c), c.red);
+        let late = time_left_chip("t", &question(270, 30), now);
+        assert_eq!(late.tone, Tone::Alert, "{}", late.words);
+        let over = time_left_chip("t", &question(300, -5), now);
+        assert_eq!((over.words.as_str(), over.tone), ("Expired", Tone::Neutral));
     }
 
     #[test]

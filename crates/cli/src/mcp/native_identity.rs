@@ -200,6 +200,12 @@ impl Context {
         }))
     }
 
+    /// The profile the shared cached host proves by its package cache; none
+    /// for a dedicated server, whose profile comes from its accepted binding.
+    pub(crate) fn shared_profile(&self) -> Option<&Path> {
+        self.profile.as_deref()
+    }
+
     /// No helper registration is made: initialization precedes the first hook.
     pub(super) fn unbound_identity(&self) -> Identity {
         Identity {

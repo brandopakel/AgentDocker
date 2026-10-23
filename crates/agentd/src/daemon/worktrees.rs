@@ -245,6 +245,38 @@ fn copy_new(
     ))
 }
 
+/// How long seeding one worktree's build directories may take, all of
+/// them together. A clone takes well under a second; this bounds copies.
+const SEED_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Seed the new worktree `path` with `names` from the checkout `root`, on a
+/// blocking thread: see [`agentdocker_host::seed`].
+async fn seed_build_dirs(
+    root: PathBuf,
+    path: PathBuf,
+    names: Vec<String>,
+) -> Vec<agentdocker_core::seed::Seeded> {
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let asked = names.clone();
+    match tokio::task::spawn_blocking(move || {
+        agentdocker_host::seed::seed(&root, &path, &names, SEED_LIMIT)
+    })
+    .await
+    {
+        Ok(seeded) => seeded,
+        Err(e) => asked
+            .into_iter()
+            .map(|dir| agentdocker_core::seed::Seeded {
+                dir,
+                outcome: agentdocker_core::seed::Outcome::Failed,
+                note: Some(format!("seeding stopped: {e}")),
+            })
+            .collect(),
+    }
+}
+
 /// Remove a session's linked worktree once it is done with it: the session
 /// has ended, the worktree is clean (untracked files included), and git
 /// agrees to a non-force removal. The branch is deleted only when git
@@ -437,13 +469,23 @@ impl Daemon {
     /// from `from` (a branch, tag or commit of the same repository). The
     /// daemon remembers who asked, so commits made there with git alone
     /// are still that agent's in the journal.
+    ///
+    /// `seed_build` names directories of the agent's checkout (build
+    /// output such as `target` or `node_modules`) to clone or copy into
+    /// the new one, once it exists and off the state lock; what became of
+    /// each is in the answer, and none of it fails the worktree.
     pub(super) async fn worktree_create(
         &self,
         reference: &str,
         path: String,
         branch: String,
         from: Option<String>,
+        seed_build: Vec<String>,
     ) -> Response {
+        // A bad name is the caller's to fix before anything is made.
+        if let Err(e) = agentdocker_core::seed::check(&seed_build) {
+            return failure(e);
+        }
         let (agent, root, _) = match self.reader_checkout(reference) {
             Ok(v) => v,
             Err(e) => return *e,
@@ -452,16 +494,23 @@ impl Daemon {
             Ok(p) => p,
             Err(e) => return failure(e),
         };
-        if let Err(response) = add_worktree(root, &path, &branch, from.as_deref()).await {
+        if let Err(response) = add_worktree(root.clone(), &path, &branch, from.as_deref()).await {
             return *response;
         }
-        let mut state = lock(&self.state);
-        state.worktree_creators.insert(path.clone(), agent.clone());
-        state.emit(EventKind::WorktreeCreated {
-            agent,
-            path: path.clone(),
-        });
-        Response::Worktree { path, branch }
+        {
+            let mut state = lock(&self.state);
+            state.worktree_creators.insert(path.clone(), agent.clone());
+            state.emit(EventKind::WorktreeCreated {
+                agent,
+                path: path.clone(),
+            });
+        }
+        let seeded = seed_build_dirs(root, path.clone(), seed_build).await;
+        Response::Worktree {
+            path,
+            branch,
+            seeded,
+        }
     }
 
     /// Remove an ended session's linked worktree once its branch is merged
@@ -1147,6 +1196,7 @@ mod tests {
                     branch.to_string_lossy().into_owned(),
                     "feature".into(),
                     None,
+                    Vec::new(),
                 )
                 .await,
             Response::Worktree { .. }
@@ -1424,6 +1474,104 @@ mod lifecycle_tests {
             "untouched"
         );
         assert!(!outside.join("settings.json").exists());
+    }
+
+    /// `seed_build` brings the asking agent's build output into the new
+    /// worktree and says how; a missing one is skipped, and a bad name is
+    /// refused before anything is made.
+    #[tokio::test]
+    async fn a_new_worktree_is_seeded_with_build_output_from_the_agents_checkout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        run(&root, &["init", "-q", "-b", "main"]).await;
+        run(&root, &["config", "user.email", "t@example.com"]).await;
+        run(&root, &["config", "user.name", "T"]).await;
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        run(&root, &["add", "."]).await;
+        run(&root, &["commit", "-qm", "initial"]).await;
+        std::fs::create_dir_all(root.join("target/debug/deps")).unwrap();
+        std::fs::write(root.join("target/debug/deps/libdep.rlib"), "built").unwrap();
+        let daemon =
+            Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+        daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "builder".into(),
+                    workdir: Some(root.clone()),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await;
+
+        let refused = tmp.path().join("refused");
+        let answer = daemon
+            .handle(Request::WorktreeCreate {
+                agent: "builder".into(),
+                path: refused.to_string_lossy().into_owned(),
+                branch: "agent/refused".into(),
+                from: None,
+                seed_build: vec!["../outside".into()],
+            })
+            .await;
+        assert!(
+            matches!(&answer, Response::Error { message, .. } if message.contains("..")),
+            "{answer:?}"
+        );
+        assert!(!refused.exists(), "nothing is made for a bad name");
+
+        let wt = tmp.path().join("wt");
+        let Response::Worktree { path, seeded, .. } = daemon
+            .handle(Request::WorktreeCreate {
+                agent: "builder".into(),
+                path: wt.to_string_lossy().into_owned(),
+                branch: "agent/seeded".into(),
+                from: None,
+                seed_build: vec!["target".into(), "node_modules".into()],
+            })
+            .await
+        else {
+            panic!("worktree_create failed");
+        };
+        assert_eq!(seeded.len(), 2, "{seeded:?}");
+        assert_eq!(seeded[0].dir, "target");
+        if cfg!(unix) {
+            assert!(seeded[0].outcome.seeded(), "{seeded:?}");
+            assert_eq!(
+                std::fs::read_to_string(path.join("target/debug/deps/libdep.rlib")).unwrap(),
+                "built"
+            );
+        } else {
+            // Nothing is seeded on Windows yet, and the answer says so.
+            assert_eq!(
+                seeded[0].outcome,
+                agentdocker_core::seed::Outcome::Refused,
+                "{seeded:?}"
+            );
+            assert!(!path.join("target").exists());
+        }
+        // A missing one is skipped where seeding is done at all; Windows
+        // refuses every name alike.
+        assert_eq!(
+            seeded[1].outcome,
+            if cfg!(unix) {
+                agentdocker_core::seed::Outcome::Skipped
+            } else {
+                agentdocker_core::seed::Outcome::Refused
+            },
+            "{seeded:?}"
+        );
+        // Seeded output is ignored, so the new checkout is clean.
+        let status = git(path.clone(), vec!["status".into(), "--porcelain".into()])
+            .await
+            .unwrap();
+        assert!(
+            status.success && status.stdout.trim().is_empty(),
+            "{}",
+            status.text
+        );
     }
 
     #[tokio::test]

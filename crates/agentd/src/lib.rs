@@ -5,9 +5,9 @@
 //! resources. Clients talk to it over a Unix socket; see
 //! `agentdocker_core::protocol`.
 //!
-//! This is a library so that the `agentdocker` package can ship the `agentd`
-//! binary beside the CLI — one `cargo install agentdocker` gets both. The
-//! binary is [`main`] and nothing else.
+//! This is a library so that the `agentdocker` executable can be the daemon
+//! too: invoked as `agentd` (the link packages ship beside it) or as
+//! `agentdocker daemon run`, it runs [`main_from`] and nothing else.
 
 mod config;
 pub mod daemon;
@@ -166,10 +166,21 @@ fn startup_checkpoint(stage: &str) {
 
 /// Parse the command line and run the daemon until SIGTERM or Ctrl-C.
 pub fn main() -> anyhow::Result<()> {
+    main_from(std::env::args_os())
+}
+
+/// [`main`] with the daemon's command line given, its first word the name
+/// its usage text shows. A managed launcher still re-executes the process's
+/// own command line in the selected release.
+pub fn main_from<I, T>(arguments: I) -> anyhow::Result<()>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
     startup_checkpoint("entered");
     agentdocker_host::installation::redirect_managed_launcher()?;
     startup_checkpoint("launcher_resolved");
-    let args = Args::parse();
+    let args = Args::parse_from(arguments);
     startup_checkpoint("arguments_parsed");
     initialize_storage_platform()?;
     startup_checkpoint("storage_platform_ready");
@@ -359,6 +370,8 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     startup_checkpoint("listener_bound");
     daemon.expect_watcher();
     watcher::spawn(daemon.clone());
+    #[cfg(unix)]
+    daemon::codex_threads::spawn(daemon.clone());
     daemon.notify_desktop();
     daemon.reload_webhooks().await;
     daemon.collect_usage();

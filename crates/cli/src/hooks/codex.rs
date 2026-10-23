@@ -384,10 +384,15 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     // native receiver proves its hooks descend from the terminal, and these
     // run in the shared app-server.
     let mut terminal = false;
+    // The profile of the shared app-server these hooks run in, when its
+    // package cache proves one: where a terminal's conversation runs.
+    // A dedicated server (a launch's own) proves none.
+    let mut shared = None;
     let delivery = tokio::time::timeout_at(deadline, async {
         let checkout = input.cwd.canonicalize()?;
         let native = crate::mcp::native_identity::Context::from_host(pid, checkout.clone(), &table)?;
         let agent = if let Some(context) = native {
+            shared = context.shared_profile().map(std::path::Path::to_path_buf);
             let meta = json!({"threadId":input.session_id, "sessionId":input.session_id});
             let mut keyed = false;
             let agent = match context.resolve(client, &meta).await {
@@ -444,7 +449,35 @@ pub(super) async fn run(client: &Client) -> Result<()> {
             });
         }
         match agent {
-            Some(agent) if terminal => prepare(client, &input, agent.id.to_string()).await,
+            // Hooks in the shared server: a terminal's conversation, or one
+            // a binding already names. Its receiver reaches it at idle
+            // through the control socket and becomes the queue's one
+            // consumer once it binds; these hooks never descend from its
+            // terminal, so its private hook endpoint is not theirs to ask.
+            // Until it binds, and without the socket, they deliver as before.
+            Some(agent) if terminal || shared.is_some() => {
+                let bound = match shared.as_deref() {
+                    Some(profile) if agent.pid.is_some() => {
+                        match crate::codex_input::external::ensure_started_control(
+                            client, &agent, profile,
+                        )
+                        .await
+                        {
+                            Ok(bound) => bound,
+                            Err(error) => {
+                                eprintln!("Codex control-socket input could not start: {error}");
+                                false
+                            }
+                        }
+                    }
+                    _ => false,
+                };
+                if bound {
+                    Ok(Delivery::empty())
+                } else {
+                    prepare(client, &input, agent.id.to_string()).await
+                }
+            }
             Some(agent) => match crate::codex_input::external::ensure_started(client, &agent).await
             {
                 Ok(true) => {

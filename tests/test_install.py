@@ -282,6 +282,39 @@ class InstallerTests(unittest.TestCase):
                 self.assertFalse((root / "home/Applications").exists(), "nothing copied by hand")
                 self.assertFalse((root / "home/.local/bin").exists(), "nothing copied by hand")
 
+    def test_the_daemon_is_installed_as_a_link_to_the_cli(self):
+        """agentd is agentdocker under the daemon's name: an archive carrying
+        it as a link (or a copy of the same bytes) installs one file under
+        both names. An earlier release's separate daemon stays separate."""
+        for daemon in ["link", "copy", "separate", "absent"]:
+            with self.subTest(daemon=daemon), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env, install, _ = self._valid_fixture(root, carries_bundle=False)
+                archive = Path(env["TEST_ARCHIVE"])
+                cli = b"#!/bin/sh\necho one program\n"
+                with tarfile.open(archive, "w:gz") as tar:
+                    info = tarfile.TarInfo("agentdocker")
+                    info.size, info.mode = len(cli), 0o755
+                    tar.addfile(info, io.BytesIO(cli))
+                    if daemon == "link":
+                        info = tarfile.TarInfo("agentd")
+                        info.type, info.linkname, info.mode = tarfile.LNKTYPE, "agentdocker", 0o755
+                        tar.addfile(info)
+                    elif daemon != "absent":
+                        data = cli if daemon == "copy" else b"#!/bin/sh\necho older daemon\n"
+                        info = tarfile.TarInfo("agentd")
+                        info.size, info.mode = len(data), 0o755
+                        tar.addfile(info, io.BytesIO(data))
+                Path(env["TEST_CHECKSUM"]).write_text(
+                    hashlib.sha256(archive.read_bytes()).hexdigest() + "  fixture.tar.gz\n")
+                result = subprocess.run(["sh", str(ROOT / "install.sh")], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((install / "agentdocker").read_bytes(), cli)
+                linked = (install / "agentd").samefile(install / "agentdocker")
+                self.assertEqual(linked, daemon != "separate")
+                if daemon == "separate":
+                    self.assertIn(b"older daemon", (install / "agentd").read_bytes())
+
     def test_desktop_route_falls_back_to_the_commands_when_a_release_has_none(self):
         """v0.1.0 predates the desktop archives. The default Mac route must
         still install something useful from it, and say why."""

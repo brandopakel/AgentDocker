@@ -1,6 +1,7 @@
 #!/bin/sh
 # Install AgentDocker: the desktop app with the `agentdocker` CLI and the
-# `agentd` daemon inside it, or the two commands alone.
+# `agentd` daemon inside it, or the two commands alone. They are one
+# executable: `agentd` is `agentdocker` under the daemon's name.
 #
 #   curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/install.sh | sh
 #
@@ -141,11 +142,18 @@ for path in "$dir/agentdocker" "$dir/agentd" "$dir/agentdocker-ui" ${app:+"$HOME
 done
 
 mkdir -p "$dir"
-for bin in agentdocker agentd; do
-    src="$(find "$tmp" -type f -name "$bin" | head -n 1)"
-    [ -n "$src" ] || { echo "install.sh: $bin missing from $archive" >&2; exit 1; }
-    install -m 0755 "$src" "$dir/$bin"
-done
+cli="$(find "$tmp" -type f -name agentdocker | head -n 1)"
+daemon="$(find "$tmp" -type f -name agentd | head -n 1)"
+[ -n "$cli" ] || { echo "install.sh: agentdocker missing from $archive" >&2; exit 1; }
+install -m 0755 "$cli" "$dir/agentdocker"
+# The daemon is agentdocker under the name agentd: a hard link to it, as the
+# archive carries it, or a copy where the directory cannot hold a link. An
+# earlier release's archive carries a separate daemon, installed as it is.
+if [ -z "$daemon" ] || cmp -s "$cli" "$daemon"; then
+    ln -f "$dir/agentdocker" "$dir/agentd" 2>/dev/null || install -m 0755 "$cli" "$dir/agentd"
+else
+    install -m 0755 "$daemon" "$dir/agentd"
+fi
 installed="agentdocker and agentd"
 # Current commands-only archives carry just the two commands; the v0.1.0
 # Mac archives also carried the UI and the bundle, and are still installed.

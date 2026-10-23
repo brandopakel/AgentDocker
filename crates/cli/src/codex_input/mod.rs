@@ -14,6 +14,7 @@ mod review;
 mod secret_requests;
 mod session_identity;
 mod terminal;
+pub mod threads;
 mod transport;
 
 use crate::client::Client;

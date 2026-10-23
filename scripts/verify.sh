@@ -294,11 +294,15 @@ PY
     trap finish_bench EXIT
     step cargo bench --locked -p agentdocker-core --bench leases -- --noplot 2>&1 | tee artifacts/criterion-leases.txt
     step cargo bench --locked -p agentdocker-host --bench fingerprint -- --noplot 2>&1 | tee artifacts/criterion-fingerprint.txt
-    step cargo build --locked --release -p agentdocker --bin agentd --message-format=json-render-diagnostics > artifacts/benchmark-agentd-build.jsonl
+    step cargo build --locked --release -p agentdocker --bin agentdocker --message-format=json-render-diagnostics > artifacts/benchmark-agentd-build.jsonl
     step cargo build --locked --release -p agentd --example socket_load --message-format=json-render-diagnostics > artifacts/benchmark-socket-build.jsonl
     # Cargo may use a custom target directory or a configured target triple.
     # Run the artifacts Cargo actually emitted, never a stale ./target binary.
-    bench_daemon="$(benchmark_executable artifacts/benchmark-agentd-build.jsonl agentd)"
+    bench_cli="$(benchmark_executable artifacts/benchmark-agentd-build.jsonl agentdocker)"
+    # The daemon is agentdocker invoked as agentd: run it under that name, a
+    # hard link beside the build that replaces any agentd an older build left.
+    bench_daemon="$(dirname "$bench_cli")/agentd"
+    ln -f "$bench_cli" "$bench_daemon"
     bench_workload="$(benchmark_executable artifacts/benchmark-socket-build.jsonl socket_load)"
     benchmark_binaries > artifacts/benchmark-binaries.json
     bench_status=0

@@ -30,6 +30,8 @@ class Agentdocker < Formula
   end
 
   def install
+    # One executable: agentd is agentdocker under the daemon's name, a hard
+    # link in the archive, and moving both into bin keeps it one file.
     bin.install "agentdocker", "agentd"
     # The desktop app is in the macOS archives only.
     bin.install "agentdocker-ui" if File.exist?("agentdocker-ui")

@@ -5,14 +5,14 @@ Read `README.md` for the model, `docs/README.md` for what each document is for a
 ## Layout
 
 - `crates/core` — `agentdocker-core`: data model, wire protocol, pure coordination logic. All semantics are unit-tested here.
-- `crates/host` — `agentdocker-host`: host-side I/O both binaries need (project discovery from a working directory, process inspection). Stateless helpers; no daemon state.
-- `crates/agentd` — the daemon, as a library (`agentd::main`); the `agentd` binary itself is built by `crates/cli` so one install ships both. `daemon.rs` holds one synchronous state mutex covering memory, SQLite writes and ordered event publication; `store.rs` is SQLite write-through persistence (JSON blobs; bump `SCHEMA_VERSION` only when a stored meaning changes).
-- `crates/cli` — the `agentdocker` package: the CLI and the `agentd` binary (`src/bin/agentd.rs`, one line). The MCP server and hooks adapter talk to the daemon through the `Backend` trait in `client.rs`, whose test mock lets them be tested without a daemon.
+- `crates/host` — `agentdocker-host`: host-side I/O the CLI and the daemon both need (project discovery from a working directory, process inspection). Stateless helpers; no daemon state.
+- `crates/agentd` — the daemon, as a library (`agentd::main_from`), run by the one `agentdocker` executable when invoked as `agentd`. `daemon.rs` holds one synchronous state mutex covering memory, SQLite writes and ordered event publication; `store.rs` is SQLite write-through persistence (JSON blobs; bump `SCHEMA_VERSION` only when a stored meaning changes).
+- `crates/cli` — the `agentdocker` package: one executable that is the CLI, and the daemon when invoked as `agentd` (the hard link packages ship beside it; `scripts/daemon_link.py` makes it in a build directory) or as `agentdocker daemon run`. `main` dispatches on `argv[0]`; `agentdocker_host::program` names which program a process runs and how to start one, since macOS may report a hard-linked file under either name. The MCP server and hooks adapter talk to the daemon through the `Backend` trait in `client.rs`, whose test mock lets them be tested without a daemon.
 - `crates/ui` — `agentdocker-ui`, the Iced desktop app with the tiny-skia software renderer. No HTTP; `agentdocker ui` launches it. See `docs/ICED-DESIGN.md` for interaction contracts and validation.
 
 ## Commands
 
-Run an isolated daemon for manual testing: `AGENTDOCKER_HOME=/tmp/ad-test agentd` and use the same env var with the CLI (or just run the CLI with that env var: a client that cannot connect starts the daemon itself; `AGENTDOCKER_NO_AUTOSTART=1` turns that off).
+Run an isolated daemon for manual testing: `AGENTDOCKER_HOME=/tmp/ad-test agentdocker daemon run` (or `agentd`, where the link is installed) and use the same env var with the CLI (or just run the CLI with that env var: a client that cannot connect starts the daemon itself; `AGENTDOCKER_NO_AUTOSTART=1` turns that off).
 
 ## Conventions
 
