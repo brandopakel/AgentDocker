@@ -136,7 +136,12 @@ details. An agent AgentDocker started opens its terminal inside the app. One
 started elsewhere is found where it runs: in a tmux or herdr pane, that pane is
 selected first; then, on macOS, its Terminal or iTerm tab is brought forward
 (macOS asks once to let AgentDocker control that app), and any other host —
-Ghostty, an editor's terminal, a JetBrains IDE — is brought to the front. Ghostty
+Ghostty, an editor's terminal, a JetBrains IDE — is brought to the front. One
+started through AgentDocker's own command in a terminal (`agentdocker codex` in
+Terminal) is in that terminal, not in AgentDocker: its action reads **Go to
+Terminal** and selects its tab. One found running under AgentDocker itself opens
+in the app's own terminal for the session that holds it, and the app says so when
+none does; AgentDocker is never offered as the place to go, nor brought forward. Ghostty
 is not asked for the agent's tab: its scripting names each terminal's
 folder but no tty or process, and a folder is not an identity (an agent can work
 in another folder than its tab reports, and that folder can be another tab's). The
