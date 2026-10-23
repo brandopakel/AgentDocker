@@ -579,7 +579,8 @@ impl App {
         };
         let version = runtime.version.clone();
         // A held delivery is the chip; outdated hooks are its fix too.
-        let hooks = (held && outdated).then(|| super::missing_setup(runtime).replacen(" · ", ", ", 1));
+        let hooks =
+            (held && outdated).then(|| super::missing_setup(runtime).replacen(" · ", ", ", 1));
         let detail = [rest, hooks, version]
             .into_iter()
             .flatten()
