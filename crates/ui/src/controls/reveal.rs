@@ -5,7 +5,6 @@
 //! focus, and a click gives a control the focus, so a clicked Reply stayed
 //! drawn after the pointer had left, until the next click elsewhere. Here
 //! only the keyboard's focus — the ringed one — keeps it showing.
-use super::Focus;
 use crate::app::Message;
 use iced::advanced::{
     Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer,
@@ -37,15 +36,9 @@ struct State {
     hovered: bool,
 }
 
-/// Whether a control under `tree` has the keyboard's focus.
-fn ringed_within(tree: &Tree) -> bool {
-    (tree.tag == tree::Tag::of::<Focus>() && tree.state.downcast_ref::<Focus>().ringed())
-        || tree.children.iter().any(ringed_within)
-}
-
 /// Whether the top shows: under the pointer, or holding the keyboard.
 fn shows_top(tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor) -> bool {
-    cursor.is_over(layout.bounds()) || ringed_within(&tree.children[1])
+    cursor.is_over(layout.bounds()) || super::focused_within(&tree.children[1], true)
 }
 
 impl Widget<Message, iced::Theme, iced::Renderer> for Hover<'_> {
@@ -262,6 +255,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Hover<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controls::Focus;
 
     /// A row with Reply over it: the top shows under the pointer, and
     /// after a click on Reply it goes when the pointer leaves — the

@@ -348,6 +348,33 @@ impl Control<'_> {
     fn focusable(&self) -> bool {
         self.button && self.semantic.action.is_some()
     }
+    /// Whether a press on it moves the focus to it: an enabled button, or
+    /// a field that takes typing. A label — a chip, a status, words read
+    /// as one — never does, so a press on one inside a row is the row's.
+    fn takes_press(&self) -> bool {
+        use accesskit::Role;
+        self.focusable()
+            || (matches!(
+                self.semantic.role,
+                Role::TextInput | Role::MultilineTextInput | Role::PasswordInput
+            ) && self.semantic.change.is_some())
+    }
+}
+
+/// Whether a control in `tree` has the focus — the keyboard's only, when
+/// `ringed`.
+pub(crate) fn focused_within(tree: &Tree, ringed: bool) -> bool {
+    (tree.tag == tree::Tag::of::<Focus>() && {
+        let focus = tree.state.downcast_ref::<Focus>();
+        if ringed {
+            focus.ringed()
+        } else {
+            focus.focused
+        }
+    }) || tree
+        .children
+        .iter()
+        .any(|child| focused_within(child, ringed))
 }
 impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
     fn tag(&self) -> tree::Tag {
@@ -445,36 +472,36 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
             shell.request_redraw();
             shell.publish(Message::Blurred);
         }
-        if self.semantic.role != accesskit::Role::Button || self.semantic.action.is_some() {
-            // A press on it: the focus comes here, by the pointer. The
-            // operation that moves it runs after the view is rebuilt, and
-            // marks whatever state this control has then.
-            if matches!(
+        // A press on it: the focus comes here, by the pointer. The
+        // operation that moves it runs after the view is rebuilt, and marks
+        // whatever state this control has then.
+        if self.takes_press()
+            && matches!(
                 event,
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-            ) && cursor.is_over(layout.bounds())
-            {
-                state.by_pointer = true;
-                shell.publish(Message::Pressed(self.semantic.id.clone()));
+            )
+            && cursor.is_over(layout.bounds())
+        {
+            state.by_pointer = true;
+            shell.publish(Message::Pressed(self.semantic.id.clone()));
+        }
+        // Enter or Space presses a focused button, once — unless a widget
+        // before it in the window already took the key (a field sending on
+        // Enter, say): one key, one action.
+        if state.focused
+            && !shell.is_event_captured()
+            && let Some(action) = self.semantic.action.clone().filter(|_| self.button)
+            && let Event::Keyboard(keyboard::Event::KeyPressed { key, repeat, .. }) = event
+            && (matches!(
+                key,
+                keyboard::Key::Named(keyboard::key::Named::Enter | keyboard::key::Named::Space)
+            ) || matches!(key, keyboard::Key::Character(c) if c.as_str() == " "))
+        {
+            if !repeat {
+                shell.publish(action);
             }
-            // Enter or Space presses a focused button, once — unless a
-            // widget before it in the window already took the key (a field
-            // sending on Enter, say): one key, one action.
-            if state.focused
-                && !shell.is_event_captured()
-                && let Some(action) = self.semantic.action.clone().filter(|_| self.button)
-                && let Event::Keyboard(keyboard::Event::KeyPressed { key, repeat, .. }) = event
-                && (matches!(
-                    key,
-                    keyboard::Key::Named(keyboard::key::Named::Enter | keyboard::key::Named::Space)
-                ) || matches!(key,keyboard::Key::Character(c) if c.as_str()==" "))
-            {
-                if !repeat {
-                    shell.publish(action);
-                }
-                shell.capture_event();
-                return;
-            }
+            shell.capture_event();
+            return;
         }
         self.content.as_widget_mut().update(
             &mut tree.children[0],
@@ -1594,6 +1621,49 @@ mod tests {
         );
         drop(shell);
         assert!(messages.is_empty(), "{messages:?}");
+    }
+
+    /// A label inside a row — a status chip, say — is read, not pressed:
+    /// a press on it is the row's, which takes the pointer's focus.
+    #[test]
+    fn a_press_on_a_label_in_a_row_is_the_rows() {
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, 14.0.into());
+        let chip: Element<'_, Message> = Control {
+            content: iced::widget::Space::new().width(60).height(16).into(),
+            semantic: Semantic {
+                role: accesskit::Role::Label,
+                ..Semantic::button("chip".into(), "Running".into(), None)
+            },
+            button: false,
+        }
+        .into();
+        let mut element = custom(
+            "row",
+            "A session",
+            chip,
+            Some(Message::ShowAdd),
+            false,
+            Kind::Quiet,
+            [0, 0],
+        );
+        let (mut tree, node) = laid_out(&mut element);
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        element.as_widget_mut().update(
+            &mut tree,
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            Layout::new(&node),
+            mouse::Cursor::Available(iced::Point::new(5.0, 5.0)),
+            &renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(Size::new(400.0, 300.0)),
+        );
+        drop(shell);
+        assert!(
+            matches!(messages.as_slice(), [Message::Pressed(id)] if id == "row"),
+            "{messages:?}"
+        );
     }
 
     #[test]

@@ -930,15 +930,35 @@ and notarization; locally signed builds are explicit previews.
 
 ## Keyboard and terminal
 
-- Tab and Shift-Tab move between controls; Enter/Space activate a focused button.
-  The focus ring is the keyboard's: a click focuses a control without one, and
-  the next key that moves or uses the focus (Tab, an arrow, Home, End, the page
-  keys, Enter, Space or a character) shows it on whatever is focused; a
-  modifier, a Command or Control shortcut, or Escape does not. A click anywhere
-  else takes the focus away, and Escape closes a project's menu.
+- Tab and Shift-Tab move between controls; Enter/Space activate a focused
+  button, once, and not when a field before it already took the key. One
+  control has the focus at a time.
+- The focus ring is the keyboard's. A click focuses a control without one,
+  wherever the click moves it (a row that opens a session, a list that a new
+  session reorders under the click), and without scrolling it. Only a key
+  that moves or uses the focus — Tab, F6, an arrow, Enter or Space — shows it
+  on whatever is focused; a modifier, a Command, Control or Option shortcut,
+  Escape, a letter (the board's keys are letters) or a key that only scrolls
+  does not. A press on a label inside a row, a status chip say, is the row's;
+  a chip never takes the focus. A focused button that becomes unavailable
+  lets the focus go.
+- A click anywhere else takes the focus away: from a button, from a field
+  (whose draft stays) and from the terminal, which then takes no typing until
+  it is pressed again. A click in a field's words puts the caret there.
+- Escape or a press outside closes a menu that floats over the page. Opened
+  from the keyboard, a menu (a project's **⋯**, **More**, **Launch agent**'s
+  tools, **Open in…**, **Roles**, **Model** and **Effort**) takes the focus to
+  its first entry; Escape, or an entry chosen with Enter or Space that closes
+  the menu, gives the focus back, ringed, to the control that opened it.
+  Opened or closed by a click, a menu leaves no ring anywhere.
+- **Launch agent…** takes the focus into its task field as it opens; nothing
+  under the dialog's scrim keeps the focus or answers keys.
+- A message's **Reply** shows under the pointer or the keyboard's focus; a
+  click on it does not keep it showing once the pointer has left.
 - Command/Ctrl+1–4 switch Projects, Inbox, Tools and Settings.
 - Command/Ctrl+[ goes back and Command/Ctrl+] forward, from a text field too;
-  so do a keyboard's Back and Forward keys and the mouse's side buttons. On
+  so do a keyboard's Back and Forward keys and the mouse's side buttons, and
+  the rail's arrows, which like any click leave no ring behind. On
   Linux and Windows, Ctrl+[ and Ctrl+] in an agent's terminal stay the
   terminal's (Escape and detach); the keyboard's Back and Forward keys still
   go back and forward there.

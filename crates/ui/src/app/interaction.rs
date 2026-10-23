@@ -94,7 +94,8 @@ fn selecting_a_session_in_a_project_leaves_no_ring() {
     session(&mut app, "heron", "/work/minio-lab");
     app.shell
         .catalog
-        .remember(ProjectRef::directory("/work/minio-lab"), false);
+        .remember(ProjectRef::directory("/work/minio-lab"), false)
+        .unwrap();
     let _ = app.update(Message::SelectProject("/work/minio-lab".into()));
     app.screen = Screen::Agents;
     assert!(!app.all_projects());
@@ -129,7 +130,8 @@ fn a_row_clicked_while_a_new_session_pushes_it_down_shows_no_ring() {
     session(&mut app, "osprey", root);
     app.shell
         .catalog
-        .remember(ProjectRef::directory(root), false);
+        .remember(ProjectRef::directory(root), false)
+        .unwrap();
     let _ = app.update(Message::SelectProject(root.into()));
     app.screen = Screen::Agents;
     // The details are open already, so selecting another session keeps
@@ -169,7 +171,8 @@ fn a_row_clicked_while_a_new_session_pushes_it_down_shows_no_ring() {
 fn project_page(app: &mut App, root: &str) {
     app.shell
         .catalog
-        .remember(ProjectRef::directory(root), false);
+        .remember(ProjectRef::directory(root), false)
+        .unwrap();
     let _ = app.update(Message::SelectProject(root.into()));
     app.screen = Screen::Agents;
 }
@@ -326,4 +329,116 @@ fn a_press_on_a_half_hidden_row_does_not_scroll_the_list() {
         heard.iter().any(|m| m == &format!("SelectSession({id:?})")),
         "the click landed: {heard:?}"
     );
+}
+
+fn ringed(id: &str) -> [Focused; 1] {
+    [Focused {
+        id: id.into(),
+        ringed: true,
+    }]
+}
+
+/// Focus `id` from the keyboard, as Tab would leave it.
+fn keyboard_focus(window: &mut Window, app: &mut App, id: &str) {
+    window.deliver(app, vec![Message::Focus(id.into())]);
+    window.key(app, named(iced::keyboard::key::Named::Shift));
+    assert_eq!(window.focused(app), ringed(id));
+}
+
+/// An entry chosen with Enter in a menu the keyboard opened, when the
+/// choice closes the menu, gives the focus back to the menu's opener.
+#[test]
+fn enter_on_a_menu_entry_gives_the_focus_back_to_its_opener() {
+    use iced::keyboard::key::Named;
+    let mut app = app();
+    project_page(&mut app, "/work/keel");
+    let mut window = window(&app);
+    keyboard_focus(&mut window, &mut app, "project-more");
+    window.key(&mut app, named(Named::Enter));
+    assert_eq!(window.focused(&app), ringed("project-tab-Journal"));
+    window.key(&mut app, named(Named::Enter));
+    assert!(!app.shell.more, "the choice closed the menu");
+    assert_eq!(app.screen, Screen::Journal, "and went to History");
+    assert_eq!(window.focused(&app), ringed("project-more"));
+}
+
+/// The roles menu, opened from the keyboard, takes the focus to its first
+/// role; choosing one keeps the menu open and the focus in it; Escape
+/// gives the focus back to the tag that opened it.
+#[test]
+fn the_roles_menu_takes_and_gives_back_the_keyboards_focus() {
+    use iced::keyboard::key::Named;
+    let mut app = app();
+    let root = "/work/orchard";
+    let id = session(&mut app, "reviewer-one", root);
+    project_page(&mut app, root);
+    app.palettes_asked.insert(root.into());
+    let palette =
+        agentdocker_core::role::defaults(&agentdocker_core::ProjectId::from("orchard"), Utc::now());
+    let first = palette[0].role.clone();
+    app.palettes.insert(root.into(), Some(palette));
+    let _ = app.update(Message::SelectSession(id.clone()));
+    let mut window = window(&app);
+    keyboard_focus(&mut window, &mut app, "session-roles");
+    window.key(&mut app, named(Named::Enter));
+    assert_eq!(app.shell.roles_menu.as_deref(), Some(id.as_str()));
+    let pick = format!("role-pick-{id}-{first}");
+    assert_eq!(window.focused(&app), ringed(&pick));
+    window.key(&mut app, named(Named::Escape));
+    assert_eq!(app.shell.roles_menu, None);
+    assert_eq!(window.focused(&app), ringed("session-roles"));
+}
+
+/// The model and effort menus take the keyboard's focus to their first
+/// entry when the keyboard opens them, and leave it alone for the pointer.
+#[test]
+fn the_launch_choice_menus_take_the_focus_only_from_the_keyboard() {
+    use super::shell::ChoiceMenu;
+    for (which, key) in [(ChoiceMenu::Model, "model"), (ChoiceMenu::Effort, "effort")] {
+        let mut app = app();
+        let _ = app.update(Message::LaunchChoiceMenu(Some(which)));
+        assert_eq!(
+            app.shell.menu_opener.as_deref(),
+            Some(&*format!("launch-{key}"))
+        );
+        let _ = app.update(Message::LaunchChoiceMenu(None));
+        assert_eq!(app.shell.menu_opener, None, "closed: nothing to give back");
+        let _ = app.update(Message::Pressed(format!("launch-{key}")));
+        let _ = app.update(Message::LaunchChoiceMenu(Some(which)));
+        assert_eq!(app.shell.menu_opener, None, "the pointer opened it");
+    }
+}
+
+/// Back and Forward pressed with the pointer leave no ring, on the arrow
+/// or on the place they land on, and what had the focus where the person
+/// went does not follow them back.
+#[test]
+fn back_and_forward_by_the_pointer_leave_no_ring() {
+    let mut app = app();
+    let id = session(&mut app, "kestrel", "/work/keel");
+    project_page(&mut app, "/work/keel");
+    let mut window = window(&app);
+    let row = window
+        .bounds(&app, &format!("session-{id}"))
+        .expect("the row");
+    window.tap(&mut app, row.center());
+    let board = window
+        .bounds(&app, "project-tab-Board")
+        .expect("the Board tab");
+    window.tap(&mut app, board.center());
+    assert_eq!(app.screen, Screen::Board);
+    // Something on the board has the keyboard when the person goes back.
+    keyboard_focus(&mut window, &mut app, "project-tab-Chat");
+    for (arrow, screen) in [
+        ("history-back", Screen::Agents),
+        ("history-forward", Screen::Board),
+        ("history-back", Screen::Agents),
+    ] {
+        let at = window.bounds(&app, arrow).expect("the arrow");
+        window.tap(&mut app, at.center());
+        assert_eq!(app.screen, screen, "{arrow}");
+        let focused = window.focused(&app);
+        assert!(focused.iter().all(|f| !f.ringed), "{arrow}: {focused:?}");
+    }
+    assert_eq!(app.shell.selected.as_deref(), Some(id.as_str()));
 }

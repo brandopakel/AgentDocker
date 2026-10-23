@@ -210,7 +210,14 @@ control does, its id or its accessible label:
   text — stays in it rather than reaching the control beneath. A menu opened
   from the keyboard takes the focus to its first entry (`shell::State::
   pressed` tells a pointer-opened menu, which leaves the focus alone), since
-  overlays come last in the Tab order.
+  overlays come last in the Tab order, and remembers its opener
+  (`shell::State::menu_opener`). The popup says how it closes, ahead of the
+  menu's own message: `Message::MenuEscaped` gives the focus back to the
+  opener; `Message::MenuChosen` (Enter or Space on its focused entry) does
+  so once the choice has closed the menu, unless it opened the launch
+  dialog or the palette; `Message::MenuPressedAway` and any pointer press
+  forget the opener. The roles menu and the launch dialog's Model and Effort
+  menus take the keyboard's focus the same way.
   Iced runs operations over overlays too, so the popup's controls are
   focusable, carry accessibility nodes and are found by the workflow driver.
   The project row's **⋯** menu (Rename…, Pin, Remove from list, the path),
@@ -387,8 +394,9 @@ control does, its id or its accessible label:
   recipients it is true of when there are several (*Delivered · 2*,
   *Waiting · 1 of 3*), every recipient's line its detail.
   **Reply** is drawn only under the pointer or keyboard focus
-  (Iced's `hover` widget), so it is always present for the driver and
-  assistive technology. `controls::framed_composer` is the field, a hairline
+  (`controls::hover`: unlike Iced's own `hover`, only the keyboard's ringed
+  focus keeps it showing, not a click's), so it is always present for the
+  driver and assistive technology. `controls::framed_composer` is the field, a hairline
   and a footer holding only a 28-point send arrow (`send-<key>`,
   spoken *Send*), the whole frame showing focus; the keys are in the field's
   spoken name. Lines under it say the error, the queued state with
@@ -719,12 +727,38 @@ Enter/Space. Repeated key events do not repeat an activation. Escape closes
 forms/details; Command/Ctrl+1–4 switch primary sections, Command/Ctrl+K opens
 Jump to…, and Command/Ctrl+[ and Command/Ctrl+] go back and forward. F6 leaves terminal input;
 Control+] detaches. Button focus follows stable identity when session rows move.
-The focus ring follows the input modality: a click focuses a control without
-it (the pointer knows where it clicked) and it stays off that control until a
-key is pressed — whatever asks for the focus meanwhile, the click included —
-while Tab and a focus the app moves to another control show it; losing focus
-forgets the click
-(`a_clicked_control_is_focused_without_a_ring_until_the_keyboard_asks`).
+The focus ring follows the input modality, and one control has the focus at
+a time:
+
+- A press publishes `Message::Pressed(id)`, whose operation
+  (`controls::focus_by_pointer`) runs after the view is rebuilt and marks the
+  focus as the pointer's on whatever widget state the control has by then — a
+  click that opens a session or lands while a new session reorders the list
+  moves the control, and moved, it starts from fresh state. A control's fresh
+  state carries its id, so a focus given to it survives the next rebuild. The
+  operation leaves a target that already has the focus as it is (a field
+  keeps the caret and selection the click made) and does not scroll it.
+  `Message::Focus(id)` is the keyboard's, assistive technology's and the
+  app's own: it shows the ring and scrolls the control into view.
+- Only Tab, F6, an arrow, Enter or Space (no Command, Control or Option)
+  brings the ring back to a clicked control. Tab and F6 step with
+  `controls::step_focus`, which unfocuses everything but its target.
+- A left press outside a focused control blurs it, sends `Message::Blurred`
+  and redraws; the terminal does the same. A label (`Role::Label`: chips,
+  statuses, read sentences) never claims a press. A control that becomes
+  unavailable drops its focus. Enter or Space already captured by a widget
+  before a focused button does not press it.
+- The launch dialog focuses its task field (`shell::LAUNCH_PROMPT`) as it
+  opens.
+
+`app/interaction.rs` drives the whole window as Iced's event loop does
+(`view::testing::Window`: events, the messages they publish, the rebuild, then
+the operations), with taps whose press and release arrive together and clicks
+a frame apart: a session row that moves, a row pushed down by a new session,
+a half-hidden row, a field's caret, menus opened and closed each way, the
+roles and choice menus, the launch dialog, and Back and Forward. Widget tests
+in `controls` cover the keys, fresh state, the pointer and Tab operations, a
+disabled control, a captured key and a label in a row.
 Text inputs use Iced's native input-method support. Message and answer composers
 use Iced's multiline editor: plain Enter sends through the existing button action,
 Shift+Enter inserts a line, and clipboard paste retains line breaks. Native
