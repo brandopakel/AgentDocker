@@ -48,6 +48,9 @@ pub(super) fn launch(binding: &Binding) -> Result<ControllerLaunch> {
             .args
             .extend(["--app-server-record".into(), path(&remote.record)?]);
     }
+    if binding.control {
+        descriptor.args.push("--control".into());
+    }
     ensure!(
         descriptor.valid(),
         "native receiver launch descriptor is invalid"
@@ -66,7 +69,36 @@ fn marker_running(previous: &Binding, current: &Binding, process: ProcessIdentit
     Ok(true)
 }
 
+/// Where the receiver reaches the conversation.
+enum Server<'a> {
+    /// A private app-server of the default profile (`CODEX_HOME`, else
+    /// `~/.codex`), as for a terminal that runs its own conversation.
+    Private,
+    /// The shared app-server of this verified profile, through its control
+    /// socket: a terminal whose conversation runs there (Codex 0.162 and later).
+    Shared(&'a std::path::Path),
+}
+
 pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool> {
+    start(client, agent, Server::Private).await
+}
+
+/// Start the receiver of a terminal whose conversation runs in `profile`'s
+/// shared app-server, reaching it through the control socket. A profile
+/// without the socket (or with one this user cannot trust) starts nothing,
+/// and its hooks keep delivering as before.
+pub async fn ensure_started_control(
+    client: &Client,
+    agent: &AgentRecord,
+    profile: &std::path::Path,
+) -> Result<bool> {
+    if !super::control::available(profile) {
+        return Ok(false);
+    }
+    start(client, agent, Server::Shared(profile)).await
+}
+
+async fn start(client: &Client, agent: &AgentRecord, server: Server<'_>) -> Result<bool> {
     if agent.managed || agent.spec.runtime != "codex" {
         return Ok(false);
     }
@@ -104,11 +136,15 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
         procinfo::start_time(pid) == Some(birth),
         "Codex provider generation changed before bootstrap"
     );
-    let profile = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::home_dir().map(|p| p.join(".codex")))
-        .context("Codex provider profile is unavailable")?
-        .canonicalize()?;
+    let profile = match server {
+        Server::Private => std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::home_dir().map(|p| p.join(".codex")))
+            .context("Codex provider profile is unavailable")?,
+        Server::Shared(profile) => profile.to_owned(),
+    }
+    .canonicalize()?;
+    let control = matches!(server, Server::Shared(_));
     let binding = Binding {
         agent: agent.id.to_string(),
         provider: ProviderGeneration {
@@ -136,6 +172,7 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
             .canonicalize()?,
         executable: procinfo::executable_path_of(pid)?.canonicalize()?,
         remote: None,
+        control,
     };
     let home = dirs::home();
     let predecessor = if agent.input_binding.is_none() {
@@ -250,6 +287,7 @@ mod tests {
             cwd: "/checkout".into(),
             executable: "/codex".into(),
             remote: None,
+            control: false,
         };
         assert!(marker_running(&current, &current, process.clone()).unwrap());
         let mut previous = current.clone();
@@ -262,6 +300,67 @@ mod tests {
         assert!(!marker_running(&previous, &current, reused_pid).unwrap());
         // The stale marker is atomically replaced only after launch succeeds;
         // the private ledger still independently validates generation changes.
+    }
+
+    #[test]
+    fn a_control_binding_starts_its_receiver_on_the_control_socket_again() {
+        let process = ProcessIdentity {
+            pid: std::process::id(),
+            started_at: procinfo::start_time(std::process::id()).unwrap(),
+        };
+        let checkout = tempfile::tempdir().unwrap();
+        let mut binding = Binding {
+            agent: "agent".into(),
+            provider: ProviderGeneration {
+                process,
+                session: "thread".into(),
+                profile: "/profile".into(),
+            },
+            socket: "/socket".into(),
+            cwd: checkout.path().canonicalize().unwrap(),
+            executable: "/codex".into(),
+            remote: None,
+            control: true,
+        };
+        assert!(
+            launch(&binding)
+                .unwrap()
+                .args
+                .iter()
+                .any(|a| a == "--control")
+        );
+        binding.control = false;
+        assert!(
+            !launch(&binding)
+                .unwrap()
+                .args
+                .iter()
+                .any(|a| a == "--control")
+        );
+    }
+
+    /// Without the profile's control socket nothing starts, and the daemon
+    /// is not even asked: the hooks keep delivering as before.
+    #[tokio::test]
+    async fn without_a_control_socket_nothing_starts() {
+        use agentdocker_core::AgentSpec;
+        let profile = tempfile::tempdir().unwrap();
+        // Nobody listens here: any daemon request would fail.
+        let client = Client::new(Some(profile.path().join("absent.sock"))).with_start_timeout(None);
+        let mut agent = AgentRecord::new(
+            AgentSpec {
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            chrono::Utc::now(),
+        );
+        agent.pid = Some(std::process::id());
+        assert!(
+            !ensure_started_control(&client, &agent, profile.path())
+                .await
+                .unwrap()
+        );
     }
 
     #[cfg(unix)]

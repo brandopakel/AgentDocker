@@ -30,3 +30,8 @@ uuid.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# A fake Codex shared server for the control-socket watch's tests.
+tokio-tungstenite.workspace = true
+futures-util.workspace = true

@@ -412,6 +412,7 @@ mod tests {
             cwd: root.clone(),
             executable: root.join("codex"),
             remote: None,
+            control: false,
         };
         let record = Record {
             version: 1,

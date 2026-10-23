@@ -47,6 +47,9 @@ mod access;
 mod binding;
 mod channels;
 mod checkouts;
+// Codex's shared server listens on a Unix socket; Windows has none.
+#[cfg(unix)]
+pub(crate) mod codex_threads;
 mod containers;
 mod contests;
 mod conversations;

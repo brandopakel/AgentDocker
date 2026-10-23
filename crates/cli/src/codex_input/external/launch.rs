@@ -507,6 +507,7 @@ impl Startup<'_> {
             executable: self.program.into(),
             socket: self.client.socket_path().into(),
             remote: None,
+            control: false,
         };
         let record = remote::Record {
             version: if birth.is_some() { 2 } else { 1 },
