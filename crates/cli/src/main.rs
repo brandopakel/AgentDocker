@@ -4411,6 +4411,7 @@ async fn run() -> Result<()> {
                         },
                         observed_at: chrono::Utc::now(),
                         reason: None,
+                        detail: None,
                         source: None,
                     },
                 })
@@ -5491,8 +5492,12 @@ async fn print_activity(client: &Client, activity: &[AgentActivity]) {
                 Activity::Working { since } | Activity::Idle { since } => {
                     (String::new(), Some(*since))
                 }
-                Activity::Waiting { since, reason } => (
-                    match reason {
+                Activity::Waiting {
+                    since,
+                    reason,
+                    detail,
+                } => {
+                    let what = match reason {
                         Some(agentdocker_core::WaitReason::Permission) => {
                             "for permission, in its terminal"
                         }
@@ -5500,10 +5505,15 @@ async fn print_activity(client: &Client, activity: &[AgentActivity]) {
                             "for an answer, in its terminal"
                         }
                         _ => "for you, in its terminal",
-                    }
-                    .into(),
-                    Some(*since),
-                ),
+                    };
+                    (
+                        match detail {
+                            Some(detail) => format!("{what}: {detail}"),
+                            None => what.to_owned(),
+                        },
+                        Some(*since),
+                    )
+                }
                 Activity::Unknown => ("no fresh activity reports".into(), None),
                 Activity::Starting | Activity::Finished => (String::new(), None),
             };
@@ -5795,6 +5805,16 @@ fn show(view: &rtk::View) {
     }
 }
 
+/// The HOOKS column: `outdated (…)` with the events an earlier version's
+/// set lacks, else the wiring's word.
+fn hooks_column(runtime: &agentdocker_core::RuntimeInfo) -> String {
+    if runtime.hooks_outdated() {
+        format!("outdated ({})", runtime.hooks_missing.join(", "))
+    } else {
+        runtime.hooks.symbol().to_owned()
+    }
+}
+
 fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
     let mut sorted: Vec<&agentdocker_core::RuntimeInfo> = runtimes.iter().collect();
     sorted.sort_by_key(|r| !r.installed());
@@ -5826,17 +5846,11 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
                     apps
                 },
                 r.mcp.symbol().to_owned(),
-                // Missing hooks say which, so a release that began to
+                // Hooks an earlier version installed are outdated and say
+                // which events they lack, so a release that began to
                 // require an event reads as that event, not as never
                 // having been set up.
-                if r.hooks_missing.is_empty()
-                    || r.hooks_missing.len()
-                        == agentdocker_host::runtimes::hook_events(&r.name).len()
-                {
-                    r.hooks.symbol().to_owned()
-                } else {
-                    format!("{} ({})", r.hooks.symbol(), r.hooks_missing.join(", "))
-                },
+                hooks_column(r),
                 r.running.to_string(),
             ]
         })
@@ -5857,6 +5871,17 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
         ],
         &rows,
     );
+    for runtime in runtimes
+        .iter()
+        .filter(|r| r.installed() && r.hooks_outdated())
+    {
+        println!(
+            "\n{} hooks are outdated: an earlier version installed them without {}. `{}` adds them.",
+            runtime.label,
+            runtime.hooks_missing.join(", "),
+            runtime.hooks_fix()
+        );
+    }
     if runtimes
         .iter()
         .any(|r| r.installed() && (r.mcp.needs_review() || r.hooks.needs_review()))
@@ -6080,6 +6105,41 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The runtimes table calls an earlier version's hook set outdated and
+    /// names what it lacks; hooks never set up stay `no`.
+    #[test]
+    fn the_hooks_column_says_outdated_with_the_missing_events() {
+        use agentdocker_core::runtime::Wiring;
+        let mut runtime = agentdocker_core::RuntimeInfo {
+            name: "claude-code".into(),
+            vendor: "Anthropic".into(),
+            label: "Claude Code".into(),
+            cli: None,
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: Wiring::Wired,
+            hooks: Wiring::Missing,
+            shell: Wiring::Unsupported,
+            hooks_missing: vec!["PermissionRequest".into(), "CwdChanged".into()],
+            running: 0,
+        };
+        assert_eq!(
+            super::hooks_column(&runtime),
+            "outdated (PermissionRequest, CwdChanged)"
+        );
+        runtime.hooks_missing = agentdocker_core::runtime::hook_events("claude-code")
+            .iter()
+            .map(|(event, _)| (*event).to_owned())
+            .collect();
+        assert_eq!(super::hooks_column(&runtime), "no");
+        runtime.hooks = Wiring::Wired;
+        runtime.hooks_missing.clear();
+        assert_eq!(super::hooks_column(&runtime), "yes");
+    }
+
     /// Parse as the binary would, on a thread with room: clap's derived
     /// parser for this many commands wants more stack than a test thread
     /// has (a main thread has four times as much), and the overflow

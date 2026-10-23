@@ -4945,7 +4945,9 @@ pub(crate) fn extension_words(extension: &agentdocker_core::runtime::InstalledEx
 }
 
 /// What "needs setup" is missing, for the Tools row: the MCP entry, the
-/// hooks, or the one or two hook events a release began to require.
+/// hooks, or the one or two hook events a release began to require. Hooks
+/// an earlier version installed, with the MCP entry in place, are
+/// outdated rather than missing: Set up adds what they lack.
 pub(crate) fn missing_setup(runtime: &agentdocker_core::runtime::RuntimeInfo) -> String {
     use agentdocker_core::runtime::Wiring;
     let mut parts = Vec::new();
@@ -4964,6 +4966,7 @@ pub(crate) fn missing_setup(runtime: &agentdocker_core::runtime::RuntimeInfo) ->
         });
     }
     match parts.as_slice() {
+        [hooks] if runtime.hooks_outdated() => format!("Hooks outdated · missing {hooks}"),
         [] => "Needs setup".to_owned(),
         [one] => format!("Needs setup · missing {one}"),
         [a, b] => format!("Needs setup · missing {a} and {b}"),
@@ -5423,18 +5426,24 @@ pub(crate) mod tests {
         };
         assert_eq!(
             missing_setup(&runtime),
-            "Needs setup · missing StopFailure hook"
+            "Hooks outdated · missing StopFailure hook"
         );
         runtime.hooks_missing = vec!["Stop".into(), "StopFailure".into()];
         assert_eq!(
             missing_setup(&runtime),
-            "Needs setup · missing Stop and StopFailure hooks"
+            "Hooks outdated · missing Stop and StopFailure hooks"
         );
         runtime.hooks_missing = vec!["Stop".into(), "StopFailure".into(), "SessionEnd".into()];
         assert_eq!(
             missing_setup(&runtime),
-            "Needs setup · missing Stop and 2 more hooks"
+            "Hooks outdated · missing Stop and 2 more hooks"
         );
+        runtime.mcp = Wiring::Missing;
+        assert_eq!(
+            missing_setup(&runtime),
+            "Needs setup · missing MCP entry and Stop and 2 more hooks"
+        );
+        runtime.mcp = Wiring::Wired;
         runtime.hooks_missing = agentdocker_host::runtimes::hook_events("claude-code")
             .iter()
             .map(|(e, _)| e.to_string())
@@ -7683,6 +7692,7 @@ pub(crate) mod tests {
         let waiting = || Activity::Waiting {
             since: now,
             reason: None,
+            detail: None,
         };
 
         // A turn that stops to ask the person is waiting, not done; and
@@ -7729,6 +7739,7 @@ pub(crate) mod tests {
         let waiting = Activity::Waiting {
             since: Utc::now() - chrono::Duration::hours(1),
             reason: Some(agentdocker_core::WaitReason::Permission),
+            detail: None,
         };
         let fresh = BTreeMap::from([
             (id.clone(), waiting.clone()),
@@ -7813,6 +7824,7 @@ pub(crate) mod tests {
         let waiting = || Activity::Waiting {
             since: now,
             reason: Some(agentdocker_core::WaitReason::Permission),
+            detail: None,
         };
 
         step(&mut app, &id, working());
@@ -7889,6 +7901,7 @@ pub(crate) mod tests {
             Activity::Waiting {
                 since: Utc::now(),
                 reason: Some(agentdocker_core::WaitReason::Permission),
+                detail: None,
             },
         )]);
         app.note_completions(&fresh);
@@ -7952,6 +7965,7 @@ pub(crate) mod tests {
         let waiting = || Activity::Waiting {
             since: now,
             reason: None,
+            detail: None,
         };
         let post = format!("post window.{id}");
         let withdraw = format!("withdraw window.{id}");

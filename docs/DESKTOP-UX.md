@@ -210,7 +210,12 @@ permission prompt or question in their own terminal, each the agent's name
 with a chip for the errand — **Wants permission**, **Has a question**, or
 **Waiting for you** when its hooks did not say which — read aloud as *Claude
 Code wants permission in its terminal*, *has a question in its terminal* or
-*is waiting for you in its terminal*; **Go to Terminal** takes you there. Seen across
+*is waiting for you in its terminal*. A permission prompt whose hooks said
+what it is for shows that one line after the name in the quiet ink, clipped to
+the row (*Bash: cargo test*, *Edit: src/lib.rs*), and the spoken line ends with
+it (*… wants permission in its terminal: Bash: cargo test*); it is never an
+answer, and nothing that reads like a secret is shown. **Go to Terminal** takes
+you there. Seen across
 projects, each row starts with its project's name (*&lt;project&gt; · Claude Code · Badger*).
 A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not
@@ -846,8 +851,13 @@ whose delivery has stopped reporting **Not heard from recently**, both
 *Connected*, since a prompt does not release what such a route holds. Other
 states distinguish **Needs setup** (whose detail says what is missing: the MCP
 entry, the hooks, or the one or two hook events setup requires, for example
-*StopFailure hook*), **Setup needs review**, **Waiting for contact**
-(*Configured*), **Integration unavailable** and **Not installed**.
+*StopFailure hook*), **Hooks outdated** (hooks an earlier version installed;
+its detail names the events they lack, for example *CwdChanged hook*; said
+even while a session is connected through them, with **Set up** offered, and
+Details reads Hooks *Outdated* — a paused or silent delivery keeps its own chip
+and carries the outdated hooks in its detail, still with **Set up**), **Setup
+needs review**, **Waiting for contact** (*Configured*), **Integration
+unavailable** and **Not installed**.
 Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
 [CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md). Missing supported setup offers
 **Set up**. **Details** holds the facts the tool has — MCP, Hooks, Shell,

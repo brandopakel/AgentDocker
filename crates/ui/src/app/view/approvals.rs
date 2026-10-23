@@ -583,7 +583,8 @@ impl App {
             };
             // What for, when its adapter could tell: a permission to give
             // and a question to answer are different errands, and its chip
-            // says which.
+            // says which; what the prompt is about, when its hooks said,
+            // follows the name.
             let (what, glyph, word) = match self.activity.get(id.as_str()) {
                 Some(agentdocker_core::Activity::Waiting {
                     reason: Some(agentdocker_core::WaitReason::Permission),
@@ -607,6 +608,14 @@ impl App {
                     "Waiting for you",
                 ),
             };
+            let detail = match self.activity.get(id.as_str()) {
+                Some(agentdocker_core::Activity::Waiting { detail, .. }) => detail.clone(),
+                _ => None,
+            };
+            let sentence = match &detail {
+                Some(detail) => format!("{name} {what}: {detail}"),
+                None => format!("{name} {what}"),
+            };
             let errand = super::super::chip::chip(
                 format!("needs-you-errand-{id}"),
                 Some(glyph),
@@ -617,8 +626,8 @@ impl App {
             rows.push(waiting_row(
                 spoken(
                     format!("needs-you-line-waiting-{id}"),
-                    format!("{name} {what}"),
-                    waiting_words(name, Some(errand), None, narrow, c),
+                    sentence,
+                    waiting_words(name, Some(errand), detail, narrow, c),
                 ),
                 None,
                 compact(
@@ -2372,6 +2381,7 @@ mod tests {
                 agentdocker_core::Activity::Waiting {
                     since: Utc::now(),
                     reason,
+                    detail: None,
                 },
             );
             let view = seen(app.needs_you(Colors::new(true)).expect("a waiting session"));
@@ -2384,6 +2394,23 @@ mod tests {
                 .expect("its terminal");
             assert_eq!(go.1, "Go to Terminal");
         }
+        // What the prompt is about, when its hooks said, follows the errand.
+        app.activity.insert(
+            id.clone(),
+            agentdocker_core::Activity::Waiting {
+                since: Utc::now(),
+                reason: Some(agentdocker_core::WaitReason::Permission),
+                detail: Some("Bash: cargo test".into()),
+            },
+        );
+        let view = seen(app.needs_you(Colors::new(true)).expect("a waiting session"));
+        let line = view
+            .control(&format!("needs-you-line-waiting-{id}"))
+            .expect("the session");
+        assert_eq!(
+            line.1,
+            "builder wants permission in its terminal: Bash: cargo test"
+        );
     }
 
     /// Needs you reads each row as one sentence and keeps its action's id.

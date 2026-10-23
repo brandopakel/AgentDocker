@@ -135,7 +135,7 @@ Then bring in the agents already on the machine:
 
 ```sh
 agentdocker runtimes        # what is installed, and whether we are wired into it
-                            # (HOOKS `no (StopFailure)` names the events setup would add)
+                            # (HOOKS `outdated (CwdChanged)` names the events setup would add)
 agentdocker setup           # register the MCP server and install hooks
 agentdocker discover        # agent processes nobody registered
 agentdocker adopt --all     # register all of them
@@ -748,9 +748,27 @@ Pass `verbose: true` for the whole record.
 
 For Claude Code, `agentdocker setup claude-code` installs handlers for
 `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `StopFailure`,
-`SessionEnd` and `Notification` (its permission prompts and question dialogs mark
-the session *waiting* for you; run setup again to add it to an existing install). `Stop` marks the session idle unless
-it leaves background work running (a shell, a subagent, a monitor or a workflow it started), which keeps it working. They are what let the daemon see an agent's session
+`SessionEnd`, `Notification`, `PermissionRequest`, `SubagentStart`, `SubagentStop`
+and `CwdChanged`. A permission prompt or question dialog marks the session
+*waiting* for you. `PermissionRequest` adds what the prompt is for in one line
+and never answers it: the dialog stays yours. The line is the tool and: for a
+shell command, the program and, for a few tools (`cargo`, `git`, `go`, `npm`,
+`pnpm`, `yarn`), one known subcommand, as in *cargo test* or *git push*, never
+another argument, since any of them could be a password; for a file, its path;
+for a fetch, its address without user, password or query. A search shows its
+tool alone, never its query or pattern, and nothing that reads like a secret is
+kept. A subagent starting keeps its session *working*, and is never an agent
+of its own. `Stop` marks the session idle unless it leaves background work
+running (a shell, a subagent, a monitor or a workflow it started), which keeps
+it working, as a subagent finishing with background work still running does. When
+the session's shell changes directory (`CwdChanged`), its branch and commit are
+read again from there. For Codex, setup installs its activity hooks, which
+include `SessionEnd` — a Codex session you started plainly in a terminal leaves
+when its conversation ends, giving back its leases — and `SubagentStart` and
+`SubagentStop`, which keep the conversation working while its subagents run.
+Hooks an earlier version installed are *outdated*: `agentdocker runtimes` shows
+`outdated (…)` with the events they lack, the Tools card says *Hooks outdated*,
+and `agentdocker setup claude-code` (or `codex`) adds them. They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
 should be told before it starts — the journal since it last looked, and
 anything it read that has gone stale. Before an edit, `PreToolUse` refuses
@@ -1289,9 +1307,10 @@ Current behaviour that the sections above do not already state, by area.
 
 - A Claude Code session stopped at a permission prompt or question shows as
   *waiting for you*: it is in Needs you with **Go to Terminal**, counted on
-  the dock icon, and `agentdocker activity` shows it `waiting`. It needs the
-  `Notification` hook, so run `agentdocker setup claude-code` to add it to an
-  existing install.
+  the dock icon, and `agentdocker activity` shows it `waiting`. A permission
+  prompt's row also says what it is for (*Bash: cargo test*, *Edit:
+  src/lib.rs*). It needs the `Notification` and `PermissionRequest` hooks, so
+  run `agentdocker setup claude-code` to add them to an existing install.
 
 - An agent with no AgentDocker hooks of its own — Codex without them, Gemini,
   another CLI — that runs in a herdr pane shows what herdr says of that pane:

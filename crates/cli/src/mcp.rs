@@ -1049,6 +1049,7 @@ impl<B: Backend> McpServer<B> {
                         activity,
                         observed_at: chrono::Utc::now(),
                         reason: None,
+                        detail: None,
                         source: None,
                     },
                 })
