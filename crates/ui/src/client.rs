@@ -5,7 +5,7 @@
 use agentdocker_host::ipc::BlockingStream as Stream;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -343,17 +343,18 @@ fn absent(err: &std::io::Error) -> bool {
     )
 }
 
-/// The `agentd` [`daemon_to_start`](agentdocker_host::installation::daemon_to_start)
+/// The daemon [`daemon_to_start`](agentdocker_host::installation::daemon_to_start)
 /// names, detached with its output on the daemon log.
 fn spawn_agentd(socket: &Path, home: &Path) -> Result<Child> {
-    let exe = agentdocker_host::installation::daemon_to_start(
+    let daemon = agentdocker_host::installation::daemon_to_start(
         agentdocker_host::procinfo::executable_path()
             .ok()
             .as_deref(),
     );
+    let exe = &daemon.program;
     agentdocker_host::dirs::secure_state_dir(home)?;
     let log = agentdocker_host::dirs::private_file(&paths::daemon_log(home), true, true)?;
-    let mut command = Command::new(&exe);
+    let mut command = daemon.command();
     agentdocker_host::command::detach(&mut command);
     agentdocker_host::command::without_session(&mut command);
     command
@@ -373,6 +374,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
+    use std::process::Command;
 
     #[test]
     fn failed_inventory_reply_preserves_its_typed_daemon_error() {

@@ -47,6 +47,9 @@ mod access;
 mod binding;
 mod channels;
 mod checkouts;
+// Codex's shared server listens on a Unix socket; Windows has none.
+#[cfg(unix)]
+pub(crate) mod codex_threads;
 mod containers;
 mod contests;
 mod conversations;
@@ -256,6 +259,7 @@ fn mutates(request: &Request) -> bool {
             | Request::Thread { .. }
             | Request::SearchMessages { .. }
             | Request::Leases { .. }
+            | Request::WebhookDeliveries { .. }
             | Request::Tasks { .. }
             | Request::TaskGet { .. }
             | Request::Boards { .. }
@@ -1976,7 +1980,11 @@ impl Daemon {
                 path,
                 branch,
                 from,
-            } => self.worktree_create(&agent, path, branch, from).await,
+                seed_build,
+            } => {
+                self.worktree_create(&agent, path, branch, from, seed_build)
+                    .await
+            }
             Request::WorktreeDiff { agent } => self.worktree_diff(&agent).await,
             Request::WorktreeRemove { agent } => self.worktree_remove(&agent).await,
             Request::ReviewBranch { agent } => self.review_branch(&agent).await,
@@ -2943,6 +2951,9 @@ impl Daemon {
             } => self.checkpoint_prune(agent.as_deref(), older_than_secs),
             Request::Vacuum { force } => self.vacuum(force),
             Request::Leases { agent, resource } => self.leases(agent.as_deref(), resource).await,
+            Request::WebhookDeliveries { webhook, limit } => {
+                self.webhook_deliveries(&webhook, limit)
+            }
             Request::Subscribe { .. }
             | Request::Events { .. }
             | Request::ResumeEvents { .. }

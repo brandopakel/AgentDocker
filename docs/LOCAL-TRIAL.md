@@ -4,7 +4,7 @@ How to try a candidate build on a real machine without putting your own sessions
 
 ## Stage 1 — Isolated candidate
 
-Select a reviewed commit and record its SHA. Build `agentdocker`, `agentd` and `agentdocker-ui` from that same source; a package version alone is insufficient. Run `bash scripts/verify.sh check` and keep its output. macOS/Linux stable CI and a local pass do not establish Windows support.
+Select a reviewed commit and record its SHA. Build `agentdocker` (which is also `agentd`) and `agentdocker-ui` from that same source; a package version alone is insufficient. Run `bash scripts/verify.sh check` and keep its output. macOS/Linux stable CI and a local pass do not establish Windows support.
 
 From the candidate checkout, create a private trial root and route every test client/app to it:
 

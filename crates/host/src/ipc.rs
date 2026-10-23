@@ -11,19 +11,28 @@ mod windows;
 #[cfg(windows)]
 pub use windows::{BlockingStream, Listener, OwnedReadHalf, OwnedWriteHalf, Stream};
 
+/// Refuse a connected peer the kernel does not report as running as `uid`.
+/// Call it before sending any application bytes: a path names a socket, but
+/// only the peer's credentials say whose process answers on it.
+#[cfg(unix)]
+pub fn require_peer_uid(stream: &Stream, uid: u32) -> std::io::Result<()> {
+    if stream.peer_cred()?.uid() != uid {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "local peer belongs to another user",
+        ));
+    }
+    Ok(())
+}
+
 /// Kernel-reported process ID of this connected, same-user peer. Application
 /// protocols must still verify process birth and their own session binding.
 pub fn peer_pid(stream: &Stream) -> std::io::Result<u32> {
     #[cfg(unix)]
     {
-        let peer = stream.peer_cred()?;
         // SAFETY: geteuid has no preconditions or pointer arguments.
-        if peer.uid() != unsafe { libc::geteuid() } {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "local peer belongs to another user",
-            ));
-        }
+        require_peer_uid(stream, unsafe { libc::geteuid() })?;
+        let peer = stream.peer_cred()?;
         peer.pid()
             .and_then(|pid| u32::try_from(pid).ok())
             .filter(|pid| *pid != 0)

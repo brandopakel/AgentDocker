@@ -6130,12 +6130,14 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
     let Response::Worktree {
         path: made_path,
         branch,
+        ..
     } = daemon
         .handle(Request::WorktreeCreate {
             agent: "writer".into(),
             path: made.to_string_lossy().into_owned(),
             branch: "made-branch".into(),
             from: Some(root_sha.clone()),
+            seed_build: Vec::new(),
         })
         .await
     else {
@@ -6149,6 +6151,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
                 path: dir.path().join("bad").to_string_lossy().into_owned(),
                 branch: "bad-branch".into(),
                 from: Some("--output=/tmp/x".into()),
+                seed_build: Vec::new(),
             })
             .await,
         Response::Error { .. }

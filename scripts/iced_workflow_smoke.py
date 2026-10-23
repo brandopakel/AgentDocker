@@ -800,7 +800,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             checks.append("send_warns_about_named_unbound_recipient_and_expands_reconnect_guidance_without_resending")
             rpc(endpoint, {"op": "report_adapter", "agent": receiver["id"], "adapter": "mcp",
                            "contact": {"process_started_at": receiver["process_started_at"], "observed_at": now()}})
-            report["contact_window"] = readiness_window("readiness-contact", "Connected · messages wait for its next prompt")
+            report["contact_window"] = readiness_window("readiness-contact", "Messages wait for its next prompt")
             def input_report(value):
                 rpc(endpoint, {"op": "report_input", "agent": receiver["id"],
                                "process_started_at": receiver["process_started_at"],

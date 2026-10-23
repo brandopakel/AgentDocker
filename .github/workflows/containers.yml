@@ -29,6 +29,8 @@ jobs:
             sudo apt-get install -y podman
           fi
       - run: cargo build --locked --workspace --bins
+      # The daemon is agentdocker invoked as agentd: give the build that name.
+      - run: python3 scripts/daemon_link.py target/debug
       - name: Build fixture and test real engine
         shell: bash
         env:

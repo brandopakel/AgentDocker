@@ -46,6 +46,12 @@ pub(super) struct Binding {
     pub executable: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<super::remote::Descriptor>,
+    /// The conversation runs in the profile's shared app-server, reached
+    /// through its control socket rather than a private server. Absent from
+    /// every ledger written before it, so those read back unchanged; a
+    /// receiver that does not know it refuses a ledger that has it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub control: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1149,7 +1155,23 @@ mod tests {
             cwd: home.into(),
             executable: home.join("codex"),
             remote: None,
+            control: false,
         }
+    }
+
+    /// A ledger written before the control socket reads back unchanged, and
+    /// a control binding keeps saying so.
+    #[test]
+    fn a_control_binding_round_trips_and_older_bindings_are_unchanged() {
+        let home = tempfile::tempdir().unwrap();
+        let mut binding = binding(home.path());
+        let plain = serde_json::to_value(&binding).unwrap();
+        assert!(plain.get("control").is_none(), "{plain}");
+        assert_eq!(serde_json::from_value::<Binding>(plain).unwrap(), binding);
+        binding.control = true;
+        let control = serde_json::to_value(&binding).unwrap();
+        assert_eq!(control["control"], true);
+        assert_eq!(serde_json::from_value::<Binding>(control).unwrap(), binding);
     }
 
     #[test]

@@ -143,8 +143,7 @@ pub(super) enum Mark {
     },
     /// A tool, by its runtime name: its logo, or the terminal glyph.
     Tool(String),
-    /// An agent: its standing's glyph while it has one to show, else its
-    /// tool's logo.
+    /// An agent: its tool's logo, and its standing's chip after its name.
     Agent {
         runtime: String,
         standing: agentdocker_core::standing::Standing,
@@ -312,8 +311,11 @@ fn hairline<'a>(c: Colors) -> Element<'a, Message> {
 /// What the keyboard does before any control sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Keys {
-    /// Closed: only the shortcut that opens it, which a terminal keeps
-    /// where Control+K means something to the shell.
+    /// Closed: only the shortcut that opens it, and Back and Forward
+    /// (`navigation::travel_key`). `shortcut` is false where a terminal
+    /// keeps Control+K, Control+[ (Escape) and Control+] (detach), which
+    /// mean something to it; the Browser Back and Forward keys go back
+    /// and forward there too.
     Closed {
         shortcut: bool,
     },
@@ -343,6 +345,8 @@ pub(super) enum Command {
     SubmitAlt,
     Escape,
     Back,
+    /// The window's Back (`false`) or Forward (`true`), not the palette's.
+    Travel(bool),
 }
 
 impl From<Command> for Message {
@@ -354,6 +358,8 @@ impl From<Command> for Message {
             Command::SubmitAlt => Message::CommandSubmitAlt,
             Command::Escape => Message::CommandEscape,
             Command::Back => Message::CommandBack,
+            Command::Travel(false) => Message::GoBack,
+            Command::Travel(true) => Message::GoForward,
         }
     }
 }
@@ -378,10 +384,20 @@ pub(super) fn handle(
         && !modifiers.shift()
         && !modifiers.alt()
         && key.to_latin(physical) == Some('k');
+    // Back and Forward go ahead of a focused field too, which would
+    // otherwise type the bracket; over the open palette they do nothing.
+    // A terminal keeps only the Control chords; a keyboard's own Back
+    // and Forward keys mean nothing to a shell.
+    let travel = super::navigation::travel_key(key, physical, modifiers);
+    let browser = matches!(key, Key::Named(Named::BrowserBack | Named::BrowserForward));
     match keys {
         Keys::Closed { shortcut: true } if shortcut => once(Command::Palette),
+        Keys::Closed { shortcut } if travel.is_some() && (shortcut || browser) => {
+            once(Command::Travel(travel == Some(true)))
+        }
         Keys::Closed { .. } => Handling::Pass,
         Keys::Open { .. } if shortcut => once(Command::Palette),
+        Keys::Open { .. } if travel.is_some() => Handling::Swallow,
         Keys::Open {
             query_empty,
             nested,
@@ -400,10 +416,10 @@ pub(super) fn handle(
     }
 }
 
-/// The window wrapped so the palette's keys reach it ahead of every
-/// control in it: ⌘K from a focused field types nothing, and Escape in
-/// the search does not just unfocus it. A composition in an input method
-/// keeps its own keys.
+/// The window wrapped so the palette's keys, and Back and Forward, reach
+/// it ahead of every control in it: ⌘K or ⌘[ from a focused field types
+/// nothing, and Escape in the search does not just unfocus it. A
+/// composition in an input method keeps its own keys.
 struct Shortcuts<'a> {
     content: Element<'a, Message>,
     keys: Keys,
@@ -606,17 +622,7 @@ fn item_view<'a>(item: &Item, active: bool, c: Colors) -> Element<'a, Message> {
     let mark: Element<'a, Message> = match &item.mark {
         Mark::Glyph(glyph) => container(icon(*glyph, ink, 16.0)).center(20).into(),
         Mark::Monogram { name, seed } => monogram(name, seed, 20.0, c),
-        Mark::Tool(runtime) => tool_mark(runtime, ink, c),
-        Mark::Agent { runtime, standing } => {
-            use agentdocker_core::standing::Standing;
-            if matches!(standing, Standing::Idle | Standing::Ended) {
-                tool_mark(runtime, ink, c)
-            } else {
-                container(super::view::standing_glyph(*standing, c))
-                    .center(20)
-                    .into()
-            }
-        }
+        Mark::Tool(runtime) | Mark::Agent { runtime, .. } => tool_mark(runtime, ink, c),
     };
     let words = row![
         text(item.label.clone())
@@ -632,6 +638,14 @@ fn item_view<'a>(item: &Item, active: bool, c: Colors) -> Element<'a, Message> {
     let mut line = row![mark, container(words).width(Fill).clip(true)]
         .spacing(10)
         .align_y(Center);
+    // An agent says where it stands in its chip; the label is cut first.
+    if let Mark::Agent { standing, .. } = &item.mark {
+        line = line.push(super::view::standing_chip(
+            format!("{}-standing", item.id),
+            *standing,
+            c,
+        ));
+    }
     if active && item.alt.is_some() {
         line = line.push(icon(Icon::Terminal, ink, 14.0));
     }
@@ -711,8 +725,9 @@ impl App {
                 nested: !palette.pages.is_empty(),
             }
         } else {
-            // On macOS ⌘K is never the shell's; elsewhere Control+K in a
-            // terminal is, and the terminal gets it first.
+            // On macOS ⌘K, ⌘[ and ⌘] are never the shell's; elsewhere
+            // Control+K, Control+[ and Control+] in a terminal are, and
+            // the terminal gets them first.
             Keys::Closed {
                 shortcut: cfg!(target_os = "macos") || self.screen != Screen::Terminal,
             }
@@ -1540,8 +1555,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hidden = agentdocker_core::ProjectRef::directory(dir.path().join("hidden"));
         let visible = agentdocker_core::ProjectRef::directory(dir.path().join("visible"));
-        assert!(app.shell.catalog.remember(hidden.clone(), true));
-        assert!(app.shell.catalog.remember(visible.clone(), true));
+        assert_eq!(app.shell.catalog.remember(hidden.clone(), true), Ok(true));
+        assert_eq!(app.shell.catalog.remember(visible.clone(), true), Ok(true));
         let now = Utc::now();
         for (name, project) in [
             ("hidden-asking", Some(hidden.clone())),
@@ -1598,7 +1613,7 @@ mod tests {
         ));
         assert!(app.shell.palette.open);
         assert!(app.shell.selected.is_none());
-        assert!(app.shell.catalog.remember(hidden, true));
+        assert_eq!(app.shell.catalog.remember(hidden, true), Ok(true));
         assert_eq!(agents(&app), ["hidden-asking", "hidden-live"]);
         let _ = app.update(Message::CommandQuery(String::new()));
         assert_eq!(
@@ -1630,7 +1645,7 @@ mod tests {
         let mut app = app();
         let dir = tempfile::tempdir().unwrap();
         let project = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
-        app.shell.catalog.remember(project.clone(), true);
+        app.shell.catalog.remember(project.clone(), true).unwrap();
         app.shell.catalog.selected = Some(project.root.clone());
         let open_in = |app: &App| -> Vec<String> {
             app.palette_places()
@@ -1667,7 +1682,7 @@ mod tests {
         app.connected = Ok(());
         let dir = tempfile::tempdir().unwrap();
         let project = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
-        app.shell.catalog.remember(project.clone(), true);
+        app.shell.catalog.remember(project.clone(), true).unwrap();
         app.shell.catalog.selected = Some(project.root.clone());
         app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
             name: "codex".into(),

@@ -743,7 +743,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = agentdocker_core::ProjectRef::directory(dir.path().join("project"));
         let root = project.root.display().to_string();
-        app.shell.catalog.remember(project.clone(), true);
+        app.shell.catalog.remember(project.clone(), true).unwrap();
         app.shell.catalog.selected = Some(project.root);
         app.request_usage();
         app.request_usage();
@@ -806,8 +806,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let first = agentdocker_core::ProjectRef::directory(dir.path().join("first"));
         let second = agentdocker_core::ProjectRef::directory(dir.path().join("second"));
-        app.shell.catalog.remember(first.clone(), true);
-        app.shell.catalog.remember(second.clone(), true);
+        app.shell.catalog.remember(first.clone(), true).unwrap();
+        app.shell.catalog.remember(second.clone(), true).unwrap();
         app.shell.catalog.selected = Some(first.root.clone());
         app.screen = Screen::Usage;
         app.request_usage();

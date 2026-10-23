@@ -1021,6 +1021,16 @@ fn single_line(text: &str) -> String {
         .collect()
 }
 
+/// One `seed_build` directory's line under `worktree-create`: `target:
+/// cloned`, `node_modules: skipped (the source checkout has no such
+/// directory)`.
+pub fn seeded(seed: &agentdocker_core::seed::Seeded) -> String {
+    match &seed.note {
+        Some(note) => format!("{}: {} ({note})", seed.dir, seed.outcome),
+        None => format!("{}: {}", seed.dir, seed.outcome),
+    }
+}
+
 /// A token count as the report knows it: the sum when every sample in
 /// the row said, the sum marked `~` when some did not, `—` when none
 /// did. A number never stands where the report has none.
@@ -1367,8 +1377,104 @@ pub fn rule_line(rule: &agentdocker_core::Rule) -> String {
     format!("{when} → {what}")
 }
 
+/// The columns of `webhook deliveries`.
+pub const WEBHOOK_ATTEMPT_HEADERS: &[&str] = &[
+    "AT", "SEQ", "EVENT", "TRY", "RESULT", "ANSWER", "TOOK", "NEXT", "DELIVERY",
+];
+
+/// One delivery attempt as a row: when, which event, which attempt, what
+/// came of it, the status code or a word for why there was none, how long
+/// it took, when the next attempt is due, and the delivery's short id.
+pub fn webhook_attempt_row(attempt: &agentdocker_core::WebhookAttempt) -> Vec<String> {
+    let answer = match (attempt.status, attempt.error.as_deref()) {
+        (Some(status), _) => status.to_string(),
+        (None, Some(error)) => error.to_owned(),
+        (None, None) => "-".to_owned(),
+    };
+    vec![
+        attempt
+            .at
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+        attempt.seq.to_string(),
+        attempt.event.clone(),
+        attempt.attempt.to_string(),
+        attempt.result.as_str().replace('_', " "),
+        answer,
+        format!("{}ms", attempt.duration_ms),
+        attempt.next_retry.map_or_else(|| "-".to_owned(), clock),
+        short(&attempt.delivery).to_owned(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
+    /// Each seed is one line: the directory, what became of it, and why
+    /// when there is a reason.
+    #[test]
+    fn a_seed_line_names_the_directory_its_outcome_and_any_reason() {
+        use agentdocker_core::seed::{Outcome, Seeded};
+        let line = |dir: &str, outcome, note: Option<&str>| {
+            super::seeded(&Seeded {
+                dir: dir.into(),
+                outcome,
+                note: note.map(str::to_owned),
+            })
+        };
+        assert_eq!(line("target", Outcome::Cloned, None), "target: cloned");
+        assert_eq!(
+            line("node_modules", Outcome::Skipped, Some("not there")),
+            "node_modules: skipped (not there)"
+        );
+    }
+
+    /// A delivery attempt reads as one row: the status code when the
+    /// receiver answered, the word for why when it did not, a dash for a
+    /// retry that is not due, and the delivery's short id.
+    #[test]
+    fn a_webhook_attempt_is_one_row() {
+        use agentdocker_core::{AttemptResult, WebhookAttempt};
+        let at = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let mut attempt = WebhookAttempt {
+            webhook: "team".into(),
+            delivery: "0123456789abcdef0123456789abcdef".into(),
+            seq: 41,
+            event: "question_asked".into(),
+            attempt: 2,
+            at,
+            duration_ms: 87,
+            result: AttemptResult::Retrying,
+            status: Some(503),
+            error: None,
+            next_retry: Some(at + chrono::Duration::seconds(5)),
+        };
+        let row = super::webhook_attempt_row(&attempt);
+        assert_eq!(row.len(), super::WEBHOOK_ATTEMPT_HEADERS.len());
+        assert_eq!(
+            row[1..],
+            [
+                "41",
+                "question_asked",
+                "2",
+                "retrying",
+                "503",
+                "87ms",
+                super::clock(at + chrono::Duration::seconds(5)).as_str(),
+                "0123456789ab"
+            ]
+        );
+        attempt.status = None;
+        attempt.error = Some("timeout".into());
+        attempt.result = AttemptResult::GaveUp;
+        attempt.next_retry = None;
+        let row = super::webhook_attempt_row(&attempt);
+        assert_eq!(
+            (row[4].as_str(), row[5].as_str(), row[7].as_str()),
+            ("gave up", "timeout", "-")
+        );
+    }
+
     /// A count shows as the report knows it: whole, marked partial, or
     /// a dash — a dash and not a zero when no sample said. Overhead that
     /// was not measured is said so, never shown as nothing.

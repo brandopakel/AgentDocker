@@ -70,6 +70,13 @@ pub enum DaemonCommand {
     },
     /// Show whether the service is installed and the daemon answering.
     Status,
+    /// Run the daemon in the foreground, as `agentd` does; the arguments
+    /// after `run` are its own (`agentdocker daemon run --help` lists them).
+    #[command(disable_help_flag = true)]
+    Run {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<std::ffi::OsString>,
+    },
     /// Internal Windows login-task supervisor.
     #[cfg(windows)]
     #[command(hide = true)]
@@ -162,13 +169,12 @@ impl Layout {
         if let Some(socket) = socket {
             validate_service_socket(socket)?;
         }
-        let agentd_binary = format!("agentd{}", std::env::consts::EXE_SUFFIX);
-        let agentd = agentdocker_host::procinfo::executable_path()
-            .ok()
-            .and_then(|me| me.parent().map(|dir| dir.join(&agentd_binary)))
-            .filter(|sibling| sibling.is_file())
-            .or_else(|| which(&agentd_binary))
-            .context("cannot find the agentd binary beside agentdocker or on PATH")?;
+        let agentd = daemon_link(
+            agentdocker_host::procinfo::executable_path()
+                .ok()
+                .as_deref(),
+            which,
+        );
         let home = agentdocker_host::dirs::home();
         // Discovery is also used by status/dry-run; neither creates state.
         // Service ownership is the caller's identity, not a directory's owner.
@@ -182,7 +188,7 @@ impl Layout {
             validate_service_socket(socket)?;
         }
         Ok(Self {
-            agentd: agentd.canonicalize().unwrap_or(agentd),
+            agentd,
             home,
             socket,
             uid,
@@ -224,6 +230,40 @@ impl Layout {
     fn target(&self) -> String {
         format!("gui/{}/{LABEL}", self.uid)
     }
+}
+
+/// The `agentd` a service definition names: the one beside this CLI (the
+/// link packages ship), else one on `PATH`, resolved into the release it
+/// belongs to with its name kept, since that name is what makes the file
+/// start as the daemon. Without either, the link's place beside this CLI,
+/// which `daemon install` refuses to name until it exists
+/// ([`require_daemon_link`]). A definition names `agentd`, never
+/// `agentdocker daemon run`, so every definition an earlier release wrote
+/// and every one written now is recognized the same way.
+fn daemon_link(me: Option<&Path>, path: impl Fn(&str) -> Option<PathBuf>) -> PathBuf {
+    use agentdocker_host::program::{Role, resolve};
+    let name = Role::Daemon.file_name();
+    let beside = me.map(|me| me.with_file_name(&name));
+    beside
+        .clone()
+        .filter(|sibling| sibling.is_file())
+        .or_else(|| path(&name))
+        .map(|agentd| resolve(&agentd, Role::Daemon))
+        .or(beside)
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// A service starts `agentd`, so it needs the file: packages ship it as a
+/// link to `agentdocker`; a `cargo install` makes only `agentdocker`.
+fn require_daemon_link(layout: &Layout) -> Result<()> {
+    if !layout.agentd.is_file() {
+        bail!(
+            "no agentd beside this agentdocker or on PATH ({} is missing). It is agentdocker under another name, which packages install as a link; a `cargo install` makes only agentdocker. Add it beside agentdocker with `ln -s agentdocker {}` and run this again",
+            layout.agentd.display(),
+            layout.agentd.display(),
+        );
+    }
+    Ok(())
 }
 
 fn which(name: &str) -> Option<PathBuf> {
@@ -592,6 +632,14 @@ async fn wait_for_daemon(client: &Client) -> Result<()> {
 const SERVICE_MANAGER: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 
 pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
+    // `agentdocker daemon run …` becomes the daemon before the CLI parses
+    // anything (see `main`); it reaches here only after the CLI's own
+    // options, which are not the daemon's.
+    if let DaemonCommand::Run { .. } = &args.command {
+        bail!(
+            "`daemon run` takes the daemon's own options, after `run` and nothing before it: agentdocker daemon run --socket <SOCKET> --home <HOME>"
+        );
+    }
     #[cfg(windows)]
     if let DaemonCommand::Supervise {
         home,
@@ -615,6 +663,9 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
     }
     // Service commands always use the canonical layout socket.
     let layout = Layout::discover(socket.as_deref())?;
+    if matches!(&args.command, DaemonCommand::Install { .. }) {
+        require_daemon_link(&layout)?;
+    }
     // Protect the separately selected daemon as well as the CLI before any
     // definition is written or an existing service is retired/replaced.
     let _registration = if matches!(&args.command, DaemonCommand::Install { dry_run: false }) {
@@ -655,6 +706,7 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
         DaemonCommand::Supervise { .. } => {
             unreachable!("supervisor handled before layout discovery")
         }
+        DaemonCommand::Run { .. } => unreachable!("refused before layout discovery"),
         DaemonCommand::Install { dry_run } => {
             if !dry_run {
                 retire(&client).await?;
@@ -1017,6 +1069,56 @@ mod tests {
             uid: 501,
             user_home: PathBuf::from("/Users/me"),
         }
+    }
+
+    /// A service names `agentd` (the link beside this CLI, else one on
+    /// PATH) resolved into its release with its name kept, since the name
+    /// is what starts the file as the daemon; and is refused, saying why,
+    /// when there is none.
+    #[cfg(unix)]
+    #[test]
+    fn a_service_names_the_daemon_link_resolved_with_its_name_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let release = root.join("release");
+        std::fs::create_dir(&release).unwrap();
+        let cli = release.join("agentdocker");
+        std::fs::write(&cli, "one program").unwrap();
+        let nowhere = |_: &str| None;
+        // None yet: the link's place beside the CLI, which install refuses.
+        let missing = daemon_link(Some(&cli), nowhere);
+        assert_eq!(missing, release.join("agentd"));
+        let mut layout = layout();
+        layout.agentd = missing;
+        let refusal = require_daemon_link(&layout).unwrap_err().to_string();
+        assert!(refusal.contains("cargo install"), "{refusal}");
+        // A hard link beside it is named as it is.
+        std::fs::hard_link(&cli, release.join("agentd")).unwrap();
+        assert_eq!(daemon_link(Some(&cli), nowhere), release.join("agentd"));
+        // Reached through a launcher link, it resolves into the release.
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::os::unix::fs::symlink(&cli, bin.join("agentdocker")).unwrap();
+        std::os::unix::fs::symlink(release.join("agentd"), bin.join("agentd")).unwrap();
+        assert_eq!(
+            daemon_link(Some(&bin.join("agentdocker")), nowhere),
+            release.join("agentd")
+        );
+        // A symbolic `agentd -> agentdocker` keeps the daemon's name rather
+        // than resolving to the CLI's.
+        std::fs::remove_file(release.join("agentd")).unwrap();
+        std::os::unix::fs::symlink("agentdocker", release.join("agentd")).unwrap();
+        assert_eq!(daemon_link(Some(&cli), nowhere), release.join("agentd"));
+        // Nothing beside the CLI: one on PATH, likewise resolved.
+        let lone = root.join("lone");
+        std::fs::create_dir(&lone).unwrap();
+        let on_path = bin.join("agentd");
+        assert_eq!(
+            daemon_link(Some(&lone.join("agentdocker")), |_: &str| Some(
+                on_path.clone()
+            )),
+            release.join("agentd")
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub mod launch;
 pub mod lock;
 pub mod policy_file;
 pub mod procinfo;
+pub mod program;
 pub mod project;
 pub mod provider_input;
 pub mod usage;
@@ -31,6 +32,7 @@ pub mod engine;
 pub mod runtimes;
 
 pub mod codex_binary;
+pub mod codex_control;
 pub mod codex_trust;
 pub mod dirs;
 pub mod editor;
@@ -53,5 +55,6 @@ pub mod transport;
 pub mod relay;
 
 pub mod files;
+pub mod seed;
 
 pub mod ipc;

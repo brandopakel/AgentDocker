@@ -445,7 +445,24 @@ pub struct SupermemoryConfig {
     /// named. Anything else must be `https://`, or `http://` on loopback.
     #[serde(default)]
     pub base_url: Option<String>,
+    /// How the server forms memories from what is sent, one of
+    /// [`DREAMING`]: sent with every addition, and then a document counts
+    /// as there only once its memories are formed. Absent, nothing is sent
+    /// and the server's default applies.
+    #[serde(default)]
+    pub dreaming: Option<String>,
+    /// Background sent with every addition to guide how the server forms
+    /// memories from it, at most [`SUPPORTING_CONTEXT_CHARS`] characters.
+    /// Absent, nothing is sent.
+    #[serde(default)]
+    pub supporting_context: Option<String>,
 }
+
+/// The `dreaming` modes Supermemory takes.
+pub const DREAMING: [&str; 2] = ["dynamic", "instant"];
+
+/// The longest `supporting_context` Supermemory takes, in characters.
+pub const SUPPORTING_CONTEXT_CHARS: usize = 1_500;
 
 impl SupermemoryConfig {
     pub fn check(&self) -> Result<(), String> {
@@ -454,6 +471,25 @@ impl SupermemoryConfig {
         }
         if self.enabled && self.projects.is_empty() {
             return Err("memory.supermemory names no projects; name the ones to copy".into());
+        }
+        if self
+            .dreaming
+            .as_deref()
+            .is_some_and(|mode| !DREAMING.contains(&mode))
+        {
+            return Err(
+                "memory.supermemory.dreaming must be \"dynamic\" or \"instant\", or left out"
+                    .into(),
+            );
+        }
+        if let Some(context) = &self.supporting_context {
+            let length = context.chars().count();
+            if length > SUPPORTING_CONTEXT_CHARS {
+                return Err(format!(
+                    "memory.supermemory.supporting_context is {length} characters; \
+                     Supermemory takes at most {SUPPORTING_CONTEXT_CHARS}"
+                ));
+            }
         }
         let url = self.base_url();
         let bad = |why: &str| Err(format!("memory.supermemory.base_url {why}"));
@@ -686,6 +722,55 @@ mod tests {
             .is_err(),
             "a relative key file"
         );
+    }
+
+    /// `dreaming` and `supporting_context` are absent unless written; a
+    /// mode is one Supermemory names, and the context is held to its limit
+    /// in characters, not bytes.
+    #[test]
+    fn the_mirror_sends_a_dreaming_mode_and_context_only_when_written_and_within_limits() {
+        let key = std::env::temp_dir().join("supermemory.key");
+        let on = |extra: &str| {
+            toml::from_str::<DaemonConfig>(&format!(
+                "[memory.supermemory]\nenabled = true\nkey_file = {:?}\nprojects = [\"p\"]\n{extra}",
+                key.display().to_string()
+            ))
+            .unwrap()
+        };
+        let plain = on("");
+        let mirror = plain.supermemory().unwrap().unwrap();
+        assert_eq!(mirror.dreaming, None);
+        assert_eq!(mirror.supporting_context, None);
+
+        for mode in DREAMING {
+            let config = on(&format!("dreaming = {mode:?}\n"));
+            let mirror = config.supermemory().unwrap().unwrap();
+            assert_eq!(mirror.dreaming.as_deref(), Some(mode));
+        }
+        for mode in ["fast", "Dynamic", ""] {
+            let error = on(&format!("dreaming = {mode:?}\n"))
+                .supermemory()
+                .unwrap_err();
+            assert!(
+                error.contains("dreaming") && error.contains("\"instant\""),
+                "{error}"
+            );
+        }
+
+        // Two bytes a character: the limit is counted in characters.
+        let longest = "é".repeat(SUPPORTING_CONTEXT_CHARS);
+        let config = on(&format!("supporting_context = {longest:?}\n"));
+        let mirror = config.supermemory().unwrap().unwrap();
+        assert_eq!(mirror.supporting_context.as_deref(), Some(&*longest));
+        let over = "é".repeat(SUPPORTING_CONTEXT_CHARS + 1);
+        let error = on(&format!("supporting_context = {over:?}\n"))
+            .supermemory()
+            .unwrap_err();
+        assert!(
+            error.contains("supporting_context") && error.contains("at most 1500"),
+            "{error}"
+        );
+        assert!(!error.contains('é'), "the text itself is not repeated");
     }
 
     /// A sink is checked for the shape that keeps it safe: a sayable

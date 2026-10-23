@@ -7,13 +7,17 @@ import sys
 
 
 def check(binary_dir, archive_dir):
-    """Share desktop limits and keep CLI-only payloads within 30 MiB."""
+    """Share desktop limits and keep CLI-only payloads within 30 MiB.
+
+    agentd is agentdocker under its daemon name: a hard link to it counts
+    once, so the payload is what an installation holds on disk."""
     spec = importlib.util.spec_from_file_location("desktop_package", Path(__file__).resolve().parents[1] / "packaging/desktop/package.py")
     package = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(package)
-    executable_bytes = {name: (binary_dir / name).stat().st_size
-                        for name in ("agentdocker", "agentd")}
-    cli_bytes = sum(executable_bytes.values())
+    executables = {name: (binary_dir / name).stat() for name in ("agentdocker", "agentd")}
+    executable_bytes = {name: status.st_size for name, status in executables.items()}
+    files = {(status.st_dev, status.st_ino): status.st_size for status in executables.values()}
+    cli_bytes = sum(files.values())
     if cli_bytes > 30 * 1024 ** 2:
         raise ValueError(f"CLI payload exceeds its 30 MiB size budget: {cli_bytes} bytes "
                          f"({executable_bytes})")
@@ -24,7 +28,7 @@ def check(binary_dir, archive_dir):
     if any(size > 40 * 1024 ** 2 for size in archive_bytes.values()):
         raise ValueError(f"release download exceeds its 40 MiB size budget: {archive_bytes}")
     result = {"cli_payload_bytes": cli_bytes, "executable_bytes": executable_bytes,
-              "archive_bytes": archive_bytes}
+              "executable_files": len(files), "archive_bytes": archive_bytes}
     app = binary_dir / "AgentDocker.app"
     if app.exists():
         result["desktop"] = package.measure_sizes(app, archives)
