@@ -476,7 +476,8 @@ pub mod tmux {
     /// per row, without escapes (`capture-pane -p` without `-e`). Read for
     /// the opt-in judge, only for a pane an agent registered from.
     pub fn capture(pane: &str) -> io::Result<String> {
-        if !pane.starts_with('%') || !pane[1..].bytes().all(|b| b.is_ascii_digit()) {
+        let number = pane.strip_prefix('%').unwrap_or_default();
+        if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "a pane is named by its id, `%` and a number",

@@ -887,7 +887,7 @@ secret_file = {secret:?}
         assert_eq!(config.judge.model, "jev-1.13.0");
         assert_eq!(config.judge.url, "https://api.typesafe.ai/v1/systemone");
         assert_eq!(config.judge.calls_per_minute, 6);
-        assert_eq!(config.judge.threshold_percent, 80);
+        assert_eq!(config.judge.threshold_percent, 75);
 
         let with = |edit: &dyn Fn(&mut JudgeConfig)| {
             let mut judge = config.judge.clone();

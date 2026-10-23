@@ -210,7 +210,16 @@ permission prompt or question in their own terminal, each the agent's name
 with a chip for the errand — **Wants permission**, **Has a question**, or
 **Waiting for you** when its hooks did not say which — read aloud as *Claude
 Code wants permission in its terminal*, *has a question in its terminal* or
-*is waiting for you in its terminal*; **Go to Terminal** takes you there. Seen across
+*is waiting for you in its terminal*; **Go to Terminal** takes you there. A
+session the opt-in screen judge read as waiting from its quiet screen, rather
+than one its hooks reported, reads the same way with a second chip beside the
+errand, **Judged · 87%** (its detail: read from its quiet screen, how likely,
+and that nothing it reported says so), and an errand of its own, **Unsent
+draft**, for words left typed at its prompt; it is read aloud as *Codex seems
+to want permission in its terminal, judged from its screen, 87% likely*, or
+*seems to have a question* or *seems to have an unsent draft*. The row goes
+when the screen changes. Its notification says the same (*Codex seems to want
+permission*, *Judged from its screen, 87% likely*). Seen across
 projects, each row starts with its project's name (*&lt;project&gt; · Claude Code · Badger*).
 A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not

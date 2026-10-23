@@ -6,7 +6,10 @@
 //! Every five seconds a pass reads the file and the key, then the screens
 //! of live agents AgentDocker already holds or is bound to: the terminal
 //! of a managed agent (its scrollback drawn as the agent drew it), and the
-//! tmux pane an agent registered from. A screen whose last lines have not
+//! tmux pane an agent registered from. A herdr pane is not read: its id
+//! can change when the pane moves, so the id an agent registered with may
+//! name another pane, and nothing here binds a pane to the agent's own
+//! session before reading it. A screen whose last lines have not
 //! changed for [`judgment::QUIET_SECS`] is quiet; a quiet screen is asked
 //! about once, and not again until it changes. Calls are budgeted per
 //! minute, made one at a time under a deadline, with no redirects; a
@@ -526,6 +529,17 @@ impl Daemon {
                 .and_then(|value| judgment::read_answers(&value).map_err(|_| Failure::Malformed));
             match answered {
                 Ok((model, answers)) => {
+                    // The answers alone, never the screen: enough to see
+                    // why a screen was or was not promoted.
+                    debug!(
+                        agent = %screen.agent.short(),
+                        %model,
+                        approval = answers.approval,
+                        question = answers.question,
+                        running = answers.running,
+                        draft = answers.draft,
+                        "judge answered"
+                    );
                     self.settle(&screen.agent, &screen.digest);
                     lock(&self.judge).problem = None;
                     if let Outcome::Promote {
@@ -1020,11 +1034,14 @@ mod tests {
 
         // A wait its hooks reported is the agent's own word: not asked.
         let reported = showing(&daemon, &dir, "reported", DIALOG).await;
-        let observation = agentdocker_core::ActivityObservation {
-            activity: agentdocker_core::ReportedActivity::Waiting,
-            observed_at: Utc::now(),
-            reason: Some(agentdocker_core::WaitReason::Permission),
-        };
+        // As the hooks send it, so fields added to an observation later
+        // need nothing here.
+        let observation: agentdocker_core::ActivityObservation = serde_json::from_value(json!({
+            "activity": "waiting",
+            "observed_at": Utc::now(),
+            "reason": "permission",
+        }))
+        .unwrap();
         assert!(matches!(
             daemon
                 .handle(Request::ReportActivity {

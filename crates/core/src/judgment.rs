@@ -46,8 +46,11 @@ pub const QUIET_SECS: u64 = 20;
 pub const DEFAULT_CALLS_PER_MINUTE: u32 = 6;
 pub const MAX_CALLS_PER_MINUTE: u32 = 60;
 /// The least probability of yes that promotes, in percent, unless the
-/// file says otherwise; it may be set from 50 to 99.
-pub const DEFAULT_THRESHOLD_PERCENT: u8 = 80;
+/// file says otherwise; it may be set from 50 to 99. Staged screens of
+/// both providers' prompts put every real approval, question and draft at
+/// 0.79 or more and every wrong yes at 0.56 or less; 75 sits between,
+/// nearer the yes side, since a wrong promotion asks for the person.
+pub const DEFAULT_THRESHOLD_PERCENT: u8 = 75;
 /// Work the model reads as running at least this likely stops any
 /// promotion: a busy screen is not one waiting on the person.
 pub const RUNNING_VETO: f64 = 0.5;
@@ -197,7 +200,8 @@ fn questions() -> Value {
                 "true": "The agent's latest message asks the person something or lists \
                     options for them to pick, and nothing below it answers it.",
                 "false": "The agent is not asking the person anything: it is reporting, \
-                    working, finished, or its question has already been answered."
+                    working, or saying its work is done, or its question has already been \
+                    answered. An empty input box waiting below a report is not a question."
             }
         },
         "running": {
@@ -213,12 +217,15 @@ fn questions() -> Value {
         },
         "draft": {
             "type": "noul",
-            "instructions": "Does the input line at the bottom of `screen`, where the person \
-                types to the agent, hold words that were typed but not sent?",
+            "instructions": "Does the input area at the bottom of `screen` hold a message the \
+                person typed and has not sent yet?",
             "criteria": {
-                "true": "The input line holds typed words after its prompt marker, not sent yet.",
-                "false": "The input line is empty, shows only a suggestion or placeholder \
-                    (such as one starting with Try), or there is no input line."
+                "true": "Words follow the prompt marker (such as > or ›) in the input area at \
+                    the bottom: a box, or the prompt line just above hints such as ? for \
+                    shortcuts. Text there has not been sent: a sent message moves up, above it.",
+                "false": "The input area is empty, holds only a placeholder suggestion (such \
+                    as one starting with Try, or Ask Codex to do anything), or there is no \
+                    input area."
             }
         }
     })
@@ -639,7 +646,7 @@ mod tests {
             decide(&answers(0.99, 0.99, 0.6, 0.99), &t),
             Outcome::Nothing
         );
-        assert_eq!(decide(&answers(0.79, 0.5, 0.0, 0.3), &t), Outcome::Nothing);
+        assert_eq!(decide(&answers(0.74, 0.5, 0.0, 0.3), &t), Outcome::Nothing);
         assert_eq!(
             decide(&answers(f64::NAN, 0.0, 0.0, 0.0), &t),
             Outcome::Nothing
@@ -712,11 +719,12 @@ mod tests {
         record.process_started_at = Some(at(-60));
         let judged = judgment(WaitReason::Question, 900);
         assert!(judged.stands_for(&record));
-        record.reported_activity = Some(ActivityObservation {
-            activity: ReportedActivity::Working,
-            observed_at: at(10),
-            reason: None,
-        });
+        // Read as the wire carries it, so fields added to an observation
+        // later need nothing here.
+        let observation: ActivityObservation =
+            serde_json::from_value(json!({"activity": "working", "observed_at": at(10)})).unwrap();
+        assert_eq!(observation.activity, ReportedActivity::Working);
+        record.reported_activity = Some(observation);
         assert!(
             judged.stands_for(&record),
             "a report before the screen was read"
