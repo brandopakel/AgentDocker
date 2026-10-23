@@ -2193,14 +2193,7 @@ impl App {
                     self.task_open = None;
                     self.card = None;
                 } else {
-                    self.card = None;
-                    let generation = self.shell.card_draft.generation + 1;
-                    self.shell.card_draft = super::shell::CardDraft {
-                        generation,
-                        ..self.draft_of(&task)
-                    };
-                    self.send(Cmd::TaskDetail(task.clone()));
-                    self.task_open = Some(task);
+                    self.open_card(task);
                 }
             }
             Message::TaskAssign(task, assignee) => self.send(Cmd::TaskEdit {
@@ -2271,12 +2264,21 @@ impl App {
                 });
             }
             Message::TodoOpen(root, task) => {
-                self.shell.catalog.selected = Some(PathBuf::from(root));
-                self.shell.changed();
-                self.task_open = Some(task.clone());
-                self.card = None;
-                self.send(Cmd::TaskDetail(task));
-                return self.update(Message::Navigate(Screen::Board));
+                // The card's project is selected as a click on it selects
+                // it, its context read anew; selected bare, the next tick
+                // took the open card for one left on the board before and
+                // closed it.
+                let root = PathBuf::from(root);
+                let scope = super::navigation::Scope::Project(root.clone());
+                if self.scope() != scope {
+                    tasks.push(self.update(Message::SelectProject(root)));
+                }
+                if self.scope() == scope {
+                    self.open_card(task);
+                    tasks.push(self.update(Message::Navigate(Screen::Board)));
+                } else {
+                    self.say("This card's project is no longer on the list.");
+                }
             }
             Message::LinkKind(kind) => {
                 // The link button again, with nothing typed, closes it.
@@ -10942,6 +10944,61 @@ mod tests {
                 .map(|p| (p.board.clone(), p.card.clone())),
             Some((Some("main".into()), Some(card.id.clone())))
         );
+    }
+
+    /// A card To-do opens on another project's board selects that project
+    /// as a click on it does: the next tick leaves the card open, its
+    /// editor takes the card's words when the board arrives, and Back goes
+    /// to To-do in one step. A project no longer listed opens nothing.
+    #[test]
+    fn a_todo_card_of_another_project_opens_on_its_board_and_stays_open() {
+        let (mut app, alpha, beta, kept) = travel();
+        app.connected = Ok(());
+        let card = card_in("aaaaaaaaaaaa", &beta, "Port the parser");
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        let _ = app.update(Message::Navigate(Screen::Todo));
+        let _ = board_asks(&kept._commands);
+
+        let _ = app.update(Message::TodoOpen(
+            beta.display().to_string(),
+            card.id.clone(),
+        ));
+        assert_eq!(on(&app), (Screen::Board, Some(beta.clone())));
+        assert_eq!(app.task_open.as_ref(), Some(&card.id));
+        let _ = app.update(Message::Tick);
+        assert_eq!(on(&app), (Screen::Board, Some(beta.clone())));
+        assert_eq!(
+            app.task_open.as_ref(),
+            Some(&card.id),
+            "the next tick leaves the card open"
+        );
+
+        let (request, _, _) = board_asks(&kept._commands)
+            .pop()
+            .expect("the card's board is asked for");
+        kept.messages
+            .send(Msg::Tasks(
+                beta.display().to_string(),
+                request,
+                Ok((vec![card.clone()], false)),
+            ))
+            .unwrap();
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.task_open.as_ref(), Some(&card.id));
+        let draft = &app.shell.card_draft;
+        assert_eq!(draft.task.as_ref(), Some(&card.id));
+        assert_eq!(
+            (draft.title.as_str(), draft.base.title.as_str()),
+            ("Port the parser", "Port the parser"),
+            "the editor shows the card's words, not an empty title"
+        );
+
+        let _ = app.update(Message::GoBack);
+        assert_eq!(app.screen, Screen::Todo, "one step back is To-do");
+
+        let _ = app.update(Message::TodoOpen("/nowhere".into(), card.id.clone()));
+        assert_eq!(app.screen, Screen::Todo);
+        assert_eq!(app.status, "This card's project is no longer on the list.");
     }
 
     /// A compact window shows the list of conversations or one of them:
