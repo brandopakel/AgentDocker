@@ -256,6 +256,7 @@ pub enum Activity {
         reason: Option<WaitReason>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         judged: Option<Judged>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
     /// Not running any more.
@@ -741,6 +742,26 @@ pub struct AgentActivity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wait with neither a judgment nor a detail keeps the wire shape it
+    /// had before either field: both are left out, not written as null.
+    #[test]
+    fn a_plain_wait_writes_neither_judged_nor_detail() {
+        let since = now();
+        let wait = Activity::Waiting {
+            since,
+            reason: None,
+            judged: None,
+            detail: None,
+        };
+        let value = serde_json::to_value(&wait).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"state": "waiting", "since": since})
+        );
+        let back: Activity = serde_json::from_value(value).unwrap();
+        assert_eq!(back, wait);
+    }
 
     #[test]
     fn activity_observations_expire_instead_of_guessing_idle() {
