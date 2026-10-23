@@ -1205,20 +1205,23 @@ Current behaviour that the sections above do not already state, by area.
   from the command line). Offered only where Codex offers it.
 
 
-- **Text only where it is a name.** The desktop says state with marks, dots,
-  rings and meters, named for screen readers and in tooltips; it has no
+- **Every state in a word.** The desktop says each state with a labelled
+  chip — an icon and its word (*Needs you*, *Working*, *Idle*, *Delivered*,
+  *Receiving messages*, *4m left*), healthy states too — with the fix, when
+  there is one, as a button beside it; a tooltip only adds detail. It has no
   sentences under headings, empty-state captions, key footers or section
   intros. It is set in IBM Plex Sans, with an ink primary action.
 
 
 - **A quieter, neutral desktop.** The sidebar is neutral, one step off the
   page, in both appearances; colour is kept for state and the one primary
-  action. Every agent row is one line that leads with one glyph for where the
-  agent stands — the same function decides it in the chat, the session list
-  and the rail — and prints a word only when it calls for you. The project
+  action. Every agent row is one line with a chip for where the agent stands
+  — the same function decides it in the chat, the session list and the
+  rail. The project
   header keeps **Launch agent…** as its one labelled button; Pause, the
   terminal and Open in are icons named in their tooltips. A project's rail row
-  shows its loudest agent's glyph and a number only for agents that need you.
+  shows its loudest agent's chip, counting the agents that need you when more
+  than one does.
   **Launch agent…** starts from what the agent should work on, sent as its
   first message; its name and arguments are under **More options**.
   Command/Ctrl+Shift+U goes to the next agent that needs you. The
@@ -1237,15 +1240,16 @@ Current behaviour that the sections above do not already state, by area.
 
 
 - An agent's row, in a project's chat and in the session list, shows its
-  branch's pull request as one chip — **#<n>** and a tick, a dot or a cross
-  for its checks, or **#<n> merged** — that opens it in the browser. It is
+  branch's pull request as one chip — **#<n>** and its checks in a word
+  (**Passed**, **Running**, **Failed**, **Merged**) — that opens it in the
+  browser. It is
   read with your signed-in `gh` every two minutes and when the window regains
   focus; without `gh`, on a default branch or off GitHub there is no chip.
-  Every agent row leads with one glyph for where the agent stands (amber:
-  needs you; red: failed; muted dot: working; accent dot: finished since you
-  looked; nothing: idle), the same in the chat, the session list and the
-  rail. An agent that finished while you were not looking keeps its accent
-  dot until you open it or its project.
+  Every agent row says where the agent stands in a chip (**Needs you**,
+  **Failed**, **Working**, **Finished**, **Running**, **Idle** — only when its
+  tool reported it quiet), the same in the chat, the
+  session list and the rail. An agent that finished while you were not
+  looking keeps its **Finished** chip until you open it or its project.
 
 - **Open in…** (the code icon beside the terminal icon in a project's header) opens the project
   in an editor installed on this computer — Visual Studio Code, Cursor,

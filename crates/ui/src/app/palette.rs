@@ -143,8 +143,7 @@ pub(super) enum Mark {
     },
     /// A tool, by its runtime name: its logo, or the terminal glyph.
     Tool(String),
-    /// An agent: its standing's glyph while it has one to show, else its
-    /// tool's logo.
+    /// An agent: its tool's logo, and its standing's chip after its name.
     Agent {
         runtime: String,
         standing: agentdocker_core::standing::Standing,
@@ -606,17 +605,7 @@ fn item_view<'a>(item: &Item, active: bool, c: Colors) -> Element<'a, Message> {
     let mark: Element<'a, Message> = match &item.mark {
         Mark::Glyph(glyph) => container(icon(*glyph, ink, 16.0)).center(20).into(),
         Mark::Monogram { name, seed } => monogram(name, seed, 20.0, c),
-        Mark::Tool(runtime) => tool_mark(runtime, ink, c),
-        Mark::Agent { runtime, standing } => {
-            use agentdocker_core::standing::Standing;
-            if matches!(standing, Standing::Idle | Standing::Ended) {
-                tool_mark(runtime, ink, c)
-            } else {
-                container(super::view::standing_glyph(*standing, c))
-                    .center(20)
-                    .into()
-            }
-        }
+        Mark::Tool(runtime) | Mark::Agent { runtime, .. } => tool_mark(runtime, ink, c),
     };
     let words = row![
         text(item.label.clone())
@@ -632,6 +621,14 @@ fn item_view<'a>(item: &Item, active: bool, c: Colors) -> Element<'a, Message> {
     let mut line = row![mark, container(words).width(Fill).clip(true)]
         .spacing(10)
         .align_y(Center);
+    // An agent says where it stands in its chip; the label is cut first.
+    if let Mark::Agent { standing, .. } = &item.mark {
+        line = line.push(super::view::standing_chip(
+            format!("{}-standing", item.id),
+            *standing,
+            c,
+        ));
+    }
     if active && item.alt.is_some() {
         line = line.push(icon(Icon::Terminal, ink, 14.0));
     }

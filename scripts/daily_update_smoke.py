@@ -93,7 +93,7 @@ else:
             launch('default-off', [step('click', id='settings'), step('wait_text', text='Daily update checks: off'), step('pause', millis=1500)])
             assert not records() and (not forbidden.exists())
             report['checks'].append('new_preferences_default_to_no_automatic_requests')
-            launch('enable', [step('click', id='settings'), step('wait_text', text='Daily update checks: off'), step('pause', millis=1500), step('click', id='automatic-update-checks'), step('wait_text', text='Daily update checks: on'), step('wait_control', id='open-available-update', present=True), step('click', id='open-available-update'), step('wait_text', text='Update available — 0.2.0'), step('wait_text', text='No managed installation at this prefix.'), step('wait_text', text='Download and preview 0.2.0'), step('capture', name='available-update'), step('pause', millis=1200)])
+            launch('enable', [step('click', id='settings'), step('wait_text', text='Daily update checks: off'), step('pause', millis=1500), step('click', id='automatic-update-checks'), step('wait_text', text='Daily update checks: on'), step('wait_control', id='open-available-update', present=True), step('click', id='open-available-update'), step('wait_text', text='Update available'), step('wait_text', text='No managed installation at this prefix'), step('wait_text', text='Download and preview 0.2.0'), step('capture', name='available-update'), step('pause', millis=1200)])
             assert len(records()) == 1, records()
             assert catalog()['updates']['enabled']
             attempt = catalog()['updates']['last_attempt']
@@ -105,7 +105,7 @@ else:
             saved['updates']['last_attempt'] = int(time.time()) - 86401
             (state / 'workspace.json').write_text(json.dumps(saved))
             failure.touch()
-            launch('offline', [step('click', id='settings'), step('wait_text', text='Couldn’t check for updates.'), step('pause', millis=1500), step('capture', name='offline-check')])
+            launch('offline', [step('click', id='settings'), step('wait_text', text='Couldn’t check for updates'), step('pause', millis=1500), step('capture', name='offline-check')])
             assert len(records()) == 2
             report['checks'].append('due_check_failure_is_visible_and_reserved')
             launch('offline-reopen', [step('click', id='settings'), step('wait_text', text='Daily update checks: on'), step('pause', millis=2200), step('click', id='automatic-update-checks'), step('wait_text', text='Daily update checks: off'), step('pause', millis=500)])
