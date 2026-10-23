@@ -892,8 +892,12 @@ mkdir -p ~/.config/agentdocker
 ```toml
 [judge]
 judgments = ["screens"]
-key_file = "/Users/you/.config/agentdocker/typesafe.key"   # the absolute path
+key_file = "/absolute/path/to/typesafe.key"
 ```
+
+`key_file` must be an absolute path: write out the full path of the file you
+created (`echo ~/.config/agentdocker/typesafe.key` prints it), since `~` is not
+expanded there.
 
 `agentdocker daemon status` prints a `judge` line: `off`, `on` with the
 model and the calls made in the last minute, or why it cannot run (a key file
