@@ -10208,8 +10208,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let alpha = ProjectRef::directory(dir.path().join("alpha"));
         let beta = ProjectRef::directory(dir.path().join("beta"));
-        app.shell.catalog.remember(alpha.clone(), true);
-        app.shell.catalog.remember(beta.clone(), true);
+        app.shell.catalog.remember(alpha.clone(), true).unwrap();
+        app.shell.catalog.remember(beta.clone(), true).unwrap();
         let kept = Kept {
             _commands,
             messages,
