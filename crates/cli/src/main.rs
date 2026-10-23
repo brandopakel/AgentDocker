@@ -830,7 +830,10 @@ enum Command {
     /// its control socket, with each one's status and AgentDocker record.
     #[command(hide = true)]
     CodexThreads(codex_input::threads::Args),
-    /// Start the agents in an Agentfile.toml that are not already running.
+    /// Start the agents in an Agentfile.toml that are not already running,
+    /// each once what it waits on allows: `depends_on` (running first) and
+    /// `after = "<name> exits 0"`. While an entry waits, `up` stays; one
+    /// whose wait can no longer be met is not started, with the reason.
     Up {
         /// Agentfile to read (default: ./Agentfile.toml).
         #[arg(short = 'f', long)]

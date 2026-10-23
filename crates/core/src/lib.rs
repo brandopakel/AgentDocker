@@ -5,6 +5,7 @@
 //! testable and deterministic.
 
 pub mod agent;
+pub mod agentfile;
 pub mod board;
 pub mod change;
 pub mod config;
