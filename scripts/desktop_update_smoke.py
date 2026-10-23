@@ -70,6 +70,7 @@ def main():
         prefix.mkdir(mode=0o700)
         env = {key: value for key, value in os.environ.items() if not key.startswith("AGENTDOCKER_")}
         env["AGENTDOCKER_PERSON_CHECK"] = "off"  # its own daemon: act as the person from anywhere
+        env["AGENTDOCKER_AGENT_CHECK"] = "off"  # and as any of its agents
         env.update(AGENTDOCKER_NO_AUTOSTART="1", AGENTDOCKER_SOCKET=str(root / "no.sock"),
                    AGENTDOCKER_HOME=str(root / "state"), AGENTDOCKER_NO_NOTIFICATIONS="1")
         # A preview feed for one made-up newer version pointing at the local archive.

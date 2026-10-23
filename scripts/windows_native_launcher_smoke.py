@@ -30,6 +30,7 @@ from windows_remote_receiver_fixture import Receiver, fixture_controller, proces
 # The daemons this starts are its own: they let it act as the person from
 # wherever it runs, an agent's session included.
 os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+os.environ.setdefault('AGENTDOCKER_AGENT_CHECK', 'off')
 
 
 class RecoveryComplete(Exception):
@@ -221,6 +222,7 @@ def main():
             'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)'}}
         env.update(CODEX_HOME=str(profile), AGENTDOCKER_FIXTURE_KEY='fixture-only', TERM='xterm-256color')
         env['AGENTDOCKER_PERSON_CHECK'] = 'off'  # its own daemon: act as the person from anywhere
+        env['AGENTDOCKER_AGENT_CHECK'] = 'off'  # and as any of its agents
         receiver = Receiver(args.binary_dir, root, repo, profile, out, env, report); receiver.start_daemon()
         config = ('model = "fixture-model"\nmodel_provider = "fixture"\napproval_policy = "on-request"\n'
                   'sandbox_mode = "danger-full-access"\ncheck_for_update_on_startup = false\n'

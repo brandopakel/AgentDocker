@@ -137,6 +137,7 @@ def trial(args):
             project.mkdir()
             env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_")}
             env["AGENTDOCKER_PERSON_CHECK"] = "off"  # its own daemon: act as the person from anywhere
+            env["AGENTDOCKER_AGENT_CHECK"] = "off"  # and as any of its agents
             endpoint = str(root / "sock")
             env.update(AGENTDOCKER_HOME=str(root / "state"), AGENTDOCKER_SOCKET=endpoint,
                        AGENTDOCKER_NO_AUTOSTART="1", CODEX_HOME=str(provider_root), RUST_LOG="warn")

@@ -467,7 +467,7 @@ text; the words and any details still go to stderr as `Error: … (Code)`.
 | 2 | a usage error, the argument parser's own; also an invalid request | `invalid` |
 | 3 | nothing by that name, or too many | `not_found`, `ambiguous` |
 | 4 | held or taken by somebody else | `conflict`, `name_taken`, `deadlock` |
-| 5 | refused: not the caller's to do, or the project is paused | `forbidden`, `paused` |
+| 5 | refused: not the caller's to do, the project is paused, or it acts as an agent from outside that agent's session | `forbidden`, `paused`, `identity_mismatch` |
 | 6 | not now: the daemon, its storage, an engine or a build is unavailable, busy, handing over, timed out or cancelled | `storage_unavailable`, `unavailable`, `engine_unavailable`, `build_failed`, `backpressure`, `timeout`, `cancelled`, `transferring`, `event_history_lost` |
 
 The class holds wherever the answer was read — a `daemon reload` refusal, an
@@ -670,7 +670,7 @@ be set.
 |---|---|---|
 | `AGENTDOCKER_HOME` | daemon, commands, app | The state directory (`~/.agentdocker`): socket, logs, `state.db`, `agentd.toml`, `policy.toml`. A different value is a different daemon. |
 | `AGENTDOCKER_SOCKET` | daemon, commands, app | The socket to serve or connect to (`<home>/agentd.sock`). |
-| `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` | commands, hooks, MCP | Who is speaking: the default for `--as` and `--from`. `run` sets both in a managed agent's environment. |
+| `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` | commands, hooks, MCP | Who is speaking: the default for `--as` and `--from`. `run` sets both in a managed agent's environment. An agent speaks only as itself: a command acting as an agent is answered only from inside that agent's own session (its shell, hooks, MCP server, and what they start) or from yours (the app, your own terminal, outside every agent's session); from inside another agent's session it is refused `identity_mismatch` (exit 5), whatever `--as`, `--from` or this variable says. |
 | `AGENTDOCKER_NO_AUTOSTART=1` | commands, app | A client that cannot connect does not start a daemon. |
 | `AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1` | Claude Code hooks | On a session launched with the channel: hooks leave inbox delivery to the channel and only observe. The parent `claude`'s own flag wins where it can be read, and the hooks deliver again when the channel's queue has paused on an unconfirmed message. `run --claude-channel` sets it. |
 | `AGENTDOCKER_CODEX_INPUT=1` | Codex hooks, bridge | On a Codex process AgentDocker launched with input: delivery goes through the bridge. `run --codex-input` and the app's **Idle messages: On** set it. |

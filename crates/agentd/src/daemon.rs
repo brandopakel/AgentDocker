@@ -44,6 +44,7 @@ use agentdocker_host::{multiplexer, procinfo, project, vcs};
 use crate::store::{ChangesQuery, JournalQuery, Store};
 use crate::supervisor;
 mod access;
+mod acting;
 mod binding;
 mod channels;
 mod checkouts;
@@ -336,6 +337,10 @@ pub struct Daemon {
     /// process that sent it (`AGENTDOCKER_PERSON_CHECK=off` at start, for a
     /// test harness's own daemon, turns it off).
     person_check: bool,
+    /// Whether a request acting as an agent is checked against the process
+    /// that sent it (`AGENTDOCKER_AGENT_CHECK=off` at start, for a test
+    /// harness's own daemon, turns it off).
+    agent_check: bool,
 }
 
 /// Release the scan slot and wake joiners on completion or cancellation.
@@ -1636,6 +1641,7 @@ impl Daemon {
             relaunch_hold: Mutex::new(None),
             peers: Mutex::new(person::Peers::default()),
             person_check: std::env::var_os("AGENTDOCKER_PERSON_CHECK").is_none_or(|v| v != "off"),
+            agent_check: std::env::var_os("AGENTDOCKER_AGENT_CHECK").is_none_or(|v| v != "off"),
             scan_finished: Notify::new(),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),

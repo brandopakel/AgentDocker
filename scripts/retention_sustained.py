@@ -101,6 +101,7 @@ def trial(args):
                         "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"], cwd=work, check=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_")}
         env["AGENTDOCKER_PERSON_CHECK"] = "off"  # its own daemon: act as the person from anywhere
+        env["AGENTDOCKER_AGENT_CHECK"] = "off"  # and as any of its agents
         env.update(AGENTDOCKER_HOME=str(home), AGENTDOCKER_SOCKET=str(sock), AGENTDOCKER_NO_AUTOSTART="1", RUST_LOG="info")
         log = open(args.output / "daemon.log", "ab")
         daemon = subprocess.Popen([str(agentd), "--home", str(home), "--socket", str(sock)], env=env,

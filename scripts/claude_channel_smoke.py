@@ -95,6 +95,7 @@ def run(args):
         endpoint = root / "sock"
         env = {key: value for key, value in os.environ.items() if not key.startswith("AGENTDOCKER_")}
         env["AGENTDOCKER_PERSON_CHECK"] = "off"  # its own daemon: act as the person from anywhere
+        env["AGENTDOCKER_AGENT_CHECK"] = "off"  # and as any of its agents
         env.update(AGENTDOCKER_HOME=str(root / "state"), AGENTDOCKER_SOCKET=str(endpoint),
                    AGENTDOCKER_NO_AUTOSTART="1", AGENTDOCKER_NO_NOTIFICATIONS="1")
 

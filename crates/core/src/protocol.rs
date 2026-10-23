@@ -1742,6 +1742,10 @@ pub enum ErrorCode {
     /// new lease is refused until they lift it. `details.reason` is the
     /// person's words.
     Paused,
+    /// The request acts as an agent, and the process that sent it does
+    /// not run inside that agent's own session: an agent acts only as
+    /// itself. `details` names the agent (`agent`, `name`).
+    IdentityMismatch,
 }
 
 // A response is built once and serialised at once, so the size gap between

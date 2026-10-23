@@ -19,6 +19,7 @@ from windows_smoke_pipe import WindowsSmokePipe
 # The daemons this starts are its own: they let it act as the person from
 # wherever it runs, an agent's session included.
 os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+os.environ.setdefault('AGENTDOCKER_AGENT_CHECK', 'off')
 
 
 def canonical(path):
@@ -83,7 +84,7 @@ class Receiver:
         self.socket = '\\\\.\\pipe\\agentdocker-remote-' + uuid.uuid4().hex
         self.env = dict(env, AGENTDOCKER_HOME=str(self.home), AGENTDOCKER_SOCKET=self.socket,
                         AGENTDOCKER_NO_AUTOSTART='1', AGENTDOCKER_NO_NOTIFICATIONS='1',
-                        AGENTDOCKER_PERSON_CHECK='off')
+                        AGENTDOCKER_PERSON_CHECK='off', AGENTDOCKER_AGENT_CHECK='off')
         self.report = report
         self.children, self.owned, self.logs = [], [], []
         self.daemon = None

@@ -26,9 +26,10 @@ impl RunningDaemon {
         // The executable is the daemon as `agentdocker daemon run`.
         let child = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
             .args(["daemon", "run"])
-            // The harness acts as the person from wherever it runs,
-            // an agent's session included.
+            // The harness acts as the person, and as its agents, from
+            // wherever it runs, an agent's session included.
             .env("AGENTDOCKER_PERSON_CHECK", "off")
+            .env("AGENTDOCKER_AGENT_CHECK", "off")
             .arg("--home")
             .arg(home)
             .arg("--socket")

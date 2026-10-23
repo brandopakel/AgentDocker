@@ -305,7 +305,8 @@ mod fixture {
             let child = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
                 .args(["daemon", "run"])
                 // The harness acts as the person from wherever it runs,
-                // an agent's session included.
+                // an agent's session included. It never acts as its agents:
+                // their own processes do, under the agent check.
                 .env("AGENTDOCKER_PERSON_CHECK", "off")
                 .arg("--home")
                 .arg(home)
@@ -506,10 +507,12 @@ impl Bridge {
         sent["message"].as_str().unwrap().to_owned()
     }
 
+    /// What waits in the agent's queue, as the person sees it: a look that
+    /// neither consumes nor counts as a delivery.
     fn inbox(&self) -> Vec<Value> {
         let inbox = fixture::rpc(
             &self.daemon.socket,
-            json!({"op": "inbox", "agent": self.agent, "drain": false}),
+            json!({"op": "peek_input", "agent": self.agent}),
         )
         .unwrap();
         assert_eq!(inbox["type"], "messages", "{inbox}");

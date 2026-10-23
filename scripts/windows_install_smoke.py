@@ -24,6 +24,7 @@ from windows_native_codex_smoke import remove_fixture
 # The daemons this starts are its own: they let it act as the person from
 # wherever it runs, an agent's session included.
 os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+os.environ.setdefault('AGENTDOCKER_AGENT_CHECK', 'off')
 
 
 @contextmanager
@@ -133,6 +134,7 @@ def main():
     token = uuid.uuid4().hex
     env = {k: v for k, v in os.environ.items() if not k.startswith('AGENTDOCKER_')}
     env['AGENTDOCKER_PERSON_CHECK'] = 'off'  # its own daemon: act as the person from anywhere
+    env['AGENTDOCKER_AGENT_CHECK'] = 'off'  # and as any of its agents
     env.update(AGENTDOCKER_HOME=str(home), AGENTDOCKER_NO_AUTOSTART='1',
                AGENTDOCKER_SOCKET=rf'\\.\pipe\agentdocker-install-{token}')
     names = ('agentdocker.exe', 'agentd.exe', 'agentdocker-ui.exe')
