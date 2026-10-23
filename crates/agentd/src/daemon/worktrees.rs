@@ -468,7 +468,9 @@ impl Daemon {
     /// A linked checkout on a new branch, from this session's HEAD or
     /// from `from` (a branch, tag or commit of the same repository). The
     /// daemon remembers who asked, so commits made there with git alone
-    /// are still that agent's in the journal.
+    /// are still that agent's in the journal, and gives it a post-commit
+    /// hook that reports each of them, so they are kept as authorship
+    /// (`authorship.rs`).
     ///
     /// `seed_build` names directories of the agent's checkout (build
     /// output such as `target` or `node_modules`) to clone or copy into
@@ -501,15 +503,17 @@ impl Daemon {
             let mut state = lock(&self.state);
             state.worktree_creators.insert(path.clone(), agent.clone());
             state.emit(EventKind::WorktreeCreated {
-                agent,
+                agent: agent.clone(),
                 path: path.clone(),
             });
         }
+        let unwitnessed = self.witness_worktree(&path, &agent).await;
         let seeded = seed_build_dirs(root, path.clone(), seed_build).await;
         Response::Worktree {
             path,
             branch,
             seeded,
+            unwitnessed,
         }
     }
 
@@ -737,21 +741,30 @@ impl Daemon {
             Ok(head) => head,
             Err(reason) => return failure(reason),
         };
-        let branch = match git(
-            root.clone(),
-            vec![
-                "symbolic-ref".into(),
-                "--short".into(),
-                "--quiet".into(),
-                "HEAD".into(),
-            ],
-        )
-        .await
-        {
-            // A detached HEAD is not an error here; it is just no branch.
-            Ok(output) if output.success => Some(output.text.trim().to_owned()),
-            _ => None,
+        // The full ref HEAD names, and the branch from it: never `--short`,
+        // which git lengthens to `heads/<name>` once a tag shares the name.
+        // A detached HEAD is not an error here; it is just no branch.
+        let full_ref = {
+            let dir = root.clone();
+            tokio::task::spawn_blocking(move || super::authorship::head_ref(&dir))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten()
+                .filter(|r| r.starts_with("refs/heads/"))
         };
+        let branch = full_ref
+            .as_deref()
+            .and_then(|r| r.strip_prefix("refs/heads/"))
+            .map(str::to_owned);
+        // The commit is the agent's as soon as git has made it, before any
+        // push can hold it up: kept apart from the journal, so its word is
+        // not taken on this branch however long the journal keeps it.
+        if let Some(error) =
+            lock(&self.state).record_daemon_commit(&agent, full_ref.as_deref(), &head)
+        {
+            return error;
+        }
 
         // Pushed after the commit exists, so a push that fails leaves a
         // commit rather than losing the work.
