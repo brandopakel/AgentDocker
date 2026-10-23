@@ -440,13 +440,42 @@ fn defer_growing_job(
     }
 }
 
-fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
-    collect_generation_bounded(weak, config, usize::MAX);
+/// What one collector pass read: the debug log's per-pass summary and the
+/// evidence tests use to show which bytes a pass had to touch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Tally {
+    /// Manifest jobs taken this pass.
+    files: u64,
+    /// Accepted-prefix bytes rehashed before parsing (`Preparation::bytes_read`).
+    proof_bytes: u64,
+    /// Parser bytes, including the restored boundary byte (`Batch::bytes_read`).
+    parsed_bytes: u64,
+    /// Proposal rechecks before commit (`Batch::validation_bytes_read`).
+    validation_bytes: u64,
+}
+
+fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) -> Tally {
+    collect_generation_bounded(weak, config, usize::MAX)
 }
 
 // A bounded page allowance also lets restart trials stop at a committed frontier
 // without killing a process while it owns the coordination mutex.
-fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pages: usize) {
+fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, pages: usize) -> Tally {
+    let started = std::time::Instant::now();
+    let mut tally = Tally::default();
+    collect_pass(weak, config, pages, &mut tally);
+    tracing::debug!(
+        files = tally.files,
+        proof_bytes = tally.proof_bytes,
+        parsed_bytes = tally.parsed_bytes,
+        validation_bytes = tally.validation_bytes,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "usage collection pass"
+    );
+    tally
+}
+
+fn collect_pass(weak: &Weak<Daemon>, config: &UsageConfig, mut pages: usize, tally: &mut Tally) {
     let Ok(sources) = roots(config) else {
         return;
     };
@@ -618,6 +647,7 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
             break;
         };
         after = Some((priority, job_id));
+        tally.files += 1;
         let key = serde_json::to_string(&(source.runtime, &source.path))
             .expect("serializable source path");
         let Some(daemon) = weak.upgrade() else {
@@ -629,7 +659,7 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
             return;
         };
         let previous = old.as_ref().map(|old| &old.cursor);
-        let prepare =
+        let mut prepare =
             |previous: Option<&reader::Cursor>| -> Result<reader::Session, reader::Error> {
                 let mut session = reader::Session::at_snapshot(captured.clone(), previous)?;
                 loop {
@@ -638,6 +668,7 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                         4 * 1024 * 1024,
                         std::time::Duration::from_millis(100),
                     )?;
+                    tally.proof_bytes += progress.bytes_read;
                     if progress.ready {
                         return Ok(session);
                     }
@@ -696,7 +727,11 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                 Ok(batch)
             });
             let batch = match proposal {
-                Ok(batch) => batch,
+                Ok(batch) => {
+                    tally.parsed_bytes += batch.bytes_read;
+                    tally.validation_bytes += batch.validation_bytes_read;
+                    batch
+                }
                 Err(reader::Error::SnapshotAdvanced) => {
                     if !defer_growing_job(weak, &collection, job_id, &source) {
                         return;
