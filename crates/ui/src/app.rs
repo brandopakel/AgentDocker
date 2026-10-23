@@ -7519,7 +7519,7 @@ pub(crate) mod tests {
             let mut project = ProjectRef::directory(root);
             project.fingerprint = Some(name.into());
             agent.project = Some(project.clone());
-            app.shell.catalog.remember(project, false);
+            app.shell.catalog.remember(project, false).unwrap();
             agents.push(agent);
         }
         let (worker, other) = (agents[0].clone(), agents[1].clone());

@@ -1537,8 +1537,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hidden = agentdocker_core::ProjectRef::directory(dir.path().join("hidden"));
         let visible = agentdocker_core::ProjectRef::directory(dir.path().join("visible"));
-        assert!(app.shell.catalog.remember(hidden.clone(), true));
-        assert!(app.shell.catalog.remember(visible.clone(), true));
+        assert_eq!(app.shell.catalog.remember(hidden.clone(), true), Ok(true));
+        assert_eq!(app.shell.catalog.remember(visible.clone(), true), Ok(true));
         let now = Utc::now();
         for (name, project) in [
             ("hidden-asking", Some(hidden.clone())),
@@ -1595,7 +1595,7 @@ mod tests {
         ));
         assert!(app.shell.palette.open);
         assert!(app.shell.selected.is_none());
-        assert!(app.shell.catalog.remember(hidden, true));
+        assert_eq!(app.shell.catalog.remember(hidden, true), Ok(true));
         assert_eq!(agents(&app), ["hidden-asking", "hidden-live"]);
         let _ = app.update(Message::CommandQuery(String::new()));
         assert_eq!(
@@ -1627,7 +1627,7 @@ mod tests {
         let mut app = app();
         let dir = tempfile::tempdir().unwrap();
         let project = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
-        app.shell.catalog.remember(project.clone(), true);
+        app.shell.catalog.remember(project.clone(), true).unwrap();
         app.shell.catalog.selected = Some(project.root.clone());
         let open_in = |app: &App| -> Vec<String> {
             app.palette_places()
@@ -1664,7 +1664,7 @@ mod tests {
         app.connected = Ok(());
         let dir = tempfile::tempdir().unwrap();
         let project = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
-        app.shell.catalog.remember(project.clone(), true);
+        app.shell.catalog.remember(project.clone(), true).unwrap();
         app.shell.catalog.selected = Some(project.root.clone());
         app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
             name: "codex".into(),

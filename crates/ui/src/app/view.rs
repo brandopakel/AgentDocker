@@ -884,10 +884,11 @@ impl App {
     pub(super) fn has_project(&self, project: Option<&ProjectRef>) -> bool {
         match self.selected_root() {
             Some(root) => project.is_some_and(|p| p.root == root),
-            // A session started in `/` or the home folder has a project
-            // only in name; it is one of the Other sessions.
+            // A session started in `/`, the home folder or a folder that
+            // is no absolute path has a project only in name; it is one of
+            // the Other sessions.
             None if self.shell.catalog.unassigned => {
-                project.is_none_or(|p| self.shell.catalog.broad_unpinned(&p.root))
+                project.is_none_or(|p| self.shell.catalog.projectless(&p.root))
             }
             None => true,
         }
@@ -1881,12 +1882,12 @@ impl App {
         if self.agents.iter().any(|a| {
             a.project
                 .as_ref()
-                .is_none_or(|p| self.shell.catalog.broad_unpinned(&p.root))
+                .is_none_or(|p| self.shell.catalog.projectless(&p.root))
                 && a.spec.runtime != agentdocker_core::HUMAN_RUNTIME
         }) || self.discovered.iter().any(|p| {
             p.project
                 .as_ref()
-                .is_none_or(|p| self.shell.catalog.broad_unpinned(&p.root))
+                .is_none_or(|p| self.shell.catalog.projectless(&p.root))
         }) {
             projects = projects.push(custom(
                 "unassigned",
@@ -4780,7 +4781,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = agentdocker_core::ProjectRef::directory(dir.path());
         let root = project.root.display().to_string();
-        app.shell.catalog.remember(project.clone(), true);
+        app.shell.catalog.remember(project.clone(), true).unwrap();
         app.shell.catalog.selected = Some(project.root.clone());
         app.connected = Ok(());
         app.screen = Screen::Board;
