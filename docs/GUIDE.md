@@ -34,9 +34,16 @@ right-click it and choose **Open** once, or
 `xattr -dr com.apple.quarantine ~/Applications/AgentDocker.app`. From a checkout:
 
 ```sh
-cargo install --path crates/cli --locked   # agentdocker + agentd
+cargo install --path crates/cli --locked   # agentdocker, which is also the daemon
 cargo install --path crates/ui  --locked   # the desktop app
 ```
+
+`agentdocker` and `agentd` are one executable: invoked as `agentd` it is the
+daemon, and packages ship `agentd` as a link to `agentdocker`. A `cargo install`
+makes only `agentdocker`; the daemon still starts on demand, as
+`agentdocker daemon run`. `agentdocker daemon install` names `agentd` in the
+service it writes, so add the link first:
+`ln -s agentdocker "$(dirname "$(command -v agentdocker)")/agentd"`.
 
 The Linux desktop archive needs a graphical session and its native display
 libraries (X11/XCB, keyboard, rendering and fonts); the archive does not install

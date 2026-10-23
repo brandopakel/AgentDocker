@@ -19,7 +19,10 @@ Then quit AgentDocker and open it again. The Dock, Spotlight, the `agentdocker`
 and `agentd` commands in `~/.local/bin`, and the MCP entry your agent tools use
 all follow one managed pointer, so they switch together.
 The real launcher bundle retains `Contents/MacOS/agentdocker`, `agentd` and
-`agentdocker-ui` executables for integrations that call them by those names. The installer copies the
+`agentdocker-ui` executables for integrations that call them by those names;
+`agentd` is `agentdocker` under the daemon's name, a hard link to the one
+executable, which is the daemon when invoked as `agentd`
+([one executable](ARCHITECTURE.md#one-executable)). The installer copies the
 signed payload intact; each entry point redirects to the active immutable release
 using installation metadata outside the app bundle. Its launch executable is
 `agentdocker-ui`: an executable named only `AgentDocker` would collide with the
@@ -28,12 +31,15 @@ CLI path on case-insensitive filesystems and send hooks or MCP into the GUI.
 ## What `make install` does
 
 1. `scripts/build_storage.py`: the disk-budget preflight from the testing standard.
-2. `scripts/build_native.py`: `cargo build --release` of the three executables,
-   bound to the exact source inputs in a `native-build.json` manifest.
+2. `scripts/build_native.py`: `cargo build --release` of the two executables,
+   `agentdocker` and `agentdocker-ui`, with `agentd` made a hard link to
+   `agentdocker` beside them (`scripts/daemon_link.py`), bound to the exact
+   source inputs in a `native-build.json` manifest.
 3. `packaging/desktop/package.py`: the same app bundle (macOS) or desktop
    payload (Linux) the release pipeline produces, ad-hoc signed, with licenses,
-   into `artifacts/local/desktop-<timestamp>/`. `artifacts/local/latest` points at
-   the newest one.
+   into `artifacts/local/desktop-<timestamp>/`, `agentd` in it a hard link to
+   `agentdocker`. `artifacts/local/latest` points at the newest one. Its
+   `manifest.json` reports the payload's size with the link counted once.
 4. `agentdocker desktop install --from <payload> --local-preview`: the built
    CLI installs its own package for the next launch. Versions are retained;
    `make rollback` activates the previous one; `make status` shows both.

@@ -585,7 +585,7 @@ class WindowsDesktopPackaging(unittest.TestCase):
         self.assertEqual(RELEASE.preview_notes("v0.2.0", original), original)
 
     def test_wrong_machine_dll_or_truncated_pe_is_refused_before_publication(self):
-        binary = self.binaries / "agentd.exe"
+        binary = self.binaries / "agentdocker-ui.exe"
         original = binary.read_bytes()
         for offset, value, fmt in [(68, 0xAA64, "<H"), (86, 0x2002, "<H"),
                                    (86, 0, "<H"), (60, 0xFFFF_FFFF, "<I"),
@@ -618,7 +618,7 @@ class WindowsDesktopPackaging(unittest.TestCase):
 
         def replace(source, destination, **kwargs):
             result = copy(source, destination, **kwargs)
-            if source.name == "agentd.exe":
+            if source.name == "agentdocker.exe":
                 # Still a valid x64 executable header, but no longer the build's bytes.
                 with destination.open("ab") as stream:
                     stream.write(b"different build")

@@ -1,4 +1,8 @@
-//! `agentdocker`: command-line client for `agentd`.
+//! `agentdocker`: command-line client for `agentd`, and `agentd` itself.
+//!
+//! One executable is both programs. Invoked as `agentd` (the link packages
+//! ship beside `agentdocker`), or as `agentdocker daemon run`, it is the
+//! daemon; otherwise the CLI. See [`agentdocker_host::program`].
 // The MCP tool schemas are one `json!` each; the board's are deep.
 #![recursion_limit = "256"]
 
@@ -2054,6 +2058,14 @@ const MAIN_STACK: usize = 32 << 20;
 /// answer by its class (see [`client::exit_code`]), anything else as
 /// unexpected. The words go to stderr as they always did.
 fn main() {
+    if let Some(arguments) = daemon_arguments(std::env::args_os().collect()) {
+        // What the separate `agentd` binary did: its error, and status 1.
+        if let Err(error) = agentd::main_from(arguments) {
+            eprintln!("Error: {error:?}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(error) = agentd::initialize_storage_platform() {
         eprintln!("Error: {error:#}");
         std::process::exit(client::exit_code_for(&error));
@@ -2077,6 +2089,26 @@ fn main() {
         }
         Err(panic) => std::panic::resume_unwind(panic),
     }
+}
+
+/// The daemon's own command line when this process is to run the daemon:
+/// every argument when it was invoked as `agentd`, and those after `run`
+/// for `agentdocker daemon run`, under that name for its usage text.
+/// `None` runs the CLI.
+fn daemon_arguments(mut arguments: Vec<std::ffi::OsString>) -> Option<Vec<std::ffi::OsString>> {
+    let invoked = arguments.first().cloned().unwrap_or_default();
+    if agentdocker_host::program::Role::invoked_as(&invoked)
+        == agentdocker_host::program::Role::Daemon
+    {
+        return Some(arguments);
+    }
+    if arguments.get(1).is_some_and(|word| word == "daemon")
+        && arguments.get(2).is_some_and(|word| word == "run")
+    {
+        arguments.splice(0..3, ["agentdocker daemon run".into()]);
+        return Some(arguments);
+    }
+    None
 }
 
 async fn run() -> Result<()> {

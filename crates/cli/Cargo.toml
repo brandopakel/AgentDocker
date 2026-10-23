@@ -1,6 +1,6 @@
 [package]
 name = "agentdocker"
-description = "Docker-style control plane for AI agents: the `agentdocker` CLI and the `agentd` daemon"
+description = "Docker-style control plane for AI agents: the `agentdocker` CLI, which is also the `agentd` daemon"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,10 +10,6 @@ rust-version.workspace = true
 [[bin]]
 name = "agentdocker"
 path = "src/main.rs"
-
-[[bin]]
-name = "agentd"
-path = "src/bin/agentd.rs"
 
 [dependencies]
 agentd.workspace = true

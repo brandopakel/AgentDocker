@@ -293,7 +293,9 @@ mod fixture {
                 true,
             )
             .unwrap();
-            let child = Command::new(env!("CARGO_BIN_EXE_agentd"))
+            // The executable is the daemon as `agentdocker daemon run`.
+            let child = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
+                .args(["daemon", "run"])
                 // The harness acts as the person from wherever it runs,
                 // an agent's session included.
                 .env("AGENTDOCKER_PERSON_CHECK", "off")

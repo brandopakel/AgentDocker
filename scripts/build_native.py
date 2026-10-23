@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Build the three desktop executables and bind them to exact source inputs."""
+"""Build the desktop executables and bind them to exact source inputs.
+
+Cargo builds agentdocker and agentdocker-ui; agentd is agentdocker under its
+daemon name, a hard link made beside it here (see daemon_link.py)."""
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import shlex
@@ -10,7 +14,11 @@ import sys
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
+BUILT = ("agentdocker", "agentdocker-ui")
 BINARIES = ("agentdocker", "agentd", "agentdocker-ui")
+_SPEC = importlib.util.spec_from_file_location("daemon_link", ROOT / "scripts/daemon_link.py")
+DAEMON_LINK = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(DAEMON_LINK)
 
 
 def git(*args):
@@ -73,11 +81,14 @@ def build(target, schema_runner=()):
         message = json.loads(line)
         if message.get("reason") == "compiler-artifact" and message.get("executable"):
             name = message["target"]["name"]
-            if name in BINARIES:
+            if name in BUILT:
                 executables[name] = Path(message["executable"])
-    if set(executables) != set(BINARIES) or len({path.parent for path in executables.values()}) != 1:
-        raise RuntimeError("Cargo did not report all three desktop executables in one directory")
+    if set(executables) != set(BUILT) or len({path.parent for path in executables.values()}) != 1:
+        raise RuntimeError("Cargo did not report both desktop executables in one directory")
     directory = executables["agentdocker"].parent
+    DAEMON_LINK.link(directory)
+    suffix = executables["agentdocker"].suffix
+    executables["agentd"] = directory / f"agentd{suffix}"
     version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
     metadata = daemon_metadata(executables["agentd"], target, version, schema_runner)
     if inputs() != before:
@@ -87,7 +98,7 @@ def build(target, schema_runner=()):
         "state_schema": metadata["state_schema"], "installation_lock": metadata.get("installation_lock", 0),
         "launcher_redirect": metadata.get("launcher_redirect", 0), "binary_directory": str(directory),
         "binary_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                          for path in executables.values()},
+                          for path in (executables[name] for name in BINARIES)},
     }
     (directory / "native-build.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
