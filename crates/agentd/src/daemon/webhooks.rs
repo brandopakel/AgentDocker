@@ -314,6 +314,26 @@ impl Answer {
     }
 }
 
+/// The client a sink posts with: `deadline` for connecting and the whole
+/// request together, no redirects, every status an answer rather than an
+/// error, and TLS verified by the platform's own verifier against its
+/// trust roots — the ones the person's system trusts, an organisation's
+/// own authority included — never a bundled set.
+fn sender(deadline: Duration) -> ureq::Agent {
+    use ureq::tls::{RootCerts, TlsConfig};
+    ureq::Agent::config_builder()
+        .timeout_global(Some(deadline))
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .tls_config(
+            TlsConfig::builder()
+                .root_certs(RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .into()
+}
+
 /// One POST, blocking, with the whole request under one deadline. The
 /// address is never in the error.
 fn post(agent: &ureq::Agent, url: &str, headers: &[(&str, String)], body: &[u8]) -> Answer {
@@ -570,13 +590,7 @@ async fn deliver(
     notice_every: Duration,
 ) {
     let name = sink.name.clone();
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(REQUEST_DEADLINE))
-        .max_redirects(0)
-        .http_status_as_error(false)
-        .build()
-        .into();
-    let agent = Arc::new(agent);
+    let agent = Arc::new(sender(REQUEST_DEADLINE));
     let mut last_notice: Option<tokio::time::Instant> = None;
     let mut last_reason = String::new();
     loop {
@@ -1471,12 +1485,7 @@ mod tests {
     /// answers is `timeout`.
     #[test]
     fn an_unanswered_attempt_is_named_by_a_word() {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_millis(300)))
-            .max_redirects(0)
-            .http_status_as_error(false)
-            .build()
-            .into();
+        let agent = sender(Duration::from_millis(300));
         let closed = {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             listener.local_addr().unwrap().port()
@@ -1501,6 +1510,45 @@ mod tests {
         held.join().unwrap();
         assert_eq!(error_kind(&ureq::Error::HostNotFound), "dns");
         assert_eq!(error_kind(&ureq::Error::Tls("handshake")), "tls");
+    }
+
+    /// A sink verifies its receiver's certificate with the platform's own
+    /// verifier and trust roots, not the bundled Mozilla set ureq would
+    /// use unasked, and with verification on; it follows no redirect and
+    /// takes every status as an answer.
+    #[test]
+    fn a_sink_trusts_the_platforms_roots() {
+        use ureq::tls::RootCerts;
+        let agent = sender(REQUEST_DEADLINE);
+        let config = agent.config();
+        let tls = config.tls_config();
+        assert!(
+            matches!(tls.root_certs(), RootCerts::PlatformVerifier),
+            "roots: {:?}",
+            tls.root_certs()
+        );
+        assert!(!tls.disable_verification());
+        assert_eq!(config.max_redirects(), 0);
+        assert!(!config.http_status_as_error());
+        assert_eq!(config.timeouts().global, Some(REQUEST_DEADLINE));
+
+        // An https attempt builds that verifier before its first message
+        // (ureq panics there when the feature providing it is missing):
+        // a receiver that hangs up mid-handshake is a failure named by a
+        // word and tried again, not a crash.
+        let hangs_up = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = hangs_up.local_addr().unwrap().port();
+        let receiver = std::thread::spawn(move || drop(hangs_up.accept().unwrap()));
+        let answer = post(
+            &sender(Duration::from_secs(5)),
+            &format!("https://127.0.0.1:{port}/hook"),
+            &[],
+            b"{}",
+        );
+        receiver.join().unwrap();
+        assert_eq!(answer.status, None);
+        assert!(answer.error.is_some(), "{answer:?}");
+        assert_eq!(answer.outcome, Attempt::Again(Duration::ZERO));
     }
 
     /// A receiver that stalls does not stall the intake: the queue takes
