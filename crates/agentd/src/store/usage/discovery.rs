@@ -26,6 +26,8 @@ pub(crate) enum Change<'a> {
     Page(&'a Progress, &'a [Job]),
     RefreshJob(usize, &'a reader::Cursor),
     FinishedJob(usize),
+    /// Several jobs finished with nothing to record, removed together.
+    FinishedJobs(&'a [usize]),
     Complete,
 }
 
@@ -145,6 +147,19 @@ impl Store {
                     )? == 1,
                     "discovery job is no longer pending"
                 );
+                None
+            }
+            Change::FinishedJobs(ids) => {
+                anyhow::ensure!(ids.len() <= PASS_ENTRIES, "finished jobs exceed bounds");
+                for id in ids {
+                    anyhow::ensure!(
+                        self.conn.execute(
+                            "DELETE FROM usage_discovery_jobs WHERE id=?1",
+                            [i64::try_from(*id)?]
+                        )? == 1,
+                        "discovery job is no longer pending"
+                    );
+                }
                 None
             }
             Change::Complete => {
@@ -438,5 +453,80 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM usage_samples", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn quiet_jobs_finish_together_or_not_at_all() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = vec![Root {
+            runtime: Runtime::Claude,
+            path: temp.path().to_owned(),
+        }];
+        let mut progress = Progress {
+            frontier: Walk::new(roots.clone()).unwrap().checkpoint(),
+            roots,
+            generation: 1,
+            jobs: 0,
+            failures: 0,
+        };
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let now = Utc::now();
+        let collection = Collection {
+            discovery_generation: Some(1),
+            ..Collection::default()
+        };
+        store
+            .usage_snapshot(&collection, &[], now, 1, Some(Change::Start(&progress)))
+            .unwrap();
+        let jobs: Vec<_> = (0..3)
+            .map(|id| {
+                let path = temp.path().join(format!("source-{id}.jsonl"));
+                std::fs::write(&path, "").unwrap();
+                Job {
+                    id,
+                    source: Source {
+                        runtime: Runtime::Claude,
+                        path: path.clone(),
+                    },
+                    captured: reader::Cursor::capture(&path, Runtime::Claude).unwrap(),
+                    priority: false,
+                }
+            })
+            .collect();
+        progress.jobs = 3;
+        store
+            .usage_snapshot(
+                &collection,
+                &[],
+                now,
+                2,
+                Some(Change::Page(&progress, &jobs)),
+            )
+            .unwrap();
+        let pending = || {
+            let mut ids = Vec::new();
+            let mut after = None;
+            while let Some(job) = store.usage_job_after(after).unwrap() {
+                after = Some((job.priority, job.id));
+                ids.push(job.id);
+            }
+            ids
+        };
+        let finish = |ids: &[usize], seq| {
+            store.usage_snapshot(&collection, &[], now, seq, Some(Change::FinishedJobs(ids)))
+        };
+        store.conn.execute_batch("CREATE TRIGGER fail_quiet BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT,'event refused'); END;").unwrap();
+        assert!(finish(&[0, 2], 3).is_err());
+        assert_eq!(pending(), [0, 1, 2]);
+        store.conn.execute_batch("DROP TRIGGER fail_quiet").unwrap();
+        finish(&[0, 2], 3).unwrap();
+        assert_eq!(pending(), [1]);
+        // A job that is no longer pending refuses the whole change.
+        assert!(finish(&[1, 0], 4).is_err());
+        assert_eq!(pending(), [1]);
+        let too_many = vec![1; PASS_ENTRIES + 1];
+        assert!(finish(&too_many, 4).is_err());
+        finish(&[1], 4).unwrap();
+        assert!(pending().is_empty());
     }
 }

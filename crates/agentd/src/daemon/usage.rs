@@ -426,6 +426,39 @@ fn finish_failed_job(
     true
 }
 
+/// Files whose visit found nothing to record: the same cursor, stop and
+/// proof date as saved. Their manifest entries finish together, in one
+/// transaction and one event, rather than one of each per unchanged file.
+/// Until then the manifest still holds them and the collection still counts
+/// them pending, so a pass that stops early leaves them for the next one.
+#[derive(Default)]
+struct Quiet {
+    jobs: Vec<usize>,
+    tails: u64,
+}
+
+/// At most this many quiet files finish in one transaction.
+const QUIET_BATCH: usize = 256;
+
+fn finish_quiet(weak: &Weak<Daemon>, collection: &mut Collection, quiet: &mut Quiet) -> bool {
+    if quiet.jobs.is_empty() {
+        return true;
+    }
+    let mut next = collection.clone();
+    if let Some(pending) = &mut next.pending_files {
+        *pending = pending.saturating_sub(quiet.jobs.len() as u64);
+    }
+    if let Some(tails) = &mut next.pending_tail_files {
+        *tails += quiet.tails;
+    }
+    if !checkpoint(weak, &next, &[], Change::FinishedJobs(&quiet.jobs)) {
+        return false;
+    }
+    *collection = next;
+    *quiet = Quiet::default();
+    true
+}
+
 fn defer_growing_job(
     weak: &Weak<Daemon>,
     collection: &Collection,
@@ -674,6 +707,7 @@ fn collect_pass(
     let mut deferred = false;
     // Accepted-prefix bytes of the whole proofs scheduled so far this pass.
     let mut scheduled_bytes: u64 = 0;
+    let mut quiet = Quiet::default();
     loop {
         if pages == 0 {
             return;
@@ -717,8 +751,10 @@ fn collect_pass(
                 .is_none_or(|at| Utc::now().signed_duration_since(at) >= schedule.interval)
         });
         let offset = previous.map_or(0, reader::Cursor::offset);
+        // An empty prefix has nothing to prove again.
         let scheduled = unchanged
             && due
+            && offset > 0
             && (scheduled_bytes == 0
                 || scheduled_bytes.saturating_add(offset) <= schedule.allowance);
         if scheduled {
@@ -856,6 +892,35 @@ fn collect_pass(
                 }
                 break;
             }
+            // Nothing to record: no samples or gaps, and the cursor, stop and
+            // proof date are those already saved (an empty prefix's proof
+            // proves nothing to date). Only the job finishes.
+            let unchanged_progress = old.as_ref().is_some_and(|old| {
+                old.cursor == batch.cursor
+                    && old.stop == batch.stop
+                    && (old.verified_at == verified_at || batch.cursor.offset() == 0)
+            });
+            if unchanged_progress
+                && batch.samples.is_empty()
+                && batch.gaps.is_empty()
+                && matches!(
+                    batch.stop,
+                    reader::Stop::Complete | reader::Stop::PendingTail
+                )
+            {
+                quiet.jobs.push(job_id);
+                quiet.tails += u64::from(batch.stop == reader::Stop::PendingTail);
+                if quiet.jobs.len() == QUIET_BATCH {
+                    if !finish_quiet(weak, &mut collection, &mut quiet) {
+                        return;
+                    }
+                    pages -= 1;
+                    if pages == 0 {
+                        return;
+                    }
+                }
+                break;
+            }
             let finished = matches!(
                 batch.stop,
                 reader::Stop::Complete | reader::Stop::PendingTail
@@ -907,6 +972,9 @@ fn collect_pass(
         if !alive_wait(weak, 1) {
             return;
         }
+    }
+    if !finish_quiet(weak, &mut collection, &mut quiet) {
+        return;
     }
     if deferred {
         // Deferred jobs and their original accepted cursors survive this pass.
@@ -1820,8 +1888,12 @@ mod tests {
         assert_eq!(query(&daemon).await.rows[0].samples, 300);
 
         // A later generation of the unchanged corpus rehashes each file's
-        // last record and reads one boundary byte; nothing is parsed again.
+        // last record and reads one boundary byte; nothing is parsed again,
+        // and the three files finish in one transaction: the pass emits its
+        // start, its discovery page, that completion and its end.
+        let seq = lock(&daemon.state).next_seq;
         let second = collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!(lock(&daemon.state).next_seq - seq, 4);
         assert_eq!(second.files, 3);
         assert_eq!((second.whole_proofs, second.last_record_proofs), (0, 3));
         assert_eq!(second.proof_bytes, lasts.iter().sum::<u64>());
@@ -1838,7 +1910,13 @@ mod tests {
         // again, and only the appended bytes are parsed.
         let extra = record("b-new", 5);
         append(&root.join("b.jsonl"), &extra);
+        let seq = lock(&daemon.state).next_seq;
         let third = collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!(
+            lock(&daemon.state).next_seq - seq,
+            5,
+            "b's batch is its own"
+        );
         assert_eq!((third.whole_proofs, third.last_record_proofs), (1, 2));
         assert_eq!(
             third.proof_bytes,
@@ -1972,6 +2050,34 @@ mod tests {
         let report = query(&daemon).await;
         assert_eq!(report.rows[0].samples, 21);
         assert_eq!(report.coverage.source_gaps, 2);
+        assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_partial_tail_stays_pending_when_its_job_finishes_quietly() {
+        let (_temp, daemon, config, root) = fixture();
+        let path = root.join("tail.jsonl");
+        let done = record("done", 3);
+        let next = record("next", 4);
+        std::fs::write(&path, format!("{done}{}", next.trim_end_matches('\n'))).unwrap();
+        std::fs::write(root.join("other.jsonl"), record("other", 1)).unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        for _ in 0..2 {
+            let pass = collect_generation(&Arc::downgrade(&daemon), &config);
+            assert_eq!(pass.last_record_proofs, 2);
+            let report = query(&daemon).await;
+            assert_eq!(report.rows[0].samples, 2);
+            assert_eq!(report.coverage.collection.pending_files, Some(0));
+            assert_eq!(report.coverage.collection.pending_tail_files, Some(1));
+            assert_eq!(report.coverage.collection.state, CollectionState::Scanning);
+        }
+        append(&path, "\n");
+        let pass = collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!((pass.whole_proofs, pass.last_record_proofs), (1, 1));
+        let report = query(&daemon).await;
+        assert_eq!(report.rows[0].samples, 3);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(8));
+        assert_eq!(report.coverage.collection.pending_tail_files, Some(0));
         assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
     }
 }
