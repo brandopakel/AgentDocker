@@ -311,8 +311,11 @@ fn hairline<'a>(c: Colors) -> Element<'a, Message> {
 /// What the keyboard does before any control sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Keys {
-    /// Closed: only the shortcut that opens it, which a terminal keeps
-    /// where Control+K means something to the shell.
+    /// Closed: only the shortcut that opens it, and Back and Forward
+    /// (`navigation::travel_key`). `shortcut` is false where a terminal
+    /// keeps Control+K, Control+[ (Escape) and Control+] (detach), which
+    /// mean something to it; the Browser Back and Forward keys go back
+    /// and forward there too.
     Closed {
         shortcut: bool,
     },
@@ -342,6 +345,8 @@ pub(super) enum Command {
     SubmitAlt,
     Escape,
     Back,
+    /// The window's Back (`false`) or Forward (`true`), not the palette's.
+    Travel(bool),
 }
 
 impl From<Command> for Message {
@@ -353,6 +358,8 @@ impl From<Command> for Message {
             Command::SubmitAlt => Message::CommandSubmitAlt,
             Command::Escape => Message::CommandEscape,
             Command::Back => Message::CommandBack,
+            Command::Travel(false) => Message::GoBack,
+            Command::Travel(true) => Message::GoForward,
         }
     }
 }
@@ -377,10 +384,20 @@ pub(super) fn handle(
         && !modifiers.shift()
         && !modifiers.alt()
         && key.to_latin(physical) == Some('k');
+    // Back and Forward go ahead of a focused field too, which would
+    // otherwise type the bracket; over the open palette they do nothing.
+    // A terminal keeps only the Control chords; a keyboard's own Back
+    // and Forward keys mean nothing to a shell.
+    let travel = super::navigation::travel_key(key, physical, modifiers);
+    let browser = matches!(key, Key::Named(Named::BrowserBack | Named::BrowserForward));
     match keys {
         Keys::Closed { shortcut: true } if shortcut => once(Command::Palette),
+        Keys::Closed { shortcut } if travel.is_some() && (shortcut || browser) => {
+            once(Command::Travel(travel == Some(true)))
+        }
         Keys::Closed { .. } => Handling::Pass,
         Keys::Open { .. } if shortcut => once(Command::Palette),
+        Keys::Open { .. } if travel.is_some() => Handling::Swallow,
         Keys::Open {
             query_empty,
             nested,
@@ -399,10 +416,10 @@ pub(super) fn handle(
     }
 }
 
-/// The window wrapped so the palette's keys reach it ahead of every
-/// control in it: ⌘K from a focused field types nothing, and Escape in
-/// the search does not just unfocus it. A composition in an input method
-/// keeps its own keys.
+/// The window wrapped so the palette's keys, and Back and Forward, reach
+/// it ahead of every control in it: ⌘K or ⌘[ from a focused field types
+/// nothing, and Escape in the search does not just unfocus it. A
+/// composition in an input method keeps its own keys.
 struct Shortcuts<'a> {
     content: Element<'a, Message>,
     keys: Keys,
@@ -708,8 +725,9 @@ impl App {
                 nested: !palette.pages.is_empty(),
             }
         } else {
-            // On macOS ⌘K is never the shell's; elsewhere Control+K in a
-            // terminal is, and the terminal gets it first.
+            // On macOS ⌘K, ⌘[ and ⌘] are never the shell's; elsewhere
+            // Control+K, Control+[ and Control+] in a terminal are, and
+            // the terminal gets them first.
             Keys::Closed {
                 shortcut: cfg!(target_os = "macos") || self.screen != Screen::Terminal,
             }

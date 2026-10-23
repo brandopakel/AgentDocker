@@ -900,7 +900,7 @@ impl App {
     pub(super) fn narrow(&self) -> bool {
         self.shell.width / self.scale_factor() < 900.0
     }
-    fn in_project(&self) -> bool {
+    pub(super) fn in_project(&self) -> bool {
         !matches!(
             self.screen,
             Screen::Questions
@@ -1745,8 +1745,12 @@ impl App {
     fn sidebar(&self, c: Colors) -> Element<'_, Message> {
         let r = c.rail();
         let project_page = self.in_project();
-        let mut nav =
-            column![container(brand(r)).padding([0, 8]), Space::new().height(18)].spacing(2);
+        // The mark, and Back and Forward beside it at the window's top
+        // left (navigation.rs).
+        let top = row![brand(r), self.travel_controls(r, c)]
+            .spacing(10)
+            .align_y(Center);
+        let mut nav = column![container(top).padding([0, 8]), Space::new().height(16)].spacing(2);
         // command palette: its way in, under the brand (palette.rs).
         nav = nav
             .push(self.palette_trigger(r))

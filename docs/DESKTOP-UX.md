@@ -78,6 +78,24 @@ Code), and three or more letters in order find what nothing else did.
 Agents in a forgotten project stay out of Jump to and out of **Next agent that
 needs you** until that project is listed again.
 
+**Back** and **Forward**, the two arrows beside the mark at the top of the
+sidebar, go through the places you went in this window, as a browser does: a
+project's Chat, Agents with the session that was open, Board with the board
+and the card that were open, an agent's terminal (ready to type into), a
+thread beside a chat, a conversation in Messages or, in a narrow window,
+the list of them, To-do, Tools, Settings. Pointing at an arrow says where it goes, by the project and
+the screen or what was open there (*Back to* a project's name *· Chat*); with
+nowhere to go it is greyed out. ⌘[ and ⌘] (Ctrl+[ and Ctrl+] on Linux and
+Windows), a keyboard's own Back and Forward keys and the mouse's side buttons
+do the same, from a text field too. Only going somewhere counts: hovering,
+menus, typing, searching, filters and scrolling do not, and nor does
+choosing the place you are already on. Going somewhere new after going back
+drops what was ahead. A place whose project you removed, whose session is no
+longer listed or whose card was archived is passed over. The window keeps
+the last hundred places and forgets them when it closes. A session you
+launch counts once its terminal opens, and so does a notification's message
+once it is on screen.
+
 With no saved selection, the app opens on **All projects**, with sessions grouped
 under their project names. A saved project or Other sessions view is restored.
 **Projects** in the sidebar returns to All projects. Choosing a project opens
@@ -919,6 +937,11 @@ and notarization; locally signed builds are explicit previews.
   modifier, a Command or Control shortcut, or Escape does not. A click anywhere
   else takes the focus away, and Escape closes a project's menu.
 - Command/Ctrl+1–4 switch Projects, Inbox, Tools and Settings.
+- Command/Ctrl+[ goes back and Command/Ctrl+] forward, from a text field too;
+  so do a keyboard's Back and Forward keys and the mouse's side buttons. On
+  Linux and Windows, Ctrl+[ and Ctrl+] in an agent's terminal stay the
+  terminal's (Escape and detach); the keyboard's Back and Forward keys still
+  go back and forward there.
 - Command/Ctrl+N opens **Launch agent…** for the project on screen.
 - Command/Ctrl+Shift+U goes to the next agent that needs you (questions, waits
   and failures first, then finished work you have not seen), round again at

@@ -1294,6 +1294,13 @@ Current behaviour that the sections above do not already state, by area.
 - The dock icon counts the questions waiting on you, across projects, and
   Command/Ctrl+N opens Launch agent.
 
+- **Back and Forward** are the two arrows beside the mark at the top of the
+  sidebar, and Command/Ctrl+[ and Command/Ctrl+] (or the mouse's side
+  buttons): they go through the places you went in this window — a
+  project's screens, the session, card, thread or conversation open on them —
+  as a browser does, passing over a project, session or card that is gone.
+  Pointing at one says where it goes.
+
 - The desktop app ships as `AgentDocker.app` on macOS, with its own icon,
   so the Dock and the app switcher name it properly. `agentdocker ui`
   first launches a matching sibling `agentdocker-ui`, then falls back to the
