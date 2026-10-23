@@ -425,8 +425,18 @@ impl InputBinding {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InputReport {
     Ready,
-    Received { input: ReceivedInput },
-    Paused { reason: String },
+    Received {
+        input: ReceivedInput,
+    },
+    Paused {
+        reason: String,
+    },
+    /// The receiver is holding its next input because the person typed in
+    /// its terminal within [`crate::typing::QUIET`]; it delivers once the
+    /// terminal is quiet, and decides again at `until`.
+    HeldForTyping {
+        until: DateTime<Utc>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -439,11 +449,27 @@ pub struct InputDelivery {
     /// The latest receipt remains historical evidence across restarts.
     pub received: Option<ReceivedInput>,
     pub received_at: Option<DateTime<Utc>>,
+    /// The end of the latest hold for the person's typing, until a receipt
+    /// or a pause replaces it; it lapses by itself at that time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typing_until: Option<DateTime<Utc>>,
 }
 
 impl InputDelivery {
     pub fn paused_for(&self, process_started_at: Option<DateTime<Utc>>) -> bool {
         self.paused && process_started_at == Some(self.process_started_at)
+    }
+
+    /// Until when this process's receiver holds input for the person's
+    /// typing, while that hold lasts.
+    pub fn held_for_typing(
+        &self,
+        generation: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+    ) -> Option<DateTime<Utc>> {
+        self.typing_until
+            .filter(|until| now < *until)
+            .filter(|_| !self.paused && generation == Some(self.process_started_at))
     }
 
     /// A receiver refreshes its report while servicing input. An old receipt,
@@ -594,6 +620,7 @@ mod tests {
                 reported_at: birth,
                 received: None,
                 received_at: None,
+                typing_until: None,
             });
             assert_eq!(
                 InputReadiness::for_agent(&agent, birth),
@@ -654,6 +681,7 @@ mod tests {
             reported_at: birth,
             received: None,
             received_at: None,
+            typing_until: None,
         };
         assert!(delivery.current_for(Some(birth), birth + chrono::Duration::seconds(89)));
         assert!(!delivery.current_for(Some(birth), birth + chrono::Duration::seconds(90)));
@@ -679,6 +707,46 @@ mod tests {
             delivery.received_for(Some(birth), birth),
             "pausing retains the receipt as history"
         );
+    }
+
+    #[test]
+    fn a_hold_for_typing_is_this_process_s_and_lapses_by_itself() {
+        let birth = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let until = birth + crate::typing::QUIET;
+        let mut delivery = InputDelivery {
+            process_started_at: birth,
+            paused: false,
+            pause_reason: None,
+            reported_at: birth,
+            received: None,
+            received_at: None,
+            typing_until: Some(until),
+        };
+        assert_eq!(delivery.held_for_typing(Some(birth), birth), Some(until));
+        assert_eq!(delivery.held_for_typing(Some(birth), until), None, "over");
+        assert_eq!(
+            delivery.held_for_typing(Some(birth + chrono::Duration::seconds(1)), birth),
+            None,
+            "another process held nothing for this one"
+        );
+        delivery.paused = true;
+        assert_eq!(delivery.held_for_typing(Some(birth), birth), None);
+        // Stored before the field existed, or written without one.
+        let mut value = serde_json::to_value(&delivery).unwrap();
+        value.as_object_mut().unwrap().remove("typing_until");
+        let legacy: InputDelivery = serde_json::from_value(value).unwrap();
+        assert_eq!(legacy.typing_until, None);
+        delivery.typing_until = None;
+        assert!(
+            serde_json::to_value(&delivery)
+                .unwrap()
+                .get("typing_until")
+                .is_none()
+        );
+        let report: InputReport =
+            serde_json::from_value(serde_json::json!({"state":"held_for_typing","until":until}))
+                .unwrap();
+        assert_eq!(report, InputReport::HeldForTyping { until });
     }
 
     #[test]

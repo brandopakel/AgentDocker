@@ -485,6 +485,15 @@ After an oversized line, all bytes through its newline are discarded, including
 edits, so its tail cannot become a separate prompt; the paste is rejected
 visibly and the next line is accepted intact.
 
+While the person is typing a line in the bridge's editor, a queued message from
+anyone else waits at the head of the queue, whether it would start a turn or
+steer the running one, until the terminal has been quiet for three seconds or
+the line is ended; then it goes by the ordinary path. The person's own lines,
+from this terminal or elsewhere, never wait. Nothing about the wait is printed
+into the terminal: the session's readiness says **Waiting for the person to stop
+typing** instead
+([contract](ARCHITECTURE.md#holding-input-while-the-person-types)).
+
 The provider profile, authentication, hooks, trust and approval policy are
 inherited. No profile is rewritten. The session's AgentDocker MCP entry is bound
 explicitly to the matching CLI, managed identity and daemon socket through leaf

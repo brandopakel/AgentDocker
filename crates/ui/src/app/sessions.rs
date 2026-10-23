@@ -282,6 +282,7 @@ mod tests {
             reported_at: now,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         limited.provider_availability = Some(ProviderAvailability {
             process_started_at: now,
@@ -333,6 +334,7 @@ mod tests {
             reported_at: now,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         app.agents.push(paused.clone());
         assert!(app.session_records(Filter::Current).is_empty());
@@ -366,6 +368,7 @@ mod tests {
             reported_at: now,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         app.agents.push(ended.clone());
         let id = ended.id.to_string();
@@ -471,6 +474,7 @@ mod tests {
             reported_at: now,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         app.agents.push(live.clone());
         app.queued_inputs.insert(live.id.to_string(), 0);

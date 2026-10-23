@@ -215,6 +215,7 @@ impl State {
         {
             return Response::error(ErrorCode::Invalid, "input report is stale or in the future");
         }
+        let mut held = None;
         let mut delivery = record.input_delivery.clone().unwrap_or(InputDelivery {
             process_started_at,
             paused: false,
@@ -222,6 +223,7 @@ impl State {
             reported_at: observed_at,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         match report {
             InputReport::Received { mut input } => {
@@ -249,7 +251,11 @@ impl State {
                 }
                 delivery.paused = false;
                 delivery.pause_reason = None;
+                // What was held has gone in.
+                delivery.typing_until = None;
             }
+            // A heartbeat says nothing about the person's typing: a hold
+            // in force lasts until its own time.
             InputReport::Ready => {
                 delivery.paused = false;
                 delivery.pause_reason = None;
@@ -266,6 +272,20 @@ impl State {
                 }
                 delivery.paused = true;
                 delivery.pause_reason = Some(reason);
+                delivery.typing_until = None;
+            }
+            // Only a hold the rule could have made: over after it was
+            // observed and within one quiet window of it. It is no evidence
+            // that a pause is over.
+            InputReport::HeldForTyping { until } => {
+                if !agentdocker_core::typing::plausible(until, observed_at) {
+                    return Response::error(
+                        ErrorCode::Invalid,
+                        "a hold for typing must end within one quiet window of its observation",
+                    );
+                }
+                held = Some(until);
+                delivery.typing_until = Some(until);
             }
         }
         delivery.process_started_at = process_started_at;
@@ -284,13 +304,17 @@ impl State {
             );
         }
         record.input_delivery = Some(delivery.clone());
-        let event = agentdocker_core::Event::new(
-            agentdocker_core::EventKind::InputDeliveryReported {
+        let kind = match held {
+            Some(until) => agentdocker_core::EventKind::InputHeldForTyping {
+                agent: id.clone(),
+                until,
+            },
+            None => agentdocker_core::EventKind::InputDeliveryReported {
                 agent: id.clone(),
                 delivery,
             },
-            now,
-        );
+        };
+        let event = agentdocker_core::Event::new(kind, now);
         let _ = self.transition(
             "input delivery report",
             event,

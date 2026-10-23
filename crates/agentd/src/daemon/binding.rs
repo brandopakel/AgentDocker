@@ -90,6 +90,7 @@ fn pause_delivery(record: &mut AgentRecord, reason: &str, now: DateTime<Utc>) {
             reported_at: now,
             received: None,
             received_at: None,
+            typing_until: None,
         });
     delivery.paused = true;
     delivery.pause_reason = Some(reason.to_owned());

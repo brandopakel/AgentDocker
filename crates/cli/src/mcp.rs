@@ -4481,6 +4481,7 @@ mod tests {
             reported_at,
             received: None,
             received_at: None,
+            typing_until: None,
         };
         let mut cases = Vec::new();
         for runtime in ["claude-code", "codex", "opencode", "custom"] {
@@ -4578,6 +4579,7 @@ mod tests {
             reported_at: now,
             received: None,
             received_at: None,
+            typing_until: None,
         });
         let mut source = quota("source", "/work/beta");
         source.status = AgentStatus::Exited { code: Some(1) };

@@ -174,6 +174,7 @@ pub(super) fn delivery_tone(state: agentdocker_core::delivery::State) -> Tone {
         | D::WaitingForPrompt
         | D::WaitsForCheckIn
         | D::WaitingToTake
+        | D::HeldForTyping
         | D::Gone
         | D::Unknown => Tone::Neutral,
     }
@@ -184,7 +185,9 @@ fn delivery_icon(state: agentdocker_core::delivery::State) -> Option<Icon> {
     match state {
         D::Answered => Some(Icon::Channels),
         D::Delivered | D::Received | D::Shown => Some(Icon::Check),
-        D::WaitingForPrompt | D::WaitsForCheckIn | D::WaitingToTake => Some(Icon::Clock),
+        D::WaitingForPrompt | D::WaitsForCheckIn | D::WaitingToTake | D::HeldForTyping => {
+            Some(Icon::Clock)
+        }
         D::Paused => Some(Icon::Pause),
         D::Blocked => Some(Icon::Hourglass),
         D::Silent | D::Unreachable => Some(Icon::Alert),
