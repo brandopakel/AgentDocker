@@ -16,7 +16,7 @@ On macOS, bind mounting a host Unix socket through the VM filesystem is not assu
 A pass of this smoke test is protocol interoperability evidence; it does not claim managed container lifecycle or immutable container validation support. Docker has a separate Linux CI matrix entry and is reported independently.
 
 
-`workspace.py` owns a managed workspace fixture and verifies authenticated mounted requests, identity/admin/traversal rejection, physical alias conflicts, stale rereads, daemon-crash reconnects, read-only validation in the image, durable validation deadlines, source/image recovery checks and revocation. Linux CI runs it independently for Docker and rootless Podman:
+`workspace.py` owns a managed workspace fixture and verifies authenticated mounted requests, identity/admin/traversal rejection, physical alias conflicts, stale rereads, daemon-crash reconnects, read-only validation in the image, durable validation deadlines, source/image recovery checks and revocation. Linux CI runs it independently for Docker and rootless Podman. Its `--daemon` is the build's `agentdocker` under the name `agentd`: `python3 scripts/daemon_link.py target/debug` makes that link after a build.
 
 ```sh
 python3 tests/containers/workspace.py --engine podman --daemon target/debug/agentd --cli target/debug/agentdocker --context tests/containers --root /tmp/ad-workspace --result /tmp/workspace-result.json

@@ -3,6 +3,7 @@ mod answers;
 mod availability;
 mod birth;
 mod bootstrap;
+mod control;
 mod history;
 mod hook_receipts;
 pub mod hooks;
@@ -15,7 +16,7 @@ mod remote;
 pub mod resolve;
 mod resume;
 pub mod upgrade;
-pub use bootstrap::ensure_started;
+pub use bootstrap::{ensure_started, ensure_started_control};
 
 use super::{call, transport::Provider};
 use crate::client::Client;
@@ -62,6 +63,10 @@ pub struct Args {
     /// Private exact-generation app-server record (owned-launch integration).
     #[arg(long, hide = true)]
     pub app_server_record: Option<PathBuf>,
+    /// The conversation runs in the profile's shared app-server: deliver
+    /// through its control socket, never a private server.
+    #[arg(long, hide = true, conflicts_with = "app_server_record")]
+    pub control: bool,
 }
 
 fn alive(binding: &Binding) -> bool {
@@ -211,7 +216,7 @@ async fn verify_provider_with_birth(
 ) -> Result<()> {
     let initialized = provider.initialize().await?;
     super::transport::check_supported(&initialized)?;
-    if binding.remote.is_some() {
+    if binding.remote.is_some() || binding.control {
         ensure!(
             initialized["codexHome"]
                 .as_str()
@@ -219,6 +224,9 @@ async fn verify_provider_with_birth(
                 == Some(PathBuf::from(&binding.provider.profile)),
             "native server initialized with a different provider profile"
         );
+    }
+    if binding.control {
+        control::hosts(provider, &binding.provider.session).await?;
     }
     let value = provider
         .request(
@@ -253,6 +261,8 @@ async fn verify_provider_with_birth(
 async fn connect_provider(binding: &Binding) -> Result<Provider> {
     let mut provider = if let Some(remote) = &binding.remote {
         remote::connect(remote, binding).await?
+    } else if binding.control {
+        control::connect(binding).await?
     } else {
         Provider::start_profile(
             &binding.executable,
@@ -292,6 +302,8 @@ async fn service(
     let mut unseen_since: Option<tokio::time::Instant> = None;
     let mut answer_wait: Option<tokio::time::Instant> = None;
     let mut last_refresh: Option<tokio::time::Instant> = None;
+    // The shared server's unloaded conversation, already reported paused.
+    let mut unloaded = false;
     loop {
         let agent = identity(client, &ledger.record().binding).await?;
         let mut healthy = true;
@@ -385,6 +397,27 @@ async fn service(
                 } else {
                     receipts::latest_item(provider, &thread).await?
                 };
+                // Through the shared server, a conversation it has unloaded
+                // has nobody to take an offer, though the terminal and this
+                // connection stay. Asked as late as possible before each new
+                // offer; nothing is prepared, so nothing waits on a receipt.
+                if ledger.record().binding.control && !control::loaded(provider, &thread).await? {
+                    if !unloaded {
+                        report(
+                            client,
+                            ledger,
+                            InputReport::Paused {
+                                reason: control::UNLOADED.into(),
+                            },
+                        )
+                        .await?;
+                        unloaded = true;
+                    }
+                    // Ready again as soon as it is loaded and healthy.
+                    last_refresh = None;
+                    wait_for_hook(hooks, resolve, client, provider, ledger, &origin).await?;
+                    continue;
+                }
                 ledger.prepare(envelope, anchor)?;
                 let attempt = ledger.record().attempt.as_ref().expect("prepared input");
                 let value = provider.request("thread/queue/add", json!({"threadId":thread,
@@ -401,6 +434,7 @@ async fn service(
         // Readiness is refreshed only after the outstanding attempt is proven
         // present, or after the next queue head has passed its ownership checks.
         if healthy {
+            unloaded = false;
             refresh(client, ledger, &mut last_refresh).await?;
         }
         wait_for_hook(hooks, resolve, client, provider, ledger, &origin).await?;
@@ -468,10 +502,12 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
         cwd: args.cwd.canonicalize()?,
         executable: args.program.canonicalize()?,
         remote: None,
+        control: false,
     };
     if let Some(path) = args.app_server_record {
         binding.remote = Some(remote::describe(&path, &binding)?);
     }
+    binding.control = args.control;
     ensure!(
         procinfo::executable_path_of(binding.provider.process.pid)?.canonicalize()?
             == binding.executable,

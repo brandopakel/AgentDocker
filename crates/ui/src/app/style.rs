@@ -4,6 +4,8 @@
 //! spent only on state. The one primary action is filled with ink, not a
 //! hue, so the page reads as type and space first; blue is the signal for
 //! "new to you", "active" and focus, and green, amber and red are standing.
+//! A state is never a colour alone: it is a chip (`chip::Chip`) whose word
+//! says it, in one of five [`Tone`]s.
 //! Light and dark keep the same roles so the hierarchy reads identically;
 //! the rail is the sidebar step of either (`Colors::rail`).
 //!
@@ -31,6 +33,24 @@ pub const UI: Font = Font::with_name("IBM Plex Sans");
 /// `UI` at a weight.
 pub const fn weight(weight: iced::font::Weight) -> Font {
     Font { weight, ..UI }
+}
+
+/// How a state's chip is coloured. Five, so the colour adds weight to
+/// the word without having to be learnt: the word always says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    /// Quiet: idle, ended, a draft, nothing known.
+    Neutral,
+    /// Healthy: receiving, delivered, passed, done, live.
+    Positive,
+    /// Waits on the person, or something stands in the way: needs you,
+    /// paused, time running.
+    Attention,
+    /// Failed, overdue, nearly out of time.
+    Alert,
+    /// News, or on its way: finished since you looked, sent, ready, in
+    /// progress.
+    Info,
 }
 
 #[derive(Clone, Copy)]
@@ -260,8 +280,22 @@ impl Colors {
         }
     }
 
-    /// A small rounded label: counts and kinds, never status (status is a
-    /// dot and a word).
+    /// A state's chip: a wash of its tone behind its word, and the word in
+    /// the tone deepened towards the text, so it carries 4.5:1 on its own
+    /// wash over every surface it sits on (the test below). Neutral is a
+    /// wash of the ink with the muted ink, the count chip's look.
+    pub fn chip(self, tone: Tone) -> (Color, Color) {
+        let hue = match tone {
+            Tone::Neutral => return (alpha(self.text, 0.07), self.muted),
+            Tone::Positive => self.green,
+            Tone::Attention => self.amber,
+            Tone::Alert => self.red,
+            Tone::Info => self.accent,
+        };
+        (alpha(hue, 0.13), mix(hue, self.text, 0.35))
+    }
+
+    /// A small rounded label: counts and kinds, and every state's chip.
     pub fn pill(self, background: Color, ink: Color) -> container::Style {
         container::Style {
             background: Some(background.into()),
@@ -460,6 +494,52 @@ mod tests {
                     contrast(tone, c.card)
                 );
             }
+        }
+    }
+
+    /// `over` with `wash` laid on it.
+    fn over(ground: Color, wash: Color) -> Color {
+        mix(ground, Color { a: 1.0, ..wash }, wash.a)
+    }
+
+    /// A chip's word reads at 4.5:1 on its own wash, wherever the chip
+    /// sits: a card, the page, a raised step, the rail and its selected
+    /// row, a selected list row, a tooltip. The tones stay told apart.
+    #[test]
+    fn every_chip_carries_its_word_on_every_surface() {
+        let tones = [
+            Tone::Neutral,
+            Tone::Positive,
+            Tone::Attention,
+            Tone::Alert,
+            Tone::Info,
+        ];
+        for dark in [false, true] {
+            let c = Colors::new(dark);
+            let rail = c.rail();
+            for tone in tones {
+                for (roles, ground, place) in [
+                    (c, c.card, "card"),
+                    (c, c.ground, "ground"),
+                    (c, c.raised, "raised"),
+                    (c, c.overlay, "overlay"),
+                    (c, c.accent_soft, "selected row"),
+                    (rail, rail.ground, "rail"),
+                    (rail, rail.raised, "selected rail row"),
+                ] {
+                    let (wash, ink) = roles.chip(tone);
+                    let shown = contrast(ink, over(ground, wash));
+                    assert!(shown >= 4.5, "{tone:?} on {place}, dark={dark}: {shown}");
+                }
+            }
+            let inks: std::collections::BTreeSet<String> = tones
+                .iter()
+                .map(|t| {
+                    let ink = c.chip(*t).1;
+                    format!("{:.3},{:.3},{:.3}", ink.r, ink.g, ink.b)
+                })
+                .collect();
+            assert_eq!(inks.len(), tones.len(), "five inks, dark={dark}");
         }
     }
 

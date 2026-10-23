@@ -452,11 +452,11 @@ impl Daemon {
             &table,
             agentdocker_host::procinfo::start_time,
             |pid| agentdocker_host::procinfo::executable_path_of(pid).ok(),
+            // By the file, not its name: the companion CLI is the daemon's
+            // own file, which macOS may name by either of its names.
             |exe| {
                 crate::daemon::person::companion_cli()
-                    .and_then(|cli| std::fs::canonicalize(cli).ok())
-                    .zip(std::fs::canonicalize(exe).ok())
-                    .is_some_and(|(cli, exe)| cli == exe)
+                    .is_some_and(|cli| agentdocker_host::program::same_file(&cli, exe))
             },
         ) {
             Author::Reviewer => None,

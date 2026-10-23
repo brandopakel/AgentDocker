@@ -20,11 +20,20 @@ use iced::{
     Center, Element, Fill,
     widget::{Space, column, container, responsive, row, scrollable, text},
 };
-use look::{
-    count_divider, day_divider, disc, link, status_line, tinted, unread_divider, with_presence,
-};
+use look::{count_divider, day_divider, disc, link, status_line, tinted, unread_divider};
 
 pub(super) mod look;
+
+/// Whether a direct conversation's agent is live, as a chip beside its
+/// name: *Live*, or *Ended* once its session has.
+fn presence_chip<'a>(id: impl Into<String>, live: bool, c: Colors) -> Element<'a, Message> {
+    use super::chip::{Tone, chip};
+    if live {
+        chip(id, None, "Live", Tone::Positive, c)
+    } else {
+        chip(id, None, "Ended", Tone::Neutral, c)
+    }
+}
 
 /// Whether the app leaves a kind of conversation to the CLI: `#all`,
 /// channels and the daemon's contested-path rooms. Their unread is read
@@ -122,7 +131,7 @@ impl App {
     /// The name the sidebar and headers show: `#everyone` for a project's
     /// chat, the other party's name for a direct conversation. The kinds
     /// the app leaves to the CLI go by their title.
-    fn conversation_label(&self, summary: &ConversationSummary) -> String {
+    pub(super) fn conversation_label(&self, summary: &ConversationSummary) -> String {
         match summary.kind {
             // Every project has one; when more than one is on view, say
             // whose.
@@ -393,8 +402,6 @@ impl App {
     ) -> Element<'_, Message> {
         let selected = self.shell.conversation.as_deref() == Some(summary.conversation.as_str());
         let unread = self.row_unread(summary);
-        // The presence dot's ring is the colour the row is drawn on.
-        let ring = if selected { c.accent_soft } else { c.ground };
         // A project's chat is named for its project and opens that
         // project's Chat; anything else opens here.
         let (label, open) = if summary.kind == ConversationKind::Everyone {
@@ -415,12 +422,7 @@ impl App {
                 let seed = self
                     .counterpart(summary)
                     .unwrap_or(summary.conversation.as_str());
-                with_presence(
-                    super::view::agent_mark(self.runtime_of(seed), &label, seed, 28.0, c),
-                    28.0,
-                    presence.map(|live| if live { c.green } else { c.faint }),
-                    ring,
-                )
+                super::view::agent_mark(self.runtime_of(seed), &label, seed, 28.0, c)
             }
             _ => super::view::monogram(
                 &label,
@@ -441,6 +443,10 @@ impl App {
             if summary.mentions > 0 { 72.0 } else { 36.0 }
         } else {
             0.0
+        } + match presence {
+            Some(true) => 40.0,
+            Some(false) => 52.0,
+            None => 0.0,
         };
         let room = (width - 16.0 - 30.0 - 10.0 - chips).max(60.0);
         let shown = fit(&shown, (room / 7.6) as usize);
@@ -459,8 +465,16 @@ impl App {
             .spacing(1)
             .width(Fill);
         // The name alone: the last line is in the conversation, and the
-        // unread count says there is something new.
+        // unread count says there is something new. A direct conversation
+        // says whether its agent is live or has ended, in a chip.
         let mut content = row![mark, body].spacing(10).align_y(Center);
+        if let Some(live) = presence {
+            content = content.push(presence_chip(
+                format!("presence-{}", summary.conversation),
+                live,
+                c,
+            ));
+        }
         // Unread, and how many of those name the person: the @ count is
         // the one that asks for an answer.
         if unread > 0 && summary.mentions > 0 {
@@ -773,20 +787,32 @@ impl App {
 
         let mut words = column![].spacing(3).width(Fill);
         if system {
-            // A notice: the sentence, quiet, and its time after it.
-            words = words.push(super::view::tip(
-                text(shown)
-                    .size(12.5)
-                    .line_height(iced::widget::text::LineHeight::Relative(1.45))
-                    .color(c.muted)
-                    .width(Fill),
-                time.clone(),
-                c,
-            ));
+            // A notice: who says it, then the sentence, quiet, its time on
+            // the pointer.
+            words = words.push(
+                row![
+                    text(name.clone())
+                        .size(12.5)
+                        .line_height(iced::widget::text::LineHeight::Relative(1.45))
+                        .font(weight(iced::font::Weight::Medium))
+                        .color(c.faint),
+                    super::view::tip(
+                        text(shown)
+                            .size(12.5)
+                            .line_height(iced::widget::text::LineHeight::Relative(1.45))
+                            .color(c.muted)
+                            .width(Fill),
+                        time.clone(),
+                        c,
+                    )
+                ]
+                .spacing(6),
+            );
         } else {
             if head {
-                // The sender, its time on the pointer; a question or a
-                // hand-off is its glyph. A mention is the row's amber tint.
+                // The sender and the time, the day on the pointer; a
+                // question or a hand-off says so in a chip. A mention is the
+                // row's amber tint.
                 let mut header = row![
                     super::view::tip(
                         text(name.clone())
@@ -802,17 +828,21 @@ impl App {
                 .align_y(Center);
                 match Self::kind_word(&message.envelope.kind) {
                     Some("question") => {
-                        header = header.push(super::view::said(
+                        header = header.push(super::chip::chip(
                             format!("kind-{id}"),
-                            "question",
-                            icon(Icon::Question, c.amber, 13.0),
+                            Some(Icon::Question),
+                            "Question",
+                            super::chip::Tone::Attention,
+                            c,
                         ));
                     }
                     Some("handoff") => {
-                        header = header.push(super::view::said(
+                        header = header.push(super::chip::chip(
                             format!("kind-{id}"),
-                            "handoff",
-                            icon(Icon::Handoff, c.faint, 13.0),
+                            Some(Icon::Handoff),
+                            "Handoff",
+                            super::chip::Tone::Neutral,
+                            c,
                         ));
                     }
                     _ => {}
@@ -857,58 +887,15 @@ impl App {
                 [2, 0],
             )]);
         }
-        // Where the person's message stands with each agent it went to, as
-        // the daemon saw it: one quiet line each, and never "read".
+        // Where the person's message stands with the agents it went to, as
+        // the daemon saw it, and never "read": one chip with the loudest
+        // state's word and how many it is true of, one line per recipient
+        // on the pointer and as its value.
         if !in_thread
             && self.is_human(from)
             && let Some(recipients) = self.deliveries.get(&id).filter(|r| !r.is_empty())
         {
-            use agentdocker_core::delivery::State as Delivery;
-            let tone_of = |state: Delivery| match state {
-                Delivery::Answered => c.accent,
-                Delivery::Delivered | Delivery::Received | Delivery::Shown => c.green,
-                Delivery::Paused | Delivery::Blocked | Delivery::Silent | Delivery::Ended => {
-                    c.amber
-                }
-                _ => c.faint,
-            };
-            // Problems first, so the one line leads with what needs a look.
-            let rank = |state: Delivery| match tone_of(state) {
-                t if t == c.amber => 0,
-                t if t == c.faint => 1,
-                t if t == c.green => 2,
-                _ => 3,
-            };
-            let mut groups: Vec<(Delivery, Vec<String>)> = Vec::new();
-            for recipient in recipients {
-                let who = recipient
-                    .name
-                    .as_ref()
-                    .map(|_| self.name_of(recipient.agent.as_str()))
-                    .unwrap_or_else(|| recipient.agent.short().to_owned());
-                match groups
-                    .iter_mut()
-                    .find(|(state, _)| *state == recipient.state)
-                {
-                    Some((_, names)) => names.push(who),
-                    None => groups.push((recipient.state, vec![who])),
-                }
-            }
-            groups.sort_by_key(|(state, _)| rank(*state));
-            // One quiet line for every recipient, as chat apps keep it: a
-            // state names its agents while there are few, and counts them
-            // otherwise; pointing at it lists each one.
-            let summary = groups
-                .iter()
-                .map(|(state, names)| {
-                    if names.len() <= 2 {
-                        format!("{} · {}", names.join(", "), state.label())
-                    } else {
-                        format!("{} {}", names.len(), state.label())
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("  ·  ");
+            let states: Vec<_> = recipients.iter().map(|r| r.state).collect();
             let every = recipients
                 .iter()
                 .map(|r| {
@@ -923,22 +910,14 @@ impl App {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            // Its delivery is one dot in the lead state's tone: the summary
-            // is its name, every recipient its tooltip.
-            let lead = groups[0].0;
-            let lines = super::view::tip(
-                super::view::said(
-                    format!("delivery-{id}"),
-                    summary,
-                    container(super::view::dot(tone_of(lead), 6.0, c)).padding(4),
-                ),
-                every,
-                c,
-            );
-            words = words.push(container(lines).padding(iced::Padding {
-                top: 4.0,
-                ..iced::Padding::ZERO
-            }));
+            if let Some(chip) = super::chip::delivery(format!("delivery-{id}"), &states) {
+                words = words.push(
+                    container(chip.detail(every).view(c)).padding(iced::Padding {
+                        top: 4.0,
+                        ..iced::Padding::ZERO
+                    }),
+                );
+            }
         }
         let mark: Element<'_, Message> = if system {
             disc(Icon::Pulse, mark_size, c)
@@ -1281,16 +1260,11 @@ impl App {
                     c.accent,
                 ));
             }
-            // The receiver's state is its dot, the words on the pointer and
-            // in its name, beside the way to put it right.
-            let mut line = row![super::view::status_dot(
-                format!("input-readiness-{key}"),
-                readiness.tone(c),
-                readiness.label(),
-                c
-            )]
-            .spacing(6)
-            .align_y(Center);
+            // The receiver's state is its chip, beside the way to put it
+            // right.
+            let mut line = row![readiness.chip(format!("input-readiness-{key}")).view(c)]
+                .spacing(6)
+                .align_y(Center);
             for item in actions {
                 line = line.push(item);
             }
@@ -1412,21 +1386,18 @@ impl App {
                         format!("new-direct-{id}"),
                         shown.clone(),
                         row![
-                            with_presence(
-                                super::view::agent_mark(
-                                    Some(agent.spec.runtime.as_str()),
-                                    &shown,
-                                    id,
-                                    24.0,
-                                    c
-                                ),
+                            super::view::agent_mark(
+                                Some(agent.spec.runtime.as_str()),
+                                &shown,
+                                id,
                                 24.0,
-                                Some(c.green),
-                                c.card,
+                                c
                             ),
                             text(shown)
                                 .size(13)
-                                .font(weight(iced::font::Weight::Medium)),
+                                .font(weight(iced::font::Weight::Medium))
+                                .width(Fill),
+                            presence_chip(format!("new-direct-presence-{id}"), true, c),
                         ]
                         .spacing(10)
                         .align_y(Center),
@@ -1488,20 +1459,19 @@ impl App {
             | ConversationKind::Notices => String::new(),
         };
         // The name on one line, what the room is about under it; a direct
-        // conversation leads with the other party's mark and presence.
+        // conversation leads with the other party's mark, and its name is
+        // followed by whether it is live.
         let mut title_row = row![].spacing(10).align_y(Center);
-        if summary.kind == ConversationKind::Dm
-            && let Some(id) = self.counterpart(&summary)
-        {
-            title_row = title_row.push(with_presence(
-                super::view::agent_mark(self.runtime_of(id), &label, id, 28.0, c),
+        let counterpart = (summary.kind == ConversationKind::Dm)
+            .then(|| self.counterpart(&summary))
+            .flatten();
+        if let Some(id) = counterpart {
+            title_row = title_row.push(super::view::agent_mark(
+                self.runtime_of(id),
+                &label,
+                id,
                 28.0,
-                Some(if self.agent_live(id) {
-                    c.green
-                } else {
-                    c.faint
-                }),
-                c.ground,
+                c,
             ));
         }
         // The name alone; what the room is about shows when it is
@@ -1518,6 +1488,13 @@ impl App {
             .width(Fill)
             .clip(true),
         );
+        if let Some(id) = counterpart {
+            title_row = title_row.push(presence_chip(
+                "conversation-presence",
+                self.agent_live(id),
+                c,
+            ));
+        }
         let header = (self.screen != Screen::Chat).then(|| {
             container(title_row).padding(iced::Padding {
                 top: 2.0,
@@ -1543,7 +1520,18 @@ impl App {
             );
         }
         match history {
-            None => list = list.push(container(icon(Icon::Ring, c.faint, 14.0)).padding([16, 8])),
+            None => {
+                list = list.push(
+                    container(super::chip::chip(
+                        format!("history-loading-{key}"),
+                        Some(Icon::Ring),
+                        "Loading…",
+                        super::chip::Tone::Neutral,
+                        c,
+                    ))
+                    .padding([16, 8]),
+                )
+            }
             Some(messages) if messages.is_empty() => {}
             Some(messages) => {
                 // The unread divider sits before the newest `unread` messages
@@ -2106,7 +2094,7 @@ mod tests {
         app.conversations_supported = Some(true);
         let mut project = ProjectRef::directory("/fixture/alpha");
         project.fingerprint = Some("alpha-fingerprint".into());
-        app.shell.catalog.remember(project.clone(), false);
+        app.shell.catalog.remember(project.clone(), false).unwrap();
         let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
         human.id = AgentId::from("human-id");
         let mut agent = record("codex-1", "codex", Some(1));
@@ -2394,6 +2382,103 @@ mod tests {
             app.direct_rows().0,
             vec![new_key.conversation.as_str(), other.conversation.as_str()]
         );
+    }
+
+    /// Under the person's own message, one chip says where it stands: the
+    /// loudest state's word and how many recipients it is true of, each
+    /// recipient's line its detail. A direct conversation's row says
+    /// whether its agent is live in a chip.
+    #[test]
+    fn a_sent_message_and_a_direct_row_say_their_states_in_chips() {
+        use agentdocker_core::delivery::{Recipient, State};
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
+        human.id = AgentId::from("human-id");
+        let mut agent = record("codex-1", "codex", Some(1));
+        agent.id = AgentId::from("agent-a");
+        let mut other = record("codex-2", "codex", Some(2));
+        other.id = AgentId::from("agent-b");
+        app.agents = vec![human, agent, other];
+        let mut envelope = agentdocker_core::Envelope::new(
+            "human-id",
+            agentdocker_core::Destination::Broadcast,
+            "chat",
+            serde_json::json!({ "text": "Ship it" }),
+            None,
+            Utc::now(),
+        );
+        envelope.id = MessageId::from("sent".to_owned());
+        let message = ArchivedMessage {
+            seq: 1,
+            conversation: agentdocker_core::ConversationId::from("everyone:project".to_owned()),
+            envelope,
+            replies: 0,
+        };
+        let recipient = |agent: &str, state: State| Recipient {
+            agent: AgentId::from(agent),
+            name: Some(agent.to_owned()),
+            runtime: Some("codex".into()),
+            queued_at: Utc::now(),
+            offered_at: None,
+            received_at: None,
+            taken_at: None,
+            reply: None,
+            state,
+        };
+        app.deliveries.insert(
+            message.envelope.id.clone(),
+            vec![
+                recipient("agent-a", State::Delivered),
+                recipient("agent-b", State::WaitingForPrompt),
+            ],
+        );
+        let view = super::super::view::testing::seen(app.archived_message(
+            &message,
+            None,
+            false,
+            false,
+            &[],
+            Colors::new(false),
+        ));
+        let chip = view.control("delivery-sent").expect("the delivery chip");
+        assert_eq!(chip.1, "Waiting · 1 of 2", "the wait leads, counted");
+        let detail = chip.2.as_deref().unwrap_or_default();
+        assert!(
+            detail.contains("· delivered") && detail.contains("· waiting for its next prompt"),
+            "every recipient's line is the detail: {detail}"
+        );
+        assert!(view.texts.iter().any(|t| t == "Waiting · 1 of 2"));
+
+        let direct = |conversation: &str| -> ConversationSummary {
+            serde_json::from_value(serde_json::json!({
+                "conversation": conversation, "kind": "dm", "title": "",
+                "members": [], "unread": 0,
+            }))
+            .unwrap()
+        };
+        let live = direct(agentdocker_core::ConversationId::dm("human-id", "agent-a").as_str());
+        let view = super::super::view::testing::seen(app.conversation_row(
+            &live,
+            Some(true),
+            300.0,
+            Colors::new(true),
+        ));
+        assert_eq!(
+            view.control(&format!("presence-{}", live.conversation))
+                .unwrap()
+                .1,
+            "Live"
+        );
+        let view = super::super::view::testing::seen(app.conversation_row(
+            &live,
+            Some(false),
+            300.0,
+            Colors::new(true),
+        ));
+        assert!(view.texts.iter().any(|t| t == "Ended"));
     }
 
     /// A run is one sender saying one kind of thing without a pause: the

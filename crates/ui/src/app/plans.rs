@@ -1,12 +1,13 @@
 //! Plans: a project's specs in Markdown, which cards carry out, and its
-//! files. The list is names with a dot for where each stands; the one
+//! files. The list is names with a chip for where each stands; the one
 //! open is its title, its status, its words to edit, and the cards that
 //! carry it out. The project's files sit under it, each opened with the
 //! system's app, and its memory under them: the facts its agents and the
 //! person keep for each other, each with who kept it.
+use super::chip::{Chip, Tone};
 use super::icons::{Icon, icon};
 use super::style::Colors;
-use super::view::{first_line, status_dot, tip};
+use super::view::{first_line, tip};
 use super::*;
 use crate::controls::{Kind, custom_sized, ghost, input_enabled, primary};
 use agentdocker_core::PlanStatus;
@@ -15,13 +16,15 @@ use iced::{
     widget::{Space, column, container, row, text, text_editor},
 };
 
-fn status_tone(status: PlanStatus, c: Colors) -> iced::Color {
-    match status {
-        PlanStatus::Draft => c.faint,
-        PlanStatus::Active => c.accent,
-        PlanStatus::Done => c.green,
-        PlanStatus::Archived => c.line_strong,
-    }
+/// A plan's status as a chip: its label, quiet while drafted or put
+/// away, the accent while active, positive once done.
+fn status_chip(id: impl Into<String>, status: PlanStatus) -> Chip {
+    let (glyph, tone) = match status {
+        PlanStatus::Draft | PlanStatus::Archived => (None, Tone::Neutral),
+        PlanStatus::Active => (Some(Icon::Pulse), Tone::Info),
+        PlanStatus::Done => (Some(Icon::Check), Tone::Positive),
+    };
+    Chip::new(id, glyph, status.label(), tone)
 }
 
 impl App {
@@ -184,7 +187,7 @@ impl App {
         let workspace = self.workspaces.get(&root);
         let draft = &self.shell.plan_draft;
         let open_id = draft.id.clone();
-        // The list: each plan a name, its dot saying where it stands.
+        // The list: each plan a name and its status chip.
         let mut list = column![
             row![
                 tip(icon(Icon::Note, c.faint, 14.0), "Plans", c),
@@ -214,19 +217,16 @@ impl App {
                 format!("plan-{}", plan.id),
                 format!("{}, {}", plan.title, plan.status.label()),
                 row![
-                    status_dot(
-                        format!("plan-status-{}", plan.id),
-                        status_tone(plan.status, c),
-                        plan.status.label(),
-                        c
-                    ),
-                    text(first_line(&plan.title, 80)).size(13).color(
+                    container(text(first_line(&plan.title, 80)).size(13).color(
                         if plan.status == PlanStatus::Archived {
                             c.muted
                         } else {
                             c.text
                         }
-                    ),
+                    ))
+                    .width(Fill)
+                    .clip(true),
+                    status_chip(format!("plan-status-{}", plan.id), plan.status).view(c),
                 ]
                 .spacing(8)
                 .align_y(Center),

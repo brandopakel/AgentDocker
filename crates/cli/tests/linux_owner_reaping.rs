@@ -96,7 +96,9 @@ impl Fixture {
         let home = root.path().join("state");
         let socket = root.path().join("daemon.sock");
         let log = std::fs::File::create(root.path().join("daemon.log")).unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_agentd"));
+        // The executable is the daemon as `agentdocker daemon run`.
+        let mut command = Command::new(env!("CARGO_BIN_EXE_agentdocker"));
+        command.args(["daemon", "run"]);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("AGENTDOCKER_") {
                 command.env_remove(key);

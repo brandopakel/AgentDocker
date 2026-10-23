@@ -58,7 +58,10 @@ separately from the macOS/Linux update feeds. See
 
 ## The daemon and the CLI
 
-`agentd` and `agentdocker` build natively for Windows. The daemon serves the
+`agentdocker` builds natively for Windows, and is the daemon when invoked as
+`agentd.exe` (a byte-identical copy beside it in the portable folder and
+installed versions, since a ZIP holds no links) or as
+`agentdocker.exe daemon run`. The daemon serves the
 shared named-pipe transport (`agentdocker_host::ipc`, the same listener and
 stream the Unix socket uses), and the CLI registers, lists, sends, reads, claims
 and stops through it. A client with nothing to talk to starts the daemon and

@@ -214,13 +214,15 @@ not all disk use by arbitrary programs.
 
 The desktop packager refuses payloads above 100 MiB and each compressed download
 above 40 MiB per architecture (universal builds allow twice these totals). Its
-manifest records logical payload and archive bytes. The release workflow also
-limits the combined CLI/daemon payload to 30 MiB. The same reusable CLI archive
+manifest records logical payload and archive bytes, a hard-linked file counted
+once. The release workflow also limits the combined CLI/daemon payload to
+30 MiB: `agentd` is a hard link to `agentdocker`, one file, counted once. The same reusable CLI archive
 workflow runs all four release targets on PRs and main, so a protected tag is
 not the first size check. Failures report each executable and archive size.
 CLI tarballs contain just those
-two commands; desktop ZIPs contain one self-contained app with all three
-executables. Build caches and compiler dependencies are never download inputs.
+two commands, `agentd` stored as a hard link to `agentdocker`; desktop ZIPs
+contain one self-contained app with all three executables, `agentd` stored whole
+because a ZIP holds no links. Build caches and compiler dependencies are never download inputs.
 
 ### Linux graphical transport observation
 

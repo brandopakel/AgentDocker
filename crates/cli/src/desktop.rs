@@ -1251,6 +1251,46 @@ fn copy_payload(source: &Path, destination: &Path) -> Result<()> {
     }
 }
 
+/// The daemon is the CLI's own file under the name `agentd`. A payload that
+/// arrives with the two as separate copies (an update archive holds no
+/// links, and an earlier installer refuses any it finds) is installed with
+/// `agentd` a hard link to `agentdocker`, so a version keeps the executable
+/// once. Only two regular files of the same bytes and modes are linked, so
+/// the payload's hash is unchanged; a filesystem that cannot link keeps the
+/// copy.
+fn link_daemon(binaries: &Path) -> Result<()> {
+    use agentdocker_host::program::{Role, same_file, same_program};
+    let cli = binaries.join(Role::Cli.file_name());
+    let daemon = binaries.join(Role::Daemon.file_name());
+    let (Ok(cli_metadata), Ok(daemon_metadata)) =
+        (payload_metadata(&cli), payload_metadata(&daemon))
+    else {
+        return Ok(());
+    };
+    if !cli_metadata.is_file()
+        || !daemon_metadata.is_file()
+        || executable_bits(&cli_metadata) != executable_bits(&daemon_metadata)
+        || same_file(&cli, &daemon)
+        || !same_program(&cli, &daemon)
+    {
+        return Ok(());
+    }
+    let staged = binaries.join(format!(".{}.link", Role::Daemon.file_name()));
+    match std::fs::remove_file(&staged) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    if std::fs::hard_link(&cli, &staged).is_err() {
+        return Ok(());
+    }
+    if let Err(error) = std::fs::rename(&staged, &daemon) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
 /// `socket` is the top-level `--socket`, when given: the daemon a status
 /// asks and an activation reloads is the one selected, not the default.
 /// The executable bits a file carries: its Unix mode's, and on Windows,
@@ -1470,6 +1510,7 @@ fn perform(
         let stage = tempfile::tempdir_in(layout.root.join("versions"))?;
         let staged = stage.path().join(&candidate.payload);
         copy_payload(&source, &staged)?;
+        link_daemon(&staged.join(layout.binary_subdir()))?;
         let (_, copied) = inspect(&staged, local_preview)?;
         ensure!(
             copied.id == candidate.id,
@@ -2291,6 +2332,51 @@ mod tests {
         assert_ne!(changed, first);
         symlink(&file, tmp.path().join("alias")).unwrap();
         assert!(tree_hash(tmp.path()).is_err());
+    }
+
+    /// An installed version holds the executable once: an `agentd` that
+    /// arrived as a copy of `agentdocker` becomes a link to it, and the
+    /// payload's hash, its release identity, does not change. Anything
+    /// else is left as it came.
+    #[cfg(unix)]
+    #[test]
+    fn an_installed_daemon_copy_becomes_a_link_without_changing_the_release() {
+        use agentdocker_host::program::same_file;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let (cli, daemon) = (bin.join("agentdocker"), bin.join("agentd"));
+        for path in [&cli, &daemon] {
+            std::fs::write(path, "one program").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let before = tree_hash(tmp.path()).unwrap();
+        link_daemon(&bin).unwrap();
+        assert!(same_file(&cli, &daemon));
+        assert_eq!(tree_hash(tmp.path()).unwrap(), before);
+        assert_eq!(
+            std::fs::read_dir(&bin).unwrap().count(),
+            2,
+            "no staging left"
+        );
+        // Linked already: nothing to do.
+        link_daemon(&bin).unwrap();
+        assert!(same_file(&cli, &daemon));
+        // Another program, or the same bytes with other modes, stays a file
+        // of its own: linking would change what was inspected.
+        for (bytes, mode) in [("an older release", 0o755), ("one program", 0o700)] {
+            std::fs::remove_file(&daemon).unwrap();
+            std::fs::write(&daemon, bytes).unwrap();
+            std::fs::set_permissions(&daemon, std::fs::Permissions::from_mode(mode)).unwrap();
+            let before = tree_hash(tmp.path()).unwrap();
+            link_daemon(&bin).unwrap();
+            assert!(!same_file(&cli, &daemon), "{bytes} {mode:o}");
+            assert_eq!(tree_hash(tmp.path()).unwrap(), before);
+        }
+        // A payload without both names is left alone.
+        std::fs::remove_file(&daemon).unwrap();
+        link_daemon(&bin).unwrap();
+        assert!(!daemon.exists());
     }
 
     #[test]
