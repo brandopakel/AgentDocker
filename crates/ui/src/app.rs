@@ -2392,12 +2392,23 @@ impl App {
     }
 
     /// The live session the app runs with a terminal of its own whose
-    /// process is `pid`: where an agent found under AgentDocker itself
-    /// shows.
-    fn in_app_session(&self, pid: u32) -> Option<String> {
+    /// process is `pid`, born at `started_at`: where an agent found under
+    /// AgentDocker itself shows. A record of another process given the
+    /// same number since is not it.
+    fn in_app_session(
+        &self,
+        pid: u32,
+        started_at: chrono::DateTime<chrono::Utc>,
+    ) -> Option<String> {
         self.agents
             .iter()
-            .find(|a| a.managed && a.spec.tty && a.status.is_live() && a.pid == Some(pid))
+            .find(|a| {
+                a.managed
+                    && a.spec.tty
+                    && a.status.is_live()
+                    && a.pid == Some(pid)
+                    && a.process_started_at == Some(started_at)
+            })
             .map(|a| a.id.to_string())
     }
 

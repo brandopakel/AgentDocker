@@ -84,6 +84,10 @@ pub enum Own {
     /// The desktop app (`agentdocker-ui`): what it starts is AgentDocker's
     /// too.
     App,
+    /// The CLI's file, or one in AgentDocker's bundle, whose arguments
+    /// could not be read: the CLI or the daemon, and nothing says which.
+    /// The walk stops without naming anything.
+    Unsure,
 }
 
 /// The CLI's file name; the daemon (`agentd`) is a link to it.
@@ -93,28 +97,46 @@ const DAEMON: &str = "agentd";
 /// The desktop app's file name, the bundle's own executable.
 const APP: &str = "agentdocker-ui";
 
-/// Which of AgentDocker's own programs `executable` runs, invoked with
-/// `argv`, if it is one: a file named `agentdocker`, `agentd` or
-/// `agentdocker-ui` wherever it is installed, or anything inside an
-/// `AgentDocker.app` bundle or a bundle `ours` says is AgentDocker's (one
-/// renamed or copied, which only the filesystem can tell). The daemon run
-/// under the CLI's name is told apart by its `daemon run` arguments.
-pub fn own(executable: &Path, argv: &[String], ours: impl Fn(&Path) -> bool) -> Option<Own> {
+/// Which of AgentDocker's own programs `executable` runs, if it is one: a
+/// file named `agentdocker`, `agentd` or `agentdocker-ui` wherever it is
+/// installed, or anything inside an `AgentDocker.app` bundle or a bundle
+/// `ours` says is AgentDocker's (one renamed or copied, which only the
+/// filesystem can tell). `arguments` are the process's own, each whole as
+/// it was started with them (never a command line split at its spaces: a
+/// path with a space in it would move every argument after it), or `None`
+/// when they could not be read. The CLI's one file runs the daemon when it
+/// is invoked as `agentd` or with `daemon run`, so without its arguments
+/// it is [`Own::Unsure`], never taken for the CLI.
+pub fn own(
+    executable: &Path,
+    arguments: Option<&[String]>,
+    ours: impl Fn(&Path) -> bool,
+) -> Option<Own> {
+    if named(executable, APP) {
+        return Some(Own::App);
+    }
     let in_bundle = bundle_of(executable)
         .is_some_and(|(bundle, _)| agentdocker_bundle(&bundle) || ours(&bundle));
+    if !(named(executable, CLI) || named(executable, DAEMON) || in_bundle) {
+        return None;
+    }
+    let Some(arguments) = arguments else {
+        return Some(Own::Unsure);
+    };
+    let invoked_as_daemon = arguments
+        .first()
+        .is_some_and(|program| named(Path::new(program), DAEMON));
     let daemon_run = matches!(
-        argv.get(1..3),
+        arguments.get(1..3),
         Some([daemon, run]) if daemon == "daemon" && run == "run"
     );
-    if named(executable, DAEMON) {
-        Some(Own::Daemon)
-    } else if named(executable, APP) {
-        Some(Own::App)
-    } else if named(executable, CLI) || in_bundle {
-        Some(if daemon_run { Own::Daemon } else { Own::Cli })
-    } else {
-        None
-    }
+    Some(
+        if named(executable, DAEMON) || invoked_as_daemon || daemon_run {
+            Own::Daemon
+        } else {
+            Own::Cli
+        },
+    )
 }
 
 /// Whether `bundle` is named `AgentDocker.app`, in any case.
@@ -216,7 +238,7 @@ const EXECUTABLES: &[(&str, &str, &str)] = &[
 /// for AgentDocker's own programs by their names ([`own`]), which are never
 /// a host.
 pub fn classify(executable: &Path) -> Option<Host> {
-    if own(executable, &[], |_| false).is_some() {
+    if own(executable, None, |_| false).is_some() {
         return None;
     }
     if let Some((bundle, name)) = bundle_of(executable) {
@@ -343,7 +365,7 @@ mod tests {
     fn own_programs_tell_the_cli_from_the_daemon_and_the_app() {
         let none = |_: &Path| false;
         let at = |file: &str| format!("{VERSIONED}/Contents/MacOS/{file}");
-        let own_at = |path: &str, words: &str| own(Path::new(path), &argv(words), none);
+        let own_at = |path: &str, words: &str| own(Path::new(path), Some(&argv(words)), none);
         // The CLI, an `agentdocker codex` wrapper among its uses, is passed
         // through; the daemon and its session owners, under either name,
         // and the app are AgentDocker itself.
@@ -375,9 +397,10 @@ mod tests {
         // A bundle under another name is AgentDocker's only when the
         // filesystem says so.
         let renamed = Path::new("/Applications/Renamed.app/Contents/MacOS/helper");
-        assert_eq!(own(renamed, &[], none), None);
+        let helper = argv("helper");
+        assert_eq!(own(renamed, Some(&helper), none), None);
         assert_eq!(
-            own(renamed, &[], |bundle| bundle
+            own(renamed, Some(&helper), |bundle| bundle
                 == Path::new("/Applications/Renamed.app")),
             Some(Own::Cli)
         );
@@ -393,6 +416,51 @@ mod tests {
         ] {
             assert_eq!(own_at(path, words), None, "{path}");
         }
+    }
+
+    /// One file at a path with a space in it, as the CLI wrapper and as a
+    /// session owner run under the CLI's name: told apart by the arguments
+    /// it was started with, each whole. Run under the daemon's name it is
+    /// the daemon whatever its file is called; without its arguments
+    /// nothing says which it is.
+    #[test]
+    fn the_daemon_is_told_from_the_cli_by_whole_arguments() {
+        let none = |_: &Path| false;
+        let file = Path::new("/tmp/Agent Docker/agentdocker");
+        let whole = |rest: &[&str]| {
+            std::iter::once("/tmp/Agent Docker/agentdocker")
+                .chain(rest.iter().copied())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            own(
+                file,
+                Some(&whole(&["daemon", "run", "--session-owner"])),
+                none
+            ),
+            Some(Own::Daemon)
+        );
+        assert_eq!(own(file, Some(&whole(&["codex"])), none), Some(Own::Cli));
+        // The kernel may name the linked file by either name; the name it
+        // was invoked by decides.
+        let linked = vec![
+            "/tmp/Agent Docker/agentd".to_owned(),
+            "--session-owner".to_owned(),
+        ];
+        assert_eq!(own(file, Some(&linked), none), Some(Own::Daemon));
+        for unread in [
+            file,
+            Path::new("/tmp/Agent Docker/agentd"),
+            Path::new("/Applications/AgentDocker.app/Contents/MacOS/helper"),
+        ] {
+            assert_eq!(own(unread, None, none), Some(Own::Unsure), "{unread:?}");
+        }
+        assert_eq!(
+            own(Path::new("/opt/x/agentdocker-ui"), None, none),
+            Some(Own::App)
+        );
+        assert_eq!(own(Path::new("/bin/zsh"), None, none), None);
     }
 
     #[test]

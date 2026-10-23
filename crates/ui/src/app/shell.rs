@@ -3798,8 +3798,8 @@ impl App {
                     Ok(crate::native_terminal::Opened::Shown(shown)) => self.say(shown),
                     // It runs under AgentDocker itself: the session of the
                     // app's own whose process holds it is where it shows.
-                    Ok(crate::native_terminal::Opened::InApp { pid }) => {
-                        match self.in_app_session(pid) {
+                    Ok(crate::native_terminal::Opened::InApp { pid, started_at }) => {
+                        match self.in_app_session(pid, started_at) {
                             Some(id) => tasks.push(self.update(Message::Attach(id))),
                             None => {
                                 self.shell.error =
@@ -7667,9 +7667,14 @@ mod tests {
             .iter()
             .map(|(pid, _, executable, _)| (*pid, PathBuf::from(executable)))
             .collect();
-        let Reach::Host(mut host) =
-            walk(500, &table, |pid| executables.get(&pid).cloned(), |_| false)
-        else {
+        // No argument here has a space in it, so the table's are whole.
+        let Reach::Host(mut host) = walk(
+            500,
+            &table,
+            |pid| executables.get(&pid).cloned(),
+            |pid| table.get(&pid).map(|process| process.argv.clone()),
+            |_| false,
+        ) else {
             panic!("Terminal is the host");
         };
         host.tty = Some("/dev/ttys005".into());
@@ -7703,12 +7708,9 @@ mod tests {
         assert_eq!(App::whereabouts(&agent), None);
     }
 
-    /// An agent found running under AgentDocker itself opens in the app's
-    /// own terminal for the session whose process holds it; with no such
-    /// session the app says so, and brings nothing forward.
-    #[test]
-    fn an_agent_under_agentdocker_opens_in_the_apps_own_terminal() {
-        let (mut app, _commands, _messages) = app();
+    /// A managed session of the app's own with a terminal, its process
+    /// `pid` born at `born`.
+    fn in_app_record(id: &str, pid: u32, born: chrono::DateTime<Utc>) -> AgentRecord {
         let mut session = AgentRecord::new(
             agentdocker_core::AgentSpec {
                 runtime: "codex".into(),
@@ -7718,22 +7720,79 @@ mod tests {
             true,
             Utc::now(),
         );
-        session.id = "in-app".into();
+        session.id = id.into();
         session.status = agentdocker_core::AgentStatus::Running;
-        session.pid = Some(4242);
-        session.process_started_at = Some(Utc::now());
-        app.agents.push(session);
+        session.pid = Some(pid);
+        session.process_started_at = Some(born);
+        session
+    }
+
+    /// An agent found running under AgentDocker itself opens in the app's
+    /// own terminal for the session whose process holds it, by number and
+    /// birth: here a wrapper the app started, with the agent under it.
+    /// With no such session the app says so, and brings nothing forward.
+    #[test]
+    fn an_agent_under_agentdocker_opens_in_the_apps_own_terminal() {
+        let (mut app, _commands, _messages) = app();
+        let born = Utc::now() - chrono::Duration::seconds(30);
+        // The agent registered on its own, under the session's wrapper.
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        agent.status = agentdocker_core::AgentStatus::Running;
+        agent.pid = Some(4300);
+        agent.process_started_at = Some(born + chrono::Duration::seconds(1));
+        app.agents.push(agent);
+        app.agents.push(in_app_record("in-app", 4242, born));
 
         let _ = app.update(Message::NativeTerminalOpened(Ok(
-            crate::native_terminal::Opened::InApp { pid: 4242 },
+            crate::native_terminal::Opened::InApp {
+                pid: 4242,
+                started_at: born,
+            },
         )));
         assert_eq!(app.screen, Screen::Terminal);
         assert_eq!(app.shell.error, None);
 
         app.screen = Screen::Agents;
         let _ = app.update(Message::NativeTerminalOpened(Ok(
-            crate::native_terminal::Opened::InApp { pid: 77 },
+            crate::native_terminal::Opened::InApp {
+                pid: 77,
+                started_at: born,
+            },
         )));
+        assert_ne!(app.screen, Screen::Terminal);
+        assert_eq!(
+            app.shell.error.as_deref(),
+            Some(crate::native_terminal::IN_AGENTDOCKER)
+        );
+    }
+
+    /// A result found under AgentDocker waits for the app to take it. If
+    /// the session it named has meanwhile given way to another process
+    /// under the same number, that other session's terminal is not
+    /// opened.
+    #[test]
+    fn a_held_in_app_result_never_opens_a_later_process_under_its_number() {
+        let (mut app, _commands, _messages) = app();
+        let born = Utc::now() - chrono::Duration::seconds(30);
+        app.agents.push(in_app_record("found", 4242, born));
+        let held = Message::NativeTerminalOpened(Ok(crate::native_terminal::Opened::InApp {
+            pid: 4242,
+            started_at: born,
+        }));
+
+        app.agents = vec![in_app_record(
+            "replacement",
+            4242,
+            born + chrono::Duration::seconds(20),
+        )];
+        let _ = app.update(held);
         assert_ne!(app.screen, Screen::Terminal);
         assert_eq!(
             app.shell.error.as_deref(),

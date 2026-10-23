@@ -34,8 +34,12 @@ pub enum Opened {
     /// Shown in another application, as the status line says it.
     Shown(String),
     /// It runs under AgentDocker itself, in the session whose process is
-    /// `pid`: the app shows that session's own terminal.
-    InApp { pid: u32 },
+    /// `pid`, born at `started_at`: the app shows that session's own
+    /// terminal, and only a record of that same process.
+    InApp {
+        pid: u32,
+        started_at: chrono::DateTime<chrono::Utc>,
+    },
 }
 
 /// What was brought forward, for the status line, or the session of the
@@ -68,6 +72,11 @@ const ENDED: &str = "This agent has ended. Its old terminal was not opened.";
 
 /// An agent under AgentDocker that no session of the app shows.
 pub const IN_AGENTDOCKER: &str = "This agent runs inside AgentDocker, not in another app's terminal, and none of its sessions shows it.";
+
+/// The session an agent was found under could not be told to be the same
+/// process once the walk was done.
+const SESSION_CHANGED: &str =
+    "The AgentDocker session this agent runs in changed while it was being found. Try again.";
 
 fn run(root: &Path, args: Vec<String>, timeout: Duration) -> Result<String, String> {
     let output = agentdocker_host::command::run(root, &args, timeout)
@@ -179,6 +188,14 @@ fn open_agent(
         }
         _ => (pid, None),
     };
+    let born = |process: u32| {
+        if process == pid {
+            Some(started_at)
+        } else {
+            agentdocker_host::procinfo::start_time(process)
+        }
+    };
+    let reached_born = born(reach);
     let found = agentdocker_host::terminal::reach_process(reach);
     if agentdocker_host::procinfo::start_time(pid) != Some(started_at) {
         return Err(ENDED.into());
@@ -187,8 +204,13 @@ fn open_agent(
         Reach::Host(host) => host,
         // Under AgentDocker's own daemon or app (a multiplexer's client
         // included, its pane now chosen): no other window holds it, and
-        // the app shows the session it runs in.
-        Reach::AgentDocker { child } => return Ok(Opened::InApp { pid: child }),
+        // the app shows the session it runs in. The process the walk
+        // started from must still be the one whose parents it read.
+        Reach::AgentDocker { child } => {
+            let child_born = agentdocker_host::procinfo::start_time(child);
+            let still = reached_born.filter(|&then| born(reach) == Some(then));
+            return in_app(child, child_born, reach, still);
+        }
         Reach::Unknown => {
             return Err(
                 "This agent's terminal could not be found. It may run inside another app; use that app to continue."
@@ -201,6 +223,36 @@ fn open_agent(
         Some(pane) => format!("{shown} · {pane}"),
         None => shown,
     }))
+}
+
+/// The session the walk ended under, as an identity: `child`, born at
+/// `child_born`, read after a walk from `reached`, born at `reached_born`.
+/// A process is born no later than anything it leads to, and `child` is
+/// `reached` itself only at that birth: a later birth is another process
+/// given the number since the walk read it. Refused when either birth is
+/// unknown.
+fn in_app(
+    child: u32,
+    child_born: Option<chrono::DateTime<chrono::Utc>>,
+    reached: u32,
+    reached_born: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<Opened, String> {
+    let (Some(born), Some(reached_born)) = (child_born, reached_born) else {
+        return Err(SESSION_CHANGED.into());
+    };
+    let same = if child == reached {
+        born == reached_born
+    } else {
+        born <= reached_born
+    };
+    if same {
+        Ok(Opened::InApp {
+            pid: child,
+            started_at: born,
+        })
+    } else {
+        Err(SESSION_CHANGED.into())
+    }
 }
 
 /// A host that names AgentDocker itself is never brought forward: the
@@ -622,6 +674,41 @@ mod tests {
         assert!(!permission_refused(
             "Could not open the terminal: Error: The original terminal was not found in Terminal."
         ));
+    }
+
+    /// The session an agent was found under is named by its number and
+    /// its birth: a wrapper above the agent was born before it, the agent
+    /// itself at its own birth; a number born since the walk, or one whose
+    /// birth cannot be read, is not that session.
+    #[test]
+    fn the_session_found_under_agentdocker_is_named_by_its_birth() {
+        let agent = chrono::DateTime::UNIX_EPOCH + chrono::Duration::seconds(1_000);
+        let earlier = agent - chrono::Duration::seconds(2);
+        let later = agent + chrono::Duration::seconds(30);
+        // A wrapper AgentDocker started, with the agent under it.
+        assert_eq!(
+            in_app(501, Some(earlier), 500, Some(agent)),
+            Ok(Opened::InApp {
+                pid: 501,
+                started_at: earlier
+            })
+        );
+        // The agent itself is the session's process.
+        assert_eq!(
+            in_app(500, Some(agent), 500, Some(agent)),
+            Ok(Opened::InApp {
+                pid: 500,
+                started_at: agent
+            })
+        );
+        for refused in [
+            in_app(501, Some(later), 500, Some(agent)),
+            in_app(500, Some(earlier), 500, Some(agent)),
+            in_app(501, None, 500, Some(agent)),
+            in_app(501, Some(earlier), 500, None),
+        ] {
+            assert_eq!(refused, Err(SESSION_CHANGED.to_owned()));
+        }
     }
 
     /// A host naming AgentDocker, as a record kept from before the walk

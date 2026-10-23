@@ -28,22 +28,27 @@ pub enum Reach {
     Unknown,
 }
 
-/// Walk up from `pid` to where its terminal is, reading each ancestor's
-/// executable with `executable_of` and asking `ours` whether a bundle not
-/// named `AgentDocker.app` is AgentDocker's all the same. AgentDocker's CLI
-/// and helpers are passed over to the terminal they run in; its daemon or
-/// app ends the walk as [`Reach::AgentDocker`]; the nearest other ancestor
-/// that is a terminal application or an application bundle is the host,
-/// without a terminal device (the caller reads `pid`'s own). A
-/// multiplexer server is not a host and usually has no parent but launchd,
-/// so an agent inside one has none here; it is reached through the
-/// multiplexer's client instead. An ancestor whose executable cannot be
-/// read is passed over. Walking stops at pid 1, at a missing parent, or
-/// after enough steps that a cycle cannot spin.
+/// Walk up from `pid` to where its terminal is, following `by_pid`'s
+/// parents, reading each ancestor's executable with `executable_of` and
+/// its own arguments, each whole, with `arguments_of` (never the table's
+/// command line, which `ps` joins at spaces), and asking `ours` whether a
+/// bundle not named `AgentDocker.app` is AgentDocker's all the same.
+/// AgentDocker's CLI and helpers are passed over to the terminal they run
+/// in; its daemon or app ends the walk as [`Reach::AgentDocker`]; one of
+/// its files whose arguments cannot be read may be either, and ends it as
+/// [`Reach::Unknown`]. The nearest other ancestor that is a terminal
+/// application or an application bundle is the host, without a terminal
+/// device (the caller reads `pid`'s own). A multiplexer server is not a
+/// host and usually has no parent but launchd, so an agent inside one has
+/// none here; it is reached through the multiplexer's client instead. An
+/// ancestor whose executable cannot be read is passed over. Walking stops
+/// at pid 1, at a missing parent, or after enough steps that a cycle
+/// cannot spin.
 pub fn walk(
     pid: u32,
     by_pid: &BTreeMap<u32, Process>,
     executable_of: impl Fn(u32) -> Option<PathBuf>,
+    arguments_of: impl Fn(u32) -> Option<Vec<String>>,
     ours: impl Fn(&Path) -> bool,
 ) -> Reach {
     let Some(mut current) = by_pid.get(&pid).map(|process| process.ppid) else {
@@ -56,9 +61,10 @@ pub fn walk(
         }
         let process = by_pid.get(&current);
         if let Some(executable) = executable_of(current) {
-            let argv = process.map_or(&[][..], |process| process.argv.as_slice());
-            match own(&executable, argv, &ours) {
+            let arguments = arguments_of(current);
+            match own(&executable, arguments.as_deref(), &ours) {
                 Some(Own::Daemon | Own::App) => return Reach::AgentDocker { child },
+                Some(Own::Unsure) => return Reach::Unknown,
                 Some(Own::Cli) => {}
                 None => {
                     if let Some(host) = classify(&executable) {
@@ -75,13 +81,14 @@ pub fn walk(
     Reach::Unknown
 }
 
-/// [`walk`] over the kernel's executables, with `pid`'s own terminal
-/// device on the host it finds.
+/// [`walk`] over the kernel's executables and each process's own
+/// arguments, with `pid`'s own terminal device on the host it finds.
 pub fn reach(pid: u32, by_pid: &BTreeMap<u32, Process>) -> Reach {
     match walk(
         pid,
         by_pid,
         |ancestor| procinfo::executable_path_of(ancestor).ok(),
+        procinfo::arguments,
         ours,
     ) {
         Reach::Host(mut host) => {
@@ -339,33 +346,54 @@ mod tests {
         assert_eq!(of(900_001, &table), None);
     }
 
-    /// A staged process table: each process's pid, parent, executable and
-    /// arguments, from the agent up.
-    type Chain<'a, S> = &'a [(u32, u32, S, &'a str)];
+    /// One staged process: its pid, its parent, its executable, and the
+    /// arguments it was started with, each whole (`None`: they cannot be
+    /// read).
+    struct Staged {
+        pid: u32,
+        ppid: u32,
+        executable: String,
+        arguments: Option<Vec<String>>,
+    }
 
-    fn walked<S: AsRef<str>>(chain: Chain<'_, S>, ours: impl Fn(&Path) -> bool) -> Reach {
+    fn run(pid: u32, ppid: u32, executable: &str, arguments: &[&str]) -> Staged {
+        Staged {
+            pid,
+            ppid,
+            executable: executable.to_owned(),
+            arguments: Some(arguments.iter().map(|&a| a.to_owned()).collect()),
+        }
+    }
+
+    /// The chain walked from its first process. The table holds each
+    /// command line as `ps` prints it, joined and split again at every
+    /// space, as the real table does; the walk is given the whole
+    /// arguments beside it.
+    fn walked(chain: &[Staged], ours: impl Fn(&Path) -> bool) -> Reach {
         let table: BTreeMap<u32, Process> = chain
             .iter()
-            .map(|(pid, ppid, _, words)| {
-                let argv = words.split(' ').map(str::to_owned).collect();
+            .map(|staged| {
+                let line = staged
+                    .arguments
+                    .as_ref()
+                    .map_or_else(|| staged.executable.clone(), |a| a.join(" "));
+                let argv = line.split_whitespace().map(str::to_owned).collect();
                 (
-                    *pid,
+                    staged.pid,
                     Process {
-                        pid: *pid,
-                        ppid: *ppid,
+                        pid: staged.pid,
+                        ppid: staged.ppid,
                         argv,
                     },
                 )
             })
             .collect();
-        let executables: BTreeMap<u32, PathBuf> = chain
-            .iter()
-            .map(|(pid, _, executable, _)| (*pid, PathBuf::from(executable.as_ref())))
-            .collect();
+        let find = |pid: u32| chain.iter().find(|staged| staged.pid == pid);
         walk(
-            chain[0].0,
+            chain[0].pid,
             &table,
-            |pid| executables.get(&pid).cloned(),
+            |pid| find(pid).map(|staged| PathBuf::from(&staged.executable)),
+            |pid| find(pid).and_then(|staged| staged.arguments.clone()),
             ours,
         )
     }
@@ -375,27 +403,25 @@ mod tests {
     const APPLICATIONS: &str = "/Applications/AgentDocker.app/Contents/MacOS";
     const VERSIONED: &str = "/Users/me/.local/share/agentdocker/desktop/versions/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f/AgentDocker.app/Contents/MacOS";
 
-    /// `agentdocker codex` in a terminal: Codex under the CLI's wrapper
-    /// under the CLI, in a login shell of `host`.
-    fn codex_in(bundle: &str, host: &str) -> Vec<(u32, u32, String, &'static str)> {
-        vec![
-            (500, 501, "/opt/homebrew/bin/codex".to_owned(), "codex"),
-            (
-                501,
-                502,
-                format!("{bundle}/agentdocker"),
-                "agentdocker codex",
-            ),
-            (
-                502,
-                503,
-                format!("{bundle}/agentdocker"),
-                "agentdocker codex",
-            ),
-            (503, 504, "/bin/zsh".to_owned(), "-zsh"),
-            (504, 505, "/usr/bin/login".to_owned(), "login -pf me"),
-            (505, 1, host.to_owned(), "Terminal"),
+    /// A login shell of `host`, under its first process `top`.
+    fn shell_in(top: u32, host: &str) -> [Staged; 3] {
+        [
+            run(top, top + 1, "/bin/zsh", &["-zsh"]),
+            run(top + 1, top + 2, "/usr/bin/login", &["login", "-pf", "me"]),
+            run(top + 2, 1, host, &["Terminal"]),
         ]
+    }
+
+    /// `agentdocker codex` in a terminal: Codex under the CLI's wrapper
+    /// under the CLI, at `cli`, in a login shell of `host`.
+    fn codex_in(cli: &str, host: &str) -> Vec<Staged> {
+        let mut chain = vec![
+            run(500, 501, "/opt/homebrew/bin/codex", &["codex"]),
+            run(501, 502, cli, &[cli, "codex"]),
+            run(502, 503, cli, &[cli, "codex"]),
+        ];
+        chain.extend(shell_in(503, host));
+        chain
     }
 
     fn host_kind(reach: Reach) -> Option<(String, String)> {
@@ -408,15 +434,14 @@ mod tests {
     #[test]
     fn the_walk_passes_agentdockers_own_cli_to_the_real_terminal() {
         for bundle in [APPLICATIONS, VERSIONED] {
-            let chain = codex_in(bundle, TERMINAL);
+            let cli = format!("{bundle}/agentdocker");
             assert_eq!(
-                host_kind(walked(&chain, |_| false)),
+                host_kind(walked(&codex_in(&cli, TERMINAL), |_| false)),
                 Some(("terminal".into(), "Terminal".into())),
                 "{bundle}"
             );
-            let chain = codex_in(bundle, ITERM);
             assert_eq!(
-                host_kind(walked(&chain, |_| false)),
+                host_kind(walked(&codex_in(&cli, ITERM), |_| false)),
                 Some(("iterm2".into(), "iTerm".into())),
                 "{bundle}"
             );
@@ -424,10 +449,7 @@ mod tests {
         // A copy under another name is passed over too, once the
         // filesystem says it is AgentDocker's: by its own helper's name it
         // would otherwise be an application of its own.
-        let renamed = "/Applications/Copied.app/Contents/MacOS";
-        let mut chain = codex_in(renamed, TERMINAL);
-        chain[1].2 = format!("{renamed}/helper");
-        chain[2].2 = format!("{renamed}/helper");
+        let chain = codex_in("/Applications/Copied.app/Contents/MacOS/helper", TERMINAL);
         assert_eq!(
             host_kind(walked(&chain, |bundle| bundle
                 == Path::new("/Applications/Copied.app"))),
@@ -443,58 +465,78 @@ mod tests {
     fn a_session_under_agentdockers_daemon_or_app_has_no_other_host() {
         // A managed session: the agent under its session owner, under
         // launchd.
+        let agentd = format!("{VERSIONED}/agentd");
+        let cli = format!("{VERSIONED}/agentdocker");
         for owner in [
-            (format!("{VERSIONED}/agentd"), "agentd --session-owner"),
-            (
-                format!("{VERSIONED}/agentdocker"),
-                "agentdocker daemon run --session-owner",
-            ),
+            run(601, 1, &agentd, &[&agentd, "--session-owner"]),
+            run(601, 1, &cli, &[&cli, "daemon", "run", "--session-owner"]),
         ] {
-            let chain = [
-                (600, 601, "/opt/homebrew/bin/codex", "codex"),
-                (601, 1, owner.0.as_str(), owner.1),
-            ];
-            assert_eq!(
-                walked(&chain, |_| false),
-                Reach::AgentDocker { child: 600 },
-                "{}",
-                owner.1
-            );
+            let chain = [run(600, 601, "/opt/homebrew/bin/codex", &["codex"]), owner];
+            assert_eq!(walked(&chain, |_| false), Reach::AgentDocker { child: 600 });
         }
         // The daemon started by hand in a terminal is still the end of the
         // walk: what it runs is not in that terminal's tab. The child
         // named is the one the daemon started, under any wrapper.
-        let chain = [
-            (700, 701, "/opt/homebrew/bin/codex", "codex"),
-            (
-                701,
-                702,
-                "/Users/me/.local/bin/agentdocker",
-                "agentdocker codex",
-            ),
-            (702, 703, "/Users/me/src/target/debug/agentd", "agentd"),
-            (703, 704, "/bin/zsh", "-zsh"),
-            (704, 705, "/usr/bin/login", "login -pf me"),
-            (705, 1, TERMINAL, "Terminal"),
+        let wrapper = "/Users/me/.local/bin/agentdocker";
+        let built = "/Users/me/src/target/debug/agentd";
+        let mut chain = vec![
+            run(700, 701, "/opt/homebrew/bin/codex", &["codex"]),
+            run(701, 702, wrapper, &[wrapper, "codex"]),
+            run(702, 703, built, &[built]),
         ];
+        chain.extend(shell_in(703, TERMINAL));
         assert_eq!(walked(&chain, |_| false), Reach::AgentDocker { child: 701 });
         // Started by the app itself.
+        let app = "/Applications/AgentDocker.app/Contents/MacOS/agentdocker-ui";
         let chain = [
-            (800, 801, "/opt/homebrew/bin/codex", "codex"),
-            (
-                801,
-                1,
-                "/Applications/AgentDocker.app/Contents/MacOS/agentdocker-ui",
-                "agentdocker-ui",
-            ),
+            run(800, 801, "/opt/homebrew/bin/codex", &["codex"]),
+            run(801, 1, app, &[app]),
         ];
         assert_eq!(walked(&chain, |_| false), Reach::AgentDocker { child: 800 });
         // Only launchd above it: nothing says where it is.
         let chain = [
-            (900, 901, "/opt/homebrew/bin/codex", "codex"),
-            (901, 1, "/bin/zsh", "-zsh"),
+            run(900, 901, "/opt/homebrew/bin/codex", &["codex"]),
+            run(901, 1, "/bin/zsh", &["-zsh"]),
         ];
         assert_eq!(walked(&chain, |_| false), Reach::Unknown);
+    }
+
+    /// One file at a path with a space in it, run as the CLI's wrapper and
+    /// as a session owner: `ps` prints both command lines split at that
+    /// space, so only the arguments each was started with tell them
+    /// apart. The owner ends the walk at the child it started; the
+    /// wrapper is passed over to its terminal; and one whose arguments
+    /// cannot be read is taken for neither.
+    #[test]
+    fn a_daemon_and_the_cli_at_one_spaced_path_stay_distinct() {
+        let file = "/tmp/Agent Docker/agentdocker";
+        let codex = || run(400, 401, "/opt/homebrew/bin/codex", &["codex"]);
+        let wrapper = || run(401, 402, file, &[file, "codex"]);
+        let owner = |ppid| run(402, ppid, file, &[file, "daemon", "run", "--session-owner"]);
+
+        let managed = [codex(), wrapper(), owner(1)];
+        assert_eq!(
+            walked(&managed, |_| false),
+            Reach::AgentDocker { child: 401 }
+        );
+        // The same owner started from a daemon run by hand in Terminal:
+        // still the end of the walk, never that Terminal.
+        let mut by_hand = vec![codex(), wrapper(), owner(403)];
+        by_hand.extend(shell_in(403, TERMINAL));
+        assert_eq!(
+            walked(&by_hand, |_| false),
+            Reach::AgentDocker { child: 401 }
+        );
+
+        let mut in_terminal = vec![codex(), wrapper()];
+        in_terminal.extend(shell_in(402, TERMINAL));
+        assert_eq!(
+            host_kind(walked(&in_terminal, |_| false)),
+            Some(("terminal".into(), "Terminal".into()))
+        );
+
+        by_hand[2].arguments = None;
+        assert_eq!(walked(&by_hand, |_| false), Reach::Unknown);
     }
 
     #[test]
