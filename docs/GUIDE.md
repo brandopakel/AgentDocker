@@ -503,9 +503,9 @@ each one by pid.
 |---|---|
 | `run <command>` | Launch a command as a supervised agent |
 | `codex [--name <name>] [-- <codex options>]` | Start Codex in this terminal so AgentDocker can reach it: the same Codex and conversation, run through AgentDocker's launcher, so a message wakes it even while it is idle, and it can hold a role (`role --as <name> reviewer`, or the app's Roles menu) like an agent the app launched. The binary behind the `codex` on `PATH` is used; experimental |
-| `register` | Announce an already-running process as an agent. `--pid` names its process: this command's own shell (`--pid $$`) or another of its parents. From inside an agent's session any other is refused `identity_mismatch` (exit 5), and a process an agent already holds is registered only from inside that agent's own session; from your own terminal, any |
+| `register` | Announce an already-running process as an agent. `--pid` names its process: this command's own shell (`--pid $$`) or another of its parents. From inside an agent's session any other is refused `identity_mismatch` (exit 5), and a process an agent already holds is registered only from inside that agent's own session; from your own terminal, any process may be named |
 | `discover` | Agent processes nobody registered |
-| `adopt <pid>` | Register one of them; `--all` for all |
+| `adopt <pid>` | Register one of them; `--all` for all. Its pid is checked as `register --pid`'s is: from inside an agent's session only a process that session may name, else refused `identity_mismatch` (exit 5); from your own terminal or the app, any |
 | `stop <agent>` | Signal an agent to stop. Its record says so from then on (`"stop_requested": true` in `inspect`), even if it exits 0, until it next starts under the same id |
 | `restart <agent>` | Replace a managed container after confirming it exited |
 | `deregister` / `rm` | Mark an external agent finished / forget a finished one |

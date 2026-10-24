@@ -65,6 +65,10 @@ type Process = (u32, DateTime<Utc>);
 struct Kernel<'a> {
     /// A process's parent, and its own birth.
     step: &'a dyn Fn(u32) -> Option<(u32, DateTime<Utc>)>,
+    /// The same, whoever's the process is: where `step` cannot read it
+    /// (root's `login` above every macOS terminal), the kernel's process
+    /// table, as the person check's trace reads it.
+    step_any: &'a dyn Fn(u32) -> Option<(u32, DateTime<Utc>)>,
     /// Why a process could not be read.
     unseen: &'a dyn Fn(u32) -> Unseen,
     /// A process's own arguments.
@@ -75,6 +79,15 @@ struct Kernel<'a> {
     born: &'a dyn Fn(u32) -> Option<DateTime<Utc>>,
     /// Whether an executable is this daemon's companion CLI.
     companion: &'a dyn Fn(&std::path::Path) -> bool,
+}
+
+fn step_of_any(pid: u32) -> Option<(u32, DateTime<Utc>)> {
+    procinfo::parent_and_birth(pid).or_else(|| {
+        Some((
+            procinfo::inspect(pid)?.ppid,
+            procinfo::start_time_of_any(pid)?,
+        ))
+    })
 }
 
 fn executable_of(pid: u32) -> Option<std::path::PathBuf> {
@@ -91,6 +104,7 @@ impl Kernel<'static> {
     fn host() -> Self {
         Self {
             step: &procinfo::parent_and_birth,
+            step_any: &step_of_any,
             unseen: &procinfo::unseen,
             arguments: &procinfo::arguments,
             executable: &executable_of,
@@ -595,16 +609,26 @@ pub(crate) struct Named {
     process: Process,
     /// The sender and its parents, nearest first, as far as they were walked.
     chain: Vec<Process>,
+    /// The sender and its parents walked as the person check walks them,
+    /// past another user's process `chain` cannot read (root's `login` above
+    /// a terminal): what the sender is judged to run outside of.
+    reach: Vec<Process>,
+    /// Whether that walk reached the top: false when it stopped at this
+    /// user's process that cannot be read, went deeper than it traces, or
+    /// found the sender gone, so what stands above `reach` is not known.
+    whole: bool,
     /// Whether the sender stands among the named process's parents: it
     /// started it.
     started: bool,
     /// Codex terminals, by pid and birth, whose companion launcher stands in
     /// `chain`, among those looked at (`evaluated`).
     launched: Vec<Process>,
+    /// The same, for `reach`.
+    launched_reach: Vec<Process>,
     /// The Codex terminals whose launcher was looked for: the process named
     /// and every live Codex agent's when the registration was checked.
     evaluated: Vec<Process>,
-    /// Whether a companion launcher stands in `chain` at all.
+    /// Whether a companion launcher stands in `reach` at all.
     launcher_in_chain: bool,
     /// The profile, as the spec spells it, when the named process is a Codex
     /// terminal whose own arguments resume the conversation the spec names.
@@ -616,7 +640,7 @@ pub(crate) struct Named {
     /// spec's and every live Codex agent's when the registration was checked.
     profiles: Vec<String>,
     /// Whether a Codex image in any profile's package cache stands in
-    /// `chain`: a shared server, proven or not.
+    /// `reach`: a shared server, proven or not.
     server_in_chain: bool,
 }
 
@@ -627,14 +651,17 @@ impl Named {
     /// launcher there, or the shared server of the profile its own record
     /// names, proven — and never on what the registration says.
     fn admits_holder(&self, holder: &Acting) -> bool {
-        holder
-            .anchors
-            .iter()
-            .any(|anchor| self.chain.contains(anchor))
+        self.holds(holder, &self.chain, &self.launched)
+    }
+
+    /// [`Named::admits_holder`], over the parents `chain` and the terminals
+    /// `launched` whose launcher stands among them.
+    fn holds(&self, holder: &Acting, chain: &[Process], launched: &[Process]) -> bool {
+        holder.anchors.iter().any(|anchor| chain.contains(anchor))
             || holder.codex.as_ref().is_some_and(|codex| {
                 codex
                     .terminal
-                    .is_some_and(|terminal| self.launched.contains(&terminal))
+                    .is_some_and(|terminal| launched.contains(&terminal))
             })
             || holder
                 .label
@@ -666,13 +693,14 @@ impl Named {
     }
 
     /// Whether the sender runs inside `agent`'s session, as the agent check
-    /// finds it ([`Named::admits_holder`]), counting it inside, too, where
+    /// finds it ([`Named::admits_holder`]) over every parent the person
+    /// check's walk reads (`reach`), counting it inside, too, where
     /// the check did not look: an agent whose terminal's launcher was not
     /// looked for while a companion launcher stands among the sender's
     /// parents, or whose profile's server was not while a shared server
     /// does.
     fn inside(&self, agent: &Acting) -> bool {
-        self.admits_holder(agent)
+        self.holds(agent, &self.reach, &self.launched_reach)
             || agent
                 .codex
                 .as_ref()
@@ -685,6 +713,33 @@ impl Named {
                 .as_ref()
                 .is_some_and(|label| self.server_in_chain && !self.profiles.contains(label))
     }
+
+    /// What keeps the sender from resuming the ended records `ended` while
+    /// `others`, the other live agents, live: nothing when it may act as
+    /// every ended record itself; else parents it could not all read, since
+    /// one of them may be another agent's, or the agent whose session it
+    /// runs inside. Only positive evidence lets a fold through.
+    fn fold_blocker(
+        &self,
+        ended: &[Acting],
+        others: impl IntoIterator<Item = Acting>,
+    ) -> Option<Blocker> {
+        if ended.iter().all(|record| self.admits_holder(record)) {
+            return None;
+        }
+        if let Some(agent) = others.into_iter().find(|agent| self.inside(agent)) {
+            return Some(Blocker::Inside(agent));
+        }
+        (!self.whole).then_some(Blocker::Unknown)
+    }
+}
+
+/// Why a registration may not resume an ended session ([`Named::fold_blocker`]).
+enum Blocker {
+    /// The sender's parents could not all be read.
+    Unknown,
+    /// It runs inside this live agent's session.
+    Inside(Acting),
 }
 
 /// What the kernel says of the registration's sender (`sender`) and the
@@ -701,6 +756,7 @@ fn gather(
 ) -> (Named, Vec<Server>) {
     let (pid, born) = sender;
     let (chain, _) = lineage(pid, born, kernel.step, kernel.unseen, |_| false);
+    let (reach, end) = lineage(pid, born, kernel.step_any, kernel.unseen, |_| false);
     let (named_pid, named_born) = named;
     let started = lineage(named_pid, named_born, kernel.step, kernel.unseen, |p| {
         p == sender
@@ -710,10 +766,9 @@ fn gather(
     evaluated.extend(live.iter().filter_map(|h| h.codex.as_ref()?.terminal));
     evaluated.sort();
     evaluated.dedup();
-    let launched = evaluated
+    let launchers: Vec<(Process, Process)> = evaluated
         .iter()
-        .copied()
-        .filter(|terminal| {
+        .filter_map(|terminal| {
             codex_launcher(
                 *terminal,
                 kernel.step,
@@ -721,9 +776,18 @@ fn gather(
                 kernel.executable,
                 kernel.companion,
             )
-            .is_some_and(|launcher| chain.contains(&launcher))
+            .map(|launcher| (*terminal, launcher))
         })
         .collect();
+    let started_from = |parents: &[Process]| -> Vec<Process> {
+        launchers
+            .iter()
+            .filter(|(_, launcher)| parents.contains(launcher))
+            .map(|(terminal, _)| *terminal)
+            .collect()
+    };
+    let launched = started_from(&chain);
+    let launched_reach = started_from(&reach);
     let resumes = terminal.filter(|terminal| {
         (kernel.born)(named_pid) == Some(named_born)
             && (kernel.arguments)(named_pid)
@@ -746,10 +810,10 @@ fn gather(
     profiles.dedup();
     let mut looked: Vec<String> = live.iter().filter_map(|h| h.label.clone()).collect();
     looked.extend(terminal.map(|t| t.label.clone()));
-    let launcher_in_chain = chain.iter().any(|(pid, _)| {
+    let launcher_in_chain = reach.iter().any(|(pid, _)| {
         launches_codex(*pid, kernel.arguments, kernel.executable, kernel.companion)
     });
-    let server_in_chain = chain.iter().any(|(pid, _)| {
+    let server_in_chain = reach.iter().any(|(pid, _)| {
         (kernel.executable)(*pid)
             .and_then(|image| std::fs::canonicalize(image).ok())
             .is_some_and(|image| codex_control::shared_server_profile(&image).is_some())
@@ -770,8 +834,11 @@ fn gather(
         Named {
             process: named,
             chain,
+            reach,
+            whole: end != End::Unknown,
             started,
             launched,
+            launched_reach,
             evaluated,
             launcher_in_chain,
             terminal: resumes.map(|t| t.label.clone()),
@@ -790,7 +857,7 @@ pub(crate) enum Authorized {
     /// The person's, who may register any process: nothing to hold to.
     Person,
     /// What the sender may name, as the kernel said it.
-    Named(Named),
+    Named(Box<Named>),
 }
 
 impl Authorized {
@@ -875,32 +942,39 @@ impl Authorized {
             return None;
         };
         let prior = ended.first()?;
-        if ended
-            .iter()
-            .all(|record| named.admits_holder(&Acting::of(record)))
-        {
-            return None;
-        }
-        let inside = state
+        let ended: Vec<Acting> = ended.iter().map(Acting::of).collect();
+        let others = state
             .registry
             .live()
             .filter(|agent| Some(&agent.id) != folding)
-            .map(Acting::of)
-            .find(|agent| named.inside(agent))?;
+            .map(Acting::of);
+        let blocker = named.fold_blocker(&ended, others)?;
         let pid = named.process.0;
+        let (why, inside) = match &blocker {
+            Blocker::Unknown => (
+                "its sender's parents could not all be read, so it cannot be told to run \
+                 outside every other agent's session"
+                    .to_owned(),
+                None,
+            ),
+            Blocker::Inside(agent) => (
+                format!("it was sent from inside agent {}'s session", agent.name),
+                Some(agent.id.clone()),
+            ),
+        };
         Some(Response::Error {
             code: ErrorCode::IdentityMismatch,
             message: format!(
-                "this registers process {pid} to resume agent {}'s ended session, and it was sent \
-                 from inside agent {}'s session; an agent's process acts only as that agent, so a \
-                 session is resumed from outside every other agent's session, or by the person",
-                prior.spec.name, inside.name
+                "this registers process {pid} to resume agent {}'s ended session, and {why}; an \
+                 agent's process acts only as that agent, so a session is resumed from outside \
+                 every other agent's session, or by the person",
+                prior.spec.name
             ),
             details: Some(json!({
                 "pid": pid,
                 "agent": prior.id,
                 "name": prior.spec.name,
-                "inside": inside.id,
+                "inside": inside,
             })),
         })
     }
@@ -1002,8 +1076,8 @@ impl Daemon {
         Some(refusal(&acting, &why))
     }
 
-    /// What lets `request`, a registration of a process (`register`'s
-    /// `pid`), through from `peer`, the process on the socket: what the
+    /// What lets `request`, a registration of a process (`register`'s or
+    /// `adopt`'s `pid`), through from `peer`, the process on the socket: what the
     /// kernel says the sender may name ([`Named::admits`]), or the person,
     /// who may register any process. `Ok(None)` for a request that names no
     /// process, with the agent check off, or from the daemon's own process,
@@ -1016,20 +1090,23 @@ impl Daemon {
         peer: Option<Peer>,
         request: &Request,
     ) -> Result<Option<Authorized>, Box<Response>> {
-        let Request::Register {
-            spec,
-            pid: Some(pid),
-            ..
-        } = request
-        else {
-            return Ok(None);
+        // An adoption registers the process it names as a registration
+        // does, with a spec of the daemon's own making that names no
+        // session.
+        let (pid, spec) = match request {
+            Request::Register {
+                spec,
+                pid: Some(pid),
+                ..
+            } => (*pid, spec.clone()),
+            Request::Adopt { pid, .. } => (*pid, AgentSpec::default()),
+            _ => return Ok(None),
         };
         if !self.agent_check || peer.is_some_and(|(sender, _)| sender == std::process::id()) {
             return Ok(None);
         }
-        let pid = *pid;
         let live: Vec<Acting> = lock(&self.state).registry.live().map(Acting::of).collect();
-        let owned = spec.clone();
+        let claimed = keyed_claim(&spec).cloned();
         let identified = peer.and_then(|(sender, born)| born.map(|born| (sender, born)));
         let (found, holders) = tokio::task::spawn_blocking(move || {
             let named = procinfo::start_time(pid).map(|born| (pid, born));
@@ -1058,7 +1135,7 @@ impl Daemon {
                     sender,
                     named,
                     &live,
-                    Terminal::of(&owned).as_ref(),
+                    Terminal::of(&spec).as_ref(),
                     &Kernel::host(),
                 )
             });
@@ -1087,16 +1164,20 @@ impl Daemon {
                 // only that profile's server or the person may take
                 // ([`Authorized::join_refusal`]): unless the server is
                 // proven, whether the person sent it is asked as well.
-                let joins = keyed_claim(spec).is_some_and(|label| !named.served.contains(label));
+                let joins = claimed
+                    .as_ref()
+                    .is_some_and(|label| !named.served.contains(label));
                 if !joins {
-                    return Ok(Some(Authorized::Named(named)));
+                    return Ok(Some(Authorized::Named(Box::new(named))));
                 }
                 admitted = Some(named);
             }
         }
         let why = match self.trace(peer, request).await {
             person::Traced::Person => return Ok(Some(Authorized::Person)),
-            _ if admitted.is_some() => return Ok(admitted.map(Authorized::Named)),
+            _ if admitted.is_some() => {
+                return Ok(admitted.map(|named| Authorized::Named(Box::new(named))));
+            }
             person::Traced::Inside(reason) => format!("it was sent from inside {reason}"),
             person::Traced::Unknown(reason) => format!("{reason} cannot be the person's"),
         };
@@ -1796,6 +1877,11 @@ mod tests {
         parents: HashMap<u32, u32>,
         argv: HashMap<u32, Vec<String>>,
         images: HashMap<u32, std::path::PathBuf>,
+        /// This user's processes that run and cannot be read.
+        unreadable: Vec<u32>,
+        /// Parents only the kernel's process table gives (another user's
+        /// process, as root's `login` is).
+        kernel_only: HashMap<u32, u32>,
     }
 
     impl Table {
@@ -1819,9 +1905,24 @@ mod tests {
             let arguments = |pid: u32| self.argv.get(&pid).cloned();
             let executable = |pid: u32| self.images.get(&pid).cloned();
             let companion = |exe: &std::path::Path| exe == std::path::Path::new("/opt/agentdocker");
+            let unseen = |pid: u32| {
+                if self.unreadable.contains(&pid) {
+                    Unseen::Unreadable
+                } else {
+                    Unseen::Ended
+                }
+            };
+            let step_any = |pid: u32| {
+                step(pid).or_else(|| {
+                    self.kernel_only
+                        .get(&pid)
+                        .map(|parent| (*parent, at(i64::from(pid))))
+                })
+            };
             let kernel = Kernel {
                 step: &step,
-                unseen: &|_: u32| Unseen::Ended,
+                step_any: &step_any,
+                unseen: &unseen,
                 arguments: &arguments,
                 executable: &executable,
                 born: &born,
@@ -1903,7 +2004,10 @@ mod tests {
     /// shell (41) started agent W (42); and a launcher (50) with its child
     /// (51). Profile P's shared server (60) runs an MCP server (61), profile
     /// Q's (70) another (71); in another terminal (80) Codex resumes
-    /// [`THREAD`] (81), and another conversation (82).
+    /// [`THREAD`] (81), and another conversation (82). Above 91, and above P's
+    /// server's copy 93 with its child 94, stands this user's process 90,
+    /// which cannot be read; above 97, another user's 96, which only the
+    /// kernel's table reads.
     fn table(images: &std::path::Path) -> (Table, std::path::PathBuf, std::path::PathBuf) {
         let profile = |name: &str| {
             let profile = images.join(name);
@@ -1935,6 +2039,10 @@ mod tests {
             (80, 1),
             (81, 80),
             (82, 80),
+            (91, 90),
+            (93, 90),
+            (94, 93),
+            (97, 96),
         ]);
         let argv = HashMap::from([
             (
@@ -1950,14 +2058,17 @@ mod tests {
         ]);
         let images = HashMap::from([
             (30, std::path::PathBuf::from("/opt/agentdocker")),
-            (60, p_image),
+            (60, p_image.clone()),
             (70, q_image),
+            (93, p_image),
         ]);
         (
             Table {
                 parents,
                 argv,
                 images,
+                unreadable: vec![90, 96],
+                kernel_only: HashMap::from([(96, 1)]),
             },
             p,
             q,
@@ -2146,6 +2257,55 @@ mod tests {
                 .named(61, (51, at(51)), &[], None, Some(60))
                 .inside(&theirs)
         );
+    }
+
+    /// A sender whose parents could not all be read may still name itself,
+    /// but cannot show that it runs outside every other agent's session, so
+    /// it resumes no ended session ([`Named::fold_blocker`]) unless it may
+    /// act as the ended record itself: from under the proven shared server
+    /// of the profile that record names. One whose parents reach the top
+    /// resumes it, unless one of them is a live agent's.
+    #[test]
+    fn a_sender_whose_parents_cannot_all_be_read_resumes_no_ended_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (table, p, _) = table(&std::fs::canonicalize(tmp.path()).unwrap());
+        let ended = [holder("claude-code", 99, None)];
+        let hidden = table.named(91, (91, at(91)), &[], None, None);
+        assert!(!hidden.whole);
+        assert!(hidden.admits(&[]), "it may name itself");
+        assert!(matches!(
+            hidden.fold_blocker(&ended, []),
+            Some(Blocker::Unknown)
+        ));
+        // Past another user's process the kernel's table reads, the walk
+        // reaches the top.
+        let terminal = table.named(97, (97, at(97)), &[], None, None);
+        assert!(terminal.whole);
+        assert!(terminal.fold_blocker(&ended, []).is_none());
+        let open = table.named(51, (51, at(51)), &[], None, None);
+        assert!(open.whole);
+        assert!(open.fold_blocker(&ended, []).is_none());
+        assert!(matches!(
+            open.fold_blocker(&ended, [holder("claude-code", 50, None)]),
+            Some(Blocker::Inside(_))
+        ));
+        let theirs = Terminal {
+            label: p.display().to_string(),
+            profile: p.clone(),
+            thread: THREAD.to_owned(),
+        };
+        let server = table.named(94, (94, at(94)), &[], Some(&theirs), Some(93));
+        assert!(!server.whole);
+        assert!(
+            server
+                .fold_blocker(&[holder("codex", 98, Some(&p))], [])
+                .is_none(),
+            "its profile's proven server"
+        );
+        assert!(matches!(
+            server.fold_blocker(&ended, []),
+            Some(Blocker::Unknown)
+        ));
     }
 
     /// A client for the registration tests: registers `spec` naming the
@@ -3164,6 +3324,98 @@ mod tests {
             matches!(&reply, Response::Agent { agent }
                 if agent.id == b2.id && agent.pid == Some(stranger.id())),
             "the person's registration: {reply:?}"
+        );
+        let _ = stranger.kill();
+        let _ = stranger.wait();
+        serving.abort();
+    }
+
+    /// Over the real socket: an adoption's pid is checked as a
+    /// registration's. From inside agent A's session a process may adopt one
+    /// it started, and not one it may not name, which is refused
+    /// `identity_mismatch` with nothing made; the person, outside every
+    /// agent's session as the app is, adopts it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_adoption_names_only_a_process_its_sender_may_speak_for() {
+        use std::io::Write as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::open(tmp.path().into(), tmp.path().join("host.sock")).unwrap();
+        daemon.person_check = false;
+        daemon.agent_check = true;
+        let daemon = Arc::new(daemon);
+        let listener = crate::server::bind(&daemon).await.unwrap();
+        let serving = tokio::spawn(crate::server::serve(daemon.clone(), listener));
+        let mut stranger = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let adopter = "import json,socket,subprocess,sys\ndef ask(request):\n    s=socket.socket(socket.AF_UNIX)\n    s.connect(sys.argv[1])\n    s.sendall(json.dumps(request).encode()+b'\\n')\n    return s.makefile().readline()\nprint('reply:'+ask({'op':'adopt','pid':int(sys.argv[2])}),end='',flush=True)\nchild=subprocess.Popen(['sleep','30'],stdout=subprocess.DEVNULL)\nprint('reply:'+ask({'op':'adopt','pid':child.pid}),end='',flush=True)\nchild.kill()\nchild.wait()\n";
+        let mut a_shell = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("read go; python3 -c \"$0\" \"$1\" \"$2\"; exit $?")
+            .arg(adopter)
+            .arg(&daemon.socket)
+            .arg(stranger.id().to_string())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let Response::Agent { .. } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "agent-a".into(),
+                    workdir: Some(tmp.path().to_owned()),
+                    ..AgentSpec::default()
+                },
+                pid: Some(a_shell.id()),
+                session: None,
+            })
+            .await
+        else {
+            panic!("registers")
+        };
+        writeln!(a_shell.stdin.take().unwrap(), "go").unwrap();
+        let output = tokio::task::spawn_blocking(move || a_shell.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        let replies: Vec<Response> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("reply:"))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 2, "{replies:?}");
+        assert!(
+            matches!(&replies[0], Response::Error { code: ErrorCode::IdentityMismatch, details: Some(details), .. }
+                if details["pid"] == stranger.id()),
+            "a stranger's process: {:?}",
+            replies[0]
+        );
+        assert!(
+            matches!(&replies[1], Response::Agent { .. }),
+            "its own child: {:?}",
+            replies[1]
+        );
+        assert!(
+            !lock(&daemon.state)
+                .registry
+                .all()
+                .any(|record| record.pid == Some(stranger.id())),
+            "nothing made for the stranger"
+        );
+        let adopt = "import json,socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.connect(sys.argv[1])\ns.sendall(json.dumps({'op':'adopt','pid':int(sys.argv[2])}).encode()+b'\\n')\nprint(s.makefile().readline(),end='',flush=True)\n";
+        let reply = from_outside(
+            adopt,
+            vec![
+                daemon.socket.display().to_string(),
+                stranger.id().to_string(),
+            ],
+        )
+        .await;
+        assert!(
+            matches!(&reply, Response::Agent { agent } if agent.pid == Some(stranger.id())),
+            "the person adopts it: {reply:?}"
         );
         let _ = stranger.kill();
         let _ = stranger.wait();

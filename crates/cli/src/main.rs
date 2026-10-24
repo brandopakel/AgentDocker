@@ -358,7 +358,9 @@ enum Command {
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: usize,
     },
-    /// Register a running process found by `discover`, by pid.
+    /// Register a running process found by `discover`, by pid. From
+    /// inside an agent's session only a process it may name, as `register
+    /// --pid` does; from your own terminal or the app, any.
     Adopt {
         #[arg(required_unless_present = "all")]
         pid: Option<u32>,
@@ -969,7 +971,7 @@ struct RegisterArgs {
     /// (`--pid $$`) or another of its parents. Any other is refused from
     /// inside an agent's session, and one an agent already holds is
     /// registered only from inside that agent's; from your own terminal,
-    /// any.
+    /// any process may be named.
     #[arg(long)]
     pid: Option<u32>,
     /// Working directory (default: current directory).

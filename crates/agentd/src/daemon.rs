@@ -2181,7 +2181,7 @@ impl Daemon {
             Request::Discover => self.discover().await,
             Request::Runtimes => self.runtimes().await,
             Request::Adopt { pid, name, runtime } => {
-                let adopted = self.adopt(pid, name, runtime).await;
+                let adopted = self.adopt(pid, name, runtime, authorized).await;
                 self.trace_starter(&adopted);
                 adopted
             }
