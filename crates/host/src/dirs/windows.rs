@@ -909,41 +909,20 @@ mod tests {
         );
     }
 
-    /// Replace a file's DACL as given, unprotected, without the inheritance
-    /// processing and propagation SetSecurityInfo performs.
-    fn set_kernel_acl(file: &File, sddl: &str) {
-        use windows_sys::Win32::Security::SetKernelObjectSecurity;
-        let sddl: Vec<_> = sddl.encode_utf16().chain([0]).collect();
-        let mut descriptor = null_mut();
-        assert_ne!(
-            unsafe {
-                ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    sddl.as_ptr(),
-                    SDDL_REVISION_1,
-                    &mut descriptor,
-                    null_mut(),
-                )
-            },
-            0
-        );
-        let _allocated = LocalAllocation(descriptor);
-        assert_ne!(
-            unsafe {
-                SetKernelObjectSecurity(file.as_raw_handle(), DACL_SECURITY_INFORMATION, descriptor)
-            },
-            0,
-            "{}",
-            io::Error::last_os_error()
-        );
-    }
-
     #[test]
     fn securing_already_private_state_rewrites_nothing_beneath_it() {
         use std::os::windows::fs::OpenOptionsExt;
         let temporary = tempfile::tempdir().unwrap();
         let state = temporary.path().join("state");
+        let donor = temporary.path().join("donor");
         secure_state_dir(&state).unwrap();
+        secure_state_dir(&donor).unwrap();
         let protection = Protection::new().unwrap();
+        // Trusted, but not the private DACL: Administrators as well.
+        let broader = format!(
+            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{})",
+            protection.sid
+        );
         // Read security through a handle that only reads it and shares
         // everything, so nothing held here keeps Windows from a child.
         let reader = |path: &Path| {
@@ -960,12 +939,25 @@ mod tests {
                 .unwrap()
         };
         assert!(private(&state));
-        // A child open to inheritance: writing the directory's DACL again
-        // would propagate the directory's inheritable entries into it.
+        // A child open to inheritance whose inherited entries are not the
+        // ones this directory passes on, as SetSecurityInfo on the directory
+        // would rewrite them. Its DACL cannot be made so in place: writing
+        // an unprotected DACL with SetKernelObjectSecurity (which Microsoft
+        // says not to use on file system objects) kept the file's protected
+        // control bit. So the child is created where it inherits other
+        // entries and moved in. "DACL for a New Object": a creator that
+        // specifies no security descriptor gets a DACL built from the
+        // parent's inheritable ACEs, merged only into DACLs without
+        // SE_DACL_PROTECTED, so it is unprotected. A rename on the same
+        // volume moves the file's descriptor with it (MoveFileEx: only a
+        // move across volumes leaves the descriptor behind).
+        set_test_acl(
+            &open(&donor, &protection, true, false, false).unwrap(),
+            &broader,
+        );
+        std::fs::write(donor.join("record"), b"inherited elsewhere").unwrap();
         let record = state.join("record");
-        let child = private_file(&record, true, false).unwrap();
-        set_kernel_acl(&child, &format!("D:(A;;FA;;;{})", protection.sid));
-        drop(child);
+        std::fs::rename(donor.join("record"), &record).unwrap();
         let before = security(&record);
         assert!(!before.0, "the fixture child accepts inheritance");
         let parent = security(&state);
@@ -978,21 +970,22 @@ mod tests {
             "securing private state rewrote an existing child"
         );
 
-        // State that is not yet private is still narrowed, and the narrowed
-        // directory's entries reach its children as they always have.
-        let directory = open(&state, &protection, true, false, false).unwrap();
+        // State that is not yet private is still narrowed, and, as the
+        // SetSecurityInfo remarks say, the narrowed directory's inheritable
+        // entries reach its existing children (none is held open here).
         set_test_acl(
-            &directory,
-            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)",
+            &open(&state, &protection, true, false, false).unwrap(),
+            &broader,
         );
-        drop(directory);
         assert!(!private(&state));
-        let broader = security(&record);
+        let broadened = security(&record);
         secure_state_dir(&state).unwrap();
         assert!(private(&state));
-        if broader != before {
-            assert_ne!(security(&record), broader);
-        }
+        assert_ne!(
+            security(&record),
+            broadened,
+            "narrowing did not reach an existing child"
+        );
     }
 
     #[test]
