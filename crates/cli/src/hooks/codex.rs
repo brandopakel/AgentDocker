@@ -645,6 +645,7 @@ pub(super) async fn claim_edits<B: Backend>(
                 ttl_secs: 600,
                 note: Some(format!("editing in Codex session {}", agent.spec.name)),
                 wait_secs: 0,
+                priority: 0,
                 automatic: true,
             })
             .await?;

@@ -208,13 +208,20 @@ pub fn render(
     }
     if !waiting.is_empty() {
         let _ = writeln!(out, "\nWaiting");
+        // In the order they will be served; a priority is said only where
+        // one was asked for.
         for (place, waiter) in waiting.iter().enumerate() {
             let _ = writeln!(
                 out,
-                "  {}. {:<20} {}",
+                "  {}. {:<20} {}{}",
                 place + 1,
                 truncate(waiter.agent.short(), 20),
-                format::resource(&waiter.resource)
+                format::resource(&waiter.resource),
+                if waiter.priority == 0 {
+                    String::new()
+                } else {
+                    format!("  (priority {:+})", waiter.priority)
+                }
             );
         }
     }
@@ -310,17 +317,35 @@ mod tests {
     fn waiters_are_listed_in_the_order_they_will_be_served() {
         let first = AgentId::from("aaaa");
         let second = AgentId::from("bbbb");
-        let waiter = |agent: AgentId, ticket| agentdocker_core::Waiter {
+        let waiter = |agent: AgentId, ticket, priority| agentdocker_core::Waiter {
             ticket,
             agent,
             resource: ResourceKey::new("task:x"),
             mode: LeaseMode::Exclusive,
             since: chrono::Utc::now(),
+            priority,
         };
-        let frame = render(&[], &[], &[], &[waiter(first, 0), waiter(second, 1)]);
+        let frame = render(&[], &[], &[], &[waiter(first, 0, 0), waiter(second, 1, 0)]);
         let one = frame.find("1. aaaa").expect("the first waiter");
         let two = frame.find("2. bbbb").expect("the second");
         assert!(one < two, "oldest first:\n{frame}");
+        assert!(!frame.contains("priority"), "none asked for:\n{frame}");
+
+        // The daemon lists them as served, a higher priority first; the
+        // frame keeps that order and says the priority.
+        let frame = render(
+            &[],
+            &[],
+            &[],
+            &[
+                waiter(AgentId::from("cccc"), 2, 3),
+                waiter(AgentId::from("aaaa"), 0, 0),
+                waiter(AgentId::from("dddd"), 3, -1),
+            ],
+        );
+        assert!(frame.contains("1. cccc"), "{frame}");
+        assert!(frame.contains("(priority +3)"), "{frame}");
+        assert!(frame.contains("(priority -1)"), "{frame}");
     }
 
     #[test]

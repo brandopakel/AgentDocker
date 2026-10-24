@@ -149,7 +149,7 @@ agentdocker discover              # agent processes running outside AgentDocker;
 # 3. Coordinate on a resource. The second claim is refused, and says by whom.
 agentdocker claim --as writer   src/ --note "refactoring the parser"
 agentdocker claim --as reviewer src/parser.rs        # -> conflict: held by writer
-agentdocker claim --as reviewer src/parser.rs --wait 60   # queue for it, in arrival order
+agentdocker claim --as reviewer src/parser.rs --wait 60   # queue for it, by --priority then arrival
 agentdocker leases
 agentdocker waiting     # who is queued for what
 agentdocker activity    # observed working/idle, unknown, or blocked with its holders
@@ -303,11 +303,11 @@ agentdocker up reviewer       # just one
 agentdocker down              # stops them
 ```
 
-`after` takes one condition or a list (`after = ["build exits 0", "lint exits 0"]`). While an entry waits, `up` stays and says so; if what it waits on exits otherwise, is stopped or fails to start, the entry is never started — nor is anything waiting on it — and `up` says why (`summary  not started: writer exited 1`) and exits unsuccessfully. Only an exit 0 whose event `up` received counts, because a record cannot show the exit was not the end of a stop: `up summary` alone does not take an earlier exit of `writer` as success, and neither does `up` once its event stream has ended (a daemon reload ends it).
+`after` takes one condition or a list (`after = ["build exits 0", "lint exits 0"]`). While an entry waits, `up` stays and says so; if what it waits on exits otherwise, is stopped or fails to start, the entry is never started — nor is anything waiting on it — and `up` says why (`summary  not started: writer exited 1`) and exits unsuccessfully. `up summary` alone takes an earlier exit 0 of `writer` as success when it was `writer`'s own — its record says no stop was asked of that run, and it ran as this file gives `writer` now (command, working directory, environment and the rest) — and not when `writer` was stopped, whatever it then exited with. For an agent `up` is watching, only an exit 0 whose event it received counts, so one seen after its event stream has ended (a daemon reload ends it) does not.
 
 ### Waiting instead of failing
 
-`agentdocker claim --wait 120 src/parser.rs` blocks until the holder releases (or the lease expires), then takes it — or reports the conflict after two minutes. The MCP `claim` tool has the same `wait_secs`.
+`agentdocker claim --wait 120 src/parser.rs` blocks until the holder releases (or the lease expires), then takes it — or reports the conflict after two minutes. Waits are served oldest first; `--priority N` (-9 to 9) puts a wait ahead of lower ones, and when waits form a ring the lowest priority's is ended with a deadlock error. The MCP `claim` tool has the same `wait_secs` and `priority`.
 
 ## The working set
 

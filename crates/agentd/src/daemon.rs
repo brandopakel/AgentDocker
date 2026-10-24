@@ -341,6 +341,11 @@ pub struct Daemon {
     /// across an await.
     #[cfg(test)]
     relaunch_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// A test's hold on one agent's claim at one point of its wait
+    /// (`waiting::ClaimPoint`), so another claim can act in between. Taken
+    /// once; never held across an await.
+    #[cfg(test)]
+    claim_hold: Mutex<Option<waiting::ClaimHold>>,
     /// What was found of the processes that asked to act as the person.
     /// Never held with the state lock.
     peers: Mutex<person::Peers>,
@@ -1071,7 +1076,10 @@ impl Daemon {
                         // (this daemon's after an abort, or the successor's)
                         // finds it again.
                         let mut agent = candidate.clone();
-                        agent.status = AgentStatus::Stopping;
+                        // Published as `agent_stopping`, so marked as a
+                        // stop on its run the way a requested one is: what
+                        // the events say and what the record says agree.
+                        agent.mark_stopping();
                         if state.persist("agent", |store| store.upsert_agent(&agent))
                             == Persisted::Committed
                         {
@@ -1080,6 +1088,9 @@ impl Daemon {
                                 AgentStatus::Stopping,
                                 Utc::now(),
                             );
+                            if let Some(stored) = state.registry.get_mut(&candidate.id) {
+                                stored.mark_stopping();
+                            }
                             state.emit(EventKind::AgentStopping {
                                 agent: candidate.id,
                                 force: false,
@@ -1676,6 +1687,8 @@ impl Daemon {
             transferred_exit: Notify::new(),
             #[cfg(test)]
             relaunch_hold: Mutex::new(None),
+            #[cfg(test)]
+            claim_hold: Mutex::new(None),
             peers: Mutex::new(person::Peers::default()),
             person_check: std::env::var_os("AGENTDOCKER_PERSON_CHECK").is_none_or(|v| v != "off"),
             agent_check: std::env::var_os("AGENTDOCKER_AGENT_CHECK").is_none_or(|v| v != "off"),
@@ -1933,21 +1946,24 @@ impl Daemon {
     }
 
     /// The wait is over and the request will write again: take a place
-    /// back first. Refused, with nothing applied, once coordination has
-    /// been offered meanwhile.
-    fn readmit(self: &Arc<Self>) -> Result<(), Box<Response>> {
-        let place = {
-            let mut state = lock(&self.state);
-            if let Some(refusal) = state.transferring() {
-                return Err(Box::new(refusal));
-            }
-            state.in_flight += 1;
-            InFlight(self.clone())
-        };
-        // Outside a request (a direct call in a test) the place goes
-        // straight back with the guard.
+    /// back first, under the hold the caller already has, so going on is
+    /// decided in the same hold as every other way the wait could end.
+    /// Refused, with nothing applied, once coordination has been offered
+    /// meanwhile. Keep the place with [`Self::resume_writing`] once the
+    /// hold is over: it gives itself back under the state lock.
+    fn readmit_locked(self: &Arc<Self>, state: &mut State) -> Result<InFlight, Box<Response>> {
+        if let Some(refusal) = state.transferring() {
+            return Err(Box::new(refusal));
+        }
+        state.in_flight += 1;
+        Ok(InFlight(self.clone()))
+    }
+
+    /// Keep a place [`Self::readmit_locked`] took where the request's
+    /// handler gives it up. Outside a request (a direct call in a test)
+    /// the place goes straight back with the guard.
+    fn resume_writing(place: InFlight) {
         let _ = ADMISSION.try_with(|slot| *slot.borrow_mut() = Some(place));
-        Ok(())
     }
 
     async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
@@ -2861,10 +2877,11 @@ impl Daemon {
                 ttl_secs,
                 note,
                 wait_secs,
+                priority,
                 automatic,
             } => {
                 self.claim(
-                    &agent, resource, mode, amount, ttl_secs, note, wait_secs, automatic,
+                    &agent, resource, mode, amount, ttl_secs, note, wait_secs, priority, automatic,
                 )
                 .await
             }
@@ -3404,7 +3421,10 @@ impl State {
         force: bool,
     ) -> Result<AgentRecord, Box<Response>> {
         let now = Utc::now();
-        agent.status = AgentStatus::Stopping;
+        // `stopping`, and the stop marked on this run, in the record the
+        // `agent_stopping` event is committed with: once it has exited,
+        // whatever it exited with, its record still says a stop was asked.
+        agent.mark_stopping();
         agent.last_seen = now;
         let event = Event::new(
             EventKind::AgentStopping {
@@ -4364,6 +4384,7 @@ impl State {
                 record.terminal = None;
                 self.free_name(&mut record);
                 record.status = AgentStatus::Running;
+                record.begin_run();
                 record.finished_at = None;
                 record.started_at = Some(now);
                 record.last_seen = now;
@@ -4489,6 +4510,7 @@ impl State {
         record.pid = Some(pid);
         record.process_started_at = Some(born);
         record.status = AgentStatus::Running;
+        record.begin_run();
         record.finished_at = None;
         record.started_at = Some(now);
         record.last_seen = now;
@@ -5795,6 +5817,10 @@ impl State {
         canonical.process_started_at = fresh.process_started_at;
         canonical.process_group = fresh.process_group;
         canonical.status = fresh.status.clone();
+        // The fresh process's run, under the record that stays, with its
+        // own stop evidence: whatever stop the record's last run had is
+        // not this one's.
+        canonical.stop_requested = fresh.stop_requested;
         canonical.started_at = fresh.started_at;
         canonical.finished_at = None;
         canonical.last_seen = now;

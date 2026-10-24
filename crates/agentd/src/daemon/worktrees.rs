@@ -961,6 +961,7 @@ impl Daemon {
                 600,
                 Some(format!("integrating verified source {head}")),
                 0,
+                0,
                 false,
             )
             .await
