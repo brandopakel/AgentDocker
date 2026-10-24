@@ -14,14 +14,19 @@
 //! command = ["codex", "exec", "review src/"]
 //! env = { RUST_LOG = "info" }
 //! labels = { role = "review" }
+//! after = "writer exits 0"        # or a list of such conditions
 //! ```
 //!
-//! Agents start in the order they are written.
+//! Agents start in the order they are written, except that one starts
+//! after what it waits on: `depends_on` (started first) and `after` (ended
+//! with status zero first). What those mean, and when an entry is never
+//! started, is decided in `agentdocker_core::agentfile`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use agentdocker_core::AgentSpec;
+use agentdocker_core::agentfile::{self, After};
 use anyhow::{Context, Result, bail};
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -75,40 +80,45 @@ pub struct AgentEntry {
     /// for each in turn.
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// Agents that must have exited with status zero before this one
+    /// starts: `"build exits 0"`, or a list of such conditions. If one
+    /// ends any other way, this agent is never started, and nor is
+    /// anything waiting on it.
+    #[serde(default, deserialize_with = "one_or_many")]
+    pub after: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
 }
 
-/// The first `depends_on` cycle, as the names round it.
-///
-/// `up` starts agents in order and waits for each dependency, so a cycle
-/// is a wait that can never end. Finding it while the file is being read
-/// turns a hang into a sentence.
-fn dependency_cycle(agents: &IndexMap<String, AgentEntry>) -> Option<Vec<String>> {
-    for start in agents.keys() {
-        let mut path = vec![start.clone()];
-        let mut seen: std::collections::HashSet<&String> = std::collections::HashSet::new();
-        seen.insert(start);
-        let mut current = start;
-        // Follow one dependency at a time; any cycle is reachable from
-        // one of its own members, so starting at each name finds them all.
-        while let Some(next) = agents
-            .get(current)
-            .and_then(|entry| entry.depends_on.first())
-        {
-            path.push(next.clone());
-            if next == start {
-                return Some(path);
+/// `after = "a exits 0"` or `after = ["a exits 0", "b exits 0"]`, as a list
+/// either way.
+fn one_or_many<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Conditions;
+    impl<'de> serde::de::Visitor<'de> for Conditions {
+        type Value = Vec<String>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a condition such as \"build exits 0\", or a list of them")
+        }
+        fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<Self::Value, E> {
+            Ok(vec![text.to_owned()])
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut all = Vec::new();
+            while let Some(text) = seq.next_element::<String>()? {
+                all.push(text);
             }
-            if !seen.insert(next) {
-                break;
-            }
-            current = next;
+            Ok(all)
         }
     }
-    None
+    deserializer.deserialize_any(Conditions)
 }
 
 fn default_runtime() -> String {
@@ -145,25 +155,36 @@ impl Agentfile {
                      or on-failure:<n>"
                 );
             }
-            // A dependency that is not in the file can never start, so
-            // `up` would wait for it forever. Say so while the file is
-            // being read, with both names.
-            for needed in &entry.depends_on {
-                if needed == name {
-                    bail!("agent `{name}` depends on itself");
-                }
-                if !file.agents.contains_key(needed) {
-                    bail!("agent `{name}` depends on `{needed}`, which is not in this file");
+            for condition in &entry.after {
+                if let Err(why) = After::parse(condition) {
+                    bail!("agent `{name}` has after = \"{condition}\": {why}");
                 }
             }
         }
-        if let Some(cycle) = dependency_cycle(&file.agents) {
-            bail!(
-                "agents depend on each other in a cycle: {}",
-                cycle.join(" → ")
-            );
-        }
+        // A wait that could never end — on a name that is not in the
+        // file, on itself, round a ring — is a sentence now, with the
+        // entry it is on, rather than an `up` that hangs.
+        agentfile::check(&file.entries())?;
         Ok(file)
+    }
+
+    /// Each entry's ordering, in file order, for the rules in
+    /// `agentdocker_core::agentfile`. Conditions are read when the file
+    /// is parsed, so by here every one of them reads.
+    pub fn entries(&self) -> Vec<agentfile::Entry> {
+        self.agents
+            .iter()
+            .map(|(name, entry)| agentfile::Entry {
+                name: name.clone(),
+                depends_on: entry.depends_on.clone(),
+                after: entry
+                    .after
+                    .iter()
+                    .filter_map(|condition| After::parse(condition).ok())
+                    .collect(),
+                restart: entry.restart_policy(),
+            })
+            .collect()
     }
 
     /// Read `path`, or the first default file name in the current directory.
@@ -316,6 +337,15 @@ labels = { role = "review" }
         assert!(Agentfile::parse("").unwrap().agents.is_empty());
     }
 
+    /// The names in the order `up` considers them.
+    fn ordered(file: &Agentfile) -> Vec<String> {
+        let entries = file.entries();
+        agentfile::order(&entries)
+            .into_iter()
+            .map(|i| entries[i].name.clone())
+            .collect()
+    }
+
     #[test]
     fn dependencies_start_before_the_agents_that_need_them() {
         let file = Agentfile::parse(
@@ -333,12 +363,7 @@ command = ["sh", "-c", "db"]
 "#,
         )
         .unwrap();
-        let specs = file.specs(Path::new("/repo"), &[]).unwrap();
-        let ordered: Vec<String> = crate::teams::order(specs)
-            .into_iter()
-            .map(|s| s.name)
-            .collect();
-        assert_eq!(ordered, ["db", "cache", "web"]);
+        assert_eq!(ordered(&file), ["db", "cache", "web"]);
     }
 
     #[test]
@@ -353,13 +378,8 @@ command = ["sh", "-c", "a"]
 "#,
         )
         .unwrap();
-        let specs = file.specs(Path::new("/repo"), &[]).unwrap();
-        let ordered: Vec<String> = crate::teams::order(specs)
-            .into_iter()
-            .map(|s| s.name)
-            .collect();
         // Not sorted: the order somebody wrote them in is information.
-        assert_eq!(ordered, ["zeta", "alpha"]);
+        assert_eq!(ordered(&file), ["zeta", "alpha"]);
     }
 
     #[test]
@@ -438,5 +458,155 @@ restart = "sometimes"
         .to_string();
         assert!(bad.contains("web"), "the agent is named: {bad}");
         assert!(bad.contains("sometimes"), "and so is the value: {bad}");
+    }
+
+    #[test]
+    fn after_reads_one_condition_or_a_list() {
+        let file = Agentfile::parse(
+            r#"
+[agents.build]
+command = ["true"]
+
+[agents.lint]
+command = ["true"]
+
+[agents.test]
+command = ["true"]
+after = "build exits 0"
+
+[agents.deploy]
+command = ["true"]
+after = ["test exits 0", "  lint   exits 0 "]
+"#,
+        )
+        .unwrap();
+        let entries = file.entries();
+        let after = |name: &str| -> Vec<String> {
+            entries
+                .iter()
+                .find(|e| e.name == name)
+                .unwrap()
+                .after
+                .iter()
+                .map(|a| a.name.clone())
+                .collect()
+        };
+        assert_eq!(after("test"), ["build"]);
+        assert_eq!(after("deploy"), ["test", "lint"]);
+        assert!(after("build").is_empty(), "no after is no wait");
+        assert_eq!(ordered(&file), ["build", "lint", "test", "deploy"]);
+        // A quoted name with a space in it reads too.
+        let spaced = Agentfile::parse(
+            r#"
+[agents."db seed"]
+command = ["true"]
+
+[agents.web]
+command = ["true"]
+after = "db seed exits 0"
+"#,
+        )
+        .unwrap();
+        assert_eq!(spaced.entries()[1].after[0].name, "db seed");
+    }
+
+    /// The error `parse` gives for a file, as one line.
+    fn refused(text: &str) -> String {
+        format!("{:#}", Agentfile::parse(text).unwrap_err())
+    }
+
+    #[test]
+    fn after_is_refused_when_its_wait_could_never_end_and_the_entry_is_named() {
+        let unknown = refused(
+            r#"
+[agents.test]
+command = ["true"]
+after = "biuld exits 0"
+"#,
+        );
+        assert!(unknown.contains("`test`"), "{unknown}");
+        assert!(unknown.contains("`biuld` is not in this file"), "{unknown}");
+
+        let itself = refused(
+            r#"
+[agents.test]
+command = ["true"]
+after = "test exits 0"
+"#,
+        );
+        assert!(itself.contains("`test`"), "{itself}");
+        assert!(itself.contains("waits on itself"), "{itself}");
+
+        let ring = refused(
+            r#"
+[agents.a]
+command = ["true"]
+after = "c exits 0"
+
+[agents.b]
+command = ["true"]
+after = "a exits 0"
+
+[agents.c]
+command = ["true"]
+after = ["b exits 0"]
+"#,
+        );
+        assert!(ring.contains("cycle: a → c → b → a"), "{ring}");
+
+        // A ring can go through both kinds of wait.
+        let mixed = refused(
+            r#"
+[agents.a]
+command = ["true"]
+depends_on = ["b"]
+
+[agents.b]
+command = ["true"]
+after = "a exits 0"
+"#,
+        );
+        assert!(mixed.contains("cycle"), "{mixed}");
+
+        let never = refused(
+            r#"
+[agents.serve]
+command = ["true"]
+restart = "always"
+
+[agents.probe]
+command = ["true"]
+after = "serve exits 0"
+"#,
+        );
+        assert!(never.contains("`probe`"), "{never}");
+        assert!(never.contains("restart = \"always\""), "{never}");
+    }
+
+    #[test]
+    fn a_malformed_condition_is_named_with_its_entry() {
+        for (condition, says) in [
+            ("\"build\"", "not a condition"),
+            ("\"build exits 1\"", "only exit status 0"),
+            ("\"build ends 0\"", "`ends` is not `exits`"),
+            ("\"\"", "it is empty"),
+            ("[\"build exits 0\", \"exits 0\"]", "names no entry"),
+        ] {
+            let error = refused(&format!(
+                "[agents.build]\ncommand = [\"true\"]\n\n[agents.test]\ncommand = [\"true\"]\nafter = {condition}\n"
+            ));
+            assert!(
+                error.contains("agent `test` has after = "),
+                "{condition}: {error}"
+            );
+            assert!(error.contains(says), "{condition}: {error}");
+        }
+        // The wrong type is TOML's error, which names the line.
+        let typed = refused("[agents.test]\ncommand = [\"true\"]\nafter = 5\n");
+        assert!(typed.contains("line 3"), "{typed}");
+        assert!(
+            typed.contains("build exits 0"),
+            "says what it wants: {typed}"
+        );
     }
 }

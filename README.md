@@ -290,13 +290,20 @@ runtime = "codex"
 command = ["codex", "exec", "Review whatever writer changes and message it"]
 env = { RUST_LOG = "info" }
 labels = { role = "review" }
+
+[agents.summary]
+runtime = "claude-code"
+command = ["claude", "-p", "Summarise what writer changed for the project"]
+after = "writer exits 0"              # only once writer has finished successfully
 ```
 
 ```sh
-agentdocker up                # starts writer, then reviewer; skips any already running
+agentdocker up                # starts writer and reviewer, then summary once writer exits 0
 agentdocker up reviewer       # just one
 agentdocker down              # stops them
 ```
+
+`after` takes one condition or a list (`after = ["build exits 0", "lint exits 0"]`). While an entry waits, `up` stays and says so; if what it waits on exits otherwise, is stopped or fails to start, the entry is never started — nor is anything waiting on it — and `up` says why (`summary  not started: writer exited 1`) and exits unsuccessfully. Only an exit 0 whose event `up` received counts, because a record cannot show the exit was not the end of a stop: `up summary` alone does not take an earlier exit of `writer` as success, and neither does `up` once its event stream has ended (a daemon reload ends it).
 
 ### Waiting instead of failing
 
