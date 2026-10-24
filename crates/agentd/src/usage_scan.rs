@@ -470,6 +470,56 @@ mod tests {
         );
     }
     #[test]
+    fn a_transcript_growing_during_the_scan_is_read_to_its_captured_snapshot() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("live.jsonl");
+        let seed: String = (0..40).map(claude).collect();
+        std::fs::write(&path, seed).unwrap();
+        // The provider keeps writing for as long as the scan runs.
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (path, stop) = (path.clone(), stop.clone());
+            std::thread::spawn(move || {
+                for id in 40.. {
+                    if stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&path)
+                        .unwrap()
+                        .write_all(claude(id).as_bytes())
+                        .unwrap();
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            })
+        };
+        let report = scan(vec![root(&path, reader::Runtime::Claude)], query());
+        stop.store(true, Ordering::SeqCst);
+        writer.join().unwrap();
+        let report = report.unwrap();
+        let text = std::fs::read(&path).unwrap();
+        let captured = report.files[0].captured_bytes as usize;
+        assert!(text.len() > captured, "the file grew past its snapshot");
+        let complete = text[..captured].iter().filter(|b| **b == b'\n').count();
+        assert!(complete >= 40);
+        assert_eq!(report.parsed_samples, complete);
+        assert_eq!(report.unique_source_records, complete as u64);
+        assert_eq!(
+            report.rows[0].counters.input_tokens.sum,
+            Some(2 * complete as u64)
+        );
+        let through = text[..captured]
+            .iter()
+            .rposition(|b| *b == b'\n')
+            .map_or(0, |i| i + 1);
+        assert_eq!(report.files[0].complete_record_bytes, through as u64);
+    }
+    #[test]
     fn ignored_nonempty_inputs_cannot_borrow_another_files_complete_coverage() {
         let temp = tempfile::tempdir().unwrap();
         let good = temp.path().join("good.jsonl");

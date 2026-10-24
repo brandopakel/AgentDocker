@@ -275,7 +275,9 @@ impl Daemon {
                 } else {
                     ContainerIntent::Stop
                 };
-                record.status = AgentStatus::Stopping;
+                // Committed with its `agent_stopping` by the container
+                // transition, the stop marked on the run with it.
+                record.mark_stopping();
             }
         })
     }
@@ -857,6 +859,7 @@ mod tests {
                 ttl_secs: 600,
                 note: None,
                 wait_secs: 0,
+                priority: 0,
                 automatic: false,
             })
             .await

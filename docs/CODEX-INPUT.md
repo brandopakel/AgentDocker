@@ -19,9 +19,10 @@ The receiver requires a daemon whose schema includes the controller binding and
 answer routing, and Codex's experimental native queue API. An accepted hook
 configuration is needed to start a receiver for an existing terminal. Setup
 includes `SessionStart`, which verifies identity and starts the receiver without
-asserting working/idle activity or consuming hook context. Codex delays this
-hook until a turn starts, even after reopening an existing thread, so the
-receiver binds at the first turn. A session that starts or reopens with no
+asserting working/idle activity or consuming hook context; its answer carries
+the project's memory as developer context, and reads nothing from the queue.
+Codex delays this hook until a turn starts, even after reopening an existing
+thread, so the receiver binds at the first turn. A session that starts or reopens with no
 prompt emits no hook and stays unbound until its first turn; the owned
 `codex-native` launcher (below) binds before the first prompt. MCP startup
 supplies no thread/profile identity in its environment, so it cannot safely

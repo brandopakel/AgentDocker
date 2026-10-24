@@ -152,14 +152,21 @@ pub fn conversation_line(c: &agentdocker_core::ConversationSummary) -> String {
 }
 
 pub fn message_line(message: &Envelope) -> String {
+    message_line_at(message, None)
+}
+
+/// A message line, with a kept topic message's sequence after its id: the
+/// point `watch --after-seq` picks up from.
+pub fn message_line_at(message: &Envelope, seq: Option<u64>) -> String {
     let from = short(&message.from);
     let reply = message
         .reply_to
         .as_ref()
         .map(|id| format!(" re:{id}"))
         .unwrap_or_default();
+    let seq = seq.map(|seq| format!("  seq:{seq}")).unwrap_or_default();
     format!(
-        "{}  {}  {from} → {}  [{}{reply}]  {}",
+        "{}  {}{seq}  {from} → {}  [{}{reply}]  {}",
         clock(message.sent_at),
         message.id,
         message.to,
@@ -565,8 +572,8 @@ pub fn event_line(event: &Event) -> String {
             requester.short(),
             resource(key)
         ),
-        EventKind::LeaseDeadlock { cycle } => format!(
-            "lease deadlock   {}",
+        EventKind::LeaseDeadlock { cycle, victim } => format!(
+            "lease deadlock   {}{}",
             cycle
                 .iter()
                 .map(|step| format!(
@@ -576,7 +583,15 @@ pub fn event_line(event: &Event) -> String {
                     step.held_by.short()
                 ))
                 .collect::<Vec<_>>()
-                .join("; ")
+                .join("; "),
+            victim
+                .as_ref()
+                .map(|v| format!(
+                    " (ended {}'s wait for {})",
+                    v.agent.short(),
+                    resource(&v.resource)
+                ))
+                .unwrap_or_default()
         ),
         EventKind::AgentRestoring { agent } => format!("restoring {}", agent.short()),
         EventKind::AgentRestored { agent, pid, stale } => format!(
@@ -724,6 +739,17 @@ pub fn event_line(event: &Event) -> String {
         EventKind::MessagesPruned { removed } => {
             format!("messages pruned  {removed} archived messages")
         }
+        EventKind::TopicMessagesPruned { removed } => {
+            format!("topics pruned    {removed} kept topic messages")
+        }
+        EventKind::TopicCursorsAdvanced { agent, cursors } => format!(
+            "{agent} read {}",
+            cursors
+                .iter()
+                .map(|cursor| format!("{} through seq:{}", cursor.topic, cursor.seq))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         EventKind::AgentsPruned { removed } => {
             format!("agents pruned    {removed} finished agents past retention")
         }
@@ -1639,6 +1665,38 @@ mod tests {
             })
             .ends_with("judge status   unusable: judge: key_file must be mode 0600")
         );
+    }
+
+    /// A deadlock line names the ring and whose wait was ended to break
+    /// it; one stored before the victim was recorded names the ring alone.
+    #[test]
+    fn a_deadlock_line_says_whose_wait_was_ended() {
+        use agentdocker_core::{Blocked, Event, EventKind, ResourceKey};
+        let step = |agent: &str, resource: &str, held_by: &str| Blocked {
+            agent: agent.into(),
+            resource: ResourceKey::new(resource),
+            held_by: held_by.into(),
+        };
+        let cycle = vec![
+            step("bbbbbbbbbbbb", "task:x", "aaaaaaaaaaaa"),
+            step("aaaaaaaaaaaa", "task:y", "bbbbbbbbbbbb"),
+        ];
+        let line = |victim| {
+            super::event_line(&Event::new(
+                EventKind::LeaseDeadlock {
+                    cycle: cycle.clone(),
+                    victim,
+                },
+                chrono::Utc::now(),
+            ))
+        };
+        let ended = line(Some(cycle[1].clone()));
+        assert!(
+            ended.ends_with("(ended aaaaaaaaaaaa's wait for task:y)"),
+            "{ended}"
+        );
+        let older = line(None);
+        assert!(older.ends_with("held by bbbbbbbbbbbb"), "{older}");
     }
 
     /// What herdr or Codex's shared server said of an agent is shown as

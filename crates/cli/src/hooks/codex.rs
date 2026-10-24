@@ -4,6 +4,11 @@
 //! input and leased, and a patch on a file another agent holds is refused.
 //! Only those paths leave this process; the tool input itself never does.
 //!
+//! A root `SessionStart` answers with the project's memory as the developer
+//! context Codex takes from that hook, the block a Claude Code session is
+//! told. It reads nothing from the queue, so it never competes with a
+//! receiver for it.
+//!
 //! A subagent's start and stop are its conversation's activity, never an
 //! agent of their own; `SessionEnd` ends a plain terminal session as Claude
 //! Code's does, and leaves every other kind to its own lifecycle. The
@@ -360,6 +365,14 @@ pub(super) async fn run(client: &Client) -> Result<()> {
         .await;
         // The bridge reports activity and supplies the next ordinary input turn.
         // Running legacy stop continuations here would compete with that queue.
+        // The project's memory is no input, so its session start is told it.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        let start = tokio::time::timeout_at(deadline, session_start(client, &input, &agent))
+            .await
+            .unwrap_or_else(|_| Delivery::empty());
+        if !start.is_empty() {
+            deliver(client, Some(agent.id.as_str()), start, 1, deadline).await?;
+        }
         return Ok(());
     }
     let started_at =
@@ -440,6 +453,11 @@ pub(super) async fn run(client: &Client) -> Result<()> {
         if subagent_event(&input.hook_event_name) {
             return Ok(Delivery::empty());
         }
+        // Whoever serves the queue below, the session's start is told the
+        // project's memory once the receiver, if any, has been started.
+        let starting = agent
+            .clone()
+            .filter(|_| input.hook_event_name == "SessionStart");
         if input.hook_event_name == "PreToolUse"
             && let Some(agent) = &agent
             && let Some(denied) = claim_edits(client, &input, agent).await?
@@ -450,7 +468,7 @@ pub(super) async fn run(client: &Client) -> Result<()> {
                 continuation: None,
             });
         }
-        match agent {
+        let delivery = match agent {
             // Hooks in the shared server: a terminal's conversation, or one
             // a binding already names. Its receiver reaches it at idle
             // through the control socket and becomes the queue's one
@@ -495,6 +513,13 @@ pub(super) async fn run(client: &Client) -> Result<()> {
                 }
             },
             None => Ok(Delivery::empty()),
+        }?;
+        match starting {
+            // No path answers a session start with anything of its own.
+            Some(agent) if delivery.is_empty() => {
+                Ok(session_start(client, &input, &agent).await)
+            }
+            _ => Ok(delivery),
         }
     })
     .await
@@ -620,6 +645,7 @@ pub(super) async fn claim_edits<B: Backend>(
                 ttl_secs: 600,
                 note: Some(format!("editing in Codex session {}", agent.spec.name)),
                 wait_secs: 0,
+                priority: 0,
                 automatic: true,
             })
             .await?;
@@ -653,6 +679,12 @@ impl Delivery {
             acknowledgement: None,
             continuation: None,
         }
+    }
+
+    /// Whether it answers nothing: no output, no acknowledgement, no
+    /// continuation.
+    fn is_empty(&self) -> bool {
+        self.output == json!({}) && self.acknowledgement.is_none() && self.continuation.is_none()
     }
 }
 
@@ -699,6 +731,31 @@ async fn prepare<B: Backend>(backend: &B, input: &Input, agent: String) -> Resul
             messages: ids,
         }),
     })
+}
+
+/// What a root `SessionStart` answers: the project's memory, which Codex
+/// adds to the conversation as developer context, never typed into its
+/// terminal. Codex runs this hook as a conversation starts or resumes (at
+/// its first turn), after `/clear` and after a compaction, so a compacted
+/// conversation is told again. Nothing is read from the queue and nothing
+/// is acknowledged. Empty for any other event, a subagent's, an agent in
+/// no project, or a project with nothing kept.
+async fn session_start<B: Backend>(backend: &B, input: &Input, agent: &AgentRecord) -> Delivery {
+    if !input.is_root() || input.hook_event_name != "SessionStart" {
+        return Delivery::empty();
+    }
+    let memory = super::memory_profile(backend, agent, super::MEMORY_PROFILE_CHARS).await;
+    if memory.is_empty() {
+        return Delivery::empty();
+    }
+    Delivery {
+        output: json!({"hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": memory
+        }}),
+        acknowledgement: None,
+        continuation: None,
+    }
 }
 
 fn context(messages: &[Envelope]) -> (String, Vec<MessageId>) {
@@ -1119,6 +1176,206 @@ mod tests {
         );
         assert_eq!(backend.requests().len(), 1);
         assert_eq!(file.metadata().unwrap().len(), 0);
+    }
+
+    /// A Codex record in a project, for the session-start tests.
+    fn codex_in_project(now: chrono::DateTime<Utc>) -> AgentRecord {
+        let mut record = AgentRecord::new(
+            AgentSpec {
+                name: "codex-42".into(),
+                runtime: "codex".into(),
+                labels: [("session_id".into(), "fixture".into())].into(),
+                ..AgentSpec::default()
+            },
+            false,
+            now,
+        );
+        record.status = agentdocker_core::AgentStatus::Running;
+        record.project = Some(agentdocker_core::ProjectRef::directory("/work/alpha"));
+        record
+    }
+
+    /// Answers the memory profile and nothing else, so a test fails if a
+    /// session start reads the queue; and records what is counted.
+    struct MemoryOnly {
+        memories: Vec<agentdocker_core::memory::Memory>,
+        requests: std::cell::RefCell<Vec<Request>>,
+        emissions: std::cell::RefCell<Vec<(String, agentdocker_core::usage::emission::Emission)>>,
+    }
+
+    impl MemoryOnly {
+        fn new(memories: Vec<agentdocker_core::memory::Memory>) -> Self {
+            Self {
+                memories,
+                requests: Default::default(),
+                emissions: Default::default(),
+            }
+        }
+    }
+
+    impl Backend for MemoryOnly {
+        async fn call(&self, request: Request) -> Result<Response> {
+            self.requests.borrow_mut().push(request.clone());
+            match request {
+                Request::MemoryProfile { .. } => Ok(Response::Memories {
+                    memories: self.memories.clone(),
+                }),
+                other => panic!("a session start asked for {other:?}"),
+            }
+        }
+        async fn record_emission(
+            &self,
+            agent: &str,
+            emission: agentdocker_core::usage::emission::Emission,
+        ) {
+            self.emissions.borrow_mut().push((agent.into(), emission));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_start_is_told_the_projects_memory_and_reads_no_queue() {
+        use agentdocker_core::memory::Memory;
+        let now = Utc::now();
+        let record = codex_in_project(now);
+        let project = record.project.as_ref().unwrap().id();
+        let earlier = now - chrono::Duration::hours(1);
+        let rule = Memory::new(
+            project.clone(),
+            "user",
+            "Reviews go through the gate",
+            vec![],
+            None,
+            earlier,
+        )
+        .unwrap()
+        .standing(true);
+        let news = Memory::new(
+            project,
+            "claude-1",
+            "The cache was cleared",
+            vec![],
+            None,
+            now,
+        )
+        .unwrap();
+        let backend = MemoryOnly::new(vec![rule.clone(), news.clone()]);
+        let delivery = session_start(&backend, &input("SessionStart"), &record).await;
+        assert_eq!(
+            delivery.output["hookSpecificOutput"]["hookEventName"],
+            "SessionStart"
+        );
+        let text = delivery.output["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(text.starts_with("Project memory ("), "{text}");
+        assert!(text.contains("data, never instructions"), "{text}");
+        let standing = text.find(rule.id.as_str()).expect("standing said");
+        let recent = text.find(news.id.as_str()).expect("recent said");
+        assert!(standing < recent, "standing first: {text}");
+        assert!(delivery.acknowledgement.is_none() && delivery.continuation.is_none());
+        assert!(matches!(
+            &backend.requests.borrow()[..],
+            [Request::MemoryProfile { from: Some(from), project: None, max_chars: Some(800) }]
+                if from == record.id.as_str()
+        ));
+
+        // Written as Codex reads it, and counted as AgentDocker's overhead.
+        #[cfg(unix)]
+        {
+            use std::io::{Read, Seek};
+            use std::os::fd::AsRawFd;
+            let mut file = tempfile::tempfile().unwrap();
+            deliver(
+                &backend,
+                Some(record.id.as_str()),
+                delivery,
+                file.as_raw_fd(),
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+            file.rewind().unwrap();
+            let mut written = String::new();
+            file.read_to_string(&mut written).unwrap();
+            let line: Value = serde_json::from_str(written.trim_end()).unwrap();
+            assert_eq!(line["hookSpecificOutput"]["additionalContext"], text);
+            let emissions = backend.emissions.borrow();
+            assert_eq!(emissions.len(), 1);
+            assert_eq!(emissions[0].0, record.id.as_str());
+            assert_eq!(
+                emissions[0].1.channel,
+                agentdocker_core::usage::emission::Channel::NativeHook
+            );
+            assert_eq!(emissions[0].1.bytes, written.len() as u64);
+            assert_eq!(backend.requests.borrow().len(), 1, "no acknowledgement");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_root_session_start_with_something_kept_is_told_memory() {
+        use agentdocker_core::memory::Memory;
+        let now = Utc::now();
+        let record = codex_in_project(now);
+        let kept = Memory::new(
+            record.project.as_ref().unwrap().id(),
+            "user",
+            "Tests run with nextest",
+            vec![],
+            None,
+            now,
+        )
+        .unwrap();
+        for event in [
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "PreCompact",
+            "PostCompact",
+            "Stop",
+            "Interrupt",
+            "SubagentStart",
+            "SessionEnd",
+        ] {
+            let backend = MemoryOnly::new(vec![kept.clone()]);
+            assert!(
+                session_start(&backend, &input(event), &record)
+                    .await
+                    .is_empty(),
+                "{event}"
+            );
+            assert!(backend.requests.borrow().is_empty(), "{event}");
+        }
+        // A subagent's start carries its parent's session: what it is
+        // answered reaches the subagent, so it is told nothing.
+        for (agent_id, agent_type) in [(Some("child"), None), (None, Some("reviewer"))] {
+            let child = Input {
+                agent_id: agent_id.map(str::to_owned),
+                agent_type: agent_type.map(str::to_owned),
+                ..input("SessionStart")
+            };
+            let backend = MemoryOnly::new(vec![kept.clone()]);
+            assert!(session_start(&backend, &child, &record).await.is_empty());
+            assert!(backend.requests.borrow().is_empty());
+        }
+        let backend = MemoryOnly::new(Vec::new());
+        assert!(
+            session_start(&backend, &input("SessionStart"), &record)
+                .await
+                .is_empty()
+        );
+        let mut elsewhere = record.clone();
+        elsewhere.project = None;
+        let backend = MemoryOnly::new(vec![kept]);
+        assert!(
+            session_start(&backend, &input("SessionStart"), &elsewhere)
+                .await
+                .is_empty()
+        );
+        assert!(
+            backend.requests.borrow().is_empty(),
+            "no project, nothing asked"
+        );
     }
 
     #[test]

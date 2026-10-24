@@ -474,25 +474,32 @@ pub enum EventKind {
         resolution: Option<String>,
     },
     /// A claim could not be satisfied and took a place in the queue.
-    /// `position` is how many waiters are ahead of it on an overlapping
-    /// resource; zero means it is next.
+    /// `position` is how many waiters are served before it and in its way
+    /// (higher priority first, then arrival); zero means it is next.
     LeaseWaiting {
         resource: crate::ResourceKey,
         requester: AgentId,
         position: usize,
     },
     /// A wait ended: the lease was taken, the caller gave up, its
-    /// connection went away, or a cycle was found.
+    /// connection went away, or it was the victim of a cycle.
     LeaseWaitEnded {
         resource: crate::ResourceKey,
         requester: AgentId,
         outcome: WaitOutcome,
     },
-    /// A claim was refused because granting the wait would have closed a
-    /// cycle. The newcomer is always the victim: deterministic, and it
-    /// needs no priorities.
+    /// A claim's wait would have closed a cycle, and the cycle was broken
+    /// at one wait in it (`crate::wait::victim`): the lowest priority, the
+    /// youngest among equals, the claim that found it counting as the
+    /// youngest of all. That claim is refused, or an older wait is ended
+    /// and the claim looks again.
     LeaseDeadlock {
         cycle: Vec<crate::Blocked>,
+        /// The step of `cycle` whose wait was ended: who, waiting for
+        /// what, held by whom. Absent in events from a daemon predating
+        /// it, where the newcomer was always the victim.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        victim: Option<crate::Blocked>,
     },
     /// A card was filed on a project's board.
     TaskCreated {
@@ -807,6 +814,18 @@ pub enum EventKind {
     /// Archived messages were dropped by retention or the cap.
     MessagesPruned {
         removed: usize,
+    },
+    /// Topic retention dropped kept topic messages past a topic's age or
+    /// count limit.
+    TopicMessagesPruned {
+        removed: usize,
+    },
+    /// An agent acknowledged kept topic messages: each topic's cursor now
+    /// stands at the sequence named, and a later subscribe replays only
+    /// what came after it.
+    TopicCursorsAdvanced {
+        agent: crate::AgentId,
+        cursors: Vec<crate::TopicCursor>,
     },
     /// Retention forgot the records of agents that ended before its
     /// window and held nothing; each was said as `agent_removed` first.

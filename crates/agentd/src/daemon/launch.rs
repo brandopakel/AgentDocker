@@ -150,6 +150,8 @@ impl Daemon {
         };
         record.managed = true;
         record.status = AgentStatus::Created;
+        // A new run, committed with `session_relaunched`.
+        record.begin_run();
         record.pid = None;
         record.process_started_at = None;
         record.process_group = None;

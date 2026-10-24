@@ -81,6 +81,7 @@ mod review;
 mod roles;
 mod secret_reviews;
 mod tasks;
+mod topics;
 mod transport;
 mod usage;
 mod waiting;
@@ -344,6 +345,11 @@ pub struct Daemon {
     /// lock that commits it, met twice. Never held across an await.
     #[cfg(test)]
     register_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// A test's hold on one agent's claim at one point of its wait
+    /// (`waiting::ClaimPoint`), so another claim can act in between. Taken
+    /// once; never held across an await.
+    #[cfg(test)]
+    claim_hold: Mutex<Option<waiting::ClaimHold>>,
     /// What was found of the processes that asked to act as the person.
     /// Never held with the state lock.
     peers: Mutex<person::Peers>,
@@ -461,7 +467,7 @@ struct State {
     transports: HashMap<AgentId, transport::Transport>,
     projects: HashMap<PathBuf, Option<String>>,
     next_seq: u64,
-    bus: broadcast::Sender<Envelope>,
+    bus: broadcast::Sender<Posted>,
     events: broadcast::Sender<Event>,
     /// Next journal seq per project, loaded from the store on first use.
     journal_seq: HashMap<ProjectId, u64>,
@@ -474,6 +480,9 @@ struct State {
     /// journal-retention tick clears that one, and would otherwise re-warn
     /// here every minute for a problem that has not changed.
     agent_config_notice: Option<String>,
+    /// The topic-retention notice, said once while `[messages]` gives a
+    /// topic value that cannot be read; the defaults hold meanwhile.
+    topic_config_notice: Option<String>,
     /// The last HEAD a commit entry was written for, per checkout, so a
     /// move seen through several agents is journaled once.
     last_head: HashMap<PathBuf, String>,
@@ -1069,7 +1078,10 @@ impl Daemon {
                         // (this daemon's after an abort, or the successor's)
                         // finds it again.
                         let mut agent = candidate.clone();
-                        agent.status = AgentStatus::Stopping;
+                        // Published as `agent_stopping`, so marked as a
+                        // stop on its run the way a requested one is: what
+                        // the events say and what the record says agree.
+                        agent.mark_stopping();
                         if state.persist("agent", |store| store.upsert_agent(&agent))
                             == Persisted::Committed
                         {
@@ -1078,6 +1090,9 @@ impl Daemon {
                                 AgentStatus::Stopping,
                                 Utc::now(),
                             );
+                            if let Some(stored) = state.registry.get_mut(&candidate.id) {
+                                stored.mark_stopping();
+                            }
                             state.emit(EventKind::AgentStopping {
                                 agent: candidate.id,
                                 force: false,
@@ -1634,6 +1649,7 @@ impl Daemon {
                 journal_rings: HashMap::new(),
                 config_notice: None,
                 agent_config_notice: None,
+                topic_config_notice: None,
                 last_head: HashMap::new(),
                 last_branch: HashMap::new(),
                 worktree_creators: HashMap::new(),
@@ -1674,6 +1690,8 @@ impl Daemon {
             relaunch_hold: Mutex::new(None),
             #[cfg(test)]
             register_hold: Mutex::new(None),
+            #[cfg(test)]
+            claim_hold: Mutex::new(None),
             peers: Mutex::new(person::Peers::default()),
             person_check: std::env::var_os("AGENTDOCKER_PERSON_CHECK").is_none_or(|v| v != "off"),
             agent_check: std::env::var_os("AGENTDOCKER_AGENT_CHECK").is_none_or(|v| v != "off"),
@@ -1944,21 +1962,24 @@ impl Daemon {
     }
 
     /// The wait is over and the request will write again: take a place
-    /// back first. Refused, with nothing applied, once coordination has
-    /// been offered meanwhile.
-    fn readmit(self: &Arc<Self>) -> Result<(), Box<Response>> {
-        let place = {
-            let mut state = lock(&self.state);
-            if let Some(refusal) = state.transferring() {
-                return Err(Box::new(refusal));
-            }
-            state.in_flight += 1;
-            InFlight(self.clone())
-        };
-        // Outside a request (a direct call in a test) the place goes
-        // straight back with the guard.
+    /// back first, under the hold the caller already has, so going on is
+    /// decided in the same hold as every other way the wait could end.
+    /// Refused, with nothing applied, once coordination has been offered
+    /// meanwhile. Keep the place with [`Self::resume_writing`] once the
+    /// hold is over: it gives itself back under the state lock.
+    fn readmit_locked(self: &Arc<Self>, state: &mut State) -> Result<InFlight, Box<Response>> {
+        if let Some(refusal) = state.transferring() {
+            return Err(Box::new(refusal));
+        }
+        state.in_flight += 1;
+        Ok(InFlight(self.clone()))
+    }
+
+    /// Keep a place [`Self::readmit_locked`] took where the request's
+    /// handler gives it up. Outside a request (a direct call in a test)
+    /// the place goes straight back with the guard.
+    fn resume_writing(place: InFlight) {
         let _ = ADMISSION.try_with(|slot| *slot.borrow_mut() = Some(place));
-        Ok(())
     }
 
     async fn handle_healthy(
@@ -2793,6 +2814,26 @@ impl Daemon {
             }
             Request::AckInbox { agent, messages } => {
                 let mut state = lock(&self.state);
+                // Kept topic messages move the agent's topic cursors; the
+                // rest are the queue's, acknowledged as they always were.
+                let (topics, rest) = match state.split_topic_acks(&agent, &messages) {
+                    Ok(split) => split,
+                    Err(error) => return *error,
+                };
+                if rest.len() != messages.len() {
+                    if !rest.is_empty()
+                        && let Err(error) = state.legacy_ack_allowed(&agent, &rest)
+                    {
+                        return *error;
+                    }
+                    if let Err(error) = state.ack_topics(&agent, &topics) {
+                        return *error;
+                    }
+                    if rest.is_empty() {
+                        return Response::Ok;
+                    }
+                }
+                let messages = rest;
                 match state.legacy_ack_allowed(&agent, &messages) {
                     Ok(()) => {
                         let response = state.ack_inbox(&agent, &messages);
@@ -2856,10 +2897,11 @@ impl Daemon {
                 ttl_secs,
                 note,
                 wait_secs,
+                priority,
                 automatic,
             } => {
                 self.claim(
-                    &agent, resource, mode, amount, ttl_secs, note, wait_secs, automatic,
+                    &agent, resource, mode, amount, ttl_secs, note, wait_secs, priority, automatic,
                 )
                 .await
             }
@@ -3340,37 +3382,50 @@ impl Daemon {
 
     /// Open a live subscription. Returns the filter plus the raw receiver so
     /// the caller can `select!` on the receiver without borrowing the filter.
+    /// The inbox backlog and the kept topic messages to replay are read
+    /// under the same lock the bus receiver is taken under, and every
+    /// publication commits and goes out under it too: a message is in the
+    /// replay or on the receiver, never both and never neither.
     pub fn subscribe(
         self: &Arc<Self>,
         agent: Option<&str>,
         topics: Vec<String>,
-    ) -> Result<(Subscription, broadcast::Receiver<Envelope>), Box<Response>> {
+        after_seq: Option<u64>,
+    ) -> Result<(Subscription, broadcast::Receiver<Posted>), Box<Response>> {
         let mut state = lock(&self.state);
         let agent = agent
             .map(|reference| state.resolve(reference))
             .transpose()?;
-        let project = agent
-            .as_ref()
-            .and_then(|id| state.registry.get(id))
-            .and_then(|a| a.project.as_ref().map(ProjectRef::id));
+        let record = agent.as_ref().and_then(|id| state.registry.get(id));
+        let project = record.and_then(|a| a.project.as_ref().map(ProjectRef::id));
+        let scope = agentdocker_core::topic::scope(record);
+        if let Some(id) = &agent {
+            state.input_consumer(id.as_str(), false)?;
+        }
+        let replay = state.topic_replay(&topics, scope.as_ref(), agent.as_ref(), after_seq)?;
         let receiver = state.bus.subscribe();
         let backlog = match &agent {
             Some(id) => {
-                state.input_consumer(id.as_str(), false)?;
                 let backlog = state.read_inbox(id, false)?;
                 *state.live_subscribers.entry(id.clone()).or_default() += 1;
                 backlog
             }
             None => Vec::new(),
         };
-        let seen = backlog.iter().map(|m| m.id.clone()).collect();
+        let seen = backlog
+            .iter()
+            .chain(replay.messages.iter().map(|(_, message)| message))
+            .map(|m| m.id.clone())
+            .collect();
         Ok((
             Subscription {
                 daemon: self.clone(),
                 agent,
                 project,
+                scope,
                 topics,
                 backlog,
+                replay,
                 seen,
             },
             receiver,
@@ -3386,7 +3441,10 @@ impl State {
         force: bool,
     ) -> Result<AgentRecord, Box<Response>> {
         let now = Utc::now();
-        agent.status = AgentStatus::Stopping;
+        // `stopping`, and the stop marked on this run, in the record the
+        // `agent_stopping` event is committed with: once it has exited,
+        // whatever it exited with, its record still says a stop was asked.
+        agent.mark_stopping();
         agent.last_seen = now;
         let event = Event::new(
             EventKind::AgentStopping {
@@ -4346,6 +4404,7 @@ impl State {
                 record.terminal = None;
                 self.free_name(&mut record);
                 record.status = AgentStatus::Running;
+                record.begin_run();
                 record.finished_at = None;
                 record.started_at = Some(now);
                 record.last_seen = now;
@@ -4477,6 +4536,7 @@ impl State {
         record.pid = Some(pid);
         record.process_started_at = Some(born);
         record.status = AgentStatus::Running;
+        record.begin_run();
         record.finished_at = None;
         record.started_at = Some(now);
         record.last_seen = now;
@@ -5204,6 +5264,7 @@ impl State {
         // The person's own messages are followed per recipient, so they can
         // see where each stands; agents' traffic is not.
         let tracked = self.is_human_id(&AgentId::from(envelope.from.as_str()));
+        let mut post = None;
         let _ = self.commit(
             "message",
             events,
@@ -5223,7 +5284,8 @@ impl State {
                     tracked,
                 )
             },
-            |state, _, ()| {
+            |state, _, kept| {
+                post = kept;
                 if let Some(channel) = &channel {
                     state.channels.insert(channel.id.clone(), channel.clone());
                 }
@@ -5270,7 +5332,13 @@ impl State {
             }
         }
         self.notify_humans(&envelope, &recipients);
-        let subscribers = self.bus.send(envelope.clone()).unwrap_or(0);
+        let subscribers = self
+            .bus
+            .send(Posted {
+                envelope: envelope.clone(),
+                topic: post,
+            })
+            .unwrap_or(0);
         let now = Utc::now();
         let mut readiness = agentdocker_core::SendReadiness::default();
         let blocked_sources: Vec<_> = self
@@ -5821,6 +5889,10 @@ impl State {
         canonical.process_started_at = fresh.process_started_at;
         canonical.process_group = fresh.process_group;
         canonical.status = fresh.status.clone();
+        // The fresh process's run, under the record that stays, with its
+        // own stop evidence: whatever stop the record's last run had is
+        // not this one's.
+        canonical.stop_requested = fresh.stop_requested;
         canonical.started_at = fresh.started_at;
         canonical.finished_at = None;
         canonical.last_seen = now;
@@ -5990,15 +6062,38 @@ impl State {
     }
 }
 
+/// One publication on the message bus: the message, and for a topic
+/// message where the topic log keeps it, so a subscriber can be told its
+/// sequence and asked whether it may see it.
+#[derive(Clone, Debug)]
+pub struct Posted {
+    pub envelope: Envelope,
+    pub topic: Option<agentdocker_core::TopicPost>,
+}
+
+impl From<Envelope> for Posted {
+    fn from(envelope: Envelope) -> Self {
+        Self {
+            envelope,
+            topic: None,
+        }
+    }
+}
+
 /// A live view of messages. Both replay and newly streamed addressed messages
-/// remain in the durable inbox until explicitly acknowledged.
+/// remain in the durable inbox until explicitly acknowledged; kept topic
+/// messages remain in the topic log, replayed again until acknowledged.
 pub struct Subscription {
     daemon: Arc<Daemon>,
     agent: Option<AgentId>,
     /// The agent's project when it subscribed, for `project:` deliveries.
     project: Option<ProjectId>,
+    /// The project its topic traffic is confined to
+    /// ([`agentdocker_core::topic::scope`]), for live and replay alike.
+    scope: Option<ProjectId>,
     topics: Vec<String>,
     backlog: Vec<Envelope>,
+    replay: crate::store::topics::TopicReplay,
     seen: HashSet<MessageId>,
 }
 
@@ -6008,7 +6103,14 @@ impl Subscription {
         std::mem::take(&mut self.backlog)
     }
 
-    pub fn wants(&self, envelope: &Envelope) -> bool {
+    /// The kept topic messages this stream replays, oldest first, each
+    /// with its sequence, and how many its bounds left out.
+    pub(crate) fn take_topic_replay(&mut self) -> crate::store::topics::TopicReplay {
+        std::mem::take(&mut self.replay)
+    }
+
+    pub fn wants(&self, posted: &Posted) -> bool {
+        let envelope = &posted.envelope;
         if self.seen.contains(&envelope.id) {
             return false;
         }
@@ -6034,10 +6136,15 @@ impl Subscription {
                         .channel_members(channel)
                         .contains(me)
             }),
-            Destination::Topic(topic) => self
-                .topics
-                .iter()
-                .any(|pattern| topic_matches(pattern, topic)),
+            Destination::Topic(topic) => {
+                self.topics
+                    .iter()
+                    .any(|pattern| topic_matches(pattern, topic))
+                    && agentdocker_core::topic::visible(
+                        posted.topic.as_ref().and_then(|post| post.project.as_ref()),
+                        self.scope.as_ref(),
+                    )
+            }
         }
     }
 }

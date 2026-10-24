@@ -316,22 +316,17 @@ impl Answer {
 
 /// The client a sink posts with: `deadline` for connecting and the whole
 /// request together, no redirects, every status an answer rather than an
-/// error, and TLS verified by the platform's own verifier against its
-/// trust roots — the ones the person's system trusts, an organisation's
-/// own authority included — never a bundled set.
+/// error, and TLS verified as every outbound client's is, against the
+/// roots the person's system trusts ([`agentdocker_host::http`]).
 fn sender(deadline: Duration) -> ureq::Agent {
-    use ureq::tls::{RootCerts, TlsConfig};
-    ureq::Agent::config_builder()
-        .timeout_global(Some(deadline))
-        .max_redirects(0)
-        .http_status_as_error(false)
-        .tls_config(
-            TlsConfig::builder()
-                .root_certs(RootCerts::PlatformVerifier)
-                .build(),
-        )
-        .build()
-        .into()
+    agentdocker_host::http::Policy {
+        deadline,
+        max_redirects: 0,
+        https_only: false,
+        status_as_error: false,
+        user_agent: None,
+    }
+    .agent()
 }
 
 /// One POST, blocking, with the whole request under one deadline. The
@@ -1529,6 +1524,7 @@ mod tests {
         );
         assert!(!tls.disable_verification());
         assert_eq!(config.max_redirects(), 0);
+        assert!(!config.https_only());
         assert!(!config.http_status_as_error());
         assert_eq!(config.timeouts().global, Some(REQUEST_DEADLINE));
 

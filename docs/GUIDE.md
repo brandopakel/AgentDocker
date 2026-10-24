@@ -400,8 +400,13 @@ Each parser pass reads at most 4 MiB/4,096 records; prefix validation is separat
 Records above the 1 MiB parser limit produce gaps. The whole operation limits captured input to 8 GiB,
 100,000 parsed samples, a 64 MiB metadata allowance, 1,024 reader gaps and five
 minutes between operations; discovery retains its 10,000-file limit. These are
-operation limits, not a hard RSS or OS-I/O deadline. Changing files or exhausted
-limits refuse without a partial JSON report. Temporary private accounting state
+operation limits, not a hard RSS or OS-I/O deadline. A file that grows during the
+scan, such as a session still being written, is read to the length captured when
+the scan started. An input replaced by another file, shortened, or changed at the
+same length with new change metadata, or an exhausted limit, refuses without a
+partial JSON report. A scan cannot tell that a file which also grew had bytes it
+already read rewritten in place: the daemon's collector catches that on its next
+pass, and a scan keeps no state to check it. Temporary private accounting state
 is removed before success; cleanup failure is an error. This command has no saved
 progress and does not reconcile gaps in the daemon's retained history.
 
@@ -501,14 +506,14 @@ each one by pid.
 | `register` | Announce an already-running process as an agent. `--pid` names its process: this command's own shell (`--pid $$`) or another of its parents. From inside an agent's session any other is refused `identity_mismatch` (exit 5), and a process an agent already holds is registered only from inside that agent's own session; from your own terminal, any |
 | `discover` | Agent processes nobody registered |
 | `adopt <pid>` | Register one of them; `--all` for all |
-| `stop <agent>` | Signal an agent to stop |
+| `stop <agent>` | Signal an agent to stop. Its record says so from then on (`"stop_requested": true` in `inspect`), even if it exits 0, until it next starts under the same id |
 | `restart <agent>` | Replace a managed container after confirming it exited |
 | `deregister` / `rm` | Mark an external agent finished / forget a finished one |
 | `role <name>…` | Give an agent (`--as`) roles from its project's palette (`roles`) — `role --as codex-1 reviewer tester` — in place of what it held; `--add reviewer` and `--remove tester` change one at a time, `--clear` takes them all away. Roles are yours to give: run from an agent's own shell it is refused. A command that names no sender speaks as you only from a terminal outside every agent: where a provider's own variables are set (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`) it asks for `--as` instead, even when the provider's process cannot be found. An agent's `send --to role:reviewer` reaches every reviewer in the project, in the role's room (one thread, where the sender hears the answers); `handoff role:reviewer` needs the role's one holder |
 | `roles` | A project's roles, each with its colour: the five every project offers (lead, implementer, reviewer, explorer, tester) and your own. `roles add "Security reviewer" --color red --description "…"` makes one, `roles set reviewer --name "Code review" --color pink` changes one (its address stays), `roles rm tester` takes one out. `roles set reviewer --tools review_verdict,review_gate,get_task` offers its holders only those MCP tools and the few every agent keeps (`--tools` works on `roles add` too), `roles set reviewer --all-tools` offers every tool again; the list shows a limited role's tools. Only you change them, and nothing holds a role until you give it; run from an agent's shell, including a Codex conversation's shared server, they are refused. `--project` names another project |
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not. A finished record that holds nothing is forgotten by itself thirty days on, or after `[agents] retention` in `~/.agentdocker/agentd.toml` (`"off"` keeps every record) |
-| `up` / `down` | Start or stop the agents in an `Agentfile.toml`. An entry with `after = "build exits 0"` starts once `build` has exited 0; `up` stays while it waits (`waiting: build exits 0`), and if `build` exits otherwise, is stopped or fails to start, it and everything waiting on it are not started (`not started: build exited 1`) and `up` exits unsuccessfully. Only an exit 0 whose event `up` received counts (a record cannot show it was not the end of a stop): `up test` alone does not take an earlier exit 0 of `build` as success, so bring both up together, and an exit 0 seen after `up` has said its event stream ended does not count either |
+| `up` / `down` | Start or stop the agents in an `Agentfile.toml`. An entry with `after = "build exits 0"` starts once `build` has exited 0; `up` stays while it waits (`waiting: build exits 0`), and if `build` exits otherwise, is stopped or fails to start, it and everything waiting on it are not started (`not started: build exited 1`) and `up` exits unsuccessfully. `up test` alone takes an earlier exit 0 of `build`, from another `up`, as success when it was `build`'s own: its record says no stop was asked of that run, and it is still the run of the entry as this file gives it now (the same command, runtime, working directory, environment and the rest of how it runs; not renamed). Edit `build` in any of those ways, or give it `isolate = true`, and bring it up again before `test`. An earlier `build` that was stopped does not count, whatever it exited with (`not started: build was stopped`), and neither does one whose record cannot show this (`not started: build ended before this run; …`); the record is kept, and the answer with it, across a daemon restart and until retention forgets it. For an agent `up` is watching, only an exit 0 whose event it received counts, so an exit 0 seen after `up` has said its event stream ended does not |
 | `heartbeat` | Report that an agent is alive |
 
 ### Talk
@@ -517,7 +522,7 @@ each one by pid.
 |---|---|
 | `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. An agent reaches only its own project and you; its `all` means its project, and you can still send anywhere. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
 | `delivery <message>` | Where one of your messages stands with each agent it was queued for: answered, delivered, received by the model, shown to its session, or why it is still waiting (next prompt, a browser agent's check-in, paused, blocked, ended). Never "read": nothing says a model read it. `send` prints the id; `--json` |
-| `watch` | Stream messages for an agent or matching topics |
+| `watch` | Stream messages for an agent or matching topics. Topics keep their messages: `watch --as <agent> 'repo/#'` first shows what each matching topic kept since the last topic message that agent acknowledged there (everything kept, the first time), then streams live; `inbox --as <agent> --ack <id>` on a topic message moves that topic on past it. A topic line shows its `seq:`; without an agent, topics are live only unless `--after-seq <n>` replays from that point. One watch replays at most a topic's newest 500, 5,000 in all, and says how many older ones it did not replay |
 | `inbox` | Messages queued while an agent was not watching |
 | `ask` | Ask an agent — or the human — and wait for the answer |
 | `answer` | Answer a question somebody is waiting on |
@@ -578,7 +583,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `claim` | Claim a lease on `path:`, `branch:`, `task:`, or anything |
 | `renew` / `release` | Extend or give up a lease you hold |
 | `leases` | Every lease held right now |
-| `waiting` | Claims waiting for a resource, oldest first |
+| `waiting` | Claims waiting for a resource, in the order they will be served: higher priority first, then oldest |
 | `task` | The board of work. `task create "Fix login" --acceptance "SSO works" --lane ready --priority high --size m --due YYYY-MM-DD --tag auth --blocked-by AD-7 --link pr:#<n>` files a card and prints its key (`AD-12`); `--parent`, `--description` and `--blocker "waiting on legal"` say more, and `--board` files it on another board. `task create-many cards.json` files up to 50 at once, all or none, each able to name another of the batch by its `ref` as its parent or in `--blocked-by`. `task pull --as <agent>` takes the next ready card (the first in the board's pull source, free and waiting on nothing; it says how many are held or waiting when there is none), `task pull AD-12 --as <agent>` that card; either holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`). `task move AD-12 review --comment "ready for eyes"` moves it to a lane by slug, name or category (`--after`/`--before` another card places it; an agent moves only a card it holds; back to Ready or to Done ends the hold). `task show AD-12` is the card in full: fields, comments, history, what it waits on. `task update AD-12 --assignee bob --priority low --tag ui` edits it (`--size ""`, `--due ""`, `--parent ""`, `--no-tags`, `--no-blocked-by`, `--no-links` clear). `task comment AD-12 "…" [--reply-to <comment>]`, `task comment-edit <comment> "…"`, `task comment-delete <comment>`. `task archive AD-12`, `task unarchive AD-12`, `task archive-lane done`. `task boards`, `task board-create Sprint --template agents` (classic, agents or simple), `task board-update sprint --lanes lanes.json --pull-source approved`. `task search "logn page"` finds cards by words, slips forgiven, a key exactly. `task start AD-12 --runtime codex` starts an agent on a card nobody holds that waits on nothing, and hands it the card. `task rules`, `task rule-add "Stale review" --idle review --days 14 --comment "Still waiting?"` (or `--enter LANE`; `--move LANE`, `--archive`, `--start RUNTIME [--max N]`), `task rule-off\|rule-on\|rule-rm <id>`. `task tags`, `task tag ui --color teal [--rename frontend]`, `task tag-rm ui`; `--plan` on `create` and `update` names the plan a card carries out. `task list [--board B] [--lane L] [--assignee me --as <agent>\|mine\|none] [--open] [--query words] [--tag T] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts); `--assignee mine` is your cards together with those held by your agents — launched with `run` or `up` from your own terminal, the app's launch, or `task start` and start rules, or a Claude Code or Codex session you started yourself in a terminal app or IDE (root's install, or one whose signature verifies), or over SSH, with no agent's session anywhere above it (their records carry `launched_by=user`, so `ps --label launched_by=user` lists them; a session inside a multiplexer server such as tmux cannot be told apart from an agent's and is not counted) — and, with `--as <agent>`, that agent's own |
 | `plan` | A project's plans, specs in Markdown that cards carry out: `plan list [--all]`, `plan show <id>`, `plan new "Auth rewrite" --body spec.md` (or `-` for stdin), `plan edit <id> [--title …] [--body FILE] [--status draft\|active\|done\|archived]` |
 | `file` | A project's files, kept beside the work: `file list [--task AD-12]`, `file put notes.md [--task AD-12] [--name …]` (at most 4 MiB; the same name again is a new version), `file get <id> [--out PATH]`, `file link <id> AD-12 [--unlink]`, `file rm <id>` |
@@ -772,8 +777,10 @@ Hooks an earlier version installed are *outdated*: `agentdocker runtimes` shows
 `outdated (…)` with the events they lack, the Tools card says *Hooks outdated*,
 and `agentdocker setup claude-code` (or `codex`) adds them. They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
-should be told before it starts — the journal since it last looked, and
-anything it read that has gone stale. Before an edit, `PreToolUse` refuses
+should be told before it starts — the journal since it last looked, the
+project's memory, and anything it read that has gone stale. Codex's
+`SessionStart` hook and the OpenCode plugin tell a new session the
+project's memory too. Before an edit, `PreToolUse` refuses
 one to a file changed since the session read it. A folder observation
 remembers children that were deleted; reread their absence before writing
 one back. A target that was and remains absent, or whose content is unchanged
@@ -815,6 +822,17 @@ than editing underneath the first. `agentdocker waiting` shows the queue;
 `agentdocker leases` shows who holds what. When they turn out to be
 changing the same files anyway, a channel opens by itself and both are in
 it — `agentdocker channels`.
+
+`--wait 120` waits up to two minutes for a held resource instead of failing
+at once, and `--priority N` (from -9 to 9, 0 by default) says where that wait
+stands: higher is served first, the oldest first among equals. A high
+priority can keep a low one waiting for as long as higher ones keep coming;
+every wait still ends by its `--wait` deadline at the latest. A lease that
+expires lets the next waiter in line try again, not every waiter at once.
+When waits form a ring, each holding what the next wants, the lowest
+priority's wait is ended with a deadlock error naming the ring (with equal
+priorities, the claim that closed it); give up something you hold and claim
+again. The MCP `claim` tool takes the same `wait_secs` and `priority`.
 
 ### Let an agent work in its own checkout
 
@@ -1083,8 +1101,25 @@ Current behaviour that the sections above do not already state, by area.
 - Projects keep their own messages. An agent reaches only its own project's
   agents, its channels and you: a send, ask or question to another project's
   agent, project or channel is refused, and an agent's `all` means its own
-  project. `list_agents` and the session-start note do not name agents in
-  other projects. You can still message anyone anywhere.
+  project. What an agent says on a topic reaches its own project's
+  subscribers and you, never another project's agents. `list_agents` and the
+  session-start note do not name agents in other projects. You can still
+  message anyone anywhere.
+
+- Topics keep their messages for whoever subscribes later: at most 1,000 per
+  topic and seven days, or what `[messages] topic_limit` and
+  `topic_retention` say in `~/.agentdocker/agentd.toml`:
+
+  ```toml
+  [messages]
+  topic_limit = 1000       # messages each topic keeps, 1–100000
+  topic_retention = "7d"   # how long it keeps one: 30m, 12h, 7d or seconds
+  ```
+
+  An agent that watches a topic gets what it has not acknowledged there and
+  picks up after its last acknowledgement on its next watch, across a
+  daemon restart too. Topics are not conversations: they are not in
+  `conversations`, `history` or the app.
 
 - The Messages workspace: **+** for a new direct message, `@` mentions
   with counts, Enter to send, resizable panes, an Earlier group for ended
@@ -1455,13 +1490,22 @@ Current behaviour that the sections above do not already state, by area.
 
 - **Project memory.** Agents and you can keep short facts for a project —
   a convention, a decision, where something lives — with `add_memory` or
-  `agentdocker memory add`. Every new session in the project is told them,
-  newest first. A memory that is no longer true is replaced
-  (`--supersedes`) or forgotten. It stays on this machine; anything that
+  `agentdocker memory add`. Every new Claude Code, Codex and OpenCode
+  session in the project is told them as it starts, the standing ones
+  first and then the newest, as context for the model, never typed into
+  its terminal (Codex runs its start hook at a conversation's first turn,
+  and again after `/clear` or a compaction). Search finds whole words, the
+  rarer ones counting for more and the newer memory first on a tie; an
+  identifier such as `task_id` is one word, so `task` does not find it,
+  while `-` and `:` separate words. A memory that is no longer true is
+  replaced (`--supersedes`) or forgotten. It stays on this machine; anything that
   looks like a secret is refused. To keep a copy in Supermemory as well,
   name the projects and a key file under `[memory.supermemory]` in
   `agentd.toml` (off unless you turn it on; the hosted service is
-  Supermemory's, on its terms).
+  Supermemory's, on its terms). `base_url` names a server of your own
+  instead; its certificate is checked against the authorities your system
+  trusts, so one from your organisation's own authority is accepted once
+  your system trusts that authority.
 - **How Supermemory forms memories from the copy.** Two optional lines
   under `[memory.supermemory]`, neither sent unless you write it:
   `dreaming = "dynamic"` (related memories are grouped before Supermemory

@@ -91,9 +91,10 @@ const POLL: Duration = Duration::from_secs(1);
 impl Bringup<'_> {
     /// What is known before anything starts: an entry already live is
     /// left running and watched; one left out by `only` is what its latest
-    /// record from this file says, or has not run. An exit 0 on record
-    /// does not count as success: nothing watched it end, and a stop
-    /// leaves no mark on the record once the agent has exited.
+    /// record from this file says, or has not run. Nothing here watched
+    /// that record end, so an exit 0 on it counts only when the record
+    /// shows the run was the entry's own and no stop was asked of it
+    /// (`agentfile::own_run`); a stop marked on it is a stop.
     async fn seed(&mut self, path: &Path, only: &[String]) -> Result<()> {
         let live = live_agents(self.client).await?;
         let recorded = if only.is_empty() {
@@ -117,7 +118,7 @@ impl Bringup<'_> {
                     .filter(|a| a.spec.name == name)
                     .max_by_key(|a| a.created_at)
                 {
-                    Some(agent) => match Ending::before(agent) {
+                    Some(agent) => match Ending::before(agent, &self.specs[i]) {
                         Some(ending) => self.end(&name, ending),
                         // Live, or about to be restarted: watched from here.
                         None => self.track(&name, agent),

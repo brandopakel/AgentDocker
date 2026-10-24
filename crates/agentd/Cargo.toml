@@ -36,3 +36,5 @@ tracing-subscriber.workspace = true
 # A fake Codex shared server for the control-socket watch's tests.
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
+# Sequences of topic sends, acknowledgements, retention and restarts.
+proptest.workspace = true

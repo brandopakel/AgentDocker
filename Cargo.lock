@@ -138,6 +138,7 @@ dependencies = [
  "ignore",
  "nix 0.29.0",
  "notify",
+ "proptest",
  "rusqlite",
  "same-file",
  "serde",
@@ -229,6 +230,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "toml",
+ "ureq",
  "uuid",
  "windows-sys 0.61.2",
 ]

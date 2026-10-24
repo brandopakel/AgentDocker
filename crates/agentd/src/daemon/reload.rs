@@ -1409,6 +1409,7 @@ mod fence_tests {
             ttl_secs: 60,
             note: None,
             wait_secs: 0,
+            priority: 0,
             automatic: false,
         }
     }
@@ -2013,6 +2014,7 @@ mod fence_tests {
                         mode: LeaseMode::Exclusive,
                         ttl_secs: 60,
                         wait_secs: 30,
+                        priority: 0,
                         note: None,
                         amount: None,
                         automatic: false,
@@ -2055,6 +2057,7 @@ mod fence_tests {
                 ttl_secs: 1,
                 note: None,
                 wait_secs: 0,
+                priority: 0,
                 automatic: false,
             })
             .await

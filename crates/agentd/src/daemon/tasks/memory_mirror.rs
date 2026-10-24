@@ -146,6 +146,11 @@ fn formed(dreaming: &Value) -> Option<Status> {
 
 /// The calls one destination is reached by.
 struct Server {
+    /// [`REQUEST_DEADLINE`] for each request, no redirects, every status
+    /// an answer to read, and TLS verified as every outbound client's is,
+    /// against the roots the person's system trusts, so a server of one's
+    /// own behind an authority the system trusts is reached
+    /// ([`agentdocker_host::http`]).
     agent: ureq::Agent,
     auth: String,
     documents: String,
@@ -159,12 +164,14 @@ struct Server {
 impl Server {
     fn new(mirror: &SupermemoryConfig, namespace: &str, key: &str) -> Self {
         Self {
-            agent: ureq::Agent::config_builder()
-                .timeout_global(Some(REQUEST_DEADLINE))
-                .max_redirects(0)
-                .http_status_as_error(false)
-                .build()
-                .into(),
+            agent: agentdocker_host::http::Policy {
+                deadline: REQUEST_DEADLINE,
+                max_redirects: 0,
+                https_only: false,
+                status_as_error: false,
+                user_agent: None,
+            }
+            .agent(),
             auth: format!("Bearer {key}"),
             documents: format!("{}/ns/{namespace}/document", mirror.base_url()),
             dreaming: mirror.dreaming.clone(),
@@ -1115,5 +1122,47 @@ mod tests {
         assert_eq!(methods(&fake), ["POST", "POST"]);
         let seen = fake.lock().unwrap().seen.clone();
         assert_eq!(seen[1].1, "Bearer sm-other-account-key-987");
+    }
+
+    /// The mirror verifies its server's certificate with the platform's
+    /// own verifier and trust roots, not the bundled Mozilla set ureq
+    /// would use unasked, with verification on, so a server of one's own
+    /// behind an authority the system trusts is reached; it keeps its
+    /// deadline, follows no redirect and reads every status itself. A
+    /// server that hangs up mid-handshake stops the request with a word,
+    /// not a crash: the verifier is built before the first message.
+    #[test]
+    fn the_mirror_trusts_the_platforms_roots() {
+        use ureq::tls::RootCerts;
+        let hangs_up = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = hangs_up.local_addr().unwrap().port();
+        let mirror = SupermemoryConfig {
+            enabled: true,
+            projects: vec!["p".to_owned()],
+            key_file: "/unused".into(),
+            base_url: Some(format!("https://127.0.0.1:{port}")),
+            dreaming: None,
+            supporting_context: None,
+        };
+        let server = Server::new(&mirror, "agentdocker_p", "sm-test-key-0123456789");
+        let config = server.agent.config();
+        let tls = config.tls_config();
+        assert!(
+            matches!(tls.root_certs(), RootCerts::PlatformVerifier),
+            "roots: {:?}",
+            tls.root_certs()
+        );
+        assert!(!tls.disable_verification());
+        assert_eq!(config.timeouts().global, Some(REQUEST_DEADLINE));
+        assert_eq!(config.max_redirects(), 0);
+        assert!(!config.https_only());
+        assert!(!config.http_status_as_error());
+
+        let peer = std::thread::spawn(move || drop(hangs_up.accept().unwrap()));
+        let answer = server.check("m1");
+        peer.join().unwrap();
+        let error = answer.unwrap_err();
+        assert!(error.starts_with("checking a memory failed ("), "{error}");
+        assert!(!error.contains("127.0.0.1"), "{error}");
     }
 }

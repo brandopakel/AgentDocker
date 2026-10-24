@@ -1619,6 +1619,7 @@ impl<B: Backend> McpServer<B> {
                         ttl_secs: args.ttl_secs,
                         note: args.note,
                         wait_secs: args.wait_secs.min(MAX_CLAIM_WAIT_SECS),
+                        priority: args.priority,
                         automatic: false,
                     })
                     .await
@@ -2034,6 +2035,9 @@ struct ClaimArgs {
     note: Option<String>,
     #[serde(default)]
     wait_secs: u64,
+    /// Passed through for the daemon to refuse out of range.
+    #[serde(default)]
+    priority: agentdocker_core::wait::Priority,
 }
 
 #[derive(Deserialize)]
@@ -2753,7 +2757,8 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "mode": { "type": "string", "enum": ["exclusive", "shared"], "default": "exclusive" },
                     "ttl_secs": { "type": "integer", "minimum": 1, "default": DEFAULT_LEASE_TTL_SECS, "description": "Seconds until the lease expires unless renewed." },
                     "note": { "type": "string", "description": "What you are doing with it, shown to agents that conflict." },
-                    "wait_secs": { "type": "integer", "minimum": 0, "maximum": MAX_CLAIM_WAIT_SECS, "default": 0, "description": "Wait this long for the resource to free up before reporting a conflict." }
+                    "wait_secs": { "type": "integer", "minimum": 0, "maximum": MAX_CLAIM_WAIT_SECS, "default": 0, "description": "Wait this long for the resource to free up before reporting a conflict." },
+                    "priority": { "type": "integer", "minimum": agentdocker_core::wait::MIN_PRIORITY, "maximum": agentdocker_core::wait::MAX_PRIORITY, "default": 0, "description": "Your place in the wait queue while waiting: higher is served first, the oldest first among equals. If waits form a ring, the lowest priority's wait is ended with a deadlock error." }
                 },
                 "required": ["resource"],
                 "additionalProperties": false
@@ -4724,6 +4729,58 @@ mod tests {
             Request::Claim { agent, resource, mode: LeaseMode::Exclusive, ttl_secs, .. }
                 if agent == "abc123" && resource == "path:/x" && *ttl_secs == DEFAULT_LEASE_TTL_SECS
         ));
+    }
+
+    /// A claim's priority reaches the daemon as given, out of range too:
+    /// the daemon is the one that refuses it. The schema states the range,
+    /// and a wait ended to break a ring comes back as the error it is.
+    #[tokio::test]
+    async fn claim_priority_is_passed_to_the_daemon_to_judge() {
+        let s = server(vec![
+            Response::error(ErrorCode::Deadlock, "the wait was ended"),
+            Response::error(ErrorCode::Invalid, "priority must be from -9 to 9, not 12"),
+        ]);
+        let reply = s
+            .handle(rpc(
+                9,
+                "tools/call",
+                json!({ "name": "claim", "arguments": { "resource": "task:x", "wait_secs": 30, "priority": -3 } }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reply["result"]["isError"], true);
+        let reply = s
+            .handle(rpc(
+                10,
+                "tools/call",
+                json!({ "name": "claim", "arguments": { "resource": "task:x", "priority": 12 } }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reply["result"]["isError"], true);
+        {
+            let requests = s.backend.requests.lock().unwrap();
+            assert!(matches!(
+                &requests[0],
+                Request::Claim {
+                    wait_secs: 30,
+                    priority: -3,
+                    ..
+                }
+            ));
+            assert!(matches!(&requests[1], Request::Claim { priority: 12, .. }));
+        }
+        let listed = s.handle(rpc(11, "tools/list", json!({}))).await.unwrap();
+        let claim = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "claim")
+            .unwrap();
+        let priority = &claim["inputSchema"]["properties"]["priority"];
+        assert_eq!(priority["minimum"], -9);
+        assert_eq!(priority["maximum"], 9);
+        assert_eq!(priority["default"], 0);
     }
 
     #[tokio::test]

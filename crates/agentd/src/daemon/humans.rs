@@ -521,7 +521,7 @@ impl Daemon {
                 }
                 tokio::select! {
                 answer = answers.recv() => match answer {
-                    Ok(envelope) if envelope.reply_to.as_ref() == Some(&message)
+                    Ok(Posted { envelope, .. }) if envelope.reply_to.as_ref() == Some(&message)
                         && matches!(&envelope.to, Destination::Agent(id) if id.as_str() == from)
                         && match &to { Destination::Agent(id) => id.as_str() == envelope.from, Destination::Project(_) | Destination::Broadcast => true, _ => false } => {
                         // A reply can arrive after cancellation. Only the

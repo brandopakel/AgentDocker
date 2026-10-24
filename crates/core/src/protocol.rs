@@ -535,11 +535,19 @@ pub enum Request {
     /// Stream messages for `agent` and/or matching `topics` until the
     /// connection closes. Queued messages are replayed first and retained
     /// until explicit Inbox draining or AckInbox, including after disconnect.
+    /// Then the kept messages of every topic the patterns match, past the
+    /// agent's cursor on each (from the oldest kept, for a topic it has
+    /// never acknowledged), or past `after_seq` when given; a subscriber
+    /// without an agent and without `after_seq` gets topics live only.
     Subscribe {
         #[serde(default)]
         agent: Option<String>,
         #[serde(default)]
         topics: Vec<String>,
+        /// Replay kept topic messages after this topic-log sequence, in
+        /// place of the agent's cursors (which it leaves as they are).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_seq: Option<u64>,
     },
     /// Unacknowledged messages, including those offered to live subscribers.
     /// A blocked destructive read returns Conflict and retains every message.
@@ -550,6 +558,8 @@ pub enum Request {
     },
 
     /// Idempotently remove only messages that a consumer has delivered.
+    /// A kept topic message's id moves the agent's cursor on that topic
+    /// to it instead: that topic replays only what came after.
     AckInbox {
         agent: String,
         messages: Vec<MessageId>,
@@ -1288,6 +1298,12 @@ pub enum Request {
         /// up; 0 reports the conflict immediately.
         #[serde(default)]
         wait_secs: u64,
+        /// Where a wait stands in the queue: higher is served first,
+        /// arrival decides among equals, and a ring of waits is broken at
+        /// the lowest. From -9 to 9; anything else is refused (`invalid`).
+        /// Only a claim that waits has a place for it to order.
+        #[serde(default)]
+        priority: crate::wait::Priority,
         /// Taken by an adapter on the agent's behalf for the edit in hand
         /// — the hooks adapter's per-file lease — rather than asked for.
         /// A turn's end releases these and only these; a lease the agent
@@ -1959,6 +1975,11 @@ pub enum Response {
     },
     Message {
         message: Envelope,
+        /// A topic message's sequence in the topic log, for a later
+        /// `subscribe {after_seq}`. Absent for every other message, and
+        /// from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
     },
     Messages {
         messages: Vec<Envelope>,
@@ -2245,6 +2266,11 @@ pub enum Response {
     /// A live stream skipped messages; events can be recovered with replay.
     Lagged {
         skipped: u64,
+        /// Not a live lag: a subscribe's bounded topic replay left out this
+        /// many kept topic messages, the oldest, before the ones it replays.
+        /// Absent (false) for a live lag, and from older daemons.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        replay: bool,
     },
     Ok,
     /// Terminates a stream that finished on the daemon's side.
@@ -2386,11 +2412,24 @@ mod tests {
                 ttl_secs: DEFAULT_LEASE_TTL_SECS,
                 note: None,
                 wait_secs: 0,
+                priority: 0,
                 automatic: false,
             }
         );
         let back = serde_json::to_string(&req).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&back).unwrap(), req);
+        let urgent: Request = serde_json::from_str(
+            r#"{"op":"claim","agent":"a","resource":"task:x","wait_secs":30,"priority":-4}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            urgent,
+            Request::Claim {
+                wait_secs: 30,
+                priority: -4,
+                ..
+            }
+        ));
     }
 
     #[test]

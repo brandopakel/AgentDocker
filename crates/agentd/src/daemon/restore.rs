@@ -447,6 +447,9 @@ impl Daemon {
             running.process_group = Some(pid);
             running.owner = Some(spawned.owner.clone());
             running.status = AgentStatus::Running;
+            // A new run, committed with `agent_restored`: the stop the
+            // daemon's own shutdown asked of the last one is not its.
+            running.begin_run();
             running.started_at = Some(Utc::now());
             running.finished_at = None;
             running.last_seen = Utc::now();
@@ -565,6 +568,7 @@ impl Daemon {
         );
         let mut record = current.clone();
         record.status = AgentStatus::Created;
+        record.begin_run();
         record.pid = None;
         record.process_started_at = None;
         record.process_group = None;
@@ -1223,6 +1227,7 @@ mod tests {
                     mode: LeaseMode::Exclusive,
                     ttl_secs: 300,
                     wait_secs: 0,
+                    priority: 0,
                     note: None,
                     amount: None,
                     automatic: false,
@@ -1673,6 +1678,7 @@ mod tests {
                     mode: LeaseMode::Exclusive,
                     ttl_secs: 300,
                     wait_secs: 0,
+                    priority: 0,
                     note: None,
                     amount: None,
                     automatic: false,
