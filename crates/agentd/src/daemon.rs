@@ -1074,7 +1074,10 @@ impl Daemon {
                         // (this daemon's after an abort, or the successor's)
                         // finds it again.
                         let mut agent = candidate.clone();
-                        agent.status = AgentStatus::Stopping;
+                        // Published as `agent_stopping`, so marked as a
+                        // stop on its run the way a requested one is: what
+                        // the events say and what the record says agree.
+                        agent.mark_stopping();
                         if state.persist("agent", |store| store.upsert_agent(&agent))
                             == Persisted::Committed
                         {
@@ -1083,6 +1086,9 @@ impl Daemon {
                                 AgentStatus::Stopping,
                                 Utc::now(),
                             );
+                            if let Some(stored) = state.registry.get_mut(&candidate.id) {
+                                stored.mark_stopping();
+                            }
                             state.emit(EventKind::AgentStopping {
                                 agent: candidate.id,
                                 force: false,
@@ -3412,7 +3418,10 @@ impl State {
         force: bool,
     ) -> Result<AgentRecord, Box<Response>> {
         let now = Utc::now();
-        agent.status = AgentStatus::Stopping;
+        // `stopping`, and the stop marked on this run, in the record the
+        // `agent_stopping` event is committed with: once it has exited,
+        // whatever it exited with, its record still says a stop was asked.
+        agent.mark_stopping();
         agent.last_seen = now;
         let event = Event::new(
             EventKind::AgentStopping {
@@ -4372,6 +4381,7 @@ impl State {
                 record.terminal = None;
                 self.free_name(&mut record);
                 record.status = AgentStatus::Running;
+                record.begin_run();
                 record.finished_at = None;
                 record.started_at = Some(now);
                 record.last_seen = now;
@@ -4497,6 +4507,7 @@ impl State {
         record.pid = Some(pid);
         record.process_started_at = Some(born);
         record.status = AgentStatus::Running;
+        record.begin_run();
         record.finished_at = None;
         record.started_at = Some(now);
         record.last_seen = now;
@@ -5803,6 +5814,10 @@ impl State {
         canonical.process_started_at = fresh.process_started_at;
         canonical.process_group = fresh.process_group;
         canonical.status = fresh.status.clone();
+        // The fresh process's run, under the record that stays, with its
+        // own stop evidence: whatever stop the record's last run had is
+        // not this one's.
+        canonical.stop_requested = fresh.stop_requested;
         canonical.started_at = fresh.started_at;
         canonical.finished_at = None;
         canonical.last_seen = now;

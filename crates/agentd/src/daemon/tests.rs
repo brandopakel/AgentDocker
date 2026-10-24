@@ -3487,6 +3487,212 @@ async fn an_agent_stopped_on_purpose_is_not_brought_back() {
     daemon.stop_all().await;
 }
 
+/// The stop is marked on the run in the transition that publishes
+/// `agent_stopping`. The agent traps it and exits 0, and its record still
+/// says a stop was asked — through a daemon restart (the store read back)
+/// and a retention pass that keeps the record. One that finished by
+/// itself says none was.
+#[tokio::test]
+async fn a_stop_stays_marked_on_the_run_it_ended_through_a_restart_and_retention() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let mut serve = spec("serve");
+    serve.workdir = Some(dir.path().to_path_buf());
+    serve.command = vec![
+        "sh".into(),
+        "-c".into(),
+        "trap 'exit 0' TERM; touch serving; while :; do sleep 0.05; done".into(),
+    ];
+    let mut done = spec("done");
+    done.workdir = Some(dir.path().to_path_buf());
+    done.command = vec!["true".into()];
+    let Response::Agent { agent: serve } = daemon.handle(Request::Run { spec: serve }).await else {
+        panic!("managed launch failed");
+    };
+    let Response::Agent { agent: done } = daemon.handle(Request::Run { spec: done }).await else {
+        panic!("managed launch failed");
+    };
+    assert_eq!(serve.stop_requested, Some(false), "a run begins unstopped");
+    let finished = until(&daemon, &done.id, "done to exit", |r| !r.status.is_live()).await;
+    assert_eq!(finished.status, AgentStatus::Exited { code: Some(0) });
+    assert_eq!(
+        finished.stop_requested,
+        Some(false),
+        "it finished by itself"
+    );
+
+    // The trap is set once it has said so.
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while !dir.path().join("serving").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("serve never started");
+    let mut events = daemon.subscribe_events();
+    let Response::Agent { agent: stopping } = daemon
+        .handle(Request::Stop {
+            agent: serve.id.to_string(),
+            force: false,
+        })
+        .await
+    else {
+        panic!("stop refused");
+    };
+    assert_eq!(stopping.status, AgentStatus::Stopping);
+    assert!(stopping.stopped_on_request());
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok())
+            .any(|event| matches!(event.kind, EventKind::AgentStopping { agent, .. } if agent == serve.id)),
+        "the mark rides on `agent_stopping`"
+    );
+    let ended = until(&daemon, &serve.id, "serve to exit", |r| !r.status.is_live()).await;
+    assert_eq!(
+        ended.status,
+        AgentStatus::Exited { code: Some(0) },
+        "its status alone reads like success"
+    );
+    assert!(ended.stopped_on_request(), "kept once it has exited");
+
+    let marks = |daemon: &Arc<Daemon>| {
+        let state = lock(&daemon.state);
+        [&serve.id, &done.id].map(|id| state.registry.get(id).unwrap().stop_requested)
+    };
+    let daemon = restart(&dir, daemon).await;
+    assert_eq!(
+        marks(&daemon),
+        [Some(true), Some(false)],
+        "read back from the store"
+    );
+    daemon.apply_agent_retention();
+    assert_eq!(
+        marks(&daemon),
+        [Some(true), Some(false)],
+        "kept while retained"
+    );
+    daemon.stop_all().await;
+}
+
+/// The daemon's own shutdown stops a restorable agent, and the stop is
+/// marked on that run. Restored under its id by the next daemon, it is a
+/// new run with no stop on it.
+#[tokio::test]
+async fn a_restored_agent_does_not_inherit_the_shutdowns_stop() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let mut command = spec("keeper");
+    command.workdir = Some(dir.path().to_path_buf());
+    command.restore = true;
+    command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+    let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+        panic!("managed launch failed");
+    };
+    daemon.stop_all().await;
+    let stopped = lock(&daemon.state)
+        .registry
+        .get(&agent.id)
+        .cloned()
+        .unwrap();
+    assert!(!stopped.status.is_live());
+    assert!(stopped.stopped_on_request(), "the shutdown's stop");
+    drop(daemon);
+
+    let daemon = open(&dir);
+    daemon.restore_agents().await;
+    let restored = lock(&daemon.state)
+        .registry
+        .get(&agent.id)
+        .cloned()
+        .unwrap();
+    daemon.stop_all().await;
+    assert_eq!(restored.status, AgentStatus::Running, "{restored:?}");
+    assert_ne!(
+        restored.pid, agent.pid,
+        "a new process under the old identity"
+    );
+    assert_eq!(restored.stop_requested, Some(false), "not inherited");
+}
+
+/// A session that comes back as a new process takes up its ended record
+/// (`session_resumed`): a run of its own under that id. The stop asked of
+/// the record's last run, which it ended in, does not come with it, in
+/// memory or on disk.
+#[tokio::test]
+async fn a_session_that_comes_back_does_not_inherit_its_last_runs_stop() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let sleeper = || {
+        std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap()
+    };
+    let (mut first, mut second) = (sleeper(), sleeper());
+    let register = async |daemon: &Arc<Daemon>, pid: u32| {
+        let mut spec = spec_here("claude-ssss");
+        spec.runtime = "claude-code".to_owned();
+        spec.labels
+            .insert("session_id".to_owned(), "session-s".to_owned());
+        match daemon
+            .handle(Request::Register {
+                spec,
+                pid: Some(pid),
+                session: None,
+            })
+            .await
+        {
+            Response::Agent { agent } => agent,
+            other => panic!("{other:?}"),
+        }
+    };
+    let earlier = register(&daemon, first.id()).await;
+    let Response::Agent { agent: stopping } = daemon
+        .handle(Request::Stop {
+            agent: earlier.id.to_string(),
+            force: false,
+        })
+        .await
+    else {
+        panic!("the session could not be stopped");
+    };
+    assert!(stopping.stopped_on_request());
+    let _ = first.kill();
+    first.wait().unwrap();
+    daemon.check_liveness();
+    let ended = lock(&daemon.state)
+        .registry
+        .get(&earlier.id)
+        .cloned()
+        .unwrap();
+    assert!(!ended.status.is_live(), "{ended:?}");
+    assert!(
+        ended.stopped_on_request(),
+        "the ended run says it was stopped"
+    );
+
+    let back = register(&daemon, second.id()).await;
+    let (memory, stored) = {
+        let state = lock(&daemon.state);
+        (
+            state.registry.get(&earlier.id).cloned().unwrap(),
+            state
+                .store
+                .load_agents()
+                .unwrap()
+                .into_iter()
+                .find(|r| r.id == earlier.id)
+                .unwrap(),
+        )
+    };
+    let _ = second.kill();
+    let _ = second.wait();
+    assert_eq!(back.id, earlier.id, "the ended record, taken up");
+    assert!(memory.status.is_live());
+    assert_eq!(memory.pid, Some(second.id()));
+    assert_eq!(memory.stop_requested, Some(false), "not inherited");
+    assert_eq!(stored.stop_requested, Some(false), "nor on disk");
+}
+
 /// A refused claim says by whom: the holder's name, which is who the
 /// person can go and talk to, with its id and what it holds.
 #[tokio::test]

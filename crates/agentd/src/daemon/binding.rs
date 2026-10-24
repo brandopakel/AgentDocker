@@ -1166,6 +1166,9 @@ impl State {
         canonical.process_started_at = Some(started_at);
         canonical.process_group = caller.process_group;
         canonical.status = caller.status;
+        // The caller's run, now under the prior id, with its own stop
+        // evidence: a stop asked of the prior run is not this one's.
+        canonical.stop_requested = caller.stop_requested;
         canonical.last_seen = now;
         canonical.vcs = caller.vcs.clone();
         for (key, value) in &caller.spec.labels {
@@ -2076,6 +2079,112 @@ mod tests {
         );
         assert_eq!(state.inboxes[&prior.id].len(), 2);
         assert!(state.registry.all().all(|r| r.id != fresh.id));
+    }
+
+    /// Resuming puts the fresh provider's run under the prior record's id.
+    /// A stop asked of the prior run, which that run ended in, is not the
+    /// new run's: the resumed record carries the fresh process's own stop
+    /// evidence, in memory and on disk, and a reopened daemon reads the
+    /// same.
+    #[tokio::test]
+    async fn a_resumed_provider_does_not_inherit_the_prior_runs_stop() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let old_provider = Other::spawn();
+        let register = async |name: &str, pid: u32| {
+            let mut spec = AgentSpec {
+                name: name.into(),
+                runtime: "custom".into(),
+                workdir: Some(dir.path().to_path_buf()),
+                ..Default::default()
+            };
+            spec.labels.insert("session_id".into(), "thread-9".into());
+            match daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(pid),
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("{other:?}"),
+            }
+        };
+        let prior = register("codex-old", old_provider.0.id()).await;
+        let controller = Other::spawn();
+        let profile = dir.path().join("profile").display().to_string();
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: prior.id.to_string(),
+                    provider: ProviderGeneration {
+                        process: old_provider.identity(),
+                        session: "thread-9".into(),
+                        profile: profile.clone(),
+                    },
+                    controller: controller.identity(),
+                    token: TOKEN.into(),
+                    launch: Some(ControllerLaunch {
+                        args: vec!["-c".into(), "exit 1".into()],
+                        ..descriptor(&dir)
+                    }),
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        // A stop is asked of the prior run, and it ends in it.
+        let Response::Agent { agent: stopping } = daemon
+            .handle(Request::Stop {
+                agent: prior.id.to_string(),
+                force: false,
+            })
+            .await
+        else {
+            panic!("the prior run could not be stopped");
+        };
+        assert!(stopping.stopped_on_request());
+        drop(old_provider);
+        drop(controller);
+
+        let fresh = register("codex-new", std::process::id()).await;
+        assert_eq!(fresh.stop_requested, Some(false));
+        let Response::InputResumed { agent, .. } = daemon
+            .handle(Request::ResumeInput {
+                agent: fresh.id.to_string(),
+                predecessor: prior.id.to_string(),
+                provider: ProviderGeneration {
+                    process: me(),
+                    session: "thread-9".into(),
+                    profile,
+                },
+                launch: descriptor(&dir),
+            })
+            .await
+        else {
+            panic!("resume failed");
+        };
+        assert_eq!(agent, prior.id);
+        let marks = |daemon: &Arc<Daemon>| {
+            let state = lock(&daemon.state);
+            let memory = state.registry.get(&prior.id).unwrap().clone();
+            let stored = state
+                .store
+                .load_agents()
+                .unwrap()
+                .into_iter()
+                .find(|r| r.id == prior.id)
+                .unwrap();
+            (memory, stored)
+        };
+        let (memory, stored) = marks(&daemon);
+        assert!(memory.status.is_live());
+        assert_eq!(memory.pid, Some(std::process::id()), "the new run");
+        assert_eq!(memory.stop_requested, Some(false), "not inherited");
+        assert_eq!(stored.stop_requested, Some(false), "nor on disk");
+        drop(daemon);
+        let (reopened, _) = marks(&open(&dir));
+        assert_eq!(reopened.stop_requested, Some(false), "nor after a reopen");
     }
 
     /// Resuming refuses to guess: a generation still running, two prior

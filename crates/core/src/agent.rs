@@ -340,6 +340,23 @@ pub struct AgentRecord {
     /// a reader deserves to know an agent has died nine times.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub restarts: u32,
+    /// Whether a stop was asked of this agent's current run, so that once
+    /// it has ended its record says whether that ending followed one: the
+    /// exit a stop ends in may be 0, and its status alone would read as
+    /// success. `Some(true)` from the transition that publishes
+    /// `agent_stopping` ([`AgentRecord::mark_stopping`]), kept once the
+    /// agent has exited, through a daemon restart and for as long as the
+    /// record is retained. `Some(false)` when a run begins under this id
+    /// ([`AgentRecord::begin_run`]: a new record, a restart by its policy,
+    /// a restore, a relaunch, a process joining the record) and no stop
+    /// has been asked of it since; where a fresh process's record is
+    /// folded into this one (a session resumed, input resumed), the fresh
+    /// process's own mark comes with its run. `None` on a record no daemon
+    /// that keeps
+    /// this has written since its run began: unknown, and never taken as
+    /// `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_requested: Option<bool>,
     /// Engine identity and intent for a managed container; never a host PID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<crate::container::ManagedContainer>,
@@ -705,6 +722,26 @@ impl AgentRecord {
         )
     }
 
+    /// A stop is under way for its current run, as `agent_stopping` says:
+    /// the record is `stopping`, and goes on saying a stop was asked once
+    /// the agent has exited, whatever it exited with.
+    pub fn mark_stopping(&mut self) {
+        self.status = AgentStatus::Stopping;
+        self.stop_requested = Some(true);
+    }
+
+    /// A run begins under this id. Whatever stop was asked of the run
+    /// before belongs to that run, not to this one.
+    pub fn begin_run(&mut self) {
+        self.stop_requested = Some(false);
+    }
+
+    /// Whether a stop is known to have been asked of its current run —
+    /// once it has ended, whether that ending followed a stop request.
+    pub fn stopped_on_request(&self) -> bool {
+        self.stop_requested == Some(true)
+    }
+
     pub fn new(spec: AgentSpec, managed: bool, now: DateTime<Utc>) -> Self {
         Self {
             id: AgentId::generate(),
@@ -713,6 +750,7 @@ impl AgentRecord {
             session: None,
             terminal: None,
             restarts: 0,
+            stop_requested: Some(false),
             host: "local".to_owned(),
             pid: None,
             process_started_at: None,
@@ -742,6 +780,49 @@ impl AgentRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stop is marked on the run it was asked of, outlives the exit,
+    /// and is not the next run's; a record written without the mark reads
+    /// as unknown, never as "no stop".
+    #[test]
+    fn a_stop_is_marked_on_its_run_and_an_older_record_is_unknown() {
+        let mut record = AgentRecord::new(AgentSpec::default(), true, chrono::Utc::now());
+        assert_eq!(record.stop_requested, Some(false), "a new run");
+        record.status = AgentStatus::Running;
+        record.mark_stopping();
+        assert_eq!(record.status, AgentStatus::Stopping);
+        record.status = AgentStatus::Exited { code: Some(0) };
+        assert!(record.stopped_on_request(), "kept once it has exited");
+
+        // Through storage, as a JSON blob.
+        let stored = serde_json::to_value(&record).unwrap();
+        assert_eq!(stored["stop_requested"], true);
+        let back: AgentRecord = serde_json::from_value(stored.clone()).unwrap();
+        assert_eq!(back, record);
+
+        // A run that begins under the same id carries no stop of the last.
+        record.begin_run();
+        assert_eq!(record.stop_requested, Some(false));
+        assert!(!record.stopped_on_request());
+        assert_eq!(
+            serde_json::to_value(&record).unwrap()["stop_requested"],
+            false
+        );
+
+        // A record from a daemon that did not keep the mark.
+        let mut older = stored;
+        older.as_object_mut().unwrap().remove("stop_requested");
+        let older: AgentRecord = serde_json::from_value(older).unwrap();
+        assert_eq!(older.stop_requested, None);
+        assert!(!older.stopped_on_request());
+        assert!(
+            serde_json::to_value(&older)
+                .unwrap()
+                .get("stop_requested")
+                .is_none(),
+            "and unknown stays unknown when it is written again"
+        );
+    }
 
     #[test]
     fn an_agents_roles_are_kept_sorted_once_each_in_its_label() {
