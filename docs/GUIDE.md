@@ -400,8 +400,13 @@ Each parser pass reads at most 4 MiB/4,096 records; prefix validation is separat
 Records above the 1 MiB parser limit produce gaps. The whole operation limits captured input to 8 GiB,
 100,000 parsed samples, a 64 MiB metadata allowance, 1,024 reader gaps and five
 minutes between operations; discovery retains its 10,000-file limit. These are
-operation limits, not a hard RSS or OS-I/O deadline. Changing files or exhausted
-limits refuse without a partial JSON report. Temporary private accounting state
+operation limits, not a hard RSS or OS-I/O deadline. A file that grows during the
+scan, such as a session still being written, is read to the length captured when
+the scan started. An input replaced by another file, shortened, or changed at the
+same length with new change metadata, or an exhausted limit, refuses without a
+partial JSON report. A scan cannot tell that a file which also grew had bytes it
+already read rewritten in place: the daemon's collector catches that on its next
+pass, and a scan keeps no state to check it. Temporary private accounting state
 is removed before success; cleanup failure is an error. This command has no saved
 progress and does not reconcile gaps in the daemon's retained history.
 
@@ -517,7 +522,7 @@ each one by pid.
 |---|---|
 | `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. An agent reaches only its own project and you; its `all` means its project, and you can still send anywhere. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
 | `delivery <message>` | Where one of your messages stands with each agent it was queued for: answered, delivered, received by the model, shown to its session, or why it is still waiting (next prompt, a browser agent's check-in, paused, blocked, ended). Never "read": nothing says a model read it. `send` prints the id; `--json` |
-| `watch` | Stream messages for an agent or matching topics |
+| `watch` | Stream messages for an agent or matching topics. Topics keep their messages: `watch --as <agent> 'repo/#'` first shows what each matching topic kept since the last topic message that agent acknowledged there (everything kept, the first time), then streams live; `inbox --as <agent> --ack <id>` on a topic message moves that topic on past it. A topic line shows its `seq:`; without an agent, topics are live only unless `--after-seq <n>` replays from that point. One watch replays at most a topic's newest 500, 5,000 in all, and says how many older ones it did not replay |
 | `inbox` | Messages queued while an agent was not watching |
 | `ask` | Ask an agent — or the human — and wait for the answer |
 | `answer` | Answer a question somebody is waiting on |
@@ -772,8 +777,10 @@ Hooks an earlier version installed are *outdated*: `agentdocker runtimes` shows
 `outdated (…)` with the events they lack, the Tools card says *Hooks outdated*,
 and `agentdocker setup claude-code` (or `codex`) adds them. They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
-should be told before it starts — the journal since it last looked, and
-anything it read that has gone stale. Before an edit, `PreToolUse` refuses
+should be told before it starts — the journal since it last looked, the
+project's memory, and anything it read that has gone stale. Codex's
+`SessionStart` hook and the OpenCode plugin tell a new session the
+project's memory too. Before an edit, `PreToolUse` refuses
 one to a file changed since the session read it. A folder observation
 remembers children that were deleted; reread their absence before writing
 one back. A target that was and remains absent, or whose content is unchanged
@@ -1100,8 +1107,25 @@ Current behaviour that the sections above do not already state, by area.
 - Projects keep their own messages. An agent reaches only its own project's
   agents, its channels and you: a send, ask or question to another project's
   agent, project or channel is refused, and an agent's `all` means its own
-  project. `list_agents` and the session-start note do not name agents in
-  other projects. You can still message anyone anywhere.
+  project. What an agent says on a topic reaches its own project's
+  subscribers and you, never another project's agents. `list_agents` and the
+  session-start note do not name agents in other projects. You can still
+  message anyone anywhere.
+
+- Topics keep their messages for whoever subscribes later: at most 1,000 per
+  topic and seven days, or what `[messages] topic_limit` and
+  `topic_retention` say in `~/.agentdocker/agentd.toml`:
+
+  ```toml
+  [messages]
+  topic_limit = 1000       # messages each topic keeps, 1–100000
+  topic_retention = "7d"   # how long it keeps one: 30m, 12h, 7d or seconds
+  ```
+
+  An agent that watches a topic gets what it has not acknowledged there and
+  picks up after its last acknowledgement on its next watch, across a
+  daemon restart too. Topics are not conversations: they are not in
+  `conversations`, `history` or the app.
 
 - The Messages workspace: **+** for a new direct message, `@` mentions
   with counts, Enter to send, resizable panes, an Earlier group for ended
@@ -1472,9 +1496,15 @@ Current behaviour that the sections above do not already state, by area.
 
 - **Project memory.** Agents and you can keep short facts for a project —
   a convention, a decision, where something lives — with `add_memory` or
-  `agentdocker memory add`. Every new session in the project is told them,
-  newest first. A memory that is no longer true is replaced
-  (`--supersedes`) or forgotten. It stays on this machine; anything that
+  `agentdocker memory add`. Every new Claude Code, Codex and OpenCode
+  session in the project is told them as it starts, the standing ones
+  first and then the newest, as context for the model, never typed into
+  its terminal (Codex runs its start hook at a conversation's first turn,
+  and again after `/clear` or a compaction). Search finds whole words, the
+  rarer ones counting for more and the newer memory first on a tie; an
+  identifier such as `task_id` is one word, so `task` does not find it,
+  while `-` and `:` separate words. A memory that is no longer true is
+  replaced (`--supersedes`) or forgotten. It stays on this machine; anything that
   looks like a secret is refused. To keep a copy in Supermemory as well,
   name the projects and a key file under `[memory.supermemory]` in
   `agentd.toml` (off unless you turn it on; the hosted service is

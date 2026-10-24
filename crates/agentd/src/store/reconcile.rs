@@ -678,6 +678,7 @@ impl Store {
             )?;
             self.conn
                 .execute("DELETE FROM journal_cursors WHERE agent=?1", [old.as_str()])?;
+            self.merge_topic_cursors(kept, old)?;
             self.conn
                 .execute("DELETE FROM agents WHERE id=?1", [old.as_str()])?;
         }

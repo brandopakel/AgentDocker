@@ -558,6 +558,40 @@ pub struct MessagesConfig {
     /// the archive.
     #[serde(default)]
     pub retention: Option<String>,
+    /// How many messages each topic keeps for subscribers that join later,
+    /// 1 to [`TOPIC_LIMIT_MAX`]. Absent means [`TOPIC_LIMIT`].
+    #[serde(default)]
+    pub topic_limit: Option<usize>,
+    /// How long a topic keeps a message, as `30m`, `12h`, `7d` or plain
+    /// seconds. Absent means [`TOPIC_RETENTION_DAYS`] days.
+    #[serde(default)]
+    pub topic_retention: Option<String>,
+}
+
+/// How many messages a topic keeps unless `[messages] topic_limit` says.
+pub const TOPIC_LIMIT: usize = 1_000;
+/// The most `[messages] topic_limit` may say.
+pub const TOPIC_LIMIT_MAX: usize = 100_000;
+/// How many days a topic keeps a message unless `[messages]
+/// topic_retention` says.
+pub const TOPIC_RETENTION_DAYS: i64 = 7;
+
+/// What each topic keeps: at most `limit` messages, none older than
+/// `window`. Always bounded: there is no setting that keeps a topic for
+/// ever.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TopicRetention {
+    pub limit: usize,
+    pub window: Duration,
+}
+
+impl Default for TopicRetention {
+    fn default() -> Self {
+        Self {
+            limit: TOPIC_LIMIT,
+            window: Duration::days(TOPIC_RETENTION_DAYS),
+        }
+    }
 }
 
 /// Observations one agent's read set holds unless `[read_set] capacity`
@@ -680,6 +714,25 @@ impl DaemonConfig {
                 "read_set.capacity must be {READ_SET_CAPACITY_MIN}–{READ_SET_CAPACITY_MAX}, not {capacity}"
             ))
         }
+    }
+
+    /// What each topic keeps: the file's `topic_limit` and
+    /// `topic_retention` where it gives them, the defaults where it does
+    /// not. A value that cannot be read is an error, for the caller to say
+    /// once and keep the defaults.
+    pub fn topic_retention(&self) -> Result<TopicRetention, String> {
+        let mut retention = TopicRetention::default();
+        if let Some(limit) = self.messages.topic_limit {
+            if !(1..=TOPIC_LIMIT_MAX).contains(&limit) {
+                return Err(format!("messages.topic_limit must be 1–{TOPIC_LIMIT_MAX}"));
+            }
+            retention.limit = limit;
+        }
+        if let Some(text) = &self.messages.topic_retention {
+            retention.window = parse_duration(text)
+                .map_err(|error| format!("messages.topic_retention: {error}"))?;
+        }
+        Ok(retention)
     }
 }
 
@@ -1195,5 +1248,47 @@ secret_file = {secret:?}
         assert!(guide.contains(&example), "GUIDE.md: {example}");
         assert_eq!(grouped(10_000), "10,000");
         assert_eq!(grouped(100), "100");
+    }
+
+    /// A topic keeps a thousand messages for seven days unless the file
+    /// says otherwise; either value may be given alone, and one that
+    /// cannot be read is refused rather than taken as unbounded.
+    #[test]
+    fn topic_retention_has_bounded_defaults_and_reads_either_value() {
+        let parse = |text: &str| toml::from_str::<DaemonConfig>(text).unwrap();
+        assert_eq!(
+            DaemonConfig::default().topic_retention().unwrap(),
+            TopicRetention {
+                limit: 1_000,
+                window: Duration::days(7)
+            }
+        );
+        assert_eq!(
+            parse("[messages]\ntopic_limit = 50\n")
+                .topic_retention()
+                .unwrap(),
+            TopicRetention {
+                limit: 50,
+                window: Duration::days(7)
+            }
+        );
+        assert_eq!(
+            parse("[messages]\ntopic_retention = \"12h\"\nretention = \"30d\"\n")
+                .topic_retention()
+                .unwrap(),
+            TopicRetention {
+                limit: 1_000,
+                window: Duration::hours(12)
+            }
+        );
+        for broken in [
+            "[messages]\ntopic_limit = 0\n",
+            "[messages]\ntopic_limit = 100001\n",
+            "[messages]\ntopic_retention = \"forever\"\n",
+            "[messages]\ntopic_retention = \"0\"\n",
+        ] {
+            assert!(parse(broken).topic_retention().is_err(), "{broken}");
+        }
+        assert!(toml::from_str::<DaemonConfig>("[messages]\ntopic_keep = 5\n").is_err());
     }
 }

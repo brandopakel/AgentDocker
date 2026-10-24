@@ -197,6 +197,9 @@ fn plan<T: Into<services::References>>(
     Ok((plan, pins))
 }
 
+/// Carry out a reviewed plan. On a Mac that registers bundles, each removed
+/// bundle is forgotten as it goes, and after an uninstall every retained
+/// build too, since none is active; the command reports what was told.
 fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
     layout.preflight()?;
     if plan.operation == "uninstall" {
@@ -206,16 +209,20 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
             layout.preflight()?;
             if path.symlink_metadata()?.is_dir() {
                 // Only our own launcher bundle reaches here (preflight).
+                layout.launch_services(Registration::Unregister, path);
                 std::fs::remove_dir_all(path)?;
             } else {
                 std::fs::remove_file(path)?;
             }
             std::fs::File::open(path.parent().context("launcher has no parent")?)?.sync_all()?;
         }
+        layout.settle_launch_services();
     } else {
         dirs::secure_state_dir(&layout.root.join("retired"))?;
         for path in &plan.remove {
             checked_version(layout, path)?;
+            // A no-op wherever bundles are not registered.
+            layout.forget_stored(&path.join("AgentDocker.app"));
             // Keep the staging directory on any verification/cleanup failure.
             // Never let a TempDir destructor erase an unexpectedly changed tree.
             let stage = tempfile::tempdir_in(layout.root.join("retired"))?.keep();
@@ -307,18 +314,20 @@ fn run_with<T: Into<services::References>>(
     if let Some(expected) = expected {
         ensure!(id == expected, "maintenance plan changed; review again");
     }
-    if !preview && !plan.remove.is_empty() {
+    let applied = !preview && !plan.remove.is_empty();
+    if applied {
         apply(layout, &plan)?;
     }
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
-            "maintenance":plan, "plan_id":id, "preview":preview,
-            "sessions":"running sessions continue; versions with lifetime pins are retained",
-            "settings":"daemon state, provider configuration and service registration are preserved",
-            "provider_configuration":"tools keep AgentDocker's MCP entries and hooks; `agentdocker setup --remove` takes them out (and `setup --undo` puts them back)",
-        }))?
-    );
+    let mut report = json!({
+        "maintenance":plan, "plan_id":id, "preview":preview,
+        "sessions":"running sessions continue; versions with lifetime pins are retained",
+        "settings":"daemon state, provider configuration and service registration are preserved",
+        "provider_configuration":"tools keep AgentDocker's MCP entries and hooks; `agentdocker setup --remove` takes them out (and `setup --undo` puts them back)",
+    });
+    if let Some(registration) = layout.launch_services_report().filter(|_| applied) {
+        report["launch_services"] = registration;
+    }
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 
@@ -652,6 +661,54 @@ mod tests {
             review
                 .remove
                 .contains(&layout.root.join("versions").join(modern.id))
+        );
+    }
+
+    /// Launch Services requests are recorded, never made: a pruned build is
+    /// forgotten before it is removed, and an uninstall forgets the removed
+    /// launcher and then every retained build, since none is active.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pruning_and_uninstalling_forget_the_bundles_they_remove() {
+        use super::super::launch_services::Registrar;
+        let (_temp, mut layout) = fixture();
+        let (registrar, calls) = Registrar::recorder();
+        layout.registrar = registrar;
+        let take = || std::mem::take(&mut *calls.lock().unwrap());
+        let old = retained(&layout, "old", 1);
+        let previous = retained(&layout, "previous", 1);
+        let current = retained(&layout, "current", 1);
+        layout.activate(previous.clone(), None).unwrap();
+        layout
+            .activate(current.clone(), Some(previous.clone()))
+            .unwrap();
+        take();
+
+        run_with(&layout, Some(0), false, None, || Ok(false)).unwrap();
+        assert!(!layout.payload(&old).exists());
+        assert_eq!(
+            take(),
+            [(Registration::Unregister, layout.payload(&old))],
+            "a pruned build is forgotten, and nothing else"
+        );
+
+        run_with(&layout, None, false, None, || Ok(false)).unwrap();
+        assert!(!layout.application.exists());
+        let mut made = take();
+        assert_eq!(
+            made.remove(0),
+            (Registration::Unregister, layout.application.clone())
+        );
+        made.sort_by(|a, b| a.1.cmp(&b.1));
+        let mut retained = vec![layout.payload(&previous), layout.payload(&current)];
+        retained.sort();
+        assert_eq!(
+            made,
+            retained
+                .into_iter()
+                .map(|bundle| (Registration::Unregister, bundle))
+                .collect::<Vec<_>>(),
+            "nothing is registered once the installation is gone"
         );
     }
 

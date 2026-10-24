@@ -1,13 +1,15 @@
 // AgentDocker for OpenCode: leases on edits, peer messages, the project
-// journal, and a wake-up when a message arrives while the session is idle.
+// journal and memory, and a wake-up when a message arrives while the session
+// is idle.
 //
 // Written by `agentdocker setup opencode`. Each OpenCode event is handed to
 // `agentdocker hook opencode` in Claude Code's hook shape, so the rules are
 // the same ones Claude Code sessions follow: an edit to a file another agent
 // holds is refused with the holder and its note, reads are recorded for
-// staleness, messages reach the model at the next turn, and the turn's end
-// gives back what was taken for it. If AgentDocker cannot be reached, OpenCode
-// carries on as if this plugin were not here.
+// staleness, a new session is told the project's memory, messages reach the
+// model at the next turn, and the turn's end gives back what was taken for
+// it. If AgentDocker cannot be reached, OpenCode carries on as if this plugin
+// were not here.
 //
 // A message leaves AgentDocker's queue only after the turn that carried it
 // completed: the hook lists what its answer contains, and this plugin reports
@@ -56,9 +58,10 @@ function ids(entries) {
 
 export const AgentDocker = async ({ directory, client }) => {
   // What each session is told on every call (who it is, who else is here,
-  // the journal); context waiting for the next request; what requests
-  // carried whose turn has not completed; the session's agent; and the
-  // watch that wakes an idle session.
+  // the journal, the project's memory: all the session start says before
+  // its waiting messages); context waiting for the next request; what
+  // requests carried whose turn has not completed; the session's agent; and
+  // the watch that wakes an idle session.
   const orientation = new Map()
   const pending = new Map()
   const inflight = new Map()

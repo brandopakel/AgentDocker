@@ -418,6 +418,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                 daemon.prune_changes();
                 daemon.apply_journal_retention();
                 daemon.apply_message_retention();
+                daemon.apply_topic_retention();
                 daemon.apply_agent_retention();
                 daemon.prune_orphan_reads();
                 daemon.apply_read_set_capacity();

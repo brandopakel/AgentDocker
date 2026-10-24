@@ -20,8 +20,15 @@ SHELL := /bin/bash
 # docs/TESTING-AND-BENCHMARKS.md asks for one campaign per checkout.
 PREFLIGHT := python3 scripts/build_storage.py
 # Where packaged artifacts and smoke reports go. Packaging refuses to reuse a
-# directory, so each run gets its own timestamped folder underneath.
-ARTIFACTS ?= artifacts/local
+# directory, so each run gets its own timestamped folder underneath. Spotlight
+# skips a `.noindex` folder, and each packaged app is unregistered from Launch
+# Services once packaging or installing has run (an assessment registers it),
+# so `open -a AgentDocker` never opens a copy in the checkout. Packages made
+# before this lived in `artifacts/local`, where Spotlight found them; packaging
+# moves them over first (`migrate-artifacts`).
+NOINDEX := artifacts/local.noindex
+LEGACY := artifacts/local
+ARTIFACTS ?= $(NOINDEX)
 STAMP := $(shell date +%Y%m%d-%H%M%S)
 PACKAGE_DIR := $(ARTIFACTS)/desktop-$(STAMP)
 VERSION := $(shell python3 -c 'import tomllib;print(tomllib.load(open("Cargo.toml","rb"))["workspace"]["package"]["version"])')
@@ -36,8 +43,19 @@ else
 PAYLOAD := agentdocker-desktop
 LOCAL_PREVIEW :=
 endif
+LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+# Forget packaged apps (`<store>/<package>/<app>`) in Launch Services; nothing
+# where there is none. lsregister resolves links, so an app is named only when
+# it, its package folder and the store are real directories, never links: a
+# link would make it forget an app somewhere else, the installed one included.
+# A pattern that matched no package names nothing.
+FORGET = if [ -x "$(LSREGISTER)" ]; then for app in $(1); do \
+  package="$${app%/*}"; store="$${package%/*}"; \
+  if [ -d "$$app" ] && [ ! -L "$$app" ] && [ ! -L "$$package" ] && [ ! -L "$$store" ]; then \
+    "$(LSREGISTER)" -u "$$app" >/dev/null 2>&1 || true; \
+  fi; done; fi
 
-.PHONY: help build check test clippy fmt app install install-preview status rollback run smoke restart-daemon clean-artifacts
+.PHONY: help build check test clippy fmt app install install-preview status rollback run smoke restart-daemon clean-artifacts migrate-artifacts
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[1m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -62,7 +80,7 @@ fmt: ## Format everything
 check: ## The standard verification gate used before a PR
 	bash scripts/verify.sh check
 
-app: ## Release build + native package for this machine (no signing)
+app: migrate-artifacts ## Release build + native package for this machine (no signing)
 	$(PREFLIGHT)
 	mkdir -p "$(ARTIFACTS)"
 	native="$$(python3 scripts/build_native.py)" && \
@@ -72,14 +90,17 @@ app: ## Release build + native package for this machine (no signing)
 	    --version "$(VERSION)" --source "$(SOURCE)" --target "$$target" && \
 	  ln -sfn "desktop-$(STAMP)" "$(ARTIFACTS)/latest" && \
 	  echo "Packaged $(PACKAGE_DIR)/$(PAYLOAD)"
+	$(call FORGET,"$(PACKAGE_DIR)/$(PAYLOAD)")
 
 install-preview: app ## Build, package, and show what `make install` would change
 	"$(PACKAGED_CLI)" desktop $(PREFIX_FLAG) install --from "$(PACKAGE_DIR)/$(PAYLOAD)" $(LOCAL_PREVIEW) --preview
+	$(call FORGET,"$(PACKAGE_DIR)/$(PAYLOAD)")
 
 PACKAGED_CLI := $(PACKAGE_DIR)/$(PAYLOAD)/$(if $(filter Darwin,$(shell uname -s)),Contents/MacOS,bin)/agentdocker
 
 install: app ## Build, package, and install for this user (takes effect on next launch)
 	"$(PACKAGED_CLI)" desktop $(PREFIX_FLAG) install --from "$(PACKAGE_DIR)/$(PAYLOAD)" $(LOCAL_PREVIEW)
+	$(call FORGET,"$(PACKAGE_DIR)/$(PAYLOAD)")
 	"$(PACKAGED_CLI)" desktop $(PREFIX_FLAG) status
 	@echo; echo "Installed. Quit and reopen AgentDocker to run this build."; \
 	  echo "The report's 'daemon' entry says whether a running daemon reloaded to it; if it did not, make restart-daemon switches it once agent work is done"
@@ -105,4 +126,17 @@ smoke: ## Native workflow acceptance against the release binaries build_native.p
 	  python3 scripts/iced_workflow_smoke.py --binary-dir "$$bindir" --output "$(ARTIFACTS)/smoke-$(STAMP)"
 
 clean-artifacts: ## Remove local package and smoke output (keeps the Cargo cache)
-	rm -rf "$(ARTIFACTS)"
+	$(call FORGET,"$(ARTIFACTS)"/desktop-*/$(PAYLOAD) "$(LEGACY)"/desktop-*/$(PAYLOAD))
+	rm -rf "$(ARTIFACTS)" "$(LEGACY)"
+
+# Forget every package in the old folder, then move the whole folder, as it
+# is, into a new folder of its own where Spotlight does not look: nothing is
+# left behind to be indexed again, and no name can collide.
+migrate-artifacts:
+	if [ "$(ARTIFACTS)" != "$(LEGACY)" ] && [ -d "$(LEGACY)" ] && [ ! -L "$(LEGACY)" ]; then \
+	  $(call FORGET,"$(LEGACY)"/desktop-*/$(PAYLOAD)); \
+	  mkdir -p "$(NOINDEX)"; \
+	  moved="$$(mktemp -d "$(NOINDEX)/from-local.XXXXXX")"; \
+	  mv "$(LEGACY)" "$$moved/"; \
+	  echo "Moved earlier packages from $(LEGACY) to $$moved"; \
+	fi

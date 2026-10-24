@@ -25,6 +25,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 pub(crate) mod authorship;
 pub(crate) mod event_replay;
 pub(crate) mod reconcile;
+pub(crate) mod topics;
 pub(crate) mod usage;
 pub(crate) mod webhooks;
 pub(crate) use event_replay::EventReplay;
@@ -83,6 +84,9 @@ pub struct TaskTransition<'a> {
 // The `authorship` and `witnessed_worktrees` tables need no bump: they are
 // new tables, no stored row changes meaning, and an older daemon leaves them
 // alone (it records no authorship while it runs; nothing it reads is wrong).
+// Nor do `topic_messages` and `topic_cursors`, by the same rule: an older
+// daemon keeps no topic messages and moves no cursor while it runs, so a
+// reader may later be replayed less or again, never anything wrong.
 pub(crate) const SCHEMA_VERSION: i64 = 28;
 
 const SCHEMA: &str = "
@@ -269,6 +273,22 @@ CREATE TABLE IF NOT EXISTS authorship (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS authorship_branch ON authorship (project, branch, agent);
 CREATE INDEX IF NOT EXISTS authorship_agent ON authorship (agent);
+CREATE TABLE IF NOT EXISTS topic_messages (
+    seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id TEXT NOT NULL UNIQUE,
+    topic      TEXT NOT NULL,
+    project    TEXT,
+    sent_at    TEXT NOT NULL,
+    json       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS topic_messages_topic ON topic_messages (topic, seq);
+CREATE TABLE IF NOT EXISTS topic_cursors (
+    agent      TEXT NOT NULL,
+    topic      TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (agent, topic)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS witnessed_worktrees (
     path       TEXT PRIMARY KEY,
     project    TEXT NOT NULL,
@@ -1206,6 +1226,7 @@ impl Store {
             "DELETE FROM journal_cursors WHERE agent=?1",
             [alias.retired.as_str()],
         )?;
+        self.merge_topic_cursors(&alias.canonical, &alias.retired)?;
         self.upsert_agent(canonical)?;
         self.conn
             .execute("DELETE FROM agents WHERE id=?1", [alias.retired.as_str()])?;
@@ -1325,6 +1346,14 @@ impl Store {
         )?;
         tx.execute(
             "DELETE FROM witnessed_worktrees WHERE agent = ?1",
+            params![id.as_str()],
+        )?;
+        // Its topic cursors, and those of former ids an offline identity
+        // repair left behind (that repair does not touch topic state).
+        tx.execute(
+            "DELETE FROM topic_cursors WHERE agent = ?1 OR agent IN (
+                 SELECT id FROM documents WHERE kind = 'identity_alias'
+                 AND json_extract(json, '$.canonical') = ?1)",
             params![id.as_str()],
         )?;
         tx.execute(
@@ -1456,10 +1485,14 @@ impl Store {
         self.publish_message_with_channel(
             message, recipients, capacity, sender, question, closed, events, None, None, false,
         )
+        .map(drop)
     }
 
     /// A channel close/review and all of its message/journal effects are one
     /// transaction; a refused ancillary write cannot leave an applied action.
+    /// A topic message is kept in the topic log in the same transaction, for
+    /// its sender's project ([`agentdocker_core::topic::scope`]), and its
+    /// place there is returned.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_message_with_channel(
         &self,
@@ -1473,8 +1506,16 @@ impl Store {
         channel: Option<(&Channel, Option<&JournalEntry>)>,
         document: Option<(&str, &str, Option<&serde_json::Value>)>,
         tracked: bool,
-    ) -> Result<()> {
+    ) -> Result<Option<agentdocker_core::TopicPost>> {
         let tx = write_transaction(&self.conn)?;
+        let post = match &message.to {
+            agentdocker_core::Destination::Topic(topic) => Some(self.keep_topic_message(
+                message,
+                topic,
+                agentdocker_core::topic::scope(sender),
+            )?),
+            _ => None,
+        };
         for recipient in recipients {
             self.insert_inbox(recipient, message, capacity)?;
             if tracked {
@@ -1511,7 +1552,7 @@ impl Store {
             self.append_event(event)?;
         }
         tx.commit()?;
-        Ok(())
+        Ok(post)
     }
 
     pub fn close_questions(

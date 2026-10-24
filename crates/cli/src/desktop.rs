@@ -18,7 +18,9 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use agentdocker_host::{command, dirs, project};
+use launch_services::{Registrar, Registration};
 
+mod launch_services;
 mod maintenance;
 mod update;
 #[cfg(windows)]
@@ -240,6 +242,10 @@ struct Layout {
     /// folder, a link stays here so absolute paths written into hook and
     /// MCP configuration by earlier releases keep resolving.
     legacy_application: Option<PathBuf>,
+    /// Who registers bundles with Launch Services; tests answer instead.
+    registrar: Registrar,
+    /// What this command has told Launch Services, and the time it took.
+    told: std::sync::Mutex<launch_services::Settlement>,
 }
 
 impl Layout {
@@ -265,6 +271,8 @@ impl Layout {
             prefix,
             application,
             legacy_application,
+            registrar: Registrar::System,
+            told: Default::default(),
         })
     }
 
@@ -448,27 +456,9 @@ impl Layout {
     /// Tell Launch Services about the launcher so it appears in Launchpad
     /// and Spotlight at once instead of after the next login. Best effort,
     /// and only for the real home prefix: trial prefixes must not register
-    /// throwaway bundles on the machine.
+    /// throwaway bundles on the machine (see `launch_services`).
     fn register_launcher(&self) {
-        self.launch_services("-f", &self.application);
-    }
-
-    fn launch_services(&self, operation: &str, application: &Path) {
-        if !cfg!(target_os = "macos")
-            || Some(self.prefix.as_path()) != std::env::home_dir().as_deref()
-        {
-            return;
-        }
-        let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
-        if !Path::new(lsregister).is_file() {
-            return;
-        }
-        let _ = std::process::Command::new(lsregister)
-            .arg(operation)
-            .arg(application)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        self.launch_services(Registration::Register, &self.application);
     }
 
     /// Copy the signed bundle without adding markers, changing Info.plist or
@@ -565,12 +555,21 @@ impl Layout {
             self.register_launcher();
             return Err(error.into());
         }
+        // The replaced app now waits in the private staging directory, which
+        // is removed on return. Forget it first, so no registration is left
+        // naming a path that can never open.
+        if bundle
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.is_dir())
+        {
+            self.launch_services(Registration::Unregister, &bundle);
+        }
         self.register_launcher();
         Ok(())
     }
 
     fn unregister_launcher(&self, application: &Path) {
-        self.launch_services("-u", application);
+        self.launch_services(Registration::Unregister, application);
     }
 
     fn repair_legacy_launcher(&self) -> Result<()> {
@@ -1432,9 +1431,6 @@ fn run_unix(args: DesktopArgs, socket: Option<PathBuf>) -> Result<()> {
         expect_current,
         socket,
     )?;
-    if !preview {
-        layout.register_launcher();
-    }
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -1559,6 +1555,14 @@ fn perform(
     report["daemon"] = daemon;
     if changed {
         report["retention"] = maintenance::after_activation(layout, &_held);
+    }
+    // Last, still under the installation lock: only the launcher and the
+    // active release may answer for the app's name, never a retained one.
+    // The report holds every call of the change, publication's and
+    // pruning's included.
+    layout.settle_launch_services();
+    if let Some(registration) = layout.launch_services_report() {
+        report["launch_services"] = registration;
     }
     Ok(report)
 }
