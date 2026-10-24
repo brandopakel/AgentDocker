@@ -230,8 +230,8 @@ session's own name, e.g. *Claude Code seems to want permission in its
 terminal, judged from its screen, 87% likely*, or *seems to have a question*
 or *seems to have an unsent draft*. The row goes when the screen changes or
 can no longer be read (a second agent claims its herdr session, its pane
-moves, is replaced or closes, or herdr or tmux stays silent for about twenty
-seconds), when the agent's own hooks report something newer, when another
+moves while it is read, is replaced or closes, or herdr or tmux stays silent
+for about twenty seconds), when the agent's own hooks report something newer, when another
 process takes its place, or when the judge is turned off. Its notification says the same with
 that name (e.g. *Claude Code seems to want permission*, *Judged from its
 screen, 87% likely*). Seen across
