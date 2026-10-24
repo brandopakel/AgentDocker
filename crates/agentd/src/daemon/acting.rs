@@ -49,6 +49,7 @@
 use super::*;
 use agentdocker_core::HUMAN;
 use agentdocker_host::codex_control;
+use agentdocker_host::peers;
 use agentdocker_host::procinfo::{self, Unseen};
 use person::Peer;
 
@@ -636,6 +637,11 @@ pub(crate) struct Named {
     /// Profiles, as spelled, whose shared server stands in `chain` and serves
     /// the profile's control socket.
     served: Vec<String>,
+    /// Of `terminal`'s profile, when it is in `served`: whether the named
+    /// process holds a Unix-domain connection whose other end that proven
+    /// server holds, as the kernel says it ([`peers::connected`]) — the
+    /// terminal is that server's client.
+    connected: Vec<String>,
     /// The profiles, as spelled, whose shared server was looked for: the
     /// spec's and every live Codex agent's when the registration was checked.
     profiles: Vec<String>,
@@ -648,8 +654,10 @@ impl Named {
     /// Whether this admits naming the process as an agent's that holds it
     /// (`holder`): from inside that agent's session, as the agent check finds
     /// it — one of its own processes in `chain`, its terminal's companion
-    /// launcher there, or the shared server of the profile its own record
-    /// names, proven — and never on what the registration says.
+    /// launcher there, the shared server of the profile its own record
+    /// names, proven, or, for a Codex terminal whose record names no profile,
+    /// the proven server the kernel shows it is a client of — and never on
+    /// what the registration says.
     fn admits_holder(&self, holder: &Acting) -> bool {
         self.holds(holder, &self.chain, &self.launched)
     }
@@ -667,6 +675,23 @@ impl Named {
                 .label
                 .as_ref()
                 .is_some_and(|label| self.served.contains(label))
+            || self.client_of_served(holder)
+    }
+
+    /// Whether `holder` is a Codex terminal whose record names no profile,
+    /// the named process itself, which the kernel shows is a client of the
+    /// proven shared server of the profile the spec names: that server runs
+    /// its conversations, as it runs those of a record that names it.
+    fn client_of_served(&self, holder: &Acting) -> bool {
+        holder.label.is_none()
+            && holder
+                .codex
+                .as_ref()
+                .is_some_and(|codex| codex.terminal == Some(self.process))
+            && self
+                .terminal
+                .as_ref()
+                .is_some_and(|label| self.served.contains(label) && self.connected.contains(label))
     }
 
     /// Whether this admits naming the process while `holders` hold it. One
@@ -843,6 +868,7 @@ fn gather(
             launcher_in_chain,
             terminal: resumes.map(|t| t.label.clone()),
             served: Vec::new(),
+            connected: Vec::new(),
             profiles: looked,
             server_in_chain,
         },
@@ -1149,6 +1175,20 @@ impl Daemon {
                 .and_then(Result::ok)
                 .flatten();
                 if served_by(&server.candidates, serving, procinfo::start_time) {
+                    if let Some(serving) = serving
+                        && named.terminal.as_ref() == Some(&server.label)
+                    {
+                        let terminal = named.process.0;
+                        let client = tokio::task::spawn_blocking(move || {
+                            peers::connected(terminal, serving)
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+                        if client == Some(true) {
+                            named.connected.push(server.label.clone());
+                        }
+                    }
                     named.served.push(server.label);
                 }
             }
@@ -2186,6 +2226,62 @@ mod tests {
         assert!(!table.admits(61, 81, &[], None));
     }
 
+    /// A Codex terminal whose record names no profile (adopted, or made
+    /// first by an MCP server) is named from under a profile's proven shared
+    /// server when the kernel shows the terminal is that server's client,
+    /// and a sender there then counts as inside its session. Not on the
+    /// connection without the server proven, not for a spec naming another
+    /// conversation, and never for a record of another profile or of
+    /// another runtime.
+    #[test]
+    fn a_terminal_that_names_no_profile_is_named_as_its_server_s_client() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (table, p, q) = table(&std::fs::canonicalize(tmp.path()).unwrap());
+        let terminal = |thread: &str| Terminal {
+            label: p.display().to_string(),
+            profile: p.clone(),
+            thread: thread.to_owned(),
+        };
+        let theirs = terminal(THREAD);
+        let at81 = (81, at(81));
+        let unprofiled = holder("codex", 81, None);
+        let named = |holders: &[Acting], spec: &Terminal, serving, client: bool| {
+            let mut named = table.named(61, at81, holders, Some(spec), serving);
+            if client {
+                named.connected.push(spec.label.clone());
+            }
+            named
+        };
+        let held = std::slice::from_ref(&unprofiled);
+        assert!(
+            !named(held, &theirs, Some(60), false).admits(held),
+            "no connection"
+        );
+        let client = named(held, &theirs, Some(60), true);
+        assert!(client.admits(held), "its server's client");
+        assert!(client.inside(&unprofiled), "and inside its session");
+        assert!(
+            !named(held, &theirs, None, true).admits(held),
+            "an unproven server"
+        );
+        let other = terminal("019a0000-0000-7000-8000-000000000002");
+        assert!(
+            !named(held, &other, Some(60), true).admits(held),
+            "another conversation's spec"
+        );
+        for record in [
+            holder("codex", 81, Some(&q)),
+            holder("claude-code", 81, None),
+        ] {
+            let held = std::slice::from_ref(&record);
+            assert!(
+                !named(held, &theirs, Some(60), true).admits(held),
+                "{}",
+                record.name
+            );
+        }
+    }
+
     /// What a check found holds when the registration commits only against
     /// the agents that hold the process by then ([`Authorized::recheck`]):
     /// a hook's word for its provider holds whoever came to hold it (each
@@ -2530,6 +2626,11 @@ mod tests {
         profile: std::path::PathBuf,
         image: std::path::PathBuf,
         terminals: Vec<std::process::Child>,
+        /// The other end of a terminal's connection, for the next stand-in
+        /// to hold.
+        peer: std::sync::Mutex<Option<std::os::fd::OwnedFd>>,
+        /// Other ends this test's own process holds.
+        held: Vec<std::os::fd::OwnedFd>,
         _dirs: (tempfile::TempDir, tempfile::TempDir),
     }
 
@@ -2564,8 +2665,53 @@ mod tests {
                 profile,
                 image,
                 terminals: Vec::new(),
+                peer: std::sync::Mutex::new(None),
+                held: Vec::new(),
                 _dirs: (tmp, short),
             }
+        }
+
+        /// A Codex terminal resuming `thread`, as [`SharedServer::terminal`],
+        /// that holds one end of a Unix-domain connection: the next stand-in
+        /// holds the other end when `to_server` says so, as a terminal's own
+        /// connection to its server is held, and this test's process
+        /// otherwise, as another server would.
+        fn connected_terminal(&mut self, thread: &str, to_server: bool) -> u32 {
+            use std::os::fd::AsRawFd as _;
+            use std::os::unix::process::CommandExt as _;
+            let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+            let raw = theirs.as_raw_fd();
+            let mut command = std::process::Command::new("/bin/sh");
+            command
+                .arg0("codex")
+                .args(["-c", "read -r line; exit", "resume", thread])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            // SAFETY: dup2 and fcntl are async-signal-safe, and the closure
+            // touches nothing else between fork and exec.
+            unsafe {
+                command.pre_exec(move || {
+                    if raw == 3 {
+                        let flags = libc::fcntl(3, libc::F_GETFD);
+                        libc::fcntl(3, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+                    } else if libc::dup2(raw, 3) != 3 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let child = command.spawn().unwrap();
+            drop(theirs);
+            let pid = child.id();
+            self.terminals.push(child);
+            let ours = std::os::fd::OwnedFd::from(ours);
+            if to_server {
+                *self.peer.lock().unwrap() = Some(ours);
+            } else {
+                self.held.push(ours);
+            }
+            pid
         }
 
         /// A Codex terminal resuming `thread`, by its pid. A shell keeps
@@ -2617,8 +2763,10 @@ mod tests {
                 "request": request,
             });
             let image = self.image.clone();
+            let peer = self.peer.lock().unwrap().take();
             let output = tokio::task::spawn_blocking(move || {
-                std::process::Command::new(&image)
+                let mut command = std::process::Command::new(&image);
+                command
                     .args([
                         "daemon::acting::tests::shared_server_stand_in",
                         "--exact",
@@ -2626,9 +2774,12 @@ mod tests {
                         "--nocapture",
                         "--test-threads=1",
                     ])
-                    .env("AGENTDOCKER_TEST_STAND_IN", told.to_string())
-                    .output()
-                    .unwrap()
+                    .env("AGENTDOCKER_TEST_STAND_IN", told.to_string());
+                // The stand-in holds a terminal's connection as its input.
+                if let Some(peer) = peer {
+                    command.stdin(std::process::Stdio::from(peer));
+                }
+                command.output().unwrap()
             })
             .await
             .unwrap();
@@ -2722,10 +2873,11 @@ mod tests {
     }
 
     /// Over the real socket: a Codex terminal whose live record names no
-    /// profile (an adopted or MCP-first record) is not the shared server's
-    /// to name, even when its own arguments resume the conversation the
-    /// registration names and the server is proven: the registration's own
-    /// profile and thread prove nothing about the record. It is refused
+    /// profile (an adopted or MCP-first record) and that is not the shared
+    /// server's client is not the server's to name, even when its own
+    /// arguments resume the conversation the registration names and the
+    /// server is proven: the registration's own profile and thread prove
+    /// nothing about the record. It is refused
     /// `identity_mismatch`, the record learns neither a session nor a
     /// profile, and the server still cannot act as it. A terminal whose
     /// own record names the profile is the server's to name, and learns its
@@ -2784,6 +2936,60 @@ mod tests {
                 if agent.id == profiled.id
                     && agent.spec.labels.get("session_id").map(String::as_str) == Some(thread)),
             "{reply:?}"
+        );
+    }
+
+    /// Over the real socket: a Codex terminal whose live record names no
+    /// profile, holding a Unix-domain connection whose other end the
+    /// profile's proven shared server holds, is that server's client, as the
+    /// kernel says it, and the server's registration binds its record to the
+    /// conversation: the same id, learning the thread and the profile. A
+    /// terminal connected to another process instead, as one of another
+    /// profile's server is, is refused, and its record stays as it was.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_shared_server_binds_a_record_that_names_no_profile_to_its_client() {
+        let mut server = SharedServer::start().await;
+        let elsewhere = server.connected_terminal(THREAD, false);
+        let theirs = server
+            .record(elsewhere, [("via".to_owned(), "mcp".to_owned())].into())
+            .await;
+        let reply = server.send(true, server.register(elsewhere, THREAD)).await;
+        assert!(
+            matches!(&reply, Response::Error { code: ErrorCode::IdentityMismatch, details: Some(details), .. }
+                if details["agent"] == theirs.id.as_str()),
+            "another process's client: {reply:?}"
+        );
+        assert_eq!(
+            lock(&server.daemon.state)
+                .registry
+                .get(&theirs.id)
+                .unwrap()
+                .spec
+                .labels,
+            theirs.spec.labels
+        );
+
+        let thread = "019a0000-0000-7000-8000-000000000003";
+        let client = server.connected_terminal(thread, true);
+        let unprofiled = server
+            .record(client, [("via".to_owned(), "mcp".to_owned())].into())
+            .await;
+        let reply = server.send(true, server.register(client, thread)).await;
+        let profile = server.profile.display().to_string();
+        assert!(
+            matches!(&reply, Response::Agent { agent }
+                if agent.id == unprofiled.id
+                    && agent.pid == Some(client)
+                    && agent.spec.labels.get("session_id").map(String::as_str) == Some(thread)
+                    && agent.spec.labels.get(agentdocker_core::agent::PROFILE_LABEL)
+                        == Some(&profile)),
+            "the server's client: {reply:?}"
+        );
+        assert_eq!(
+            lock(&server.daemon.state).registry.all().count(),
+            2,
+            "no record added"
         );
     }
 
