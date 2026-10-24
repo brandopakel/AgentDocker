@@ -36,6 +36,7 @@ pub mod codex_control;
 pub mod codex_trust;
 pub mod dirs;
 pub mod editor;
+pub mod http;
 // Passing an open descriptor to another process is `SCM_RIGHTS` over a
 // Unix socket, and Windows has no equivalent — it duplicates handles
 // into a named target process instead, which is a different mechanism

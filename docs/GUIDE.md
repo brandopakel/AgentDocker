@@ -1461,7 +1461,10 @@ Current behaviour that the sections above do not already state, by area.
   looks like a secret is refused. To keep a copy in Supermemory as well,
   name the projects and a key file under `[memory.supermemory]` in
   `agentd.toml` (off unless you turn it on; the hosted service is
-  Supermemory's, on its terms).
+  Supermemory's, on its terms). `base_url` names a server of your own
+  instead; its certificate is checked against the authorities your system
+  trusts, so one from your organisation's own authority is accepted once
+  your system trusts that authority.
 - **How Supermemory forms memories from the copy.** Two optional lines
   under `[memory.supermemory]`, neither sent unless you write it:
   `dreaming = "dynamic"` (related memories are grouped before Supermemory
