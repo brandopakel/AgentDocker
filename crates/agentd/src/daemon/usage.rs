@@ -459,6 +459,64 @@ fn finish_quiet(weak: &Weak<Daemon>, collection: &mut Collection, quiet: &mut Qu
     true
 }
 
+/// Manifest jobs read per state-lock hold while scheduling proofs.
+const SCHEDULE_PAGE: usize = 256;
+
+/// Choose this pass's scheduled whole proofs among the pending jobs: files
+/// whose saved cursor has a non-empty prefix, matches the job's captured
+/// generation and was last wholly proven `interval` ago or never. They are
+/// taken oldest first — never proven, then by the time of the last whole
+/// proof, then by job — up to `allowance` bytes of accepted prefix, always at
+/// least one, stopping at the first that does not fit so none is overtaken.
+/// A file just proven goes behind every other due file: none is proven twice
+/// before every due file has been proven once. `None` when storage fails or
+/// the daemon is gone.
+fn schedule_whole_proofs(
+    weak: &Weak<Daemon>,
+    schedule: ProofSchedule,
+) -> Option<std::collections::BTreeSet<usize>> {
+    let now = Utc::now();
+    let mut due = Vec::new();
+    let mut after = None;
+    loop {
+        let daemon = weak.upgrade()?;
+        let page = lock(&daemon.state).store_read("usage proof schedule", |store| {
+            store.usage_jobs_with_progress(after, SCHEDULE_PAGE)
+        })?;
+        drop(daemon);
+        let full = page.len() == SCHEDULE_PAGE;
+        for (job, progress) in page {
+            after = Some(job.id);
+            let Some(progress) = progress else {
+                continue;
+            };
+            let offset = progress.cursor.offset();
+            if offset > 0
+                && progress.cursor.same_generation(&job.captured)
+                && progress
+                    .verified_at
+                    .is_none_or(|at| now.signed_duration_since(at) >= schedule.interval)
+            {
+                due.push((progress.verified_at, job.id, offset));
+            }
+        }
+        if !full {
+            break;
+        }
+    }
+    due.sort_unstable();
+    let mut chosen = std::collections::BTreeSet::new();
+    let mut bytes: u64 = 0;
+    for (_, id, offset) in due {
+        if !chosen.is_empty() && bytes.saturating_add(offset) > schedule.allowance {
+            break;
+        }
+        bytes = bytes.saturating_add(offset);
+        chosen.insert(id);
+    }
+    Some(chosen)
+}
+
 fn defer_growing_job(
     weak: &Weak<Daemon>,
     collection: &Collection,
@@ -499,9 +557,10 @@ struct Tally {
 /// whose identity, length or change metadata moved always takes a whole
 /// proof; one that reports exactly the generation it was proven under
 /// rehashes only its last record, until its last whole proof is `interval`
-/// old. Scheduled whole proofs take at most `allowance` bytes of accepted
-/// prefix per pass (always at least one file), so the cost of re-proving an
-/// unchanged corpus is spread over passes rather than paid every pass.
+/// old. Due files are proven oldest first (`schedule_whole_proofs`), at most
+/// `allowance` bytes of accepted prefix per pass and always at least one
+/// file, so the cost of re-proving an unchanged corpus is spread over passes
+/// rather than paid every pass, and no due file is passed over for a newer one.
 #[derive(Clone, Copy, Debug)]
 struct ProofSchedule {
     interval: Duration,
@@ -703,10 +762,11 @@ fn collect_pass(
             return;
         }
     }
+    let Some(chosen) = schedule_whole_proofs(weak, schedule) else {
+        return;
+    };
     let mut after = None;
     let mut deferred = false;
-    // Accepted-prefix bytes of the whole proofs scheduled so far this pass.
-    let mut scheduled_bytes: u64 = 0;
     let mut quiet = Quiet::default();
     loop {
         if pages == 0 {
@@ -732,8 +792,7 @@ fn collect_pass(
         };
         after = Some((priority, job_id));
         tally.files += 1;
-        let key = serde_json::to_string(&(source.runtime, &source.path))
-            .expect("serializable source path");
+        let key = crate::store::usage::file_key(&source);
         let Some(daemon) = weak.upgrade() else {
             return;
         };
@@ -743,22 +802,11 @@ fn collect_pass(
             return;
         };
         let previous = old.as_ref().map(|old| &old.cursor);
-        // An unchanged generation proves only its last record unless its
-        // whole proof is due and this pass's allowance has room for it.
+        // An unchanged generation proves only its last record unless the
+        // schedule chose it for a whole proof this pass.
         let unchanged = previous.is_some_and(|previous| previous.same_generation(&captured));
-        let due = old.as_ref().is_none_or(|old| {
-            old.verified_at
-                .is_none_or(|at| Utc::now().signed_duration_since(at) >= schedule.interval)
-        });
-        let offset = previous.map_or(0, reader::Cursor::offset);
-        // An empty prefix has nothing to prove again.
-        let scheduled = unchanged
-            && due
-            && offset > 0
-            && (scheduled_bytes == 0
-                || scheduled_bytes.saturating_add(offset) <= schedule.allowance);
+        let scheduled = unchanged && chosen.contains(&job_id);
         if scheduled {
-            scheduled_bytes = scheduled_bytes.saturating_add(offset);
             tally.scheduled_proofs += 1;
         }
         let mut prepare = |previous: Option<&reader::Cursor>,
@@ -2006,6 +2054,72 @@ mod tests {
         assert_eq!((settled.scheduled_proofs, settled.whole_proofs), (0, 0));
         assert_eq!(settled.last_record_proofs, 3);
         assert_eq!(query(&daemon).await.rows[0].samples, 61);
+    }
+
+    #[tokio::test]
+    async fn scheduled_whole_proofs_reach_every_file_before_any_twice() {
+        let (_temp, daemon, config, root) = fixture();
+        let paths: Vec<PathBuf> = (0..6)
+            .map(|n| {
+                let path = root.join(format!("source-{n}.jsonl"));
+                let text: String = (0..5).map(|m| record(&format!("{n}-{m}"), 1)).collect();
+                std::fs::write(&path, text).unwrap();
+                path
+            })
+            .collect();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let proven = || -> Vec<Option<DateTime<Utc>>> {
+            let state = lock(&daemon.state);
+            paths
+                .iter()
+                .map(|path| {
+                    let source = agentdocker_host::usage::discovery::Source {
+                        runtime: reader::Runtime::Claude,
+                        path: path.clone(),
+                    };
+                    let key = crate::store::usage::file_key(&source);
+                    state.store.usage_file(&key).unwrap().unwrap().verified_at
+                })
+                .collect()
+        };
+        // Every file is due again the moment it is proven, and the allowance
+        // admits one file a pass: if visiting order decided, the first file
+        // would take every turn and the others would never get one.
+        let schedule = ProofSchedule {
+            interval: Duration::zero(),
+            allowance: 1,
+        };
+        let mut order = Vec::new();
+        let mut before = proven();
+        for _ in 0..paths.len() {
+            let pass = collect_scheduled(&Arc::downgrade(&daemon), &config, usize::MAX, schedule);
+            assert_eq!(pass.scheduled_proofs, 1);
+            assert_eq!((pass.whole_proofs, pass.last_record_proofs), (1, 5));
+            let after = proven();
+            let changed: Vec<usize> = (0..paths.len())
+                .filter(|&n| after[n] != before[n])
+                .collect();
+            assert_eq!(changed.len(), 1, "one whole proof a pass");
+            order.push(changed[0]);
+            before = after;
+        }
+        let mut distinct = order.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct,
+            (0..paths.len()).collect::<Vec<_>>(),
+            "every file once before any twice: {order:?}"
+        );
+        // The next turn goes back to the file proven longest ago.
+        collect_scheduled(&Arc::downgrade(&daemon), &config, usize::MAX, schedule);
+        let after = proven();
+        for (n, (was, now)) in before.iter().zip(&after).enumerate() {
+            assert_eq!(was != now, n == order[0], "file {n} after {order:?}");
+        }
+        let report = query(&daemon).await;
+        assert_eq!(report.rows[0].samples, 30);
+        assert_eq!(report.coverage.source_gaps, 0);
     }
 
     #[tokio::test]

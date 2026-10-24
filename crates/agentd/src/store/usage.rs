@@ -56,6 +56,11 @@ pub(crate) struct Ingest<'a> {
     pub finished_job: Option<usize>,
 }
 
+/// The `usage_files` key of one discovered source: its runtime and path.
+pub(crate) fn file_key(source: &agentdocker_host::usage::discovery::Source) -> String {
+    serde_json::to_string(&(source.runtime, &source.path)).expect("serializable source path")
+}
+
 fn fingerprint<T: Serialize>(value: &T) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
 }

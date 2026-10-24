@@ -31,6 +31,18 @@ pub(crate) enum Change<'a> {
     Complete,
 }
 
+fn saved_job(id: i64, json: &str) -> Result<Job> {
+    let job: Job = serde_json::from_str(json)?;
+    anyhow::ensure!(
+        job.id < MAX_FILES
+            && i64::try_from(job.id)? == id
+            && job.source.path.is_absolute()
+            && job.source.path.to_str().is_some_and(|p| p.len() <= 8192),
+        "invalid saved discovery job"
+    );
+    Ok(job)
+}
+
 impl Store {
     pub(crate) fn usage_discovery(&self) -> Result<Option<Progress>> {
         // This is restartable enumeration metadata, not accepted accounting.
@@ -71,18 +83,36 @@ impl Store {
                 |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
             )
             .optional()?
-            .map(|(id, json)| {
-                let job: Job = serde_json::from_str(&json)?;
-                anyhow::ensure!(
-                    job.id < MAX_FILES
-                        && i64::try_from(job.id)? == id
-                        && job.source.path.is_absolute()
-                        && job.source.path.to_str().is_some_and(|p| p.len() <= 8192),
-                    "invalid saved discovery job"
-                );
-                Ok(job)
-            })
+            .map(|(id, json)| saved_job(id, &json))
             .transpose()
+    }
+
+    /// One bounded page of the pending manifest in id order, after `after`,
+    /// each job with its file's saved progress: what the collector reads to
+    /// choose a pass's scheduled whole proofs.
+    pub(crate) fn usage_jobs_with_progress(
+        &self,
+        after: Option<usize>,
+        limit: usize,
+    ) -> Result<Vec<(Job, Option<FileProgress>)>> {
+        let after = match after {
+            Some(id) => i64::try_from(id)?,
+            None => -1,
+        };
+        let rows = self
+            .conn
+            .prepare("SELECT id,json FROM usage_discovery_jobs WHERE id > ?1 ORDER BY id LIMIT ?2")?
+            .query_map(params![after, i64::try_from(limit)?], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|(id, json)| {
+                let job = saved_job(id, &json)?;
+                let progress = self.usage_file(&file_key(&job.source))?;
+                Ok((job, progress))
+            })
+            .collect()
     }
 
     /// Called only within an accounting or coverage transaction.
@@ -512,6 +542,25 @@ mod tests {
             }
             ids
         };
+        // The scheduler reads the manifest in bounded id-ordered pages.
+        let page_ids = |page: Vec<(Job, Option<FileProgress>)>| {
+            assert!(page.iter().all(|(_, progress)| progress.is_none()));
+            page.into_iter().map(|(job, _)| job.id).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            page_ids(store.usage_jobs_with_progress(None, 2).unwrap()),
+            [0, 1]
+        );
+        assert_eq!(
+            page_ids(store.usage_jobs_with_progress(Some(1), 2).unwrap()),
+            [2]
+        );
+        assert!(
+            store
+                .usage_jobs_with_progress(Some(2), 2)
+                .unwrap()
+                .is_empty()
+        );
         let finish = |ids: &[usize], seq| {
             store.usage_snapshot(&collection, &[], now, seq, Some(Change::FinishedJobs(ids)))
         };
