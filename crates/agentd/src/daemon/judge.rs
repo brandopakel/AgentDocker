@@ -336,15 +336,24 @@ fn transport(error: &ureq::Error) -> Failure {
     }
 }
 
+/// The client a call is made with: `deadline` for connecting, sending and
+/// the answer together, no redirects, every status an answer to read, and
+/// TLS verified as every outbound client's is, against the roots the
+/// person's system trusts ([`agentdocker_host::http`]).
+fn client(deadline: StdDuration) -> ureq::Agent {
+    agentdocker_host::http::Policy {
+        deadline,
+        max_redirects: 0,
+        https_only: false,
+        status_as_error: false,
+        user_agent: None,
+    }
+    .agent()
+}
+
 /// One call: the request, the key as a bearer token and nothing else.
 fn call(url: &str, key: &str, body: &Value, deadline: StdDuration) -> Result<Value, Failure> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(deadline))
-        .max_redirects(0)
-        .http_status_as_error(false)
-        .build()
-        .into();
-    let mut response = agent
+    let mut response = client(deadline)
         .post(url)
         .header("Authorization", &format!("Bearer {key}"))
         .header("Content-Type", "application/json")
@@ -1470,6 +1479,42 @@ mod tests {
         };
         assert_eq!(problem.as_deref(), Some("timed out"));
         stop(&daemon, &agent).await;
+    }
+
+    /// A call verifies TypeSafe's certificate with the platform's own
+    /// verifier and trust roots, not the bundled Mozilla set ureq would
+    /// use unasked, with verification on; it keeps its deadline, follows
+    /// no redirect and reads every status itself. A service that hangs up
+    /// mid-handshake is a failure that may pass, not a crash: the verifier
+    /// is built before the first message.
+    #[test]
+    fn a_call_trusts_the_platforms_roots() {
+        use ureq::tls::RootCerts;
+        let agent = client(CALL_DEADLINE);
+        let config = agent.config();
+        let tls = config.tls_config();
+        assert!(
+            matches!(tls.root_certs(), RootCerts::PlatformVerifier),
+            "roots: {:?}",
+            tls.root_certs()
+        );
+        assert!(!tls.disable_verification());
+        assert_eq!(config.timeouts().global, Some(CALL_DEADLINE));
+        assert_eq!(config.max_redirects(), 0);
+        assert!(!config.https_only());
+        assert!(!config.http_status_as_error());
+
+        let hangs_up = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = hangs_up.local_addr().unwrap().port();
+        let service = std::thread::spawn(move || drop(hangs_up.accept().unwrap()));
+        let answer = call(
+            &format!("https://127.0.0.1:{port}/v1/systemone"),
+            KEY,
+            &json!({}),
+            StdDuration::from_secs(5),
+        );
+        service.join().unwrap();
+        assert_eq!(answer, Err(Failure::Unreachable));
     }
 
     /// Turning the judge off takes every standing judgment off with it.
