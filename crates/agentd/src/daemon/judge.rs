@@ -1879,18 +1879,45 @@ mod tests {
     #[cfg(unix)]
     impl Servers {
         fn start(&mut self, socket: &Path, text: &str) {
-            let status = std::process::Command::new("tmux")
+            let output = std::process::Command::new("tmux")
                 .args(["-f", "/dev/null", "-S"])
                 .arg(socket)
                 .args(["new-session", "-d", "-x", "80", "-y", "24"])
                 .arg(format!("printf '{text}\\n'; trap '' HUP; exec sleep 120"))
-                .status()
+                .output()
                 .unwrap();
-            assert!(status.success());
+            // Ended with the rest whatever the answer.
             self.sockets.push(socket.to_owned());
+            assert!(
+                output.status.success(),
+                "tmux new-session on {} failed ({}): {}",
+                socket.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
             // A pane that ignores hangups outlives its server; it is ended
             // with the rest.
             self.pids.push(Self::pane_pid(socket));
+        }
+
+        /// End the server on `socket` and wait until it is gone from it.
+        /// `kill-server` answers before the server has exited, and a server
+        /// on its way out still listens on its socket and closes every
+        /// connection it accepts: a `new-session` there in between fails
+        /// with "server exited unexpectedly" (seen under coverage on CI).
+        /// Once nothing accepts, the next client starts a server of its
+        /// own.
+        fn kill(socket: &Path) {
+            Self::ask(socket, &["kill-server"]);
+            let deadline = Instant::now() + StdDuration::from_secs(10);
+            while std::os::unix::net::UnixStream::connect(socket).is_ok() {
+                assert!(
+                    Instant::now() < deadline,
+                    "the tmux server on {} did not exit",
+                    socket.display()
+                );
+                std::thread::sleep(StdDuration::from_millis(20));
+            }
         }
 
         fn ask(socket: &Path, args: &[&str]) -> String {
@@ -2023,7 +2050,7 @@ mod tests {
 
         // The server is replaced by another on the same socket, with a %0
         // of its own.
-        Servers::ask(&own, &["kill-server"]);
+        Servers::kill(&own);
         servers.start(&own, "SENTINEL_NEW_SERVER");
         eventually(async || Servers::shows(&own, "SENTINEL_NEW_SERVER").then_some(())).await;
         daemon.judge_once().await;

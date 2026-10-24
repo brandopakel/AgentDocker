@@ -612,6 +612,23 @@ fn a_queued_message_becomes_a_turn_with_a_receipt_proved_from_the_providers_item
         agent["input_delivery"]["received"]["receipt"]["turn"], "turn-2",
         "the loop keeps serving after a completed turn"
     );
+    // The bridge reports the receipt and acknowledges the message in two
+    // requests, so the receipt can be on the record a moment before the
+    // message leaves the queue (seen under coverage on CI): ask until it
+    // has. Each look is one read: two would index an inbox the bridge may
+    // have emptied in between (seen on CI).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while bridge
+        .inbox()
+        .first()
+        .is_some_and(|message| message["id"] == second.as_str())
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the second received message leaves the queue"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let transcript = bridge.transcript();
     let turns: Vec<&Value> = transcript
         .iter()
@@ -644,14 +661,6 @@ fn a_queued_message_becomes_a_turn_with_a_receipt_proved_from_the_providers_item
             .iter()
             .any(|frame| frame["method"] == "hooks/list"),
         "every turn is preceded by the hook preflight"
-    );
-    // One read: the bridge may take the second message between two, which
-    // emptied the inbox under its own index (seen on CI).
-    let inbox = bridge.inbox();
-    assert!(
-        inbox
-            .first()
-            .is_none_or(|message| message["id"] != second.as_str())
     );
     bridge.stop();
 }
