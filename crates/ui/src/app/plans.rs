@@ -61,14 +61,20 @@ impl App {
                 .into()
         };
         let read = workspace.map(|w| &w.memory);
+        // A daemon from before memory: the state as a chip, the fix its
+        // detail.
         if read == Some(&super::MemoryRead::Unsupported) {
             return card(
                 column![
                     header,
-                    super::view::small(
-                        "This AgentDocker keeps no project memory; update it to keep one.",
-                        c
-                    ),
+                    Chip::new(
+                        "memory-unsupported",
+                        Some(Icon::Alert),
+                        "No project memory",
+                        Tone::Attention,
+                    )
+                    .detail("Update AgentDocker to keep one")
+                    .view(c),
                 ]
                 .spacing(6),
             );
@@ -84,7 +90,7 @@ impl App {
             row![
                 container(input_enabled(
                     "memory-draft",
-                    "A fact for this project's agents",
+                    "New memory",
                     &form.draft,
                     Message::MemoryDraft,
                     connected && form.adding.is_none(),
@@ -118,25 +124,17 @@ impl App {
                 super::view::small(format!("Memory could not be read: {error}"), c).color(c.amber),
             );
         }
+        // The newest page, or the best answers to the search: the search
+        // field above them is the way to the rest.
         let query = form.query.trim();
-        let (shown, limit_note): (&[agentdocker_core::memory::Memory], Option<&str>) =
-            if query.is_empty() {
-                let kept = workspace.map(|w| w.memories.as_slice()).unwrap_or_default();
-                (
-                    kept,
-                    (kept.len() >= super::MEMORY_PAGE)
-                        .then_some("The newest 100; search to find older ones."),
-                )
-            } else {
-                match &form.results {
-                    Some((words, found)) if words == query => (
-                        found.as_slice(),
-                        (found.len() >= super::MEMORY_PAGE)
-                            .then_some("The best 100 answers; more words narrow them."),
-                    ),
-                    _ => (&[], None),
-                }
-            };
+        let shown: &[agentdocker_core::memory::Memory] = if query.is_empty() {
+            workspace.map(|w| w.memories.as_slice()).unwrap_or_default()
+        } else {
+            match &form.results {
+                Some((words, found)) if words == query => found.as_slice(),
+                _ => &[],
+            }
+        };
         let now = chrono::Utc::now();
         for kept in shown {
             memory = memory.push(
@@ -172,9 +170,6 @@ impl App {
                 .spacing(6)
                 .align_y(Center),
             );
-        }
-        if let Some(note) = limit_note {
-            memory = memory.push(super::view::small(note, c));
         }
         card(memory)
     }
@@ -374,5 +369,75 @@ impl App {
         } else {
             row![side, main].spacing(16).align_y(Top).into()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::view::testing::seen;
+
+    /// Words on screen: memory's field is named New memory, not described;
+    /// a full page of memories is the list alone, with no line saying it
+    /// is a page — the search above it is the way to the rest.
+    #[test]
+    fn memory_is_a_named_field_and_its_list_without_footnotes() {
+        let (tx, _commands) = super::super::queue::channel();
+        let (_messages, rx) = std::sync::mpsc::sync_channel(super::super::MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        let project = agentdocker_core::ProjectRef::directory("/fixture/plans");
+        let root = project.root.display().to_string();
+        app.shell.catalog.remember(project.clone(), true).unwrap();
+        app.shell.catalog.selected = Some(project.root.clone());
+        let now = chrono::Utc::now();
+        let memories = (0..super::super::MEMORY_PAGE)
+            .map(|n| {
+                agentdocker_core::memory::Memory::new(
+                    project.id(),
+                    agentdocker_core::HUMAN,
+                    &format!("fact {n}"),
+                    Vec::new(),
+                    None,
+                    now,
+                )
+                .unwrap()
+            })
+            .collect();
+        app.workspaces.insert(
+            root,
+            super::super::Workspace {
+                memories,
+                ..Default::default()
+            },
+        );
+        let view = seen(app.plans_view(Colors::new(false)));
+        assert_eq!(
+            view.control("memory-draft").map(|c| c.1.as_str()),
+            Some("New memory")
+        );
+        assert!(view.reads("fact 99"));
+        for gone in [
+            "A fact for this project",
+            "The newest 100",
+            "search to find older",
+            "The best 100",
+        ] {
+            assert!(!view.reads(gone), "{gone}");
+        }
+        // A daemon from before memory: a chip, the fix its detail.
+        app.workspaces
+            .values_mut()
+            .for_each(|w| w.memory = super::super::MemoryRead::Unsupported);
+        let view = seen(app.plans_view(Colors::new(false)));
+        let state = view
+            .control("memory-unsupported")
+            .expect("the state is a chip");
+        assert_eq!(
+            (state.1.as_str(), state.2.as_deref()),
+            ("No project memory", Some("Update AgentDocker to keep one"))
+        );
+        assert!(!view.reads("keeps no project memory"));
+        assert!(view.control("memory-draft").is_none());
     }
 }

@@ -584,37 +584,37 @@ impl App {
             // What for, when its adapter could tell: a permission to give
             // and a question to answer are different errands, and its chip
             // says which; what the prompt is about, when its hooks said,
-            // follows the name.
-            let (what, glyph, word) = match self.activity.get(id.as_str()) {
+            // follows the name. A wait the opt-in judge read from its quiet
+            // screen says so on a second chip, with how sure it was: never
+            // only on the pointer.
+            let (reason, judged, detail) = match self.activity.get(id.as_str()) {
                 Some(agentdocker_core::Activity::Waiting {
-                    reason: Some(agentdocker_core::WaitReason::Permission),
+                    reason,
+                    judged,
+                    detail,
                     ..
-                }) => (
-                    "wants permission in its terminal",
-                    Icon::Shield,
-                    "Wants permission",
-                ),
-                Some(agentdocker_core::Activity::Waiting {
-                    reason: Some(agentdocker_core::WaitReason::Question),
-                    ..
-                }) => (
-                    "has a question in its terminal",
-                    Icon::Question,
-                    "Has a question",
-                ),
-                _ => (
-                    "is waiting for you in its terminal",
-                    Icon::Hourglass,
-                    "Waiting for you",
-                ),
+                }) => (*reason, *judged, detail.clone()),
+                _ => (None, None, None),
             };
-            let detail = match self.activity.get(id.as_str()) {
-                Some(agentdocker_core::Activity::Waiting { detail, .. }) => detail.clone(),
-                _ => None,
+            let (glyph, word) = match reason {
+                Some(agentdocker_core::WaitReason::Permission) => {
+                    (Icon::Shield, "Wants permission")
+                }
+                Some(agentdocker_core::WaitReason::Question) => (Icon::Question, "Has a question"),
+                Some(agentdocker_core::WaitReason::Draft) => (Icon::Note, "Unsent draft"),
+                _ => (Icon::Hourglass, "Waiting for you"),
             };
-            let sentence = match &detail {
-                Some(detail) => format!("{name} {what}: {detail}"),
-                None => format!("{name} {what}"),
+            let what = format!(
+                "{} in its terminal",
+                super::waiting_errand(reason, judged.is_some())
+            );
+            let sentence = match (judged, &detail) {
+                (Some(judged), _) => format!(
+                    "{name} {what}, judged from its screen, {} likely",
+                    judged.percent()
+                ),
+                (None, Some(detail)) => format!("{name} {what}: {detail}"),
+                (None, None) => format!("{name} {what}"),
             };
             let errand = super::super::chip::chip(
                 format!("needs-you-errand-{id}"),
@@ -623,6 +623,26 @@ impl App {
                 Tone::Attention,
                 c,
             );
+            let errand: Element<'_, Message> = match judged {
+                Some(judged) => row![
+                    errand,
+                    Chip::new(
+                        format!("needs-you-judged-{id}"),
+                        Some(Icon::Pulse),
+                        format!("Judged · {}", judged.percent()),
+                        Tone::Neutral,
+                    )
+                    .detail(format!(
+                        "Read from its quiet screen by the judge, {} likely; nothing it reported says so",
+                        judged.percent()
+                    ))
+                    .view(c)
+                ]
+                .spacing(4)
+                .align_y(Center)
+                .into(),
+                None => errand,
+            };
             rows.push(waiting_row(
                 spoken(
                     format!("needs-you-line-waiting-{id}"),
@@ -705,32 +725,30 @@ impl App {
             return None;
         }
         let total = rows.len();
-        // The card's head is its chip: what it is and, when something
-        // waits, how many.
-        let header = if guidance {
-            Chip::new(
-                "needs-you-header",
-                Some(Icon::Play),
-                "To get started",
-                Tone::Info,
-            )
-        } else {
-            Chip::new(
+        // What waits is headed by its chip and how many. The first steps
+        // need no heading: each row is a tool and the one control that
+        // gets it going, Connect or Set up.
+        let mut list = column![].width(Fill);
+        if !guidance {
+            let header = Chip::new(
                 "needs-you-header",
                 Some(Icon::Alert),
                 format!("Needs you · {total}"),
                 Tone::Attention,
             )
+            .view(c);
+            list = list.push(container(header).padding([10, 16]).width(Fill));
         }
-        .view(c);
-        let mut list = column![container(header).padding([10, 16]).width(Fill)].width(Fill);
         let shown = if self.shell.needs_you_expanded {
             total
         } else {
             SHOWN
         };
-        for item in rows.into_iter().take(shown) {
-            list = list.push(rule(c)).push(item);
+        for (index, item) in rows.into_iter().take(shown).enumerate() {
+            if index > 0 || !guidance {
+                list = list.push(rule(c));
+            }
+            list = list.push(item);
         }
         if total > SHOWN {
             list = list.push(rule(c)).push(
@@ -1892,6 +1910,23 @@ mod tests {
         app.secrets.acknowledge("secret-view", true, now);
         let rendered = seen(app.secret_review_panel(Colors::new(false)));
         assert!(rendered.control("temporary-submit-secret-view").unwrap().3);
+        // The notice acknowledged and the seconds left are said; what the
+        // window does with the edits is not.
+        assert!(rendered.reads(agentdocker_core::secret::PROVIDER_NOTICE));
+        assert!(rendered.reads("Expires in "));
+        assert!(!rendered.reads("Edits are discarded"));
+        // Once attempted, a chip says so instead of two sentences.
+        assert!(app.secrets.take("secret-view", now).is_some());
+        let rendered = seen(app.secret_review_panel(Colors::new(false)));
+        assert_eq!(
+            rendered
+                .control("temporary-attempted-secret-view")
+                .expect("the state is a chip")
+                .1,
+            "Awaiting confirmation"
+        );
+        assert!(!rendered.reads("missing confirmation"));
+        assert!(rendered.control("temporary-secret-view-value").is_none());
     }
 
     #[test]
@@ -2360,20 +2395,45 @@ mod tests {
         app.agents.push(waiting);
         app.activity_seen = true;
         // Each reason its adapter can name reads as its own errand; one
-        // it cannot name, or a newer one, reads as a plain wait.
-        for (reason, said) in [
-            (None, "builder is waiting for you in its terminal"),
+        // it cannot name, or a newer one, reads as a plain wait. One the
+        // judge read from its screen says it seems so, and how sure.
+        let judged = Some(agentdocker_core::Judged { permille: 912 });
+        for (reason, judged, said, chip) in [
+            (
+                None,
+                None,
+                "builder is waiting for you in its terminal",
+                "Waiting for you",
+            ),
             (
                 Some(agentdocker_core::WaitReason::Permission),
+                None,
                 "builder wants permission in its terminal",
+                "Wants permission",
             ),
             (
                 Some(agentdocker_core::WaitReason::Question),
+                None,
                 "builder has a question in its terminal",
+                "Has a question",
             ),
             (
                 Some(agentdocker_core::WaitReason::Other),
+                None,
                 "builder is waiting for you in its terminal",
+                "Waiting for you",
+            ),
+            (
+                Some(agentdocker_core::WaitReason::Permission),
+                judged,
+                "builder seems to want permission in its terminal, judged from its screen, 91% likely",
+                "Wants permission",
+            ),
+            (
+                Some(agentdocker_core::WaitReason::Draft),
+                judged,
+                "builder seems to have an unsent draft in its terminal, judged from its screen, 91% likely",
+                "Unsent draft",
             ),
         ] {
             app.activity.insert(
@@ -2381,6 +2441,7 @@ mod tests {
                 agentdocker_core::Activity::Waiting {
                     since: Utc::now(),
                     reason,
+                    judged,
                     detail: None,
                 },
             );
@@ -2389,6 +2450,21 @@ mod tests {
                 .control(&format!("needs-you-line-waiting-{id}"))
                 .expect("the session");
             assert_eq!(line.1, said);
+            let errand = view
+                .control(&format!("needs-you-errand-{id}"))
+                .expect("its errand chip");
+            assert_eq!(errand.1, chip);
+            // A judged wait carries a chip of its own that says so, in
+            // words on the row, not only on the pointer.
+            match judged {
+                Some(_) => assert_eq!(
+                    view.control(&format!("needs-you-judged-{id}"))
+                        .expect("its judged chip")
+                        .1,
+                    "Judged · 91%"
+                ),
+                None => assert!(view.control(&format!("needs-you-judged-{id}")).is_none()),
+            }
             let go = view
                 .control(&format!("needs-you-terminal-{id}"))
                 .expect("its terminal");
@@ -2400,6 +2476,7 @@ mod tests {
             agentdocker_core::Activity::Waiting {
                 since: Utc::now(),
                 reason: Some(agentdocker_core::WaitReason::Permission),
+                judged: None,
                 detail: Some("Bash: cargo test".into()),
             },
         );
@@ -2471,6 +2548,38 @@ mod tests {
             view.texts.iter().any(|t| t == left),
             "printed, not found on the pointer"
         );
+    }
+
+    /// With nobody waiting, the card offers the first steps with no
+    /// heading: each row is a tool and the one control that gets it going.
+    #[test]
+    fn the_first_steps_are_rows_without_a_heading() {
+        let (mut app, _commands) = app();
+        app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
+            name: "codex".into(),
+            vendor: "fixture".into(),
+            label: "Codex".into(),
+            cli: Some("/fixture/codex".into()),
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: agentdocker_core::runtime::Wiring::Missing,
+            hooks: agentdocker_core::runtime::Wiring::Missing,
+            hooks_missing: vec![],
+            shell: agentdocker_core::runtime::Wiring::Unsupported,
+            running: 0,
+        }];
+        assert!(app.all_projects());
+        let view = seen(app.needs_you(Colors::new(false)).expect("a first step"));
+        assert_eq!(
+            view.control("needs-you-tool-codex").map(|c| c.1.as_str()),
+            Some("Set up")
+        );
+        assert!(view.reads("Codex"));
+        assert!(view.control("needs-you-header").is_none(), "no heading");
+        assert!(!view.reads("To get started"));
     }
 
     #[test]

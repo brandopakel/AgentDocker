@@ -304,6 +304,11 @@ async fn service(
     let mut last_refresh: Option<tokio::time::Instant> = None;
     // The shared server's unloaded conversation, already reported paused.
     let mut unloaded = false;
+    // The message whose steer the server refused: proved not delivered, it
+    // goes by the native queue at idle and is not steered again.
+    let mut unsteered: Option<String> = None;
+    // A server that says it has no `turn/steer` is not asked again.
+    let mut steering = true;
     loop {
         let agent = identity(client, &ledger.record().binding).await?;
         let mut healthy = true;
@@ -331,6 +336,19 @@ async fn service(
                     since.elapsed() < Duration::from_secs(30),
                     "native hook offer lacks an exact provider receipt; retained without resubmission"
                 );
+            } else if let Some(steer) = &attempt.steer {
+                if control::still_running(provider, &thread, &steer.turn).await? {
+                    // The turn takes steered input at its next step; until
+                    // it ends, a missing receipt proves nothing either way.
+                    unseen_since = None;
+                } else {
+                    healthy = false;
+                    let since = unseen_since.get_or_insert_with(tokio::time::Instant::now);
+                    ensure!(
+                        since.elapsed() < Duration::from_secs(30),
+                        "steered input has no exact receipt in the turn it was steered into; retained for reconciliation, automatic resubmission refused"
+                    );
+                }
             } else if let Some(id) = receipts::queued(provider, &thread, &attempt).await? {
                 if attempt.queued.as_deref() != Some(&id) {
                     ledger.queued(&id)?;
@@ -352,7 +370,12 @@ async fn service(
         } else {
             let fresh = ledger.pristine()
                 && remote::fresh_anchor(provider, &ledger.record().binding).await?;
-            if !fresh && !availability::check(client, provider, ledger, &agent).await? {
+            let available = fresh || availability::check(client, provider, ledger, &agent).await?;
+            // The turn that carried the last input still runs: through the
+            // shared server it may take the next one by steering, never by
+            // another native queue entry.
+            let steer_only = !available && ledger.record().binding.control && steering;
+            if !available && !steer_only {
                 refresh(client, ledger, &mut last_refresh).await?;
                 wait_for_hook(hooks, resolve, client, provider, ledger, &origin).await?;
                 continue;
@@ -418,16 +441,77 @@ async fn service(
                     wait_for_hook(hooks, resolve, client, provider, ledger, &origin).await?;
                     continue;
                 }
-                ledger.prepare(envelope, anchor)?;
-                let attempt = ledger.record().attempt.as_ref().expect("prepared input");
-                let value = provider.request("thread/queue/add", json!({"threadId":thread,
-                    "clientUserMessageId":attempt.message,
-                    "input":[{"type":"text","text":attempt.input,"text_elements":[]}]})).await
-                    .context("native queue submission is unconfirmed; retained for receipt reconciliation")?;
-                let id = receipts::queued_id(&value["queuedSubmission"], attempt)?
-                    .context("native queue returned a different submission")?;
-                ledger.queued(&id)?;
-                unseen_since = None;
+                // Through the shared server, a turn running for nobody's
+                // answer takes the message now; one waiting on the person
+                // takes nothing until it stops waiting. Read from the
+                // conversation itself, after the loaded check, last of all.
+                let moment = if ledger.record().binding.control
+                    && steering
+                    && unsteered.as_deref() != Some(envelope.id.as_str())
+                {
+                    control::moment(provider, &thread).await?
+                } else {
+                    control::Moment::Queue
+                };
+                let moment = match moment {
+                    control::Moment::Queue if steer_only => control::Moment::Hold,
+                    moment => moment,
+                };
+                match moment {
+                    control::Moment::Hold => {}
+                    control::Moment::Steer(turn) => {
+                        ledger.prepare_steer(envelope, anchor, &turn)?;
+                        let attempt = ledger.record().attempt.as_ref().expect("prepared input");
+                        let result = provider
+                            .request(
+                                "turn/steer",
+                                json!({"threadId":thread,
+                            "expectedTurnId":turn, "clientUserMessageId":attempt.message,
+                            "input":[{"type":"text","text":attempt.input,"text_elements":[]}]}),
+                            )
+                            .await;
+                        match result {
+                            Ok(value) => {
+                                ensure!(
+                                    value["turnId"].as_str() == Some(turn.as_str()),
+                                    "Codex steering answer named another turn; input retained for receipt reconciliation"
+                                );
+                                ledger.steer_accepted()?;
+                            }
+                            Err(error) => {
+                                let unserved = super::transport::unserved(&error, "turn/steer");
+                                if !unserved
+                                    && super::transport::steering_refusal(&error, &turn).is_none()
+                                {
+                                    return Err(error.context(
+                                        "Codex steering is unconfirmed; input retained for receipt reconciliation",
+                                    ));
+                                }
+                                // The server's own word that nothing was
+                                // submitted: the turn ended or changed, or
+                                // takes no steering. The message stays queued
+                                // and goes by the native queue instead.
+                                ledger.reject_steer()?;
+                                unsteered = Some(envelope.id.to_string());
+                                steering &= !unserved;
+                                continue;
+                            }
+                        }
+                        unseen_since = None;
+                    }
+                    control::Moment::Queue => {
+                        ledger.prepare(envelope, anchor)?;
+                        let attempt = ledger.record().attempt.as_ref().expect("prepared input");
+                        let value = provider.request("thread/queue/add", json!({"threadId":thread,
+                            "clientUserMessageId":attempt.message,
+                            "input":[{"type":"text","text":attempt.input,"text_elements":[]}]})).await
+                            .context("native queue submission is unconfirmed; retained for receipt reconciliation")?;
+                        let id = receipts::queued_id(&value["queuedSubmission"], attempt)?
+                            .context("native queue returned a different submission")?;
+                        ledger.queued(&id)?;
+                        unseen_since = None;
+                    }
+                }
             }
         }
         // A reconciliation retry must not briefly clear an unresolved pause.

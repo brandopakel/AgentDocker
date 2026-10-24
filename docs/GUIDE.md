@@ -508,7 +508,7 @@ each one by pid.
 | `roles` | A project's roles, each with its colour: the five every project offers (lead, implementer, reviewer, explorer, tester) and your own. `roles add "Security reviewer" --color red --description "…"` makes one, `roles set reviewer --name "Code review" --color pink` changes one (its address stays), `roles rm tester` takes one out. `roles set reviewer --tools review_verdict,review_gate,get_task` offers its holders only those MCP tools and the few every agent keeps (`--tools` works on `roles add` too), `roles set reviewer --all-tools` offers every tool again; the list shows a limited role's tools. Only you change them, and nothing holds a role until you give it; run from an agent's shell, including a Codex conversation's shared server, they are refused. `--project` names another project |
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not. A finished record that holds nothing is forgotten by itself thirty days on, or after `[agents] retention` in `~/.agentdocker/agentd.toml` (`"off"` keeps every record) |
-| `up` / `down` | Start or stop the agents in an `Agentfile.toml` |
+| `up` / `down` | Start or stop the agents in an `Agentfile.toml`. An entry with `after = "build exits 0"` starts once `build` has exited 0; `up` stays while it waits (`waiting: build exits 0`), and if `build` exits otherwise, is stopped or fails to start, it and everything waiting on it are not started (`not started: build exited 1`) and `up` exits unsuccessfully. Only an exit 0 whose event `up` received counts (a record cannot show it was not the end of a stop): `up test` alone does not take an earlier exit 0 of `build` as success, so bring both up together, and an exit 0 seen after `up` has said its event stream ended does not count either |
 | `heartbeat` | Report that an agent is alive |
 
 ### Talk
@@ -599,7 +599,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]…` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
+| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]…` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours, and a post-commit hook (put in front of any the repository has, which still runs) reports each one so your verdict on that branch is refused later. When it cannot (the repository sets `core.hooksPath`), it says why on stderr. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
 | `worktree-diff` | Tracked changes in an agent's checkout |
 | `worktree-remove <agent>` | Remove an ended session's own worktree once its branch is merged or no longer wanted; the worktree must be clean, and the branch is deleted only when git considers it merged |
 | `review-branch <agent>` | What an agent's branch would bring to the branch in the project's main checkout: commits, files and lines, and what stops a merge now (uncommitted work, uncommitted changes in the main checkout, conflicts, held files); `--patch` prints the diff, `--json` the whole review |
@@ -858,7 +858,9 @@ a sha.
 
 Nothing goes into the commit itself. The git author is whoever git is
 configured as, and no trailer is added: it is your repository, and which
-agent typed it is our record to keep, not a change to your history.
+agent typed it is our record to keep, not a change to your history. That
+record outlives the journal: the agent's verdict on the branch is refused
+from then on.
 
 A pending merge can be committed even when its file tree is unchanged; its new ancestry is still journaled. An ordinary empty commit remains refused, and untracked files are not staged automatically.
 
@@ -900,6 +902,74 @@ that process. The third is on by default: with `native_codex = false`, an
 existing Codex session gets its messages at tool boundaries through its hooks
 and no receiver is started for it. The file is read by the daemon; a bridge or
 a hook asks the daemon how the switches stand.
+
+### Let a model read a quiet screen (opt-in)
+
+An agent can stop for you without saying so: a tool with no hooks shows an
+approval dialog, asks a question in plain text, or sits at its prompt over
+words you typed and never sent. The screen judge notices: when an agent's
+screen has not changed for twenty seconds, it asks TypeSafe's Jev model about
+the screen's last 30 lines, and an agent that clearly waits on you goes into
+Needs you, marked as judged from its screen with how sure the model was.
+
+It is **off** unless you turn it on, and while it is off no screen is read for
+it and nothing is sent anywhere. To turn it on, keep your TypeSafe API key in
+a file only you can read, and name it in `~/.agentdocker/agentd.toml`:
+
+```sh
+mkdir -p ~/.config/agentdocker
+(umask 077; cat > ~/.config/agentdocker/typesafe.key)   # paste the key, then Ctrl-D
+chmod 600 ~/.config/agentdocker/typesafe.key   # umask covers only a new file
+```
+
+```toml
+[judge]
+judgments = ["screens"]
+key_file = "/absolute/path/to/typesafe.key"
+```
+
+`key_file` must be an absolute path: write out the full path of the file you
+created (`echo ~/.config/agentdocker/typesafe.key` prints it), since `~` is not
+expanded there.
+
+`agentdocker daemon status` prints a `judge` line: `off`, `on` with the
+model and the calls made in the last minute, or why it cannot run (a key file
+others can read, a relative path, an address that is not https). The daemon
+reads the file every few seconds, so no restart is needed. To turn it **off**,
+delete the `[judge]` section or empty `judgments`; every wait it judged is
+taken off at once.
+
+**What is sent, and to whom.** For each quiet screen, one request to TypeSafe
+(`https://api.typesafe.ai/v1/systemone`, or the `url` you set) carrying the
+screen's last 30 lines as text, a fixed sentence saying they are a coding
+agent's terminal, and four yes/no questions — is an approval
+prompt open, is the agent asking you something, is work still running, is
+there a message typed and not sent. Once a screen is answered it is not sent
+again until it changes. A call that failed for a reason that may pass (no
+connection, a timeout, a busy or unavailable service, a key not accepted) is
+tried again after a minute; one the service refused, or answered in a shape
+AgentDocker cannot read, is not. Your key goes in the request's
+`Authorization` header and nowhere else. Nothing else is sent: no agent name
+or id, no project, no path, nothing but what is on those 30 lines — which can
+be anything the agent printed, so turn it on only for work you are content to
+show TypeSafe. TypeSafe's own terms and costs apply; at most
+`calls_per_minute` requests go each minute (6 unless you set it, 1–60).
+
+**Whose screens.** The terminals of agents AgentDocker started (from the app
+or with `run --tty`) and the tmux pane an agent registered from — at the tmux
+server that pane belongs to, and only while the pane still runs that agent's
+own process. A herdr pane, screen, zellij, and your terminal app's windows are
+never read. A screen is read again just before it is sent and before its
+answer is used, so a prompt you answered in the meantime is not sent or
+acted on, and turning the judge off stops any upload still to come.
+
+**What it can change.** Only one thing: an agent that works, is idle or whose
+state is unknown can move into Needs you, when the likeliest of an approval
+prompt, a question or an unsent draft is at least `threshold_percent` (75
+unless you set it, 50–99) and work is not read as running. It never moves an
+agent out of anything, and a wait its own hooks report always stands. The
+judged wait ends when the screen changes, when the agent's hooks report
+anything, or when you turn the judge off.
 
 ### Planned daemon replacement
 
@@ -946,7 +1016,13 @@ Current behaviour that the sections above do not already state, by area.
   a merge of main included, makes the approval stale until the reviewer
   reads what came after. Whose word counts is a role you give
   (`reviewer` by default); `--publish` also sets it as a GitHub commit
-  status that branch protection can require.
+  status that branch protection can require. An agent's verdict is
+  refused on the branch its checkout is on, and on any branch it
+  committed to through `agentdocker commit` or with git in a worktree
+  AgentDocker made for it, wherever its checkout is now and however
+  much of the journal is gone. Checking a branch out to read it is not
+  committing to it. Commits made with git in a checkout you made by hand
+  are not seen this way, so keep authors and reviewers separate agents.
 
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or
@@ -1077,9 +1153,11 @@ Current behaviour that the sections above do not already state, by area.
   keeps saying it, the agent's own tools calling in do not make a quiet or
   waiting Codex read as working, and where herdr also follows its pane, the
   server's word wins. `agentdocker events` marks these `(Codex server)`.
-  A terminal resumed with `codex resume <thread>` is also fed at
-  idle through that server's own queue, with the same exact receipts as any
-  Codex receiver. Without the socket nothing changes. `agentdocker
+  A terminal resumed with `codex resume <thread>` is also fed through that
+  server, with the same exact receipts as any Codex receiver: a message that
+  arrives while it works goes into the running turn, one that arrives while
+  it waits for you waits too, and otherwise it goes at idle through that
+  server's own queue. Without the socket nothing changes. `agentdocker
   codex-threads` lists what that server has loaded, read-only
   ([Codex input](CODEX-INPUT.md#terminals-in-codexs-shared-app-server)).
 
@@ -1249,6 +1327,13 @@ Current behaviour that the sections above do not already state, by area.
   or Claude you started in your own terminal turns mouse-reporting modes off
   once the program has exited. In a tab left reporting every mouse move as
   typed text, type `reset`.
+
+
+- **A wait read from the screen.** With the opt-in screen judge on (see
+  [Let a model read a quiet screen](#let-a-model-read-a-quiet-screen-opt-in)), an
+  agent whose quiet screen shows an approval prompt, a question or an unsent
+  draft is in Needs you with its errand chip and a second chip, **Judged · 87%**,
+  saying it was read from the screen and how sure the model was.
 
 
 - **Allow for session.** A Codex approval that Codex offers to remember has a

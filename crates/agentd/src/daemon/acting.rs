@@ -134,6 +134,10 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::ProviderInbox { .. }
         | R::UnbindInput { .. }
         | R::ResumeInput { .. }
+        // The witness token and the session of one of the worktree's
+        // owners, which the daemon finds from the sender and names in it
+        // (`authenticate_report`), speak for a reported commit.
+        | R::ReportCommit { .. }
         // The exact live owner process these name is checked by them.
         | R::OpenSecretReview { .. }
         | R::PollSecretReview { .. }
@@ -615,6 +619,7 @@ mod tests {
             serde_json::json!({"op": "code_verdict", "agent": "x", "branch": "b", "head": "h", "verdict": "approve"}),
             serde_json::json!({"op": "unbind_input", "agent": "x", "force": true}),
             serde_json::json!({"op": "attach", "agent": "x"}),
+            serde_json::json!({"op": "report_commit", "checkout": "/w", "token": "t", "head": "abc", "agent": "x"}),
         ] {
             assert_eq!(acting(json.clone()), None, "{json}");
         }

@@ -71,6 +71,15 @@ pub(super) fn steering_refusal(error: &anyhow::Error, expected: &str) -> Option<
         .filter(|actual| !actual.is_empty() && *actual != expected && !actual.contains('`'))
         .map(|_| SteeringRefusal::ChangedTurn)
 }
+
+/// Whether the server answered `method` saying it does not serve it
+/// (JSON-RPC's method-not-found): its word that nothing ran.
+pub(super) fn unserved(error: &anyhow::Error, method: &str) -> bool {
+    error
+        .downcast_ref::<RpcRejection>()
+        .is_some_and(|r| r.method == method && r.error["code"].as_i64() == Some(-32601))
+}
+
 /// Only this explicit read-only capability refusal allows turn pagination.
 /// Timeouts, missing threads and arbitrary provider errors remain failures.
 pub(super) fn items_list_unsupported(error: &anyhow::Error) -> bool {
@@ -620,5 +629,26 @@ mod support_tests {
         assert!(!rejected(&anyhow::anyhow!(
             "Codex turn/start reply timed out"
         )));
+    }
+
+    /// Only the server's method-not-found answer for that very method says
+    /// it does not serve it; a busy refusal or a lost answer does not.
+    #[test]
+    fn only_method_not_found_for_that_method_means_unserved() {
+        let missing = rejection(
+            "turn/steer",
+            json!({"code": -32601, "message": "unknown method"}),
+        );
+        assert!(unserved(&missing, "turn/steer"));
+        assert!(!unserved(&missing, "thread/queue/add"));
+        let busy = rejection(
+            "turn/steer",
+            json!({"code": -32603, "message": "failed to submit turn input: Busy"}),
+        );
+        assert!(!unserved(&busy, "turn/steer"));
+        assert!(!unserved(
+            &anyhow::anyhow!("Codex turn/steer reply timed out"),
+            "turn/steer"
+        ));
     }
 }

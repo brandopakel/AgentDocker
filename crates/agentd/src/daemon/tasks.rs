@@ -20,7 +20,7 @@ mod memory_mirror;
 mod plans;
 mod roles;
 mod rules;
-mod verdicts;
+pub(in crate::daemon) mod verdicts;
 
 const DOCUMENT: &str = "task";
 const BOARD: &str = "board";

@@ -220,7 +220,19 @@ what it is for shows that one line after the name in the quiet ink, clipped to
 the row (*Bash: cargo test*, *Edit: src/lib.rs*), and the spoken line ends with
 it (*… wants permission in its terminal: Bash: cargo test*); it is never an
 answer, and nothing that reads like a secret is shown. **Go to Terminal** takes
-you there. Seen across
+you there. A
+session the opt-in screen judge read as waiting from its quiet screen, rather
+than one its hooks reported, reads the same way with a second chip beside the
+errand, **Judged · 87%** (its detail: read from its quiet screen, how likely,
+and that nothing it reported says so), and an errand of its own, **Unsent
+draft**, for words left typed at its prompt; it is read aloud with the
+session's own name, e.g. *Claude Code seems to want permission in its
+terminal, judged from its screen, 87% likely*, or *seems to have a question*
+or *seems to have an unsent draft*. The row goes when the screen changes, when
+the agent's own hooks report something newer, when another process takes its
+place, or when the judge is turned off. Its notification says the same with
+that name (e.g. *Claude Code seems to want permission*, *Judged from its
+screen, 87% likely*). Seen across
 projects, each row starts with its project's name (*&lt;project&gt; · Claude Code · Badger*).
 A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not
@@ -238,7 +250,8 @@ A project's row in the rail shows its loudest agent's chip — *Needs you*
 counts the agents that need you when more than one does (*Needs you · 2*) —
 and its name in semibold when something there is new; how many agents run is
 not shown on the row, since it is not a reason to look (the project tile's
-tooltip gives the folder and how many are live or new). A project with no
+tooltip, and its accessible name, give the folder and how many are live or
+new; the row's ⋯ menu does not repeat the folder). A project with no
 live agent shows no chip. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
@@ -258,9 +271,9 @@ and the window is wide enough, send the same exact answer as the Inbox card, wit
 the command in the row's words; file changes, which must be looked at first,
 and every other question open with **Answer**. The first three items are shown; **Show N more** expands the same list and
 **Show fewer** collapses it. When nobody needs an answer or delivery review, the
-same card, headed by a *To get started* chip, can offer
-**Connect** for discovered processes and **Set up** for installed tools. Tools
-also keeps the full setup controls.
+same card, without a heading, can offer
+**Connect** for discovered processes and **Set up** for installed tools, one
+tool and its control to a row. Tools also keeps the full setup controls.
 
 A vendor's browser extension (Claude, ChatGPT) has its own Tools row, whose
 chip says **Installed in Chrome**, with the rest in its detail: *its sessions
@@ -300,7 +313,7 @@ Quiet projects remain available. An unavailable folder stays selected and shows
 the alert mark (*Project folder unavailable*) beside **Check again**. Each project row has its own **⋯** menu, shown when the
 pointer is on the row or the row is selected: **Rename…**
 gives the entry a name of your own in the sidebar and All projects headings (an empty name goes back to the
-folder's), **Pin**/**Unpin**, and **Remove from list**, which keeps the folder
+folder's, which is the field's placeholder), **Pin**/**Unpin**, and **Remove from list**, which keeps the folder
 off the list even when its sessions are discovered again, until you add it
 again or open one of its sessions (from All projects, say): going there is
 asking for it, so the project is listed again, unpinned, with that session
@@ -510,17 +523,17 @@ name with a chip for where it stands (*Draft*, *Active*, *Done*, *Archived*) and
 Markdown in an editor, **Save** while it has changes, and the cards that
 carry it out, each opening on its board. Under it are the project's files,
 each opening with the system's app (a private copy) or deleted, and **Add a
-file**. Under those is the project's **Memory**: one line to keep a fact for
-its agents (**Keep**, kept as the person's; the words stay until the daemon
+file**. Under those is the project's **Memory**: a **New memory** line to keep
+a fact for its agents (**Keep**, kept as the person's; the words stay until the daemon
 has kept them, and stay to fix when it refuses them), a line to search it,
-then each memory, newest first or the best answers to the search, with who
-kept it and when, and a cross to forget it. At 100 it says that only the
-newest are shown and that a search finds older ones. Each project has its
+then each memory, newest first or the best answers to the search (at most 100;
+the search finds older ones), with who kept it and when, and a cross to
+forget it. Each project has its
 own words to keep and search; a saved search is asked again whenever its
 project comes back into view or a memory changes, and one that could not
 be sent is sent on the next tick. A memory an agent keeps appears at once; a
 read that fails says so over what was shown; an AgentDocker from before
-memory says it keeps none. An agent pulls the
+memory shows a *No project memory* chip, updating AgentDocker its detail. An agent pulls the
 next ready card with `pull_task` (or names one), and the board shows it in
 progress under that agent at once; two agents never get one card, and a
 card that waits on an open card is skipped. When the person moves, hands or
@@ -553,7 +566,7 @@ new leases until **Resume**, and while it holds the header shows a chip
 beside **Resume** that starts the reason (*Paused · reason*), the whole
 reason in its detail when the chip cuts it. What an agent already holds, it keeps; your own actions are not
 held; only you can pause or resume, an agent asks with a message.
-**Launch agent…** opens the form. For Claude and Codex it offers **Model** and **Effort**, each a chip that opens its list: the provider's default first, named (*Default (&lt;model&gt;)*), then the models the provider shows on this machine (Codex's `models_cache.json`; Claude's aliases) and the efforts the chosen model takes. The defaults are read from the provider's own settings (`~/.codex/config.toml`, `~/.claude/settings.json`) off the UI thread; nothing is fetched. A choice becomes the tool's own options (`--model`, `--effort`, `-c model_reasoning_effort=…`) before **More options**' arguments, which win where they name one (in any spelling the tool takes, the last in force): the chip then shows the argument's value and gives way to it, and an effort the model in force does not take is dropped. Changing the tool starts from its defaults, and a read made for an earlier tool never applies. The session's panel says the model and effort it was launched with (`<model> · xhigh`). In a git project it offers **Own worktree**, on by default: the session works on a branch of its own (`agent/<name>`) in its own folder under AgentDocker's worktree directory, with the files the project's `.worktreeinclude` lists copied in; off, it works in the project folder on its current branch. Pressing the button again leaves the form open; **Cancel**
+**Launch agent…** opens the form, led by its **Task** field. For Claude and Codex it offers **Model** and **Effort**, each a chip that opens its list: the provider's default first, named (*Default (&lt;model&gt;)*), then the models the provider shows on this machine (Codex's `models_cache.json`; Claude's aliases) and the efforts the chosen model takes. The defaults are read from the provider's own settings (`~/.codex/config.toml`, `~/.claude/settings.json`) off the UI thread; nothing is fetched. A choice becomes the tool's own options (`--model`, `--effort`, `-c model_reasoning_effort=…`) before **More options**' arguments, which win where they name one (in any spelling the tool takes, the last in force): the chip then shows the argument's value and gives way to it, and an effort the model in force does not take is dropped. Changing the tool starts from its defaults, and a read made for an earlier tool never applies. The session's panel says the model and effort it was launched with (`<model> · xhigh`). In a git project it offers **Own worktree**, on by default: the session works on a branch of its own (`agent/<name>`) in its own folder under AgentDocker's worktree directory, with the files the project's `.worktreeinclude` lists copied in; off, it works in the project folder on its current branch. Pressing the button again leaves the form open; **Cancel**
 or a press outside the dialog closes it) to choose an installed CLI and start it at the project root
 (the folder on the header title's tooltip). With Codex chosen and no saved trusted entry found for the project root, the form shows *Trust unconfirmed* in amber, whose tooltip directs the person to open Codex in that folder to review trust before launching. A missing trust entry alone does not establish effective sandbox or approval policy; explicit provider configuration can override those defaults. Saved trust is read off the UI thread only for an open Codex form; results for an older form, project or tool are ignored, and unreadable paths remain unknown. Every project-selection path, including notifications while the form stays open, clears the previous notice and checks the newly selected project. AgentDocker never trusts a folder on the person's behalf. Claude and Codex launches default to **Idle messages: On**;
 each switch says what it means on its tooltip, and turned off this one says
@@ -614,20 +627,32 @@ Project tabs provide:
   (who holds it, in what mode and why, on its tooltip), the path from the
   project's root, and a thin meter of the time left (*4m left* on its
   tooltip) that turns amber under one fifth.
-- **More → AgentDocker commands:** the real bundled `agentdocker` CLI in the selected project folder.
-  It keeps command history and output with a bounded execution deadline.
+- **More → AgentDocker commands:** the real bundled `agentdocker` CLI in the selected project folder:
+  a **Command** field and **Run command** (with *Running* beside it while a
+  command runs), and the output under them once a command has said
+  something; no heading, since the More tab names the screen. It keeps
+  command history and output with a bounded execution deadline.
 - **More → Usage:** the tokens the providers reported for this project's
   sessions over the last 24 hours, 7 or 30 days, one row per agent, model,
   provider or hour (largest first; hours in time order), under four totals —
   input, cache read, cache write and output — and, on a wide window, a share
   bar per row: input, cache read, cache write, output and reasoning
   tokens, each shown only where samples said (`~` where some did not, `—`
-  where none did) and never as an invented zero. Under the table: the range
-  actually answered, whether the current hour is still filling, retention
-  and gaps in the sources, where collection stands, and the overhead
-  AgentDocker injected — *not measured yet* until it is. Collection is off
-  until `agentd.toml` enables it; the screen then shows the empty mark and
-  *Collection: off* in the lines under it rather than an empty table. A failed read keeps the last report with the failure beside
+  where none did; the mark's meaning is the count's tooltip and, for a
+  screen reader, its value, with no legend)
+  and never as an invented zero. There is no heading (the More tab names
+  the screen): the window and the grouping are the two tracks, which are
+  the range, and beside them a chip says where collection stands
+  (*Collection caught up*, *Collection scanning*, *Collection starting*,
+  *Collection off*), with how far it has got, over how many roots, and the
+  overhead AgentDocker injected — *not measured yet* until it is — as its
+  detail. What the totals do not cover — the current hour still filling,
+  history retained only since a day, gaps in the sources (lower bounds), the
+  tracking storage limit — is each total's tooltip and accessible value,
+  after what its mark means. Nothing sits under the table. A window with nothing reported reads
+  *No usage*. Collection is off until `agentd.toml` enables it; the screen
+  then shows the empty mark and the *Collection off* chip rather than an
+  empty table. A failed read keeps the last report with the failure beside
   it. The screen follows the project on view: choosing another project (or
   forgetting the current one, which selects another) reads that project's
   usage at once, and a screen opened while the daemon was away asks the
@@ -732,9 +757,10 @@ its thread beside the conversation, or in place of it when narrow with
 **‹ Conversation** to return; the thread is read whole. The thread has a
 composer of its own with its own draft, and only it sends with `reply_to`;
 the conversation's composer stays under the conversation and never becomes a
-reply. It sends to the project (`#everyone`) or to that agent; it reads
-**This session has ended** for a direct conversation whose agent is gone and
-says so for one between two agents. Drafts survive navigation, a failed
+reply. It sends to the project (`#everyone`) or to that agent; its field
+reads **Session ended** for a direct conversation whose agent is gone and
+**Read only** for one between two agents, and the thread's field reads
+**Reply**. Drafts survive navigation, a failed
 request and disconnection. Notifications: none is posted about what the focused window already shows (the
 agent whose session or terminal is open, or the project whose chat is open;
 the window keeps a short-lived `viewing.json` in the AgentDocker home for the
@@ -887,11 +913,13 @@ reads **Sent · waiting for the agent to take it**, since an earlier receipt say
 (a message still in the queue with a receipt from the current process counts
 as delivered). The session
 inspector shows the same readiness as a chip, the latest receipt in its
-detail, beside a chip with the queued count (*2 queued*).
+detail, beside a chip with the queued count (*2 queued*); an ended session's
+latest receipt is *Last message* under its **Details**.
 A setup review is named for its tool; its files show their MCP, Hooks or Shell
 lines as a diff, and its state is the footer's chip (*Waiting for you*,
-*Applying…*, *Nothing to change*). Applying a plan turns that chip to saved
-(*Saved; start a fresh session to load it*), with **Undo** available afterwards. Fresh
+*Applying…*, *Nothing to change*). Applying a plan turns that chip to *Saved*,
+whose detail says what loads it (*Start a fresh session to load it*, or a new
+terminal for the shell), with **Undo** available afterwards. Fresh
 sessions load saved setup; only the provider can request its required approval.
 The connection check is one line per installed tool, a *Configuration
 checked* chip when configuration passes or the alert mark with the first
@@ -934,14 +962,15 @@ is older* chip whose detail gives both versions, and **Restart…** beside it;
 or an update is ready to install (a download icon and *Update
 &lt;version&gt;*). A healthy service says nothing and takes no room. The restart's
 confirmation, an amber strip across the bottom with **Restart** and **Cancel**,
-says what a restart costs:
-how many sessions AgentDocker itself started will stop (and how many are set to
-start again); sessions started in a terminal keep running and reconnect. A
+asks *Restart the background service?* with what a restart costs as counts:
+how many sessions AgentDocker itself launched stop (and how many start again).
+Sessions started in a terminal keep running and reconnect, and the strip says
+nothing of them. A
 request the older service has never heard of reads *The background service is
 older than this app…* instead of the service's parser error, and no screen
 shows raw error codes or Rust debug output.
 
-Settings → Installation → **Manage** (read aloud *Manage installation and
+Settings → Installation → Versions → **Manage** (read aloud *Manage installation and
 retained versions*) opens the screen that previews installation, rollback,
 cleanup and launcher removal. Apply is tied to the reviewed payload or cleanup
 plan and refuses stale inputs. Running versions and agents remain protected by
@@ -1013,11 +1042,13 @@ tooltip says that submitted answers are kept in the conversation and that
 passwords, API keys, access tokens and payment credentials do not belong in it.
 
 Temporary managed-Codex questions use a separate masked form above the current
-page, naming the session and project. Every field in a mixed secret/ordinary
+page, naming the session and project, with the seconds left. Every field in a mixed secret/ordinary
 bundle is masked; its edits stay only in memory and never join ordinary drafts.
 The person must acknowledge that Codex/model may retain or repeat the values
+(the notice is printed on the form, since it is what is acknowledged)
 before Submit once is enabled. Submission clears the edits and cannot be repeated
-by this window, even if its acknowledgement is lost. Cancel, expiry, closure and
+by this window, even if its acknowledgement is lost: the form then shows an
+*Awaiting confirmation* chip in place of its fields. Cancel, expiry, closure and
 disconnection also clear them. Accessibility marks these controls as password
 inputs without publishing their values.
 The provider producer is behind its development switch (`secret_input` in the `[experimental]` table of `agentd.toml`).

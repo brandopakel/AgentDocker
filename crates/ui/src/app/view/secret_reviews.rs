@@ -8,18 +8,42 @@ impl App {
         let now = Utc::now();
         let mut cards = column![].spacing(12);
         for review in self.secrets.reviews.iter().filter(|r| r.expires_at > now) {
+            // The notice is what Acknowledge agrees to, so it is read here;
+            // the time left is a value, and what the window does with the
+            // edits is not said.
             let mut card = column![
-                heading(format!("Temporary input · {}", self.name_of(review.agent.as_str())), 16),
+                heading(
+                    format!("Temporary input · {}", self.name_of(review.agent.as_str())),
+                    16
+                ),
                 note(PROVIDER_NOTICE, c),
-                small(format!("Expires in {} seconds. Edits are discarded if this window disconnects or closes.", (review.expires_at - now).num_seconds().max(0)), c),
-            ].spacing(8);
+                small(
+                    format!(
+                        "Expires in {} seconds",
+                        (review.expires_at - now).num_seconds().max(0)
+                    ),
+                    c
+                ),
+            ]
+            .spacing(8);
             if let Some(agent) = self.agents.iter().find(|a| a.id == review.agent)
                 && let Some(project) = &agent.project
             {
                 card = card.push(small(format!("Project: {}", project.dir().display()), c));
             }
             if self.secrets.attempted(&review.id) {
-                card = card.push(note("Submission or cancellation was attempted. A missing confirmation does not authorize another submission.", c));
+                // Sent or cancelled from here, unconfirmed: a state, and
+                // this window will not send it again.
+                card = card.push(
+                    super::super::chip::Chip::new(
+                        format!("temporary-attempted-{}", review.id),
+                        Some(Icon::Ring),
+                        "Awaiting confirmation",
+                        super::super::chip::Tone::Neutral,
+                    )
+                    .detail("Submitted or cancelled from this window; it is not sent again")
+                    .view(c),
+                );
             } else {
                 let draft = self.secrets.drafts.get(&review.id);
                 for field in &review.request.fields {

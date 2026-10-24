@@ -4544,28 +4544,38 @@ impl App {
             };
             let name = self.display_name(agent);
             let (title, then) = if waits {
-                (
-                    match self.activity.get(id.as_str()) {
-                        Some(Activity::Waiting {
-                            reason: Some(agentdocker_core::WaitReason::Permission),
-                            ..
-                        }) => format!("{name} wants permission"),
-                        Some(Activity::Waiting {
-                            reason: Some(agentdocker_core::WaitReason::Question),
-                            ..
-                        }) => format!("{name} has a question"),
-                        _ => format!("{name} is waiting for you"),
-                    },
-                    "It is waiting in its terminal.",
-                )
+                match self.activity.get(id.as_str()) {
+                    Some(Activity::Waiting {
+                        reason,
+                        judged: Some(judged),
+                        ..
+                    }) => (
+                        format!("{name} {}", super::view::waiting_errand(*reason, true)),
+                        format!(
+                            "Judged from its screen, {} likely. It is in its terminal.",
+                            judged.percent()
+                        ),
+                    ),
+                    Some(Activity::Waiting { reason, .. }) => (
+                        format!("{name} {}", super::view::waiting_errand(*reason, false)),
+                        "It is waiting in its terminal.".to_owned(),
+                    ),
+                    _ => (
+                        format!("{name} is waiting for you"),
+                        "It is waiting in its terminal.".to_owned(),
+                    ),
+                }
             } else {
-                (format!("{name} finished"), "Click to see what it did.")
+                (
+                    format!("{name} finished"),
+                    "Click to see what it did.".to_owned(),
+                )
             };
             let notice = agentdocker_host::notify::Notification {
                 title,
                 body: match agent.project.as_ref() {
                     Some(project) => format!("In {}. {then}", project.name()),
-                    None => then.to_owned(),
+                    None => then,
                 },
                 action: None,
                 tag: Some(window_tag(&id)),
@@ -7558,6 +7568,7 @@ mod tests {
             agentdocker_core::Activity::Waiting {
                 since: Utc::now(),
                 reason: None,
+                judged: None,
                 detail: None,
             },
         );

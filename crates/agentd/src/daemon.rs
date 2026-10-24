@@ -45,6 +45,7 @@ use crate::store::{ChangesQuery, JournalQuery, Store};
 use crate::supervisor;
 mod access;
 mod acting;
+pub(crate) mod authorship;
 mod binding;
 mod channels;
 mod checkouts;
@@ -61,6 +62,7 @@ pub mod humans;
 mod images;
 mod inbox;
 mod journal;
+mod judge;
 mod launch;
 mod leases;
 mod panes;
@@ -313,6 +315,14 @@ pub struct Daemon {
     scanning: std::sync::atomic::AtomicBool,
     /// A memory mirror run is under way; the next waits for the next tick.
     mirroring: std::sync::atomic::AtomicBool,
+    /// The opt-in judge's screens, budget and status, off the state lock;
+    /// never held across an await or with another lock.
+    judge: Mutex<judge::Judge>,
+    /// A judge pass is under way; the next waits for the next tick.
+    judging: std::sync::atomic::AtomicBool,
+    /// The judge's own read of the file and key is under way, apart from
+    /// any pass, so a switch-off is seen while a pass waits on an answer.
+    judge_watching: std::sync::atomic::AtomicBool,
     scan_finished: Notify,
     /// How session owners are run: as processes of the daemon binary, or
     /// in-process where no daemon binary is on hand (tests).
@@ -341,6 +351,10 @@ pub struct Daemon {
     /// that sent it (`AGENTDOCKER_AGENT_CHECK=off` at start, for a test
     /// harness's own daemon, turns it off).
     agent_check: bool,
+    /// The `agentdocker` command the post-commit hook of a worktree the
+    /// daemon creates reports with: the CLI beside the daemon, when it is
+    /// there. Never held across an await.
+    witness_cli: Mutex<Option<PathBuf>>,
 }
 
 /// Release the scan slot and wake joiners on completion or cancellation.
@@ -529,6 +543,15 @@ struct State {
     /// Empty means everything is allowed, which is what no file means.
     host_policy: policies::Loaded,
     project_policies: HashMap<PathBuf, policies::Loaded>,
+    /// The screen judge's generation and how it stands, as this lock sees
+    /// them. A judgment is recorded only under the generation in force
+    /// here while the judge is on, and a stop clears every standing
+    /// judgment in the same hold that records it, so nothing judged under
+    /// an earlier setup is written after a stop has cleared; a change of
+    /// how it stands is announced in that hold too (see `judge.rs`).
+    judge_generation: u64,
+    judge_status: agentdocker_core::judgment::JudgeState,
+    judge_reason: Option<String>,
 }
 
 struct JournalRing {
@@ -1628,11 +1651,17 @@ impl Daemon {
                 notifier: None,
                 host_policy: policies::Loaded::default(),
                 project_policies: HashMap::new(),
+                judge_generation: 0,
+                judge_status: agentdocker_core::judgment::JudgeState::Off,
+                judge_reason: None,
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
             scanning: std::sync::atomic::AtomicBool::new(false),
             mirroring: std::sync::atomic::AtomicBool::new(false),
+            judge: Mutex::new(judge::Judge::default()),
+            judging: std::sync::atomic::AtomicBool::new(false),
+            judge_watching: std::sync::atomic::AtomicBool::new(false),
             owner_mode: supervisor::OwnerMode::detect(),
             webhooks: Mutex::new(webhooks::Sinks::default()),
             held: Mutex::new(None),
@@ -1642,6 +1671,7 @@ impl Daemon {
             peers: Mutex::new(person::Peers::default()),
             person_check: std::env::var_os("AGENTDOCKER_PERSON_CHECK").is_none_or(|v| v != "off"),
             agent_check: std::env::var_os("AGENTDOCKER_AGENT_CHECK").is_none_or(|v| v != "off"),
+            witness_cli: Mutex::new(person::companion_cli().filter(|cli| cli.is_file())),
             scan_finished: Notify::new(),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
@@ -1996,6 +2026,16 @@ impl Daemon {
                 all,
                 push,
             } => self.commit(&agent, message, all, push).await,
+            Request::ReportCommit {
+                checkout,
+                token,
+                head,
+                branch,
+                agent,
+            } => {
+                self.report_commit(checkout, token, head, branch, agent)
+                    .await
+            }
             Request::Integrate {
                 agent,
                 source,
@@ -2038,6 +2078,7 @@ impl Daemon {
                 pid: Some(std::process::id()),
                 executable: agentdocker_host::procinfo::executable_path().ok(),
                 experimental: Some(crate::config::experimental(&self.home)),
+                judge: Some(self.judge_status()),
             },
             Request::DaemonProcess => {
                 let state = lock(&self.state);

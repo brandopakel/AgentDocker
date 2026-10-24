@@ -45,6 +45,7 @@ async fn in_herdr(
         session: herdr.map(str::to_owned),
         pane: Some("w1:p1".to_owned()),
         evidence: Evidence::Environment,
+        socket: None,
     });
     let record = record.clone();
     state.store.upsert_agent(&record).unwrap();
@@ -511,6 +512,7 @@ mod socket {
                 == Activity::Waiting {
                     since: observation(&daemon, &agent.id).unwrap().observed_at,
                     reason: Some(WaitReason::Other),
+                    judged: None,
                     detail: None,
                 }
         })

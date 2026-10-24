@@ -4016,6 +4016,7 @@ async fn a_wait_keeps_what_it_is_for_through_the_store() {
     let detailed = Activity::Waiting {
         since: now,
         reason: Some(WaitReason::Permission),
+        judged: None,
         detail: Some("Bash: cargo test".into()),
     };
     assert_eq!(
@@ -4040,6 +4041,7 @@ async fn a_wait_keeps_what_it_is_for_through_the_store() {
             since: again,
             reason: Some(WaitReason::Permission),
             detail: Some("Bash: cargo test".into()),
+            judged: None,
         }
     );
     let later = now + Duration::seconds(7);
@@ -4058,6 +4060,7 @@ async fn a_wait_keeps_what_it_is_for_through_the_store() {
         Activity::Waiting {
             since: later,
             reason: Some(WaitReason::Permission),
+            judged: None,
             detail: None,
         }
     );
@@ -5583,6 +5586,7 @@ async fn an_agent_says_which_multiplexer_it_lives_in_and_the_daemon_keeps_it() {
         kind: "tmux".to_owned(),
         session: Some("work".to_owned()),
         pane: Some("%3".to_owned()),
+        socket: Some("/private/tmp/tmux-501/default".to_owned()),
         evidence: Evidence::Environment,
     };
     let Response::Agent { agent } = daemon

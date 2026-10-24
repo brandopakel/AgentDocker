@@ -124,6 +124,15 @@ enum Command {
         #[arg(long = "seed-build", value_name = "DIR")]
         seed_build: Vec<String>,
     },
+    /// What the post-commit hook of a worktree AgentDocker created runs:
+    /// report the commit just made there, so the daemon keeps it as the
+    /// authorship of the agent whose session made it.
+    #[command(hide = true)]
+    ReportCommit {
+        /// The worktree's witness file, in its own git directory.
+        #[arg(long)]
+        witness: PathBuf,
+    },
     /// Commit this agent's checkout, journaled and attributed to it
     Commit {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -830,7 +839,10 @@ enum Command {
     /// its control socket, with each one's status and AgentDocker record.
     #[command(hide = true)]
     CodexThreads(codex_input::threads::Args),
-    /// Start the agents in an Agentfile.toml that are not already running.
+    /// Start the agents in an Agentfile.toml that are not already running,
+    /// each once what it waits on allows: `depends_on` (running first) and
+    /// `after = "<name> exits 0"`. While an entry waits, `up` stays; one
+    /// whose wait can no longer be met is not started, with the reason.
     Up {
         /// Agentfile to read (default: ./Agentfile.toml).
         #[arg(short = 'f', long)]
@@ -2349,6 +2361,9 @@ async fn run() -> Result<()> {
                 );
             }
         }
+        Command::ReportCommit { witness } => {
+            print_json(&gate::report_commit(&witness).await?)?;
+        }
         Command::WorktreeCreate {
             agent,
             path,
@@ -2366,12 +2381,21 @@ async fn run() -> Result<()> {
                 })
                 .await?
             {
-                Response::Worktree { path, seeded, .. } => {
+                Response::Worktree {
+                    path,
+                    seeded,
+                    unwitnessed,
+                    ..
+                } => {
                     // The path alone on stdout, for `cd "$(…)"`; what
-                    // became of each seed on stderr.
+                    // became of each seed, and why commits there are not
+                    // witnessed if they are not, on stderr.
                     println!("{}", path.display());
                     for line in seeded.iter().map(format::seeded) {
                         eprintln!("{line}");
+                    }
+                    if let Some(why) = unwitnessed {
+                        eprintln!("commits made there with git are not recorded as yours: {why}");
                     }
                 }
                 _ => bail!("unexpected worktree response"),
@@ -5495,21 +5519,31 @@ async fn print_activity(client: &Client, activity: &[AgentActivity]) {
                 Activity::Waiting {
                     since,
                     reason,
+                    judged,
                     detail,
                 } => {
-                    let what = match reason {
-                        Some(agentdocker_core::WaitReason::Permission) => {
-                            "for permission, in its terminal"
+                    let what: String = match (reason, judged) {
+                        (Some(reason), Some(judged)) => format!(
+                            "{}, in its terminal (judged from its screen, {})",
+                            format::judged_errand(*reason),
+                            judged.percent()
+                        ),
+                        (None, Some(judged)) => format!(
+                            "for you, in its terminal (judged from its screen, {})",
+                            judged.percent()
+                        ),
+                        (Some(agentdocker_core::WaitReason::Permission), None) => {
+                            "for permission, in its terminal".into()
                         }
-                        Some(agentdocker_core::WaitReason::Question) => {
-                            "for an answer, in its terminal"
+                        (Some(agentdocker_core::WaitReason::Question), None) => {
+                            "for an answer, in its terminal".into()
                         }
-                        _ => "for you, in its terminal",
+                        _ => "for you, in its terminal".into(),
                     };
                     (
                         match detail {
                             Some(detail) => format!("{what}: {detail}"),
-                            None => what.to_owned(),
+                            None => what,
                         },
                         Some(*since),
                     )
