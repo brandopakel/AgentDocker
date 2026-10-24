@@ -37,9 +37,13 @@ CLI path on case-insensitive filesystems and send hooks or MCP into the GUI.
    source inputs in a `native-build.json` manifest.
 3. `packaging/desktop/package.py`: the same app bundle (macOS) or desktop
    payload (Linux) the release pipeline produces, ad-hoc signed, with licenses,
-   into `artifacts/local/desktop-<timestamp>/`, `agentd` in it a hard link to
-   `agentdocker`. `artifacts/local/latest` points at the newest one. Its
-   `manifest.json` reports the payload's size with the link counted once.
+   into `artifacts/local.noindex/desktop-<timestamp>/`, `agentd` in it a hard
+   link to `agentdocker`. `artifacts/local.noindex/latest` points at the newest
+   one. Its `manifest.json` reports the payload's size with the link counted
+   once. Spotlight skips a `.noindex` folder, and the package is unregistered
+   from Launch Services after packaging and after installing, so
+   `open -a AgentDocker`, Spotlight and the Dock open the installed app, never
+   a package in the checkout.
 4. `agentdocker desktop install --from <payload> --local-preview`: the built
    CLI installs its own package for the next launch. Versions are retained;
    `make rollback` activates the previous one; `make status` shows both.
@@ -120,7 +124,7 @@ it for the next launch. See [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md).
 | `make run` | Run the desktop app from the checkout against your real daemon |
 | `make smoke` | Native workflow acceptance against release binaries |
 | `make status`, `make rollback` | Inspect or roll back the managed installation |
-| `make clean-artifacts` | Remove `artifacts/local` (keeps the Cargo cache) |
+| `make clean-artifacts` | Unregister and remove `artifacts/local.noindex` and the older `artifacts/local` (keeps the Cargo cache) |
 
 Set `PREFIX=/tmp/agentdocker-trial` on any install target to keep launchers,
 versions and activation metadata inside a disposable directory. The Makefile
