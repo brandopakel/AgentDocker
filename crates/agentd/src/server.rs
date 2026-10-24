@@ -201,6 +201,10 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
             write(&mut writer, &refusal).await?;
             continue;
         }
+        if let Some(refusal) = daemon.register_refusal(peer, &request).await {
+            write(&mut writer, &refusal).await?;
+            continue;
+        }
         daemon.mark_launcher(peer, &mut request).await;
         if let Some(refusal) = daemon.authenticate_verdict(peer, &mut request).await {
             write(&mut writer, &refusal).await?;

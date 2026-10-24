@@ -954,7 +954,11 @@ struct RegisterArgs {
     provider: Option<String>,
     #[arg(long)]
     model: Option<String>,
-    /// Process id, so `stop` can signal it.
+    /// Process id, so `stop` can signal it: this command's own shell
+    /// (`--pid $$`) or another of its parents. Any other is refused from
+    /// inside an agent's session, and one an agent already holds is
+    /// registered only from inside that agent's; from your own terminal,
+    /// any.
     #[arg(long)]
     pid: Option<u32>,
     /// Working directory (default: current directory).
