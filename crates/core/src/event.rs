@@ -251,6 +251,23 @@ pub enum EventKind {
         agent: crate::AgentId,
         path: std::path::PathBuf,
     },
+    /// A worktree the daemon created has a post-commit hook that reports
+    /// the commits made there, and a witness token only its reports carry;
+    /// `agent` is who it was created for.
+    WorktreeWitnessed {
+        agent: crate::AgentId,
+        path: std::path::PathBuf,
+    },
+    /// The daemon recorded that an agent made a commit on a branch (its
+    /// full ref), kept apart from the journal so that the agent's word is
+    /// not taken on that branch.
+    AuthorshipRecorded {
+        project: ProjectId,
+        agent: crate::AgentId,
+        branch: String,
+        commit: String,
+        witness: crate::gate::Witness,
+    },
     /// An agent committed its checkout through the daemon.
     Committed {
         agent: crate::AgentId,

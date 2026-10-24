@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 pub type Delivery = (AgentId, DateTime<Utc>, Option<DateTime<Utc>>);
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
+pub(crate) mod authorship;
 pub(crate) mod event_replay;
 pub(crate) mod reconcile;
 pub(crate) mod usage;
@@ -79,6 +80,9 @@ pub struct TaskTransition<'a> {
 // holders left, and drop `role` rewriting the channel.
 // Schema 28, unreleased, also lets a pending Codex review offer the session
 // (`for_session` on its presentation), a field an older reader refuses.
+// The `authorship` and `witnessed_worktrees` tables need no bump: they are
+// new tables, no stored row changes meaning, and an older daemon leaves them
+// alone (it records no authorship while it runs; nothing it reads is wrong).
 pub(crate) const SCHEMA_VERSION: i64 = 28;
 
 const SCHEMA: &str = "
@@ -254,6 +258,24 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
     json    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS webhook_deliveries_webhook ON webhook_deliveries (webhook, seq);
+CREATE TABLE IF NOT EXISTS authorship (
+    project   TEXT NOT NULL,
+    commit_id TEXT NOT NULL,
+    branch    TEXT NOT NULL,
+    agent     TEXT NOT NULL,
+    witness   TEXT NOT NULL,
+    at        TEXT NOT NULL,
+    PRIMARY KEY (project, commit_id, branch)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS authorship_branch ON authorship (project, branch, agent);
+CREATE INDEX IF NOT EXISTS authorship_agent ON authorship (agent);
+CREATE TABLE IF NOT EXISTS witnessed_worktrees (
+    path       TEXT PRIMARY KEY,
+    project    TEXT NOT NULL,
+    agent      TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
+) WITHOUT ROWID;
 ";
 
 /// Full-text search over journal summaries. Contentless: the text lives in
@@ -1277,6 +1299,18 @@ impl Store {
     /// Forget an agent, its old-ID routes and queued work in one transition.
     pub fn delete_agent(&self, id: &AgentId, event: &Event) -> Result<()> {
         let tx = write_transaction(&self.conn)?;
+        // What it and its former ids committed, and the worktrees made for
+        // it, go with it: a forgotten record's word is never asked again.
+        tx.execute(
+            "DELETE FROM authorship WHERE agent = ?1 OR agent IN (
+                 SELECT id FROM documents WHERE kind = 'identity_alias'
+                 AND json_extract(json, '$.canonical') = ?1)",
+            params![id.as_str()],
+        )?;
+        tx.execute(
+            "DELETE FROM witnessed_worktrees WHERE agent = ?1",
+            params![id.as_str()],
+        )?;
         tx.execute(
             "DELETE FROM documents WHERE kind = 'identity_alias'
              AND json_extract(json, '$.canonical') = ?1",

@@ -598,6 +598,22 @@ pub fn event_line(event: &Event) -> String {
         EventKind::WorktreeCreated { agent, path } => {
             format!("{agent} created worktree {}", path.display())
         }
+        EventKind::WorktreeWitnessed { agent, path } => {
+            format!("{agent}'s worktree {} reports its commits", path.display())
+        }
+        EventKind::AuthorshipRecorded {
+            agent,
+            branch,
+            commit,
+            witness,
+            ..
+        } => format!(
+            "authored         {} {} on {} ({})",
+            agent.short(),
+            commit.chars().take(8).collect::<String>(),
+            branch.strip_prefix("refs/heads/").unwrap_or(branch),
+            witness.as_str()
+        ),
         EventKind::BranchMerged {
             agent,
             branch,

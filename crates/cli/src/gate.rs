@@ -3,12 +3,15 @@
 //! gate is the daemon's; this side turns a pull request or a branch into
 //! the branch and the full commit it means, and can set the answer as a
 //! commit status on GitHub, where any later commit starts without one.
-use std::path::PathBuf;
+//! And `agentdocker report-commit`, what the post-commit hook of a worktree
+//! AgentDocker created runs, so the daemon keeps who made each commit there
+//! and refuses that agent's word on the branch.
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::client::Client;
 use crate::sender;
-use agentdocker_core::gate::{CodeVerdict, Findings, Gate};
+use agentdocker_core::gate::{CodeVerdict, Findings, Gate, WitnessFile};
 use agentdocker_core::{HUMAN, Request, Response};
 use anyhow::{Context, Result, bail, ensure};
 
@@ -345,10 +348,102 @@ pub async fn gate(client: &Client, args: GateArgs) -> Result<bool> {
     Ok(gate.approved())
 }
 
+/// How long a hook's report may take: a commit waits for it.
+const REPORT_TIMEOUT: Duration = Duration::from_secs(5);
+/// A witness file is a few hundred bytes; past this it is not one.
+const WITNESS_BYTES: u64 = 16 * 1024;
+
+/// The report of the commit HEAD is at in the witness file's worktree:
+/// HEAD and the full ref it names (none when detached), as git says now.
+fn commit_report(witness: WitnessFile) -> Result<Request> {
+    let git = |args: &[&str]| -> Result<agentdocker_host::command::Output> {
+        let argv: Vec<String> = std::iter::once("git")
+            .chain(args.iter().copied())
+            .map(str::to_owned)
+            .collect();
+        agentdocker_host::command::run(&witness.checkout, &argv, TOOL_TIMEOUT)
+            .context("cannot run git")
+    };
+    let head = git(&["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?;
+    ensure!(head.success, "HEAD names no commit");
+    let branch = git(&["symbolic-ref", "--quiet", "HEAD"])?;
+    Ok(Request::ReportCommit {
+        checkout: witness.checkout.clone(),
+        head: head.stdout.trim().to_owned(),
+        // `--quiet` makes a detached HEAD a failure that says nothing.
+        branch: branch.success.then(|| branch.stdout.trim().to_owned()),
+        token: witness.token,
+        agent: None,
+    })
+}
+
+/// `report-commit --witness <file>`: send the commit just made to the
+/// daemon that created the worktree, at the socket the file names, never
+/// starting one. Who made it is the daemon's to find.
+pub async fn report_commit(witness: &Path) -> Result<Response> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    agentdocker_host::dirs::open_private(witness)
+        .with_context(|| format!("cannot open {}", witness.display()))?
+        .take(WITNESS_BYTES)
+        .read_to_string(&mut text)?;
+    let witness: WitnessFile =
+        serde_json::from_str(&text).context("the witness file is not one")?;
+    let client = Client::new(Some(witness.socket.clone())).with_start_timeout(None);
+    let request = commit_report(witness)?;
+    tokio::time::timeout(REPORT_TIMEOUT, client.call(&request))
+        .await
+        .context("the daemon did not answer in time")?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use agentdocker_core::{AgentId, ProjectId, Verdict};
+
+    /// The report names HEAD and its full ref, a tag of the branch's name
+    /// notwithstanding, and no branch when HEAD is detached.
+    #[test]
+    fn a_report_names_head_and_its_full_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.invalid", "-c", "user.name=T"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["init", "-q", "-b", "feature/mine"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "first"]);
+        git(&["tag", "feature/mine"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        let witness = || WitnessFile {
+            token: agentdocker_core::secret::SecretText::new("t".into()).unwrap(),
+            socket: tmp.path().join("sock"),
+            checkout: tmp.path().to_path_buf(),
+        };
+        let Request::ReportCommit {
+            head: said,
+            branch,
+            agent,
+            ..
+        } = commit_report(witness()).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(said, head);
+        assert_eq!(branch.as_deref(), Some("refs/heads/feature/mine"));
+        assert_eq!(agent, None, "who made it is the daemon's to find");
+        git(&["checkout", "-q", "--detach"]);
+        let Request::ReportCommit { branch, .. } = commit_report(witness()).unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(branch, None);
+    }
 
     fn verdict(head: &str) -> Box<CodeVerdict> {
         Box::new(CodeVerdict {

@@ -599,7 +599,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]…` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
+| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]…` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours, and a post-commit hook (put in front of any the repository has, which still runs) reports each one so your verdict on that branch is refused later. When it cannot (the repository sets `core.hooksPath`), it says why on stderr. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
 | `worktree-diff` | Tracked changes in an agent's checkout |
 | `worktree-remove <agent>` | Remove an ended session's own worktree once its branch is merged or no longer wanted; the worktree must be clean, and the branch is deleted only when git considers it merged |
 | `review-branch <agent>` | What an agent's branch would bring to the branch in the project's main checkout: commits, files and lines, and what stops a merge now (uncommitted work, uncommitted changes in the main checkout, conflicts, held files); `--patch` prints the diff, `--json` the whole review |
@@ -858,7 +858,9 @@ a sha.
 
 Nothing goes into the commit itself. The git author is whoever git is
 configured as, and no trailer is added: it is your repository, and which
-agent typed it is our record to keep, not a change to your history.
+agent typed it is our record to keep, not a change to your history. That
+record outlives the journal: the agent's verdict on the branch is refused
+from then on.
 
 A pending merge can be committed even when its file tree is unchanged; its new ancestry is still journaled. An ordinary empty commit remains refused, and untracked files are not staged automatically.
 
@@ -1014,7 +1016,13 @@ Current behaviour that the sections above do not already state, by area.
   a merge of main included, makes the approval stale until the reviewer
   reads what came after. Whose word counts is a role you give
   (`reviewer` by default); `--publish` also sets it as a GitHub commit
-  status that branch protection can require.
+  status that branch protection can require. An agent's verdict is
+  refused on the branch its checkout is on, and on any branch it
+  committed to through `agentdocker commit` or with git in a worktree
+  AgentDocker made for it, wherever its checkout is now and however
+  much of the journal is gone. Checking a branch out to read it is not
+  committing to it. Commits made with git in a checkout you made by hand
+  are not seen this way, so keep authors and reviewers separate agents.
 
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or

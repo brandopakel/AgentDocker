@@ -44,6 +44,7 @@ use agentdocker_host::{multiplexer, procinfo, project, vcs};
 use crate::store::{ChangesQuery, JournalQuery, Store};
 use crate::supervisor;
 mod access;
+pub(crate) mod authorship;
 mod binding;
 mod channels;
 mod checkouts;
@@ -345,6 +346,10 @@ pub struct Daemon {
     /// process that sent it (`AGENTDOCKER_PERSON_CHECK=off` at start, for a
     /// test harness's own daemon, turns it off).
     person_check: bool,
+    /// The `agentdocker` command the post-commit hook of a worktree the
+    /// daemon creates reports with: the CLI beside the daemon, when it is
+    /// there. Never held across an await.
+    witness_cli: Mutex<Option<PathBuf>>,
 }
 
 /// Release the scan slot and wake joiners on completion or cancellation.
@@ -1660,6 +1665,7 @@ impl Daemon {
             relaunch_hold: Mutex::new(None),
             peers: Mutex::new(person::Peers::default()),
             person_check: std::env::var_os("AGENTDOCKER_PERSON_CHECK").is_none_or(|v| v != "off"),
+            witness_cli: Mutex::new(person::companion_cli().filter(|cli| cli.is_file())),
             scan_finished: Notify::new(),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
@@ -2014,6 +2020,16 @@ impl Daemon {
                 all,
                 push,
             } => self.commit(&agent, message, all, push).await,
+            Request::ReportCommit {
+                checkout,
+                token,
+                head,
+                branch,
+                agent,
+            } => {
+                self.report_commit(checkout, token, head, branch, agent)
+                    .await
+            }
             Request::Integrate {
                 agent,
                 source,

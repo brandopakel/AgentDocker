@@ -139,6 +139,22 @@ pub enum Request {
         agent: String,
         head: String,
     },
+    /// What the post-commit hook the daemon installs for a worktree it
+    /// created sends: the commit just made in `checkout`, with the
+    /// worktree's witness token, its HEAD and the full ref HEAD names
+    /// (none when detached). The daemon checks both against git, finds who
+    /// made it, and keeps it as that agent's authorship of the branch.
+    /// `agent` is the daemon's to fill on its socket, from the sender's
+    /// session. Answers `commit_witnessed`.
+    ReportCommit {
+        checkout: std::path::PathBuf,
+        token: crate::secret::SecretText,
+        head: String,
+        #[serde(default)]
+        branch: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+    },
     /// Commit an agent's checkout through the daemon, so the act is
     /// journaled against the agent that asked for it rather than guessed
     /// afterwards from a HEAD that moved.
@@ -1769,6 +1785,21 @@ pub enum Response {
         /// What became of each `seed_build` directory, in the order named.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         seeded: Vec<crate::seed::Seeded>,
+        /// Why commits made there with git alone are not witnessed (no
+        /// post-commit hook reports them); absent when they are.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unwitnessed: Option<String>,
+    },
+    /// What became of a commit a worktree's post-commit hook reported:
+    /// recorded as `agent`'s on `branch` (a full ref), or why not.
+    CommitWitnessed {
+        recorded: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<AgentId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
     Diff {
         text: String,

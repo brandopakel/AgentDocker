@@ -1,7 +1,8 @@
 //! Reviewers' verdicts on branches, each bound to the commit it read, and
 //! the gate over them: documents of their own kind, by project. An agent
 //! holding a role in the project, or the person, gives one; anybody may
-//! ask the gate.
+//! ask the gate. No agent's word is taken on the branch its checkout is
+//! on, nor on a branch the daemon saw it commit to (`daemon/authorship.rs`).
 use std::collections::HashMap;
 
 use super::*;
@@ -174,6 +175,21 @@ impl Daemon {
         if let Some(error) = state.write_failure() {
             return error;
         }
+        // Nor on a branch it has committed to, wherever its checkout is now:
+        // what the daemon made or witnessed it commit, read by the branch's
+        // full ref, which the journal's pruning and retention never touch.
+        if !actor.human {
+            match state.has_authored(&project, &AgentId::from(actor.id.as_str()), branch) {
+                Ok(false) => {}
+                Ok(true) => {
+                    return Response::error(
+                        ErrorCode::Forbidden,
+                        "an agent does not review a branch it has committed to",
+                    );
+                }
+                Err(response) => return *response,
+            }
+        }
         let existing = match state.project_verdicts(&project) {
             Ok(verdicts) => verdicts,
             Err(response) => return *response,
@@ -265,7 +281,7 @@ impl Daemon {
 
 /// How a walk up from a verdict's sender ended.
 #[derive(Debug, PartialEq, Eq)]
-enum Author {
+pub(in crate::daemon) enum Author {
     Reviewer,
     Other(&'static str),
 }
@@ -334,7 +350,8 @@ fn dedicated_server(
 /// its own process, the server its supervised bridge started, or the
 /// dedicated server `agentdocker codex` started beside it. Anything else,
 /// an agent it started included, registered or not, is another session.
-fn author(
+/// A worktree hook's report of a commit is held to the same test.
+pub(in crate::daemon) fn author(
     sender: u32,
     reviewer: &AgentRecord,
     agents: &HashMap<u32, (DateTime<Utc>, AgentId)>,
@@ -472,30 +489,8 @@ fn checkout_branch(checkout: &std::path::Path) -> Result<Option<String>, String>
     // The full ref, never `--short`: git lengthens a short name it finds
     // ambiguous (`heads/feature/mine` once a tag `feature/mine` exists),
     // which would let a reviewer dodge the own-branch refusal with a tag.
-    let argv: Vec<String> = ["git", "symbolic-ref", "--quiet", "HEAD"]
-        .map(str::to_owned)
-        .to_vec();
-    let output =
-        agentdocker_host::command::run(checkout, &argv, std::time::Duration::from_secs(10))
-            .map_err(|error| error.kind().to_string())?;
-    if output.success {
-        return Ok(output
-            .stdout
-            .trim()
-            .strip_prefix("refs/heads/")
-            .map(str::to_owned));
-    }
-    // `--quiet` makes a detached HEAD a plain failure with nothing said.
-    if output.text.trim().is_empty() {
-        return Ok(None);
-    }
-    Err(output
-        .text
-        .trim()
-        .lines()
-        .next()
-        .unwrap_or("git failed")
-        .to_owned())
+    Ok(crate::daemon::authorship::head_ref(checkout)?
+        .and_then(|full| full.strip_prefix("refs/heads/").map(str::to_owned)))
 }
 
 /// The journal's line for a verdict: who said what of which branch, at

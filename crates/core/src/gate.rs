@@ -191,6 +191,89 @@ pub fn to_forget(existing: &[CodeVerdict], given: &CodeVerdict, cap: usize) -> O
     })
 }
 
+/// The full ref a branch lives under, `refs/heads/<name>`: what authorship
+/// is kept and asked by, so that a tag of the same name never stands for
+/// the branch.
+pub fn branch_ref(branch: &str) -> String {
+    format!("refs/heads/{branch}")
+}
+
+/// How the daemon came to know of a commit an agent made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Witness {
+    /// The daemon made it, asked by the agent (`commit`).
+    Commit,
+    /// The post-commit hook of a worktree the daemon created reported it,
+    /// from inside the session of the agent it names.
+    Hook,
+}
+
+impl Witness {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Commit => "commit",
+            Self::Hook => "hook",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "commit" => Some(Self::Commit),
+            "hook" => Some(Self::Hook),
+            _ => None,
+        }
+    }
+}
+
+/// That an agent made a commit on a branch, as the daemon made or saw it.
+/// Kept apart from the journal, which pruning and retention may empty, so
+/// that an agent's word is not taken on a branch it wrote, wherever its
+/// checkout stands later. One per project, commit and branch: a commit is
+/// recorded once.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Authorship {
+    pub project: ProjectId,
+    pub agent: AgentId,
+    /// The full ref the commit was made on, `refs/heads/<name>`.
+    pub branch: String,
+    /// The full id of the commit.
+    pub commit: String,
+    pub witness: Witness,
+    pub at: DateTime<Utc>,
+}
+
+impl Authorship {
+    /// Whether it can be kept: a branch's full ref and a full commit id.
+    pub fn check(&self) -> Result<(), &'static str> {
+        if !self
+            .branch
+            .strip_prefix("refs/heads/")
+            .is_some_and(branch_name)
+        {
+            return Err("authorship names a branch by its full ref, refs/heads/<name>");
+        }
+        if !full_commit(&self.commit) {
+            return Err("authorship names a full commit id");
+        }
+        Ok(())
+    }
+}
+
+/// The file, in a witnessed worktree's own git directory, that its
+/// post-commit hook reports with.
+pub const WITNESS_FILE: &str = "agentdocker-witness";
+
+/// What [`WITNESS_FILE`] holds, readable by this user alone: the token only
+/// this worktree's reports carry, the socket of the daemon that made the
+/// worktree, and the worktree itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WitnessFile {
+    pub token: crate::secret::SecretText,
+    pub socket: std::path::PathBuf,
+    pub checkout: std::path::PathBuf,
+}
+
 /// What the gate says about a branch at a commit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -442,6 +525,37 @@ mod tests {
             .collect();
         assert_eq!(gate(&after, "feature/x", A, GATE_ROLE), before);
         assert!(gate(&after, "feature/x", A, "tester").approved());
+    }
+
+    #[test]
+    fn authorship_is_kept_by_a_branch_s_full_ref_and_a_full_commit() {
+        assert_eq!(branch_ref("feature/mine"), "refs/heads/feature/mine");
+        let at = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let authored = |branch: &str, commit: &str| Authorship {
+            project: ProjectId::from("p"),
+            agent: AgentId::from("a"),
+            branch: branch.to_owned(),
+            commit: commit.to_owned(),
+            witness: Witness::Hook,
+            at,
+        };
+        assert!(authored("refs/heads/feature/mine", A).check().is_ok());
+        for (branch, commit) in [
+            ("feature/mine", A),
+            ("refs/tags/feature/mine", A),
+            ("refs/heads/", A),
+            ("refs/heads/a..b", A),
+            ("refs/heads/feature/mine", "abc1234"),
+        ] {
+            assert!(
+                authored(branch, commit).check().is_err(),
+                "{branch} {commit}"
+            );
+        }
+        for witness in [Witness::Commit, Witness::Hook] {
+            assert_eq!(Witness::parse(witness.as_str()), Some(witness));
+        }
+        assert_eq!(Witness::parse("reflog"), None);
     }
 
     #[test]

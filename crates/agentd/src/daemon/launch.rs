@@ -724,6 +724,9 @@ impl Daemon {
                         agent: record.id.clone(),
                         path: path.clone(),
                     });
+                    if let Some(why) = self.witness_worktree(&path, &record.id).await {
+                        info!(agent = %record.id.short(), %why, "commits in the agent's worktree are not witnessed");
+                    }
                     return Ok(path);
                 }
                 Err(response) => last = Some(response),

@@ -124,6 +124,15 @@ enum Command {
         #[arg(long = "seed-build", value_name = "DIR")]
         seed_build: Vec<String>,
     },
+    /// What the post-commit hook of a worktree AgentDocker created runs:
+    /// report the commit just made there, so the daemon keeps it as the
+    /// authorship of the agent whose session made it.
+    #[command(hide = true)]
+    ReportCommit {
+        /// The worktree's witness file, in its own git directory.
+        #[arg(long)]
+        witness: PathBuf,
+    },
     /// Commit this agent's checkout, journaled and attributed to it
     Commit {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -2352,6 +2361,9 @@ async fn run() -> Result<()> {
                 );
             }
         }
+        Command::ReportCommit { witness } => {
+            print_json(&gate::report_commit(&witness).await?)?;
+        }
         Command::WorktreeCreate {
             agent,
             path,
@@ -2369,12 +2381,21 @@ async fn run() -> Result<()> {
                 })
                 .await?
             {
-                Response::Worktree { path, seeded, .. } => {
+                Response::Worktree {
+                    path,
+                    seeded,
+                    unwitnessed,
+                    ..
+                } => {
                     // The path alone on stdout, for `cd "$(…)"`; what
-                    // became of each seed on stderr.
+                    // became of each seed, and why commits there are not
+                    // witnessed if they are not, on stderr.
                     println!("{}", path.display());
                     for line in seeded.iter().map(format::seeded) {
                         eprintln!("{line}");
+                    }
+                    if let Some(why) = unwitnessed {
+                        eprintln!("commits made there with git are not recorded as yours: {why}");
                     }
                 }
                 _ => bail!("unexpected worktree response"),
