@@ -196,6 +196,8 @@ impl Daemon {
                         running.process_group = Some(pid);
                         running.owner = Some(spawned.owner.clone());
                         running.status = AgentStatus::Running;
+                        // A new run, committed with `agent_restarted`.
+                        running.begin_run();
                         running.started_at = Some(Utc::now());
                         running.finished_at = None;
                         running.last_seen = Utc::now();
@@ -414,6 +416,61 @@ mod tests {
                 1
             );
         }
+    }
+
+    /// The daemon's own shutdown stops a running agent without clearing
+    /// its restart policy, so the next daemon can start it again by that
+    /// policy, under its id, with the shutdown's stop marked on the run
+    /// that ended. The restart begins a run of its own: the mark is not
+    /// carried into it, in memory or on disk, and a stop of the new run is
+    /// marked again.
+    #[tokio::test]
+    async fn a_restarted_agent_does_not_inherit_a_stop_marked_on_the_run_before() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("host.sock")).unwrap());
+        let mut previous = AgentRecord::new(
+            AgentSpec {
+                name: "stopped-then-restarted".into(),
+                command: vec!["sleep".into(), "30".into()],
+                workdir: Some(dir.path().to_path_buf()),
+                restart: agentdocker_core::RestartPolicy::OnFailure { max: 1 },
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        previous.mark_stopping();
+        previous.status = AgentStatus::Exited { code: None };
+        previous.finished_at = Some(Utc::now());
+        assert!(previous.stopped_on_request());
+        assert!(matches!(
+            lock(&daemon.state).insert_record(previous.clone()),
+            Response::Agent { .. }
+        ));
+        daemon
+            .restart_now(&previous.id, std::time::Duration::ZERO)
+            .await;
+        let (current, durable) = {
+            let state = lock(&daemon.state);
+            (
+                state.registry.get(&previous.id).unwrap().clone(),
+                state.store.load_agents().unwrap()[0].clone(),
+            )
+        };
+        // Cleanup precedes assertions so a failure cannot leak a child.
+        daemon.stop_all().await;
+        let stopped = lock(&daemon.state)
+            .registry
+            .get(&previous.id)
+            .unwrap()
+            .clone();
+        assert_eq!(current.status, AgentStatus::Running, "{current:?}");
+        assert_eq!(current.restarts, 1);
+        assert_eq!(current.stop_requested, Some(false), "not inherited");
+        assert_eq!(durable.stop_requested, Some(false), "nor on disk");
+        assert!(stopped.stopped_on_request(), "the new run's own stop");
+        assert!(!stopped.status.is_live());
     }
 
     #[tokio::test]

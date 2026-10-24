@@ -1,9 +1,12 @@
 //! `after = "A exits 0"` on a real daemon: `agentdocker up` starts what
 //! waits once the entry it names has exited with status zero, and never
 //! starts it, nor anything waiting on it, when that entry exits otherwise,
-//! is stopped, or fails to start — and an exit 0 counts only when `up` saw
-//! its own event delivered, so one seen without the event stream (none
-//! could be opened, or the one there was ended) does not. Every command and
+//! is stopped, or fails to start. An exit 0 of an agent `up` watches counts
+//! only when `up` saw its own event delivered, so one seen without the
+//! event stream (none could be opened, or the one there was ended) does
+//! not; an exit 0 of an entry left out of `up <names>`, from an earlier
+//! run, counts when its record shows it was the agent's own and no stop was
+//! asked of it, and that holds across a daemon restart. Every command and
 //! endpoint belongs to the fixture; no installed daemon, provider account or
 //! user config is used.
 #![cfg(unix)]
@@ -21,6 +24,9 @@ use serde_json::{Value, json};
 struct RunningDaemon {
     child: Child,
     socket: PathBuf,
+    /// Already shut down and waited for, so dropping it sends nothing to
+    /// the socket — which a daemon started after it may now serve.
+    stopped: bool,
 }
 
 impl RunningDaemon {
@@ -54,6 +60,7 @@ impl RunningDaemon {
         let mut running = Self {
             child,
             socket: socket.to_path_buf(),
+            stopped: false,
         };
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -70,10 +77,13 @@ impl RunningDaemon {
     }
 }
 
-impl Drop for RunningDaemon {
-    fn drop(&mut self) {
-        // Whoever serves the socket now — this child, or the successor a
-        // reload handed it to — is told to shut down, and is waited for.
+impl RunningDaemon {
+    /// Whoever serves the socket now — this child, or the successor a
+    /// reload handed it to — is told to shut down, and is waited for.
+    fn shut_down(&mut self) {
+        if std::mem::replace(&mut self.stopped, true) {
+            return;
+        }
         let _ = rpc(&self.socket, json!({"op":"shutdown"}));
         let deadline = Instant::now() + Duration::from_secs(10);
         while (self.child.try_wait().ok().flatten().is_none()
@@ -84,6 +94,12 @@ impl Drop for RunningDaemon {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+impl Drop for RunningDaemon {
+    fn drop(&mut self) {
+        self.shut_down();
     }
 }
 
@@ -132,6 +148,13 @@ impl Fixture {
             work,
             _tmp: tmp,
         }
+    }
+
+    /// Shut the daemon down and start another on the same home: what it
+    /// knows from then on is what the store kept.
+    fn restart_daemon(&mut self) {
+        self.daemon.shut_down();
+        self.daemon = RunningDaemon::start(&self.home, &self.socket, &[]);
     }
 
     /// `agentdocker up` against this daemon, with nothing inherited from
@@ -391,12 +414,18 @@ after = "serve exits 0"
     assert!(!fixture.work.join("report-ran").exists());
 }
 
-/// What `up` prints for an entry whose dependency ended before it ran.
-const BEFORE_THIS_RUN: &str = "ended before this run; its exit cannot be shown to be its own";
+/// Wait until a file the fixture's commands touch exists.
+fn wait_file(fixture: &Fixture, name: &str) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !fixture.work.join(name).exists() {
+        assert!(Instant::now() < deadline, "{name} never appeared");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
 
 #[test]
 fn a_dependency_stopped_before_this_run_does_not_let_what_waits_start() {
-    let fixture = Fixture::new(
+    let mut fixture = Fixture::new(
         r#"
 [agents.serve]
 command = ["sh", "-c", "trap 'exit 0' TERM; touch serving; while :; do sleep 0.05; done"]
@@ -408,25 +437,36 @@ after = "serve exits 0"
     );
     let (ok, stderr) = up_only(&fixture, &["serve"]);
     assert!(ok, "{stderr}");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !fixture.work.join("serving").exists() {
-        assert!(Instant::now() < deadline, "serve never started");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_file(&fixture, "serving");
     let stopped = rpc(
         &fixture.socket,
         json!({"op":"stop","agent":"serve","force":false}),
     )
     .unwrap();
     assert_eq!(stopped["type"], "agent", "{stopped}");
-    // It traps the stop and exits 0, so its record reads like success.
+    // It traps the stop and exits 0, so its status alone reads like
+    // success; its record says the stop was asked.
     wait_status(&fixture, "serve", json!({"state":"exited","code":0}));
+    assert_eq!(fixture.record("serve").unwrap()["stop_requested"], true);
 
+    let refused = format!("{:<24} not started: serve was stopped", "report");
     let (ok, stderr) = up_only(&fixture, &["report"]);
     assert!(!ok, "{stderr}");
     assert_eq!(
         said(&stderr, "report", "not started:"),
-        Some(format!("{:<24} not started: serve {BEFORE_THIS_RUN}", "report").as_str()),
+        Some(refused.as_str()),
+        "{stderr}"
+    );
+    assert!(fixture.record("report").is_none(), "report was started");
+
+    // The next daemon reads the same from the store.
+    fixture.restart_daemon();
+    assert_eq!(fixture.record("serve").unwrap()["stop_requested"], true);
+    let (ok, stderr) = up_only(&fixture, &["report"]);
+    assert!(!ok, "{stderr}");
+    assert_eq!(
+        said(&stderr, "report", "not started:"),
+        Some(refused.as_str()),
         "{stderr}"
     );
     assert!(fixture.record("report").is_none(), "report was started");
@@ -434,11 +474,58 @@ after = "serve exits 0"
 }
 
 #[test]
-fn an_earlier_exit_0_on_record_cannot_be_told_from_a_stop_so_it_fails_closed() {
-    let fixture = Fixture::new(
+fn an_earlier_exit_0_of_its_own_meets_after_in_a_later_up_and_after_a_daemon_restart() {
+    let mut fixture = Fixture::new(
         r#"
 [agents.build]
 command = ["true"]
+
+[agents.test]
+command = ["sh", "-c", "echo x >> test-ran"]
+after = "build exits 0"
+"#,
+    );
+    let (ok, stderr) = up_only(&fixture, &["build"]);
+    assert!(ok, "{stderr}");
+    wait_status(&fixture, "build", json!({"state":"exited","code":0}));
+    assert_eq!(fixture.record("build").unwrap()["stop_requested"], false);
+
+    // `build` exited 0 by itself in an earlier `up`, and its record says
+    // no stop was asked of that run: `up test` takes it as success.
+    let (ok, stderr) = up_only(&fixture, &["test"]);
+    assert!(ok, "{stderr}");
+    assert!(said(&stderr, "build", "exited 0").is_some(), "{stderr}");
+    assert!(said(&stderr, "test", "started").is_some(), "{stderr}");
+    wait_status(&fixture, "test", json!({"state":"exited","code":0}));
+
+    // And so does the next daemon, from what the store kept.
+    fixture.restart_daemon();
+    let (ok, stderr) = up_only(&fixture, &["test"]);
+    assert!(ok, "{stderr}");
+    assert!(said(&stderr, "test", "started").is_some(), "{stderr}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while std::fs::read_to_string(fixture.work.join("test-ran"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+        < 2
+    {
+        assert!(
+            Instant::now() < deadline,
+            "test did not run twice: {stderr}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_later_run_of_the_entry_carries_no_stop_from_the_one_before() {
+    // The first run waits to be stopped, traps it and exits 0; any later
+    // run finishes by itself.
+    let fixture = Fixture::new(
+        r#"
+[agents.build]
+command = ["sh", "-c", "[ -e built-once ] && exit 0; touch built-once; trap 'exit 0' TERM; while :; do sleep 0.05; done"]
 
 [agents.test]
 command = ["sh", "-c", "touch test-ran"]
@@ -447,28 +534,46 @@ after = "build exits 0"
     );
     let (ok, stderr) = up_only(&fixture, &["build"]);
     assert!(ok, "{stderr}");
+    wait_file(&fixture, "built-once");
+    let stopped = rpc(
+        &fixture.socket,
+        json!({"op":"stop","agent":"build","force":false}),
+    )
+    .unwrap();
+    assert_eq!(stopped["type"], "agent", "{stopped}");
     wait_status(&fixture, "build", json!({"state":"exited","code":0}));
-
-    // `build` exited 0 by itself, but its record would read the same had
-    // it been stopped and exited 0, so `up test` cannot take it as success.
     let (ok, stderr) = up_only(&fixture, &["test"]);
     assert!(!ok, "{stderr}");
     assert_eq!(
         said(&stderr, "test", "not started:"),
-        Some(format!("{:<24} not started: build {BEFORE_THIS_RUN}", "test").as_str()),
+        Some(format!("{:<24} not started: build was stopped", "test").as_str()),
         "{stderr}"
     );
-    assert!(fixture.record("test").is_none(), "test was started");
 
-    // Brought up together, the exit is watched, and `test` runs.
-    let (ok, stderr) = up_only(&fixture, &[]);
+    // Brought up again, `build` runs anew and finishes by itself; its
+    // latest record decides, and the stop of the run before is not on it.
+    let first = fixture.record("build").unwrap()["id"].clone();
+    let (ok, stderr) = up_only(&fixture, &["build"]);
+    assert!(ok, "{stderr}");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let latest = loop {
+        let again = fixture
+            .records()
+            .into_iter()
+            .find(|agent| agent["spec"]["name"] == "build" && agent["id"] != first);
+        if let Some(again) = again
+            && again["status"] == json!({"state":"exited","code":0})
+        {
+            break again;
+        }
+        assert!(Instant::now() < deadline, "build did not run again");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(latest["stop_requested"], false);
+    let (ok, stderr) = up_only(&fixture, &["test"]);
     assert!(ok, "{stderr}");
     assert!(said(&stderr, "test", "started").is_some(), "{stderr}");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !fixture.work.join("test-ran").exists() {
-        assert!(Instant::now() < deadline, "test never ran: {stderr}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_file(&fixture, "test-ran");
 }
 
 #[test]
@@ -564,7 +669,8 @@ const WITHOUT_EVENTS: &str =
 fn an_exit_0_after_the_event_stream_ended_does_not_let_what_waits_start() {
     // A reload hands the daemon to a successor, which ends every event
     // stream without a word: `up` is left looking at records, where a stop
-    // that a trapping agent turns into exit 0 is invisible.
+    // that a trapping agent turns into exit 0 shows only as the stop
+    // marked on its record.
     let fixture = Fixture::with_daemon_env(
         r#"
 [agents.serve]
@@ -605,13 +711,13 @@ after = "serve exits 0"
     drop(child);
     let stderr = followed.finish();
     assert!(!status.success(), "{stderr}");
-    // Its record read exited 0. A once-a-second look that happens to land
-    // in the moment it was `stopping` sees the stop instead; either way
-    // the exit 0 does not count.
-    let report = said(&stderr, "report", "not started:").unwrap_or_default();
-    assert!(
-        report.ends_with(&format!("not started: serve {WITHOUT_EVENTS}"))
-            || report.ends_with("not started: serve was stopped"),
+    // Its record read exited 0, and says the stop was asked of that run
+    // (the successor marked it): whether a look landed while it was
+    // `stopping` or after it had exited, the stop is seen.
+    assert_eq!(fixture.record("serve").unwrap()["stop_requested"], true);
+    assert_eq!(
+        said(&stderr, "report", "not started:"),
+        Some(format!("{:<24} not started: serve was stopped", "report").as_str()),
         "{stderr}"
     );
     assert!(fixture.record("report").is_none(), "report was started");

@@ -13,8 +13,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
+use crate::agent::NAME_LABEL;
 use crate::event::EventKind;
-use crate::{AgentId, AgentRecord, AgentStatus, RestartPolicy};
+use crate::{AgentId, AgentRecord, AgentSpec, AgentStatus, RestartPolicy};
 
 /// How a condition is written, for the sentences that say one is not.
 pub const AFTER_FORM: &str = "write it as \"<name> exits 0\"";
@@ -326,9 +327,9 @@ pub enum Ending {
     /// Left out of this run and not on record as ever having run.
     NeverRan,
     /// It exited 0, but not in a way that shows the exit was its own
-    /// rather than the end of a stop: once a stopped agent has exited, its
-    /// record no longer says it was stopped, so only the daemon's events,
-    /// delivered in order, can. Not success — an `after` fails closed on it.
+    /// rather than the end of a stop: its events were not seen, and its
+    /// record cannot vouch for it (see [`own_run`]). Not success — an
+    /// `after` fails closed on it.
     Unproven(Unseen),
 }
 
@@ -336,7 +337,8 @@ pub enum Ending {
 /// was the agent's own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unseen {
-    /// It had ended before this run watched it: found on record only.
+    /// It had ended before this run watched it, and its record does not
+    /// show the run that ended was the entry's own (see [`own_run`]).
     BeforeThisRun,
     /// It ended while there was no event stream (none could be opened, or
     /// the one there was ended), and a look at the record found it.
@@ -347,19 +349,20 @@ pub enum Unseen {
 /// order they were published: a stop is published before the exit it ends
 /// in, and a restart before anything of the run it starts.
 ///
-/// Success is the one thing only an event can show. A record read later
-/// may already be a newer run than the last event taken (restarted,
-/// stopped and exited 0 while those events are still on their way), and
-/// once a stopped agent has exited the record no longer says it was
-/// stopped. So an exit 0 counts only as an `agent_exited` with status 0,
-/// in stream order, with no stop seen before it and no restart to follow
-/// it; a record read is left to say only that an agent is still live or
-/// has failed.
+/// Success, for an agent being watched, is the one thing only an event can
+/// show. A record read later may already be a newer run than the last
+/// event taken (restarted, stopped and exited 0 while those events are
+/// still on their way). So an exit 0 counts only as an `agent_exited` with
+/// status 0, in stream order, with no stop seen before it and no restart
+/// to follow it; a record read is left to say only that an agent is still
+/// live, was stopped (`stopping`, or a stop marked on its run) or has
+/// failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Seen {
-    /// A stop: an `agent_stopping` taken, or `stopping` on a record read.
-    /// Kept: a stopped agent's restart policy is cleared, so nothing of
-    /// it that follows is a run of its own.
+    /// A stop: an `agent_stopping` taken, or a record read that is
+    /// `stopping` or says a stop was asked of its run. Kept: a stopped
+    /// agent's restart policy is cleared, so nothing of it that follows is
+    /// a run of its own.
     stopped: bool,
     /// Its restart policy as the events leave it; only a managed agent is
     /// restarted.
@@ -373,7 +376,7 @@ impl Seen {
     /// Watching starts from the first record read of the agent.
     pub fn new(record: &AgentRecord) -> Self {
         Self {
-            stopped: record.status == AgentStatus::Stopping,
+            stopped: record.status == AgentStatus::Stopping || record.stopped_on_request(),
             policy: if record.managed {
                 record.spec.restart
             } else {
@@ -400,9 +403,10 @@ impl Seen {
         }
     }
 
-    /// A record read of it: one under way to stopping is a stop.
+    /// A record read of it: one under way to stopping, or one whose run
+    /// ended after a stop was asked of it, is a stop.
     pub fn record(&mut self, record: &AgentRecord) {
-        if record.status == AgentStatus::Stopping {
+        if record.status == AgentStatus::Stopping || record.stopped_on_request() {
             self.stopped = true;
         }
     }
@@ -448,14 +452,18 @@ impl Ending {
     }
 
     /// The ending of an agent that had already ended before anything here
-    /// watched it, from its record alone: what [`Ending::of`] says, except
-    /// that an exit 0 is [`Ending::Unproven`]. No stop was seen, and the
-    /// record cannot say there was none, so a success cannot be shown;
-    /// any other ending is a failure whatever caused it. `None` while the
-    /// agent may still run, as for [`Ending::of`].
-    pub fn before(record: &AgentRecord) -> Option<Self> {
-        match Self::of(record, false)? {
-            ending if ending.succeeded() => Some(Self::Unproven(Unseen::BeforeThisRun)),
+    /// watched it, from its record alone, for the entry `up` would launch
+    /// as `launched`. A stop marked on its run makes it
+    /// [`Ending::Stopped`], whatever it exited with. An exit 0 is success
+    /// only when the record shows the run that ended was the entry's own
+    /// ([`own_run`]), and [`Ending::Unproven`] otherwise; any other ending
+    /// is a failure whatever caused it. `None` while the agent may still
+    /// run, as for [`Ending::of`].
+    pub fn before(record: &AgentRecord, launched: &AgentSpec) -> Option<Self> {
+        match Self::of(record, record.stopped_on_request())? {
+            ending if ending.succeeded() && !own_run(record, launched) => {
+                Some(Self::Unproven(Unseen::BeforeThisRun))
+            }
             ending => Some(ending),
         }
     }
@@ -515,6 +523,38 @@ impl fmt::Display for Ending {
             ),
         }
     }
+}
+
+/// Whether the run an ended agent's record shows is the entry's own, for
+/// the entry `up` would launch as `launched` — so that an exit 0 on record
+/// is the entry finishing by itself, not the end of a stop, another
+/// launch's run or another agent's. All of these, or it is not:
+///
+/// - **Same agent, same run.** A daemon that keeps the mark wrote it when
+///   this run began and no stop has turned it since:
+///   [`AgentRecord::stop_requested`] is `Some(false)`. The mark is on this
+///   record's id and is reset whenever a run begins under it, so it
+///   describes the run whose status the record shows; `None` (a record no
+///   such daemon has written since) is unknown and does not count.
+/// - **Supervised.** It is managed: the daemon started the process and
+///   read its exit status itself. A record that registered itself, was
+///   adopted or is kept by contact ends with whatever it or a liveness
+///   check said.
+/// - **The same launch.** Its runtime and command are the ones the file
+///   gives the entry now: a session relaunched under the record runs
+///   another command, and an entry edited since is not the one that ran.
+/// - **Not a reused name.** It still has the name the launch gave it: the
+///   same name, and the same `name` label as the launch, which a rename
+///   (`chosen`) or the daemon giving the name up (`generated`) changes.
+///   The caller has already taken it from this file's records (its
+///   `agentfile` label) by that name.
+pub fn own_run(record: &AgentRecord, launched: &AgentSpec) -> bool {
+    record.stop_requested == Some(false)
+        && record.managed
+        && record.spec.runtime == launched.runtime
+        && record.spec.command == launched.command
+        && record.spec.name == launched.name
+        && record.spec.labels.get(NAME_LABEL) == launched.labels.get(NAME_LABEL)
 }
 
 /// What is known of an entry while a file is being brought up.
@@ -1034,29 +1074,103 @@ mod tests {
         );
     }
 
+    /// `before` for a record, judged against the launch it was made from.
+    fn before(record: &AgentRecord) -> Option<Ending> {
+        Ending::before(record, &record.spec.clone())
+    }
+
+    /// The same record, ended after a stop was asked of its run.
+    fn after_a_stop(mut record: AgentRecord) -> AgentRecord {
+        let status = record.status.clone();
+        record.mark_stopping();
+        record.status = status;
+        record
+    }
+
     #[test]
-    fn an_earlier_exit_0_is_not_taken_as_success_but_an_earlier_failure_is_a_failure() {
+    fn an_earlier_exit_0_of_its_own_run_is_success_and_one_after_a_stop_is_not() {
         let no = RestartPolicy::No;
-        // A stop leaves no mark on the record once the agent has exited,
-        // so an exit 0 found on record may be the end of one.
-        let earlier = Ending::before(&record(AgentStatus::Exited { code: Some(0) }, no, 0));
-        assert_eq!(earlier, Some(Ending::Unproven(Unseen::BeforeThisRun)));
-        assert!(!Ending::Unproven(Unseen::BeforeThisRun).succeeded());
+        let done = record(AgentStatus::Exited { code: Some(0) }, no, 0);
+        assert_eq!(before(&done), Some(Ending::Exited { code: Some(0) }));
+        // An `on-failure` agent that failed, was restarted and then
+        // finished by itself has finished.
+        let retried = record(
+            AgentStatus::Exited { code: Some(0) },
+            RestartPolicy::OnFailure { max: 3 },
+            2,
+        );
+        assert_eq!(before(&retried), Some(Ending::Exited { code: Some(0) }));
+
+        // A stop marked on the run is a stop, whatever it exited with.
+        for status in [
+            AgentStatus::Exited { code: Some(0) },
+            AgentStatus::Exited { code: Some(1) },
+            AgentStatus::Exited { code: None },
+        ] {
+            assert_eq!(
+                before(&after_a_stop(record(status, no, 0))),
+                Some(Ending::Stopped)
+            );
+        }
+        // Any other ending is a failure.
         assert_eq!(
-            Ending::before(&record(AgentStatus::Exited { code: Some(1) }, no, 0)),
+            before(&record(AgentStatus::Exited { code: Some(1) }, no, 0)),
             Some(Ending::Exited { code: Some(1) })
         );
         assert_eq!(
-            Ending::before(&record(AgentStatus::Exited { code: None }, no, 0)),
+            before(&record(AgentStatus::Exited { code: None }, no, 0)),
             Some(Ending::Exited { code: None })
         );
         // Still running, or about to be restarted: nothing to judge yet.
-        assert_eq!(Ending::before(&record(AgentStatus::Running, no, 0)), None);
+        assert_eq!(before(&record(AgentStatus::Running, no, 0)), None);
         let retry = RestartPolicy::OnFailure { max: 2 };
         assert_eq!(
-            Ending::before(&record(AgentStatus::Exited { code: Some(1) }, retry, 0)),
+            before(&record(AgentStatus::Exited { code: Some(1) }, retry, 0)),
             None
         );
+    }
+
+    #[test]
+    fn an_earlier_exit_0_the_record_cannot_vouch_for_fails_closed() {
+        let done = record(AgentStatus::Exited { code: Some(0) }, RestartPolicy::No, 0);
+        let launched = done.spec.clone();
+        assert!(own_run(&done, &launched));
+        let unproven = Some(Ending::Unproven(Unseen::BeforeThisRun));
+        type Change = fn(&mut AgentRecord);
+        let cases: [(&str, Change); 7] = [
+            ("written without the mark", |r| r.stop_requested = None),
+            ("not supervised", |r| r.managed = false),
+            ("another command (a relaunch, an edit)", |r| {
+                r.spec.command = vec!["claude".into(), "--resume".into(), "s1".into()];
+            }),
+            ("another runtime", |r| r.spec.runtime = "claude-code".into()),
+            ("renamed to this name", |r| {
+                r.spec.labels.insert(NAME_LABEL.into(), "chosen".into());
+            }),
+            ("given up its name", |r| {
+                r.spec.labels.insert(NAME_LABEL.into(), "generated".into());
+            }),
+            ("another name", |r| r.spec.name = "lint".into()),
+        ];
+        for (why, change) in cases {
+            let mut other = done.clone();
+            change(&mut other);
+            assert!(!own_run(&other, &launched), "{why}");
+            assert_eq!(Ending::before(&other, &launched), unproven, "{why}");
+        }
+        assert!(!Ending::Unproven(Unseen::BeforeThisRun).succeeded());
+        // A failure is a failure whoever's run it was.
+        let mut failed = done.clone();
+        failed.status = AgentStatus::Exited { code: Some(3) };
+        failed.stop_requested = None;
+        assert_eq!(
+            Ending::before(&failed, &launched),
+            Some(Ending::Exited { code: Some(3) })
+        );
+        // A `name` label the launch itself carried is the launch's.
+        let mut labelled = done.clone();
+        labelled.spec.labels.insert(NAME_LABEL.into(), "x".into());
+        assert!(own_run(&labelled, &labelled.spec));
         // What waits on it is not started, and says why.
         let report = entry("report", &[], &["serve"]);
         assert_eq!(
@@ -1208,6 +1322,32 @@ mod tests {
         .unwrap();
         assert_eq!(ending, Ending::Stopped);
         assert!(!ending.succeeded());
+    }
+
+    #[test]
+    fn a_stop_marked_on_a_record_read_is_a_stop_while_watching_too() {
+        let no = RestartPolicy::No;
+        let running = record(AgentStatus::Running, no, 0);
+        let stopped = after_a_stop(record(AgentStatus::Exited { code: Some(0) }, no, 0));
+        // Watching began after it had been stopped and had exited.
+        for streaming in [true, false] {
+            assert_eq!(
+                Ending::judged(&stopped, Seen::new(&stopped), streaming),
+                Some(Ending::Stopped)
+            );
+        }
+        // A look finds the stop on its record ahead of its events.
+        let mut seen = Seen::new(&running);
+        seen.record(&stopped);
+        assert!(seen.stopped());
+        assert_eq!(Ending::judged(&stopped, seen, true), Some(Ending::Stopped));
+        // While it is watched, an exit 0 with no stop on record still
+        // waits for its event: the record may be a newer run.
+        let done = record(AgentStatus::Exited { code: Some(0) }, no, 0);
+        let mut own = Seen::new(&running);
+        own.record(&done);
+        assert!(!own.stopped());
+        assert_eq!(Ending::judged(&done, own, true), None);
     }
 
     #[test]
