@@ -182,7 +182,8 @@ pub fn current(memories: &[Memory], now: DateTime<Utc>) -> Vec<&Memory> {
 }
 
 /// The words of a text as search reads them: lower case, split at
-/// anything but a letter, a digit or `_`.
+/// anything but a letter, a digit or `_`, so an identifier such as
+/// `task_id` is one word, and `latest` holds no `test`.
 fn words(text: &str) -> std::collections::HashSet<String> {
     text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
         .filter(|w| !w.is_empty())
@@ -193,7 +194,9 @@ fn words(text: &str) -> std::collections::HashSet<String> {
 /// The current memories that answer `query`, the best first. A memory
 /// answers a word it holds whole (`test` is not in `latest`), and a word
 /// few memories hold counts for more than one most of them hold; a newer
-/// memory wins a tie. An empty query answers the newest.
+/// memory wins a tie, and between two kept at the same moment the lower
+/// id comes first, so equal evidence always comes back in one order. An
+/// empty query answers the newest.
 pub fn search<'a>(
     memories: &'a [Memory],
     query: &str,
@@ -228,8 +231,11 @@ pub fn search<'a>(
         })
         .filter(|(score, _)| asked.is_empty() || *score > 0.0)
         .collect();
-    // `current` is newest first and the sort is stable: ties stay newest first.
-    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    scored.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then(b.1.created_at.cmp(&a.1.created_at))
+            .then(a.1.id.cmp(&b.1.id))
+    });
     scored.into_iter().take(limit).map(|(_, m)| m).collect()
 }
 
@@ -240,7 +246,8 @@ pub fn profile(memories: &[Memory], max_chars: usize, now: DateTime<Utc>) -> Vec
     let said = current(memories, now);
     let (mut standing, recent): (Vec<&Memory>, Vec<&Memory>) =
         said.into_iter().partition(|m| m.standing);
-    standing.reverse();
+    // Oldest first; two kept at the same moment by id, as everywhere else.
+    standing.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
     let mut used = 0;
     standing
         .into_iter()
@@ -517,6 +524,80 @@ mod tests {
             .map(|m| m.id.as_str())
             .collect();
         assert_eq!(ids, ["rule"], "the standing ones claim the room first");
+    }
+
+    #[test]
+    fn a_word_is_cut_at_marks_but_an_identifier_stays_whole() {
+        let all = vec![
+            memory("field", "the task_id field names the card", 0, None),
+            memory("cargo", "hold task:local-cargo-campaign first", 1, None),
+            memory("tests", "testing happens in CI", 2, None),
+            memory("accent", "L'ÉTÉ est long", 3, None),
+        ];
+        let ids = |q: &str| -> Vec<String> {
+            search(&all, q, 10, now())
+                .iter()
+                .map(|m| m.id.clone())
+                .collect()
+        };
+        assert_eq!(ids("task"), ["cargo"], "`:` and `-` cut, `_` does not");
+        assert_eq!(ids("id"), Vec::<String>::new(), "not inside `task_id`");
+        assert_eq!(ids("task_id"), ["field"], "an identifier is one word");
+        assert_eq!(ids("TASK_ID"), ["field"]);
+        assert_eq!(ids("campaign"), ["cargo"]);
+        assert_eq!(ids("test"), Vec::<String>::new(), "not inside `testing`");
+        assert_eq!(ids("ask"), Vec::<String>::new(), "not inside `task`");
+        assert_eq!(ids("été"), ["accent"], "case folds beyond ASCII");
+    }
+
+    #[test]
+    fn equal_scores_kept_at_the_same_moment_go_by_id() {
+        let same = |id: &str, text: &str| memory(id, text, 7, None);
+        let forward = vec![
+            same("b2", "deploy on monday"),
+            same("a1", "deploy on monday"),
+            same("c3", "deploy on monday"),
+            memory("newer", "deploy on friday", 8, None),
+            memory("other", "unrelated", 0, None),
+        ];
+        let mut backward = forward.clone();
+        backward.reverse();
+        for all in [&forward, &backward] {
+            let ids: Vec<&str> = search(all, "deploy", 10, now())
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect();
+            assert_eq!(ids, ["newer", "a1", "b2", "c3"], "newer, then by id");
+            let ids: Vec<&str> = search(all, "monday deploy", 10, now())
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect();
+            assert_eq!(ids, ["a1", "b2", "c3", "newer"], "score, then by id");
+        }
+    }
+
+    #[test]
+    fn a_profile_says_standing_then_recent_in_one_order_whatever_was_stored() {
+        let mut all = vec![
+            memory("s-b", "standing kept with another", 2, None),
+            memory("r-old", "older news", 1, None),
+            memory("s-a", "standing kept with another", 2, None),
+            memory("s-first", "the first convention", 0, None),
+            memory("r-b", "news at one moment", 5, None),
+            memory("r-a", "news at one moment", 5, None),
+        ];
+        for m in all.iter_mut().filter(|m| m.id.starts_with("s-")) {
+            m.standing = true;
+        }
+        let mut backward = all.clone();
+        backward.reverse();
+        for stored in [&all, &backward] {
+            let ids: Vec<&str> = profile(stored, 4000, now())
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect();
+            assert_eq!(ids, ["s-first", "s-a", "s-b", "r-a", "r-b", "r-old"]);
+        }
     }
 
     #[test]
