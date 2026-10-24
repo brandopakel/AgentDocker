@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
-use agentdocker_core::agentfile::{self, Ending, Entry, Progress, Readiness};
-use agentdocker_core::{AgentId, AgentRecord, AgentSpec, AgentStatus, ErrorCode, EventKind};
+use agentdocker_core::agentfile::{self, Ending, Entry, Progress, Readiness, Seen};
+use agentdocker_core::{AgentId, AgentRecord, AgentSpec, ErrorCode, EventKind};
 use agentdocker_core::{Request, Response};
 use anyhow::{Context, Result, bail};
 use tokio::sync::mpsc;
@@ -47,7 +47,7 @@ pub async fn up(client: &Client, file: Option<&Path>, only: &[String]) -> Result
         specs,
         progress: BTreeMap::new(),
         watching: HashMap::new(),
-        stopped: HashSet::new(),
+        seen: HashMap::new(),
         shown: HashMap::new(),
         not_started: 0,
         endings,
@@ -72,9 +72,9 @@ struct Bringup<'a> {
     progress: BTreeMap<String, Progress>,
     /// The agent behind each started entry, until it has ended for good.
     watching: HashMap<AgentId, String>,
-    /// Agents a stop was seen for: what they exit with afterwards is not
-    /// success.
-    stopped: HashSet<AgentId>,
+    /// What the events (and looks at the records) have shown of each
+    /// watched agent's run: a stop, an exit 0 delivered.
+    seen: HashMap<AgentId, Seen>,
     /// Entries something waits for with `after`, whose endings are said.
     waited: HashSet<String>,
     /// What each waiting entry was last said to wait on.
@@ -230,13 +230,17 @@ impl Bringup<'_> {
         self.not_started += 1;
     }
 
-    /// Watch an entry's agent from its record, or record how it ended
-    /// when the record already shows that.
+    /// Watch an entry's agent from a record read of it, or record how it
+    /// ended. The read says only that it is live or how it failed; success
+    /// is an exit 0 taken from its own event, and with no stream to bring
+    /// that event, an exit 0 does not count.
     fn track(&mut self, name: &str, agent: &AgentRecord) {
-        if agent.status == AgentStatus::Stopping {
-            self.stopped.insert(agent.id.clone());
-        }
-        match Ending::of(agent, self.stopped.contains(&agent.id)) {
+        let seen = self
+            .seen
+            .entry(agent.id.clone())
+            .or_insert_with(|| Seen::new(agent));
+        seen.record(agent);
+        match Ending::judged(agent, *seen, self.endings.is_some()) {
             Some(ending) => {
                 self.watching.remove(&agent.id);
                 self.end(name, ending);
@@ -265,7 +269,8 @@ impl Bringup<'_> {
         };
         let Some(first) = endings.rx.recv().await else {
             eprintln!(
-                "agentdocker: the daemon's event stream ended; looking at what is waited on every second"
+                "agentdocker: the daemon's event stream ended; looking at what is waited on every second, \
+                 where an exit 0 cannot be shown to be its own and does not count"
             );
             self.endings = None;
             return self.watching.keys().cloned().collect();
@@ -284,8 +289,8 @@ impl Bringup<'_> {
             if !self.watching.contains_key(agent) {
                 continue;
             }
-            if matches!(kind, EventKind::AgentStopping { .. }) {
-                self.stopped.insert(agent.clone());
+            if let Some(seen) = self.seen.get_mut(agent) {
+                seen.event(&kind);
             }
             if !look.contains(agent) {
                 look.push(agent.clone());
@@ -387,7 +392,8 @@ impl Endings {
             _ => {
                 task.abort();
                 eprintln!(
-                    "agentdocker: no event stream from the daemon; looking at what is waited on every second"
+                    "agentdocker: no event stream from the daemon; looking at what is waited on every second, \
+                     where an exit 0 cannot be shown to be its own and does not count"
                 );
                 None
             }

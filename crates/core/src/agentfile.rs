@@ -325,11 +325,92 @@ pub enum Ending {
     NotStarted { cause: String },
     /// Left out of this run and not on record as ever having run.
     NeverRan,
-    /// It had exited 0 before anything here watched it, and the record
-    /// cannot show that the exit was its own rather than the end of a stop:
-    /// once a stopped agent has exited, its record no longer says it was
-    /// stopped. Not success — an `after` fails closed on it.
-    Unproven,
+    /// It exited 0, but not in a way that shows the exit was its own
+    /// rather than the end of a stop: once a stopped agent has exited, its
+    /// record no longer says it was stopped, so only the daemon's events,
+    /// delivered in order, can. Not success — an `after` fails closed on it.
+    Unproven(Unseen),
+}
+
+/// How an exit 0 came to be seen without the events that would show it
+/// was the agent's own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unseen {
+    /// It had ended before this run watched it: found on record only.
+    BeforeThisRun,
+    /// It ended while there was no event stream (none could be opened, or
+    /// the one there was ended), and a look at the record found it.
+    WithoutEvents,
+}
+
+/// What the daemon's events have shown of one watched agent, taken in the
+/// order they were published: a stop is published before the exit it ends
+/// in, and a restart before anything of the run it starts.
+///
+/// Success is the one thing only an event can show. A record read later
+/// may already be a newer run than the last event taken (restarted,
+/// stopped and exited 0 while those events are still on their way), and
+/// once a stopped agent has exited the record no longer says it was
+/// stopped. So an exit 0 counts only as an `agent_exited` with status 0,
+/// in stream order, with no stop seen before it and no restart to follow
+/// it; a record read is left to say only that an agent is still live or
+/// has failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Seen {
+    /// A stop: an `agent_stopping` taken, or `stopping` on a record read.
+    /// Kept: a stopped agent's restart policy is cleared, so nothing of
+    /// it that follows is a run of its own.
+    stopped: bool,
+    /// Its restart policy as the events leave it; only a managed agent is
+    /// restarted.
+    policy: RestartPolicy,
+    /// An exit 0 taken from its event, with no stop before it and no
+    /// restart to follow: success, shown.
+    exit_zero: bool,
+}
+
+impl Seen {
+    /// Watching starts from the first record read of the agent.
+    pub fn new(record: &AgentRecord) -> Self {
+        Self {
+            stopped: record.status == AgentStatus::Stopping,
+            policy: if record.managed {
+                record.spec.restart
+            } else {
+                RestartPolicy::No
+            },
+            exit_zero: false,
+        }
+    }
+
+    /// An event about this agent, taken in the order it was published.
+    pub fn event(&mut self, kind: &EventKind) {
+        match kind {
+            EventKind::AgentStopping { .. } => self.stopped = true,
+            EventKind::AgentRestartCleared { .. } => self.policy = RestartPolicy::No,
+            EventKind::AgentRestarted { .. } => self.exit_zero = false,
+            EventKind::AgentExited { status, .. } => {
+                // Only `always` restarts after an exit 0, whatever the
+                // count, so the count does not matter here.
+                self.exit_zero = *status == AgentStatus::Exited { code: Some(0) }
+                    && !self.stopped
+                    && !self.policy.restarts(status, 0);
+            }
+            _ => {}
+        }
+    }
+
+    /// A record read of it: one under way to stopping is a stop.
+    pub fn record(&mut self, record: &AgentRecord) {
+        if record.status == AgentStatus::Stopping {
+            self.stopped = true;
+        }
+    }
+
+    /// Whether a stop has been seen.
+    pub fn stopped(&self) -> bool {
+        self.stopped
+    }
 }
 
 impl Ending {
@@ -374,8 +455,29 @@ impl Ending {
     /// agent may still run, as for [`Ending::of`].
     pub fn before(record: &AgentRecord) -> Option<Self> {
         match Self::of(record, false)? {
-            ending if ending.succeeded() => Some(Self::Unproven),
+            ending if ending.succeeded() => Some(Self::Unproven(Unseen::BeforeThisRun)),
             ending => Some(ending),
+        }
+    }
+
+    /// How a watched agent has ended, from what its events have shown and
+    /// a record read of it. Success comes from the events alone (see
+    /// [`Seen`]). The record says only whether it is still live (`None`)
+    /// or how it failed; an exit 0 on the record is not success. While the
+    /// stream is live (`streaming`) the event that would show it may still
+    /// come, so it is `None`, not yet decided; with no stream it never
+    /// will, so it is [`Ending::Unproven`].
+    pub fn judged(record: &AgentRecord, seen: Seen, streaming: bool) -> Option<Self> {
+        if seen.exit_zero && !seen.stopped {
+            return Some(Self::Exited { code: Some(0) });
+        }
+        let ending = Self::of(record, seen.stopped)?;
+        if !ending.succeeded() {
+            Some(ending)
+        } else if streaming {
+            None
+        } else {
+            Some(Self::Unproven(Unseen::WithoutEvents))
         }
     }
 
@@ -405,9 +507,12 @@ impl fmt::Display for Ending {
             Self::FailedToStart { reason } => write!(f, "failed to start: {reason}"),
             Self::NotStarted { cause } => write!(f, "was not started: {cause}"),
             Self::NeverRan => f.write_str("has not run"),
-            Self::Unproven => {
+            Self::Unproven(Unseen::BeforeThisRun) => {
                 f.write_str("ended before this run; its exit cannot be shown to be its own")
             }
+            Self::Unproven(Unseen::WithoutEvents) => f.write_str(
+                "exited 0 without its events being seen; the exit cannot be shown to be its own",
+            ),
         }
     }
 }
@@ -685,8 +790,12 @@ mod tests {
             ),
             (Ending::NeverRan, "build has not run"),
             (
-                Ending::Unproven,
+                Ending::Unproven(Unseen::BeforeThisRun),
                 "build ended before this run; its exit cannot be shown to be its own",
+            ),
+            (
+                Ending::Unproven(Unseen::WithoutEvents),
+                "build exited 0 without its events being seen; the exit cannot be shown to be its own",
             ),
         ] {
             assert_eq!(
@@ -931,8 +1040,8 @@ mod tests {
         // A stop leaves no mark on the record once the agent has exited,
         // so an exit 0 found on record may be the end of one.
         let earlier = Ending::before(&record(AgentStatus::Exited { code: Some(0) }, no, 0));
-        assert_eq!(earlier, Some(Ending::Unproven));
-        assert!(!Ending::Unproven.succeeded());
+        assert_eq!(earlier, Some(Ending::Unproven(Unseen::BeforeThisRun)));
+        assert!(!Ending::Unproven(Unseen::BeforeThisRun).succeeded());
         assert_eq!(
             Ending::before(&record(AgentStatus::Exited { code: Some(1) }, no, 0)),
             Some(Ending::Exited { code: Some(1) })
@@ -953,7 +1062,10 @@ mod tests {
         assert_eq!(
             readiness(
                 &report,
-                &progress(&[("serve", Progress::Ended(Ending::Unproven))])
+                &progress(&[(
+                    "serve",
+                    Progress::Ended(Ending::Unproven(Unseen::BeforeThisRun))
+                )])
             ),
             Readiness::Blocked {
                 reason: "serve ended before this run; its exit cannot be shown to be its own"
@@ -963,6 +1075,127 @@ mod tests {
                         .into()
                 },
             }
+        );
+    }
+
+    fn exit_event(id: &AgentId, code: Option<i32>) -> EventKind {
+        EventKind::AgentExited {
+            agent: id.clone(),
+            status: AgentStatus::Exited { code },
+        }
+    }
+
+    #[test]
+    fn an_exit_0_counts_only_from_its_own_event_with_no_stop_before_it() {
+        let no = RestartPolicy::No;
+        let running = record(AgentStatus::Running, no, 0);
+        let done = record(AgentStatus::Exited { code: Some(0) }, no, 0);
+        let id = done.id.clone();
+        let mut seen = Seen::new(&running);
+
+        // A record read says exited 0, but no event has: while the stream
+        // is live the event may still come, so nothing is decided; without
+        // one it never will.
+        assert_eq!(Ending::judged(&done, seen, true), None);
+        assert_eq!(
+            Ending::judged(&done, seen, false),
+            Some(Ending::Unproven(Unseen::WithoutEvents))
+        );
+
+        // Its exit 0, taken from the stream: success, whatever the record
+        // read says and whether or not the stream lasts.
+        seen.event(&exit_event(&id, Some(0)));
+        for (read, streaming) in [(&done, true), (&done, false), (&running, true)] {
+            assert_eq!(
+                Ending::judged(read, seen, streaming),
+                Some(Ending::Exited { code: Some(0) })
+            );
+        }
+
+        // A stop taken before its exit makes the same exit a stop.
+        let mut stopped = Seen::new(&running);
+        stopped.event(&EventKind::AgentStopping {
+            agent: id.clone(),
+            force: false,
+        });
+        stopped.event(&exit_event(&id, Some(0)));
+        assert!(stopped.stopped());
+        assert_eq!(Ending::judged(&done, stopped, true), Some(Ending::Stopped));
+        // So does a record read that found it stopping.
+        let mut looked = Seen::new(&running);
+        looked.record(&record(AgentStatus::Stopping, no, 0));
+        looked.event(&exit_event(&id, Some(0)));
+        assert_eq!(Ending::judged(&done, looked, false), Some(Ending::Stopped));
+        // And one that was stopping when watching began.
+        let first = Seen::new(&record(AgentStatus::Stopping, no, 0));
+        assert_eq!(Ending::judged(&done, first, true), Some(Ending::Stopped));
+
+        // `always` starts it again after an exit 0: not success, until a
+        // stop clears the policy — and then it was stopped.
+        let mut always = Seen::new(&record(AgentStatus::Running, RestartPolicy::Always, 0));
+        always.event(&exit_event(&id, Some(0)));
+        assert_eq!(Ending::judged(&done, always, true), None);
+
+        // A restart starts a new run: an exit 0 before it no longer counts.
+        let mut restarted = seen;
+        restarted.event(&EventKind::AgentRestarted {
+            agent: id.clone(),
+            pid: None,
+            attempt: 1,
+        });
+        assert_eq!(
+            Ending::judged(&done, restarted, false),
+            Some(Ending::Unproven(Unseen::WithoutEvents))
+        );
+
+        // A failure is a failure however it was seen.
+        let failed = record(AgentStatus::Exited { code: Some(2) }, no, 0);
+        for streaming in [true, false] {
+            assert_eq!(
+                Ending::judged(&failed, Seen::new(&running), streaming),
+                Some(Ending::Exited { code: Some(2) })
+            );
+        }
+        // Still running: nothing to judge.
+        assert_eq!(Ending::judged(&running, Seen::new(&running), false), None);
+    }
+
+    #[test]
+    fn a_record_read_ahead_of_unread_events_cannot_supply_success() {
+        // `on-failure` agent: its first exit 1 is taken from the stream.
+        // Before the record read answers, it is restarted, stopped, traps
+        // the stop and exits 0, and those events are still on their way.
+        let retry = RestartPolicy::OnFailure { max: 3 };
+        let running = record(AgentStatus::Running, retry, 0);
+        let id = running.id.clone();
+        let mut seen = Seen::new(&running);
+        seen.event(&exit_event(&id, Some(1)));
+        let mut ahead = record(AgentStatus::Exited { code: Some(0) }, RestartPolicy::No, 1);
+        ahead.id = id.clone();
+        assert_eq!(
+            Ending::judged(&ahead, seen, true),
+            None,
+            "the exit 0 read ahead is not success"
+        );
+        // The events then arrive, in order, and say what it was.
+        seen.event(&EventKind::AgentRestarted {
+            agent: id.clone(),
+            pid: None,
+            attempt: 1,
+        });
+        seen.event(&EventKind::AgentRestartCleared { agent: id.clone() });
+        seen.event(&EventKind::AgentStopping {
+            agent: id.clone(),
+            force: false,
+        });
+        seen.event(&exit_event(&id, Some(0)));
+        assert_eq!(Ending::judged(&ahead, seen, true), Some(Ending::Stopped));
+        // Had the stream ended first, the read-ahead exit 0 is unproven.
+        let mut lost = Seen::new(&running);
+        lost.event(&exit_event(&id, Some(1)));
+        assert_eq!(
+            Ending::judged(&ahead, lost, false),
+            Some(Ending::Unproven(Unseen::WithoutEvents))
         );
     }
 
