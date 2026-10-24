@@ -133,6 +133,20 @@ pub struct Cursor {
     /// offset. Persist this with the complete prefix so an unchanged retry
     /// cannot loop; only a larger bounded budget may retry this generation.
     quarantined_at_budget: Option<u64>,
+    /// Where the last complete record before `offset` starts, with the digest
+    /// chained before it. A session resuming exactly this generation rehashes
+    /// only that record instead of the whole prefix (`Session`). Absent in a
+    /// cursor written before it existed: such a cursor takes a whole proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_record: Option<Anchor>,
+}
+
+/// A record boundary within the accepted prefix and the chained digest of
+/// every record before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Anchor {
+    offset: u64,
+    prefix_digest: [u8; 32],
 }
 
 impl Cursor {
@@ -153,11 +167,13 @@ impl Cursor {
             prefix_digest: [0; 32],
             codex: Codex::default(),
             quarantined_at_budget: None,
+            last_record: None,
         })
     }
 
     /// This comparison only selects a candidate cursor. `scan` still verifies
-    /// its complete prefix; matching metadata never establishes coverage.
+    /// its complete prefix; matching metadata alone never establishes coverage
+    /// (an unchanged-generation `Session` still rehashes the last record).
     pub fn same_generation(&self, other: &Self) -> bool {
         self.runtime == other.runtime && self.generation == other.generation
     }
@@ -375,6 +391,7 @@ fn scan_checked(
             prefix_digest: [0; 32],
             codex: Codex::default(),
             quarantined_at_budget: None,
+            last_record: None,
         },
     };
     let started = Instant::now();
@@ -459,6 +476,10 @@ fn scan_checked(
                 cursor.codex = Codex::default();
             }
         }
+        cursor.last_record = Some(Anchor {
+            offset: cursor.offset,
+            prefix_digest: cursor.prefix_digest,
+        });
         cursor.prefix_digest = record_digest(cursor.prefix_digest, &line);
         cursor.offset += line.len() as u64;
         records += 1;

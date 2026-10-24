@@ -1,4 +1,4 @@
-use agentdocker_host::usage::reader::{Budget, Runtime, Session, Stop};
+use agentdocker_host::usage::reader::{Budget, Cursor, Runtime, Session, Stop};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use std::{hint::black_box, io::Write, time::Duration};
 
@@ -79,6 +79,27 @@ fn usage_prefix(c: &mut Criterion) {
                 }
                 record_progress(&mut stalled, progress.bytes_read != 0);
             }
+            black_box(session.offset())
+        })
+    });
+    group.finish();
+
+    // The same retained cursor when the file still reports the generation it
+    // was proven under: the proof rehashes only the last 64 KiB record. The
+    // capture is inside the loop, as the collector captures every pass.
+    let mut group = c.benchmark_group("usage_unchanged");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(3));
+    group.bench_function("prove_16_mib_prefix", |b| {
+        b.iter(|| {
+            let captured = Cursor::capture(&path, Runtime::Claude).unwrap();
+            let mut session = Session::at_unchanged_snapshot(captured, Some(&cursor)).unwrap();
+            assert!(!session.proves_whole_prefix());
+            let progress = session
+                .prepare_next(&path, 4 * 1024 * 1024, Duration::from_millis(100))
+                .unwrap();
+            assert!(progress.ready && progress.bytes_read == line.len() as u64);
             black_box(session.offset())
         })
     });

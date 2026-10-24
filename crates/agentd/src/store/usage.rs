@@ -37,6 +37,11 @@ struct Contribution {
 pub(crate) struct FileProgress {
     pub cursor: reader::Cursor,
     pub stop: reader::Stop,
+    /// When the collector last rehashed this cursor's whole accepted prefix.
+    /// Absent before the first such proof, and in progress written before
+    /// it was kept: either way the next pass schedules a whole proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<DateTime<Utc>>,
 }
 
 pub(crate) struct Ingest<'a> {
@@ -49,6 +54,11 @@ pub(crate) struct Ingest<'a> {
     pub now: DateTime<Utc>,
     pub event_seq: u64,
     pub finished_job: Option<usize>,
+}
+
+/// The `usage_files` key of one discovered source: its runtime and path.
+pub(crate) fn file_key(source: &agentdocker_host::usage::discovery::Source) -> String {
+    serde_json::to_string(&(source.runtime, &source.path)).expect("serializable source path")
 }
 
 fn fingerprint<T: Serialize>(value: &T) -> Result<String> {
@@ -654,6 +664,7 @@ mod tests {
         FileProgress {
             cursor: reader::Cursor::capture(&path, reader::Runtime::Codex).unwrap(),
             stop: reader::Stop::Complete,
+            verified_at: None,
         }
     }
 
