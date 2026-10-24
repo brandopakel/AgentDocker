@@ -2,7 +2,8 @@
 //! bridge's tests and the screen judge's: `pane.list` answers with the
 //! panes it is given, `events.subscribe` acknowledges and then pushes what
 //! the test sends, and `pane.read` answers with the screen it is given for
-//! a pane, in the shape a live herdr 0.9.3 answered, or as the test says.
+//! a pane, in the shape a live herdr 0.9.3 answered, or as the test says;
+//! what a test stages for the next read runs as that read arrives.
 //! It records every method it is asked, each subscription's request, each
 //! read's parameters, and each subscription the client closed.
 
@@ -32,12 +33,16 @@ pub(crate) enum Reads {
     AnswerThenMove(Value),
 }
 
+/// What a test does as the next `pane.read` arrives, before it is answered.
+type Hook = Box<dyn FnOnce() + Send>;
+
 pub(crate) struct Fake {
     panes: Arc<Mutex<Value>>,
     screens: Arc<Mutex<BTreeMap<String, String>>>,
     reads: Arc<Mutex<Reads>>,
     methods: Arc<Mutex<Vec<String>>>,
     read_params: Arc<Mutex<Vec<Value>>>,
+    on_read: Arc<Mutex<Option<Hook>>>,
     subscriptions: Arc<Mutex<Vec<Value>>>,
     pushers: Arc<Mutex<Vec<mpsc::UnboundedSender<String>>>>,
     pub(crate) closed: Arc<AtomicUsize>,
@@ -54,6 +59,7 @@ impl Fake {
             reads: Arc::new(Mutex::new(Reads::Answer)),
             methods: Arc::default(),
             read_params: Arc::default(),
+            on_read: Arc::default(),
             subscriptions: Arc::default(),
             pushers: Arc::default(),
             closed: Arc::default(),
@@ -78,6 +84,7 @@ impl Fake {
             reads: self.reads.clone(),
             methods: self.methods.clone(),
             read_params: self.read_params.clone(),
+            on_read: self.on_read.clone(),
             subscriptions: self.subscriptions.clone(),
             pushers: self.pushers.clone(),
             closed: self.closed.clone(),
@@ -98,6 +105,12 @@ impl Fake {
 
     pub(crate) fn reads(&self, reads: Reads) {
         *self.reads.lock().unwrap() = reads;
+    }
+
+    /// Do `hook` as the next `pane.read` arrives, before it is answered:
+    /// something that happens while a read is out.
+    pub(crate) fn on_next_read(&self, hook: impl FnOnce() + Send + 'static) {
+        *self.on_read.lock().unwrap() = Some(Box::new(hook));
     }
 
     /// One line to every open subscription.
@@ -143,6 +156,7 @@ struct Shared {
     reads: Arc<Mutex<Reads>>,
     methods: Arc<Mutex<Vec<String>>>,
     read_params: Arc<Mutex<Vec<Value>>>,
+    on_read: Arc<Mutex<Option<Hook>>>,
     subscriptions: Arc<Mutex<Vec<Value>>>,
     pushers: Arc<Mutex<Vec<mpsc::UnboundedSender<String>>>>,
     closed: Arc<AtomicUsize>,
@@ -168,6 +182,10 @@ impl Shared {
             "pane.read" => {
                 let params = request["params"].clone();
                 self.read_params.lock().unwrap().push(params.clone());
+                let hook = self.on_read.lock().unwrap().take();
+                if let Some(hook) = hook {
+                    hook();
+                }
                 let reads = self.reads.lock().unwrap().clone();
                 match reads {
                     Reads::Hang => {

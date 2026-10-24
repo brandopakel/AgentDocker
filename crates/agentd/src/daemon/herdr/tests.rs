@@ -251,6 +251,53 @@ async fn herdr_observations_outrank_contact_until_they_expire() {
     ));
 }
 
+/// A second agent claiming the same provider session on the same socket
+/// makes herdr's word for it neither's, even for a watcher that read the
+/// panes before it came: the bridge applies the agent-side rule again as
+/// it records, and the screen judge, applying the same rule, reads the
+/// pane for neither.
+#[tokio::test]
+async fn a_word_for_a_session_two_agents_claim_is_neithers() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let socket_of = sockets_in(Path::new("/h"));
+    let socket = Path::new("/h/herdr.sock");
+    let first = in_herdr(&daemon, "first", Some("thread-1"), None).await;
+    let now = Utc::now();
+    assert!(lock(&daemon.state).report_from_herdr(
+        &first.id,
+        socket,
+        "thread-1",
+        Status::Working,
+        &socket_of,
+        now
+    ));
+    assert_eq!(
+        lock(&daemon.state).herdr_bound(&socket_of),
+        Watches::from([(
+            socket.to_path_buf(),
+            BTreeMap::from([("thread-1".to_owned(), first.id.clone())])
+        )])
+    );
+
+    let second = in_herdr(&daemon, "second", Some("thread-1"), None).await;
+    let later = now + Duration::seconds(61);
+    let mut state = lock(&daemon.state);
+    for agent in [&first.id, &second.id] {
+        assert!(!state.report_from_herdr(
+            agent,
+            socket,
+            "thread-1",
+            Status::Idle,
+            &socket_of,
+            later
+        ));
+        assert!(!state.herdr_sole_claimant(agent, socket, "thread-1", &socket_of));
+    }
+    assert!(state.herdr_bound(&socket_of).is_empty());
+    assert!(state.herdr_watches(&socket_of).is_empty());
+}
+
 /// Only the daemon observes for an agent: a client cannot pass its report
 /// off as herdr's.
 #[tokio::test]

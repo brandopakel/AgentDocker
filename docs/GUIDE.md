@@ -961,9 +961,10 @@ server that pane belongs to, and only while the pane still runs that agent's
 own process; and the herdr pane holding an agent's own session — found the
 way herdr's status is (by the agent's session, never by a pane id, which herdr
 changes when you move a pane), checked just before and just after each read,
-and only while exactly one pane holds that session: what was read as the
-session moved to another pane is dropped, and two panes claiming one session
-are not read at all.
+and only while exactly one pane holds that session and no other agent claims
+it: what was read as the session moved to another pane, or as a second agent
+claimed it, is dropped, and two panes or two agents claiming one session are
+not read at all.
 Windows of screen or zellij, and your terminal app's windows, are never read.
 A screen is read again just before it is sent and before its answer is used,
 so a prompt you answered in the meantime is not sent or acted on, and turning

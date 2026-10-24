@@ -20,10 +20,12 @@
 //!
 //! Which pane is an agent's is decided here once, for the bridge and for
 //! the opt-in screen judge alike: [`herdr_binding`] names the socket and
-//! the provider session, and `held` reads `pane.list` and keeps a session
-//! only where exactly one pane holds it. The judge's `read_screen` makes
-//! that check immediately before and after each `pane.read`, so neither
-//! reader can take a pane the other would not.
+//! the provider session; `sole_claimants` keeps a session only where one
+//! agent alone claims it on that socket; and `held` reads `pane.list` and
+//! keeps a session only where exactly one pane holds it. The judge's
+//! `read_screen` makes the pane check immediately before and after each
+//! `pane.read`, and the judge makes the agent check around it under the
+//! state lock, so neither reader can take a pane the other would not.
 // herdr on Windows listens on a named pipe and is not followed there.
 #![cfg_attr(not(unix), allow(dead_code))]
 
@@ -64,27 +66,7 @@ impl State {
     /// and whose hooks have not run in its current process. A provider
     /// session two such agents claim on one socket is neither's.
     pub(super) fn herdr_watches(&self, socket_of: &SocketOf) -> Watches {
-        let mut watches = Watches::new();
-        let mut twice = Vec::new();
-        for record in self.registry.all() {
-            let Some((socket, session)) = herdr_watchable(record, socket_of) else {
-                continue;
-            };
-            match watches.entry(socket.clone()).or_default().entry(session) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(record.id.clone());
-                }
-                std::collections::btree_map::Entry::Occupied(entry) => {
-                    twice.push((socket, entry.key().clone()));
-                }
-            }
-        }
-        for (socket, session) in twice {
-            if let Some(sessions) = watches.get_mut(&socket) {
-                sessions.remove(&session);
-            }
-        }
-        watches.retain(|_, sessions| !sessions.is_empty());
+        let mut watches = self.herdr_watched(socket_of);
         for sessions in watches.values_mut() {
             while sessions.len() > MAX_SESSIONS {
                 sessions.pop_last();
@@ -93,11 +75,46 @@ impl State {
         watches
     }
 
+    /// The agents herdr is asked about, each the sole claimant of its
+    /// provider session on its socket, before any bound on their number.
+    fn herdr_watched(&self, socket_of: &SocketOf) -> Watches {
+        sole_claimants(self.registry.all(), |record| {
+            herdr_watchable(record, socket_of)
+        })
+    }
+
+    /// The live agents whose herdr pane the screen judge may read, by
+    /// socket and provider session: each bound to a herdr pane
+    /// ([`herdr_binding`]) and the only live agent claiming its session
+    /// there (`sole_claimants`). Hooks do not matter here, since the
+    /// judge reads the screens of agents whose hooks run too.
+    pub(super) fn herdr_bound(&self, socket_of: &SocketOf) -> Watches {
+        sole_claimants(
+            self.registry.all().filter(|record| record.status.is_live()),
+            |record| herdr_binding(record, socket_of),
+        )
+    }
+
+    /// Whether `agent` is, now, the only live agent claiming `session` on
+    /// `socket`: the screen judge's check just before and just after each
+    /// read of the pane, and when it records a judgment from it.
+    pub(super) fn herdr_sole_claimant(
+        &self,
+        agent: &AgentId,
+        socket: &Path,
+        session: &str,
+        socket_of: &SocketOf,
+    ) -> bool {
+        claimant(&self.herdr_bound(socket_of), socket, session) == Some(agent)
+    }
+
     /// Record what herdr says of `agent`, whose provider session `session`
     /// a pane on `socket` holds, while it is still an agent herdr is asked
     /// about there and the word is news: another activity, or the same one
-    /// due for renewal. While Codex's shared server has a current word on
-    /// the agent, herdr's is not recorded: the server says what the
+    /// due for renewal — still its session's only claimant there, so a
+    /// second agent claiming the session since the panes were read makes
+    /// the word neither's. While Codex's shared server has a current word
+    /// on the agent, herdr's is not recorded: the server says what the
     /// conversation itself is doing, herdr what its terminal looks like.
     /// Whether it was recorded.
     pub(super) fn report_from_herdr(
@@ -109,13 +126,12 @@ impl State {
         socket_of: &SocketOf,
         now: DateTime<Utc>,
     ) -> bool {
+        if claimant(&self.herdr_watched(socket_of), socket, session) != Some(agent) {
+            return false;
+        }
         let Some(record) = self.registry.get(agent) else {
             return false;
         };
-        let watched = herdr_watchable(record, socket_of);
-        if watched.as_ref().map(|(s, id)| (s.as_path(), id.as_str())) != Some((socket, session)) {
-            return false;
-        }
         let Some(observation) = status.observation(now) else {
             return false;
         };
@@ -163,6 +179,49 @@ pub(crate) fn herdr_binding(
         .get("session_id")
         .filter(|id| !id.is_empty())?;
     Some((socket_of(session.session.as_deref())?, provider.clone()))
+}
+
+/// Whose each provider session on each herdr socket is, among `records` as
+/// `bind` binds them: one agent record per socket and session, and a
+/// session two records claim on one socket is neither's. This is the
+/// agent-side half of the identity rule, beside the pane-side half in
+/// `held` (exactly one pane holds the session); the status bridge and the
+/// screen judge both apply both halves, each to the agents it reads for.
+fn sole_claimants<'a>(
+    records: impl IntoIterator<Item = &'a AgentRecord>,
+    bind: impl Fn(&AgentRecord) -> Option<(PathBuf, String)>,
+) -> Watches {
+    let mut claims = Watches::new();
+    let mut twice = Vec::new();
+    for record in records {
+        let Some((socket, session)) = bind(record) else {
+            continue;
+        };
+        match claims.entry(socket.clone()).or_default().entry(session) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(record.id.clone());
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                twice.push((socket, entry.key().clone()));
+            }
+        }
+    }
+    for (socket, session) in twice {
+        if let Some(sessions) = claims.get_mut(&socket) {
+            sessions.remove(&session);
+        }
+    }
+    claims.retain(|_, sessions| !sessions.is_empty());
+    claims
+}
+
+/// The one agent claiming `session` on `socket` in `claims`, if any.
+pub(super) fn claimant<'a>(
+    claims: &'a Watches,
+    socket: &Path,
+    session: &str,
+) -> Option<&'a AgentId> {
+    claims.get(socket)?.get(session)
 }
 
 impl Daemon {
