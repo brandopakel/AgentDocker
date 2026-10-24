@@ -41,6 +41,12 @@ use crate::owner::Launch;
 /// child. The launch gate's own deadline is shorter.
 const OWNER_READY_WITHIN: Duration = Duration::from_secs(10);
 
+/// The largest window a managed agent's screen is drawn at, whatever a
+/// client asks the terminal to be: drawing allocates every cell at once,
+/// and the judge reads only the bottom lines at the real width.
+pub(crate) const SCREEN_COLS: u16 = 500;
+pub(crate) const SCREEN_ROWS: u16 = 200;
+
 /// What a client attaching late is shown before the live stream: enough
 /// to see where the agent got to, not its whole history — the log has
 /// that.
@@ -190,6 +196,10 @@ pub struct Session {
     pub input: mpsc::Sender<Vec<u8>>,
     resize: mpsc::Sender<(u16, u16)>,
     scrollback: Arc<std::sync::Mutex<VecDeque<u8>>>,
+    /// The window size last asked for, so the screen can be drawn as the
+    /// agent drew it, bounded by [`SCREEN_COLS`] and [`SCREEN_ROWS`]; a
+    /// terminal nobody sized is the classic 80 by 24.
+    size: Arc<std::sync::Mutex<(u16, u16)>>,
 }
 
 impl Session {
@@ -198,7 +208,26 @@ impl Session {
     pub fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
         self.resize
             .try_send((cols, rows))
-            .map_err(|_| std::io::Error::other("terminal is not accepting resizes"))
+            .map_err(|_| std::io::Error::other("terminal is not accepting resizes"))?;
+        if cols > 0 && rows > 0 {
+            *self
+                .size
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                (cols.min(SCREEN_COLS), rows.min(SCREEN_ROWS));
+        }
+        Ok(())
+    }
+
+    /// What the agent printed lately, as bytes, and the window it printed
+    /// into: enough to draw its screen as it stands.
+    pub fn screen(&self) -> (Vec<u8>, (u16, u16)) {
+        let bytes = lock_scrollback(&self.scrollback).iter().copied().collect();
+        let size = *self
+            .size
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (bytes, size)
     }
 
     /// What to show now, and what comes next, taken together under one
@@ -536,6 +565,7 @@ impl Spawned {
             input,
             resize,
             scrollback: scrollback.clone(),
+            size: Arc::new(std::sync::Mutex::new((80, 24))),
         });
         self.keystrokes = Some(keystrokes);
         self.resizes = Some(resizes);

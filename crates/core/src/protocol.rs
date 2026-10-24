@@ -1866,6 +1866,11 @@ pub enum Response {
         /// Absent from a daemon older than the switches.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         experimental: Option<crate::config::ExperimentalConfig>,
+        /// How the opt-in judge stands (`[judge]` in `agentd.toml`): off,
+        /// on with its calls in the last minute, or why it cannot run.
+        /// Absent from a daemon older than the judge.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        judge: Option<crate::judgment::JudgeStatus>,
     },
     DaemonProcess {
         pid: u32,

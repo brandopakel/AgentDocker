@@ -196,6 +196,16 @@ pub fn activity_cell(activity: &Activity) -> String {
     }
 }
 
+/// What an agent judged waiting on the person is waiting for, in words.
+pub fn judged_errand(reason: agentdocker_core::WaitReason) -> &'static str {
+    match reason {
+        agentdocker_core::WaitReason::Permission => "for permission",
+        agentdocker_core::WaitReason::Question => "for an answer",
+        agentdocker_core::WaitReason::Draft => "with an unsent draft",
+        agentdocker_core::WaitReason::Other => "for you",
+    }
+}
+
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
         EventKind::SecretReviewChanged { review, agent } => {
@@ -216,6 +226,25 @@ pub fn event_line(event: &Event) -> String {
                 agent.short(),
                 observation.activity
             )
+        }
+        EventKind::AgentJudgedNeedsYou { agent, judgment } => format!(
+            "judged waiting   {} {} ({}, from its screen)",
+            agent.short(),
+            judged_errand(judgment.reason),
+            agentdocker_core::Judged {
+                permille: judgment.permille
+            }
+            .percent()
+        ),
+        EventKind::AgentJudgmentCleared { agent, reason } => {
+            format!("judgment cleared   {} {reason}", agent.short())
+        }
+        EventKind::JudgeStatusChanged { status, reason } => match reason {
+            Some(reason) => format!("judge status   {}: {reason}", status.word()),
+            None => format!("judge status   {}", status.word()),
+        },
+        EventKind::JudgeFailed { reason, failures } => {
+            format!("judge failed   {reason}, {failures} calls")
         }
         EventKind::AgentRenamed { agent, name, .. } => {
             format!("renamed   {} {name}", agent.short())
@@ -1541,6 +1570,59 @@ mod tests {
         let text = super::event_line(&event);
         assert!(!text.chars().any(char::is_control));
         assert!(text.contains("\\n"));
+    }
+
+    /// A judged wait says what for, how sure, and that it was read from
+    /// the screen; its clearing and the judge's failures say why.
+    #[test]
+    fn judge_events_say_what_was_judged_and_how_sure() {
+        use agentdocker_core::{Event, EventKind, WaitReason, judgment::ScreenJudgment};
+        let now = chrono::Utc::now();
+        let line = |kind| super::event_line(&Event::new(kind, now));
+        let judged = line(EventKind::AgentJudgedNeedsYou {
+            agent: "abcdef123456".into(),
+            judgment: ScreenJudgment {
+                reason: WaitReason::Draft,
+                permille: 874,
+                since: now,
+                judged_at: now,
+                process_started_at: None,
+                screen: "0123456789abcdef".into(),
+                model: "jev-1.13.0".into(),
+            },
+        });
+        assert!(
+            judged.ends_with("with an unsent draft (87%, from its screen)"),
+            "{judged}"
+        );
+        assert!(
+            line(EventKind::AgentJudgmentCleared {
+                agent: "abcdef123456".into(),
+                reason: "screen_changed".into(),
+            })
+            .ends_with("screen_changed")
+        );
+        assert!(
+            line(EventKind::JudgeFailed {
+                reason: "timeout".into(),
+                failures: 3,
+            })
+            .ends_with("judge failed   timeout, 3 calls")
+        );
+        assert!(
+            line(EventKind::JudgeStatusChanged {
+                status: agentdocker_core::judgment::JudgeState::On,
+                reason: None,
+            })
+            .ends_with("judge status   on")
+        );
+        assert!(
+            line(EventKind::JudgeStatusChanged {
+                status: agentdocker_core::judgment::JudgeState::Unusable,
+                reason: Some("judge: key_file must be mode 0600".into()),
+            })
+            .ends_with("judge status   unusable: judge: key_file must be mode 0600")
+        );
     }
 
     /// What herdr or Codex's shared server said of an agent is shown as

@@ -60,6 +60,7 @@ pub mod humans;
 mod images;
 mod inbox;
 mod journal;
+mod judge;
 mod launch;
 mod leases;
 mod panes;
@@ -312,6 +313,14 @@ pub struct Daemon {
     scanning: std::sync::atomic::AtomicBool,
     /// A memory mirror run is under way; the next waits for the next tick.
     mirroring: std::sync::atomic::AtomicBool,
+    /// The opt-in judge's screens, budget and status, off the state lock;
+    /// never held across an await or with another lock.
+    judge: Mutex<judge::Judge>,
+    /// A judge pass is under way; the next waits for the next tick.
+    judging: std::sync::atomic::AtomicBool,
+    /// The judge's own read of the file and key is under way, apart from
+    /// any pass, so a switch-off is seen while a pass waits on an answer.
+    judge_watching: std::sync::atomic::AtomicBool,
     scan_finished: Notify,
     /// How session owners are run: as processes of the daemon binary, or
     /// in-process where no daemon binary is on hand (tests).
@@ -524,6 +533,15 @@ struct State {
     /// Empty means everything is allowed, which is what no file means.
     host_policy: policies::Loaded,
     project_policies: HashMap<PathBuf, policies::Loaded>,
+    /// The screen judge's generation and how it stands, as this lock sees
+    /// them. A judgment is recorded only under the generation in force
+    /// here while the judge is on, and a stop clears every standing
+    /// judgment in the same hold that records it, so nothing judged under
+    /// an earlier setup is written after a stop has cleared; a change of
+    /// how it stands is announced in that hold too (see `judge.rs`).
+    judge_generation: u64,
+    judge_status: agentdocker_core::judgment::JudgeState,
+    judge_reason: Option<String>,
 }
 
 struct JournalRing {
@@ -1623,11 +1641,17 @@ impl Daemon {
                 notifier: None,
                 host_policy: policies::Loaded::default(),
                 project_policies: HashMap::new(),
+                judge_generation: 0,
+                judge_status: agentdocker_core::judgment::JudgeState::Off,
+                judge_reason: None,
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
             scanning: std::sync::atomic::AtomicBool::new(false),
             mirroring: std::sync::atomic::AtomicBool::new(false),
+            judge: Mutex::new(judge::Judge::default()),
+            judging: std::sync::atomic::AtomicBool::new(false),
+            judge_watching: std::sync::atomic::AtomicBool::new(false),
             owner_mode: supervisor::OwnerMode::detect(),
             webhooks: Mutex::new(webhooks::Sinks::default()),
             held: Mutex::new(None),
@@ -2032,6 +2056,7 @@ impl Daemon {
                 pid: Some(std::process::id()),
                 executable: agentdocker_host::procinfo::executable_path().ok(),
                 experimental: Some(crate::config::experimental(&self.home)),
+                judge: Some(self.judge_status()),
             },
             Request::DaemonProcess => {
                 let state = lock(&self.state);

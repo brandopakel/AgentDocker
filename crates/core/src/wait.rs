@@ -245,10 +245,17 @@ pub enum Activity {
     /// the person can move it on, from there. `reason` says which, when
     /// the adapter could tell, and `detail` what the prompt is about in
     /// one short line (see [`wait_detail`]).
+    ///
+    /// Or, when the opt-in judge is on, read that way from its quiet
+    /// screen: `judged` then says so and how sure the judge was. A
+    /// judgment only ever raises working, idle or unknown to this; it
+    /// never stands over another state (see `crate::judgment::raise`).
     Waiting {
         since: DateTime<Utc>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<WaitReason>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        judged: Option<Judged>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
@@ -295,9 +302,26 @@ pub enum WaitReason {
     Permission,
     /// A question or a choice it put to the person.
     Question,
+    /// Words typed at its prompt and never sent. Only the judge reads
+    /// this, from the screen; no adapter reports it.
+    Draft,
     /// A kind this build does not know, from a newer adapter.
     #[serde(other)]
     Other,
+}
+
+/// A wait read from the agent's screen by the opt-in judge rather than
+/// reported by its adapter: how sure the judge was, in thousandths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Judged {
+    pub permille: u16,
+}
+
+impl Judged {
+    /// `92%`, for a person.
+    pub fn percent(self) -> String {
+        format!("{}%", (u32::from(self.permille.min(1000)) + 5) / 10)
+    }
 }
 
 /// Who made an observation, when it was not the agent's own adapter.
@@ -708,6 +732,7 @@ impl ActivityObservation {
             ReportedActivity::Waiting => Activity::Waiting {
                 since: self.observed_at,
                 reason: self.reason,
+                judged: None,
                 detail: self.detail.clone(),
             },
         })
@@ -749,6 +774,26 @@ pub struct AgentActivity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wait with neither a judgment nor a detail keeps the wire shape it
+    /// had before either field: both are left out, not written as null.
+    #[test]
+    fn a_plain_wait_writes_neither_judged_nor_detail() {
+        let since = now();
+        let wait = Activity::Waiting {
+            since,
+            reason: None,
+            judged: None,
+            detail: None,
+        };
+        let value = serde_json::to_value(&wait).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"state": "waiting", "since": since})
+        );
+        let back: Activity = serde_json::from_value(value).unwrap();
+        assert_eq!(back, wait);
+    }
 
     #[test]
     fn activity_observations_expire_instead_of_guessing_idle() {
@@ -793,7 +838,8 @@ mod tests {
             Some(Activity::Waiting {
                 since: now,
                 reason: Some(WaitReason::Permission),
-                detail: None
+                judged: None,
+                detail: None,
             })
         );
         assert_eq!(observation.current(now + chrono::Duration::hours(12)), None);
@@ -805,7 +851,8 @@ mod tests {
             Activity::Waiting {
                 since: now,
                 reason: None,
-                detail: None
+                judged: None,
+                detail: None,
             }
             .label(),
             "waiting"
@@ -838,7 +885,8 @@ mod tests {
             Some(Activity::Waiting {
                 since: now,
                 reason: Some(WaitReason::Other),
-                detail: None
+                judged: None,
+                detail: None,
             })
         );
     }
@@ -1040,6 +1088,7 @@ mod tests {
             Some(Activity::Waiting {
                 since: again.observed_at,
                 reason: permission,
+                judged: None,
                 detail: Some("Bash: cargo test".into())
             })
         );

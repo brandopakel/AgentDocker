@@ -5495,21 +5495,31 @@ async fn print_activity(client: &Client, activity: &[AgentActivity]) {
                 Activity::Waiting {
                     since,
                     reason,
+                    judged,
                     detail,
                 } => {
-                    let what = match reason {
-                        Some(agentdocker_core::WaitReason::Permission) => {
-                            "for permission, in its terminal"
+                    let what: String = match (reason, judged) {
+                        (Some(reason), Some(judged)) => format!(
+                            "{}, in its terminal (judged from its screen, {})",
+                            format::judged_errand(*reason),
+                            judged.percent()
+                        ),
+                        (None, Some(judged)) => format!(
+                            "for you, in its terminal (judged from its screen, {})",
+                            judged.percent()
+                        ),
+                        (Some(agentdocker_core::WaitReason::Permission), None) => {
+                            "for permission, in its terminal".into()
                         }
-                        Some(agentdocker_core::WaitReason::Question) => {
-                            "for an answer, in its terminal"
+                        (Some(agentdocker_core::WaitReason::Question), None) => {
+                            "for an answer, in its terminal".into()
                         }
-                        _ => "for you, in its terminal",
+                        _ => "for you, in its terminal".into(),
                     };
                     (
                         match detail {
                             Some(detail) => format!("{what}: {detail}"),
-                            None => what.to_owned(),
+                            None => what,
                         },
                         Some(*since),
                     )

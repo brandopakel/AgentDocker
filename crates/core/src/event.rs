@@ -630,6 +630,40 @@ pub enum EventKind {
         reason: String,
         dropped: u64,
     },
+    /// The opt-in judge read an agent's quiet screen as waiting on the
+    /// person: what for, how sure, and which screen of which process (by
+    /// digest, never its text). Its record carries the judgment and its
+    /// activity reads as waiting, marked judged, until the screen changes,
+    /// its own adapter reports, or another process is behind it.
+    AgentJudgedNeedsYou {
+        agent: AgentId,
+        judgment: crate::judgment::ScreenJudgment,
+    },
+    /// A judgment was taken off an agent's record: `screen_changed` (its
+    /// screen moved on), `process_changed` (another process is behind
+    /// it) or `judge_off` (the judge was turned off or cannot run).
+    AgentJudgmentCleared {
+        agent: AgentId,
+        reason: String,
+    },
+    /// The judge was turned on or off, or cannot run: `status` is `on`,
+    /// `off` or `unusable`, and `reason` says why it cannot, in words that
+    /// name neither the key nor the address. Said only when that changes,
+    /// never for a read that leaves it as it was.
+    JudgeStatusChanged {
+        status: crate::judgment::JudgeState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// The judge's calls to its model failed: why in a word
+    /// (`unauthorized`, `refused`, `rate_limited`, `unavailable`,
+    /// `unreachable`, `timeout`, `malformed`) and how many failed since the
+    /// last such notice. At most once a minute; the address and the key
+    /// never appear.
+    JudgeFailed {
+        reason: String,
+        failures: u64,
+    },
     /// The person told a project's agents to hold, and why.
     ProjectPaused {
         project: ProjectId,

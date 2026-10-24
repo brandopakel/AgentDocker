@@ -153,6 +153,7 @@ impl Keyed {
             session: None,
             pane: Some("w1:p1".to_owned()),
             evidence: Evidence::Environment,
+            socket: None,
         });
     }
 }

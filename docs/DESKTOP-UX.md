@@ -220,7 +220,19 @@ what it is for shows that one line after the name in the quiet ink, clipped to
 the row (*Bash: cargo test*, *Edit: src/lib.rs*), and the spoken line ends with
 it (*… wants permission in its terminal: Bash: cargo test*); it is never an
 answer, and nothing that reads like a secret is shown. **Go to Terminal** takes
-you there. Seen across
+you there. A
+session the opt-in screen judge read as waiting from its quiet screen, rather
+than one its hooks reported, reads the same way with a second chip beside the
+errand, **Judged · 87%** (its detail: read from its quiet screen, how likely,
+and that nothing it reported says so), and an errand of its own, **Unsent
+draft**, for words left typed at its prompt; it is read aloud with the
+session's own name, e.g. *Claude Code seems to want permission in its
+terminal, judged from its screen, 87% likely*, or *seems to have a question*
+or *seems to have an unsent draft*. The row goes when the screen changes, when
+the agent's own hooks report something newer, when another process takes its
+place, or when the judge is turned off. Its notification says the same with
+that name (e.g. *Claude Code seems to want permission*, *Judged from its
+screen, 87% likely*). Seen across
 projects, each row starts with its project's name (*&lt;project&gt; · Claude Code · Badger*).
 A session that is blocked by its provider, not receiving messages,
 or ended with messages no model took is not a decision for you, so it is not

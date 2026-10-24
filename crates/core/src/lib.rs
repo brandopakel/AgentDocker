@@ -24,6 +24,7 @@ pub use input::{
     ReceivedInput, controller_backoff,
 };
 pub mod journal;
+pub mod judgment;
 pub mod lease;
 pub mod link;
 pub mod memory;
@@ -93,8 +94,8 @@ pub use contest::{Contest, ContestId, Entry, Measure, Metric, Standing};
 
 pub mod wait;
 pub use wait::{
-    Activity, ActivityObservation, ActivitySource, AgentActivity, Blocked, ReportedActivity,
-    WaitQueue, WaitReason, Waiter,
+    Activity, ActivityObservation, ActivitySource, AgentActivity, Blocked, Judged,
+    ReportedActivity, WaitQueue, WaitReason, Waiter,
 };
 
 pub mod standing;

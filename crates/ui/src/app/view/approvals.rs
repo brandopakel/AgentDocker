@@ -584,37 +584,37 @@ impl App {
             // What for, when its adapter could tell: a permission to give
             // and a question to answer are different errands, and its chip
             // says which; what the prompt is about, when its hooks said,
-            // follows the name.
-            let (what, glyph, word) = match self.activity.get(id.as_str()) {
+            // follows the name. A wait the opt-in judge read from its quiet
+            // screen says so on a second chip, with how sure it was: never
+            // only on the pointer.
+            let (reason, judged, detail) = match self.activity.get(id.as_str()) {
                 Some(agentdocker_core::Activity::Waiting {
-                    reason: Some(agentdocker_core::WaitReason::Permission),
+                    reason,
+                    judged,
+                    detail,
                     ..
-                }) => (
-                    "wants permission in its terminal",
-                    Icon::Shield,
-                    "Wants permission",
-                ),
-                Some(agentdocker_core::Activity::Waiting {
-                    reason: Some(agentdocker_core::WaitReason::Question),
-                    ..
-                }) => (
-                    "has a question in its terminal",
-                    Icon::Question,
-                    "Has a question",
-                ),
-                _ => (
-                    "is waiting for you in its terminal",
-                    Icon::Hourglass,
-                    "Waiting for you",
-                ),
+                }) => (*reason, *judged, detail.clone()),
+                _ => (None, None, None),
             };
-            let detail = match self.activity.get(id.as_str()) {
-                Some(agentdocker_core::Activity::Waiting { detail, .. }) => detail.clone(),
-                _ => None,
+            let (glyph, word) = match reason {
+                Some(agentdocker_core::WaitReason::Permission) => {
+                    (Icon::Shield, "Wants permission")
+                }
+                Some(agentdocker_core::WaitReason::Question) => (Icon::Question, "Has a question"),
+                Some(agentdocker_core::WaitReason::Draft) => (Icon::Note, "Unsent draft"),
+                _ => (Icon::Hourglass, "Waiting for you"),
             };
-            let sentence = match &detail {
-                Some(detail) => format!("{name} {what}: {detail}"),
-                None => format!("{name} {what}"),
+            let what = format!(
+                "{} in its terminal",
+                super::waiting_errand(reason, judged.is_some())
+            );
+            let sentence = match (judged, &detail) {
+                (Some(judged), _) => format!(
+                    "{name} {what}, judged from its screen, {} likely",
+                    judged.percent()
+                ),
+                (None, Some(detail)) => format!("{name} {what}: {detail}"),
+                (None, None) => format!("{name} {what}"),
             };
             let errand = super::super::chip::chip(
                 format!("needs-you-errand-{id}"),
@@ -623,6 +623,26 @@ impl App {
                 Tone::Attention,
                 c,
             );
+            let errand: Element<'_, Message> = match judged {
+                Some(judged) => row![
+                    errand,
+                    Chip::new(
+                        format!("needs-you-judged-{id}"),
+                        Some(Icon::Pulse),
+                        format!("Judged · {}", judged.percent()),
+                        Tone::Neutral,
+                    )
+                    .detail(format!(
+                        "Read from its quiet screen by the judge, {} likely; nothing it reported says so",
+                        judged.percent()
+                    ))
+                    .view(c)
+                ]
+                .spacing(4)
+                .align_y(Center)
+                .into(),
+                None => errand,
+            };
             rows.push(waiting_row(
                 spoken(
                     format!("needs-you-line-waiting-{id}"),
@@ -2360,20 +2380,45 @@ mod tests {
         app.agents.push(waiting);
         app.activity_seen = true;
         // Each reason its adapter can name reads as its own errand; one
-        // it cannot name, or a newer one, reads as a plain wait.
-        for (reason, said) in [
-            (None, "builder is waiting for you in its terminal"),
+        // it cannot name, or a newer one, reads as a plain wait. One the
+        // judge read from its screen says it seems so, and how sure.
+        let judged = Some(agentdocker_core::Judged { permille: 912 });
+        for (reason, judged, said, chip) in [
+            (
+                None,
+                None,
+                "builder is waiting for you in its terminal",
+                "Waiting for you",
+            ),
             (
                 Some(agentdocker_core::WaitReason::Permission),
+                None,
                 "builder wants permission in its terminal",
+                "Wants permission",
             ),
             (
                 Some(agentdocker_core::WaitReason::Question),
+                None,
                 "builder has a question in its terminal",
+                "Has a question",
             ),
             (
                 Some(agentdocker_core::WaitReason::Other),
+                None,
                 "builder is waiting for you in its terminal",
+                "Waiting for you",
+            ),
+            (
+                Some(agentdocker_core::WaitReason::Permission),
+                judged,
+                "builder seems to want permission in its terminal, judged from its screen, 91% likely",
+                "Wants permission",
+            ),
+            (
+                Some(agentdocker_core::WaitReason::Draft),
+                judged,
+                "builder seems to have an unsent draft in its terminal, judged from its screen, 91% likely",
+                "Unsent draft",
             ),
         ] {
             app.activity.insert(
@@ -2381,6 +2426,7 @@ mod tests {
                 agentdocker_core::Activity::Waiting {
                     since: Utc::now(),
                     reason,
+                    judged,
                     detail: None,
                 },
             );
@@ -2389,6 +2435,21 @@ mod tests {
                 .control(&format!("needs-you-line-waiting-{id}"))
                 .expect("the session");
             assert_eq!(line.1, said);
+            let errand = view
+                .control(&format!("needs-you-errand-{id}"))
+                .expect("its errand chip");
+            assert_eq!(errand.1, chip);
+            // A judged wait carries a chip of its own that says so, in
+            // words on the row, not only on the pointer.
+            match judged {
+                Some(_) => assert_eq!(
+                    view.control(&format!("needs-you-judged-{id}"))
+                        .expect("its judged chip")
+                        .1,
+                    "Judged · 91%"
+                ),
+                None => assert!(view.control(&format!("needs-you-judged-{id}")).is_none()),
+            }
             let go = view
                 .control(&format!("needs-you-terminal-{id}"))
                 .expect("its terminal");
@@ -2400,6 +2461,7 @@ mod tests {
             agentdocker_core::Activity::Waiting {
                 since: Utc::now(),
                 reason: Some(agentdocker_core::WaitReason::Permission),
+                judged: None,
                 detail: Some("Bash: cargo test".into()),
             },
         );

@@ -2188,7 +2188,9 @@ impl App {
             EventKind::InboxAcknowledged { .. } | EventKind::MessagesCaughtUp { .. } => {
                 self.send(Cmd::Activity)
             }
-            EventKind::AgentActivityReported { .. } => {
+            EventKind::AgentActivityReported { .. }
+            | EventKind::AgentJudgedNeedsYou { .. }
+            | EventKind::AgentJudgmentCleared { .. } => {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
@@ -7727,6 +7729,7 @@ pub(crate) mod tests {
         let waiting = || Activity::Waiting {
             since: now,
             reason: None,
+            judged: None,
             detail: None,
         };
 
@@ -7774,6 +7777,7 @@ pub(crate) mod tests {
         let waiting = Activity::Waiting {
             since: Utc::now() - chrono::Duration::hours(1),
             reason: Some(agentdocker_core::WaitReason::Permission),
+            judged: None,
             detail: None,
         };
         let fresh = BTreeMap::from([
@@ -7859,6 +7863,7 @@ pub(crate) mod tests {
         let waiting = || Activity::Waiting {
             since: now,
             reason: Some(agentdocker_core::WaitReason::Permission),
+            judged: None,
             detail: None,
         };
 
@@ -7936,6 +7941,7 @@ pub(crate) mod tests {
             Activity::Waiting {
                 since: Utc::now(),
                 reason: Some(agentdocker_core::WaitReason::Permission),
+                judged: None,
                 detail: None,
             },
         )]);
@@ -8000,6 +8006,7 @@ pub(crate) mod tests {
         let waiting = || Activity::Waiting {
             since: now,
             reason: None,
+            judged: None,
             detail: None,
         };
         let post = format!("post window.{id}");
