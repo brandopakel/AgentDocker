@@ -2063,6 +2063,10 @@ mod tests {
         let _ = in_tmux;
     }
 
+    /// How long one tmux command, or a server's exit, may take.
+    #[cfg(unix)]
+    const TMUX_BOUND: StdDuration = StdDuration::from_secs(10);
+
     /// tmux servers of the test's own, each on its own socket, ended
     /// however the test ends.
     #[cfg(unix)]
@@ -2074,27 +2078,99 @@ mod tests {
     #[cfg(unix)]
     impl Servers {
         fn start(&mut self, socket: &Path, text: &str) {
-            let status = std::process::Command::new("tmux")
-                .args(["-f", "/dev/null", "-S"])
-                .arg(socket)
-                .args(["new-session", "-d", "-x", "80", "-y", "24"])
-                .arg(format!("printf '{text}\\n'; trap '' HUP; exec sleep 120"))
-                .status()
-                .unwrap();
-            assert!(status.success());
+            let output = Self::bounded(
+                std::process::Command::new("tmux")
+                    .args(["-f", "/dev/null", "-S"])
+                    .arg(socket)
+                    .args(["new-session", "-d", "-x", "80", "-y", "24"])
+                    .arg(format!("printf '{text}\\n'; trap '' HUP; exec sleep 120")),
+                TMUX_BOUND,
+            )
+            .unwrap();
+            // Ended with the rest whatever the answer.
             self.sockets.push(socket.to_owned());
+            assert!(
+                output.status.success(),
+                "tmux new-session on {} failed ({}): {}",
+                socket.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
             // A pane that ignores hangups outlives its server; it is ended
             // with the rest.
             self.pids.push(Self::pane_pid(socket));
         }
 
-        fn ask(socket: &Path, args: &[&str]) -> String {
-            let output = std::process::Command::new("tmux")
-                .arg("-S")
-                .arg(socket)
-                .args(args)
-                .output()
+        /// End the server on `socket` and wait until its process is gone.
+        /// `kill-server` answers before the server has exited, and a server
+        /// on its way out still listens on its socket and closes every
+        /// connection it accepts: a `new-session` there in between fails
+        /// with "server exited unexpectedly" (seen under coverage on CI).
+        /// Once its process has exited nothing accepts there, and the next
+        /// client starts a server of its own. Nothing here connects to the
+        /// socket itself, so a server that stalls fails the test within
+        /// the bound instead of holding it.
+        fn kill(socket: &Path) {
+            let server = Self::ask(socket, &["display-message", "-p", "-t", "%0", "#{pid}"])
+                .parse()
                 .unwrap();
+            Self::ask(socket, &["kill-server"]);
+            assert!(
+                Self::exited(server, TMUX_BOUND),
+                "the tmux server on {} did not exit",
+                socket.display()
+            );
+        }
+
+        /// Whether `pid` has gone within `bound`. A tmux server is a
+        /// daemon, so it is reaped as it exits.
+        fn exited(pid: i32, bound: StdDuration) -> bool {
+            let deadline = Instant::now() + bound;
+            loop {
+                if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None)
+                    == Err(nix::errno::Errno::ESRCH)
+                {
+                    return true;
+                }
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(StdDuration::from_millis(20));
+            }
+        }
+
+        /// Run `command` to its end within `bound`, or end it and say so.
+        fn bounded(
+            command: &mut std::process::Command,
+            bound: StdDuration,
+        ) -> Result<std::process::Output, String> {
+            let mut child = command
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            let deadline = Instant::now() + bound;
+            while child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("{command:?} still ran after {bound:?}"));
+                }
+                std::thread::sleep(StdDuration::from_millis(10));
+            }
+            child.wait_with_output().map_err(|e| e.to_string())
+        }
+
+        fn ask(socket: &Path, args: &[&str]) -> String {
+            let output = Self::bounded(
+                std::process::Command::new("tmux")
+                    .arg("-S")
+                    .arg(socket)
+                    .args(args),
+                TMUX_BOUND,
+            )
+            .unwrap();
             String::from_utf8_lossy(&output.stdout).trim().to_owned()
         }
 
@@ -2116,11 +2192,13 @@ mod tests {
     impl Drop for Servers {
         fn drop(&mut self) {
             for socket in &self.sockets {
-                let _ = std::process::Command::new("tmux")
-                    .arg("-S")
-                    .arg(socket)
-                    .arg("kill-server")
-                    .output();
+                let _ = Self::bounded(
+                    std::process::Command::new("tmux")
+                        .arg("-S")
+                        .arg(socket)
+                        .arg("kill-server"),
+                    TMUX_BOUND,
+                );
             }
             for pid in &self.pids {
                 let _ = std::process::Command::new("kill")
@@ -2128,6 +2206,40 @@ mod tests {
                     .output();
             }
         }
+    }
+
+    /// A tmux that never answers, here a client waiting on a socket
+    /// whose listener never accepts, and a server that never exits are
+    /// each given up within their bound rather than holding the test.
+    #[cfg(unix)]
+    #[test]
+    fn a_stalled_tmux_is_given_up_within_its_bound() {
+        let bound = StdDuration::from_millis(300);
+        let started = Instant::now();
+        assert!(!Servers::exited(std::process::id() as i32, bound));
+        let mut ended = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        ended.kill().unwrap();
+        ended.wait().unwrap();
+        assert!(Servers::exited(ended.id() as i32, bound));
+        if multiplexer::tmux::available() {
+            let dir = TempDir::new().unwrap();
+            let socket = dir.path().join("stalled");
+            let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            assert!(
+                Servers::bounded(
+                    std::process::Command::new("tmux")
+                        .arg("-S")
+                        .arg(&socket)
+                        .arg("kill-server"),
+                    bound,
+                )
+                .is_err()
+            );
+        }
+        assert!(started.elapsed() < StdDuration::from_secs(5));
     }
 
     /// Two tmux servers each have a `%0`. Only the screen of the agent's
@@ -2218,7 +2330,7 @@ mod tests {
 
         // The server is replaced by another on the same socket, with a %0
         // of its own.
-        Servers::ask(&own, &["kill-server"]);
+        Servers::kill(&own);
         servers.start(&own, "SENTINEL_NEW_SERVER");
         eventually(async || Servers::shows(&own, "SENTINEL_NEW_SERVER").then_some(())).await;
         daemon.judge_once().await;
