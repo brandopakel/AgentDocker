@@ -1337,10 +1337,29 @@ impl Store {
             "DELETE FROM journal_cursors WHERE agent = ?1",
             params![id.as_str()],
         )?;
+        // Its read set is nobody's to check once the record is gone; a
+        // checkpoint it saved keeps a copy of its own.
+        tx.execute(
+            "DELETE FROM documents WHERE kind = 'reads' AND id = ?1",
+            params![id.as_str()],
+        )?;
         tx.execute("DELETE FROM agents WHERE id = ?1", params![id.as_str()])?;
         self.append_event(event)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Read sets whose agent the store no longer knows, left by a daemon
+    /// that forgot agents without their read sets: at most `batch` go per
+    /// call, and how many went is returned.
+    pub fn prune_orphan_reads(&self, batch: usize) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM documents WHERE kind = 'reads' AND id IN (
+                 SELECT d.id FROM documents d WHERE d.kind = 'reads'
+                 AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.id = d.id)
+                 LIMIT ?1)",
+            params![i64::try_from(batch).unwrap_or(i64::MAX)],
+        )?)
     }
 
     pub fn load_agents(&self) -> Result<Vec<AgentRecord>> {
@@ -2974,6 +2993,56 @@ mod tests {
             )
             .unwrap();
         assert!(store.load_agents().unwrap().is_empty());
+    }
+
+    /// Forgetting an agent takes its read set with it, and read sets an
+    /// earlier daemon left behind for records it forgot are swept a
+    /// bounded batch at a time; a known agent's read set is never touched.
+    #[test]
+    fn forgotten_agents_leave_no_read_sets() {
+        let store = Store::in_memory().unwrap();
+        let mark = |path: &str| agentdocker_core::ReadMark {
+            path: path.into(),
+            at: Utc::now(),
+            version: "v".into(),
+            head: None,
+        };
+        let (kept, forgotten) = (record("kept"), record("forgotten"));
+        for agent in [&kept, &forgotten] {
+            store.upsert_agent(agent).unwrap();
+            store
+                .put_document("reads", agent.id.as_str(), &vec![mark("/file")])
+                .unwrap();
+        }
+        let reads = |id: &str| {
+            store
+                .document::<Vec<agentdocker_core::ReadMark>>("reads", id)
+                .unwrap()
+        };
+        store
+            .delete_agent(
+                &forgotten.id,
+                &Event::new(
+                    EventKind::AgentRemoved {
+                        agent: forgotten.id.clone(),
+                    },
+                    Utc::now(),
+                ),
+            )
+            .unwrap();
+        assert!(reads(forgotten.id.as_str()).is_none());
+        assert!(reads(kept.id.as_str()).is_some());
+
+        for i in 0..5 {
+            store
+                .put_document("reads", &format!("gone-{i}"), &vec![mark("/file")])
+                .unwrap();
+        }
+        assert_eq!(store.prune_orphan_reads(3).unwrap(), 3);
+        assert_eq!(store.prune_orphan_reads(3).unwrap(), 2);
+        assert_eq!(store.prune_orphan_reads(3).unwrap(), 0);
+        assert!((0..5).all(|i| reads(&format!("gone-{i}")).is_none()));
+        assert!(reads(kept.id.as_str()).is_some(), "a known agent's stays");
     }
 
     #[test]

@@ -842,6 +842,51 @@ mod tests {
         ));
     }
 
+    /// `rm` forgets an agent's read set with its record, and the tick
+    /// sweeps read sets left for records an earlier daemon forgot.
+    #[tokio::test]
+    async fn a_forgotten_agent_leaves_no_read_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("state");
+        let root = tmp.path().join("checkout");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("file"), "one").unwrap();
+        let daemon = setup(&home, &root, "reader").await;
+        let id = lock(&daemon.state).registry.resolve("reader").unwrap();
+        daemon.observe("reader", vec!["file".into()]).await;
+        let stored = |id: &str| {
+            lock(&daemon.state)
+                .store
+                .document::<Vec<ReadMark>>("reads", id)
+                .unwrap()
+        };
+        assert!(stored(id.as_str()).is_some());
+        let deregistered = daemon
+            .handle(Request::Deregister {
+                agent: "reader".into(),
+            })
+            .await;
+        assert!(
+            !matches!(deregistered, Response::Error { .. }),
+            "{deregistered:?}"
+        );
+        assert_eq!(
+            daemon
+                .handle(Request::Remove {
+                    agent: id.to_string()
+                })
+                .await,
+            Response::Ok
+        );
+        assert!(stored(id.as_str()).is_none());
+        lock(&daemon.state)
+            .store
+            .put_document("reads", "left-behind", &Vec::<ReadMark>::new())
+            .unwrap();
+        daemon.prune_orphan_reads();
+        assert!(stored("left-behind").is_none());
+    }
+
     #[tokio::test]
     async fn content_check_catches_unwatched_changes_retries_and_restart() {
         let tmp = tempfile::tempdir().unwrap();

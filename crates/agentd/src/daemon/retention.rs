@@ -15,6 +15,19 @@ impl Daemon {
         }
     }
 
+    /// A read set belongs to a record. One whose agent is no longer
+    /// known — forgotten by an earlier daemon that left its read set
+    /// behind — goes, [`ORPHAN_READS_BATCH`] a tick, so what read sets
+    /// take is bounded by the records kept.
+    pub fn prune_orphan_reads(&self) {
+        if let Some(removed) = lock(&self.state).store_op("read-set retention", |store| {
+            store.prune_orphan_reads(ORPHAN_READS_BATCH)
+        }) && removed > 0
+        {
+            info!(removed, "forgot the read sets of forgotten agents");
+        }
+    }
+
     /// Captured output belongs to a record. A log whose agent is no longer
     /// known, forgotten while the daemon was down or left by an earlier
     /// daemon, goes once it is an hour old, so `logs/` holds nothing
@@ -204,3 +217,6 @@ impl Daemon {
         }
     }
 }
+
+/// Read sets of forgotten agents removed per tick at most.
+const ORPHAN_READS_BATCH: usize = 100;
