@@ -22,10 +22,10 @@ use windows_sys::Win32::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
             GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
         },
-        DACL_SECURITY_INFORMATION, GetAce, GetSecurityDescriptorDacl, GetTokenInformation,
-        INHERIT_ONLY_ACE, IsValidSid, OWNER_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
-        TokenUser,
+        DACL_SECURITY_INFORMATION, GetAce, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+        GetTokenInformation, INHERIT_ONLY_ACE, IsValidSid, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
+        TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, CREATE_ALWAYS, CREATE_NEW, CreateDirectoryW, CreateFileW,
@@ -263,6 +263,35 @@ impl Protection {
     /// Existing state may have broad read access that can be narrowed. Refuse
     /// foreign ownership or untrusted write access before changing any ACL.
     pub(crate) fn validate_access(&self, handle: HANDLE, access: Access) -> io::Result<()> {
+        self.inspect(handle, access).map(|_| ())
+    }
+
+    /// The private DACL inside this protection's own descriptor.
+    fn private_acl(&self) -> io::Result<*mut ACL> {
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut private_acl: *mut ACL = null_mut();
+        // SAFETY: the converted self-relative descriptor lives as long as
+        // self; the returned ACL points into it and is only read.
+        if unsafe {
+            GetSecurityDescriptorDacl(
+                self.descriptor.0,
+                &mut present,
+                &mut private_acl,
+                &mut defaulted,
+            )
+        } == 0
+            || present == 0
+            || private_acl.is_null()
+        {
+            return Err(denied("private DACL is unavailable"));
+        }
+        Ok(private_acl)
+    }
+
+    /// [`Self::validate_access`], answering whether the object already has
+    /// exactly this private DACL, protected from inheritance.
+    fn inspect(&self, handle: HANDLE, access: Access) -> io::Result<bool> {
         let mut owner = null_mut();
         let mut acl = null_mut();
         let mut descriptor = null_mut();
@@ -351,27 +380,29 @@ impl Protection {
                 )));
             }
         }
-        Ok(())
+        let mut control = 0;
+        let mut revision = 0;
+        // SAFETY: descriptor is the live allocation GetSecurityInfo returned;
+        // both outputs are writable locals.
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: acl points into the live descriptor above, the private ACL
+        // into self's; both were validated by Windows and are only read.
+        Ok(control & SE_DACL_PROTECTED != 0 && unsafe { same_entries(acl, self.private_acl()?) })
     }
 
+    /// Validate, then give the object the private DACL unless it already has
+    /// it. Writing an unchanged DACL again is not free on a directory:
+    /// SetSecurityInfo propagates inheritable entries in the calling process
+    /// by opening and rewriting every existing object beneath it, while other
+    /// processes may be creating, replacing and reading files there (a
+    /// receiver publishing its ledger while a client finds its endpoint).
     fn validate_and_narrow(&self, handle: HANDLE) -> io::Result<()> {
-        self.validate_access(handle, Access::State)?;
-        let mut present = 0;
-        let mut defaulted = 0;
-        let mut private_acl: *mut ACL = null_mut();
-        if unsafe {
-            GetSecurityDescriptorDacl(
-                self.descriptor.0,
-                &mut present,
-                &mut private_acl,
-                &mut defaulted,
-            )
-        } == 0
-            || present == 0
-            || private_acl.is_null()
-        {
-            return Err(denied("private DACL is unavailable"));
+        if self.inspect(handle, Access::State)? {
+            return Ok(());
         }
+        let private_acl = self.private_acl()?;
         let code = unsafe {
             SetSecurityInfo(
                 handle,
@@ -388,6 +419,32 @@ impl Protection {
         }
         Ok(())
     }
+}
+
+/// Whether two DACLs hold the same entries in the same order, byte for byte.
+///
+/// # Safety
+/// Both pointers name valid ACLs that stay allocated through the call.
+unsafe fn same_entries(left: *const ACL, right: *const ACL) -> bool {
+    let count = unsafe { (*left).AceCount };
+    if count != unsafe { (*right).AceCount } {
+        return false;
+    }
+    (0..u32::from(count)).all(|index| {
+        let (mut ours, mut theirs) = (null_mut(), null_mut());
+        if unsafe { GetAce(left, index, &mut ours) } == 0
+            || unsafe { GetAce(right, index, &mut theirs) } == 0
+        {
+            return false;
+        }
+        let size = unsafe { (*ours.cast::<ACE_HEADER>()).AceSize };
+        // Windows validated each ACL, so every entry lies within its list.
+        size == unsafe { (*theirs.cast::<ACE_HEADER>()).AceSize }
+            && unsafe {
+                std::slice::from_raw_parts(ours.cast::<u8>(), size.into())
+                    == std::slice::from_raw_parts(theirs.cast::<u8>(), size.into())
+            }
+    })
 }
 
 // These principals administer the machine and can already take ownership.
@@ -850,6 +907,144 @@ mod tests {
             },
             0
         );
+    }
+
+    /// Replace a file's DACL as given, unprotected, without the inheritance
+    /// processing and propagation SetSecurityInfo performs.
+    fn set_kernel_acl(file: &File, sddl: &str) {
+        use windows_sys::Win32::Security::SetKernelObjectSecurity;
+        let sddl: Vec<_> = sddl.encode_utf16().chain([0]).collect();
+        let mut descriptor = null_mut();
+        assert_ne!(
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    sddl.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    null_mut(),
+                )
+            },
+            0
+        );
+        let _allocated = LocalAllocation(descriptor);
+        assert_ne!(
+            unsafe {
+                SetKernelObjectSecurity(file.as_raw_handle(), DACL_SECURITY_INFORMATION, descriptor)
+            },
+            0,
+            "{}",
+            io::Error::last_os_error()
+        );
+    }
+
+    #[test]
+    fn securing_already_private_state_rewrites_nothing_beneath_it() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let temporary = tempfile::tempdir().unwrap();
+        let state = temporary.path().join("state");
+        secure_state_dir(&state).unwrap();
+        let protection = Protection::new().unwrap();
+        // Read security through a handle that only reads it and shares
+        // everything, so nothing held here keeps Windows from a child.
+        let reader = |path: &Path| {
+            std::fs::OpenOptions::new()
+                .access_mode(READ_CONTROL)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(path)
+                .unwrap()
+        };
+        let security = |path: &Path| acl_bytes(reader(path).as_raw_handle());
+        let private = |path: &Path| {
+            protection
+                .inspect(reader(path).as_raw_handle(), Access::State)
+                .unwrap()
+        };
+        assert!(private(&state));
+        // A child open to inheritance: writing the directory's DACL again
+        // would propagate the directory's inheritable entries into it.
+        let record = state.join("record");
+        let child = private_file(&record, true, false).unwrap();
+        set_kernel_acl(&child, &format!("D:(A;;FA;;;{})", protection.sid));
+        drop(child);
+        let before = security(&record);
+        assert!(!before.0, "the fixture child accepts inheritance");
+        let parent = security(&state);
+        secure_state_dir(&state).unwrap();
+        secure_state_dir(&state.join("nested")).unwrap();
+        assert_eq!(security(&state), parent);
+        assert_eq!(
+            security(&record),
+            before,
+            "securing private state rewrote an existing child"
+        );
+
+        // State that is not yet private is still narrowed, and the narrowed
+        // directory's entries reach its children as they always have.
+        let directory = open(&state, &protection, true, false, false).unwrap();
+        set_test_acl(
+            &directory,
+            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)",
+        );
+        drop(directory);
+        assert!(!private(&state));
+        let broader = security(&record);
+        secure_state_dir(&state).unwrap();
+        assert!(private(&state));
+        if broader != before {
+            assert_ne!(security(&record), broader);
+        }
+    }
+
+    #[test]
+    fn resecuring_a_directory_never_disturbs_a_publisher_inside_it() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+        // Ends the securers however the publisher leaves, so a failure is
+        // reported rather than waited on forever by the scope.
+        struct Done<'a>(&'a AtomicBool);
+        impl Drop for Done<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let state = temporary.path().join("state");
+        secure_state_dir(&state).unwrap();
+        let record = state.join("record.json");
+        let done = AtomicBool::new(false);
+        let started = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let resecure = || {
+                while !done.load(Ordering::Acquire) {
+                    secure_state_dir(&state).unwrap();
+                    started.fetch_add(1, Ordering::AcqRel);
+                }
+            };
+            let securers = [scope.spawn(resecure), scope.spawn(resecure)];
+            let finished = Done(&done);
+            // Publish only once re-securing is under way.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while started.load(Ordering::Acquire) < 2 {
+                assert!(Instant::now() < deadline, "the securers never ran");
+                std::thread::yield_now();
+            }
+            for index in 0..200 {
+                let staged = state.join(format!("record.{index}.staged"));
+                let mut file = create_private_file(&staged).unwrap();
+                file.write_all(format!("record {index}").as_bytes())
+                    .unwrap();
+                file.sync_all().unwrap();
+                drop(file);
+                crate::files::publish_snapshot(&staged, &record).unwrap();
+                read_private_file(&record).unwrap();
+            }
+            drop(finished);
+            for securer in securers {
+                securer.join().unwrap();
+            }
+        });
+        assert_eq!(std::fs::read(&record).unwrap(), b"record 199");
+        assert_eq!(std::fs::read_dir(&state).unwrap().count(), 1);
     }
 
     #[test]
