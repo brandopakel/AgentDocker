@@ -7,11 +7,12 @@
 //! lifecycle hooks in its process — that is the best evidence there is of
 //! what it is doing, so the daemon reads it.
 //!
-//! Only reads: `pane.list` and `events.subscribe`. Nothing here writes to
+//! Only reads: `pane.list` and `events.subscribe` for the status bridge,
+//! and `pane.read` for the opt-in screen judge. Nothing here writes to
 //! herdr. A pane is matched to an agent by the provider session herdr
 //! says it holds (`agent_session.value` against the agent's `session_id`),
 //! never by the agent's or the pane's display name, and only when exactly
-//! one pane holds it.
+//! one pane holds it ([`holding`]); both readers use that one check.
 //!
 //! Pure: building requests and reading replies. The connection is the
 //! daemon's.
@@ -147,6 +148,48 @@ pub fn holding<'a>(
             }
         })
         .collect()
+}
+
+/// `pane.read`: what `pane` shows now — its visible screen, as text with
+/// escape sequences stripped, as `capture-pane -p` gives a tmux pane's.
+/// The shape is herdr's bundled API schema's (`PaneReadParams`), and the
+/// reply a live herdr 0.9.3 gave to it is in the tests.
+pub fn read_request(pane: &str) -> Value {
+    json!({
+        "id": REQUEST_ID,
+        "method": "pane.read",
+        "params": {"pane_id": pane, "source": "visible", "format": "text", "strip_ansi": true},
+    })
+}
+
+/// The text of a `pane.read` reply to [`read_request`] for `pane`, or why
+/// there is none. Read defensively: herdr's refusal, a reply of another
+/// `type`, one for another pane, source or format, one missing its text
+/// or whether it was cut short, or one cut short to nothing, is no screen.
+pub fn screen(reply: &str, pane: &str) -> Result<String, String> {
+    let value: Value = serde_json::from_str(reply.trim())
+        .map_err(|_| "herdr gave a reply AgentDocker cannot read".to_owned())?;
+    if let Some(error) = value.get("error") {
+        return Err(refusal(error));
+    }
+    let result = &value["result"];
+    if result["type"] != "pane_read" {
+        return Err("herdr's reply is not a pane's screen".to_owned());
+    }
+    let read = &result["read"];
+    if read["pane_id"].as_str() != Some(pane) {
+        return Err("herdr's reply is another pane's screen".to_owned());
+    }
+    if read["source"] != "visible" || read["format"] != "text" {
+        return Err("herdr's reply is not the visible screen as text".to_owned());
+    }
+    let (Some(text), Some(truncated)) = (read["text"].as_str(), read["truncated"].as_bool()) else {
+        return Err("herdr's reply lacks the screen's text".to_owned());
+    };
+    if truncated && text.is_empty() {
+        return Err("herdr cut the screen short to nothing".to_owned());
+    }
+    Ok(text.to_owned())
 }
 
 /// `events.subscribe` for an agent appearing in or leaving any pane — the
@@ -296,6 +339,96 @@ mod tests {
         assert_eq!(refused, "herdr refused: busy (internal)");
         assert!(panes("not json").is_err());
         assert!(panes(r#"{"id":"x","result":{"type":"ok"}}"#).is_err());
+    }
+
+    /// `pane.read` asks for the visible screen as text, escapes stripped,
+    /// in the shape herdr's bundled API schema gives `PaneReadParams`.
+    #[test]
+    fn a_pane_is_read_as_its_visible_screen_in_text() {
+        assert_eq!(
+            read_request("w1:p1"),
+            json!({"id": REQUEST_ID, "method": "pane.read", "params": {
+                "pane_id": "w1:p1", "source": "visible", "format": "text", "strip_ansi": true,
+            }})
+        );
+    }
+
+    /// What a live herdr 0.9.3 answered to that request, verbatim, from a
+    /// pane of a server of its own that printed an approval dialog with
+    /// bold and colour, under a shell prompt of `$ `: the text comes back
+    /// with its escapes stripped, and it is judged as tmux's is.
+    const LIVE_READ: &str = r#"{"id":"agentdocker-activity","result":{"type":"pane_read","read":{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","source":"visible","format":"text","text":"Bash command\n\n  rm -rf build\n\nDo you want to proceed?\n> 1. Yes\n  2. No\n$\n","revision":0,"truncated":false}}}"#;
+
+    #[test]
+    fn a_live_pane_read_reply_is_the_screen() {
+        let text = screen(LIVE_READ, "w1:p1").unwrap();
+        assert_eq!(
+            crate::judgment::screen_tail(&text),
+            [
+                "Bash command",
+                "",
+                "  rm -rf build",
+                "",
+                "Do you want to proceed?",
+                "> 1. Yes",
+                "  2. No",
+                "$",
+            ]
+        );
+        assert!(
+            screen(LIVE_READ, "w2:p1").is_err(),
+            "another pane's screen is not this pane's"
+        );
+        // The same server's answer for a pane it does not have, verbatim.
+        assert_eq!(
+            screen(
+                r#"{"id":"agentdocker-activity","error":{"code":"pane_not_found","message":"pane w9:p9 not found"}}"#,
+                "w9:p9"
+            )
+            .unwrap_err(),
+            "herdr refused: pane w9:p9 not found (pane_not_found)"
+        );
+    }
+
+    /// Anything but the screen asked for is no screen: never a guess.
+    #[test]
+    fn a_pane_read_reply_out_of_shape_is_no_screen() {
+        let live: Value = serde_json::from_str(LIVE_READ).unwrap();
+        let with = |change: &dyn Fn(&mut Value)| {
+            let mut reply = live.clone();
+            change(&mut reply);
+            screen(&reply.to_string(), "w1:p1")
+        };
+        assert!(with(&|_| {}).is_ok());
+        assert!(with(&|r| r["result"]["type"] = json!("pane_snapshot")).is_err());
+        assert!(with(&|r| r["result"]["read"]["source"] = json!("recent")).is_err());
+        assert!(with(&|r| r["result"]["read"]["format"] = json!("ansi")).is_err());
+        for field in ["pane_id", "source", "format", "text", "truncated"] {
+            assert!(
+                with(&|r| {
+                    r["result"]["read"].as_object_mut().unwrap().remove(field);
+                })
+                .is_err(),
+                "a reply without {field}"
+            );
+        }
+        assert!(with(&|r| r["result"]["read"]["text"] = json!(null)).is_err());
+        assert!(with(&|r| r["result"]["read"]["truncated"] = json!("no")).is_err());
+        assert!(
+            with(&|r| {
+                r["result"]["read"]["truncated"] = json!(true);
+                r["result"]["read"]["text"] = json!("");
+            })
+            .is_err(),
+            "cut short to nothing"
+        );
+        assert_eq!(
+            with(&|r| r["result"]["read"]["text"] = json!("")).unwrap(),
+            "",
+            "a blank screen is a screen, with nothing on it to ask about"
+        );
+        assert!(screen("not json", "w1:p1").is_err());
+        assert!(screen(r#"{"id":"x","result":{"type":"ok"}}"#, "w1:p1").is_err());
     }
 
     /// One subscription: agents appearing anywhere, and status changes in

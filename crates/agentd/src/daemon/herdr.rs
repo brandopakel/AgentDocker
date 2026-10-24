@@ -17,6 +17,13 @@
 //! socket. It never writes to herdr. Everything is bounded: the sockets
 //! watched, the sessions one subscription follows, the length of a line,
 //! and every connection, request and acknowledgement by a timeout.
+//!
+//! Which pane is an agent's is decided here once, for the bridge and for
+//! the opt-in screen judge alike: [`herdr_binding`] names the socket and
+//! the provider session, and `held` reads `pane.list` and keeps a session
+//! only where exactly one pane holds it. The judge's `read_screen` makes
+//! that check immediately before and after each `pane.read`, so neither
+//! reader can take a pane the other would not.
 // herdr on Windows listens on a named pipe and is not followed there.
 #![cfg_attr(not(unix), allow(dead_code))]
 
@@ -47,6 +54,9 @@ const LIST_BYTES: usize = 4 * 1024 * 1024;
 /// The longest subscription line read.
 #[cfg(unix)]
 const LINE_BYTES: usize = 64 * 1024;
+/// The longest `pane.read` reply read: a visible screen, escapes stripped.
+#[cfg(unix)]
+const READ_BYTES: usize = 1024 * 1024;
 
 impl State {
     /// The provider sessions herdr is asked about, by socket: each running
@@ -126,14 +136,26 @@ impl State {
 }
 
 /// The socket and provider session herdr is asked about for `record`, if
-/// it is one herdr is asked about: running, in a herdr session whose socket
-/// can be named, naming its provider session — a pane is found by that,
-/// never by a display name — and with no hooks run in its current process,
+/// it is one herdr is asked about: running, bound to a herdr pane
+/// ([`herdr_binding`]), and with no hooks run in its current process,
 /// since those report its turns themselves.
 fn herdr_watchable(record: &AgentRecord, socket_of: &SocketOf) -> Option<(PathBuf, String)> {
     if record.status != AgentStatus::Running || super::waiting::reports_turns(record) {
         return None;
     }
+    herdr_binding(record, socket_of)
+}
+
+/// The herdr socket and provider session that find `record`'s pane: it is
+/// recorded in a herdr session whose socket can be named, and names its
+/// provider session. A pane is found by that session (`held`), never by
+/// a display name and never by the pane id the agent registered with,
+/// which herdr changes when a pane moves. The status bridge and the screen
+/// judge both bind an agent to its pane through this, and only this.
+pub(crate) fn herdr_binding(
+    record: &AgentRecord,
+    socket_of: &SocketOf,
+) -> Option<(PathBuf, String)> {
     let session = record.session.as_ref().filter(|s| s.kind == "herdr")?;
     let provider = record
         .spec
@@ -319,8 +341,8 @@ async fn follow(
     socket_of: &SocketOf,
 ) -> Ended {
     let wanted = sessions.borrow_and_update().clone();
-    let held = match list(socket, timing.timeout).await {
-        Ok(panes) => herdr::holding(&panes, wanted.keys().map(String::as_str)),
+    let held = match self::held(socket, wanted.keys().map(String::as_str), timing.timeout).await {
+        Ok(held) => held,
         Err(reason) => return Ended::Failed(reason),
     };
     let mut stream = match subscribe(socket, &held, timing.timeout).await {
@@ -329,9 +351,8 @@ async fn follow(
     };
     // Read again once changes are followed, so none made between the
     // first reading and the subscription is missed.
-    match list(socket, timing.timeout).await {
-        Ok(panes) => {
-            let current = herdr::holding(&panes, wanted.keys().map(String::as_str));
+    match self::held(socket, wanted.keys().map(String::as_str), timing.timeout).await {
+        Ok(current) => {
             if !same_panes(&held, &current) {
                 return Ended::Again;
             }
@@ -373,9 +394,8 @@ async fn follow(
             }
         };
         if recheck {
-            match list(socket, timing.timeout).await {
-                Ok(panes) => {
-                    let current = herdr::holding(&panes, wanted.keys().map(String::as_str));
+            match self::held(socket, wanted.keys().map(String::as_str), timing.timeout).await {
+                Ok(current) => {
                     if !same_panes(&held, &current) {
                         return Ended::Again;
                     }
@@ -433,21 +453,89 @@ async fn send(stream: &mut Stream, request: &Value) -> Result<(), String> {
         .map_err(|error| format!("could not ask herdr: {error}"))
 }
 
-/// Every pane, by `pane.list` on a connection of its own.
+/// One request on a connection of its own, and herdr's one-line answer of
+/// at most `limit` bytes, all within `timeout`.
 #[cfg(unix)]
-async fn list(socket: &Path, timeout: std::time::Duration) -> Result<Vec<herdr::Pane>, String> {
+async fn ask(
+    socket: &Path,
+    request: &Value,
+    limit: usize,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
     let ask = async {
         let mut stream = connect(socket).await?;
-        send(&mut stream, &herdr::list_request()).await?;
-        read_line(&mut stream, LIST_BYTES)
+        send(&mut stream, request).await?;
+        read_line(&mut stream, limit)
             .await
             .map_err(|error| format!("herdr's answer could not be read: {error}"))?
             .ok_or_else(|| "herdr closed the connection without answering".to_owned())
     };
-    let reply = tokio::time::timeout(timeout, ask)
+    tokio::time::timeout(timeout, ask)
         .await
-        .map_err(|_| "herdr did not answer in time".to_owned())??;
-    herdr::panes(&reply)
+        .map_err(|_| "herdr did not answer in time".to_owned())?
+}
+
+/// Every pane, by `pane.list` on a connection of its own.
+#[cfg(unix)]
+async fn list(socket: &Path, timeout: std::time::Duration) -> Result<Vec<herdr::Pane>, String> {
+    herdr::panes(&ask(socket, &herdr::list_request(), LIST_BYTES, timeout).await?)
+}
+
+/// Which of `sessions` exactly one pane on `socket` holds, and where, as
+/// `pane.list` says now: the one pane-identity check, made by the status
+/// bridge for every reading and by the screen judge around every read.
+#[cfg(unix)]
+pub(crate) async fn held<'a>(
+    socket: &Path,
+    sessions: impl IntoIterator<Item = &'a str>,
+    timeout: std::time::Duration,
+) -> Result<BTreeMap<String, Held>, String> {
+    Ok(herdr::holding(&list(socket, timeout).await?, sessions))
+}
+
+/// The pane holding `session` on `socket`, when exactly one does.
+#[cfg(unix)]
+async fn pane_holding(
+    socket: &Path,
+    session: &str,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
+    held(socket, [session], timeout)
+        .await?
+        .remove(session)
+        .map(|held| held.pane)
+        .ok_or_else(|| "no one pane holds the agent's session".to_owned())
+}
+
+/// What the pane holding `session` on `socket` shows, by `pane.read`, only
+/// while that pane is the agent's: exactly one pane holds the session just
+/// before the read, the reply is that pane's screen, and the same pane
+/// alone still holds it just after. A pane moved (herdr gives it a new
+/// id), replaced, released or claimed twice is never read, or its screen
+/// is dropped. Each request is bounded by `timeout`, as the bridge's are.
+#[cfg(unix)]
+pub(crate) async fn read_screen(
+    socket: &Path,
+    session: &str,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
+    let pane = pane_holding(socket, session, timeout).await?;
+    let reply = ask(socket, &herdr::read_request(&pane), READ_BYTES, timeout).await?;
+    let text = herdr::screen(&reply, &pane)?;
+    if pane_holding(socket, session, timeout).await? != pane {
+        return Err("the agent's session moved to another pane while it was read".to_owned());
+    }
+    Ok(text)
+}
+
+/// herdr on Windows listens on a named pipe; no pane is read there.
+#[cfg(not(unix))]
+pub(crate) async fn read_screen(
+    _socket: &Path,
+    _session: &str,
+    _timeout: std::time::Duration,
+) -> Result<String, String> {
+    Err("herdr is not followed on this platform".to_owned())
 }
 
 /// A subscription to agents appearing anywhere and to the status of each
@@ -512,5 +600,7 @@ where
     }
 }
 
+#[cfg(all(test, unix))]
+pub(crate) mod fake;
 #[cfg(test)]
 mod tests;

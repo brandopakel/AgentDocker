@@ -956,12 +956,18 @@ show TypeSafe. TypeSafe's own terms and costs apply; at most
 `calls_per_minute` requests go each minute (6 unless you set it, 1–60).
 
 **Whose screens.** The terminals of agents AgentDocker started (from the app
-or with `run --tty`) and the tmux pane an agent registered from — at the tmux
+or with `run --tty`); the tmux pane an agent registered from — at the tmux
 server that pane belongs to, and only while the pane still runs that agent's
-own process. A herdr pane, screen, zellij, and your terminal app's windows are
-never read. A screen is read again just before it is sent and before its
-answer is used, so a prompt you answered in the meantime is not sent or
-acted on, and turning the judge off stops any upload still to come.
+own process; and the herdr pane holding an agent's own session — found the
+way herdr's status is (by the agent's session, never by a pane id, which herdr
+changes when you move a pane), checked just before and just after each read,
+and only while exactly one pane holds that session: what was read as the
+session moved to another pane is dropped, and two panes claiming one session
+are not read at all.
+Windows of screen or zellij, and your terminal app's windows, are never read.
+A screen is read again just before it is sent and before its answer is used,
+so a prompt you answered in the meantime is not sent or acted on, and turning
+the judge off stops any upload still to come.
 
 **What it can change.** Only one thing: an agent that works, is idle or whose
 state is unknown can move into Needs you, when the likeliest of an approval
