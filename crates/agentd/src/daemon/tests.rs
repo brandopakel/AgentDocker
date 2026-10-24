@@ -4032,6 +4032,267 @@ async fn an_older_lower_priority_wait_is_ended_to_break_a_ring() {
     assert_eq!(lease.resource, ResourceKey::new("task:x"));
 }
 
+/// Hold `agent`'s claim at `point` of its wait: the barrier is passed
+/// once when it arrives and once to let it go on.
+fn hold_claim(
+    daemon: &Arc<Daemon>,
+    point: super::waiting::ClaimPoint,
+    agent: &AgentId,
+) -> Arc<tokio::sync::Barrier> {
+    let hold = Arc::new(tokio::sync::Barrier::new(2));
+    *lock(&daemon.claim_hold) = Some((point, agent.clone(), hold.clone()));
+    hold
+}
+
+async fn pass(hold: &tokio::sync::Barrier) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), hold.wait())
+        .await
+        .expect("the held claim reached its point");
+}
+
+/// Wait until the queue is exactly these agents' waits, in this order.
+async fn queue_is(daemon: &Arc<Daemon>, agents: &[&AgentId]) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let queued: Vec<AgentId> = lock(&daemon.state)
+                .waiting
+                .all()
+                .iter()
+                .map(|w| w.agent.clone())
+                .collect();
+            if queued.iter().eq(agents.iter().copied()) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the queue reached the expected waits");
+}
+
+fn wait_ends_of(events: &[EventKind], agent: &AgentId) -> Vec<agentdocker_core::WaitOutcome> {
+    events
+        .iter()
+        .filter_map(|kind| match kind {
+            EventKind::LeaseWaitEnded {
+                requester, outcome, ..
+            } if requester == agent => Some(*outcome),
+            _ => None,
+        })
+        .collect()
+}
+
+/// alpha's wait for y runs out of time, and before alpha has decided
+/// what that means, beta closes a ring through it at a higher priority
+/// and picks alpha's wait. The ring was broken first: alpha answers
+/// `deadlock` with the ring, not a timeout, and its wait ended once.
+#[tokio::test]
+async fn a_wait_picked_as_victim_after_its_deadline_still_answers_deadlock() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let alpha = register(&daemon, "alpha", distinct_pid()).await;
+    let beta = register(&daemon, "beta", distinct_pid()).await;
+    let Response::Lease { lease: x } = claim(&daemon, "alpha", "task:x").await else {
+        panic!("alpha takes x")
+    };
+    assert!(matches!(
+        claim(&daemon, "beta", "task:y").await,
+        Response::Lease { .. }
+    ));
+    let mut events = daemon.subscribe_events();
+    let hold = hold_claim(&daemon, super::waiting::ClaimPoint::Woken, &alpha.id);
+    let alpha_waits = {
+        let daemon = daemon.clone();
+        tokio::spawn(async move { claim_waiting_at(&daemon, "alpha", "task:y", 1, -1).await })
+    };
+    // Out of time, and held before the hold that decides it.
+    pass(&hold).await;
+    let beta_waits = {
+        let daemon = daemon.clone();
+        tokio::spawn(async move { claim_waiting_at(&daemon, "beta", "task:x", 30, 2).await })
+    };
+    queue_is(&daemon, &[&beta.id]).await;
+    pass(&hold).await;
+
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(5), alpha_waits)
+        .await
+        .expect("alpha answered")
+        .unwrap();
+    let Response::Error {
+        code: ErrorCode::Deadlock,
+        details: Some(details),
+        ..
+    } = &answer
+    else {
+        panic!("alpha's wait was broken first: {answer:?}")
+    };
+    let cycle: Vec<agentdocker_core::Blocked> =
+        serde_json::from_value(details["cycle"].clone()).unwrap();
+    assert_eq!(cycle[0].agent, beta.id);
+    assert_eq!(cycle[1].agent, alpha.id);
+    let seen: Vec<EventKind> = std::iter::from_fn(|| events.try_recv().ok())
+        .map(|event| event.kind)
+        .collect();
+    assert_eq!(
+        wait_ends_of(&seen, &alpha.id),
+        vec![agentdocker_core::WaitOutcome::Deadlock]
+    );
+
+    release(&daemon, alpha.id.as_str(), x.id).await;
+    let got = tokio::time::timeout(std::time::Duration::from_secs(5), beta_waits)
+        .await
+        .expect("beta answered")
+        .unwrap();
+    assert!(matches!(got, Response::Lease { .. }), "{got:?}");
+}
+
+/// alpha's wait for y has run out of time and alpha has decided so; held
+/// before it answers, beta asks for x at a higher priority. The decision
+/// gave alpha's place up in its own hold, so there is no ring through
+/// alpha for beta to break: beta just waits, alpha answers its timeout,
+/// and its wait ended once, as a timeout.
+#[tokio::test]
+async fn a_wait_that_has_timed_out_is_not_picked_as_a_victim() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let alpha = register(&daemon, "alpha", distinct_pid()).await;
+    let beta = register(&daemon, "beta", distinct_pid()).await;
+    assert!(matches!(
+        claim(&daemon, "alpha", "task:x").await,
+        Response::Lease { .. }
+    ));
+    assert!(matches!(
+        claim(&daemon, "beta", "task:y").await,
+        Response::Lease { .. }
+    ));
+    let mut events = daemon.subscribe_events();
+    let hold = hold_claim(&daemon, super::waiting::ClaimPoint::Decided, &alpha.id);
+    let alpha_waits = {
+        let daemon = daemon.clone();
+        tokio::spawn(async move { claim_waiting_at(&daemon, "alpha", "task:y", 1, -1).await })
+    };
+    pass(&hold).await;
+    let beta_waits = {
+        let daemon = daemon.clone();
+        tokio::spawn(async move { claim_waiting_at(&daemon, "beta", "task:x", 30, 2).await })
+    };
+    queue_is(&daemon, &[&beta.id]).await;
+    pass(&hold).await;
+
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(5), alpha_waits)
+        .await
+        .expect("alpha answered")
+        .unwrap();
+    assert!(
+        matches!(
+            &answer,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ),
+        "alpha's timeout stands: {answer:?}"
+    );
+    let seen: Vec<EventKind> = std::iter::from_fn(|| events.try_recv().ok())
+        .map(|event| event.kind)
+        .collect();
+    assert!(
+        !seen
+            .iter()
+            .any(|kind| matches!(kind, EventKind::LeaseDeadlock { .. })),
+        "no ring through a wait that had ended: {seen:?}"
+    );
+    assert_eq!(
+        wait_ends_of(&seen, &alpha.id),
+        vec![agentdocker_core::WaitOutcome::Timeout]
+    );
+    beta_waits.abort();
+}
+
+/// alpha holds x and waits, low, for a shared y behind carol's exclusive
+/// one. carol lets go and alpha is granted y; held just after, before it
+/// answers, beta takes a shared y too and asks for x at a higher
+/// priority. alpha's place went with the grant, in the same hold, so no
+/// stale "alpha waits for y" remains to make a ring of: beta just waits,
+/// alpha's lease stands, and its wait ended once, claimed.
+#[tokio::test]
+async fn a_granted_wait_is_not_picked_to_break_a_later_ring() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let alpha = register(&daemon, "alpha", distinct_pid()).await;
+    let beta = register(&daemon, "beta", distinct_pid()).await;
+    let carol = register(&daemon, "carol", distinct_pid()).await;
+    let Response::Lease { lease: x } = claim(&daemon, "alpha", "task:x").await else {
+        panic!("alpha takes x")
+    };
+    let Response::Lease { lease: y } = claim(&daemon, "carol", "task:y").await else {
+        panic!("carol takes y")
+    };
+    let shared_y = |agent: &str, wait_secs, priority| Request::Claim {
+        agent: agent.to_owned(),
+        resource: "task:y".into(),
+        mode: LeaseMode::Shared,
+        amount: None,
+        ttl_secs: 60,
+        note: None,
+        wait_secs,
+        priority,
+        automatic: false,
+    };
+    let mut events = daemon.subscribe_events();
+    let hold = hold_claim(&daemon, super::waiting::ClaimPoint::Answered, &alpha.id);
+    let alpha_waits = {
+        let daemon = daemon.clone();
+        let request = shared_y("alpha", 30, -1);
+        tokio::spawn(async move { daemon.handle(request).await })
+    };
+    queue_is(&daemon, &[&alpha.id]).await;
+    release(&daemon, carol.id.as_str(), y.id).await;
+    // Granted, its place given up, and held before it answers.
+    pass(&hold).await;
+    queue_is(&daemon, &[]).await;
+    assert!(matches!(
+        daemon.handle(shared_y("beta", 0, 0)).await,
+        Response::Lease { .. }
+    ));
+    let beta_waits = {
+        let daemon = daemon.clone();
+        tokio::spawn(async move { claim_waiting_at(&daemon, "beta", "task:x", 30, 2).await })
+    };
+    queue_is(&daemon, &[&beta.id]).await;
+    pass(&hold).await;
+
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(5), alpha_waits)
+        .await
+        .expect("alpha answered")
+        .unwrap();
+    let Response::Lease { lease } = &answer else {
+        panic!("alpha's grant stands: {answer:?}")
+    };
+    assert_eq!(lease.holder, alpha.id);
+    assert_eq!(lease.resource, ResourceKey::new("task:y"));
+    let seen: Vec<EventKind> = std::iter::from_fn(|| events.try_recv().ok())
+        .map(|event| event.kind)
+        .collect();
+    assert!(
+        !seen
+            .iter()
+            .any(|kind| matches!(kind, EventKind::LeaseDeadlock { .. })),
+        "beta's wait closes no ring through alpha: {seen:?}"
+    );
+    assert_eq!(
+        wait_ends_of(&seen, &alpha.id),
+        vec![agentdocker_core::WaitOutcome::Claimed]
+    );
+
+    release(&daemon, alpha.id.as_str(), x.id).await;
+    let got = tokio::time::timeout(std::time::Duration::from_secs(5), beta_waits)
+        .await
+        .expect("beta answered")
+        .unwrap();
+    assert!(matches!(got, Response::Lease { .. }), "{got:?}");
+}
+
 /// With equal priorities the newcomer is still the victim, as it was
 /// before priorities, however high both are; and the event names it.
 #[tokio::test]

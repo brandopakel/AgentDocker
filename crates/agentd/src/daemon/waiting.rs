@@ -95,15 +95,23 @@ impl<'a> Waiting<'a> {
         });
     }
 
-    /// Give the place up. Idempotent, so the explicit call on every exit
-    /// path and the one in `drop` cannot both count. A wait another claim
-    /// already ended to break a ring was said to end then, and is not said
-    /// again.
-    pub(super) fn end(&mut self, outcome: WaitOutcome) {
+    /// Give the place up, in the hold that decided the claim's answer.
+    ///
+    /// Every answer a waiting claim gives — a lease, a timeout, a refusal —
+    /// is decided under the state lock, and its place has to go in that
+    /// same hold. Given up later, it would stay in the queue after the
+    /// claim had its answer, where another claim could pick it as a ring's
+    /// victim: a granted claim announced as deadlocked, or a deadlocked
+    /// one answering something else. The caller has seen
+    /// [`Self::deadlocked`] answer nothing in this hold, so the wait is
+    /// still queued and this says it ended. Idempotent, so the guard's
+    /// drop cannot count it twice.
+    pub(super) fn end_locked(&mut self, state: &mut State, outcome: WaitOutcome) {
         let Some(ticket) = self.ticket.take() else {
             return;
         };
-        let mut state = lock(&self.daemon.state);
+        // A wait another claim already ended to break a ring was said to
+        // end then, and is not said again.
         if state.waiting.leave(ticket).is_none() {
             return;
         }
@@ -129,9 +137,57 @@ impl<'a> Waiting<'a> {
     }
 }
 
+/// Only a claim that went away without an answer — its client gone, its
+/// future dropped — still holds a place here; every answer gives the
+/// place up in its own hold ([`Waiting::end_locked`]).
 impl Drop for Waiting<'_> {
     fn drop(&mut self) {
-        self.end(WaitOutcome::Cancelled);
+        if self.ticket.is_none() {
+            return;
+        }
+        let mut state = lock(&self.daemon.state);
+        self.end_locked(&mut state, WaitOutcome::Cancelled);
+    }
+}
+
+/// Where a test may hold one agent's claim (`Daemon::claim_hold`).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ClaimPoint {
+    /// Woken from its wait (or out of time), before the hold that decides
+    /// what the wake means.
+    Woken,
+    /// After that hold, before the claim answers what it decided.
+    Decided,
+    /// After the hold in which an attempt gave the claim its answer — a
+    /// lease, say — before it is returned.
+    Answered,
+}
+
+/// A test's hold: the point, the agent whose claim stops there, and the
+/// barrier it waits at twice — once to say it arrived, once to go on.
+#[cfg(test)]
+pub(super) type ClaimHold = (ClaimPoint, AgentId, Arc<tokio::sync::Barrier>);
+
+#[cfg(test)]
+impl Daemon {
+    /// Stop here if a test asked this agent's claim to stop at `point`.
+    pub(super) async fn claim_pause(&self, point: ClaimPoint, agent: &AgentId) {
+        let hold = {
+            let mut hold = lock(&self.claim_hold);
+            if hold
+                .as_ref()
+                .is_some_and(|(at, who, _)| *at == point && who == agent)
+            {
+                hold.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, _, barrier)) = hold {
+            barrier.wait().await;
+            barrier.wait().await;
+        }
     }
 }
 
