@@ -517,22 +517,6 @@ fn schedule_whole_proofs(
     Some(chosen)
 }
 
-fn defer_growing_job(
-    weak: &Weak<Daemon>,
-    collection: &Collection,
-    job: usize,
-    source: &agentdocker_host::usage::discovery::Source,
-) -> bool {
-    // No samples, accepted cursor, pending count or coverage advance here.
-    // A restart re-verifies the old accepted prefix against this new snapshot.
-    // If capture itself fails, leave the old job for the next bounded pass;
-    // that pass handles a persistent disappearance/replacement as a real gap.
-    match reader::Cursor::capture(&source.path, source.runtime) {
-        Ok(captured) => checkpoint(weak, collection, &[], Change::RefreshJob(job, &captured)),
-        Err(_) => true,
-    }
-}
-
 /// What one collector pass read: the debug log's per-pass summary and the
 /// evidence tests use to show which bytes a pass had to touch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -766,7 +750,6 @@ fn collect_pass(
         return;
     };
     let mut after = None;
-    let mut deferred = false;
     let mut quiet = Quiet::default();
     loop {
         if pages == 0 {
@@ -802,6 +785,14 @@ fn collect_pass(
             return;
         };
         let previous = old.as_ref().map(|old| &old.cursor);
+        // Read the file as it stands at this visit, not as discovery saw it:
+        // a writer appending more often than passes run has always outgrown
+        // an earlier snapshot. The session proves and parses up to this one
+        // and leaves later appends to the next pass. A truncated, replaced or
+        // rewritten file still fails its proof against the accepted cursor;
+        // if the file cannot be captured at all, the discovered snapshot
+        // fails its proof instead and the job finishes with a gap.
+        let captured = reader::Cursor::capture(&source.path, source.runtime).unwrap_or(captured);
         // An unchanged generation proves only its last record unless the
         // schedule chose it for a whole proof this pass.
         let unchanged = previous.is_some_and(|previous| previous.same_generation(&captured));
@@ -842,14 +833,6 @@ fn collect_pass(
                 let offset = session.offset();
                 (session, offset)
             }
-            Err(reader::Error::SnapshotAdvanced) => {
-                if !defer_growing_job(weak, &collection, job_id, &source) {
-                    return;
-                }
-                deferred = true;
-                pages -= 1;
-                continue;
-            }
             Err(_) => {
                 let gap_key = format!("generation:{generation}:{key}");
                 if !snapshot(
@@ -862,8 +845,10 @@ fn collect_pass(
                 ) {
                     return;
                 }
-                // Retry once from the captured generation. If the file changed
-                // after discovery, even the empty prefix refuses it this pass.
+                // Retry once from this visit's snapshot. If the file is no
+                // longer that snapshot or a growth of it (replaced, truncated
+                // or rewritten during the visit), even the empty prefix
+                // refuses it this pass.
                 let Ok(session) = prepare(None, false) else {
                     if !finish_failed_job(weak, &mut collection, job_id, &[]) {
                         return;
@@ -898,14 +883,6 @@ fn collect_pass(
                     tally.parsed_bytes += batch.bytes_read;
                     tally.validation_bytes += batch.validation_bytes_read;
                     batch
-                }
-                Err(reader::Error::SnapshotAdvanced) => {
-                    if !defer_growing_job(weak, &collection, job_id, &source) {
-                        return;
-                    }
-                    deferred = true;
-                    pages -= 1;
-                    break;
                 }
                 Err(reader::Error::Oversized { .. }) if budget.bytes < 16 * 1024 * 1024 => {
                     budget.bytes = 16 * 1024 * 1024;
@@ -1022,11 +999,6 @@ fn collect_pass(
         }
     }
     if !finish_quiet(weak, &mut collection, &mut quiet) {
-        return;
-    }
-    if deferred {
-        // Deferred jobs and their original accepted cursors survive this pass.
-        // A growing source never becomes a gap or "caught up" merely by retrying.
         return;
     }
     if collection.discovery_complete
@@ -1621,7 +1593,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn growing_usage_job_stays_pending_without_starving_peers_and_survives_reopen() {
+    async fn a_job_grown_since_discovery_is_collected_on_its_visit_without_starving_peers() {
         for (rewrite, partial_discovery) in [(false, false), (true, false), (false, true)] {
             let (temp, daemon, config, root) = fixture();
             for name in ["first", "second"] {
@@ -1660,42 +1632,16 @@ mod tests {
                     .collect();
                 std::fs::write(&job.source.path, content).unwrap();
             }
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(&job.source.path)
-                .unwrap()
-                .write_all(record("appended", 2).as_bytes())
-                .unwrap();
+            append(&job.source.path, &record("appended", 2));
+            // The partly read file has outgrown the snapshot discovery took.
+            // Its visit reads the file as it stands: the accepted prefix is
+            // proven whole again and the rest, the append included, is parsed
+            // in this pass, and the other file finishes in it too. A rewrite
+            // fails that proof: an explicit gap and a rescan from the start
+            // that counts nothing twice.
             collect_generation(&Arc::downgrade(&daemon), &config);
-            let deferred = query(&daemon).await;
-            assert_eq!(
-                deferred.rows[0].samples, 428,
-                "other job must finish this pass"
-            );
-            assert_eq!(
-                deferred.coverage.collection.pending_files,
-                (!partial_discovery).then_some(1)
-            );
-            assert_eq!(
-                deferred.coverage.collection.state,
-                CollectionState::Scanning
-            );
-            assert_eq!(deferred.coverage.source_gaps, 0);
-            assert_eq!(
-                lock(&daemon.state)
-                    .store
-                    .usage_next_job()
-                    .unwrap()
-                    .unwrap()
-                    .id,
-                job.id
-            );
-            drop(daemon);
-            let daemon =
-                Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
-            collect_generation(&Arc::downgrade(&daemon), &config);
-            let done = query(&daemon).await;
             let samples = if rewrite { 602 } else { 601 };
+            let done = query(&daemon).await;
             assert_eq!(done.rows[0].samples, samples);
             assert_eq!(done.rows[0].counters.input_tokens.sum, Some(samples * 2));
             assert_eq!(done.coverage.source_gaps, u64::from(rewrite));
@@ -1711,24 +1657,177 @@ mod tests {
                     CollectionState::CaughtUp
                 }
             );
-            assert!(
-                lock(&daemon.state)
-                    .store
-                    .usage_discovery()
-                    .unwrap()
-                    .is_none()
-            );
-            assert!(lock(&daemon.state).storage_error.is_none());
-            if partial_discovery {
-                collect_generation(&Arc::downgrade(&daemon), &config);
-                let complete = query(&daemon).await;
-                assert_eq!(
-                    complete.coverage.collection.state,
-                    CollectionState::CaughtUp
-                );
-                assert_eq!(complete.rows[0].samples, samples);
-                assert_eq!(complete.coverage.source_gaps, 0);
+            {
+                let state = lock(&daemon.state);
+                assert!(state.store.usage_next_job().unwrap().is_none());
+                assert!(state.store.usage_discovery().unwrap().is_none());
+                assert!(state.storage_error.is_none());
             }
+            // A restart and the next generation count nothing twice.
+            drop(daemon);
+            let daemon = reopen(temp.path());
+            collect_generation(&Arc::downgrade(&daemon), &config);
+            let again = query(&daemon).await;
+            assert_eq!(again.rows[0].samples, samples);
+            assert_eq!(again.rows[0].counters.input_tokens.sum, Some(samples * 2));
+            assert_eq!(again.coverage.source_gaps, u64::from(rewrite));
+            assert_eq!(again.coverage.collection.state, CollectionState::CaughtUp);
+        }
+    }
+
+    /// A writer appending a record every second, far more often than passes
+    /// run. Each pass counts the log as it stood when the pass reached it, so
+    /// the session's usage arrives while the writing goes on, through a
+    /// restart in the middle of the file, and ends at exactly one count per
+    /// record written.
+    #[tokio::test]
+    async fn a_log_written_every_second_is_collected_while_it_grows() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let (temp, daemon, config, root) = fixture();
+        let path = root.join("live.jsonl");
+        let seed: String = (0..300).map(|n| record(&format!("seed-{n}"), 2)).collect();
+        std::fs::write(&path, seed).unwrap();
+        // Discovery alone: its snapshot is older than the visit, as a real
+        // pass's is by up to the whole pass, and the writer starts after it.
+        collect_generation_bounded(&Arc::downgrade(&daemon), &config, 1);
+        assert!(query(&daemon).await.rows.is_empty());
+        // Records begun and records finished, so a pass that catches one in
+        // the middle of its write is still bounded on both sides.
+        let begun = Arc::new(AtomicUsize::new(0));
+        let written = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (path, begun, written, stop) =
+                (path.clone(), begun.clone(), written.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    let n = begun.fetch_add(1, Ordering::SeqCst);
+                    append(&path, &record(&format!("live-{n}"), 2));
+                    written.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            })
+        };
+        let written_past = |count: u64| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while written.load(Ordering::SeqCst) as u64 <= count {
+                assert!(std::time::Instant::now() < deadline, "the writer stalled");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+
+        // The visit reads the grown file. Its first 128 records commit, and
+        // the daemon restarts in the middle of the file while the writer goes on.
+        written_past(0);
+        collect_generation_bounded(&Arc::downgrade(&daemon), &config, 1);
+        assert_eq!(query(&daemon).await.rows[0].samples, 128);
+        drop(daemon);
+        let daemon = reopen(temp.path());
+        let mut counted: u64 = 128;
+        for _ in 0..4 {
+            // At least one record past what the last pass counted.
+            written_past(counted.saturating_sub(300));
+            let floor = 300 + written.load(Ordering::SeqCst) as u64;
+            collect_generation(&Arc::downgrade(&daemon), &config);
+            let report = query(&daemon).await;
+            let samples = report.rows[0].samples;
+            let ceiling = 300 + begun.load(Ordering::SeqCst) as u64;
+            assert!(
+                floor <= samples && samples <= ceiling,
+                "every record written before the pass, none twice: {floor} <= {samples} <= {ceiling}"
+            );
+            assert!(samples > counted, "usage arrives while the log grows");
+            assert_eq!(report.rows[0].counters.input_tokens.sum, Some(samples * 2));
+            assert_eq!(report.coverage.source_gaps, 0);
+            counted = samples;
+        }
+        stop.store(true, Ordering::SeqCst);
+        writer.join().unwrap();
+        let total = 300 + written.load(Ordering::SeqCst) as u64;
+        assert_eq!(begun.load(Ordering::SeqCst), written.load(Ordering::SeqCst));
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(report.rows[0].samples, total);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(total * 2));
+        assert_eq!(report.coverage.source_gaps, 0);
+        assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+        assert_eq!(report.coverage.collection.pending_tail_files, Some(0));
+    }
+
+    #[tokio::test]
+    async fn a_record_cut_at_the_visit_snapshot_waits_until_it_is_complete() {
+        let (temp, daemon, config, root) = fixture();
+        let path = root.join("live.jsonl");
+        let cut = record("cut", 4);
+        let half = cut.len() / 2;
+        std::fs::write(&path, record("first", 3)).unwrap();
+        collect_generation_bounded(&Arc::downgrade(&daemon), &config, 1);
+        // The writer is in the middle of the next record when the visit takes
+        // its snapshot: the complete record counts, and the cut one is a
+        // pending tail of which nothing is parsed.
+        append(&path, &cut[..half]);
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(report.rows[0].samples, 1);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(3));
+        assert_eq!(report.coverage.collection.pending_tail_files, Some(1));
+        assert_eq!(report.coverage.collection.state, CollectionState::Scanning);
+        assert_eq!(report.coverage.source_gaps, 0);
+        // Finished and followed by another, it counts once, after a restart too.
+        append(&path, &cut[half..]);
+        append(&path, &record("after", 5));
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        drop(daemon);
+        let daemon = reopen(temp.path());
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(report.rows[0].samples, 3);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(12));
+        assert_eq!(report.coverage.collection.pending_tail_files, Some(0));
+        assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+        assert_eq!(report.coverage.source_gaps, 0);
+    }
+
+    #[tokio::test]
+    async fn truncation_or_replacement_while_a_log_grows_leaves_a_gap_and_recounts_nothing() {
+        for replace in [false, true] {
+            let (temp, daemon, config, root) = fixture();
+            let path = root.join("live.jsonl");
+            let rows = |ids: std::ops::Range<usize>| -> String {
+                ids.map(|n| record(&format!("live-{n}"), 1)).collect()
+            };
+            std::fs::write(&path, rows(0..10)).unwrap();
+            collect_generation(&Arc::downgrade(&daemon), &config);
+            assert_eq!(query(&daemon).await.rows[0].samples, 10);
+            // After discovery the writer appends; then the log is cut back in
+            // place, or replaced by a copy that starts later, and written on
+            // past its old length before the visit, so it looks only grown.
+            collect_generation_bounded(&Arc::downgrade(&daemon), &config, 1);
+            append(&path, &rows(10..12));
+            if replace {
+                let replacement = temp.path().join("replacement.jsonl");
+                std::fs::write(&replacement, rows(5..16)).unwrap();
+                std::fs::rename(&replacement, &path).unwrap();
+            } else {
+                std::fs::write(&path, rows(5..16)).unwrap();
+            }
+            append(&path, &rows(16..18));
+            collect_generation(&Arc::downgrade(&daemon), &config);
+            // The accepted prefix is no longer there: one explicit gap, and a
+            // rescan from the start that counts each response once.
+            let report = query(&daemon).await;
+            assert_eq!(report.rows[0].samples, 18);
+            assert_eq!(report.rows[0].counters.input_tokens.sum, Some(18));
+            assert_eq!(report.coverage.source_gaps, 1);
+            assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+            drop(daemon);
+            let daemon = reopen(temp.path());
+            append(&path, &rows(18..19));
+            collect_generation(&Arc::downgrade(&daemon), &config);
+            let report = query(&daemon).await;
+            assert_eq!(report.rows[0].samples, 19);
+            assert_eq!(report.rows[0].counters.input_tokens.sum, Some(19));
+            assert_eq!(report.coverage.source_gaps, 1);
         }
     }
 
