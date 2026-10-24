@@ -402,8 +402,11 @@ Records above the 1 MiB parser limit produce gaps. The whole operation limits ca
 minutes between operations; discovery retains its 10,000-file limit. These are
 operation limits, not a hard RSS or OS-I/O deadline. A file that grows during the
 scan, such as a session still being written, is read to the length captured when
-the scan started; any other change to an input, or an exhausted limit, refuses
-without a partial JSON report. Temporary private accounting state
+the scan started. An input replaced by another file, shortened, or changed at the
+same length with new change metadata, or an exhausted limit, refuses without a
+partial JSON report. A scan cannot tell that a file which also grew had bytes it
+already read rewritten in place: the daemon's collector catches that on its next
+pass, and a scan keeps no state to check it. Temporary private accounting state
 is removed before success; cleanup failure is an error. This command has no saved
 progress and does not reconcile gaps in the daemon's retained history.
 
