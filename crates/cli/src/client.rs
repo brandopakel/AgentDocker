@@ -387,14 +387,19 @@ impl Client {
             }
             match into_result(serde_json::from_str(&line)?)? {
                 Response::End => return Ok(Ended::ByDaemon),
-                Response::Lagged { skipped } => {
+                // A replay's bound is the caller's to explain; only a
+                // live lag is handled here.
+                Response::Lagged {
+                    skipped,
+                    replay: false,
+                } => {
                     if matches!(request, Request::Events { .. }) {
                         bail!(
                             "event stream lost {skipped} events; rerun journal with --since to recover retained entries"
                         );
                     } else {
                         eprintln!(
-                            "agentdocker: skipped {skipped} live messages; reconnect to resume delivery and ask senders to resend missing payloads (live messages cannot be replayed)"
+                            "agentdocker: skipped {skipped} live messages; reconnect to resume delivery (messages addressed to an agent stay in its inbox, and topics replay what they kept)"
                         );
                     }
                 }
@@ -990,7 +995,13 @@ mod stream_tests {
         let mut peer = BufReader::new(stream);
         let mut line = String::new();
         peer.read_line(&mut line).await.unwrap();
-        for response in [Response::EventsReady, Response::Lagged { skipped: 3 }] {
+        for response in [
+            Response::EventsReady,
+            Response::Lagged {
+                skipped: 3,
+                replay: false,
+            },
+        ] {
             peer.get_mut()
                 .write_all((serde_json::to_string(&response).unwrap() + "\n").as_bytes())
                 .await
@@ -1002,6 +1013,84 @@ mod stream_tests {
             .unwrap()
             .unwrap_err();
         assert!(error.to_string().contains("lost 3 events"));
+    }
+
+    /// On a message stream, a bounded topic replay's `lagged` reaches the
+    /// caller, which can say what it means; a live lag is still handled
+    /// here and never handed on, and the stream goes on after both.
+    #[tokio::test]
+    async fn a_replay_lag_reaches_the_caller_and_a_live_lag_does_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let client = Client::new(Some(socket)).with_start_timeout(None);
+        let task = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            client
+                .stream(
+                    &Request::Subscribe {
+                        agent: Some("reader".into()),
+                        topics: vec!["t".into()],
+                        after_seq: None,
+                    },
+                    |response| {
+                        seen.push(response);
+                        Ok(true)
+                    },
+                )
+                .await
+                .map(|()| seen)
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut peer = BufReader::new(stream);
+        let mut line = String::new();
+        peer.read_line(&mut line).await.unwrap();
+        let message = agentdocker_core::Envelope::new(
+            "user",
+            agentdocker_core::Destination::Topic("t".into()),
+            "notice",
+            serde_json::json!({"text": "kept"}),
+            None,
+            chrono::Utc::now(),
+        );
+        for response in [
+            Response::Lagged {
+                skipped: 7,
+                replay: true,
+            },
+            Response::Message {
+                message: message.clone(),
+                seq: Some(8),
+            },
+            Response::Lagged {
+                skipped: 2,
+                replay: false,
+            },
+            Response::End,
+        ] {
+            peer.get_mut()
+                .write_all((serde_json::to_string(&response).unwrap() + "\n").as_bytes())
+                .await
+                .unwrap();
+        }
+        let seen = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            seen,
+            [
+                Response::Lagged {
+                    skipped: 7,
+                    replay: true
+                },
+                Response::Message {
+                    message,
+                    seq: Some(8)
+                },
+            ]
+        );
     }
 
     #[test]

@@ -222,7 +222,7 @@ impl Client {
                 }
                 Response::End => return Ok(()),
                 Response::Error { message, .. } => bail!("{message}"),
-                Response::Lagged { skipped } => {
+                Response::Lagged { skipped, .. } => {
                     bail!("event stream missed {skipped} events; reconnecting to refresh snapshots")
                 }
                 _ => {}

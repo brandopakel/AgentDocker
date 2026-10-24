@@ -318,6 +318,7 @@ async fn stream_messages(
             writer,
             &Response::Lagged {
                 skipped: replay.skipped,
+                replay: true,
             },
         )
         .await?;
@@ -344,7 +345,7 @@ async fn stream_messages(
                 }
                 Err(RecvError::Lagged(skipped)) => {
                     warn!(skipped, "subscriber fell behind the message bus");
-                    write(writer, &Response::Lagged { skipped }).await?;
+                    write(writer, &Response::Lagged { skipped, replay: false }).await?;
                 }
                 Err(RecvError::Closed) => break,
             },
@@ -445,7 +446,7 @@ async fn stream_events(
                 }
                 Err(RecvError::Lagged(skipped)) => {
                     warn!(skipped, "event subscriber fell behind");
-                    write(writer, &Response::Lagged { skipped }).await?;
+                    write(writer, &Response::Lagged { skipped, replay: false }).await?;
                 }
                 Err(RecvError::Closed) => break,
             },
@@ -515,7 +516,7 @@ async fn stream_attach(
                 // A slow reader misses bytes rather than stalling the
                 // agent; say so instead of pretending the screen is whole.
                 Err(RecvError::Lagged(skipped)) => {
-                    write(writer, &Response::Lagged { skipped }).await?;
+                    write(writer, &Response::Lagged { skipped, replay: false }).await?;
                 }
                 Err(RecvError::Closed) => break,
             },

@@ -2253,10 +2253,13 @@ pub enum Response {
         line: String,
     },
     /// A live stream skipped messages; events can be recovered with replay.
-    /// On a message stream it also says how many kept topic messages a
-    /// subscribe's bounded replay left out.
     Lagged {
         skipped: u64,
+        /// Not a live lag: a subscribe's bounded topic replay left out this
+        /// many kept topic messages, the oldest, before the ones it replays.
+        /// Absent (false) for a live lag, and from older daemons.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        replay: bool,
     },
     Ok,
     /// Terminates a stream that finished on the daemon's side.

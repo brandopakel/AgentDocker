@@ -100,45 +100,85 @@ pub fn advance(
         .collect()
 }
 
-/// What one subscribe replays, as sequences, oldest first, and how many
-/// messages past where the subscriber starts it leaves out.
+/// What one subscribe replays, as sequences, oldest first; how many
+/// messages past where the subscriber starts it leaves out; and the most
+/// candidate sequences it held at once while choosing them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReplayPlan {
     pub seqs: Vec<u64>,
     pub skipped: u64,
+    pub peak: usize,
 }
 
-/// Bound a replay: from each topic the newest `per_topic` of its waiting
-/// messages, then across all of them the newest `total`. Each topic gives
-/// how many messages wait past where the subscriber starts and the
-/// sequences of the newest of them (at least `per_topic` of them when that
-/// many wait; more are cut here). Everything left out is counted as
-/// skipped, so the subscriber is told it missed some rather than left to
-/// believe it saw them all. Memory stays within `total` plus one topic's
-/// sequences however many topics match.
-pub fn plan_replay(
-    topics: impl IntoIterator<Item = (u64, Vec<u64>)>,
+/// Bound a replay as its topics are read, one at a time: from each topic
+/// the newest `per_topic` of its waiting messages, across all of them the
+/// newest `total`. It never holds more than `total` candidate sequences,
+/// however many topics match: a topic is offered its sequences newest
+/// first, and [`ReplayBound::offer`] says when nothing more from that topic
+/// could be kept, so the reader stops reading it. Everything waiting that is
+/// not kept is counted as skipped, so the subscriber is told it missed some
+/// rather than left to believe it saw them all.
+#[derive(Clone, Debug)]
+pub struct ReplayBound {
     per_topic: usize,
     total: usize,
-) -> ReplayPlan {
-    let mut kept: BinaryHeap<Reverse<u64>> = BinaryHeap::new();
-    let mut skipped = 0u64;
-    for (waiting, mut seqs) in topics {
-        seqs.sort_unstable_by(|a, b| b.cmp(a));
-        seqs.dedup();
-        seqs.truncate(per_topic);
-        skipped += waiting.saturating_sub(seqs.len() as u64);
-        for seq in seqs {
-            kept.push(Reverse(seq));
-            if kept.len() > total {
-                kept.pop();
-                skipped += 1;
-            }
+    kept: BinaryHeap<Reverse<u64>>,
+    waiting: u64,
+    taken: usize,
+    peak: usize,
+}
+
+impl ReplayBound {
+    pub fn new(per_topic: usize, total: usize) -> Self {
+        Self {
+            per_topic,
+            total,
+            kept: BinaryHeap::new(),
+            waiting: 0,
+            taken: 0,
+            peak: 0,
         }
     }
-    let mut seqs: Vec<u64> = kept.into_iter().map(|Reverse(seq)| seq).collect();
-    seqs.sort_unstable();
-    ReplayPlan { seqs, skipped }
+
+    /// The next topic: how many of its messages wait past where the
+    /// subscriber starts there. Its sequences follow through
+    /// [`ReplayBound::offer`], newest first.
+    pub fn topic(&mut self, waiting: u64) {
+        self.waiting += waiting;
+        self.taken = 0;
+    }
+
+    /// Offer the current topic's next sequence, newest first. `false` when
+    /// nothing more from this topic can be kept — its share is taken, or
+    /// this and everything older loses to what is already kept — and the
+    /// reader should go on to the next topic.
+    pub fn offer(&mut self, seq: u64) -> bool {
+        if self.taken >= self.per_topic || self.total == 0 {
+            return false;
+        }
+        if self.kept.len() >= self.total {
+            match self.kept.peek() {
+                Some(Reverse(oldest)) if seq > *oldest => {
+                    self.kept.pop();
+                }
+                _ => return false,
+            }
+        }
+        self.kept.push(Reverse(seq));
+        self.taken += 1;
+        self.peak = self.peak.max(self.kept.len());
+        self.taken < self.per_topic
+    }
+
+    pub fn finish(self) -> ReplayPlan {
+        let mut seqs: Vec<u64> = self.kept.into_iter().map(|Reverse(seq)| seq).collect();
+        seqs.sort_unstable();
+        ReplayPlan {
+            skipped: self.waiting.saturating_sub(seqs.len() as u64),
+            seqs,
+            peak: self.peak,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -263,20 +303,67 @@ mod tests {
     /// everything left out counted.
     #[test]
     fn a_replay_keeps_the_newest_and_counts_the_rest() {
-        let plan = plan_replay([(5, vec![1, 3, 5, 7, 9]), (2, vec![2, 4])], 3, 10);
-        assert_eq!(plan.seqs, [2, 4, 5, 7, 9]);
-        assert_eq!(plan.skipped, 2, "the two oldest of the first topic");
+        // Each topic: how many wait, and its sequences, newest first.
+        let plan = |topics: &[(u64, &[u64])], per_topic: usize, total: usize| {
+            let mut bound = ReplayBound::new(per_topic, total);
+            for (waiting, seqs) in topics {
+                bound.topic(*waiting);
+                for seq in *seqs {
+                    if !bound.offer(*seq) {
+                        break;
+                    }
+                }
+            }
+            bound.finish()
+        };
+        let both: &[(u64, &[u64])] = &[(5, &[9, 7, 5, 3, 1]), (2, &[4, 2])];
+        let replay = plan(both, 3, 10);
+        assert_eq!(replay.seqs, [2, 4, 5, 7, 9]);
+        assert_eq!(replay.skipped, 2, "the two oldest of the first topic");
 
-        let plan = plan_replay([(5, vec![1, 3, 5, 7, 9]), (2, vec![2, 4])], 3, 4);
-        assert_eq!(plan.seqs, [4, 5, 7, 9]);
-        assert_eq!(plan.skipped, 3, "and the oldest kept across both");
+        let replay = plan(both, 3, 4);
+        assert_eq!(replay.seqs, [4, 5, 7, 9]);
+        assert_eq!(replay.skipped, 3, "and the oldest kept across both");
+        assert_eq!(replay.peak, 4);
 
         // A topic may say more wait than it hands over: the rest are
         // counted too.
-        let plan = plan_replay([(800, vec![900, 899])], 500, 5_000);
-        assert_eq!(plan.seqs, [899, 900]);
-        assert_eq!(plan.skipped, 798);
+        let replay = plan(&[(800, &[900, 899])], 500, 5_000);
+        assert_eq!(replay.seqs, [899, 900]);
+        assert_eq!(replay.skipped, 798);
 
-        assert_eq!(plan_replay([], 500, 5_000), ReplayPlan::default());
+        assert_eq!(plan(&[], 500, 5_000), ReplayPlan::default());
+        assert_eq!(plan(&[(3, &[3, 2, 1])], 500, 0).skipped, 3);
+    }
+
+    /// However many topics are offered, no more than `total` candidates
+    /// are ever held, and a topic stops being read as soon as nothing more
+    /// of it could be kept.
+    #[test]
+    fn a_replay_holds_no_more_than_its_total_however_many_topics() {
+        let mut bound = ReplayBound::new(500, 50);
+        let mut read = 0usize;
+        // A thousand topics of five hundred each, interleaved sequences.
+        for topic in 0..1_000u64 {
+            bound.topic(500);
+            for n in (0..500u64).rev() {
+                read += 1;
+                if !bound.offer(n * 1_000 + topic) {
+                    break;
+                }
+            }
+        }
+        let replay = bound.finish();
+        assert!(replay.peak <= 50, "held {}", replay.peak);
+        assert_eq!(replay.seqs.len(), 50);
+        assert_eq!(
+            replay.seqs,
+            (0..50).map(|n| 499_000 + 950 + n).collect::<Vec<_>>()
+        );
+        assert_eq!(replay.skipped, 500_000 - 50);
+        assert!(
+            read < 5_000,
+            "read {read}: a few rows of each topic, not five hundred"
+        );
     }
 }

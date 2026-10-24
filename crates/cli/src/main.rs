@@ -4814,9 +4814,13 @@ async fn run() -> Result<()> {
                                 }
                                 println!("{}", format::message_line_at(&message, seq));
                             }
-                            Response::Lagged { skipped } => eprintln!(
-                                "agentdocker: {skipped} message(s) were skipped; a topic replays at most its newest {} on one watch",
-                                agentdocker_core::topic::REPLAY_PER_TOPIC
+                            Response::Lagged {
+                                skipped,
+                                replay: true,
+                            } => eprintln!(
+                                "agentdocker: {skipped} older kept topic message(s) not replayed; one watch replays at most a topic's newest {} and {} in all",
+                                agentdocker_core::topic::REPLAY_PER_TOPIC,
+                                agentdocker_core::topic::REPLAY_TOTAL
                             ),
                             _ => {}
                         }

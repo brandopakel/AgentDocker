@@ -5,7 +5,7 @@
 //! keeps its meaning after any prune. Retention is per topic and project:
 //! one project's traffic on a topic never pushes another's out.
 use super::*;
-use agentdocker_core::topic::{self, ReplayPlan, TopicCursor, TopicPost};
+use agentdocker_core::topic::{self, ReplayBound, ReplayPlan, TopicCursor, TopicPost};
 
 /// What one subscribe replays: the kept messages, oldest first, each with
 /// its sequence, and how many past where the subscriber starts the bounds
@@ -66,63 +66,10 @@ impl Store {
     /// The kept messages a subscription replays: for every kept topic its
     /// patterns match, the messages past where it starts there
     /// ([`topic::start`]) that its reader may see ([`topic::visible`]),
-    /// bounded by [`topic::plan_replay`].
+    /// chosen by [`Store::topic_replay_plan`]. Only the chosen messages'
+    /// JSON is read.
     pub(crate) fn topic_replay(&self, request: &ReplayRequest<'_>) -> Result<TopicReplay> {
-        if request.patterns.is_empty()
-            || topic::start(request.reader.is_some(), None, request.after).is_none()
-        {
-            return Ok(TopicReplay::default());
-        }
-        let cursors: HashMap<String, u64> = match request.reader {
-            Some(reader) => self.topic_cursors(reader)?.into_iter().collect(),
-            None => HashMap::new(),
-        };
-        let topics: Vec<String> = {
-            let mut stmt = self
-                .conn
-                .prepare_cached("SELECT DISTINCT topic FROM topic_messages ORDER BY topic")?;
-            stmt.query_map([], |row| row.get::<_, String>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?
-        };
-        let scope = request.scope.map(ProjectId::as_str);
-        let per_topic = i64::try_from(request.per_topic).unwrap_or(i64::MAX);
-        let mut count = self.conn.prepare_cached(
-            "SELECT COUNT(*) FROM topic_messages
-             WHERE topic = ?1 AND seq > ?2 AND (?3 IS NULL OR project IS NULL OR project = ?3)",
-        )?;
-        let mut newest = self.conn.prepare_cached(
-            "SELECT seq FROM topic_messages
-             WHERE topic = ?1 AND seq > ?2 AND (?3 IS NULL OR project IS NULL OR project = ?3)
-             ORDER BY seq DESC LIMIT ?4",
-        )?;
-        let mut waiting = Vec::new();
-        for topic in topics.iter().filter(|topic| {
-            request
-                .patterns
-                .iter()
-                .any(|pattern| agentdocker_core::topic_matches(pattern, topic))
-        }) {
-            let Some(start) = topic::start(
-                request.reader.is_some(),
-                cursors.get(topic).copied(),
-                request.after,
-            ) else {
-                continue;
-            };
-            let start = sql_seq(start);
-            let pending: i64 = count.query_row(params![topic, start, scope], |row| row.get(0))?;
-            if pending == 0 {
-                continue;
-            }
-            let seqs: Vec<u64> = newest
-                .query_map(params![topic, start, scope, per_topic], |row| {
-                    row.get::<_, i64>(0).map(seq_of)
-                })?
-                .collect::<std::result::Result<_, _>>()?;
-            waiting.push((seq_of(pending), seqs));
-        }
-        let ReplayPlan { seqs, skipped } =
-            topic::plan_replay(waiting, request.per_topic, request.total);
+        let ReplayPlan { seqs, skipped, .. } = self.topic_replay_plan(request)?;
         let mut json = self
             .conn
             .prepare_cached("SELECT json FROM topic_messages WHERE seq = ?1")?;
@@ -132,6 +79,75 @@ impl Store {
             messages.push((seq, serde_json::from_str(&text)?));
         }
         Ok(TopicReplay { messages, skipped })
+    }
+
+    /// The sequences a subscription replays, chosen while the topics are
+    /// read, one at a time: each kept topic name is found by one indexed
+    /// seek past the last (never collected into a list), a matching topic's
+    /// cursor by a point read, and its waiting messages are offered newest
+    /// first to a [`ReplayBound`], which stops reading that topic as soon as
+    /// nothing more of it could be kept. At most `total` candidate
+    /// sequences are held at once, whatever the number of topics; per
+    /// matching topic the work is one count and at most `per_topic` rows.
+    pub(crate) fn topic_replay_plan(&self, request: &ReplayRequest<'_>) -> Result<ReplayPlan> {
+        if request.patterns.is_empty()
+            || topic::start(request.reader.is_some(), None, request.after).is_none()
+        {
+            return Ok(ReplayPlan::default());
+        }
+        let mut first = self
+            .conn
+            .prepare_cached("SELECT topic FROM topic_messages ORDER BY topic LIMIT 1")?;
+        let mut next = self.conn.prepare_cached(
+            "SELECT topic FROM topic_messages WHERE topic > ?1 ORDER BY topic LIMIT 1",
+        )?;
+        let mut cursor = self
+            .conn
+            .prepare_cached("SELECT seq FROM topic_cursors WHERE agent = ?1 AND topic = ?2")?;
+        let mut count = self.conn.prepare_cached(
+            "SELECT COUNT(*) FROM topic_messages
+             WHERE topic = ?1 AND seq > ?2 AND (?3 IS NULL OR project IS NULL OR project = ?3)",
+        )?;
+        let mut newest = self.conn.prepare_cached(
+            "SELECT seq FROM topic_messages
+             WHERE topic = ?1 AND seq > ?2 AND (?3 IS NULL OR project IS NULL OR project = ?3)
+             ORDER BY seq DESC LIMIT ?4",
+        )?;
+        let scope = request.scope.map(ProjectId::as_str);
+        let per_topic = i64::try_from(request.per_topic).unwrap_or(i64::MAX);
+        let mut bound = ReplayBound::new(request.per_topic, request.total);
+        let mut current: Option<String> = first.query_row([], |row| row.get(0)).optional()?;
+        while let Some(topic) = current {
+            let matching = request
+                .patterns
+                .iter()
+                .any(|pattern| agentdocker_core::topic_matches(pattern, &topic));
+            let held = match (matching, request.reader) {
+                (true, Some(reader)) => cursor
+                    .query_row(params![reader.as_str(), topic], |row| row.get::<_, i64>(0))
+                    .optional()?
+                    .map(seq_of),
+                _ => None,
+            };
+            let start = matching
+                .then(|| topic::start(request.reader.is_some(), held, request.after))
+                .flatten();
+            if let Some(start) = start.map(sql_seq) {
+                let pending: i64 =
+                    count.query_row(params![topic, start, scope], |row| row.get(0))?;
+                if pending > 0 {
+                    bound.topic(seq_of(pending));
+                    let mut rows = newest.query(params![topic, start, scope, per_topic])?;
+                    while let Some(row) = rows.next()? {
+                        if !bound.offer(seq_of(row.get(0)?)) {
+                            break;
+                        }
+                    }
+                }
+            }
+            current = next.query_row([&topic], |row| row.get(0)).optional()?;
+        }
+        Ok(bound.finish())
     }
 
     /// Where `ids` stand in the topic log, for those that are kept topic
@@ -483,6 +499,58 @@ mod tests {
         }
         kept.retain(|k| !doomed.contains(&k.seq));
         doomed.len()
+    }
+
+    /// Many topics, each with more waiting than its share: one subscribe
+    /// to `#` never holds more than its total in candidates while it reads
+    /// them, for an agent with no cursors and for a watcher with no agent
+    /// replaying from the start alike, and still replays the newest.
+    #[test]
+    fn a_replay_across_many_topics_holds_no_more_than_its_total() {
+        const TOPIC_COUNT: usize = 300;
+        const EACH: usize = 20;
+        const SHARE: usize = 10;
+        const CAP: usize = 50;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("state.db")).unwrap();
+        let base = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let mut all = Vec::new();
+        {
+            let tx = write_transaction(&store.conn).unwrap();
+            // Round by round, so the newest are spread over every topic.
+            for round in 0..EACH {
+                for topic in 0..TOPIC_COUNT {
+                    let name = format!("feed/{topic:03}");
+                    let message = Envelope::new(
+                        "sender",
+                        Destination::Topic(name.clone()),
+                        "notice",
+                        serde_json::json!({ "round": round }),
+                        None,
+                        base,
+                    );
+                    all.push(store.keep_topic_message(&message, &name, None).unwrap().seq);
+                }
+            }
+            tx.commit().unwrap();
+        }
+        let patterns = vec!["#".to_owned()];
+        let reader = AgentId::from("reader");
+        for (reader, after) in [(Some(&reader), None), (None, Some(0))] {
+            let plan = store
+                .topic_replay_plan(&ReplayRequest {
+                    patterns: &patterns,
+                    scope: None,
+                    reader,
+                    after,
+                    per_topic: SHARE,
+                    total: CAP,
+                })
+                .unwrap();
+            assert!(plan.peak <= CAP, "held {} candidates at once", plan.peak);
+            assert_eq!(plan.seqs, all[all.len() - CAP..]);
+            assert_eq!(plan.skipped, (TOPIC_COUNT * EACH - CAP) as u64);
+        }
     }
 
     proptest! {
