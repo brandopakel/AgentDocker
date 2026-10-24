@@ -26,8 +26,14 @@
 //! never stops the daemon. What an answer may do is core's rule
 //! ([`judgment::decide`], [`judgment::raise`]): promote to waiting for the
 //! person, never anything else. A promotion is kept on the agent's record
-//! until its screen changes, another process is behind it, or the judge is
-//! turned off.
+//! until its screen changes, another process is behind it, its screen can
+//! no longer be read, or the judge is turned off ([`judgment::review`]): a
+//! screen lost for a reason of the agent's own — a second claimant of its
+//! herdr session, no one pane holding that session, a moved or replaced
+//! pane, a tmux pane that is gone or no longer holds its process, no
+//! source left at all — takes the judgment off in that pass; a source
+//! that gives no answer at all takes it off only after
+//! [`judgment::OUTAGE_PASSES`] passes in a row.
 //!
 //! The key leaves the process only in the `Authorization` header; it is
 //! never logged, and no status or event names it or the address.
@@ -40,7 +46,8 @@ use super::*;
 use agentdocker_core::Activity;
 use agentdocker_core::config::JudgeConfig;
 use agentdocker_core::judgment::{
-    self, JudgeState, JudgeStatus, Outcome, ScreenJudgment, Thresholds,
+    self, ClearReason, JudgeState, JudgeStatus, Outcome, Review, ScreenJudgment, Thresholds,
+    Unreadable,
 };
 use agentdocker_core::multiplexer::Evidence;
 use sha2::{Digest, Sha256};
@@ -100,6 +107,27 @@ fn descends(parents: &HashMap<u32, u32>, agent: u32, ancestor: u32) -> bool {
         }
     }
     false
+}
+
+/// Where `record`'s screen is read from this pass, if anywhere: its
+/// managed terminal, the tmux pane it registered from, or — by the binding
+/// the status bridge uses, and only for the session's sole claimant, by
+/// its rule — the herdr pane holding its provider session.
+fn source_of(
+    record: &AgentRecord,
+    terminals: &HashMap<AgentId, supervisor::Session>,
+    herdr_bound: &super::herdr::Watches,
+    socket_of: &super::herdr::SocketOf,
+) -> Option<Source> {
+    if terminals.contains_key(&record.id) {
+        return Some(Source::Terminal);
+    }
+    if let Some((socket, pane)) = tmux_pane(record) {
+        return Some(Source::Tmux { socket, pane });
+    }
+    let (socket, session) = super::herdr::herdr_binding(record, socket_of)?;
+    (super::herdr::claimant(herdr_bound, &socket, &session) == Some(&record.id))
+        .then_some(Source::Herdr { socket, session })
 }
 
 /// One screen being watched.
@@ -162,6 +190,9 @@ pub(in crate::daemon) struct Judge {
     reads_started: u64,
     reads_applied: u64,
     screens: HashMap<AgentId, Watched>,
+    /// For each judged agent whose source gave no answer, how many passes
+    /// in a row it has not ([`judgment::review`]).
+    outages: HashMap<AgentId, u32>,
     calls: VecDeque<Instant>,
     backoff_until: Option<Instant>,
     /// The last call's failure, until one succeeds.
@@ -200,6 +231,7 @@ impl Default for Judge {
             reads_started: 0,
             reads_applied: 0,
             screens: HashMap::new(),
+            outages: HashMap::new(),
             calls: VecDeque::new(),
             backoff_until: None,
             problem: None,
@@ -241,6 +273,7 @@ impl Judge {
         self.generation += 1;
         self.setting = setting;
         self.screens.clear();
+        self.outages.clear();
         self.calls.clear();
         self.backoff_until = None;
         self.problem = None;
@@ -619,7 +652,7 @@ impl Daemon {
             })
             .collect();
         for (agent, screen) in standing {
-            state.clear_judgment(&agent, &screen, "judge_off");
+            state.clear_judgment(&agent, &screen, ClearReason::JudgeOff);
         }
     }
 
@@ -643,7 +676,10 @@ impl Daemon {
     /// herdr pane read only while it alone holds the agent's provider
     /// session and the agent alone claims it, both checked before and
     /// after the read. A pane that cannot be read so is no screen, and
-    /// says nothing more: it is not the judge's failure.
+    /// says nothing more: it is not the judge's failure. Why there is none
+    /// is kept apart: lost for a reason of the agent's own, or its source
+    /// as a whole silent ([`Unreadable`]), which a standing judgment of
+    /// the screen is reviewed with.
     async fn read_source(
         &self,
         pass: &mut Pass,
@@ -651,14 +687,17 @@ impl Daemon {
         source: &Source,
         pid: Option<u32>,
         process: Option<DateTime<Utc>>,
-    ) -> Option<Vec<String>> {
+    ) -> Result<Vec<String>, Unreadable> {
         let text = match source {
             Source::Terminal => {
-                let (bytes, size) = pass.terminals.get(agent)?.screen();
+                let (bytes, size) = pass.terminals.get(agent).ok_or(Unreadable::Lost)?.screen();
                 draw(&bytes, size)
             }
             Source::Tmux { socket, pane } => {
-                let (pid, parents) = (pid?, pass.parents.clone()?);
+                let pid = pid.ok_or(Unreadable::Lost)?;
+                // The process table, read once a pass: one that could not
+                // be read says nothing of any pane.
+                let parents = pass.parents.clone().ok_or(Unreadable::Outage)?;
                 let (program, deadline) = {
                     let judge = lock(&self.judge);
                     (judge.tmux.clone(), judge.capture_deadline)
@@ -666,7 +705,7 @@ impl Daemon {
                 let (socket, pane) = (socket.clone(), pane.clone());
                 tokio::task::spawn_blocking(move || {
                     if process.is_some() && agentdocker_host::procinfo::start_time(pid) != process {
-                        return None;
+                        return Err(Unreadable::Lost);
                     }
                     multiplexer::tmux::capture_bound(
                         &program,
@@ -675,14 +714,19 @@ impl Daemon {
                         |holder| descends(&parents, pid, holder),
                         deadline,
                     )
-                    .ok()
+                    .map_err(|uncaptured| match uncaptured {
+                        // tmux could not be run or ran past its deadline:
+                        // its server, not this pane.
+                        multiplexer::tmux::Uncaptured::Unanswered(_) => Unreadable::Outage,
+                        multiplexer::tmux::Uncaptured::Refused(_) => Unreadable::Lost,
+                    })
                 })
                 .await
-                .ok()??
+                .unwrap_or(Err(Unreadable::Outage))?
             }
             Source::Herdr { socket, session } => {
                 if pass.silent.contains(socket) {
-                    return None;
+                    return Err(Unreadable::Outage);
                 }
                 let (socket_of, timeout) = {
                     let judge = lock(&self.judge);
@@ -696,59 +740,62 @@ impl Daemon {
                     || lock(&self.state).herdr_sole_claimant(agent, socket, session, &socket_of);
                 if !alone() {
                     debug!(agent = %agent.short(), "herdr pane not read: its session is claimed twice");
-                    return None;
+                    return Err(Unreadable::Lost);
                 }
                 let text = match super::herdr::read_screen(socket, session, timeout).await {
                     Ok(text) => text,
                     Err(unread) => {
-                        if matches!(unread, super::herdr::Unread::Silent(_)) {
-                            pass.silent.insert(socket.clone());
-                        }
+                        let why = match unread {
+                            super::herdr::Unread::Silent(_) => {
+                                pass.silent.insert(socket.clone());
+                                Unreadable::Outage
+                            }
+                            super::herdr::Unread::Pane(_) => Unreadable::Lost,
+                        };
                         let reason = unread.reason();
                         debug!(agent = %agent.short(), %reason, "herdr pane not read");
-                        return None;
+                        return Err(why);
                     }
                 };
                 if !alone() {
                     debug!(agent = %agent.short(), "herdr pane dropped: its session was claimed twice while it was read");
-                    return None;
+                    return Err(Unreadable::Lost);
                 }
                 text
             }
         };
         lock(&self.judge).reads += 1;
-        Some(judgment::screen_tail(&text))
+        Ok(judgment::screen_tail(&text))
     }
 
     /// Read every screen there is to read, keep track of which have gone
-    /// quiet, take off judgments whose screen moved on, and say which
-    /// quiet screens are due to be asked about.
+    /// quiet, take off judgments whose screen moved on or can no longer be
+    /// read, and say which quiet screens are due to be asked about.
     async fn read_screens(self: &Arc<Self>, setup: &Setup) -> (Pass, Vec<Due>) {
         let terminals: HashMap<AgentId, supervisor::Session> = lock(&self.sessions).clone();
         let socket_of = lock(&self.judge).herdr_socket_of.clone();
         let now = Utc::now();
         let mut candidates: Vec<Candidate> = {
-            let state = lock(&self.state);
+            let mut state = lock(&self.state);
             let herdr_bound = state.herdr_bound(&socket_of);
-            state
+            // Judged live agents with no screen this pass may read: no
+            // source left, or a herdr session a second agent now claims.
+            let mut unread = Vec::new();
+            let candidates: Vec<Candidate> = state
                 .registry
                 .all()
                 .filter(|record| record.status.is_live())
                 .filter_map(|record| {
-                    let source = if terminals.contains_key(&record.id) {
-                        Source::Terminal
-                    } else if let Some((socket, pane)) = tmux_pane(record) {
-                        Source::Tmux { socket, pane }
-                    } else {
-                        // The binding the status bridge uses, and only
-                        // for the session's sole claimant, by its rule.
-                        let (socket, session) = super::herdr::herdr_binding(record, &socket_of)?;
-                        if super::herdr::claimant(&herdr_bound, &socket, &session)
-                            != Some(&record.id)
-                        {
-                            return None;
+                    let Some(source) = source_of(record, &terminals, &herdr_bound, &socket_of)
+                    else {
+                        if let Some(standing) = &record.judged {
+                            unread.push((
+                                record.id.clone(),
+                                standing.clone(),
+                                record.process_started_at,
+                            ));
                         }
-                        Source::Herdr { socket, session }
+                        return None;
                     };
                     Some(Candidate {
                         agent: record.id.clone(),
@@ -762,7 +809,17 @@ impl Daemon {
                         standing: record.judged.clone(),
                     })
                 })
-                .collect()
+                .collect();
+            // Taken off in the hold that found them unreadable, so the
+            // claim or the record they were found by cannot change first.
+            for (agent, standing, process) in unread {
+                if let Review::Clear(reason) =
+                    judgment::review(&standing, process, Err(Unreadable::Lost), 0)
+                {
+                    state.clear_judgment(&agent, &standing.screen, reason);
+                }
+            }
+            candidates
         };
         // Terminals first: a tmux server or herdr that does not answer
         // holds only its own panes, each for at most its deadlines.
@@ -784,15 +841,23 @@ impl Daemon {
             parents,
             silent: HashSet::new(),
         };
-        lock(&self.judge)
-            .screens
-            .retain(|agent, _| candidates.iter().any(|c| &c.agent == agent));
+        {
+            let mut judge = lock(&self.judge);
+            judge
+                .screens
+                .retain(|agent, _| candidates.iter().any(|c| &c.agent == agent));
+            judge.outages.retain(|agent, _| {
+                candidates
+                    .iter()
+                    .any(|c| &c.agent == agent && c.standing.is_some())
+            });
+        }
         let mut due = Vec::new();
         for candidate in candidates {
             if !self.judge_current(setup.generation) {
                 return (pass, Vec::new());
             }
-            let Some(lines) = self
+            let lines = match self
                 .read_source(
                     &mut pass,
                     &candidate.agent,
@@ -801,8 +866,19 @@ impl Daemon {
                     candidate.process,
                 )
                 .await
-            else {
-                continue;
+            {
+                Ok(lines) => lines,
+                Err(unreadable) => {
+                    if let Some(standing) = &candidate.standing {
+                        self.review_judgment(
+                            &candidate.agent,
+                            standing,
+                            candidate.process,
+                            Err(unreadable),
+                        );
+                    }
+                    continue;
+                }
             };
             let read_at = Utc::now();
             let screen = digest(&lines);
@@ -820,11 +896,7 @@ impl Daemon {
                 (quiet_now, watched.changed_at)
             };
             if let Some(standing) = &candidate.standing {
-                if standing.process_started_at != candidate.process {
-                    self.clear_judgment(&candidate.agent, &standing.screen, "process_changed");
-                } else if standing.screen != screen {
-                    self.clear_judgment(&candidate.agent, &standing.screen, "screen_changed");
-                }
+                self.review_judgment(&candidate.agent, standing, candidate.process, Ok(&screen));
                 continue;
             }
             if quiet_for && candidate.eligible && !lines.is_empty() {
@@ -857,6 +929,7 @@ impl Daemon {
                 screen.process,
             )
             .await
+            .ok()
             .map(|lines| digest(&lines));
         if now.as_deref() == Some(screen.digest.as_str()) {
             return true;
@@ -1065,17 +1138,51 @@ impl Daemon {
         ) == Persisted::Committed
     }
 
+    /// What this pass makes of `agent`'s standing judgment, by core's rule
+    /// ([`judgment::review`]): its screen read, with this digest, or why
+    /// not. The count of silent passes is kept here between passes; a
+    /// judgment taken off because its screen could not be read forgets the
+    /// screen too, so once it can be read again it is watched from the
+    /// start and asked about afresh rather than taken as already answered.
+    fn review_judgment(
+        &self,
+        agent: &AgentId,
+        standing: &ScreenJudgment,
+        process: Option<DateTime<Utc>>,
+        screen: Result<&str, Unreadable>,
+    ) {
+        let review = {
+            let mut judge = lock(&self.judge);
+            let before = judge.outages.remove(agent).unwrap_or(0);
+            let review = judgment::review(standing, process, screen, before);
+            match review {
+                Review::Stands { outages } if outages > 0 => {
+                    judge.outages.insert(agent.clone(), outages);
+                }
+                Review::Clear(ClearReason::ScreenUnreadable) => {
+                    judge.screens.remove(agent);
+                }
+                Review::Stands { .. } | Review::Clear(_) => {}
+            }
+            review
+        };
+        if let Review::Clear(reason) = review {
+            self.clear_judgment(agent, &standing.screen, reason);
+        }
+    }
+
     /// Take a judgment off an agent's record, if it is still the one
     /// judged from `screen`.
-    fn clear_judgment(&self, agent: &AgentId, screen: &str, reason: &str) {
+    fn clear_judgment(&self, agent: &AgentId, screen: &str, reason: ClearReason) {
         lock(&self.state).clear_judgment(agent, screen, reason);
     }
 }
 
 impl State {
     /// Take a judgment off an agent's record, if it is still the one
-    /// judged from `screen`, with its event, in the caller's hold.
-    fn clear_judgment(&mut self, agent: &AgentId, screen: &str, reason: &str) {
+    /// judged from `screen`, with its event, in the caller's hold: one
+    /// event for each judgment, however often it is found to be over.
+    fn clear_judgment(&mut self, agent: &AgentId, screen: &str, reason: ClearReason) {
         let Some(mut record) = self.registry.get(agent).cloned() else {
             return;
         };
@@ -1086,7 +1193,7 @@ impl State {
         let event = Event::new(
             EventKind::AgentJudgmentCleared {
                 agent: agent.clone(),
-                reason: reason.to_owned(),
+                reason: reason.as_str().to_owned(),
             },
             Utc::now(),
         );
@@ -2647,6 +2754,340 @@ mod tests {
             "every session was looked for"
         );
         assert_eq!(calls(&fake), 0);
+    }
+
+    /// Every `agent_judgment_cleared` so far, as agent and reason.
+    fn clearings(events: &mut tokio::sync::broadcast::Receiver<Event>) -> Vec<(AgentId, String)> {
+        let mut cleared = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::AgentJudgmentCleared { agent, reason } = event.kind {
+                cleared.push((agent, reason));
+            }
+        }
+        cleared
+    }
+
+    const UNREADABLE: &str = "screen_unreadable";
+
+    /// A second agent claiming the session after the judgment: the screen
+    /// is no longer the judged agent's to read, so its judgment comes off
+    /// in the next pass, with one event however many passes follow, and
+    /// the pane is not read while two claim it. Once one alone claims it
+    /// again, its screen is asked about afresh.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_herdr_twin_arriving_after_a_judgment_clears_it() {
+        use super::super::herdr::fake::pane;
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.96, 0.31, 0.02, 0.01]);
+        configure(&dir, &url, "");
+        let daemon = open(&dir);
+        let mut events = daemon.subscribe_events();
+        let herdr = herdr_fake(
+            &daemon,
+            &dir,
+            json!([pane("w1:p1", "blocked", Some("thread-1"))]),
+        );
+        herdr.show("w1:p1", HERDR_DIALOG);
+        let agent = in_herdr_pane(&daemon, &dir, "first", "thread-1").await;
+        daemon.judge_once().await;
+        assert!(record(&daemon, &agent).judged.is_some());
+        assert_eq!(calls(&fake), 1);
+        let read = herdr.panes_read().len();
+
+        let twin = in_herdr_pane(&daemon, &dir, "twin", "thread-1").await;
+        for _ in 0..3 {
+            daemon.judge_once().await;
+        }
+        assert!(record(&daemon, &agent).judged.is_none(), "taken off");
+        assert!(!matches!(
+            activity(&daemon, &agent).await,
+            Activity::Waiting { .. }
+        ));
+        assert_eq!(
+            clearings(&mut events),
+            [(agent.clone(), UNREADABLE.to_owned())],
+            "one event for the judgment"
+        );
+        assert_eq!(
+            herdr.panes_read().len(),
+            read,
+            "not read while two claim it"
+        );
+        assert!(record(&daemon, &twin).judged.is_none());
+        assert_eq!(calls(&fake), 1);
+
+        // The twin ends: the screen is the first agent's again, watched
+        // from the start and asked about anew.
+        lock(&daemon.state).registry.get_mut(&twin).unwrap().status =
+            AgentStatus::Exited { code: Some(0) };
+        daemon.judge_once().await;
+        assert_eq!(calls(&fake), 2);
+        assert!(record(&daemon, &agent).judged.is_some());
+    }
+
+    /// The session moving to another pane while it is read, and later its
+    /// pane holding another session with none holding the agent's: each
+    /// time the screen is lost, and the judgment comes off in that pass,
+    /// one event for each judgment.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_moved_or_replaced_herdr_pane_clears_its_judgment() {
+        use super::super::herdr::fake::{Reads, pane};
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.96, 0.31, 0.02, 0.01]);
+        configure(&dir, &url, "");
+        let daemon = open(&dir);
+        let mut events = daemon.subscribe_events();
+        let herdr = herdr_fake(
+            &daemon,
+            &dir,
+            json!([pane("w1:p1", "blocked", Some("thread-1"))]),
+        );
+        herdr.show("w1:p1", HERDR_DIALOG);
+        herdr.show("w2:p4", HERDR_DIALOG);
+        let agent = in_herdr_pane(&daemon, &dir, "in-herdr", "thread-1").await;
+        daemon.judge_once().await;
+        assert!(record(&daemon, &agent).judged.is_some());
+
+        // Moved to w2:p4 as w1:p1 is read.
+        herdr.reads(Reads::AnswerThenMove(json!([
+            pane("w1:p1", "idle", Some("thread-2")),
+            pane("w2:p4", "blocked", Some("thread-1")),
+        ])));
+        daemon.judge_once().await;
+        assert!(record(&daemon, &agent).judged.is_none(), "moved");
+        assert_eq!(
+            clearings(&mut events),
+            [(agent.clone(), UNREADABLE.to_owned())]
+        );
+
+        // Settled in w2:p4, where it is read and judged afresh.
+        herdr.reads(Reads::Answer);
+        daemon.judge_once().await;
+        assert_eq!(calls(&fake), 2);
+        assert!(record(&daemon, &agent).judged.is_some());
+
+        // The pane is given to another session; none holds the agent's.
+        herdr.set_panes(json!([pane("w2:p4", "idle", Some("thread-9"))]));
+        for _ in 0..3 {
+            daemon.judge_once().await;
+        }
+        assert!(record(&daemon, &agent).judged.is_none(), "replaced");
+        assert_eq!(
+            clearings(&mut events),
+            [(agent.clone(), UNREADABLE.to_owned())],
+            "one event for the second judgment"
+        );
+        assert_eq!(calls(&fake), 2);
+    }
+
+    /// A herdr that does not answer `pane.list` says nothing of the
+    /// agent's screen: the judgment stands through fewer than
+    /// [`judgment::OUTAGE_PASSES`] silent passes in a row, a pass that reads
+    /// the screen starts the count again, and the judgment comes off once
+    /// on the last of that many in a row.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_silent_herdr_clears_a_judgment_only_after_passes_in_a_row() {
+        use super::super::herdr::fake::pane;
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.96, 0.31, 0.02, 0.01]);
+        configure(&dir, &url, "");
+        let daemon = open(&dir);
+        let mut events = daemon.subscribe_events();
+        let herdr = herdr_fake(
+            &daemon,
+            &dir,
+            json!([pane("w1:p1", "blocked", Some("thread-1"))]),
+        );
+        herdr.show("w1:p1", HERDR_DIALOG);
+        let agent = in_herdr_pane(&daemon, &dir, "in-herdr", "thread-1").await;
+        daemon.judge_once().await;
+        let judged = record(&daemon, &agent).judged.expect("judged");
+
+        let passes = async |n: u32| {
+            for _ in 0..n {
+                daemon.judge_once().await;
+            }
+        };
+        herdr.silence(true);
+        passes(1).await;
+        assert_eq!(record(&daemon, &agent).judged.as_ref(), Some(&judged));
+        assert!(
+            clearings(&mut events).is_empty(),
+            "one silent pass clears nothing"
+        );
+        passes(judgment::OUTAGE_PASSES - 2).await;
+        assert_eq!(record(&daemon, &agent).judged.as_ref(), Some(&judged));
+        assert!(clearings(&mut events).is_empty());
+
+        // Answering again: the same screen, and the count starts over.
+        herdr.silence(false);
+        passes(1).await;
+        assert_eq!(record(&daemon, &agent).judged.as_ref(), Some(&judged));
+        herdr.silence(true);
+        passes(judgment::OUTAGE_PASSES - 1).await;
+        assert_eq!(
+            record(&daemon, &agent).judged.as_ref(),
+            Some(&judged),
+            "silent passes not in a row"
+        );
+        assert!(clearings(&mut events).is_empty());
+
+        passes(1).await;
+        assert!(record(&daemon, &agent).judged.is_none());
+        passes(2).await;
+        assert_eq!(
+            clearings(&mut events),
+            [(agent.clone(), UNREADABLE.to_owned())],
+            "once, on the last pass in a row"
+        );
+        assert_eq!(calls(&fake), 1);
+    }
+
+    /// A tmux pane the agent registered from, read through a stand-in for
+    /// tmux: a tmux that runs past its deadline clears the judgment only
+    /// after [`judgment::OUTAGE_PASSES`] passes in a row; a pane tmux says
+    /// is not there, or one that no longer holds the agent's process,
+    /// clears it in the pass that finds it so, one event each.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unreadable_tmux_pane_clears_its_judgment() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.98, 0.2, 0.0, 0.0]);
+        configure(&dir, &url, "");
+        let daemon = open(&dir);
+        let mut events = daemon.subscribe_events();
+        let mut guest = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let mut stranger = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        // How the stand-in answers: `ok`, `hang` (past its deadline),
+        // `gone` (tmux says the pane is not there) or `replaced` (the pane
+        // holds a process that is not the agent's).
+        let mode = dir.path().join("mode");
+        let set = |how: &str| std::fs::write(&mode, how).unwrap();
+        set("ok");
+        let stand_in = dir.path().join("tmux");
+        std::fs::write(
+            &stand_in,
+            format!(
+                "#!/bin/sh\n\
+                 mode=$(cat '{mode}')\n\
+                 case \"$mode\" in\n\
+                 hang) exec sleep 30;;\n\
+                 gone) echo \"can't find pane: %0\" >&2; exit 1;;\n\
+                 esac\n\
+                 case \"$3\" in\n\
+                 display-message) if [ \"$mode\" = replaced ]; then echo {stranger}; else echo {guest}; fi;;\n\
+                 capture-pane) printf 'Bash command\\n\\n  rm -rf build\\n\\nDo you want to proceed?\\n> 1. Yes\\n  2. No\\n';;\n\
+                 esac\n",
+                mode = mode.display(),
+                stranger = stranger.id(),
+                guest = guest.id(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
+        {
+            let mut judge = lock(&daemon.judge);
+            judge.tmux = stand_in;
+            judge.capture_deadline = StdDuration::from_millis(300);
+        }
+        let Response::Agent { agent } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "in-tmux".into(),
+                    workdir: Some(dir.path().to_path_buf()),
+                    ..AgentSpec::default()
+                },
+                pid: Some(guest.id()),
+                session: Some(agentdocker_core::multiplexer::Session {
+                    kind: "tmux".into(),
+                    session: Some("0".into()),
+                    pane: Some("%0".into()),
+                    socket: Some(dir.path().join("server").display().to_string()),
+                    evidence: Evidence::Environment,
+                }),
+            })
+            .await
+        else {
+            panic!("registered");
+        };
+        let agent = agent.id;
+        daemon.judge_once().await;
+        assert_eq!(calls(&fake), 1);
+        assert!(
+            record(&daemon, &agent).judged.is_some(),
+            "judged from the pane"
+        );
+
+        // tmux runs past its deadline: its server, not the pane.
+        set("hang");
+        for _ in 1..judgment::OUTAGE_PASSES {
+            daemon.judge_once().await;
+        }
+        assert!(record(&daemon, &agent).judged.is_some(), "stands for now");
+        assert!(clearings(&mut events).is_empty());
+        daemon.judge_once().await;
+        assert!(record(&daemon, &agent).judged.is_none());
+        assert_eq!(
+            clearings(&mut events),
+            [(agent.clone(), UNREADABLE.to_owned())]
+        );
+
+        for (how, calls_before) in [("gone", 2), ("replaced", 3)] {
+            set("ok");
+            daemon.judge_once().await;
+            assert_eq!(calls(&fake), calls_before, "asked about afresh");
+            assert!(record(&daemon, &agent).judged.is_some());
+            set(how);
+            for _ in 0..3 {
+                daemon.judge_once().await;
+            }
+            assert!(record(&daemon, &agent).judged.is_none(), "{how}");
+            assert_eq!(
+                clearings(&mut events),
+                [(agent.clone(), UNREADABLE.to_owned())],
+                "{how}: one event"
+            );
+        }
+        assert_eq!(calls(&fake), 3, "nothing sent of an unreadable pane");
+        for child in [&mut guest, &mut stranger] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    /// A judged agent whose screen there is no longer any source for — its
+    /// terminal gone while its record still lives — loses the judgment in
+    /// the next pass, once.
+    #[tokio::test]
+    async fn a_judged_agent_left_with_no_screen_is_cleared() {
+        let dir = TempDir::new().unwrap();
+        let (url, _fake) = server([0.98, 0.2, 0.0, 0.0]);
+        configure(&dir, &url, "");
+        let daemon = open(&dir);
+        let mut events = daemon.subscribe_events();
+        let agent = showing(&daemon, &dir, "managed", DIALOG).await;
+        daemon.judge_once().await;
+        assert!(record(&daemon, &agent).judged.is_some());
+        let session = lock(&daemon.sessions).remove(&agent).unwrap();
+        daemon.judge_once().await;
+        daemon.judge_once().await;
+        assert!(record(&daemon, &agent).judged.is_none());
+        assert_eq!(
+            clearings(&mut events),
+            [(agent.clone(), UNREADABLE.to_owned())]
+        );
+        lock(&daemon.sessions).insert(agent.clone(), session);
+        stop(&daemon, &agent).await;
     }
 
     /// A key file anyone else can read is refused, as is a relative path

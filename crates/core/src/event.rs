@@ -657,15 +657,20 @@ pub enum EventKind {
     /// The opt-in judge read an agent's quiet screen as waiting on the
     /// person: what for, how sure, and which screen of which process (by
     /// digest, never its text). Its record carries the judgment and its
-    /// activity reads as waiting, marked judged, until the screen changes,
-    /// its own adapter reports, or another process is behind it.
+    /// activity reads as waiting, marked judged, until the screen changes
+    /// or can no longer be read, its own adapter reports, or another
+    /// process is behind it.
     AgentJudgedNeedsYou {
         agent: AgentId,
         judgment: crate::judgment::ScreenJudgment,
     },
     /// A judgment was taken off an agent's record: `screen_changed` (its
     /// screen moved on), `process_changed` (another process is behind
-    /// it) or `judge_off` (the judge was turned off or cannot run).
+    /// it), `screen_unreadable` (its screen can no longer be read: lost
+    /// for a reason of the agent's own, or its source silent for
+    /// [`crate::judgment::OUTAGE_PASSES`] passes in a row) or `judge_off`
+    /// (the judge was turned off or cannot run), as
+    /// [`crate::judgment::ClearReason`] words them.
     AgentJudgmentCleared {
         agent: AgentId,
         reason: String,

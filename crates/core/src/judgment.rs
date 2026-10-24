@@ -13,7 +13,9 @@
 //! state as it was. Nothing here can take an agent out of waiting, clear
 //! a state or demote one; an answer the judge is unsure of does nothing.
 //! The model's answers are advisory: AgentDocker reads no state from an
-//! agent's words anywhere else.
+//! agent's words anywhere else. [`review`] says when a promotion comes
+//! off again: another process, a changed screen, or a screen that can no
+//! longer be read ([`Unreadable`], [`OUTAGE_PASSES`]).
 //!
 //! Everything in this module is pure: what is asked, how an answer is
 //! read and what it may change. Reading screens, the key and the network
@@ -406,6 +408,99 @@ impl ScreenJudgment {
     }
 }
 
+/// Why a judgment came off an agent's record, as
+/// `agent_judgment_cleared` says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClearReason {
+    /// Its screen moved on.
+    ScreenChanged,
+    /// Another process is behind the agent.
+    ProcessChanged,
+    /// Its screen can no longer be read ([`Unreadable`]).
+    ScreenUnreadable,
+    /// The judge was turned off or cannot run.
+    JudgeOff,
+}
+
+impl ClearReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ScreenChanged => "screen_changed",
+            Self::ProcessChanged => "process_changed",
+            Self::ScreenUnreadable => "screen_unreadable",
+            Self::JudgeOff => "judge_off",
+        }
+    }
+}
+
+/// Why a pass could not read an agent's screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unreadable {
+    /// For a reason of the agent's own: a second agent claims its herdr
+    /// session, no one pane holds that session or it moved while read,
+    /// herdr refused or garbled that pane's read, its tmux pane or server
+    /// is gone or no longer holds its process, or it has no screen to read
+    /// at all any more. What was judged can no longer be vouched for.
+    Lost,
+    /// Its source as a whole gave no answer this pass — a herdr socket
+    /// that did not answer `pane.list`, a tmux that could not be run or
+    /// ran past its deadline, a process table that could not be read —
+    /// which says nothing of this agent's screen.
+    Outage,
+}
+
+/// How many passes in a row an agent's source must give no answer
+/// ([`Unreadable::Outage`]) before a judgment of its screen comes off. A
+/// herdr or tmux busy for a moment costs a pass or two and clears
+/// nothing, so a standing wait does not drop out of Needs you and come
+/// back with the next answer; one dark for four passes — twenty seconds
+/// at a pass every five, the quiet period [`QUIET_SECS`] itself — has
+/// been unseen for as long as it takes a screen to be judged at all, and
+/// the judgment comes off once, without waiting on the source for ever.
+pub const OUTAGE_PASSES: u32 = 4;
+
+/// What a pass makes of a standing judgment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Review {
+    /// It stands. `outages` is how many passes in a row, this one
+    /// included, found the agent's source silent, kept for the next pass.
+    Stands { outages: u32 },
+    /// It comes off the record, for this reason.
+    Clear(ClearReason),
+}
+
+/// What one pass makes of `standing`, for an agent whose record names
+/// `process`: its screen was read, with this digest, or could not be;
+/// `outages` is how many passes in a row before this one found the
+/// agent's source silent. Another process behind the agent ends it
+/// whatever the screen; a screen read that is not the judged one ends it;
+/// a screen lost for the agent's own reason ends it at once; and its
+/// source silent ends it only on the [`OUTAGE_PASSES`]th pass in a row,
+/// a screen read in between starting the count again.
+pub fn review(
+    standing: &ScreenJudgment,
+    process: Option<DateTime<Utc>>,
+    screen: Result<&str, Unreadable>,
+    outages: u32,
+) -> Review {
+    if standing.process_started_at != process {
+        return Review::Clear(ClearReason::ProcessChanged);
+    }
+    match screen {
+        Ok(digest) if digest != standing.screen => Review::Clear(ClearReason::ScreenChanged),
+        Ok(_) => Review::Stands { outages: 0 },
+        Err(Unreadable::Lost) => Review::Clear(ClearReason::ScreenUnreadable),
+        Err(Unreadable::Outage) => {
+            let outages = outages.saturating_add(1);
+            if outages >= OUTAGE_PASSES {
+                Review::Clear(ClearReason::ScreenUnreadable)
+            } else {
+                Review::Stands { outages }
+            }
+        }
+    }
+}
+
 /// Apply a standing promotion to what the agent is otherwise doing. It
 /// lifts working, idle and unknown to waiting for the person, marked as
 /// judged; every other state — a wait its adapter reported, a block on a
@@ -767,6 +862,61 @@ mod tests {
     }
 
     #[test]
+    fn clear_reasons_read_as_the_event_says_them() {
+        assert_eq!(ClearReason::ScreenChanged.as_str(), "screen_changed");
+        assert_eq!(ClearReason::ProcessChanged.as_str(), "process_changed");
+        assert_eq!(ClearReason::ScreenUnreadable.as_str(), "screen_unreadable");
+        assert_eq!(ClearReason::JudgeOff.as_str(), "judge_off");
+    }
+
+    /// A screen read decides as before; one lost for the agent's own
+    /// reason clears at once; a silent source clears only on the
+    /// [`OUTAGE_PASSES`]th pass in a row; another process clears whatever
+    /// the screen.
+    #[test]
+    fn a_pass_reviews_a_standing_judgment() {
+        let judged = judgment(WaitReason::Permission, 960);
+        let process = judged.process_started_at;
+        let same = judged.screen.as_str();
+        assert_eq!(
+            review(&judged, process, Ok(same), 2),
+            Review::Stands { outages: 0 },
+            "a screen read starts the count again"
+        );
+        assert_eq!(
+            review(&judged, process, Ok("fedcba9876543210"), 0),
+            Review::Clear(ClearReason::ScreenChanged)
+        );
+        assert_eq!(
+            review(&judged, process, Err(Unreadable::Lost), 0),
+            Review::Clear(ClearReason::ScreenUnreadable)
+        );
+        for before in 0..OUTAGE_PASSES - 1 {
+            assert_eq!(
+                review(&judged, process, Err(Unreadable::Outage), before),
+                Review::Stands {
+                    outages: before + 1
+                }
+            );
+        }
+        assert_eq!(
+            review(&judged, process, Err(Unreadable::Outage), OUTAGE_PASSES - 1),
+            Review::Clear(ClearReason::ScreenUnreadable)
+        );
+        assert_eq!(
+            review(&judged, process, Err(Unreadable::Outage), u32::MAX),
+            Review::Clear(ClearReason::ScreenUnreadable),
+            "the count saturates"
+        );
+        for screen in [Ok(same), Err(Unreadable::Lost), Err(Unreadable::Outage)] {
+            assert_eq!(
+                review(&judged, Some(at(-5)), screen, 0),
+                Review::Clear(ClearReason::ProcessChanged)
+            );
+        }
+    }
+
+    #[test]
     fn judgments_are_named_as_the_file_names_them() {
         assert_eq!(Judgment::parse("screens"), Some(Judgment::Screens));
         assert_eq!(Judgment::parse("summaries"), None);
@@ -874,6 +1024,48 @@ mod tests {
                     Outcome::Nothing => prop_assert!(false, "a clear answer promotes"),
                 }
             }
+        }
+
+        /// Over any run of passes of one process — its judged screen read,
+        /// lost, or its source silent — a judgment comes off exactly once,
+        /// at the first lost screen or the first [`OUTAGE_PASSES`] silent
+        /// passes in a row, whichever comes first, and never otherwise.
+        #[test]
+        fn a_judgment_comes_off_at_the_first_loss_or_long_outage(
+            passes in proptest::collection::vec(0u8..3, 0..24),
+        ) {
+            let judged = judgment(WaitReason::Question, 900);
+            let process = judged.process_started_at;
+            let mut expected = None;
+            let mut run = 0u32;
+            for (index, pass) in passes.iter().enumerate() {
+                match pass {
+                    0 => run = 0,
+                    1 => { expected = Some(index); break; }
+                    _ => {
+                        run += 1;
+                        if run == OUTAGE_PASSES { expected = Some(index); break; }
+                    }
+                }
+            }
+            let (mut outages, mut cleared) = (0u32, None);
+            for (index, pass) in passes.iter().enumerate() {
+                let screen = match pass {
+                    0 => Ok(judged.screen.as_str()),
+                    1 => Err(Unreadable::Lost),
+                    _ => Err(Unreadable::Outage),
+                };
+                match review(&judged, process, screen, outages) {
+                    Review::Stands { outages: kept } => outages = kept,
+                    Review::Clear(reason) => {
+                        prop_assert_eq!(reason, ClearReason::ScreenUnreadable);
+                        cleared = Some(index);
+                        // Off the record: no later pass reviews it.
+                        break;
+                    }
+                }
+            }
+            prop_assert_eq!(cleared, expected);
         }
     }
 }

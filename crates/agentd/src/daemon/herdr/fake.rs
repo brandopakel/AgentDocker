@@ -3,13 +3,14 @@
 //! panes it is given, `events.subscribe` acknowledges and then pushes what
 //! the test sends, and `pane.read` answers with the screen it is given for
 //! a pane, in the shape a live herdr 0.9.3 answered, or as the test says;
-//! what a test stages for the next read runs as that read arrives.
+//! what a test stages for the next read runs as that read arrives. Told to
+//! go silent, it takes every connection and answers no `pane.list`.
 //! It records every method it is asked, each subscription's request, each
 //! read's parameters, and each subscription the client closed.
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
@@ -38,6 +39,7 @@ type Hook = Box<dyn FnOnce() + Send>;
 
 pub(crate) struct Fake {
     panes: Arc<Mutex<Value>>,
+    silent: Arc<AtomicBool>,
     screens: Arc<Mutex<BTreeMap<String, String>>>,
     reads: Arc<Mutex<Reads>>,
     methods: Arc<Mutex<Vec<String>>>,
@@ -55,6 +57,7 @@ impl Fake {
         let listener = tokio::net::UnixListener::bind(path).unwrap();
         let fake = Self {
             panes: Arc::new(Mutex::new(panes)),
+            silent: Arc::default(),
             screens: Arc::default(),
             reads: Arc::new(Mutex::new(Reads::Answer)),
             methods: Arc::default(),
@@ -80,6 +83,7 @@ impl Fake {
     fn shared(&self) -> Shared {
         Shared {
             panes: self.panes.clone(),
+            silent: self.silent.clone(),
             screens: self.screens.clone(),
             reads: self.reads.clone(),
             methods: self.methods.clone(),
@@ -93,6 +97,12 @@ impl Fake {
 
     pub(crate) fn set_panes(&self, panes: Value) {
         *self.panes.lock().unwrap() = panes;
+    }
+
+    /// While `silent`, every `pane.list` is held open unanswered, as a
+    /// herdr that takes connections and never answers does.
+    pub(crate) fn silence(&self, silent: bool) {
+        self.silent.store(silent, Ordering::SeqCst);
     }
 
     /// What `pane` shows.
@@ -152,6 +162,7 @@ impl Fake {
 #[derive(Clone)]
 struct Shared {
     panes: Arc<Mutex<Value>>,
+    silent: Arc<AtomicBool>,
     screens: Arc<Mutex<BTreeMap<String, String>>>,
     reads: Arc<Mutex<Reads>>,
     methods: Arc<Mutex<Vec<String>>>,
@@ -176,6 +187,10 @@ impl Shared {
         self.methods.lock().unwrap().push(method.clone());
         let reply = match method.as_str() {
             "pane.list" => {
+                if self.silent.load(Ordering::SeqCst) {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    return;
+                }
                 let panes = self.panes.lock().unwrap().clone();
                 json!({"id": id, "result": {"type": "pane_list", "panes": panes}})
             }
