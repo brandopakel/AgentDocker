@@ -633,6 +633,13 @@ pub(crate) struct Named {
     /// The profile, as the spec spells it, when the named process is a Codex
     /// terminal whose own arguments resume the conversation the spec names.
     terminal: Option<String>,
+    /// Whether the named process's own command line resumes the very
+    /// session the spec names: Claude Code's `--resume <id>`, or a Codex
+    /// terminal's `resume <thread>`. Read from the kernel, not from the
+    /// spec, it is what lets a registration that joins the process's record
+    /// resume that session's ended records into it
+    /// ([`Authorized::fold_refusal`]).
+    resumed: bool,
     /// Profiles, as spelled, whose shared server stands in `chain` and serves
     /// the profile's control socket.
     served: Vec<String>,
@@ -752,6 +759,7 @@ fn gather(
     named: Process,
     live: &[Acting],
     terminal: Option<&Terminal>,
+    session: Option<&str>,
     kernel: &Kernel,
 ) -> (Named, Vec<Server>) {
     let (pid, born) = sender;
@@ -793,6 +801,16 @@ fn gather(
             && (kernel.arguments)(named_pid)
                 .is_some_and(|argv| procinfo::codex_resumes(&argv, &terminal.thread))
     });
+    let resumed = resumes.is_some()
+        || session.is_some_and(|session| {
+            (kernel.born)(named_pid) == Some(named_born)
+                && (kernel.arguments)(named_pid).is_some_and(|argv| {
+                    procinfo::resume_request(&argv)
+                        .and_then(|request| request.session)
+                        .as_deref()
+                        == Some(session)
+                })
+        });
     let mut profiles: Vec<(String, std::path::PathBuf)> = live
         .iter()
         .filter_map(|holder| {
@@ -842,6 +860,7 @@ fn gather(
             evaluated,
             launcher_in_chain,
             terminal: resumes.map(|t| t.label.clone()),
+            resumed,
             served: Vec::new(),
             profiles: looked,
             server_in_chain,
@@ -932,6 +951,11 @@ impl Authorized {
     /// a resumed session's own hooks run under its new process), when the
     /// sender may act as every ended record as the agent check finds it (the
     /// proven shared server of the profile they name), or from the person.
+    /// The record it joins counts as another agent's too, unless the joined
+    /// process's own command line resumes that very session
+    /// ([`Named::resumed`]): a hook joining the record its session's MCP
+    /// server made first. Neither record's labels are evidence that it may
+    /// become the ended one.
     pub(super) fn fold_refusal(
         &self,
         state: &State,
@@ -946,7 +970,7 @@ impl Authorized {
         let others = state
             .registry
             .live()
-            .filter(|agent| Some(&agent.id) != folding)
+            .filter(|agent| !(named.resumed && Some(&agent.id) == folding))
             .map(Acting::of);
         let blocker = named.fold_blocker(&ended, others)?;
         let pid = named.process.0;
@@ -1136,6 +1160,10 @@ impl Daemon {
                     named,
                     &live,
                     Terminal::of(&spec).as_ref(),
+                    spec.labels
+                        .get("session_id")
+                        .map(String::as_str)
+                        .filter(|session| !session.is_empty()),
                     &Kernel::host(),
                 )
             });
@@ -1896,6 +1924,26 @@ mod tests {
             terminal: Option<&Terminal>,
             serving: Option<u32>,
         ) -> Named {
+            self.naming(
+                sender,
+                named,
+                holders,
+                terminal,
+                terminal.map(|t| t.thread.as_str()),
+                serving,
+            )
+        }
+
+        /// [`Table::named`], the spec naming `session`.
+        fn naming(
+            &self,
+            sender: u32,
+            named: (u32, DateTime<Utc>),
+            holders: &[Acting],
+            terminal: Option<&Terminal>,
+            session: Option<&str>,
+            serving: Option<u32>,
+        ) -> Named {
             let step = |pid: u32| {
                 self.parents
                     .get(&pid)
@@ -1933,6 +1981,7 @@ mod tests {
                 named,
                 holders,
                 terminal,
+                session,
                 &kernel,
             );
             for server in servers {
@@ -2306,6 +2355,77 @@ mod tests {
             server.fold_blocker(&ended, []),
             Some(Blocker::Unknown)
         ));
+    }
+
+    /// A registration joining a process's record may resume an ended session
+    /// into it only when the process's own command line resumes that very
+    /// session ([`Named::resumed`]): `claude --resume <id>`, or a Codex
+    /// terminal's `resume <thread>`. Not another session, not `--continue`
+    /// or the picker, which name none, not a process that is not Claude
+    /// Code's, and not a pid reused since; and never on the spec alone.
+    #[test]
+    fn a_joined_process_resumes_only_the_session_its_own_command_line_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (codex, p, _) = table(&std::fs::canonicalize(tmp.path()).unwrap());
+        let table = Table {
+            parents: HashMap::from([
+                (100, 1),
+                (101, 100),
+                (110, 1),
+                (111, 110),
+                (120, 1),
+                (121, 120),
+                (130, 1),
+                (131, 130),
+            ]),
+            argv: HashMap::from([
+                (100, argv(&["claude", "--resume", "session-c"])),
+                (110, argv(&["claude", "--continue"])),
+                (120, argv(&["sh", "--resume", "session-c"])),
+                (130, argv(&["claude", "-r"])),
+            ]),
+            images: HashMap::new(),
+            unreadable: Vec::new(),
+            kernel_only: HashMap::new(),
+        };
+        let resumed = |sender: u32, named: u32, session: Option<&str>| {
+            table
+                .naming(
+                    sender,
+                    (named, at(i64::from(named))),
+                    &[],
+                    None,
+                    session,
+                    None,
+                )
+                .resumed
+        };
+        assert!(resumed(101, 100, Some("session-c")), "the session it names");
+        assert!(!resumed(101, 100, Some("session-d")), "another session");
+        assert!(!resumed(101, 100, None), "a spec naming none");
+        assert!(
+            !resumed(111, 110, Some("session-c")),
+            "--continue names none"
+        );
+        assert!(!resumed(131, 130, Some("session-c")), "nor does the picker");
+        assert!(!resumed(121, 120, Some("session-c")), "not Claude Code's");
+        assert!(
+            !table
+                .naming(101, (100, at(7)), &[], None, Some("session-c"), None)
+                .resumed,
+            "a pid reused since"
+        );
+        let thread = Terminal {
+            label: p.display().to_string(),
+            profile: p.clone(),
+            thread: THREAD.to_owned(),
+        };
+        assert!(
+            codex
+                .named(81, (81, at(81)), &[], Some(&thread), None)
+                .resumed,
+            "a Codex terminal resuming its thread"
+        );
     }
 
     /// A client for the registration tests: registers `spec` naming the
@@ -3094,12 +3214,16 @@ mod tests {
     /// a role and a message queued) resumes only from outside every other
     /// agent's session, or for the person. C, the child of live agent A,
     /// may not act as B; its registration of itself under B's session would
-    /// resume B, and is refused `identity_mismatch` with nothing done: B stays
-    /// ended with its process, role and message, no record is made under B's
-    /// session, and C still may not act as B. A process outside every
-    /// agent's session, as the person's own `claude --resume` is, resumes B
-    /// under B's id; and the person, registering a process that is not their
-    /// own, resumes another ended session.
+    /// resume B, as would its registration of A's process, which joins A's
+    /// record, and each is refused `identity_mismatch` with nothing done: B
+    /// stays ended with its process, role and message, A names no session,
+    /// no record is made under B's session, and C still may not act as B. A
+    /// process outside every agent's session, as the person's own `claude
+    /// --resume` is, resumes B under B's id; and the person, registering a
+    /// process that is not their own, resumes another ended session. A hook
+    /// joining the record its session's MCP server made first resumes the
+    /// session that session's own command line resumes, and no other; one
+    /// that already names its session is answered as it is.
     #[cfg(unix)]
     #[tokio::test]
     async fn an_ended_session_resumes_only_from_outside_every_other_agent_s_session() {
@@ -3216,7 +3340,7 @@ mod tests {
 
         // C, under live agent A's shell: a claim as B, a registration of
         // itself under B's session, and the claim again.
-        let impostor = "import json,os,socket,sys\ndef ask(request):\n    s=socket.socket(socket.AF_UNIX)\n    s.connect(sys.argv[1])\n    s.sendall(json.dumps(request).encode()+b'\\n')\n    return s.makefile().readline()\nclaim={'op':'claim','agent':sys.argv[2],'resource':sys.argv[3],'ttl_secs':60}\nfor request in [claim,{'op':'register','spec':json.loads(sys.argv[4]),'pid':os.getpid()},claim]:\n    print('reply:'+ask(request),end='',flush=True)\n";
+        let impostor = "import json,os,socket,sys\ndef ask(request):\n    s=socket.socket(socket.AF_UNIX)\n    s.connect(sys.argv[1])\n    s.sendall(json.dumps(request).encode()+b'\\n')\n    return s.makefile().readline()\nclaim={'op':'claim','agent':sys.argv[2],'resource':sys.argv[3],'ttl_secs':60}\nfor request in [claim,{'op':'register','spec':json.loads(sys.argv[4]),'pid':os.getpid()},{'op':'register','spec':json.loads(sys.argv[4]),'pid':os.getppid()},claim]:\n    print('reply:'+ask(request),end='',flush=True)\n";
         let mut a_shell = std::process::Command::new("sh")
             .arg("-c")
             .arg("read go; python3 -c \"$0\" \"$1\" \"$2\" \"$3\" \"$4\"; exit $?")
@@ -3241,22 +3365,23 @@ mod tests {
             .filter_map(|line| line.strip_prefix("reply:"))
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(replies.len(), 3, "{replies:?}");
+        assert_eq!(replies.len(), 4, "{replies:?}");
         assert!(
             identity_mismatch(&replies[0]),
             "C acts as B: {:?}",
             replies[0]
         );
+        for (reply, what) in [(&replies[1], "itself"), (&replies[2], "A's process")] {
+            assert!(
+                matches!(reply, Response::Error { code: ErrorCode::IdentityMismatch, details: Some(details), .. }
+                    if details["agent"] == b.id.as_str() && details["inside"] == a.id.as_str()),
+                "C resumes B, registering {what}: {reply:?}"
+            );
+        }
         assert!(
-            matches!(&replies[1], Response::Error { code: ErrorCode::IdentityMismatch, details: Some(details), .. }
-                if details["agent"] == b.id.as_str() && details["inside"] == a.id.as_str()),
-            "C resumes B: {:?}",
-            replies[1]
-        );
-        assert!(
-            identity_mismatch(&replies[2]),
+            identity_mismatch(&replies[3]),
             "C acts as B after: {:?}",
-            replies[2]
+            replies[3]
         );
         {
             let state = lock(&daemon.state);
@@ -3273,6 +3398,12 @@ mod tests {
             );
             let current = state.registry.get(&b.id).unwrap();
             assert_eq!(current, &b, "B is as it was");
+            let a_now = state.registry.get(&a.id).unwrap();
+            assert!(
+                !a_now.spec.labels.contains_key("session_id"),
+                "A learns no session"
+            );
+            assert_eq!(a_now.status, a.status);
         }
         assert_eq!(queued(b.id.clone()).await, messages, "B keeps its messages");
 
@@ -3327,6 +3458,98 @@ mod tests {
         );
         let _ = stranger.kill();
         let _ = stranger.wait();
+
+        // A live record that already names its session while an earlier
+        // life of that session has ended: a registration from inside it is
+        // answered with the record as it is, and folds nothing.
+        let mut e_shell = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("read go; python3 -c \"$0\" \"$1\" \"$2\" $$; exit $?")
+            .arg(register_self)
+            .arg(&daemon.socket)
+            .arg(spec("hook", "session-e"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let bound = register(
+            "agent-e".into(),
+            e_shell.id(),
+            [("session_id".to_owned(), "session-e".to_owned())].into(),
+        )
+        .await;
+        let e = ended("session-e").await;
+        writeln!(e_shell.stdin.take().unwrap(), "go").unwrap();
+        let output = tokio::task::spawn_blocking(move || e_shell.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        let reply: Response = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            matches!(&reply, Response::Agent { agent } if agent.id == bound.id),
+            "the record it is inside: {reply:?}"
+        );
+        assert_eq!(lock(&daemon.state).registry.get(&e.id).unwrap(), &e);
+
+        // `claude --resume session-c`, staged as an interpreter-run Claude
+        // Code so its command line is its own: its MCP server registers it
+        // first, naming no session; its hook then joins that record, naming
+        // session D and then session C.
+        if !std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
+            eprintln!("node is not installed here; skipping the joined resumption");
+            serving.abort();
+            return;
+        }
+        let c = ended("session-c").await;
+        let d = ended("session-d").await;
+        let cli = workdir.join("node_modules/@anthropic-ai/claude-code/cli.js");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cli,
+            "const {execFileSync}=require('child_process');\nrequire('fs').readSync(0,Buffer.alloc(1));\nconst [socket,script,...specs]=process.argv.slice(4);\nfor(const spec of specs){process.stdout.write('reply:'+execFileSync('python3',['-c',script,socket,spec,String(process.pid)]));}\n",
+        )
+        .unwrap();
+        let mut session = std::process::Command::new("node")
+            .arg(&cli)
+            .args(["--resume", "session-c"])
+            .arg(&daemon.socket)
+            .arg(register_self)
+            .arg(spec("hook", "session-d"))
+            .arg(spec("hook", "session-c"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let first = register("mcp-first".into(), session.id(), BTreeMap::new()).await;
+        assert_ne!(first.id, c.id);
+        writeln!(session.stdin.take().unwrap(), "go").unwrap();
+        let output = tokio::task::spawn_blocking(move || session.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        let replies: Vec<Response> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("reply:"))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 2, "{replies:?}");
+        assert!(
+            matches!(&replies[0], Response::Error { code: ErrorCode::IdentityMismatch, details: Some(details), .. }
+                if details["agent"] == d.id.as_str() && details["inside"] == first.id.as_str()),
+            "a session its command line does not resume: {:?}",
+            replies[0]
+        );
+        assert!(
+            matches!(&replies[1], Response::Agent { agent }
+                if agent.id == c.id && agent.pid == first.pid),
+            "the session it resumes: {:?}",
+            replies[1]
+        );
+        assert_eq!(lock(&daemon.state).registry.get(&d.id).unwrap(), &d);
         serving.abort();
     }
 

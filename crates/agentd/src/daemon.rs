@@ -5537,20 +5537,28 @@ impl State {
             // Joined, it may resume an ended record of the session it is
             // shown: which the registration must be allowed, before anything
             // is written.
+            let mut resume = true;
             if let Some(authorized) = authorized {
                 let mut joined = self.registry.get(&id).cloned().expect("just found");
-                if joined
+                let learns = joined
                     .spec
                     .labels
                     .get("session_id")
                     .is_none_or(|session| session.is_empty())
-                    && let Some(session) = session.cloned()
-                {
+                    && session.is_some();
+                if learns && let Some(session) = session.cloned() {
                     joined.spec.labels.insert("session_id".to_owned(), session);
                 }
                 let ended = self.fold_targets(&joined);
                 if let Some(refusal) = authorized.fold_refusal(self, Some(&id), &ended) {
-                    return refusal;
+                    // Taught the session now, the record would become its
+                    // ended lives on the registration's word alone. One that
+                    // already named it is answered as it is, and its ended
+                    // lives are left as they are.
+                    if learns {
+                        return refusal;
+                    }
+                    resume = false;
                 }
             }
             // The record takes on the session it has just been shown,
@@ -5630,7 +5638,11 @@ impl State {
             }
             let agent = self.registry.get(&id).cloned().expect("just found");
             return Response::Agent {
-                agent: self.resume_session(agent),
+                agent: if resume {
+                    self.resume_session(agent)
+                } else {
+                    agent
+                },
             };
         }
         // A fresh record that would resume an ended one: the registration
