@@ -400,8 +400,10 @@ Each parser pass reads at most 4 MiB/4,096 records; prefix validation is separat
 Records above the 1 MiB parser limit produce gaps. The whole operation limits captured input to 8 GiB,
 100,000 parsed samples, a 64 MiB metadata allowance, 1,024 reader gaps and five
 minutes between operations; discovery retains its 10,000-file limit. These are
-operation limits, not a hard RSS or OS-I/O deadline. Changing files or exhausted
-limits refuse without a partial JSON report. Temporary private accounting state
+operation limits, not a hard RSS or OS-I/O deadline. A file that grows during the
+scan, such as a session still being written, is read to the length captured when
+the scan started; any other change to an input, or an exhausted limit, refuses
+without a partial JSON report. Temporary private accounting state
 is removed before success; cleanup failure is an error. This command has no saved
 progress and does not reconcile gaps in the daemon's retained history.
 

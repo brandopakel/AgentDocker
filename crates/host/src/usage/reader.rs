@@ -69,8 +69,9 @@ struct Generation {
 }
 
 impl Generation {
-    /// Growth invalidates this snapshot, but is not proof that accepted bytes
-    /// changed. The collector must recapture and verify the entire old prefix.
+    /// A standalone read refuses any change. Growth is not proof that accepted
+    /// bytes changed, so it is told apart: the caller starts again from a
+    /// fresh snapshot rather than recording a gap.
     fn check(&self, observed: Self) -> Result<(), Error> {
         if *self == observed {
             Ok(())
@@ -78,6 +79,30 @@ impl Generation {
             Err(Error::SnapshotAdvanced)
         } else {
             Err(Error::Changed)
+        }
+    }
+
+    /// A session reads within the snapshot it starts from: the same file, no
+    /// shorter. Bytes past the snapshot are the writer's next records, left
+    /// for a later snapshot. Growth moves the change metadata, so the bytes
+    /// within the snapshot are proven by their digests, never by metadata:
+    /// a rewrite that also grows fails that proof now if it is read, and
+    /// otherwise the next session's whole proof, since the cursor keeps this
+    /// snapshot's generation and a grown file never reports it again. Another
+    /// file, a shorter one, or the same length under new change metadata is
+    /// still a changed source.
+    fn check_within(&self, observed: Self) -> Result<(), Error> {
+        match self.check(observed) {
+            Err(Error::SnapshotAdvanced) => Ok(()),
+            result => result,
+        }
+    }
+
+    fn admit(&self, observed: Self, within: bool) -> Result<(), Error> {
+        if within {
+            self.check_within(observed)
+        } else {
+            self.check(observed)
         }
     }
 
@@ -207,15 +232,18 @@ impl Cursor {
     }
 
     fn validate_file(&self, file: &mut File, elapsed: Duration) -> Result<u64, Error> {
-        self.validate_suffix(file, 0, [0; 32], elapsed)
+        self.validate_suffix(file, 0, [0; 32], elapsed, false)
     }
 
+    /// `within`: a session's recheck, which reads within its snapshot and
+    /// leaves growth past it for later (`Generation::check_within`).
     fn validate_suffix(
         &self,
         file: &mut File,
         start: u64,
         mut prefix: [u8; 32],
         elapsed: Duration,
+        within: bool,
     ) -> Result<u64, Error> {
         if self.version != CURSOR_VERSION
             || self.offset > self.generation.length
@@ -223,7 +251,7 @@ impl Cursor {
         {
             return Err(Error::Cursor);
         }
-        self.generation.check(Generation::capture(file)?)?;
+        self.generation.admit(Generation::capture(file)?, within)?;
         if self.offset - start > MAX_BATCH {
             return Err(Error::ValidationIncomplete);
         }
@@ -259,7 +287,7 @@ impl Cursor {
             return Err(Error::ValidationIncomplete);
         }
         self.generation
-            .check(Generation::capture(reader.get_ref().get_ref())?)?;
+            .admit(Generation::capture(reader.get_ref().get_ref())?, within)?;
         Ok(covered - start)
     }
 }
@@ -338,7 +366,9 @@ pub fn scan(
 }
 
 // `prepared` is private: only Session may supply its retained, byte-verified
-// prefix. Public standalone scans continue to verify the entire prefix.
+// prefix, and only a session reads within a snapshot the file has outgrown.
+// Public standalone scans continue to verify the entire prefix and refuse any
+// change to the file.
 fn scan_checked(
     path: &Path,
     runtime: Runtime,
@@ -357,7 +387,7 @@ fn scan_checked(
         return Err(Error::Budget);
     }
     let mut file = crate::files::open_regular(path)?;
-    let generation = Generation::capture(&file)?;
+    let opened = Generation::capture(&file)?;
     let mut validation_bytes_read = 0;
     let mut cursor = match previous {
         Some(prior) => {
@@ -367,7 +397,7 @@ fn scan_checked(
             {
                 return Err(Error::Cursor);
             }
-            prior.generation.check(generation.clone())?;
+            prior.generation.admit(opened.clone(), prepared)?;
             if !prepared {
                 validation_bytes_read += prior.validate_file(&mut file, PREFIX_DEADLINE)?;
             }
@@ -386,7 +416,7 @@ fn scan_checked(
         None => Cursor {
             version: CURSOR_VERSION,
             runtime,
-            generation: generation.clone(),
+            generation: opened,
             offset: 0,
             prefix_digest: [0; 32],
             codex: Codex::default(),
@@ -394,6 +424,10 @@ fn scan_checked(
             last_record: None,
         },
     };
+    // What this scan reads: a session's snapshot, which the file may since
+    // have outgrown (bytes past it wait for a later snapshot), or for a
+    // standalone scan the file exactly as it was opened.
+    let generation = cursor.generation.clone();
     let started = Instant::now();
     // Validate the restored record boundary; charge the byte to the same pass.
     let boundary_bytes = u64::from(cursor.offset > 0);
@@ -487,8 +521,9 @@ fn scan_checked(
     let bytes_read = boundary_bytes + allowance - reader.get_ref().limit();
     // Check both the opened object and the path. A renamed/replaced file must
     // not validate the earlier path merely because its old descriptor survives.
-    generation.check(Generation::capture(reader.get_ref().get_ref())?)?;
+    generation.admit(Generation::capture(reader.get_ref().get_ref())?, prepared)?;
     if prepared {
+        // Reread the parsed suffix: its digest must match what was parsed.
         let prior = previous.ok_or(Error::Cursor)?;
         let mut check = crate::files::open_regular(path)?;
         validation_bytes_read += cursor.validate_suffix(
@@ -496,8 +531,9 @@ fn scan_checked(
             prior.offset,
             prior.prefix_digest,
             PREFIX_DEADLINE,
+            true,
         )?;
-        generation.check(Generation::capture(&crate::files::open_regular(path)?)?)?;
+        generation.check_within(Generation::capture(&crate::files::open_regular(path)?)?)?;
     } else {
         validation_bytes_read += cursor.validate_counted(path)?;
     }

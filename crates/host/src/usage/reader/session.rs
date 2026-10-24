@@ -2,6 +2,11 @@
 //! serialized. A whole proof rehashes every accepted byte; a session resuming
 //! exactly the generation its cursor was proven under rehashes only the last
 //! accepted record, and the collector schedules whole proofs for those files.
+//!
+//! A session reads within the snapshot it starts from. A writer may keep
+//! appending meanwhile: the proof, the parse and the recheck before commit
+//! still cover that snapshot, and the bytes past it wait for the next session.
+//! Truncation, replacement or a same-length rewrite still fails the session.
 use super::*;
 
 pub struct Preparation {
@@ -31,7 +36,8 @@ impl Session {
     }
 
     /// Use the collector's already captured high-water mark for this generation.
-    /// The proof rehashes every accepted byte of `previous`.
+    /// The proof rehashes every accepted byte of `previous`, and the session
+    /// parses no further than `captured`, however far the file grows meanwhile.
     pub fn at_snapshot(captured: Cursor, previous: Option<&Cursor>) -> Result<Self, Error> {
         Self::start(captured, previous, false)
     }
@@ -118,7 +124,9 @@ impl Session {
             return Err(Error::Budget);
         }
         let mut file = crate::files::open_regular(path)?;
-        self.cursor.generation.check(Generation::capture(&file)?)?;
+        self.cursor
+            .generation
+            .check_within(Generation::capture(&file)?)?;
         let start = Instant::now();
         file.seek(SeekFrom::Start(self.checked))?;
         let allowance = bytes.min(self.cursor.offset - self.checked);
@@ -150,10 +158,10 @@ impl Session {
         let bytes_read = allowance - reader.get_ref().limit();
         self.cursor
             .generation
-            .check(Generation::capture(reader.get_ref().get_ref())?)?;
+            .check_within(Generation::capture(reader.get_ref().get_ref())?)?;
         self.cursor
             .generation
-            .check(Generation::capture(&crate::files::open_regular(path)?)?)?;
+            .check_within(Generation::capture(&crate::files::open_regular(path)?)?)?;
         self.ready = self.checked == self.cursor.offset;
         if self.ready && (!self.line.is_empty() || self.prefix != self.cursor.prefix_digest) {
             self.ready = false;
@@ -187,8 +195,10 @@ impl Session {
         self.cursor.offset()
     }
 
-    /// Parse/recheck only the new bounded suffix after a fully verified prefix.
-    /// File generation checks cover both that proof and the new proposal.
+    /// Parse/recheck only the new bounded suffix after a fully verified prefix,
+    /// up to the session's snapshot: a record the snapshot cuts mid-line is a
+    /// pending tail, even if the writer has finished it since. File generation
+    /// checks cover both that proof and the new proposal.
     pub fn scan(&mut self, path: &Path, budget: Budget) -> Result<Batch, Error> {
         if !self.ready {
             return Err(Error::ValidationIncomplete);
@@ -208,7 +218,7 @@ impl Session {
         }
         cursor
             .generation
-            .check(Generation::capture(&crate::files::open_regular(path)?)?)?;
+            .check_within(Generation::capture(&crate::files::open_regular(path)?)?)?;
         Ok(())
     }
 }
@@ -240,51 +250,127 @@ mod tests {
     }
 
     #[test]
-    fn growth_defers_each_snapshot_stage_but_a_rewritten_prefix_still_fails() {
+    fn a_session_reads_within_its_snapshot_while_the_file_grows() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("growing.jsonl");
         std::fs::write(&path, row(0)).unwrap();
         let accepted = scan(&path, Runtime::Claude, None, Budget::default()).unwrap();
-        let mut session = Session::open(&path, Runtime::Claude, Some(&accepted.cursor)).unwrap();
-        let append = |id| {
+        let append = |text: &str| {
             std::fs::OpenOptions::new()
                 .append(true)
                 .open(&path)
                 .unwrap()
-                .write_all(row(id).as_bytes())
+                .write_all(text.as_bytes())
                 .unwrap();
         };
-        append(1);
-        assert!(matches!(
-            prepare(&mut session, &path),
-            Err(Error::SnapshotAdvanced)
-        ));
-        let mut session = Session::open(&path, Runtime::Claude, Some(&accepted.cursor)).unwrap();
-        prepare(&mut session, &path).unwrap();
-        append(2);
-        assert!(matches!(
-            session.scan(&path, Budget::default()),
-            Err(Error::SnapshotAdvanced)
-        ));
-        let mut session = Session::open(&path, Runtime::Claude, Some(&accepted.cursor)).unwrap();
-        prepare(&mut session, &path).unwrap();
-        let proposal = session.scan(&path, Budget::default()).unwrap();
-        assert_eq!(proposal.samples.len(), 2);
-        append(3);
-        assert!(matches!(
-            session.validate(&path, &proposal.cursor),
-            Err(Error::SnapshotAdvanced)
-        ));
+        let through = |ids: std::ops::Range<usize>| ids.map(|id| row(id).len() as u64).sum::<u64>();
 
-        // Growth alone cannot certify an append-only writer. A changed accepted
-        // record, even alongside an append, must fail the fresh prefix proof.
-        std::fs::write(
-            &path,
-            format!("{}{}{}{}{}", row(9), row(1), row(2), row(3), row(4)),
-        )
-        .unwrap();
+        // The writer appends during every stage: the proof, the parse and the
+        // recheck before commit. Each keeps to the snapshot the session took.
+        append(&row(1));
+        let mut session = Session::open(&path, Runtime::Claude, Some(&accepted.cursor)).unwrap();
+        append(&row(2));
+        prepare(&mut session, &path).unwrap();
+        append(&row(3));
+        let proposal = session.scan(&path, Budget::default()).unwrap();
+        assert_eq!(proposal.stop, Stop::Complete);
+        assert_eq!(proposal.samples.len(), 1);
+        assert_eq!(proposal.cursor.offset(), through(0..2));
+        assert_eq!(proposal.bytes_read, 1 + row(1).len() as u64);
+        append(&row(4));
+        session.validate(&path, &proposal.cursor).unwrap();
+
+        // The next session takes what was appended since, once, after proving
+        // the whole prefix again: growth moved the metadata. A record its
+        // snapshot cuts mid-line stays pending and unparsed, though the writer
+        // finishes it straight away; the session after that takes it whole.
+        let cut = row(6).len() / 2;
+        append(&row(5));
+        append(&row(6)[..cut]);
+        let mut next = Session::open(&path, Runtime::Claude, Some(&proposal.cursor)).unwrap();
+        assert!(next.proves_whole_prefix());
+        append(&row(6)[cut..]);
+        assert_eq!(prove(&mut next, &path).unwrap(), through(0..2));
+        let batch = next.scan(&path, Budget::default()).unwrap();
+        assert_eq!(batch.stop, Stop::PendingTail);
+        assert_eq!(batch.samples.len(), 4);
+        assert_eq!(batch.cursor.offset(), through(0..6));
+        next.validate(&path, &batch.cursor).unwrap();
+        let (last, samples) = collect(&path, Some(&batch.cursor));
+        assert_eq!(samples, 1);
+        assert_eq!(last.offset(), through(0..7));
+
+        // Growth never certifies an append-only writer. A changed accepted
+        // record, even alongside an append, fails the fresh prefix proof.
+        let rewrite = |rows: &[usize]| {
+            std::fs::write(&path, rows.iter().map(|id| row(*id)).collect::<String>()).unwrap();
+        };
+        rewrite(&[9, 1, 2, 3, 4]);
         let mut changed = Session::open(&path, Runtime::Claude, Some(&accepted.cursor)).unwrap();
         assert!(matches!(prepare(&mut changed, &path), Err(Error::Changed)));
+
+        // One that lands after a session read the prefix is past that session:
+        // its digests matched what it read, and growth hides the rewrite from
+        // metadata. The cursor it proposes keeps its snapshot's generation,
+        // which a grown file never reports again, so the next session takes a
+        // whole proof, and that proof finds the rewrite.
+        rewrite(&[0, 1]);
+        let (cursor, _) = collect(&path, None);
+        append(&row(2));
+        let mut session = Session::open(&path, Runtime::Claude, Some(&cursor)).unwrap();
+        prepare(&mut session, &path).unwrap();
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.write_all(row(8).as_bytes()).unwrap();
+        drop(file);
+        append(&row(3));
+        let proposal = session.scan(&path, Budget::default()).unwrap();
+        assert_eq!(proposal.samples.len(), 1);
+        session.validate(&path, &proposal.cursor).unwrap();
+        let mut next = Session::open(&path, Runtime::Claude, Some(&proposal.cursor)).unwrap();
+        assert!(next.proves_whole_prefix());
+        assert!(matches!(prepare(&mut next, &path), Err(Error::Changed)));
+
+        // Truncation, replacement and a same-length rewrite during a session
+        // still fail it: none of them is growth.
+        let session_at = |rows: &[usize]| {
+            rewrite(rows);
+            let (cursor, _) = collect(&path, None);
+            append(&row(2));
+            let mut session = Session::open(&path, Runtime::Claude, Some(&cursor)).unwrap();
+            prepare(&mut session, &path).unwrap();
+            session
+        };
+        let mut session = session_at(&[0, 1]);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(row(0).len() as u64)
+            .unwrap();
+        assert!(matches!(
+            session.scan(&path, Budget::default()),
+            Err(Error::Changed)
+        ));
+        let mut session = session_at(&[0, 1]);
+        let replacement = temp.path().join("replacement.jsonl");
+        std::fs::write(&replacement, [0, 1, 2, 3].map(row).concat()).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        assert!(matches!(
+            session.scan(&path, Budget::default()),
+            Err(Error::Changed)
+        ));
+        let mut session = session_at(&[0, 1]);
+        let proposal = session.scan(&path, Budget::default()).unwrap();
+        let length = std::fs::metadata(&path).unwrap().len();
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.write_all(row(8).as_bytes()).unwrap();
+        drop(file);
+        filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(1, 0)).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), length);
+        assert!(matches!(
+            session.validate(&path, &proposal.cursor),
+            Err(Error::Changed)
+        ));
     }
 
     #[test]
@@ -417,10 +503,16 @@ mod tests {
         drop(file);
         let mut changed = Session::open(&path, Runtime::Claude, Some(&batch.cursor)).unwrap();
         assert!(matches!(prepare(&mut changed, &path), Err(Error::Changed)));
+        // The session whose snapshot is the current length refuses the
+        // rewrite on its recheck. The first session's snapshot has since been
+        // outgrown, which hides the rewrite from its metadata; a later proof,
+        // like the one above, is what finds it.
+        filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(1, 0)).unwrap();
         assert!(matches!(
-            session.validate(&path, &last),
-            Err(Error::SnapshotAdvanced)
+            resumed.validate(&path, &batch.cursor),
+            Err(Error::Changed)
         ));
+        session.validate(&path, &last).unwrap();
         std::fs::OpenOptions::new()
             .write(true)
             .open(&path)
