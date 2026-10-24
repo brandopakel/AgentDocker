@@ -23,8 +23,12 @@ PREFLIGHT := python3 scripts/build_storage.py
 # directory, so each run gets its own timestamped folder underneath. Spotlight
 # skips a `.noindex` folder, and each packaged app is unregistered from Launch
 # Services once packaging or installing has run (an assessment registers it),
-# so `open -a AgentDocker` never opens a copy in the checkout.
-ARTIFACTS ?= artifacts/local.noindex
+# so `open -a AgentDocker` never opens a copy in the checkout. Packages made
+# before this lived in `artifacts/local`, where Spotlight found them; packaging
+# moves them over first (`migrate-artifacts`).
+NOINDEX := artifacts/local.noindex
+LEGACY := artifacts/local
+ARTIFACTS ?= $(NOINDEX)
 STAMP := $(shell date +%Y%m%d-%H%M%S)
 PACKAGE_DIR := $(ARTIFACTS)/desktop-$(STAMP)
 VERSION := $(shell python3 -c 'import tomllib;print(tomllib.load(open("Cargo.toml","rb"))["workspace"]["package"]["version"])')
@@ -40,10 +44,11 @@ PAYLOAD := agentdocker-desktop
 LOCAL_PREVIEW :=
 endif
 LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-# Forget packaged apps in Launch Services; nothing where there is none.
-FORGET = if [ -x "$(LSREGISTER)" ]; then for app in $(1); do "$(LSREGISTER)" -u "$$app" >/dev/null 2>&1 || true; done; fi
+# Forget packaged apps in Launch Services; nothing where there is none, and
+# nothing for a pattern that matched no package.
+FORGET = if [ -x "$(LSREGISTER)" ]; then for app in $(1); do [ -e "$$app" ] || continue; "$(LSREGISTER)" -u "$$app" >/dev/null 2>&1 || true; done; fi
 
-.PHONY: help build check test clippy fmt app install install-preview status rollback run smoke restart-daemon clean-artifacts
+.PHONY: help build check test clippy fmt app install install-preview status rollback run smoke restart-daemon clean-artifacts migrate-artifacts
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[1m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -68,7 +73,7 @@ fmt: ## Format everything
 check: ## The standard verification gate used before a PR
 	bash scripts/verify.sh check
 
-app: ## Release build + native package for this machine (no signing)
+app: migrate-artifacts ## Release build + native package for this machine (no signing)
 	$(PREFLIGHT)
 	mkdir -p "$(ARTIFACTS)"
 	native="$$(python3 scripts/build_native.py)" && \
@@ -114,5 +119,20 @@ smoke: ## Native workflow acceptance against the release binaries build_native.p
 	  python3 scripts/iced_workflow_smoke.py --binary-dir "$$bindir" --output "$(ARTIFACTS)/smoke-$(STAMP)"
 
 clean-artifacts: ## Remove local package and smoke output (keeps the Cargo cache)
-	$(call FORGET,"$(ARTIFACTS)"/desktop-*/$(PAYLOAD) artifacts/local/desktop-*/$(PAYLOAD))
-	rm -rf "$(ARTIFACTS)" artifacts/local
+	$(call FORGET,"$(ARTIFACTS)"/desktop-*/$(PAYLOAD) "$(LEGACY)"/desktop-*/$(PAYLOAD))
+	rm -rf "$(ARTIFACTS)" "$(LEGACY)"
+
+# Forget every package in the old folder and move its contents where
+# Spotlight does not look; an entry already there by that name stays put.
+migrate-artifacts:
+	if [ "$(ARTIFACTS)" != "$(LEGACY)" ] && [ -d "$(LEGACY)" ] && [ ! -L "$(LEGACY)" ]; then \
+	  $(call FORGET,"$(LEGACY)"/desktop-*/$(PAYLOAD)); \
+	  mkdir -p "$(NOINDEX)"; \
+	  for old in "$(LEGACY)"/*; do \
+	    name="$${old##*/}"; \
+	    if [ ! -e "$$old" ] || [ "$$name" = latest ] || [ -e "$(NOINDEX)/$$name" ]; then continue; fi; \
+	    mv "$$old" "$(NOINDEX)/"; \
+	  done; \
+	  rm -f "$(LEGACY)/latest"; \
+	  rmdir "$(LEGACY)" 2>/dev/null || echo "Left $(LEGACY): entries already in $(NOINDEX)"; \
+	fi
