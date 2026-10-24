@@ -942,21 +942,29 @@ impl App {
                 small("Restarting the background service…", c).width(Fill),
             ]
         } else if self.shell.confirm_daemon_restart {
+            // The question and what it costs, as counts: the sessions this
+            // app launched stop, some of them start again; nothing else is
+            // said, since nothing else changes.
             let (stop, back) = self.restart_cost();
+            let stops = |n: usize| {
+                if n == 1 {
+                    "1 launched session stops".to_owned()
+                } else {
+                    format!("{n} launched sessions stop")
+                }
+            };
             let cost = match (stop, back) {
-                (0, _) => "Sessions keep running and reconnect on their own.".to_owned(),
-                (n, 0) => format!(
-                    "{n} session{} AgentDocker started will stop. Sessions started in a terminal keep running.",
-                    if n == 1 { "" } else { "s" }
-                ),
+                (0, _) => String::new(),
+                (n, 0) => format!(" {}.", stops(n)),
                 (n, m) => format!(
-                    "{n} session{} AgentDocker started will stop and {m} will start again. Sessions started in a terminal keep running.",
-                    if n == 1 { "" } else { "s" }
+                    " {}, {m} start{} again.",
+                    stops(n),
+                    if m == 1 { "s" } else { "" }
                 ),
             };
             row![
                 dot(c.amber, 7.0, c),
-                small(format!("Restart the background service now? {cost}"), c).width(Fill),
+                small(format!("Restart the background service?{cost}"), c).width(Fill),
                 primary(
                     "daemon-restart-confirm",
                     "Restart",
@@ -1639,7 +1647,14 @@ impl App {
         .spacing(1)
         .width(Fill);
         let label = container(label).width(Fill).clip(true);
-        let mut content = row![hint(monogram(&name, &seed, 20.0, r), hint_text, c), label]
+        // The mark says the same to a reader as on the pointer: the folder
+        // is said nowhere else in the rail or the row's menu.
+        let mark = said(
+            format!("project-mark-{}", path.display()),
+            hint_text.clone(),
+            monogram(&name, &seed, 20.0, r),
+        );
+        let mut content = row![hint(mark, hint_text, c), label]
             .spacing(6)
             .width(Fill)
             .align_y(Center);
@@ -2001,17 +2016,19 @@ impl App {
             .as_ref()
             .filter(|(root, _)| root == &path)
         {
+            // The field's placeholder is the folder's own name: what an
+            // emptied field shows is what saving it empty goes back to.
             items = items.push(
                 container(
                     column![
                         input(
                             format!("project-rename-{key}"),
-                            "Name",
+                            &entry.project.name(),
                             draft,
                             Message::ProjectRenameDraft,
                         ),
                         row![
-                            small("Empty goes back to the folder's name.", c).width(Fill),
+                            Space::new().width(Fill),
                             primary(
                                 format!("project-rename-save-{key}"),
                                 "Save",
@@ -2047,16 +2064,7 @@ impl App {
                     true,
                 ));
         }
-        items = items.push(menu_separator(c)).push(
-            container(
-                text(shorten_home(&path))
-                    .size(11.5)
-                    .font(Font::MONOSPACE)
-                    .color(c.faint)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            )
-            .padding([4, 8]),
-        );
+        // The folder is the row mark's tooltip; the menu is its actions.
         menu(items, c)
     }
 
@@ -3141,14 +3149,14 @@ impl App {
                 .and_then(|d| d.received_at)
                 .map(|at| format!("Last took a message {}", ago(Utc::now(), at)));
             let mut marks = row![].spacing(6).align_y(Center);
+            // An ended session's last message is a fact under Details, not
+            // a line of its own here.
             if agent.status.is_live() {
                 let mut readiness = self.input_readiness(agent).chip("inspector-readiness");
                 if let Some(last) = &last {
                     readiness = readiness.detail(last.clone());
                 }
                 marks = marks.push(readiness.view(c));
-            } else if let Some(last) = &last {
-                marks = marks.push(small(last.clone(), c));
             }
             if let Some(count) = self.queued_inputs.get(&id).filter(|n| **n > 0) {
                 marks = marks.push(super::chip::chip(
@@ -3604,6 +3612,12 @@ impl App {
                 "Last seen".to_owned(),
                 value(ago(Utc::now(), agent.last_seen)),
             ));
+            // A live session's last message is its readiness chip's detail.
+            if !agent.status.is_live()
+                && let Some(at) = delivery.and_then(|d| d.received_at)
+            {
+                facts.push(("Last message".to_owned(), value(ago(Utc::now(), at))));
+            }
             if let Some(pid) = agent.pid {
                 facts.push(("Process".to_owned(), mono_value(pid.to_string())));
             }
@@ -3685,7 +3699,7 @@ impl App {
         let prompt = crate::controls::composer(
             super::shell::LAUNCH_PROMPT,
             "launch",
-            "What should it work on?",
+            "Task",
             &self.shell.launch_prompt,
             Message::LaunchPrompt,
             !self.shell.launching,
@@ -5240,6 +5254,152 @@ mod tests {
         assert_eq!(words(Status::Failed), "#12 · Failed");
         assert_eq!(words(Status::Merged), "#12 · Merged");
         assert_eq!(words(Status::Open), "#12 · Open");
+    }
+
+    /// Words on screen: the restart strip is its question and what it
+    /// costs as counts, with nothing said to reassure; the rename field's
+    /// placeholder is the name an emptied field goes back to, with no line
+    /// saying so, and the menu has no path at its foot; the launch form's
+    /// field is named Task, not asked for in a sentence.
+    #[test]
+    fn the_strip_the_rename_and_the_launch_form_carry_no_helper_lines() {
+        use super::super::view::testing::seen;
+        use super::*;
+        use agentdocker_core::{AgentSpec, AgentStatus, ProjectRef};
+        let (commands, _requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        let c = Colors::new(false);
+
+        app.daemon = Some(crate::app::DaemonInfo {
+            version: "0.0.1".into(),
+            executable: None,
+        });
+        app.shell.confirm_daemon_restart = true;
+        let strip = seen(app.daemon_notice(c).expect("the strip"));
+        assert!(
+            strip
+                .texts
+                .iter()
+                .any(|t| t == "Restart the background service?"),
+            "nothing launched: the question alone: {:?}",
+            strip.texts
+        );
+        for gone in ["keep running", "on their own", "started in a terminal"] {
+            assert!(!strip.reads(gone), "no reassurance: {gone}");
+        }
+        let mut launched = AgentRecord::new(
+            AgentSpec {
+                name: "launched".into(),
+                runtime: "codex".into(),
+                restore: true,
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        launched.status = AgentStatus::Running;
+        app.agents.push(launched);
+        let strip = seen(app.daemon_notice(c).expect("the strip"));
+        assert!(
+            strip
+                .reads("Restart the background service? 1 launched session stops, 1 starts again."),
+            "{:?}",
+            strip.texts
+        );
+        assert!(!strip.reads("keep running"));
+        app.shell.confirm_daemon_restart = false;
+
+        let project = ProjectRef::directory("/fixture/alpha");
+        app.shell.catalog.remember(project.clone(), false).unwrap();
+        app.shell.project_rename = Some((project.root.clone(), String::new()));
+        let entry = app.shell.catalog.projects[0].clone();
+        let menu = seen(app.project_menu(&entry, c));
+        let key = project.root.display().to_string();
+        let field = menu
+            .control(&format!("project-rename-{key}"))
+            .expect("the name field");
+        assert_eq!(
+            field.1, "alpha",
+            "the placeholder is the folder's name, what an empty name goes back to"
+        );
+        assert!(
+            menu.control(&format!("project-rename-save-{key}"))
+                .is_some()
+        );
+        assert!(!menu.reads("Empty goes back"));
+        // The folder is the row mark's, on the pointer and to a reader,
+        // not the menu's foot.
+        assert!(!menu.texts.iter().any(|t| t.contains("/fixture/alpha")));
+        let shared = std::collections::BTreeSet::new();
+        let row = seen(app.project_row(&entry, &shared, true, c));
+        assert_eq!(
+            row.control(&format!("project-mark-{key}"))
+                .map(|m| m.1.as_str()),
+            Some("/fixture/alpha"),
+            "the mark names its folder without the pointer"
+        );
+        app.shell.project_rename = None;
+        let menu = seen(app.project_menu(&entry, c));
+        assert!(menu.control(&format!("project-remove-{key}")).is_some());
+        assert!(!menu.texts.iter().any(|t| t.contains("/fixture/alpha")));
+
+        app.shell.catalog.selected = Some(project.root.clone());
+        app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
+            name: "codex".into(),
+            vendor: "fixture".into(),
+            label: "Codex".into(),
+            cli: Some("/fixture/codex".into()),
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: agentdocker_core::runtime::Wiring::Wired,
+            hooks: agentdocker_core::runtime::Wiring::Wired,
+            hooks_missing: vec![],
+            shell: agentdocker_core::runtime::Wiring::Unsupported,
+            running: 0,
+        }];
+        app.shell.launch = true;
+        app.shell.launch_runtime = Some("codex".into());
+        let form = seen(app.launch_view(c));
+        let task = form
+            .control(super::super::shell::LAUNCH_PROMPT)
+            .expect("the task field");
+        assert!(task.1.starts_with("Task "), "named Task: {}", task.1);
+        assert!(!form.reads("What should it work on"));
+        assert!(form.control("confirm-launch").is_some());
+
+        // An ended session's last message is a fact under Details, not a
+        // line of its own in the panel.
+        let now = Utc::now();
+        let mut ended = AgentRecord::new(
+            AgentSpec {
+                name: "ended".into(),
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            now,
+        );
+        ended.status = AgentStatus::Exited { code: Some(0) };
+        ended.input_delivery = Some(agentdocker_core::InputDelivery {
+            process_started_at: now,
+            paused: false,
+            pause_reason: None,
+            reported_at: now,
+            received: None,
+            received_at: Some(now),
+            typing_until: None,
+        });
+        let panel = seen(app.inspector(&ended, c));
+        assert!(!panel.reads("Last took a message"));
+        assert!(!panel.reads("Last message"), "behind Details until opened");
+        app.shell.session_details = true;
+        let panel = seen(app.inspector(&ended, c));
+        assert!(panel.reads("Last message"));
     }
 
     #[test]

@@ -725,32 +725,30 @@ impl App {
             return None;
         }
         let total = rows.len();
-        // The card's head is its chip: what it is and, when something
-        // waits, how many.
-        let header = if guidance {
-            Chip::new(
-                "needs-you-header",
-                Some(Icon::Play),
-                "To get started",
-                Tone::Info,
-            )
-        } else {
-            Chip::new(
+        // What waits is headed by its chip and how many. The first steps
+        // need no heading: each row is a tool and the one control that
+        // gets it going, Connect or Set up.
+        let mut list = column![].width(Fill);
+        if !guidance {
+            let header = Chip::new(
                 "needs-you-header",
                 Some(Icon::Alert),
                 format!("Needs you · {total}"),
                 Tone::Attention,
             )
+            .view(c);
+            list = list.push(container(header).padding([10, 16]).width(Fill));
         }
-        .view(c);
-        let mut list = column![container(header).padding([10, 16]).width(Fill)].width(Fill);
         let shown = if self.shell.needs_you_expanded {
             total
         } else {
             SHOWN
         };
-        for item in rows.into_iter().take(shown) {
-            list = list.push(rule(c)).push(item);
+        for (index, item) in rows.into_iter().take(shown).enumerate() {
+            if index > 0 || !guidance {
+                list = list.push(rule(c));
+            }
+            list = list.push(item);
         }
         if total > SHOWN {
             list = list.push(rule(c)).push(
@@ -1912,6 +1910,23 @@ mod tests {
         app.secrets.acknowledge("secret-view", true, now);
         let rendered = seen(app.secret_review_panel(Colors::new(false)));
         assert!(rendered.control("temporary-submit-secret-view").unwrap().3);
+        // The notice acknowledged and the seconds left are said; what the
+        // window does with the edits is not.
+        assert!(rendered.reads(agentdocker_core::secret::PROVIDER_NOTICE));
+        assert!(rendered.reads("Expires in "));
+        assert!(!rendered.reads("Edits are discarded"));
+        // Once attempted, a chip says so instead of two sentences.
+        assert!(app.secrets.take("secret-view", now).is_some());
+        let rendered = seen(app.secret_review_panel(Colors::new(false)));
+        assert_eq!(
+            rendered
+                .control("temporary-attempted-secret-view")
+                .expect("the state is a chip")
+                .1,
+            "Awaiting confirmation"
+        );
+        assert!(!rendered.reads("missing confirmation"));
+        assert!(rendered.control("temporary-secret-view-value").is_none());
     }
 
     #[test]
@@ -2533,6 +2548,38 @@ mod tests {
             view.texts.iter().any(|t| t == left),
             "printed, not found on the pointer"
         );
+    }
+
+    /// With nobody waiting, the card offers the first steps with no
+    /// heading: each row is a tool and the one control that gets it going.
+    #[test]
+    fn the_first_steps_are_rows_without_a_heading() {
+        let (mut app, _commands) = app();
+        app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
+            name: "codex".into(),
+            vendor: "fixture".into(),
+            label: "Codex".into(),
+            cli: Some("/fixture/codex".into()),
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: agentdocker_core::runtime::Wiring::Missing,
+            hooks: agentdocker_core::runtime::Wiring::Missing,
+            hooks_missing: vec![],
+            shell: agentdocker_core::runtime::Wiring::Unsupported,
+            running: 0,
+        }];
+        assert!(app.all_projects());
+        let view = seen(app.needs_you(Colors::new(false)).expect("a first step"));
+        assert_eq!(
+            view.control("needs-you-tool-codex").map(|c| c.1.as_str()),
+            Some("Set up")
+        );
+        assert!(view.reads("Codex"));
+        assert!(view.control("needs-you-header").is_none(), "no heading");
+        assert!(!view.reads("To get started"));
     }
 
     #[test]
