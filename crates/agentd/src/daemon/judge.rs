@@ -2552,14 +2552,10 @@ mod tests {
         let second = in_herdr_pane(&daemon, &dir, "second", "thread-2").await;
         let managed = showing(&daemon, &dir, "managed", DIALOG).await;
 
-        let started = Instant::now();
         daemon.judge_once().await;
-        let took = started.elapsed();
+        // One ask is one timeout at most, not one per agent; a count rather
+        // than a stopwatch, so a slow machine cannot fail it.
         assert_eq!(asked.load(Ordering::SeqCst), 1, "asked once this pass");
-        assert!(
-            took < 2 * timeout,
-            "one timeout, not one per agent: {took:?}"
-        );
         assert!(
             record(&daemon, &managed).judged.is_some(),
             "the terminal was judged"
