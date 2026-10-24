@@ -1,6 +1,7 @@
 //! The OpenCode plugin `agentdocker setup opencode` installs: OpenCode's
 //! counterpart of the Claude Code hooks (leases on edits, messages, the
-//! journal, idle wake-up), run by OpenCode from its global plugin directory.
+//! journal and the project's memory, idle wake-up), run by OpenCode from its
+//! global plugin directory.
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 

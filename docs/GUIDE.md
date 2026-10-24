@@ -772,8 +772,10 @@ Hooks an earlier version installed are *outdated*: `agentdocker runtimes` shows
 `outdated (…)` with the events they lack, the Tools card says *Hooks outdated*,
 and `agentdocker setup claude-code` (or `codex`) adds them. They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
-should be told before it starts — the journal since it last looked, and
-anything it read that has gone stale. Before an edit, `PreToolUse` refuses
+should be told before it starts — the journal since it last looked, the
+project's memory, and anything it read that has gone stale. Codex's
+`SessionStart` hook and the OpenCode plugin tell a new session the
+project's memory too. Before an edit, `PreToolUse` refuses
 one to a file changed since the session read it. A folder observation
 remembers children that were deleted; reread their absence before writing
 one back. A target that was and remains absent, or whose content is unchanged
@@ -1455,8 +1457,14 @@ Current behaviour that the sections above do not already state, by area.
 
 - **Project memory.** Agents and you can keep short facts for a project —
   a convention, a decision, where something lives — with `add_memory` or
-  `agentdocker memory add`. Every new session in the project is told them,
-  newest first. A memory that is no longer true is replaced
+  `agentdocker memory add`. Every new Claude Code, Codex and OpenCode
+  session in the project is told them as it starts, the standing ones
+  first and then the newest, as context for the model, never typed into
+  its terminal (Codex runs its start hook at a conversation's first turn,
+  and again after `/clear` or a compaction). Search finds whole words, the
+  rarer ones counting for more and the newer memory first on a tie; `_`,
+  `-` and `:` separate words, so `task` finds `task_id`. A memory that is
+  no longer true is replaced
   (`--supersedes`) or forgotten. It stays on this machine; anything that
   looks like a secret is refused. To keep a copy in Supermemory as well,
   name the projects and a key file under `[memory.supermemory]` in
