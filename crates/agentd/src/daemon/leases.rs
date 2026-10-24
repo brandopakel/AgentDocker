@@ -1,4 +1,6 @@
 use super::*;
+use agentdocker_core::wait::{self, Priority};
+use agentdocker_core::{Blocked, WaitOutcome};
 
 impl Daemon {
     #[allow(clippy::too_many_arguments)]
@@ -11,8 +13,19 @@ impl Daemon {
         ttl_secs: u64,
         note: Option<String>,
         wait_secs: u64,
+        priority: Priority,
         automatic: bool,
     ) -> Response {
+        if !wait::valid_priority(priority) {
+            return Response::error(
+                ErrorCode::Invalid,
+                format!(
+                    "priority must be from {} to {}, not {priority}",
+                    wait::MIN_PRIORITY,
+                    wait::MAX_PRIORITY
+                ),
+            );
+        }
         let mut holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
@@ -54,211 +67,244 @@ impl Daemon {
         // behind it.
         let mut waiting = waiting::Waiting::new(self, holder.clone(), resource.clone());
         loop {
-            let (message, held_by) = {
+            let attempt = {
                 let mut state = lock(&self.state);
-                if !state
-                    .registry
-                    .get(&holder)
-                    .is_some_and(|a| a.status == AgentStatus::Running)
-                {
-                    return Response::error(ErrorCode::Invalid, "agent is not running");
+                // Another claim may have ended this wait to break a ring
+                // since it last looked.
+                if let Some(cycle) = waiting.deadlocked(&mut state) {
+                    return ended_by_deadlock(&state, &resource, &cycle);
                 }
-                // A session's return may have folded the resolved record
-                // into the record its session ended with since (during
-                // `localise`, or between attempts before any place was
-                // taken): a lease granted to the retired id would be one its
-                // session's releases never find. Claim as the record that
-                // stays.
-                if let Some(current) = state.registry.get(&holder).map(|a| a.id.clone())
-                    && current != holder
-                {
-                    holder = current;
-                    waiting.follow(holder.clone());
-                }
-                if let Some(error) = state.write_failure() {
-                    return error;
-                }
-                // A waiter queued before the pause is held too: a release
-                // during the pause grants nothing to the project's agents.
-                if let Some(pause) = state.pause_holding(&holder) {
-                    return pause_refusal(pause);
-                }
-                let now = Utc::now();
-                state.expire_leases_at(now);
-                if let Some(error) = state.write_failure() {
-                    return error;
-                }
-                // Fairness: a waiter with somebody ahead of it on an
-                // overlapping resource does not try, so a newcomer
-                // cannot take what somebody has been waiting minutes
-                // for. A first attempt has no ticket and always tries.
-                // A quota is a number, not a place: several agents hold
-                // one at once, and what decides is whether the sum fits.
-                // Checked here, under the same lock as the table, so two
-                // claims cannot both see room for the last of it.
-                if resource.kind() == "quota"
-                    && let Some(capacity) = state.quota_capacity(&holder, resource.value())
-                {
-                    let want = amount.unwrap_or(1);
-                    let committed = state.leases.committed(&resource);
-                    if committed.saturating_add(want) > capacity {
-                        state.touch(&holder);
-                        if let Some(error) = state.write_failure() {
-                            return error;
-                        }
-                        return Response::Error {
-                            code: ErrorCode::Conflict,
-                            message: format!(
-                                "{resource} has {} of {capacity} left and {want} was asked for",
-                                capacity.saturating_sub(committed)
-                            ),
-                            details: Some(json!({
-                                "quota": resource.value(),
-                                "capacity": capacity,
-                                "committed": committed,
-                                "requested": want,
-                            })),
-                        };
+                // From here to the end of this hold only this claim can end
+                // its wait. Whatever the attempt answers, its place goes in
+                // this same hold (`end_locked`, below), so a claim that has
+                // its answer is never afterwards picked to break a ring.
+                let attempt: Result<(String, Vec<Lease>), (Response, WaitOutcome)> = 'attempt: {
+                    let gone = WaitOutcome::Cancelled;
+                    if !state
+                        .registry
+                        .get(&holder)
+                        .is_some_and(|a| a.status == AgentStatus::Running)
+                    {
+                        break 'attempt Err((
+                            Response::error(ErrorCode::Invalid, "agent is not running"),
+                            gone,
+                        ));
                     }
-                }
-                let result = if state.may_attempt(waiting.ticket()) {
-                    state.leases.clone().claim_as(
-                        resource.clone(),
-                        holder.clone(),
-                        // A quota is shared by construction: it is spent,
-                        // not occupied, so exclusivity would make every
-                        // budget a lock on itself.
-                        if resource.kind() == "quota" {
-                            LeaseMode::Shared
-                        } else {
-                            mode
+                    // A session's return may have folded the resolved record
+                    // into the record its session ended with since (during
+                    // `localise`, or between attempts before any place was
+                    // taken): a lease granted to the retired id would be one its
+                    // session's releases never find. Claim as the record that
+                    // stays.
+                    if let Some(current) = state.registry.get(&holder).map(|a| a.id.clone())
+                        && current != holder
+                    {
+                        holder = current;
+                        waiting.follow(holder.clone());
+                    }
+                    if let Some(error) = state.write_failure() {
+                        break 'attempt Err((error, gone));
+                    }
+                    // A waiter queued before the pause is held too: a release
+                    // during the pause grants nothing to the project's agents.
+                    if let Some(pause) = state.pause_holding(&holder) {
+                        break 'attempt Err((pause_refusal(pause), gone));
+                    }
+                    let now = Utc::now();
+                    state.expire_leases_at(now);
+                    if let Some(error) = state.write_failure() {
+                        break 'attempt Err((error, gone));
+                    }
+                    // Fairness: a waiter with somebody ahead of it on an
+                    // overlapping resource does not try, so a newcomer
+                    // cannot take what somebody has been waiting minutes
+                    // for. A first attempt has no ticket and always tries.
+                    // A quota is a number, not a place: several agents hold
+                    // one at once, and what decides is whether the sum fits.
+                    // Checked here, under the same lock as the table, so two
+                    // claims cannot both see room for the last of it.
+                    if resource.kind() == "quota"
+                        && let Some(capacity) = state.quota_capacity(&holder, resource.value())
+                    {
+                        let want = amount.unwrap_or(1);
+                        let committed = state.leases.committed(&resource);
+                        if committed.saturating_add(want) > capacity {
+                            state.touch(&holder);
+                            if let Some(error) = state.write_failure() {
+                                break 'attempt Err((error, gone));
+                            }
+                            break 'attempt Err((
+                                Response::Error {
+                                    code: ErrorCode::Conflict,
+                                    message: format!(
+                                        "{resource} has {} of {capacity} left and {want} was asked for",
+                                        capacity.saturating_sub(committed)
+                                    ),
+                                    details: Some(json!({
+                                        "quota": resource.value(),
+                                        "capacity": capacity,
+                                        "committed": committed,
+                                        "requested": want,
+                                    })),
+                                },
+                                gone,
+                            ));
+                        }
+                    }
+                    let result = if state.may_attempt(waiting.ticket()) {
+                        state.leases.clone().claim_as(
+                            resource.clone(),
+                            holder.clone(),
+                            // A quota is shared by construction: it is spent,
+                            // not occupied, so exclusivity would make every
+                            // budget a lock on itself.
+                            if resource.kind() == "quota" {
+                                LeaseMode::Shared
+                            } else {
+                                mode
+                            },
+                            ttl(ttl_secs),
+                            note.clone(),
+                            now,
+                            automatic,
+                        )
+                    } else {
+                        Err(LeaseError::Conflict {
+                            resource: resource.clone(),
+                            held_by: state
+                                .leases
+                                .holders_of(&resource)
+                                .into_iter()
+                                .cloned()
+                                .collect(),
+                        })
+                    };
+                    let (message, held_by) = match result {
+                        Ok(Claimed::New(mut lease)) => {
+                            lease.change_seq = state.store_read("lease ledger boundary", |store| {
+                                store.change_watermark()
+                            });
+                            if lease.resource.kind() == "quota" {
+                                lease.amount = amount.unwrap_or(1);
+                            }
+                            if !state.commit_lease_activity(
+                                &holder,
+                                Some(&lease),
+                                Some(EventKind::LeaseClaimed {
+                                    lease: lease.clone(),
+                                }),
+                                now,
+                            ) {
+                                let error = state
+                                    .write_failure()
+                                    .expect("failed lease commit freezes storage");
+                                break 'attempt Err((error, gone));
+                            }
+                            break 'attempt Err((Response::Lease { lease }, WaitOutcome::Claimed));
+                        }
+                        Ok(Claimed::Renewed(lease)) => {
+                            if !state.commit_lease_activity(
+                                &holder,
+                                Some(&lease),
+                                Some(EventKind::LeaseRenewed {
+                                    lease: lease.clone(),
+                                }),
+                                now,
+                            ) {
+                                let error = state
+                                    .write_failure()
+                                    .expect("failed lease commit freezes storage");
+                                break 'attempt Err((error, gone));
+                            }
+                            break 'attempt Err((Response::Lease { lease }, WaitOutcome::Claimed));
+                        }
+                        Err(err) => match err {
+                            // Said by whom, by name: the holder is somebody the
+                            // person can go and talk to, and an id is not a name.
+                            LeaseError::Conflict { held_by, .. } => {
+                                let holders = held_by
+                                    .iter()
+                                    .map(|l| {
+                                        let name = state
+                                            .registry
+                                            .get(&l.holder)
+                                            .map(|a| a.spec.name.as_str())
+                                            .filter(|n| !n.is_empty())
+                                            .unwrap_or("an unknown agent");
+                                        format!(
+                                            "{name} ({}; {} on {})",
+                                            l.holder.short(),
+                                            l.mode,
+                                            l.resource
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                (format!("{resource} is held by {holders}"), held_by)
+                            }
+                            other => break 'attempt Err((lease_error(other), gone)),
                         },
-                        ttl(ttl_secs),
-                        note.clone(),
-                        now,
-                        automatic,
-                    )
-                } else {
-                    Err(LeaseError::Conflict {
+                    };
+                    // One conflict event per request, committed with liveness.
+                    let conflict = (!reported_conflict).then(|| EventKind::LeaseConflict {
                         resource: resource.clone(),
-                        held_by: state
-                            .leases
-                            .holders_of(&resource)
-                            .into_iter()
-                            .cloned()
-                            .collect(),
-                    })
+                        requester: holder.clone(),
+                        held_by: held_by.iter().map(|l| l.holder.clone()).collect(),
+                    });
+                    if !state.commit_lease_activity(&holder, None, conflict, now) {
+                        let error = state
+                            .write_failure()
+                            .expect("failed conflict commit freezes storage");
+                        break 'attempt Err((error, gone));
+                    }
+                    if !reported_conflict {
+                        reported_conflict = true;
+                        warn!(agent = %holder.short(), %resource, waiting = wait_secs > 0, "lease conflict");
+                    }
+                    // Before agreeing to wait: would waiting close a cycle?
+                    // If it would, nobody in it could ever proceed, so it is
+                    // broken at its victim: the lowest priority, the youngest
+                    // among equals, this claim counting as the youngest of
+                    // all. An older wait chosen is ended and this claim waits;
+                    // chosen itself, it is refused.
+                    if wait_secs > 0 && waiting.ticket().is_none() {
+                        if let Some(cycle) = state.break_rings(&holder, &resource, priority) {
+                            warn!(agent = %holder.short(), %resource, "claim would deadlock");
+                            // A wait that never began still ended, and its
+                            // outcome is one subscribers are told to expect.
+                            waiting.never_started(&mut state, WaitOutcome::Deadlock);
+                            break 'attempt Err((
+                                Response::Error {
+                                    code: ErrorCode::Deadlock,
+                                    message: format!(
+                                        "waiting for {resource} would deadlock: {}",
+                                        describe(&cycle)
+                                    ),
+                                    details: Some(json!({ "cycle": cycle, "held_by": held_by })),
+                                },
+                                WaitOutcome::Deadlock,
+                            ));
+                        }
+                        // Joined under the same lock the check ran under.
+                        // Letting go in between would let two claims each
+                        // see no cycle and then both create one.
+                        waiting.join_locked(&mut state, mode, priority);
+                    }
+                    Ok((message, held_by))
                 };
-                let (message, held_by) = match result {
-                    Ok(Claimed::New(mut lease)) => {
-                        lease.change_seq = state
-                            .store_read("lease ledger boundary", |store| store.change_watermark());
-                        if lease.resource.kind() == "quota" {
-                            lease.amount = amount.unwrap_or(1);
-                        }
-                        if !state.commit_lease_activity(
-                            &holder,
-                            Some(&lease),
-                            Some(EventKind::LeaseClaimed {
-                                lease: lease.clone(),
-                            }),
-                            now,
-                        ) {
-                            return state
-                                .write_failure()
-                                .expect("failed lease commit freezes storage");
-                        }
-                        drop(state);
-                        waiting.end(agentdocker_core::WaitOutcome::Claimed);
-                        return Response::Lease { lease };
-                    }
-                    Ok(Claimed::Renewed(lease)) => {
-                        if !state.commit_lease_activity(
-                            &holder,
-                            Some(&lease),
-                            Some(EventKind::LeaseRenewed {
-                                lease: lease.clone(),
-                            }),
-                            now,
-                        ) {
-                            return state
-                                .write_failure()
-                                .expect("failed lease commit freezes storage");
-                        }
-                        drop(state);
-                        waiting.end(agentdocker_core::WaitOutcome::Claimed);
-                        return Response::Lease { lease };
-                    }
-                    Err(err) => match err {
-                        // Said by whom, by name: the holder is somebody the
-                        // person can go and talk to, and an id is not a name.
-                        LeaseError::Conflict { held_by, .. } => {
-                            let holders = held_by
-                                .iter()
-                                .map(|l| {
-                                    let name = state
-                                        .registry
-                                        .get(&l.holder)
-                                        .map(|a| a.spec.name.as_str())
-                                        .filter(|n| !n.is_empty())
-                                        .unwrap_or("an unknown agent");
-                                    format!(
-                                        "{name} ({}; {} on {})",
-                                        l.holder.short(),
-                                        l.mode,
-                                        l.resource
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            (format!("{resource} is held by {holders}"), held_by)
-                        }
-                        other => return lease_error(other),
-                    },
-                };
-                // One conflict event per request, committed with liveness.
-                let conflict = (!reported_conflict).then(|| EventKind::LeaseConflict {
-                    resource: resource.clone(),
-                    requester: holder.clone(),
-                    held_by: held_by.iter().map(|l| l.holder.clone()).collect(),
-                });
-                if !state.commit_lease_activity(&holder, None, conflict, now) {
-                    return state
-                        .write_failure()
-                        .expect("failed conflict commit freezes storage");
+                attempt.map_err(|(response, outcome)| {
+                    waiting.end_locked(&mut state, outcome);
+                    response
+                })
+            };
+            let (message, held_by) = match attempt {
+                Ok(conflict) => conflict,
+                Err(answer) => {
+                    #[cfg(test)]
+                    self.claim_pause(waiting::ClaimPoint::Answered, &holder)
+                        .await;
+                    return answer;
                 }
-                if !reported_conflict {
-                    reported_conflict = true;
-                    warn!(agent = %holder.short(), %resource, waiting = wait_secs > 0, "lease conflict");
-                }
-                // Before agreeing to wait: would waiting close a cycle?
-                // If it would, nobody in it could ever proceed, and the
-                // newcomer is always the victim — deterministic, and it
-                // needs no priorities.
-                if wait_secs > 0 && waiting.ticket().is_none() {
-                    if let Some(cycle) = state.deadlock(&holder, &resource) {
-                        warn!(agent = %holder.short(), %resource, "claim would deadlock");
-                        state.emit(EventKind::LeaseDeadlock {
-                            cycle: cycle.clone(),
-                        });
-                        // A wait that never began still ended, and its
-                        // outcome is one subscribers are told to expect.
-                        waiting.never_started(&mut state, agentdocker_core::WaitOutcome::Deadlock);
-                        return Response::Error {
-                            code: ErrorCode::Deadlock,
-                            message: format!(
-                                "waiting for {resource} would deadlock: {}",
-                                describe(&cycle)
-                            ),
-                            details: Some(json!({ "cycle": cycle, "held_by": held_by })),
-                        };
-                    }
-                    // Joined under the same lock the check ran under.
-                    // Letting go in between would let two claims each
-                    // see no cycle and then both create one.
-                    waiting.join_locked(&mut state, mode);
-                }
-                (message, held_by)
             };
             if wait_secs == 0 {
                 return Response::Error {
@@ -270,19 +316,40 @@ impl Daemon {
             // The conflict is recorded; from here this request only waits,
             // and an offer must not wait with it.
             self.done_writing();
-            if !wait_for_release(&mut events, &resource, deadline).await {
-                waiting.end(agentdocker_core::WaitOutcome::Timeout);
-                return Response::Error {
-                    code: ErrorCode::Conflict,
-                    message,
-                    details: Some(json!({ "held_by": held_by })),
-                };
-            }
-            // Something changed; claiming again is a write, so take a
-            // place back for it, or learn the daemon is handing over.
-            if let Err(refusal) = self.readmit() {
-                waiting.end(agentdocker_core::WaitOutcome::Cancelled);
-                return *refusal;
+            let woke = wait_for_release(&mut events, &resource, deadline).await;
+            #[cfg(test)]
+            self.claim_pause(waiting::ClaimPoint::Woken, &holder).await;
+            // What the wake means is decided in one hold, and a wait it ends
+            // gives its place up in that hold: a ring broken at this wait
+            // first, whatever else woke it or the deadline says; then the
+            // deadline; then a handover that refuses it another attempt.
+            let next = {
+                let mut state = lock(&self.state);
+                if let Some(cycle) = waiting.deadlocked(&mut state) {
+                    Err(ended_by_deadlock(&state, &resource, &cycle))
+                } else if !woke {
+                    waiting.end_locked(&mut state, WaitOutcome::Timeout);
+                    Err(Response::Error {
+                        code: ErrorCode::Conflict,
+                        message,
+                        details: Some(json!({ "held_by": held_by })),
+                    })
+                } else {
+                    // Something changed; claiming again is a write, so take
+                    // a place back for it, or learn the daemon is handing
+                    // over.
+                    self.readmit_locked(&mut state).map_err(|refusal| {
+                        waiting.end_locked(&mut state, WaitOutcome::Cancelled);
+                        *refusal
+                    })
+                }
+            };
+            #[cfg(test)]
+            self.claim_pause(waiting::ClaimPoint::Decided, &holder)
+                .await;
+            match next {
+                Ok(place) => Self::resume_writing(place),
+                Err(answer) => return answer,
             }
         }
     }
@@ -363,6 +430,26 @@ impl Daemon {
             )));
         }
         Ok(ResourceKey::new(format!("path:{}", path.display())))
+    }
+}
+
+/// The answer to a claim whose wait another claim ended to break a ring:
+/// `deadlock`, with the ring, as a claim refused before it waited is told
+/// it, and who holds what it wanted.
+fn ended_by_deadlock(state: &State, resource: &ResourceKey, cycle: &[Blocked]) -> Response {
+    let held_by: Vec<Lease> = state
+        .leases
+        .holders_of(resource)
+        .into_iter()
+        .cloned()
+        .collect();
+    Response::Error {
+        code: ErrorCode::Deadlock,
+        message: format!(
+            "the wait for {resource} was ended to break a deadlock: {}",
+            describe(cycle)
+        ),
+        details: Some(json!({ "cycle": cycle, "held_by": held_by })),
     }
 }
 
