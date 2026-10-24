@@ -507,7 +507,7 @@ impl Daemon {
             };
             match proven {
                 Some(response) => response,
-                None => state.insert_record(record),
+                None => state.insert_record_authorized(record, authorized.as_ref()),
             }
         };
         // The reply is what a session waits for before its first edit, so

@@ -41,7 +41,9 @@
 //! the check found goes on with the registration and is held to under the
 //! lock that commits it, against the agents that hold the process by then
 //! and against a keyed Codex conversation its labels would join, which
-//! only that profile's proven server or the person may take.
+//! only that profile's proven server or the person may take, and an ended
+//! session it would resume, which a sender inside another live agent's
+//! session never may.
 //! The same switch turns it off.
 
 use super::*;
@@ -366,13 +368,23 @@ fn codex_launcher(
         return None;
     }
     let (_, launched) = step(launcher).filter(|(_, launched)| *launched <= born)?;
-    let argv = arguments(launcher)?;
-    (argv
-        .iter()
-        .skip(1)
-        .any(|argument| argument == "codex" || argument == "codex-native")
-        && executable(launcher).is_some_and(|exe| companion(&exe)))
-    .then_some((launcher, launched))
+    launches_codex(launcher, arguments, executable, companion).then_some((launcher, launched))
+}
+
+/// Whether `pid` runs this daemon's own CLI (`companion` says of an
+/// executable whether it is that file) as `agentdocker codex` or
+/// `codex-native`: a Codex terminal's companion launcher.
+fn launches_codex(
+    pid: u32,
+    arguments: impl Fn(u32) -> Option<Vec<String>>,
+    executable: impl Fn(u32) -> Option<std::path::PathBuf>,
+    companion: impl Fn(&std::path::Path) -> bool,
+) -> bool {
+    arguments(pid).is_some_and(|argv| {
+        argv.iter()
+            .skip(1)
+            .any(|argument| argument == "codex" || argument == "codex-native")
+    }) && executable(pid).is_some_and(|exe| companion(&exe))
 }
 
 /// The processes among `chain` that may be `profile`'s shared Codex server
@@ -587,14 +599,25 @@ pub(crate) struct Named {
     /// started it.
     started: bool,
     /// Codex terminals, by pid and birth, whose companion launcher stands in
-    /// `chain`.
+    /// `chain`, among those looked at (`evaluated`).
     launched: Vec<Process>,
+    /// The Codex terminals whose launcher was looked for: the process named
+    /// and every live Codex agent's when the registration was checked.
+    evaluated: Vec<Process>,
+    /// Whether a companion launcher stands in `chain` at all.
+    launcher_in_chain: bool,
     /// The profile, as the spec spells it, when the named process is a Codex
     /// terminal whose own arguments resume the conversation the spec names.
     terminal: Option<String>,
     /// Profiles, as spelled, whose shared server stands in `chain` and serves
     /// the profile's control socket.
     served: Vec<String>,
+    /// The profiles, as spelled, whose shared server was looked for: the
+    /// spec's and every live Codex agent's when the registration was checked.
+    profiles: Vec<String>,
+    /// Whether a Codex image in any profile's package cache stands in
+    /// `chain`: a shared server, proven or not.
+    server_in_chain: bool,
 }
 
 impl Named {
@@ -641,6 +664,27 @@ impl Named {
             holders.iter().all(|holder| self.admits_holder(holder))
         }
     }
+
+    /// Whether the sender runs inside `agent`'s session, as the agent check
+    /// finds it ([`Named::admits_holder`]), counting it inside, too, where
+    /// the check did not look: an agent whose terminal's launcher was not
+    /// looked for while a companion launcher stands among the sender's
+    /// parents, or whose profile's server was not while a shared server
+    /// does.
+    fn inside(&self, agent: &Acting) -> bool {
+        self.admits_holder(agent)
+            || agent
+                .codex
+                .as_ref()
+                .and_then(|codex| codex.terminal)
+                .is_some_and(|terminal| {
+                    self.launcher_in_chain && !self.evaluated.contains(&terminal)
+                })
+            || agent
+                .label
+                .as_ref()
+                .is_some_and(|label| self.server_in_chain && !self.profiles.contains(label))
+    }
 }
 
 /// What the kernel says of the registration's sender (`sender`) and the
@@ -651,7 +695,7 @@ impl Named {
 fn gather(
     sender: Process,
     named: Process,
-    holders: &[Acting],
+    live: &[Acting],
     terminal: Option<&Terminal>,
     kernel: &Kernel,
 ) -> (Named, Vec<Server>) {
@@ -662,10 +706,13 @@ fn gather(
         p == sender
     })
     .1 == End::Found;
-    let mut terminals = vec![named];
-    terminals.extend(holders.iter().filter_map(|h| h.codex.as_ref()?.terminal));
-    let launched = terminals
-        .into_iter()
+    let mut evaluated = vec![named];
+    evaluated.extend(live.iter().filter_map(|h| h.codex.as_ref()?.terminal));
+    evaluated.sort();
+    evaluated.dedup();
+    let launched = evaluated
+        .iter()
+        .copied()
         .filter(|terminal| {
             codex_launcher(
                 *terminal,
@@ -682,7 +729,7 @@ fn gather(
             && (kernel.arguments)(named_pid)
                 .is_some_and(|argv| procinfo::codex_resumes(&argv, &terminal.thread))
     });
-    let mut profiles: Vec<(String, std::path::PathBuf)> = holders
+    let mut profiles: Vec<(String, std::path::PathBuf)> = live
         .iter()
         .filter_map(|holder| {
             Some((
@@ -697,6 +744,16 @@ fn gather(
     profiles.extend(terminal.map(|t| (t.label.clone(), t.profile.clone())));
     profiles.sort();
     profiles.dedup();
+    let mut looked: Vec<String> = live.iter().filter_map(|h| h.label.clone()).collect();
+    looked.extend(terminal.map(|t| t.label.clone()));
+    let launcher_in_chain = chain.iter().any(|(pid, _)| {
+        launches_codex(*pid, kernel.arguments, kernel.executable, kernel.companion)
+    });
+    let server_in_chain = chain.iter().any(|(pid, _)| {
+        (kernel.executable)(*pid)
+            .and_then(|image| std::fs::canonicalize(image).ok())
+            .is_some_and(|image| codex_control::shared_server_profile(&image).is_some())
+    });
     let servers = profiles
         .into_iter()
         .filter_map(|(label, profile)| {
@@ -715,8 +772,12 @@ fn gather(
             chain,
             started,
             launched,
+            evaluated,
+            launcher_in_chain,
             terminal: resumes.map(|t| t.label.clone()),
             served: Vec::new(),
+            profiles: looked,
+            server_in_chain,
         },
         servers,
     )
@@ -792,6 +853,56 @@ impl Authorized {
             Some(&target),
             "it would join that agent's conversation, whose session it was not sent from",
         ))
+    }
+
+    /// Under the lock that commits the registration, which would resume the
+    /// ended records `ended` (the session its `session_id` names) into the
+    /// record `folding`, the registration's own, already live when it joins
+    /// one: a refusal, with nothing done, when the sender runs inside another
+    /// live agent's session ([`Named::inside`]). A sender inside agent A's
+    /// session acts as A, and must never become ended agent B. Let through
+    /// from outside every other agent's session (the person's terminal, where
+    /// a resumed session's own hooks run under its new process), when the
+    /// sender may act as every ended record as the agent check finds it (the
+    /// proven shared server of the profile they name), or from the person.
+    pub(super) fn fold_refusal(
+        &self,
+        state: &State,
+        folding: Option<&AgentId>,
+        ended: &[AgentRecord],
+    ) -> Option<Response> {
+        let Authorized::Named(named) = self else {
+            return None;
+        };
+        let prior = ended.first()?;
+        if ended
+            .iter()
+            .all(|record| named.admits_holder(&Acting::of(record)))
+        {
+            return None;
+        }
+        let inside = state
+            .registry
+            .live()
+            .filter(|agent| Some(&agent.id) != folding)
+            .map(Acting::of)
+            .find(|agent| named.inside(agent))?;
+        let pid = named.process.0;
+        Some(Response::Error {
+            code: ErrorCode::IdentityMismatch,
+            message: format!(
+                "this registers process {pid} to resume agent {}'s ended session, and it was sent \
+                 from inside agent {}'s session; an agent's process acts only as that agent, so a \
+                 session is resumed from outside every other agent's session, or by the person",
+                prior.spec.name, inside.name
+            ),
+            details: Some(json!({
+                "pid": pid,
+                "agent": prior.id,
+                "name": prior.spec.name,
+                "inside": inside.id,
+            })),
+        })
     }
 }
 
@@ -922,19 +1033,23 @@ impl Daemon {
         let identified = peer.and_then(|(sender, born)| born.map(|born| (sender, born)));
         let (found, holders) = tokio::task::spawn_blocking(move || {
             let named = procinfo::start_time(pid).map(|born| (pid, born));
+            let live: Vec<Acting> = live
+                .into_iter()
+                .map(|mut agent| {
+                    if let Some(codex) = &mut agent.codex {
+                        codex.profile = codex
+                            .profile
+                            .take()
+                            .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+                    }
+                    agent
+                })
+                .collect();
             let holders: Vec<Acting> = named
                 .map(|named| {
-                    live.into_iter()
+                    live.iter()
                         .filter(|holder| holder.anchors.contains(&named))
-                        .map(|mut holder| {
-                            if let Some(codex) = &mut holder.codex {
-                                codex.profile = codex
-                                    .profile
-                                    .take()
-                                    .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
-                            }
-                            holder
-                        })
+                        .cloned()
                         .collect()
                 })
                 .unwrap_or_default();
@@ -942,7 +1057,7 @@ impl Daemon {
                 gather(
                     sender,
                     named,
-                    &holders,
+                    &live,
                     Terminal::of(&owned).as_ref(),
                     &Kernel::host(),
                 )
@@ -1996,6 +2111,42 @@ mod tests {
         assert!(shared.admits(&[holder("codex", 81, Some(&p))]));
     }
 
+    /// Whether a sender runs inside another live agent's session, which
+    /// keeps it from resuming an ended one ([`Authorized::fold_refusal`]):
+    /// as the agent check finds it for the agents looked at, and inside,
+    /// too, for one the check did not look at while a companion launcher or
+    /// a shared server stands among the sender's parents.
+    #[test]
+    fn a_sender_inside_an_agent_s_session_is_found_there_or_assumed_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (table, p, q) = table(&std::fs::canonicalize(tmp.path()).unwrap());
+        let x = holder("claude-code", 20, None);
+        let y = holder("codex", 31, None);
+        // Under X's own process; under Y's launcher, looked at or not.
+        assert!(table.named(23, (51, at(51)), &[], None, None).inside(&x));
+        assert!(
+            table
+                .named(33, (51, at(51)), std::slice::from_ref(&y), None, None)
+                .inside(&y)
+        );
+        assert!(table.named(33, (51, at(51)), &[], None, None).inside(&y));
+        // Nothing of either among a stranger's parents.
+        let stranger = table.named(41, (51, at(51)), &[], None, None);
+        assert!(!stranger.inside(&x) && !stranger.inside(&y));
+        // Under P's proven server: inside P's agents, not Q's, which it
+        // looked at; inside an agent of a profile it did not look at.
+        let ours = holder("codex", 81, Some(&p));
+        let theirs = holder("codex", 82, Some(&q));
+        let live = [ours.clone(), theirs.clone()];
+        let server = table.named(61, (51, at(51)), &live, None, Some(60));
+        assert!(server.inside(&ours) && !server.inside(&theirs));
+        assert!(
+            table
+                .named(61, (51, at(51)), &[], None, Some(60))
+                .inside(&theirs)
+        );
+    }
+
     /// A client for the registration tests: registers `spec` naming the
     /// process the mode says (`self`, its `parent`, a `child` it starts and
     /// keeps until the answer, or a pid) and prints the answer.
@@ -2742,5 +2893,277 @@ mod tests {
                 if agent.id == b.id && agent.pid == Some(terminal)),
             "the profile's server: {reply:?}"
         );
+    }
+
+    /// A process outside every agent's session (its parent exits before it
+    /// speaks, as a terminal the person opened is): runs `script` with
+    /// `args` and answers its last printed line.
+    #[cfg(unix)]
+    async fn from_outside(script: &str, args: Vec<String>) -> Response {
+        use std::io::{BufRead as _, Write as _};
+        let mut parent = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("python3 -c \"$0\" \"$@\" & read line; exit 0")
+            .arg(format!(
+                "import os,time\nparent=os.getppid()\nprint('ready',flush=True)\nwhile os.getppid()==parent:\n    time.sleep(0.01)\n{script}"
+            ))
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        tokio::task::spawn_blocking(move || {
+            let mut out = std::io::BufReader::new(parent.stdout.take().unwrap());
+            let mut line = String::new();
+            out.read_line(&mut line).unwrap();
+            assert_eq!(line.trim(), "ready");
+            writeln!(parent.stdin.take().unwrap(), "exit").unwrap();
+            parent.wait().unwrap();
+            line.clear();
+            out.read_line(&mut line).unwrap();
+            serde_json::from_str::<Response>(&line).unwrap()
+        })
+        .await
+        .unwrap()
+    }
+
+    /// Over the real socket: an ended session (B, a Claude Code session with
+    /// a role and a message queued) resumes only from outside every other
+    /// agent's session, or for the person. C, the child of live agent A,
+    /// may not act as B; its registration of itself under B's session would
+    /// resume B, and is refused `identity_mismatch` with nothing done: B stays
+    /// ended with its process, role and message, no record is made under B's
+    /// session, and C still may not act as B. A process outside every
+    /// agent's session, as the person's own `claude --resume` is, resumes B
+    /// under B's id; and the person, registering a process that is not their
+    /// own, resumes another ended session.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_ended_session_resumes_only_from_outside_every_other_agent_s_session() {
+        use std::io::Write as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::open(tmp.path().into(), tmp.path().join("host.sock")).unwrap();
+        daemon.person_check = false;
+        daemon.agent_check = true;
+        let daemon = Arc::new(daemon);
+        let listener = crate::server::bind(&daemon).await.unwrap();
+        let serving = tokio::spawn(crate::server::serve(daemon.clone(), listener));
+        let workdir = std::fs::canonicalize(tmp.path()).unwrap();
+        let register = |name: String, pid: u32, labels: BTreeMap<String, String>| {
+            let daemon = daemon.clone();
+            let workdir = workdir.clone();
+            async move {
+                match daemon
+                    .handle(Request::Register {
+                        spec: AgentSpec {
+                            name,
+                            runtime: "claude-code".into(),
+                            workdir: Some(workdir),
+                            labels,
+                            ..AgentSpec::default()
+                        },
+                        pid: Some(pid),
+                        session: None,
+                    })
+                    .await
+                {
+                    Response::Agent { agent } => agent,
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        // A Claude Code session that ended: its record holds a role and a
+        // message, its process has exited.
+        let ended = |session: &'static str| {
+            let daemon = daemon.clone();
+            async move {
+                let mut process = std::process::Command::new("sleep")
+                    .arg("30")
+                    .spawn()
+                    .unwrap();
+                let record = register(
+                    format!("claude-{session}"),
+                    process.id(),
+                    [("session_id".to_owned(), session.to_owned())].into(),
+                )
+                .await;
+                let roles = daemon
+                    .handle(Request::RoleAssign {
+                        from: HUMAN.into(),
+                        agent: record.id.to_string(),
+                        add: vec!["reviewer".into()],
+                        remove: Vec::new(),
+                    })
+                    .await;
+                assert!(!matches!(roles, Response::Error { .. }), "{roles:?}");
+                let sent = daemon
+                    .handle(Request::Send {
+                        from: HUMAN.into(),
+                        to: record.id.to_string(),
+                        kind: "chat".into(),
+                        payload: json!("for B alone"),
+                        reply_to: None,
+                        links: Vec::new(),
+                    })
+                    .await;
+                assert!(!matches!(sent, Response::Error { .. }), "{sent:?}");
+                let _ = process.kill();
+                let _ = process.wait();
+                let gone = daemon
+                    .handle(Request::Deregister {
+                        agent: record.id.to_string(),
+                    })
+                    .await;
+                assert!(matches!(gone, Response::Agent { .. }), "{gone:?}");
+                lock(&daemon.state)
+                    .registry
+                    .get(&record.id)
+                    .unwrap()
+                    .clone()
+            }
+        };
+        let queued = |id: AgentId| {
+            let daemon = daemon.clone();
+            async move {
+                match daemon
+                    .handle(Request::PeekInput {
+                        agent: id.to_string(),
+                    })
+                    .await
+                {
+                    Response::Messages { messages } => messages.len(),
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        let spec = |name: &str, session: &str| {
+            serde_json::json!({
+                "name": name,
+                "runtime": "claude-code",
+                "workdir": workdir,
+                "labels": {"session_id": session},
+            })
+            .to_string()
+        };
+        let b = ended("session-b").await;
+        assert!(!b.status.is_live());
+        // The message, and the notice of the role.
+        let messages = queued(b.id.clone()).await;
+        assert!(messages >= 1);
+
+        // C, under live agent A's shell: a claim as B, a registration of
+        // itself under B's session, and the claim again.
+        let impostor = "import json,os,socket,sys\ndef ask(request):\n    s=socket.socket(socket.AF_UNIX)\n    s.connect(sys.argv[1])\n    s.sendall(json.dumps(request).encode()+b'\\n')\n    return s.makefile().readline()\nclaim={'op':'claim','agent':sys.argv[2],'resource':sys.argv[3],'ttl_secs':60}\nfor request in [claim,{'op':'register','spec':json.loads(sys.argv[4]),'pid':os.getpid()},claim]:\n    print('reply:'+ask(request),end='',flush=True)\n";
+        let mut a_shell = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("read go; python3 -c \"$0\" \"$1\" \"$2\" \"$3\" \"$4\"; exit $?")
+            .arg(impostor)
+            .arg(&daemon.socket)
+            .arg(b.id.as_str())
+            .arg(format!("path:{}/taken", workdir.display()))
+            .arg(spec("impostor", "session-b"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let a = register("agent-a".into(), a_shell.id(), BTreeMap::new()).await;
+        let agents = lock(&daemon.state).registry.all().count();
+        writeln!(a_shell.stdin.take().unwrap(), "go").unwrap();
+        let output = tokio::task::spawn_blocking(move || a_shell.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        let replies: Vec<Response> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("reply:"))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 3, "{replies:?}");
+        assert!(
+            identity_mismatch(&replies[0]),
+            "C acts as B: {:?}",
+            replies[0]
+        );
+        assert!(
+            matches!(&replies[1], Response::Error { code: ErrorCode::IdentityMismatch, details: Some(details), .. }
+                if details["agent"] == b.id.as_str() && details["inside"] == a.id.as_str()),
+            "C resumes B: {:?}",
+            replies[1]
+        );
+        assert!(
+            identity_mismatch(&replies[2]),
+            "C acts as B after: {:?}",
+            replies[2]
+        );
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(state.registry.all().count(), agents, "no record for C");
+            assert_eq!(
+                state
+                    .registry
+                    .all()
+                    .filter(|r| r.spec.labels.get("session_id").map(String::as_str)
+                        == Some("session-b"))
+                    .count(),
+                1,
+                "only B names B's session"
+            );
+            let current = state.registry.get(&b.id).unwrap();
+            assert_eq!(current, &b, "B is as it was");
+        }
+        assert_eq!(queued(b.id.clone()).await, messages, "B keeps its messages");
+
+        // As the person's resumed session, from outside every agent's
+        // session, a process registering itself resumes B under B's id.
+        let register_self = "import json,os,socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.connect(sys.argv[1])\ns.sendall(json.dumps({'op':'register','spec':json.loads(sys.argv[2]),'pid':int(sys.argv[3]) if len(sys.argv)>3 else os.getpid()}).encode()+b'\\n')\nprint(s.makefile().readline(),end='',flush=True)\n";
+        let reply = from_outside(
+            register_self,
+            vec![
+                daemon.socket.display().to_string(),
+                spec("resumed", "session-b"),
+            ],
+        )
+        .await;
+        assert!(
+            matches!(&reply, Response::Agent { agent }
+                if agent.id == b.id && agent.status.is_live() && agent.pid != b.pid),
+            "the person's resumed session: {reply:?}"
+        );
+        assert_eq!(queued(b.id.clone()).await, messages, "with its messages");
+        assert_eq!(
+            lock(&daemon.state)
+                .registry
+                .get(&b.id)
+                .unwrap()
+                .spec
+                .labels
+                .get(agentdocker_core::agent::ROLE_LABEL),
+            b.spec.labels.get(agentdocker_core::agent::ROLE_LABEL),
+            "and its role"
+        );
+
+        // The person registers a process not their own, resuming another.
+        let b2 = ended("session-b2").await;
+        let mut stranger = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let reply = from_outside(
+            register_self,
+            vec![
+                daemon.socket.display().to_string(),
+                spec("persons", "session-b2"),
+                stranger.id().to_string(),
+            ],
+        )
+        .await;
+        assert!(
+            matches!(&reply, Response::Agent { agent }
+                if agent.id == b2.id && agent.pid == Some(stranger.id())),
+            "the person's registration: {reply:?}"
+        );
+        let _ = stranger.kill();
+        let _ = stranger.wait();
+        serving.abort();
     }
 }

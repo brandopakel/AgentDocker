@@ -5300,7 +5300,18 @@ impl State {
     }
 
     fn insert_record(&mut self, record: AgentRecord) -> Response {
-        self.insert_record_announcing(record, true)
+        self.insert_record_announcing(record, true, None)
+    }
+
+    /// [`State::insert_record`] for a registration the socket's check let
+    /// through on `authorized`, which a session's resumption into an ended
+    /// record must satisfy ([`acting::Authorized::fold_refusal`]).
+    fn insert_record_authorized(
+        &mut self,
+        record: AgentRecord,
+        authorized: Option<&acting::Authorized>,
+    ) -> Response {
+        self.insert_record_announcing(record, true, authorized)
     }
 
     /// `announce_start` is false where the record exists before its
@@ -5312,6 +5323,7 @@ impl State {
         &mut self,
         mut record: AgentRecord,
         announce_start: bool,
+        authorized: Option<&acting::Authorized>,
     ) -> Response {
         if let Some(error) = self.write_failure() {
             return error;
@@ -5454,6 +5466,25 @@ impl State {
             if adopted {
                 return Response::error(ErrorCode::Invalid, "pid is already registered");
             }
+            // Joined, it may resume an ended record of the session it is
+            // shown: which the registration must be allowed, before anything
+            // is written.
+            if let Some(authorized) = authorized {
+                let mut joined = self.registry.get(&id).cloned().expect("just found");
+                if joined
+                    .spec
+                    .labels
+                    .get("session_id")
+                    .is_none_or(|session| session.is_empty())
+                    && let Some(session) = session.cloned()
+                {
+                    joined.spec.labels.insert("session_id".to_owned(), session);
+                }
+                let ended = self.fold_targets(&joined);
+                if let Some(refusal) = authorized.fold_refusal(self, Some(&id), &ended) {
+                    return refusal;
+                }
+            }
             // The record takes on the session it has just been shown,
             // and this is not bookkeeping — without it the rule is not
             // transitive and two sessions collapse into one.
@@ -5533,6 +5564,14 @@ impl State {
             return Response::Agent {
                 agent: self.resume_session(agent),
             };
+        }
+        // A fresh record that would resume an ended one: the registration
+        // must be allowed that, before the record is made.
+        if let Some(authorized) = authorized {
+            let ended = self.fold_targets(&record);
+            if let Some(refusal) = authorized.fold_refusal(self, None, &ended) {
+                return refusal;
+            }
         }
         if let Err(err) = self.registry.insert(record.clone()) {
             return registry_error(err);
@@ -5700,32 +5739,39 @@ impl State {
     /// it, has a live subscriber, has ambiguous observations, or a
     /// store that cannot say or refuses the rewrite — leaves the fresh
     /// record as it is.
-    fn resume_session(&mut self, fresh: AgentRecord) -> AgentRecord {
+    /// The ended records `fresh` would resume, the one that stays first
+    /// ([`agentdocker_core::identity::resumed_session`]): none for a record
+    /// whose receiver may already have offered its queue head, that names no
+    /// session or has no process. Whether each record's process is gone, and
+    /// what it holds, [`State::resume_session`] decides next.
+    fn fold_targets(&self, fresh: &AgentRecord) -> Vec<AgentRecord> {
         // An initialized receiver may already have offered its queue head.
         // Folding older backlog ahead of that offer would reorder delivery.
         // Before initialization, channel ownership is also locked by provider
         // process generation so changing an agent ID cannot admit a second MCP.
-        if fresh.input_delivery.is_some() {
-            return fresh;
+        if fresh.input_delivery.is_some()
+            || fresh.pid.is_none()
+            || fresh
+                .spec
+                .labels
+                .get("session_id")
+                .is_none_or(|id| id.is_empty())
+        {
+            return Vec::new();
         }
-        let Some(session) = fresh
-            .spec
-            .labels
-            .get("session_id")
-            .filter(|id| !id.is_empty())
+        agentdocker_core::identity::resumed_session(self.registry.all(), fresh)
+            .into_iter()
             .cloned()
-        else {
-            return fresh;
-        };
-        let ended: Vec<AgentRecord> =
-            agentdocker_core::identity::resumed_session(self.registry.all(), &fresh)
-                .into_iter()
-                .cloned()
-                .collect();
+            .collect()
+    }
+
+    fn resume_session(&mut self, fresh: AgentRecord) -> AgentRecord {
+        let ended = self.fold_targets(&fresh);
         let Some((prior, earlier)) = ended.split_first() else {
             return fresh;
         };
-        let Some(pid) = fresh.pid else {
+        let (Some(pid), Some(session)) = (fresh.pid, fresh.spec.labels.get("session_id").cloned())
+        else {
             return fresh;
         };
         // Ended on a record is not enough: the process it named must be
