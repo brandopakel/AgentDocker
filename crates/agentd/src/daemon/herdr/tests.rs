@@ -251,6 +251,53 @@ async fn herdr_observations_outrank_contact_until_they_expire() {
     ));
 }
 
+/// A second agent claiming the same provider session on the same socket
+/// makes herdr's word for it neither's, even for a watcher that read the
+/// panes before it came: the bridge applies the agent-side rule again as
+/// it records, and the screen judge, applying the same rule, reads the
+/// pane for neither.
+#[tokio::test]
+async fn a_word_for_a_session_two_agents_claim_is_neithers() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let socket_of = sockets_in(Path::new("/h"));
+    let socket = Path::new("/h/herdr.sock");
+    let first = in_herdr(&daemon, "first", Some("thread-1"), None).await;
+    let now = Utc::now();
+    assert!(lock(&daemon.state).report_from_herdr(
+        &first.id,
+        socket,
+        "thread-1",
+        Status::Working,
+        &socket_of,
+        now
+    ));
+    assert_eq!(
+        lock(&daemon.state).herdr_bound(&socket_of),
+        Watches::from([(
+            socket.to_path_buf(),
+            BTreeMap::from([("thread-1".to_owned(), first.id.clone())])
+        )])
+    );
+
+    let second = in_herdr(&daemon, "second", Some("thread-1"), None).await;
+    let later = now + Duration::seconds(61);
+    let mut state = lock(&daemon.state);
+    for agent in [&first.id, &second.id] {
+        assert!(!state.report_from_herdr(
+            agent,
+            socket,
+            "thread-1",
+            Status::Idle,
+            &socket_of,
+            later
+        ));
+        assert!(!state.herdr_sole_claimant(agent, socket, "thread-1", &socket_of));
+    }
+    assert!(state.herdr_bound(&socket_of).is_empty());
+    assert!(state.herdr_watches(&socket_of).is_empty());
+}
+
 /// Only the daemon observes for an agent: a client cannot pass its report
 /// off as herdr's.
 #[tokio::test]
@@ -282,11 +329,11 @@ async fn a_client_report_cannot_name_a_source() {
 
 #[cfg(unix)]
 mod socket {
+    use super::super::fake::{Fake, pane};
     use super::*;
     use agentdocker_core::WaitReason;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::sync::mpsc;
+    use std::sync::atomic::Ordering;
+    use tokio::io::BufReader;
 
     fn activity(daemon: &Daemon, agent: &AgentId) -> Activity {
         let state = lock(&daemon.state);
@@ -299,149 +346,6 @@ mod socket {
             assert!(std::time::Instant::now() < deadline, "timed out: {what}");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-    }
-
-    /// A herdr server as far as the daemon talks to one: `pane.list`
-    /// answers with the panes it is given, `events.subscribe` acknowledges
-    /// and then pushes what the test sends. It records every method it is
-    /// asked, each subscription's request, and each subscription the
-    /// client closed.
-    struct Fake {
-        panes: Arc<Mutex<Value>>,
-        methods: Arc<Mutex<Vec<String>>>,
-        subscriptions: Arc<Mutex<Vec<Value>>>,
-        pushers: Arc<Mutex<Vec<mpsc::UnboundedSender<String>>>>,
-        closed: Arc<AtomicUsize>,
-        _server: tokio::task::JoinHandle<()>,
-    }
-
-    impl Fake {
-        fn start(path: &Path, panes: Value) -> Self {
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let listener = tokio::net::UnixListener::bind(path).unwrap();
-            let fake = Self {
-                panes: Arc::new(Mutex::new(panes)),
-                methods: Arc::default(),
-                subscriptions: Arc::default(),
-                pushers: Arc::default(),
-                closed: Arc::default(),
-                _server: tokio::spawn(async {}),
-            };
-            let (panes, methods, subscriptions, pushers, closed) = (
-                fake.panes.clone(),
-                fake.methods.clone(),
-                fake.subscriptions.clone(),
-                fake.pushers.clone(),
-                fake.closed.clone(),
-            );
-            let server = tokio::spawn(async move {
-                while let Ok((stream, _)) = listener.accept().await {
-                    let (panes, methods, subscriptions, pushers, closed) = (
-                        panes.clone(),
-                        methods.clone(),
-                        subscriptions.clone(),
-                        pushers.clone(),
-                        closed.clone(),
-                    );
-                    tokio::spawn(async move {
-                        let (read, mut write) = stream.into_split();
-                        let mut read = BufReader::new(read);
-                        let mut line = String::new();
-                        if read.read_line(&mut line).await.unwrap_or(0) == 0 {
-                            return;
-                        }
-                        let request: Value = serde_json::from_str(&line).unwrap();
-                        let id = request["id"].clone();
-                        let method = request["method"].as_str().unwrap_or("").to_owned();
-                        methods.lock().unwrap().push(method.clone());
-                        match method.as_str() {
-                            "pane.list" => {
-                                let panes = panes.lock().unwrap().clone();
-                                let reply = json!({"id": id, "result": {"type": "pane_list", "panes": panes}});
-                                let _ = write.write_all(format!("{reply}\n").as_bytes()).await;
-                            }
-                            "events.subscribe" => {
-                                subscriptions
-                                    .lock()
-                                    .unwrap()
-                                    .push(request["params"]["subscriptions"].clone());
-                                let ack =
-                                    json!({"id": id, "result": {"type": "subscription_started"}});
-                                let _ = write.write_all(format!("{ack}\n").as_bytes()).await;
-                                let (push, mut pushed) = mpsc::unbounded_channel::<String>();
-                                pushers.lock().unwrap().push(push);
-                                let mut rest = String::new();
-                                loop {
-                                    tokio::select! {
-                                        next = pushed.recv() => match next {
-                                            Some(line) => {
-                                                let _ = write.write_all(format!("{line}\n").as_bytes()).await;
-                                            }
-                                            None => return,
-                                        },
-                                        read = read.read_line(&mut rest) => {
-                                            if read.unwrap_or(0) == 0 {
-                                                closed.fetch_add(1, Ordering::SeqCst);
-                                                return;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {
-                                let reply = json!({"id": id, "error": {"code": "unknown_method", "message": "no"}});
-                                let _ = write.write_all(format!("{reply}\n").as_bytes()).await;
-                            }
-                        }
-                    });
-                }
-            });
-            Self {
-                _server: server,
-                ..fake
-            }
-        }
-
-        fn set_panes(&self, panes: Value) {
-            *self.panes.lock().unwrap() = panes;
-        }
-
-        /// One line to every open subscription.
-        fn push(&self, line: Value) {
-            self.pushers
-                .lock()
-                .unwrap()
-                .retain(|push| push.send(line.to_string()).is_ok());
-        }
-
-        /// herdr ends every subscription.
-        fn end_subscriptions(&self) {
-            self.pushers.lock().unwrap().clear();
-        }
-
-        fn subscribed(&self) -> Vec<Value> {
-            self.subscriptions.lock().unwrap().clone()
-        }
-
-        fn methods(&self) -> Vec<String> {
-            self.methods.lock().unwrap().clone()
-        }
-    }
-
-    fn pane(id: &str, status: &str, session: Option<&str>) -> Value {
-        json!({
-            "pane_id": id,
-            "terminal_id": "term_1",
-            "workspace_id": "w1",
-            "tab_id": "w1:t1",
-            "focused": false,
-            "revision": 0,
-            "agent": "gemini",
-            "agent_status": status,
-            "agent_session": session.map(|value| json!({
-                "source": "herdr:gemini", "agent": "gemini", "kind": "id", "value": value
-            })),
-        })
     }
 
     fn status(pane: &str, status: &str) -> Value {
