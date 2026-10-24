@@ -151,4 +151,78 @@ mod tests {
         let again = Durable::open(&directory, "record.json", 64, "test record", "taken").unwrap();
         assert_eq!(again.read::<Vec<u32>>().unwrap(), Some(vec![1, 2, 3]));
     }
+
+    /// A record's owner that lets it go can take it again at once, and so
+    /// can its successor. A child that another thread forks (a test running
+    /// `git`, a controller starting its provider) holds every descriptor of
+    /// this process, the owner lock's among them, until its exec, which a
+    /// loaded machine delays; dropping the record releases the lock anyway.
+    /// The managed bridge's delivery record and the native queue ledger both
+    /// own their directory this way.
+    #[cfg(unix)]
+    #[test]
+    fn a_dropped_owner_reopens_at_once_while_a_forked_child_shares_its_lock() {
+        let home = tempfile::tempdir().unwrap();
+        let directory = home.path().join("records");
+        dirs::secure_state_dir(&directory).unwrap();
+        let file = Durable::open(&directory, "record.json", 64, "test record", "taken").unwrap();
+        file.publish(&vec![1_u32]).unwrap();
+        let child = ForkedHolder::fork();
+        drop(file);
+        let again = Durable::open(&directory, "record.json", 64, "test record", "taken");
+        drop(child);
+        assert_eq!(again.unwrap().read::<Vec<u32>>().unwrap(), Some(vec![1]));
+    }
+
+    /// A forked child holding a copy of every descriptor this process had
+    /// open, as a child of `Command::spawn` does between its fork and its
+    /// exec, until this is dropped (or for ten seconds at most).
+    #[cfg(unix)]
+    struct ForkedHolder {
+        pid: libc::pid_t,
+        release: Option<std::io::PipeWriter>,
+    }
+
+    #[cfg(unix)]
+    impl ForkedHolder {
+        fn fork() -> Self {
+            use std::os::fd::AsRawFd;
+            // Close-on-exec, so no program another thread starts meanwhile
+            // can keep the child waiting.
+            let (wait, release) = std::io::pipe().unwrap();
+            let (wait_fd, release_fd) = (wait.as_raw_fd(), release.as_raw_fd());
+            // SAFETY: the child only closes, polls and exits, each
+            // async-signal-safe, as a child of a threaded process must.
+            let pid = unsafe { libc::fork() };
+            if pid == 0 {
+                // SAFETY: as above; `ready` outlives the poll on it.
+                unsafe {
+                    libc::close(release_fd);
+                    let mut ready = libc::pollfd {
+                        fd: wait_fd,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    libc::poll(&mut ready, 1, 10_000);
+                    libc::_exit(0);
+                }
+            }
+            assert!(pid > 0, "fork: {}", std::io::Error::last_os_error());
+            drop(wait);
+            Self {
+                pid,
+                release: Some(release),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ForkedHolder {
+        fn drop(&mut self) {
+            // The end of the pipe ends the child's wait; it is ours to reap.
+            drop(self.release.take());
+            // SAFETY: waits for this holder's own child only.
+            unsafe { libc::waitpid(self.pid, std::ptr::null_mut(), 0) };
+        }
+    }
 }
