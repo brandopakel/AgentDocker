@@ -808,6 +808,18 @@ pub enum EventKind {
     MessagesPruned {
         removed: usize,
     },
+    /// Topic retention dropped kept topic messages past a topic's age or
+    /// count limit.
+    TopicMessagesPruned {
+        removed: usize,
+    },
+    /// An agent acknowledged kept topic messages: each topic's cursor now
+    /// stands at the sequence named, and a later subscribe replays only
+    /// what came after it.
+    TopicCursorsAdvanced {
+        agent: crate::AgentId,
+        cursors: Vec<crate::TopicCursor>,
+    },
     /// Retention forgot the records of agents that ended before its
     /// window and held nothing; each was said as `agent_removed` first.
     AgentsPruned {

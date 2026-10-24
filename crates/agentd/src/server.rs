@@ -212,8 +212,20 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
         }
         // Streaming requests own the connection until it closes.
         match request {
-            Request::Subscribe { agent, topics } => {
-                return stream_messages(&daemon, agent, topics, &mut reader, &mut writer).await;
+            Request::Subscribe {
+                agent,
+                topics,
+                after_seq,
+            } => {
+                return stream_messages(
+                    &daemon,
+                    agent,
+                    topics,
+                    after_seq,
+                    &mut reader,
+                    &mut writer,
+                )
+                .await;
             }
             Request::Events { replay, ready } => {
                 return stream_events(&daemon, replay, ready, &mut reader, &mut writer).await;
@@ -281,32 +293,59 @@ async fn client_closed(reader: &mut Reader) {
     }
 }
 
+/// The inbox backlog, then — after a `lagged` frame when the bounded
+/// replay left some out — the kept topic messages, oldest first, then the
+/// live stream. A topic message carries its sequence, replayed or live.
 async fn stream_messages(
     daemon: &Arc<Daemon>,
     agent: Option<String>,
     topics: Vec<String>,
+    after_seq: Option<u64>,
     reader: &mut Reader,
     writer: &mut OwnedWriteHalf,
 ) -> io::Result<()> {
-    let (mut subscription, mut receiver) = match daemon.subscribe(agent.as_deref(), topics) {
-        Ok(opened) => opened,
-        Err(response) => return write(writer, &response).await,
-    };
+    let (mut subscription, mut receiver) =
+        match daemon.subscribe(agent.as_deref(), topics, after_seq) {
+            Ok(opened) => opened,
+            Err(response) => return write(writer, &response).await,
+        };
     for message in subscription.take_backlog() {
-        write(writer, &Response::Message { message }).await?;
+        write(writer, &Response::Message { message, seq: None }).await?;
+    }
+    let replay = subscription.take_topic_replay();
+    if replay.skipped > 0 {
+        write(
+            writer,
+            &Response::Lagged {
+                skipped: replay.skipped,
+                replay: true,
+            },
+        )
+        .await?;
+    }
+    for (seq, message) in replay.messages {
+        write(
+            writer,
+            &Response::Message {
+                message,
+                seq: Some(seq),
+            },
+        )
+        .await?;
     }
     loop {
         tokio::select! {
             () = client_closed(reader) => break,
             received = receiver.recv() => match received {
-                Ok(message) => {
-                    if subscription.wants(&message) {
-                        write(writer, &Response::Message { message }).await?;
+                Ok(posted) => {
+                    if subscription.wants(&posted) {
+                        let seq = posted.topic.as_ref().map(|post| post.seq);
+                        write(writer, &Response::Message { message: posted.envelope, seq }).await?;
                     }
                 }
                 Err(RecvError::Lagged(skipped)) => {
                     warn!(skipped, "subscriber fell behind the message bus");
-                    write(writer, &Response::Lagged { skipped }).await?;
+                    write(writer, &Response::Lagged { skipped, replay: false }).await?;
                 }
                 Err(RecvError::Closed) => break,
             },
@@ -407,7 +446,7 @@ async fn stream_events(
                 }
                 Err(RecvError::Lagged(skipped)) => {
                     warn!(skipped, "event subscriber fell behind");
-                    write(writer, &Response::Lagged { skipped }).await?;
+                    write(writer, &Response::Lagged { skipped, replay: false }).await?;
                 }
                 Err(RecvError::Closed) => break,
             },
@@ -477,7 +516,7 @@ async fn stream_attach(
                 // A slow reader misses bytes rather than stalling the
                 // agent; say so instead of pretending the screen is whole.
                 Err(RecvError::Lagged(skipped)) => {
-                    write(writer, &Response::Lagged { skipped }).await?;
+                    write(writer, &Response::Lagged { skipped, replay: false }).await?;
                 }
                 Err(RecvError::Closed) => break,
             },

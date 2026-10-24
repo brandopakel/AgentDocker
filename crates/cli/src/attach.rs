@@ -298,7 +298,7 @@ where
                             screen.flush().await?;
                         }
                     }
-                    Response::Lagged { skipped } => {
+                    Response::Lagged { skipped, .. } => {
                         notices.dropped = notices.dropped.saturating_add(skipped);
                     }
                     Response::End => return Ok(Left::Ended),
@@ -442,8 +442,14 @@ mod tests {
         };
         let (mut daemon, client) = tokio::io::duplex(4096);
         let mut frames = frame(output("\x1b[Hbefore"));
-        frames += &frame(Response::Lagged { skipped: 700 });
-        frames += &frame(Response::Lagged { skipped: 34 });
+        frames += &frame(Response::Lagged {
+            skipped: 700,
+            replay: false,
+        });
+        frames += &frame(Response::Lagged {
+            skipped: 34,
+            replay: false,
+        });
         frames += &frame(output(" after"));
         frames += &frame(Response::End);
         daemon.write_all(frames.as_bytes()).await.unwrap();

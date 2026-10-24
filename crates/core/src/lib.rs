@@ -81,6 +81,7 @@ pub use tag::{Tag, TagColor};
 pub use task::{
     Column, Comment, CommentId, NewTask, Priority, Size, Task, TaskAction, TaskEntry, TaskId,
 };
+pub use topic::{TopicCursor, TopicPost};
 
 pub mod policy;
 pub use policy::{Policy, Ruling};
@@ -88,6 +89,7 @@ pub use policy::{Policy, Ruling};
 pub mod editor;
 pub mod multiplexer;
 pub mod terminal;
+pub mod topic;
 pub mod typing;
 
 pub mod contest;
