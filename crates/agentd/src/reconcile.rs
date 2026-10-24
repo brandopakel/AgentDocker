@@ -29,6 +29,11 @@ pub fn repair(
         .context("state home must already exist")?;
     agentdocker_host::dirs::check_private_dir(&home)?;
     let store = crate::store::Store::open_repair(&home.join("state.db"), expected.is_some())?;
+    // The joined read set keeps to the capacity the daemon would apply:
+    // the file's, or the default when it says nothing or cannot be used.
+    if let Ok(capacity) = crate::config::read(&home).and_then(|config| config.read_set_capacity()) {
+        store.set_read_capacity(capacity);
+    }
     store.repair(
         &AgentId::from(kept),
         &AgentId::from(retired),

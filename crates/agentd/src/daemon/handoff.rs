@@ -334,8 +334,17 @@ impl Daemon {
                 "bundle carries more than 64 KiB of notes",
             );
         }
-        if bundle.read_set.len() > 1000
-            || bundle.changes.len() > BUNDLE_ROWS
+        let capacity = lock(&self.state).store.read_capacity();
+        if bundle.read_set.len() > capacity {
+            return Response::error(
+                ErrorCode::Invalid,
+                format!(
+                    "bundle carries {} observations; this daemon's read-set capacity is {capacity}",
+                    bundle.read_set.len()
+                ),
+            );
+        }
+        if bundle.changes.len() > BUNDLE_ROWS
             || bundle.journal.len() > BUNDLE_ROWS
             || bundle.unread_inbox.len() > BUNDLE_ROWS
             || bundle.leases.len() > BUNDLE_ROWS
@@ -1538,7 +1547,7 @@ mod tests {
             head: None,
         };
         let mut huge = bundle.clone();
-        huge.read_set = (0..1001)
+        huge.read_set = (0..=agentdocker_core::config::READ_SET_CAPACITY)
             .map(|i| mark(root.join(format!("f{i}"))))
             .collect();
         assert!(matches!(
@@ -1548,6 +1557,22 @@ mod tests {
                 ..
             }
         ));
+        // The receiving daemon's own capacity decides, as configured.
+        std::fs::write(
+            elsewhere.home.join("agentd.toml"),
+            "[read_set]\ncapacity = 100\n",
+        )
+        .unwrap();
+        elsewhere.apply_read_set_capacity();
+        let mut over = bundle.clone();
+        over.read_set = (0..101).map(|i| mark(root.join(format!("f{i}")))).collect();
+        assert!(matches!(
+            elsewhere.import("recipient", over).await,
+            Response::Error { code: ErrorCode::Invalid, message, .. }
+                if message.contains("101 observations") && message.contains("capacity is 100")
+        ));
+        std::fs::remove_file(elsewhere.home.join("agentd.toml")).unwrap();
+        elsewhere.apply_read_set_capacity();
         for field in ["sender", "version", "total"] {
             let mut oversized = bundle.clone();
             match field {

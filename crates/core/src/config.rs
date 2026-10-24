@@ -25,6 +25,9 @@ pub struct DaemonConfig {
     pub journal: JournalConfig,
     #[serde(default)]
     pub messages: MessagesConfig,
+    /// How many observations one agent's read set holds.
+    #[serde(default)]
+    pub read_set: ReadSetConfig,
     /// Where copies of chosen events are posted, signed. Nothing is
     /// posted anywhere unless the person writes a sink here.
     #[serde(default)]
@@ -557,6 +560,45 @@ pub struct MessagesConfig {
     pub retention: Option<String>,
 }
 
+/// Observations one agent's read set holds unless `[read_set] capacity`
+/// says otherwise: three times both the largest read set a real session
+/// has held and a session that observes every file of a checkout of six
+/// hundred, rounded up. Cost follows the set's size, not the capacity.
+pub const READ_SET_CAPACITY: usize = 2_000;
+/// The least capacity the file may set: five times the read set that
+/// ninety-nine sessions in a hundred stay within.
+pub const READ_SET_CAPACITY_MIN: usize = 100;
+/// The most capacity the file may set. Every observation rewrites the
+/// whole set under the daemon's one lock, so its cost grows with the set;
+/// at this size each takes tens of milliseconds and writes megabytes.
+pub const READ_SET_CAPACITY_MAX: usize = 10_000;
+const _: () = assert!(
+    READ_SET_CAPACITY_MIN <= READ_SET_CAPACITY && READ_SET_CAPACITY <= READ_SET_CAPACITY_MAX
+);
+
+/// `[read_set]`: how much one agent's read set holds. An observation that
+/// would take the set past `capacity` is refused; nothing is evicted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadSetConfig {
+    /// Observations (distinct physical paths) one agent's read set holds
+    /// at most, [`READ_SET_CAPACITY_MIN`]–[`READ_SET_CAPACITY_MAX`].
+    #[serde(default = "read_set_capacity")]
+    pub capacity: usize,
+}
+
+fn read_set_capacity() -> usize {
+    READ_SET_CAPACITY
+}
+
+impl Default for ReadSetConfig {
+    fn default() -> Self {
+        Self {
+            capacity: READ_SET_CAPACITY,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JournalConfig {
@@ -623,6 +665,21 @@ impl DaemonConfig {
                 parse_duration(text).map_err(|error| format!("messages.retention: {error}"))
             })
             .transpose()
+    }
+
+    /// How many observations one agent's read set holds: the file's word
+    /// when it is in range, [`READ_SET_CAPACITY`] when it says nothing. A
+    /// value out of range is a broken setting, not a request for the
+    /// nearest bound: callers keep the default and say so.
+    pub fn read_set_capacity(&self) -> Result<usize, String> {
+        let capacity = self.read_set.capacity;
+        if (READ_SET_CAPACITY_MIN..=READ_SET_CAPACITY_MAX).contains(&capacity) {
+            Ok(capacity)
+        } else {
+            Err(format!(
+                "read_set.capacity must be {READ_SET_CAPACITY_MIN}–{READ_SET_CAPACITY_MAX}, not {capacity}"
+            ))
+        }
     }
 }
 
@@ -1067,5 +1124,76 @@ secret_file = {secret:?}
         assert!(unreadable.journal_retention().is_err());
         assert!(parse("[journal]\nretain = \"1d\"\n").is_err());
         assert!(parse("[jurnal]\nretention = \"1d\"\n").is_err());
+    }
+
+    /// The capacity is the default unless written, the file's word within
+    /// its range, and refused — not clamped — outside it; a value of the
+    /// wrong type or an unknown key fails the file as any other would.
+    #[test]
+    fn read_set_capacity_defaults_takes_its_range_and_refuses_the_rest() {
+        let parse = |text: &str| toml::from_str::<DaemonConfig>(text);
+        assert_eq!(
+            parse("").unwrap().read_set_capacity(),
+            Ok(READ_SET_CAPACITY)
+        );
+        assert_eq!(
+            parse("[read_set]\n").unwrap().read_set_capacity(),
+            Ok(READ_SET_CAPACITY)
+        );
+        for capacity in [READ_SET_CAPACITY_MIN, 2_500, READ_SET_CAPACITY_MAX] {
+            let config = parse(&format!("[read_set]\ncapacity = {capacity}\n")).unwrap();
+            assert_eq!(config.read_set_capacity(), Ok(capacity));
+        }
+        for capacity in [0, READ_SET_CAPACITY_MIN - 1, READ_SET_CAPACITY_MAX + 1] {
+            let error = parse(&format!("[read_set]\ncapacity = {capacity}\n"))
+                .unwrap()
+                .read_set_capacity()
+                .unwrap_err();
+            assert_eq!(
+                error,
+                format!(
+                    "read_set.capacity must be {READ_SET_CAPACITY_MIN}–{READ_SET_CAPACITY_MAX}, not {capacity}"
+                )
+            );
+        }
+        assert!(parse("[read_set]\ncapacity = -1\n").is_err(), "negative");
+        assert!(
+            parse("[read_set]\ncapacity = \"1000\"\n").is_err(),
+            "a string"
+        );
+        assert!(parse("[read_set]\nmarks = 1000\n").is_err(), "unknown key");
+    }
+
+    /// What the documents tell a person is what the daemon applies: the
+    /// default and the range, in the architecture's capacity rule and in
+    /// the guide's example.
+    #[test]
+    fn the_documented_read_set_capacity_is_the_default_and_range() {
+        fn grouped(n: usize) -> String {
+            let digits = n.to_string();
+            let mut out = String::new();
+            for (i, digit) in digits.chars().enumerate() {
+                if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                    out.push(',');
+                }
+                out.push(digit);
+            }
+            out
+        }
+        let architecture = include_str!("../../../docs/ARCHITECTURE.md");
+        let rule = format!(
+            "{} unless `agentd.toml` sets it, {}–{}",
+            grouped(READ_SET_CAPACITY),
+            grouped(READ_SET_CAPACITY_MIN),
+            grouped(READ_SET_CAPACITY_MAX)
+        );
+        assert!(architecture.contains(&rule), "ARCHITECTURE.md: {rule}");
+        let guide = include_str!("../../../docs/GUIDE.md");
+        let example = format!(
+            "capacity = {READ_SET_CAPACITY}  # the default; {READ_SET_CAPACITY_MIN}–{READ_SET_CAPACITY_MAX}"
+        );
+        assert!(guide.contains(&example), "GUIDE.md: {example}");
+        assert_eq!(grouped(10_000), "10,000");
+        assert_eq!(grouped(100), "100");
     }
 }

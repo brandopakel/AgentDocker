@@ -307,6 +307,11 @@ pub struct Store {
     /// until restart, when the bootstrap rebuilds it, so search falls back
     /// to LIKE at once rather than read an incomplete index.
     messages_fts: std::cell::Cell<bool>,
+    /// How many observations one agent's read set may hold: `[read_set]
+    /// capacity` from `agentd.toml` as the daemon last applied it. Every
+    /// path that writes a read set — an observation, an accepted handoff,
+    /// an identity repair or a resumed session's fold — keeps to it.
+    read_capacity: std::cell::Cell<usize>,
 }
 
 /// A journal query; see [`Store::journal`].
@@ -1166,7 +1171,18 @@ impl Store {
             conn,
             fts,
             pending_from: std::cell::Cell::new(pending_from),
+            read_capacity: std::cell::Cell::new(agentdocker_core::config::READ_SET_CAPACITY),
         })
+    }
+
+    /// Observations one agent's read set may hold.
+    pub fn read_capacity(&self) -> usize {
+        self.read_capacity.get()
+    }
+
+    /// Apply `[read_set] capacity`; the caller has checked its range.
+    pub fn set_read_capacity(&self, capacity: usize) {
+        self.read_capacity.set(capacity);
     }
 
     // ----- agents ---------------------------------------------------------

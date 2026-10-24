@@ -470,6 +470,8 @@ struct State {
     /// journal-retention tick clears that one, and would otherwise re-warn
     /// here every minute for a problem that has not changed.
     agent_config_notice: Option<String>,
+    /// The read-set capacity notice, kept apart for the same reason.
+    read_set_notice: Option<String>,
     /// The last HEAD a commit entry was written for, per checkout, so a
     /// move seen through several agents is journaled once.
     last_head: HashMap<PathBuf, String>,
@@ -1630,6 +1632,7 @@ impl Daemon {
                 journal_rings: HashMap::new(),
                 config_notice: None,
                 agent_config_notice: None,
+                read_set_notice: None,
                 last_head: HashMap::new(),
                 last_branch: HashMap::new(),
                 worktree_creators: HashMap::new(),
