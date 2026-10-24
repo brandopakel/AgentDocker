@@ -376,15 +376,25 @@ that profile's shared server. Every five seconds it reads `thread/loaded/list`
 `thread/read` without turns; between reads, the server's own
 `thread/status/changed` for a watched conversation has it read again at once (the
 announcement says when, the read says what, so an announcement older than an
-answer already applied never undoes it). The status is reported as the
-record's activity, as an adapter's report would be (`agent_activity_reported`):
+answer already applied never undoes it). The status is recorded as the
+record's activity, as the daemon's own observation rather than the agent's
+(`source: codex_server`, announced as `agent_activity_reported`):
 `active` with `waitingOnApproval` is *waiting* for a permission, with
 `waitingOnUserInput` *waiting* for a question (an approval first when both are
 set), so the session *needs you*; `active` without either is *working*; `idle` is
-*idle*; `notLoaded` and `systemError` say nothing. An unchanged status is renewed
-after four minutes, inside an observation's lifetime. A stop for the person this
-watch reported ends (reported idle) when the conversation is no longer loaded,
-fails, or the connection ends, unless something else has reported since. A child
+*idle*; `notLoaded` and `systemError` say nothing. Such an observation is not the
+agent's contact, lasts five minutes whatever it says, a wait included, and an
+unchanged status is recorded again after four minutes, inside that lifetime.
+While it lasts, the agent's MCP server calling the daemon does not turn it into
+*working*, and herdr's reading of the conversation's terminal, where herdr
+follows it too, is not recorded over it: the server reports the conversation's
+own state, herdr infers it from the screen ([Architecture](ARCHITECTURE.md#derived-activity)).
+The same word already on the record is restated as the server's when herdr or
+the agent's own adapter said it, except a running turn the adapter reported,
+which is left until due. A stop for the person this watch reported ends
+(recorded as the server's *idle*) when the conversation is no longer loaded,
+fails, or the connection ends, unless something else has reported since: a wait
+the agent's hooks or herdr reported is never this watch's to end. A child
 (sub-agent) conversation is never a record's own. A read the server refuses for
 one conversation never ends the watch: its answer for a conversation that
 unloaded between the list and the read (code -32600, `thread not loaded:
