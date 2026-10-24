@@ -37,8 +37,10 @@
 //! be sent: what a Codex terminal's companion launcher started may name the
 //! terminal, and a shared server only a terminal whose own record names its
 //! profile, never on the profile the registration names. Otherwise only the
-//! person may, and the registration is refused `identity_mismatch`. The
-//! same switch turns it off.
+//! person may, and the registration is refused `identity_mismatch`. What
+//! the check found goes on with the registration and is held to under the
+//! lock that commits it, against the agents that hold the process by then.
+//! The same switch turns it off.
 
 use super::*;
 use agentdocker_core::HUMAN;
@@ -198,7 +200,7 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::PollSecretReview { .. }
         | R::CodeVerdict { .. }
         // The process a registration names has a check of its own
-        // (`register_refusal`).
+        // (`authorize_registration`).
         | R::Register { .. }
         // What is acted on, not who acts.
         | R::WorktreeRemove { .. }
@@ -485,6 +487,8 @@ struct Acting {
     anchors: Vec<Process>,
     /// For a Codex agent, what finds its launcher and its shared server.
     codex: Option<Codex>,
+    /// For a Codex agent, the provider profile its record names, as spelled.
+    label: Option<String>,
 }
 
 impl Acting {
@@ -508,17 +512,21 @@ impl Acting {
                 anchors.push((process.pid, process.started_at));
             }
         }
+        let codex = record.spec.runtime == "codex";
+        let label = record
+            .spec
+            .labels
+            .get(agentdocker_core::agent::PROFILE_LABEL)
+            .filter(|_| codex)
+            .cloned();
         Self {
             id: record.id.clone(),
             name: record.spec.name.clone(),
-            codex: (record.spec.runtime == "codex").then(|| Codex {
+            codex: codex.then(|| Codex {
                 terminal: own,
-                profile: record
-                    .spec
-                    .labels
-                    .get(agentdocker_core::agent::PROFILE_LABEL)
-                    .map(std::path::PathBuf::from),
+                profile: label.as_ref().map(std::path::PathBuf::from),
             }),
+            label,
             anchors,
         }
     }
@@ -526,8 +534,9 @@ impl Acting {
 
 /// What a registration's spec says of the process it names when that is a
 /// Codex terminal whose conversation runs in a profile's shared server: the
-/// profile, canonical, and the conversation's thread.
+/// profile as spelled and canonical, and the conversation's thread.
 struct Terminal {
+    label: String,
     profile: std::path::PathBuf,
     thread: String,
 }
@@ -540,97 +549,221 @@ impl Terminal {
             return None;
         }
         let thread = spec.labels.get("session_id").filter(|t| !t.is_empty())?;
-        let profile = spec.labels.get(agentdocker_core::agent::PROFILE_LABEL)?;
+        let label = spec.labels.get(agentdocker_core::agent::PROFILE_LABEL)?;
         Some(Self {
-            profile: std::fs::canonicalize(profile).ok()?,
+            label: label.clone(),
+            profile: std::fs::canonicalize(label).ok()?,
             thread: thread.clone(),
         })
     }
 }
 
-/// What lets a registration's sender name the process it names.
+/// A profile's shared server, still to be proven by its control socket
+/// ([`served_by`]): the profile as records and the spec spell it, its
+/// canonical directory, and the candidates for its server among the
+/// sender's parents.
 #[derive(Debug, PartialEq, Eq)]
-enum Naming {
-    /// Its relation to the sender does.
-    Admitted,
-    /// It would, if one of a profile's candidates for its shared server,
-    /// each among the sender's parents, serves that profile's control
-    /// socket ([`served_by`]).
-    Served(Vec<(std::path::PathBuf, Vec<Process>)>),
-    /// Nothing about it does; the person check's trace decides.
-    Unrelated,
+struct Server {
+    label: String,
+    profile: std::path::PathBuf,
+    candidates: Vec<Process>,
 }
 
-/// Whether the process a registration names (`named`, by pid and its birth
-/// now) is one its sender (`sender`) may name, as the kernel tells it. One
-/// that live agents hold as their own (`holders`, their sessions as
-/// [`Acting::of`] finds them) may be named only from inside one of their
-/// sessions, exactly as a request acting as that agent may be sent
-/// ([`find_session`]: its own processes, its Codex launcher, and the shared
-/// server of the profile its record names, never of one a request names):
-/// registering it is acting as that agent. One nobody holds may be named
-/// when it is the sender or one of its parents (the sender runs inside it: a
-/// hook naming its provider, an MCP server its host), when the sender stands
-/// among its own parents (the sender started it: a launcher naming its
-/// terminal), or, when it is a Codex terminal whose own arguments resume the
-/// thread `terminal` names, from under that profile's shared server, which
-/// runs a terminal conversation's hooks and MCP servers beside rather than
-/// under it. A shared server is for its control socket to prove
-/// ([`Naming::Served`]).
-fn naming(
+/// What the kernel said of a registration's sender and the process it names
+/// when the registration was checked: what admits it then ([`Named::admits`])
+/// and again under the lock that commits it, against the agents that hold
+/// the process by then ([`Authorized::recheck`]), so an agent that comes to
+/// hold it in between is never joined on a word given for a process nobody
+/// held.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Named {
+    /// The process named, by pid and its birth.
+    process: Process,
+    /// The sender and its parents, nearest first, as far as they were walked.
+    chain: Vec<Process>,
+    /// Whether the sender stands among the named process's parents: it
+    /// started it.
+    started: bool,
+    /// Codex terminals, by pid and birth, whose companion launcher stands in
+    /// `chain`.
+    launched: Vec<Process>,
+    /// The profile, as the spec spells it, when the named process is a Codex
+    /// terminal whose own arguments resume the conversation the spec names.
+    terminal: Option<String>,
+    /// Profiles, as spelled, whose shared server stands in `chain` and serves
+    /// the profile's control socket.
+    served: Vec<String>,
+}
+
+impl Named {
+    /// Whether this admits naming the process as an agent's that holds it
+    /// (`holder`): from inside that agent's session, as the agent check finds
+    /// it — one of its own processes in `chain`, its terminal's companion
+    /// launcher there, or the shared server of the profile its own record
+    /// names, proven — and never on what the registration says.
+    fn admits_holder(&self, holder: &Acting) -> bool {
+        holder
+            .anchors
+            .iter()
+            .any(|anchor| self.chain.contains(anchor))
+            || holder.codex.as_ref().is_some_and(|codex| {
+                codex
+                    .terminal
+                    .is_some_and(|terminal| self.launched.contains(&terminal))
+            })
+            || holder
+                .label
+                .as_ref()
+                .is_some_and(|label| self.served.contains(label))
+    }
+
+    /// Whether this admits naming the process while `holders` hold it. One
+    /// that live agents hold may be named only as every one of theirs
+    /// ([`Named::admits_holder`]): registering it is acting as them, and it
+    /// may join any of them. One nobody holds may be named when it is the
+    /// sender or one of its parents (the sender runs inside it: a hook naming
+    /// its provider, an MCP server its host), when the sender started it (a
+    /// launcher naming its terminal), or when it is a Codex terminal resuming
+    /// the conversation the spec names and the spec's profile's shared server
+    /// is proven among the sender's parents (where a terminal conversation's
+    /// hooks and MCP servers run, beside rather than under it).
+    fn admits(&self, holders: &[Acting]) -> bool {
+        if holders.is_empty() {
+            self.chain.contains(&self.process)
+                || self.started
+                || self
+                    .terminal
+                    .as_ref()
+                    .is_some_and(|label| self.served.contains(label))
+        } else {
+            holders.iter().all(|holder| self.admits_holder(holder))
+        }
+    }
+}
+
+/// What the kernel says of the registration's sender (`sender`) and the
+/// process it names (`named`, by pid and its birth now), with the agents that
+/// hold it (`holders`, their profiles canonical) and the terminal the spec
+/// claims: the facts, and the shared servers their control sockets have to
+/// prove before [`Named::served`] counts them.
+fn gather(
     sender: Process,
     named: Process,
     holders: &[Acting],
     terminal: Option<&Terminal>,
     kernel: &Kernel,
-) -> Naming {
+) -> (Named, Vec<Server>) {
     let (pid, born) = sender;
-    let mut served = Vec::new();
-    if holders.is_empty() {
-        let (chain, up) = lineage(pid, born, kernel.step, kernel.unseen, |p| p == named);
-        let started = || {
-            let (named_pid, named_born) = named;
-            lineage(named_pid, named_born, kernel.step, kernel.unseen, |p| {
-                p == sender
+    let (chain, _) = lineage(pid, born, kernel.step, kernel.unseen, |_| false);
+    let (named_pid, named_born) = named;
+    let started = lineage(named_pid, named_born, kernel.step, kernel.unseen, |p| {
+        p == sender
+    })
+    .1 == End::Found;
+    let mut terminals = vec![named];
+    terminals.extend(holders.iter().filter_map(|h| h.codex.as_ref()?.terminal));
+    let launched = terminals
+        .into_iter()
+        .filter(|terminal| {
+            codex_launcher(
+                *terminal,
+                kernel.step,
+                kernel.arguments,
+                kernel.executable,
+                kernel.companion,
+            )
+            .is_some_and(|launcher| chain.contains(&launcher))
+        })
+        .collect();
+    let resumes = terminal.filter(|terminal| {
+        (kernel.born)(named_pid) == Some(named_born)
+            && (kernel.arguments)(named_pid)
+                .is_some_and(|argv| procinfo::codex_resumes(&argv, &terminal.thread))
+    });
+    let mut profiles: Vec<(String, std::path::PathBuf)> = holders
+        .iter()
+        .filter_map(|holder| {
+            Some((
+                holder.label.clone()?,
+                holder.codex.as_ref()?.profile.clone()?,
+            ))
+        })
+        .collect();
+    profiles.extend(resumes.map(|t| (t.label.clone(), t.profile.clone())));
+    profiles.sort();
+    profiles.dedup();
+    let servers = profiles
+        .into_iter()
+        .filter_map(|(label, profile)| {
+            let candidates =
+                shared_server_candidates(&chain, &profile, kernel.executable, kernel.born);
+            (!candidates.is_empty()).then_some(Server {
+                label,
+                profile,
+                candidates,
             })
-            .1 == End::Found
+        })
+        .collect();
+    (
+        Named {
+            process: named,
+            chain,
+            started,
+            launched,
+            terminal: resumes.map(|t| t.label.clone()),
+            served: Vec::new(),
+        },
+        servers,
+    )
+}
+
+/// What a registration's check let its `pid` through on, for the
+/// registration to hold to when it commits.
+#[derive(Clone, Debug)]
+pub(crate) enum Authorized {
+    /// The person's, who may register any process: nothing to hold to.
+    Person,
+    /// What the sender may name, as the kernel said it.
+    Named(Named),
+}
+
+impl Authorized {
+    /// Under the lock that commits the registration, which recorded the
+    /// named process's birth as `born`: a refusal, with nothing done, when
+    /// the process is not the one checked any more, or what was checked no
+    /// longer admits it against the agents that hold it now — one that came
+    /// to hold it after a check that found nobody, say. `None` lets it
+    /// through.
+    pub(super) fn recheck(&self, state: &State, born: Option<DateTime<Utc>>) -> Option<Response> {
+        let Authorized::Named(named) = self else {
+            return None;
         };
-        if up == End::Found || started() {
-            return Naming::Admitted;
+        let (pid, checked) = named.process;
+        if born != Some(checked) {
+            return Some(naming_refusal(
+                pid,
+                None,
+                "another process has that pid since it was checked",
+            ));
         }
-        if let Some(terminal) = terminal {
-            let (named_pid, named_born) = named;
-            let resumes = (kernel.born)(named_pid) == Some(named_born)
-                && (kernel.arguments)(named_pid)
-                    .is_some_and(|argv| procinfo::codex_resumes(&argv, &terminal.thread));
-            if resumes {
-                let shared = shared_server_candidates(
-                    &chain,
-                    &terminal.profile,
-                    kernel.executable,
-                    kernel.born,
-                );
-                if !shared.is_empty() {
-                    served.push((terminal.profile.clone(), shared));
-                }
-            }
+        let holders: Vec<Acting> = state
+            .registry
+            .live()
+            .map(Acting::of)
+            .filter(|holder| holder.anchors.contains(&named.process))
+            .collect();
+        if named.admits(&holders) {
+            return None;
         }
-    }
-    for holder in holders {
-        match find_session(pid, born, &holder.anchors, holder.codex.as_ref(), kernel) {
-            Session::Inside => return Naming::Admitted,
-            Session::Outside { shared } if !shared.is_empty() => {
-                if let Some(profile) = holder.codex.as_ref().and_then(|c| c.profile.clone()) {
-                    served.push((profile, shared));
-                }
-            }
-            Session::Outside { .. } => {}
-        }
-    }
-    if served.is_empty() {
-        Naming::Unrelated
-    } else {
-        Naming::Served(served)
+        let holder = holders
+            .iter()
+            .find(|holder| !named.admits_holder(holder))
+            .or(holders.first());
+        Some(naming_refusal(
+            pid,
+            holder,
+            "it came to be held after it was checked, by an agent whose session it was not sent from",
+        ))
     }
 }
 
@@ -730,33 +863,36 @@ impl Daemon {
         Some(refusal(&acting, &why))
     }
 
-    /// A refusal when `request` registers a process (`register`'s `pid`)
-    /// that `peer`, the process on the socket, may not name ([`naming`]),
-    /// and `peer` is not the person's either: the person may register any
-    /// process. Follows the agent check's switch, and trusts the daemon's
-    /// own process, as [`Daemon::agent_refusal`] does. `None` lets it
-    /// through.
-    pub(crate) async fn register_refusal(
+    /// What lets `request`, a registration of a process (`register`'s
+    /// `pid`), through from `peer`, the process on the socket: what the
+    /// kernel says the sender may name ([`Named::admits`]), or the person,
+    /// who may register any process. `Ok(None)` for a request that names no
+    /// process, with the agent check off, or from the daemon's own process,
+    /// which are not checked, as [`Daemon::agent_refusal`] does not check
+    /// them; `Err` with the refusal otherwise. What was admitted goes on to
+    /// the registration, which holds to it when it commits
+    /// ([`Authorized::recheck`]).
+    pub(crate) async fn authorize_registration(
         self: &Arc<Self>,
         peer: Option<Peer>,
         request: &Request,
-    ) -> Option<Response> {
+    ) -> Result<Option<Authorized>, Box<Response>> {
         let Request::Register {
             spec,
             pid: Some(pid),
             ..
         } = request
         else {
-            return None;
+            return Ok(None);
         };
         if !self.agent_check || peer.is_some_and(|(sender, _)| sender == std::process::id()) {
-            return None;
+            return Ok(None);
         }
         let pid = *pid;
         let live: Vec<Acting> = lock(&self.state).registry.live().map(Acting::of).collect();
         let spec = spec.clone();
         let identified = peer.and_then(|(sender, born)| born.map(|born| (sender, born)));
-        let (found, holder) = tokio::task::spawn_blocking(move || {
+        let (found, holders) = tokio::task::spawn_blocking(move || {
             let named = procinfo::start_time(pid).map(|born| (pid, born));
             let holders: Vec<Acting> = named
                 .map(|named| {
@@ -775,7 +911,7 @@ impl Daemon {
                 })
                 .unwrap_or_default();
             let found = identified.zip(named).map(|(sender, named)| {
-                naming(
+                gather(
                     sender,
                     named,
                     &holders,
@@ -783,37 +919,36 @@ impl Daemon {
                     &Kernel::host(),
                 )
             });
-            (found, holders.into_iter().next())
+            (found, holders)
         })
         .await
-        .unwrap_or((None, None));
-        match found {
-            Some(Naming::Admitted) => return None,
-            Some(Naming::Served(servers)) => {
-                for (profile, candidates) in servers {
-                    let serving = tokio::time::timeout(
-                        SERVER_CHECK,
-                        codex_control::serving_process(&profile),
-                    )
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .flatten();
-                    if served_by(&candidates, serving, procinfo::start_time) {
-                        return None;
-                    }
+        .unwrap_or((None, Vec::new()));
+        if let Some((mut named, servers)) = found {
+            for server in servers {
+                let serving = tokio::time::timeout(
+                    SERVER_CHECK,
+                    codex_control::serving_process(&server.profile),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten();
+                if served_by(&server.candidates, serving, procinfo::start_time) {
+                    named.served.push(server.label);
                 }
             }
-            Some(Naming::Unrelated) | None => {}
+            if named.admits(&holders) {
+                return Ok(Some(Authorized::Named(named)));
+            }
         }
         let why = match self.trace(peer, request).await {
-            person::Traced::Person => return None,
+            person::Traced::Person => return Ok(Some(Authorized::Person)),
             person::Traced::Inside(reason) => format!("it was sent from inside {reason}"),
             person::Traced::Unknown(reason) => format!("{reason} cannot be the person's"),
         };
         let sender = peer.map_or(0, |(sender, _)| sender);
         warn!(peer = sender, pid, %why, "refused a registration of a process its sender may not name");
-        Some(naming_refusal(pid, holder.as_ref(), &why))
+        Err(Box::new(naming_refusal(pid, holders.first(), &why)))
     }
 }
 
@@ -830,10 +965,7 @@ fn naming_refusal(pid: u32, holder: Option<&Acting>, why: &str) -> Response {
             json!({"pid": pid, "agent": holder.id, "name": holder.name}),
         ),
         None => (
-            format!(
-                "this registers process {pid}, which is neither its sender, one of the sender's \
-                 parents nor a process the sender started, and {why}; {RULE}"
-            ),
+            format!("this registers process {pid}, and {why}; {RULE}"),
             json!({"pid": pid}),
         ),
     };
@@ -1499,13 +1631,17 @@ mod tests {
     }
 
     impl Table {
-        fn naming(
+        /// What the kernel says `sender` may name of `named` while
+        /// `holders` hold it and the spec claims `terminal`, with `serving`
+        /// the process every profile's control socket names.
+        fn named(
             &self,
             sender: u32,
-            named: u32,
+            named: (u32, DateTime<Utc>),
             holders: &[Acting],
             terminal: Option<&Terminal>,
-        ) -> Naming {
+            serving: Option<u32>,
+        ) -> Named {
             let step = |pid: u32| {
                 self.parents
                     .get(&pid)
@@ -1523,13 +1659,39 @@ mod tests {
                 born: &born,
                 companion: &companion,
             };
-            naming(
+            let (mut facts, servers) = gather(
                 (sender, at(i64::from(sender))),
-                (named, at(i64::from(named))),
+                named,
                 holders,
                 terminal,
                 &kernel,
+            );
+            for server in servers {
+                if served_by(&server.candidates, serving, born) {
+                    facts.served.push(server.label);
+                }
+            }
+            facts
+        }
+
+        /// Whether `sender` may name `named` while `holders` hold it, the
+        /// spec claiming `terminal`, every control socket served by 60:
+        /// profile P's shared server.
+        fn admits(
+            &self,
+            sender: u32,
+            named: u32,
+            holders: &[Acting],
+            terminal: Option<&Terminal>,
+        ) -> bool {
+            self.named(
+                sender,
+                (named, at(i64::from(named))),
+                holders,
+                terminal,
+                Some(60),
             )
+            .admits(holders)
         }
     }
 
@@ -1645,35 +1807,22 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (table, _, _) = table(&std::fs::canonicalize(tmp.path()).unwrap());
         // The peer itself.
-        assert_eq!(table.naming(21, 21, &[], None), Naming::Admitted);
+        assert!(table.admits(21, 21, &[], None));
         // One of its parents: an MCP server its host, a hook its provider
         // past the shell between them.
-        assert_eq!(table.naming(21, 20, &[], None), Naming::Admitted);
-        assert_eq!(table.naming(23, 20, &[], None), Naming::Admitted);
+        assert!(table.admits(21, 20, &[], None));
+        assert!(table.admits(23, 20, &[], None));
         // A process it started, directly or below a child.
-        assert_eq!(table.naming(50, 51, &[], None), Naming::Admitted);
-        assert_eq!(table.naming(20, 23, &[], None), Naming::Admitted);
+        assert!(table.admits(50, 51, &[], None));
+        assert!(table.admits(20, 23, &[], None));
         // The Codex launcher names the terminal it started.
-        assert_eq!(table.naming(30, 31, &[], None), Naming::Admitted);
+        assert!(table.admits(30, 31, &[], None));
         // A sibling, a cousin or a stranger is not.
-        assert_eq!(table.naming(21, 22, &[], None), Naming::Unrelated);
-        assert_eq!(table.naming(41, 51, &[], None), Naming::Unrelated);
-        assert_eq!(table.naming(41, 20, &[], None), Naming::Unrelated);
+        assert!(!table.admits(21, 22, &[], None));
+        assert!(!table.admits(41, 51, &[], None));
+        assert!(!table.admits(41, 20, &[], None));
         // A process given the named pid since is not the one walked.
-        let step = |pid: u32| table.parents.get(&pid).map(|p| (*p, at(i64::from(pid))));
-        let born = |pid: u32| Some(at(i64::from(pid)));
-        let kernel = Kernel {
-            step: &step,
-            unseen: &|_: u32| Unseen::Ended,
-            arguments: &|_: u32| -> Option<Vec<String>> { None },
-            executable: &|_: u32| -> Option<std::path::PathBuf> { None },
-            born: &born,
-            companion: &|_: &std::path::Path| false,
-        };
-        assert_eq!(
-            naming((21, at(21)), (20, at(19)), &[], None, &kernel),
-            Naming::Unrelated
-        );
+        assert!(!table.named(21, (20, at(19)), &[], None, None).admits(&[]));
     }
 
     /// A process a live agent holds is named only from inside that agent's
@@ -1689,24 +1838,24 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (table, _, _) = table(&std::fs::canonicalize(tmp.path()).unwrap());
         let x = [holder("claude-code", 20, None)];
-        assert_eq!(table.naming(23, 20, &x, None), Naming::Admitted, "X's hook");
-        assert_eq!(table.naming(20, 20, &x, None), Naming::Admitted, "X itself");
+        assert!(table.admits(23, 20, &x, None), "X's hook");
+        assert!(table.admits(20, 20, &x, None), "X itself");
         // A process a recorded agent's launcher started: the Codex
         // terminal Y, re-registered from under the server its launcher
         // started beside it.
         let y = [holder("codex", 31, None)];
-        assert_eq!(table.naming(33, 31, &y, None), Naming::Admitted);
-        assert_eq!(table.naming(30, 31, &y, None), Naming::Admitted);
+        assert!(table.admits(33, 31, &y, None));
+        assert!(table.admits(30, 31, &y, None));
         // Impostors.
-        assert_eq!(table.naming(41, 20, &x, None), Naming::Unrelated);
-        assert_eq!(table.naming(40, 20, &x, None), Naming::Unrelated);
-        assert_eq!(table.naming(41, 31, &y, None), Naming::Unrelated);
-        assert_eq!(table.naming(21, 31, &y, None), Naming::Unrelated);
+        assert!(!table.admits(41, 20, &x, None));
+        assert!(!table.admits(40, 20, &x, None));
+        assert!(!table.admits(41, 31, &y, None));
+        assert!(!table.admits(21, 31, &y, None));
         // Z started W, and still may not take W's identity.
         let w = [holder("claude-code", 42, None)];
-        assert_eq!(table.naming(41, 42, &[], None), Naming::Admitted);
-        assert_eq!(table.naming(41, 42, &w, None), Naming::Unrelated);
-        assert_eq!(table.naming(10, 42, &w, None), Naming::Unrelated);
+        assert!(table.admits(41, 42, &[], None));
+        assert!(!table.admits(41, 42, &w, None));
+        assert!(!table.admits(10, 42, &w, None));
     }
 
     /// From under a profile's shared server, a Codex terminal nobody holds
@@ -1714,7 +1863,7 @@ mod tests {
     /// named as a record of that profile, when the server among the
     /// sender's parents is a Codex image in that profile's package cache,
     /// and then only if it serves the profile's control socket
-    /// ([`Naming::Served`]). A terminal a live agent holds is named from
+    /// ([`served_by`]). A terminal a live agent holds is named from
     /// there only when that agent's own record names the same profile, as
     /// the agent check allows: never on the profile the registration names,
     /// so a record that names none, another profile's or another runtime's
@@ -1725,25 +1874,31 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (table, p, q) = table(&std::fs::canonicalize(tmp.path()).unwrap());
         let terminal = |profile: &std::path::Path, thread: &str| Terminal {
+            label: profile.display().to_string(),
             profile: profile.to_owned(),
             thread: thread.to_owned(),
         };
         let theirs = terminal(&p, THREAD);
-        let served = Naming::Served(vec![(p.clone(), vec![(60, at(60))])]);
-        assert_eq!(table.naming(61, 81, &[], Some(&theirs)), served);
+        assert!(table.admits(61, 81, &[], Some(&theirs)));
+        // Only while the server serves the profile's control socket.
+        let at81 = (81, at(81));
+        for serving in [None, Some(61)] {
+            assert!(
+                !table
+                    .named(61, at81, &[], Some(&theirs), serving)
+                    .admits(&[])
+            );
+        }
         // Held by a Codex record of the same profile: its own record proves
         // it, whatever the spec says.
         let ours = [holder("codex", 81, Some(&p))];
-        assert_eq!(table.naming(61, 81, &ours, Some(&theirs)), served);
-        assert_eq!(table.naming(61, 81, &ours, None), served);
+        assert!(table.admits(61, 81, &ours, Some(&theirs)));
+        assert!(table.admits(61, 81, &ours, None));
         // Another conversation's terminal, or a spec naming another thread.
-        assert_eq!(table.naming(61, 82, &[], Some(&theirs)), Naming::Unrelated);
+        assert!(!table.admits(61, 82, &[], Some(&theirs)));
         // From another profile's server, or naming this terminal for it.
-        assert_eq!(table.naming(71, 81, &[], Some(&theirs)), Naming::Unrelated);
-        assert_eq!(
-            table.naming(61, 81, &[], Some(&terminal(&q, THREAD))),
-            Naming::Unrelated
-        );
+        assert!(!table.admits(71, 81, &[], Some(&theirs)));
+        assert!(!table.admits(61, 81, &[], Some(&terminal(&q, THREAD))));
         // Held by a Codex record that names no profile, another profile's
         // agent, or another runtime's: the spec's profile proves nothing.
         for held in [
@@ -1751,14 +1906,42 @@ mod tests {
             holder("codex", 81, Some(&q)),
             holder("claude-code", 81, None),
         ] {
-            assert_eq!(
-                table.naming(61, 81, &[held], Some(&theirs)),
-                Naming::Unrelated
-            );
+            assert!(!table.admits(61, 81, &[held], Some(&theirs)));
         }
         // From an ordinary process, or without a terminal's claim.
-        assert_eq!(table.naming(41, 81, &[], Some(&theirs)), Naming::Unrelated);
-        assert_eq!(table.naming(61, 81, &[], None), Naming::Unrelated);
+        assert!(!table.admits(41, 81, &[], Some(&theirs)));
+        assert!(!table.admits(61, 81, &[], None));
+    }
+
+    /// What a check found holds when the registration commits only against
+    /// the agents that hold the process by then ([`Authorized::recheck`]):
+    /// a hook's word for its provider holds whoever came to hold it (each
+    /// holds it as its own, and the hook runs under it), the Codex
+    /// launcher's for its terminal holds against the terminal's own record
+    /// and not another runtime's, and a shared server's for a terminal
+    /// nobody held holds against a record that names its profile, never one
+    /// that names none. Every holder must be admitted, not one of them.
+    #[test]
+    fn a_check_holds_only_against_the_agents_that_hold_the_process_at_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (table, p, _) = table(&std::fs::canonicalize(tmp.path()).unwrap());
+        let hook = table.named(23, (20, at(20)), &[], None, None);
+        assert!(hook.admits(&[]));
+        assert!(hook.admits(&[holder("claude-code", 20, None)]));
+        let launcher = table.named(30, (31, at(31)), &[], None, None);
+        assert!(launcher.admits(&[]));
+        assert!(launcher.admits(&[holder("codex", 31, None)]));
+        assert!(!launcher.admits(&[holder("claude-code", 31, None)]));
+        assert!(!launcher.admits(&[holder("codex", 31, None), holder("claude-code", 31, None)]));
+        let theirs = Terminal {
+            label: p.display().to_string(),
+            profile: p.clone(),
+            thread: THREAD.to_owned(),
+        };
+        let shared = table.named(61, (81, at(81)), &[], Some(&theirs), Some(60));
+        assert!(shared.admits(&[]));
+        assert!(!shared.admits(&[holder("codex", 81, None)]));
+        assert!(shared.admits(&[holder("codex", 81, Some(&p))]));
     }
 
     /// A client for the registration tests: registers `spec` naming the
@@ -2244,5 +2427,70 @@ mod tests {
                     && agent.spec.labels.get("session_id").map(String::as_str) == Some(thread)),
             "{reply:?}"
         );
+    }
+
+    /// Over the real socket, between the check and the commit: the shared
+    /// server's registration of a terminal nobody holds is admitted, then
+    /// paused before the lock that commits it, and meanwhile the terminal
+    /// gets a record of its own that names no profile (an MCP-first one)
+    /// with a lease of its own. Resumed, the registration is refused
+    /// `identity_mismatch` against the agent that holds the process now:
+    /// the record learns neither the session nor the profile, keeps its
+    /// lease, and the server still cannot act as it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_record_that_appears_after_the_check_is_not_taken_over() {
+        let mut server = SharedServer::start().await;
+        let b = server.terminal(THREAD);
+        let hold = Arc::new(tokio::sync::Barrier::new(2));
+        *lock(&server.daemon.register_hold) = Some(hold.clone());
+        let request = server.register(b, THREAD);
+        let own = format!("path:{}/own", server.workdir.display());
+        let (reply, record) = tokio::join!(server.send(true, request), async {
+            // The shared server's registration has been let through.
+            hold.wait().await;
+            let record = server
+                .record(b, [("via".to_owned(), "mcp".to_owned())].into())
+                .await;
+            let lease = server
+                .daemon
+                .handle(Request::Claim {
+                    agent: record.id.to_string(),
+                    resource: own.clone(),
+                    mode: Default::default(),
+                    amount: None,
+                    ttl_secs: 60,
+                    note: None,
+                    wait_secs: 0,
+                    automatic: false,
+                })
+                .await;
+            assert!(matches!(lease, Response::Lease { .. }), "{lease:?}");
+            hold.wait().await;
+            record
+        });
+        assert!(identity_mismatch(&reply), "{reply:?}");
+        assert!(
+            matches!(&reply, Response::Error { details: Some(details), .. }
+                if details["agent"] == record.id.as_str() && details["pid"] == b),
+            "{reply:?}"
+        );
+        {
+            let state = lock(&server.daemon.state);
+            assert_eq!(state.registry.all().count(), 1, "only B's own record");
+            let current = state.registry.get(&record.id).unwrap();
+            assert_eq!(current.spec.labels, record.spec.labels, "{current:?}");
+            assert_eq!(state.leases.len(), 1, "B keeps its lease");
+        }
+        let claim = serde_json::json!({
+            "op": "claim",
+            "agent": record.id,
+            "resource": format!("path:{}/taken", server.workdir.display()),
+            "ttl_secs": 60,
+        })
+        .to_string();
+        let reply = server.send(true, claim).await;
+        assert!(identity_mismatch(&reply), "{reply:?}");
+        assert_eq!(lock(&server.daemon.state).leases.len(), 1);
     }
 }

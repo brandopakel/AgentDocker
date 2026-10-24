@@ -293,7 +293,7 @@ impl Daemon {
             },
             ..AgentSpec::default()
         };
-        let response = self.register(spec, Some(pid), None).await;
+        let response = self.register(spec, Some(pid), None, None).await;
         if matches!(response, Response::Agent { .. }) {
             let mut state = lock(&self.state);
             if let Some(index) = state.discovered.processes.iter().position(|p| p.pid == pid) {

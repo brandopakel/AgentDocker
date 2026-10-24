@@ -340,6 +340,10 @@ pub struct Daemon {
     /// across an await.
     #[cfg(test)]
     relaunch_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// A test's pause in a registration, after its check and before the
+    /// lock that commits it, met twice. Never held across an await.
+    #[cfg(test)]
+    register_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     /// What was found of the processes that asked to act as the person.
     /// Never held with the state lock.
     peers: Mutex<person::Peers>,
@@ -1668,6 +1672,8 @@ impl Daemon {
             transferred_exit: Notify::new(),
             #[cfg(test)]
             relaunch_hold: Mutex::new(None),
+            #[cfg(test)]
+            register_hold: Mutex::new(None),
             peers: Mutex::new(person::Peers::default()),
             person_check: std::env::var_os("AGENTDOCKER_PERSON_CHECK").is_none_or(|v| v != "off"),
             agent_check: std::env::var_os("AGENTDOCKER_AGENT_CHECK").is_none_or(|v| v != "off"),
@@ -1857,6 +1863,19 @@ impl Daemon {
 
     /// Handle every non-streaming request.
     pub async fn handle(self: &Arc<Self>, request: Request) -> Response {
+        self.handle_authorized(request, None).await
+    }
+
+    /// [`Daemon::handle`], with what the socket's registration check let a
+    /// `register` through on ([`Daemon::authorize_registration`]), which
+    /// the registration holds to when it commits. `None` for anything the
+    /// check did not look at: the daemon's own callers, a request that
+    /// names no process, or the check switched off.
+    pub(crate) async fn handle_authorized(
+        self: &Arc<Self>,
+        request: Request,
+        authorized: Option<acting::Authorized>,
+    ) -> Response {
         // A failed write makes the in-memory projection unsafe to serve. Keep
         // the daemon unavailable until restart reloads durable state; never
         // acknowledge a mutation or grant new protection from that projection.
@@ -1895,7 +1914,7 @@ impl Daemon {
         let response = ADMISSION
             .scope(
                 std::cell::RefCell::new(in_flight),
-                Box::pin(self.handle_healthy(request)),
+                Box::pin(self.handle_healthy(request, authorized)),
             )
             .await;
         if control {
@@ -1942,7 +1961,11 @@ impl Daemon {
         Ok(())
     }
 
-    async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
+    async fn handle_healthy(
+        self: &Arc<Self>,
+        request: Request,
+        authorized: Option<acting::Authorized>,
+    ) -> Response {
         match request {
             Request::RecordEmission { agent, emission } => self.record_emission(&agent, emission),
             Request::BuildImage { spec } => self.build_image(spec).await,
@@ -2115,7 +2138,7 @@ impl Daemon {
             }
             Request::RestartContainer { agent } => self.restart_container(&agent).await,
             Request::Register { spec, pid, session } => {
-                let registered = self.register(spec, pid, session).await;
+                let registered = self.register(spec, pid, session, authorized).await;
                 self.trace_starter(&registered);
                 registered
             }
