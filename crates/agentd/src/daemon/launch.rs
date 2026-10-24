@@ -500,6 +500,7 @@ impl Daemon {
                         record.process_started_at,
                         (record.session.clone(), record.terminal.clone()),
                         Utc::now(),
+                        authorized.as_ref(),
                     )
                 }
                 _ => None,

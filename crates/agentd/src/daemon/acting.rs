@@ -39,7 +39,9 @@
 //! profile, never on the profile the registration names. Otherwise only the
 //! person may, and the registration is refused `identity_mismatch`. What
 //! the check found goes on with the registration and is held to under the
-//! lock that commits it, against the agents that hold the process by then.
+//! lock that commits it, against the agents that hold the process by then
+//! and against a keyed Codex conversation its labels would join, which
+//! only that profile's proven server or the person may take.
 //! The same switch turns it off.
 
 use super::*;
@@ -689,7 +691,10 @@ fn gather(
             ))
         })
         .collect();
-    profiles.extend(resumes.map(|t| (t.label.clone(), t.profile.clone())));
+    // The spec's own profile too, whether or not the process resumes its
+    // thread: a keyed record of that profile the registration would join is
+    // the profile's shared server's to name ([`Authorized::join_refusal`]).
+    profiles.extend(terminal.map(|t| (t.label.clone(), t.profile.clone())));
     profiles.sort();
     profiles.dedup();
     let servers = profiles
@@ -763,6 +768,29 @@ impl Authorized {
             pid,
             holder,
             "it came to be held after it was checked, by an agent whose session it was not sent from",
+        ))
+    }
+
+    /// Under the lock that commits the registration, which would join an
+    /// existing record of the conversation its labels name (`target`, a
+    /// Codex conversation known by its key alone, with no process): a
+    /// refusal, with nothing done, unless the sender may act as that record
+    /// as the agent check finds it — for a keyed record, from under the
+    /// proven shared server of the profile it names — or the person sent
+    /// it. The registration's own labels select the record and prove
+    /// nothing about who may take it. `None` lets it through.
+    pub(super) fn join_refusal(&self, target: &AgentRecord) -> Option<Response> {
+        let Authorized::Named(named) = self else {
+            return None;
+        };
+        let target = Acting::of(target);
+        if named.admits_holder(&target) {
+            return None;
+        }
+        Some(naming_refusal(
+            named.process.0,
+            Some(&target),
+            "it would join that agent's conversation, whose session it was not sent from",
         ))
     }
 }
@@ -890,7 +918,7 @@ impl Daemon {
         }
         let pid = *pid;
         let live: Vec<Acting> = lock(&self.state).registry.live().map(Acting::of).collect();
-        let spec = spec.clone();
+        let owned = spec.clone();
         let identified = peer.and_then(|(sender, born)| born.map(|born| (sender, born)));
         let (found, holders) = tokio::task::spawn_blocking(move || {
             let named = procinfo::start_time(pid).map(|born| (pid, born));
@@ -915,7 +943,7 @@ impl Daemon {
                     sender,
                     named,
                     &holders,
-                    Terminal::of(&spec).as_ref(),
+                    Terminal::of(&owned).as_ref(),
                     &Kernel::host(),
                 )
             });
@@ -923,6 +951,7 @@ impl Daemon {
         })
         .await
         .unwrap_or((None, Vec::new()));
+        let mut admitted = None;
         if let Some((mut named, servers)) = found {
             for server in servers {
                 let serving = tokio::time::timeout(
@@ -938,11 +967,21 @@ impl Daemon {
                 }
             }
             if named.admits(&holders) {
-                return Ok(Some(Authorized::Named(named)));
+                // A spec that names a Codex conversation's profile and
+                // thread may join that conversation's keyed record, which
+                // only that profile's server or the person may take
+                // ([`Authorized::join_refusal`]): unless the server is
+                // proven, whether the person sent it is asked as well.
+                let joins = keyed_claim(spec).is_some_and(|label| !named.served.contains(label));
+                if !joins {
+                    return Ok(Some(Authorized::Named(named)));
+                }
+                admitted = Some(named);
             }
         }
         let why = match self.trace(peer, request).await {
             person::Traced::Person => return Ok(Some(Authorized::Person)),
+            _ if admitted.is_some() => return Ok(admitted.map(Authorized::Named)),
             person::Traced::Inside(reason) => format!("it was sent from inside {reason}"),
             person::Traced::Unknown(reason) => format!("{reason} cannot be the person's"),
         };
@@ -950,6 +989,19 @@ impl Daemon {
         warn!(peer = sender, pid, %why, "refused a registration of a process its sender may not name");
         Err(Box::new(naming_refusal(pid, holders.first(), &why)))
     }
+}
+
+/// The profile, as spelled, of the Codex conversation a registration's spec
+/// names by its profile and thread: the key a keyed record of that
+/// conversation is found by when the registration commits.
+fn keyed_claim(spec: &AgentSpec) -> Option<&String> {
+    (spec.runtime == "codex"
+        && spec
+            .labels
+            .get("session_id")
+            .is_some_and(|thread| !thread.is_empty()))
+    .then(|| spec.labels.get(agentdocker_core::agent::PROFILE_LABEL))
+    .flatten()
 }
 
 fn naming_refusal(pid: u32, holder: Option<&Acting>, why: &str) -> Response {
@@ -2492,5 +2544,203 @@ mod tests {
         let reply = server.send(true, claim).await;
         assert!(identity_mismatch(&reply), "{reply:?}");
         assert_eq!(lock(&server.daemon.state).leases.len(), 1);
+    }
+
+    /// Over the real socket: a Codex conversation known by its key alone
+    /// (B: profile P, thread T, its checkout), holding a lease and with a
+    /// message queued, is not taken by a process that registers itself under
+    /// B's labels. C, a child of another agent, may not act as B; its
+    /// registration of itself names its own process, so the pid check lets
+    /// it through, but it would join B, and is refused `identity_mismatch`
+    /// with nothing done: B keeps no process, its lease and its message, no
+    /// record is made for C, and C still may not act as B. C may still
+    /// register itself for a conversation nobody holds, the person may join
+    /// a keyed conversation from outside every agent's session, and from
+    /// under P's proven shared server the terminal resuming T joins B under
+    /// B's own id.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_keyed_conversation_is_joined_only_from_its_profile_s_server_or_by_the_person() {
+        use std::io::{BufRead as _, Write as _};
+        let mut server = SharedServer::start().await;
+        let daemon = server.daemon.clone();
+        let profile = server.profile.display().to_string();
+        let attach = |thread: &'static str| {
+            let daemon = daemon.clone();
+            let profile = profile.clone();
+            let workdir = server.workdir.clone();
+            async move {
+                match daemon
+                    .handle(Request::SessionAttach {
+                        runtime: "codex".into(),
+                        profile,
+                        session: thread.into(),
+                        workdir,
+                        adapter: agentdocker_core::AdapterKind::Mcp,
+                    })
+                    .await
+                {
+                    Response::Agent { agent } => agent,
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        let b = attach(THREAD).await;
+        assert!(b.pid.is_none() && b.keyed_only(), "{b:?}");
+        let lease = daemon
+            .handle(Request::Claim {
+                agent: b.id.to_string(),
+                resource: format!("path:{}/b", server.workdir.display()),
+                mode: Default::default(),
+                amount: None,
+                ttl_secs: 600,
+                note: None,
+                wait_secs: 0,
+                automatic: false,
+            })
+            .await;
+        assert!(matches!(lease, Response::Lease { .. }), "{lease:?}");
+        let sent = daemon
+            .handle(Request::Send {
+                from: HUMAN.into(),
+                to: b.id.to_string(),
+                kind: "chat".into(),
+                payload: json!("for B alone"),
+                reply_to: None,
+                links: Vec::new(),
+            })
+            .await;
+        assert!(!matches!(sent, Response::Error { .. }), "{sent:?}");
+        let queued = |id: AgentId| {
+            let daemon = daemon.clone();
+            async move {
+                match daemon
+                    .handle(Request::PeekInput {
+                        agent: id.to_string(),
+                    })
+                    .await
+                {
+                    Response::Messages { messages } => messages.len(),
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        assert_eq!(queued(b.id.clone()).await, 1);
+
+        // C, under agent A's shell: a claim as B, a registration of itself
+        // under B's labels, the claim again, and a registration of itself for
+        // a conversation nobody holds.
+        let impostor = "import json,os,socket,sys\ndef ask(request):\n    s=socket.socket(socket.AF_UNIX)\n    s.connect(sys.argv[1])\n    s.sendall(json.dumps(request).encode()+b'\\n')\n    return s.makefile().readline()\nclaim={'op':'claim','agent':sys.argv[2],'resource':sys.argv[3],'ttl_secs':60}\nfor request in [claim,{'op':'register','spec':json.loads(sys.argv[4]),'pid':os.getpid()},claim,{'op':'register','spec':json.loads(sys.argv[5]),'pid':os.getpid()}]:\n    print('reply:'+ask(request),end='',flush=True)\n";
+        let spec = |name: &str, thread: &str| {
+            serde_json::json!({
+                "name": name,
+                "runtime": "codex",
+                "workdir": server.workdir,
+                "labels": {"session_id": thread, (agentdocker_core::agent::PROFILE_LABEL): profile},
+            })
+            .to_string()
+        };
+        let mut a_shell = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("read go; python3 -c \"$0\" \"$1\" \"$2\" \"$3\" \"$4\" \"$5\"; exit $?")
+            .arg(impostor)
+            .arg(&daemon.socket)
+            .arg(b.id.as_str())
+            .arg(format!("path:{}/taken", server.workdir.display()))
+            .arg(spec("impostor", THREAD))
+            .arg(spec("fresh", "019a0000-0000-7000-8000-000000000009"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let a = server
+            .record(a_shell.id(), [("via".to_owned(), "mcp".to_owned())].into())
+            .await;
+        let agents = lock(&daemon.state).registry.all().count();
+        writeln!(a_shell.stdin.take().unwrap(), "go").unwrap();
+        let output = tokio::task::spawn_blocking(move || a_shell.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        let replies: Vec<Response> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("reply:"))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 4, "{replies:?}");
+        assert!(
+            identity_mismatch(&replies[0]),
+            "C acts as B: {:?}",
+            replies[0]
+        );
+        assert!(
+            matches!(&replies[1], Response::Error { code: ErrorCode::IdentityMismatch, details: Some(details), .. }
+                if details["agent"] == b.id.as_str()),
+            "C joins B: {:?}",
+            replies[1]
+        );
+        assert!(
+            identity_mismatch(&replies[2]),
+            "C acts as B after: {:?}",
+            replies[2]
+        );
+        assert!(
+            matches!(&replies[3], Response::Agent { agent }
+                if agent.id != b.id && agent.id != a.id && agent.pid.is_some()),
+            "C's own conversation: {:?}",
+            replies[3]
+        );
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(state.registry.all().count(), agents + 1, "only C's own");
+            let current = state.registry.get(&b.id).unwrap();
+            assert!(current.pid.is_none(), "{current:?}");
+            assert_eq!(current.spec.labels, b.spec.labels);
+            assert_eq!(state.leases.by_holder(&b.id).len(), 1, "B keeps its lease");
+        }
+        assert_eq!(queued(b.id.clone()).await, 1, "B keeps its message");
+
+        // The person, outside every agent's session, joins another keyed
+        // conversation with a process of their own.
+        let thread = "019a0000-0000-7000-8000-000000000004";
+        let persons = attach(thread).await;
+        let register_self = "import json,os,socket,sys,time\nparent=os.getppid()\nprint('ready',flush=True)\nwhile os.getppid()==parent:\n    time.sleep(0.01)\ns=socket.socket(socket.AF_UNIX)\ns.connect(sys.argv[1])\ns.sendall(json.dumps({'op':'register','spec':json.loads(sys.argv[2]),'pid':os.getpid()}).encode()+b'\\n')\nprint(s.makefile().readline(),end='',flush=True)\n";
+        let mut orphan = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("python3 -c \"$0\" \"$1\" \"$2\" & read line; exit 0")
+            .arg(register_self)
+            .arg(&daemon.socket)
+            .arg(spec("persons", thread))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let reply = tokio::task::spawn_blocking(move || {
+            let mut out = std::io::BufReader::new(orphan.stdout.take().unwrap());
+            let mut line = String::new();
+            out.read_line(&mut line).unwrap();
+            assert_eq!(line.trim(), "ready");
+            writeln!(orphan.stdin.take().unwrap(), "exit").unwrap();
+            orphan.wait().unwrap();
+            line.clear();
+            out.read_line(&mut line).unwrap();
+            serde_json::from_str::<Response>(&line).unwrap()
+        })
+        .await
+        .unwrap();
+        assert!(
+            matches!(&reply, Response::Agent { agent } if agent.id == persons.id && agent.pid.is_some()),
+            "the person joins: {reply:?}"
+        );
+
+        // From under P's proven shared server, the terminal resuming T
+        // joins B under B's id.
+        let terminal = server.terminal(THREAD);
+        let reply = server.send(true, server.register(terminal, THREAD)).await;
+        assert!(
+            matches!(&reply, Response::Agent { agent }
+                if agent.id == b.id && agent.pid == Some(terminal)),
+            "the profile's server: {reply:?}"
+        );
     }
 }

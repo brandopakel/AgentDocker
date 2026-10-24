@@ -4420,6 +4420,7 @@ impl State {
             Option<agentdocker_core::terminal::Host>,
         ),
         now: DateTime<Utc>,
+        authorized: Option<&acting::Authorized>,
     ) -> Option<Response> {
         let session = spec.labels.get("session_id").filter(|s| !s.is_empty())?;
         let profile = spec.labels.get(agentdocker_core::agent::PROFILE_LABEL)?;
@@ -4438,6 +4439,11 @@ impl State {
             .collect();
         keyed.sort_by_key(|a| (a.status.is_live(), a.last_seen));
         let mut record = keyed.pop()?;
+        // The labels chose the record; taking it is acting as it, which
+        // what let the registration through must allow on its own.
+        if let Some(refusal) = authorized.and_then(|authorized| authorized.join_refusal(&record)) {
+            return Some(refusal);
+        }
         if record.spec.workdir != spec.workdir {
             return Some(Response::error(
                 ErrorCode::Conflict,
