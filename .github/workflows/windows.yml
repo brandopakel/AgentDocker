@@ -159,6 +159,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Codex download failed" }
           $actual = (Get-FileHash artifacts/codex.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $digests[$env:CODEX_TEST_VERSION]) { throw "Codex digest mismatch" }
+      - name: Keep a minidump of any AgentDocker process that crashes
+        # A process that dies with an NTSTATUS such as 0xC0000374 (heap
+        # corruption) leaves its stacks in the smoke evidence below.
+        run: |
+          $dumps = Join-Path $env:GITHUB_WORKSPACE 'artifacts\crash-dumps'
+          New-Item -ItemType Directory -Force $dumps | Out-Null
+          foreach ($image in 'agentdocker.exe', 'agentd.exe') {
+            $key = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\$image"
+            New-Item -Path $key -Force | Out-Null
+            New-ItemProperty -Path $key -Name DumpFolder -PropertyType ExpandString -Value $dumps -Force | Out-Null
+            New-ItemProperty -Path $key -Name DumpType -PropertyType DWord -Value 1 -Force | Out-Null
+            New-ItemProperty -Path $key -Name DumpCount -PropertyType DWord -Value 10 -Force | Out-Null
+          }
       - name: Extracted Windows desktop package acceptance
         id: package
         # Every command in it is bounded; a hang is a finding, not a wait.
@@ -241,6 +254,7 @@ jobs:
             artifacts/windows-desktop-package/service/
             artifacts/windows-desktop-package/connector-service/
             artifacts/windows-desktop-package/installation/
+            artifacts/crash-dumps/
           if-no-files-found: warn
 
   remote-tui:

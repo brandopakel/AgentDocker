@@ -14,8 +14,11 @@ named-pipe names, bounded file observations, and Job Object command ownership.
 State creation checks existing ancestry without changing its ACLs, refuses
 foreign write/delete access and reparse points, and retains directory handles
 while creating state. Existing owned broad-read state can be narrowed;
-foreign-writable state is refused. Administrators and SYSTEM remain machine
-administrators, as root does on Unix.
+foreign-writable state is refused. State that already has the private protected
+DACL is only checked: its DACL is not written again, because writing a
+directory's DACL makes Windows reopen and rewrite every object beneath it in
+the calling process while other processes create and replace files there.
+Administrators and SYSTEM remain machine administrators, as root does on Unix.
 
 File observations on Windows track native read-only attributes and change
 metadata; Windows has no Unix executable permission bits. Captured Windows
@@ -376,7 +379,12 @@ with these inputs; each one narrows or extends what the native run exercises:
   without opening a browser, those decisions after the model turn ends, and the
   experimental masked input with synthetic ConPTY boundaries.
 
-Failed CI packages are kept separately from the accepted preview artifact.
+Failed CI packages are kept separately from the accepted preview artifact. The
+Windows job has Windows Error Reporting keep a minidump of any `agentdocker.exe`
+or `agentd.exe` that crashes, kept with the smoke evidence; the queued-recovery
+scenarios report a recovery command that ends with a Windows status (an
+NTSTATUS such as `0xC0000374`, heap corruption) as a crash, never as a refusal
+or a retry's disposition.
 
 ## Desktop installation
 

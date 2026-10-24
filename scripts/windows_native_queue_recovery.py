@@ -62,8 +62,14 @@ def exercise(mode, receiver, call, thread, held_text, recovery_text, held_model,
              '--agent', receiver.agent, *arguments], cwd=receiver.repo,
             env=receiver.env, stdin=subprocess.DEVNULL, capture_output=True,
             text=True, encoding='utf-8', timeout=90)
-        return {'exit_code': result.returncode, 'stdout': result.stdout,
-                'stderr': result.stderr}
+        reply = {'exit_code': result.returncode, 'stdout': result.stdout,
+                 'stderr': result.stderr}
+        # The CLI's own statuses are small. An NTSTATUS (0xC0000374 is heap
+        # corruption) means the process died, whatever it printed first: never
+        # a refusal or a retry's disposition, so it is reported as a crash.
+        assert 0 <= result.returncode < 0x100, (
+            f'codex-queue-resolve died with Windows status 0x{result.returncode & 0xFFFFFFFF:08X}', reply)
+        return reply
 
     held_message = receiver.send(held_text)
     held_receipt = receiver.received(held_message)
