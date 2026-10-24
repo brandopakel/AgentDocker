@@ -795,6 +795,23 @@ turn ends; a lease the session claimed itself — a worktree, a branch, the
 build campaign — is not touched until the session releases it, its TTL runs
 out, or the session ends.
 
+A session's read set — every file and folder it observed — holds up to 2,000
+observations, far more than sessions use. Past that, a new observation is
+refused and nothing is recorded: the hook lets the read go ahead, but an edit
+of that file is not guarded. Rereading what the set already holds always
+works, and `agentdocker reads` shows what it holds. A session that fills its
+set checkpoints and continues in a fresh one, or you raise the limit in
+`~/.agentdocker/agentd.toml`, which the daemon applies within a minute:
+
+```toml
+[read_set]
+capacity = 2000  # the default; 100–10000
+```
+
+A value outside that range is ignored, the daemon log says so once, and 2,000
+applies. Each observation rewrites the whole set, so a larger capacity costs
+every read of a session that fills it.
+
 ---
 
 ## Tutorials

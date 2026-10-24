@@ -335,10 +335,14 @@ impl Daemon {
                 for mark in current {
                     reads.insert(mark.path.clone(), mark);
                 }
-                if reads.len() > 1000 {
+                let capacity = state.store.read_capacity();
+                if reads.len() > capacity {
                     return Response::error(
                         ErrorCode::Invalid,
-                        "combined read set exceeds capacity",
+                        format!(
+                            "combined read set of {} observations exceeds the read-set capacity of {capacity}",
+                            reads.len()
+                        ),
                     );
                 }
                 checkpoint.accepted_by = Some(agent.clone());
@@ -736,6 +740,64 @@ mod tests {
         }
         (daemon, root)
     }
+    /// Accepting a handoff seeds the recipient's read set with the
+    /// sender's, joined to its own: the union keeps to the capacity in
+    /// `agentd.toml`, and a refused acceptance changes nothing.
+    #[tokio::test]
+    async fn accepting_a_handoff_keeps_to_the_configured_read_set_capacity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, root) = fixture(&tmp).await;
+        for i in 0..101 {
+            std::fs::write(root.join(format!("f{i}")), format!("{i}")).unwrap();
+        }
+        std::fs::write(
+            daemon.home.join(agentdocker_core::config::FILE_NAME),
+            "[read_set]\ncapacity = 100\n",
+        )
+        .unwrap();
+        daemon.apply_read_set_capacity();
+        let files = |range: std::ops::Range<usize>| -> Vec<String> {
+            range.map(|i| format!("f{i}")).collect()
+        };
+        daemon.observe("original", files(0..70)).await;
+        let Response::Checkpoint { checkpoint } = daemon
+            .handle(Request::Checkpoint {
+                agent: "original".into(),
+                key: "full".into(),
+                task: "read widely".into(),
+                assumptions: Vec::new(),
+                next_steps: Vec::new(),
+                release_leases: false,
+                links: Vec::new(),
+            })
+            .await
+        else {
+            panic!()
+        };
+        daemon.observe("replacement", files(70..101)).await;
+        assert!(matches!(
+            daemon.resume("replacement", &checkpoint.id, true).await,
+            Response::Error { code: ErrorCode::Invalid, message, .. }
+                if message.contains("101 observations") && message.contains("capacity of 100")
+        ));
+        assert!(
+            matches!(daemon.reads("replacement"), Response::Reads { reads } if reads.len() == 31)
+        );
+        std::fs::write(
+            daemon.home.join(agentdocker_core::config::FILE_NAME),
+            "[read_set]\ncapacity = 101\n",
+        )
+        .unwrap();
+        daemon.apply_read_set_capacity();
+        assert!(matches!(
+            daemon.resume("replacement", &checkpoint.id, true).await,
+            Response::Recovery { recovery } if recovery.checkpoint.accepted_by.is_some()
+        ));
+        assert!(
+            matches!(daemon.reads("replacement"), Response::Reads { reads } if reads.len() == 101)
+        );
+    }
+
     #[tokio::test]
     async fn handoff_is_durable_idempotent_and_refuses_stale_content() {
         let tmp = tempfile::tempdir().unwrap();

@@ -77,9 +77,46 @@ impl Daemon {
         }
     }
 
+    /// Apply `[read_set] capacity` from `agentd.toml`: at start and once a
+    /// minute, so an edit takes effect without a restart. A value out of
+    /// range, or a file that does not read, leaves the default in force
+    /// and is said once, and again when it is fixed.
+    pub fn apply_read_set_capacity(&self) {
+        use agentdocker_core::config::{FILE_NAME, READ_SET_CAPACITY};
+        let path = self.home.join(FILE_NAME);
+        let read = crate::config::read(&self.home).and_then(|config| {
+            config
+                .read_set_capacity()
+                .map_err(|error| format!("{}: {error}", path.display()))
+        });
+        let mut state = lock(&self.state);
+        let capacity = match read {
+            Ok(capacity) => {
+                if state.read_set_notice.take().is_some() {
+                    info!(capacity, "read-set capacity applied again");
+                }
+                capacity
+            }
+            Err(notice) => {
+                if state.read_set_notice.as_ref() != Some(&notice) {
+                    warn!(%notice, capacity = READ_SET_CAPACITY, "read-set capacity left at its default");
+                    state.read_set_notice = Some(notice);
+                }
+                READ_SET_CAPACITY
+            }
+        };
+        if state.store.read_capacity() != capacity {
+            info!(capacity, "read-set capacity");
+            state.store.set_read_capacity(capacity);
+        }
+    }
+
     pub(super) async fn observe(&self, reference: &str, paths: Vec<String>) -> Response {
-        if paths.is_empty() || paths.len() > 1000 {
-            return Response::error(ErrorCode::Invalid, "observe requires 1–1000 paths");
+        if paths.is_empty() || paths.len() > OBSERVE_PATHS {
+            return Response::error(
+                ErrorCode::Invalid,
+                format!("observe requires 1–{OBSERVE_PATHS} paths"),
+            );
         }
         let (id, root, head) = match self.reader_checkout(reference) {
             Ok(v) => v,
@@ -137,6 +174,7 @@ impl Daemon {
             Ok(existing) => existing.unwrap_or_default(),
             Err(e) => return Response::error(ErrorCode::Internal, e.to_string()),
         };
+        let held = existing.len();
         let mut by_path: BTreeMap<PathBuf, ReadMark> =
             existing.into_iter().map(|m| (m.path.clone(), m)).collect();
         let paths = marks.iter().map(|(m, _)| m.path.clone()).collect();
@@ -147,11 +185,19 @@ impl Daemon {
                 by_path.insert(mark.path.clone(), mark);
             }
         }
-        if by_path.len() > 1000 {
-            return Response::error(
-                ErrorCode::Invalid,
-                "read-set capacity exceeded; checkpoint and start a replacement session",
-            );
+        // Only growth is refused: paths already held are always observed
+        // again, even after the capacity was lowered below what is held,
+        // so a full set never keeps an agent from rereading.
+        let capacity = state.store.read_capacity();
+        if by_path.len() > capacity && by_path.len() > held {
+            return Response::Error {
+                code: ErrorCode::Invalid,
+                message: format!(
+                    "read set full: it holds {held} of {capacity} observations ([read_set] capacity in agentd.toml) and this would add {}; checkpoint and continue in a replacement session",
+                    by_path.len() - held
+                ),
+                details: Some(json!({ "capacity": capacity, "held": held })),
+            };
         }
         let reads: Vec<_> = by_path.into_values().collect();
         if let Err(e) = state.store.put_document("reads", id.as_str(), &reads) {
@@ -453,6 +499,10 @@ fn snapshot_candidates(
 /// past it, the mark's targets stay stale.
 const STALE_LEDGER_SCAN: usize = 500;
 
+/// Paths one `observe` names at most, whatever the read-set capacity: a
+/// bound on the host work of one request, which snapshots every path.
+const OBSERVE_PATHS: usize = 1000;
+
 pub(super) fn checkout_path(root: &Path, raw: &str) -> anyhow::Result<PathBuf> {
     let raw = Path::new(raw);
     let path = project::canonical(&if raw.is_absolute() {
@@ -661,6 +711,182 @@ mod tests {
             .await;
         daemon
     }
+    fn configure(daemon: &Daemon, text: &str) {
+        std::fs::write(daemon.home.join(agentdocker_core::config::FILE_NAME), text).unwrap();
+        daemon.apply_read_set_capacity();
+    }
+
+    fn held(daemon: &Daemon, agent: &str) -> usize {
+        match daemon.reads(agent) {
+            Response::Reads { reads } => reads.len(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The capacity in `agentd.toml` is the one observations keep to: an
+    /// observation that would grow the set past it is refused whole and
+    /// records nothing, while rereading what is held never is, even after
+    /// the capacity was lowered below it.
+    #[tokio::test]
+    async fn observations_keep_to_the_configured_capacity_and_rereads_are_never_refused() {
+        use agentdocker_core::config::READ_SET_CAPACITY;
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("state");
+        let root = tmp.path().join("checkout");
+        std::fs::create_dir(&root).unwrap();
+        for i in 0..160 {
+            std::fs::write(root.join(format!("f{i}")), format!("{i}")).unwrap();
+        }
+        let daemon = setup(&home, &root, "reader").await;
+        let files = |range: std::ops::Range<usize>| -> Vec<String> {
+            range.map(|i| format!("f{i}")).collect()
+        };
+        daemon.apply_read_set_capacity();
+        assert_eq!(lock(&daemon.state).store.read_capacity(), READ_SET_CAPACITY);
+
+        configure(&daemon, "[read_set]\ncapacity = 100\n");
+        assert_eq!(lock(&daemon.state).store.read_capacity(), 100);
+        assert!(matches!(
+            daemon.observe("reader", files(0..100)).await,
+            Response::Reads { reads } if reads.len() == 100
+        ));
+        let refused = daemon.observe("reader", files(99..101)).await;
+        let Response::Error {
+            code: ErrorCode::Invalid,
+            message,
+            details: Some(details),
+        } = refused
+        else {
+            panic!("{refused:?}")
+        };
+        assert!(
+            message.contains("holds 100 of 100") && message.contains("[read_set] capacity"),
+            "{message}"
+        );
+        assert_eq!(details, json!({"capacity": 100, "held": 100}));
+        assert_eq!(held(&daemon, "reader"), 100, "a refusal records nothing");
+        assert!(matches!(
+            daemon.observe("reader", files(0..100)).await,
+            Response::Reads { reads } if reads.len() == 100
+        ));
+
+        configure(&daemon, "[read_set]\ncapacity = 200\n");
+        assert!(matches!(
+            daemon.observe("reader", files(100..150)).await,
+            Response::Reads { reads } if reads.len() == 150
+        ));
+        // Lowered below what is held: rereads go on, growth does not.
+        configure(&daemon, "[read_set]\ncapacity = 100\n");
+        assert!(matches!(
+            daemon.observe("reader", files(0..150)).await,
+            Response::Reads { reads } if reads.len() == 150
+        ));
+        assert!(matches!(
+            daemon.observe("reader", files(150..151)).await,
+            Response::Error { code: ErrorCode::Invalid, details: Some(details), .. }
+                if details == json!({"capacity": 100, "held": 150})
+        ));
+        assert_eq!(held(&daemon, "reader"), 150);
+    }
+
+    /// A capacity out of range, or a file that does not read, leaves the
+    /// default in force and is said once until it changes; a good value
+    /// clears the notice. One request names at most 1,000 paths whatever
+    /// the capacity.
+    #[tokio::test]
+    async fn an_unusable_capacity_leaves_the_default_and_requests_stay_bounded() {
+        use agentdocker_core::config::{READ_SET_CAPACITY, READ_SET_CAPACITY_MAX};
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("state");
+        let root = tmp.path().join("checkout");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("file"), "one").unwrap();
+        let daemon = setup(&home, &root, "reader").await;
+        for text in [
+            "[read_set]\ncapacity = 99\n".to_owned(),
+            format!("[read_set]\ncapacity = {}\n", READ_SET_CAPACITY_MAX + 1),
+            "[read_set]\ncapacity = \"lots\"\n".to_owned(),
+        ] {
+            configure(&daemon, "[read_set]\ncapacity = 300\n");
+            assert_eq!(lock(&daemon.state).store.read_capacity(), 300);
+            assert!(lock(&daemon.state).read_set_notice.is_none());
+            configure(&daemon, &text);
+            let notice = lock(&daemon.state).read_set_notice.clone();
+            assert!(notice.is_some(), "{text}");
+            assert_eq!(
+                lock(&daemon.state).store.read_capacity(),
+                READ_SET_CAPACITY,
+                "{text}"
+            );
+            daemon.apply_read_set_capacity();
+            assert_eq!(lock(&daemon.state).read_set_notice, notice, "said once");
+        }
+        configure(&daemon, "[read_set]\ncapacity = 10000\n");
+        assert!(lock(&daemon.state).read_set_notice.is_none());
+        assert_eq!(lock(&daemon.state).store.read_capacity(), 10_000);
+        std::fs::remove_file(home.join(agentdocker_core::config::FILE_NAME)).unwrap();
+        daemon.apply_read_set_capacity();
+        assert_eq!(lock(&daemon.state).store.read_capacity(), READ_SET_CAPACITY);
+
+        let many: Vec<String> = (0..=OBSERVE_PATHS).map(|_| "file".to_owned()).collect();
+        assert!(matches!(
+            daemon.observe("reader", many).await,
+            Response::Error { code: ErrorCode::Invalid, message, .. } if message == "observe requires 1–1000 paths"
+        ));
+        assert!(matches!(
+            daemon.observe("reader", Vec::new()).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+    }
+
+    /// `rm` forgets an agent's read set with its record, and the tick
+    /// sweeps read sets left for records an earlier daemon forgot.
+    #[tokio::test]
+    async fn a_forgotten_agent_leaves_no_read_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("state");
+        let root = tmp.path().join("checkout");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("file"), "one").unwrap();
+        let daemon = setup(&home, &root, "reader").await;
+        let id = lock(&daemon.state).registry.resolve("reader").unwrap();
+        daemon.observe("reader", vec!["file".into()]).await;
+        let stored = |id: &str| {
+            lock(&daemon.state)
+                .store
+                .document::<Vec<ReadMark>>("reads", id)
+                .unwrap()
+        };
+        assert!(stored(id.as_str()).is_some());
+        let deregistered = daemon
+            .handle(Request::Deregister {
+                agent: "reader".into(),
+            })
+            .await;
+        assert!(
+            !matches!(deregistered, Response::Error { .. }),
+            "{deregistered:?}"
+        );
+        assert_eq!(
+            daemon
+                .handle(Request::Remove {
+                    agent: id.to_string()
+                })
+                .await,
+            Response::Ok
+        );
+        assert!(stored(id.as_str()).is_none());
+        lock(&daemon.state)
+            .store
+            .put_document("reads", "left-behind", &Vec::<ReadMark>::new())
+            .unwrap();
+        daemon.prune_orphan_reads();
+        assert!(stored("left-behind").is_none());
+    }
+
     #[tokio::test]
     async fn content_check_catches_unwatched_changes_retries_and_restart() {
         let tmp = tempfile::tempdir().unwrap();

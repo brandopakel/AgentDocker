@@ -1334,7 +1334,7 @@ fn conflicting_or_excessive_resumed_observations_leave_every_record_untouched() 
             &vec![mark("/same".into(), now(), "two")],
         )
         .unwrap();
-    let marks: Vec<_> = (0..RESUME_READS)
+    let marks: Vec<_> = (0..store.read_capacity())
         .map(|i| mark(format!("/unique-{i}"), now(), "v"))
         .collect();
     store
@@ -1353,7 +1353,13 @@ fn conflicting_or_excessive_resumed_observations_leave_every_record_untouched() 
         .put_document(
             "reads",
             fresh.id.as_str(),
-            &vec![mark("/large".into(), now(), &"x".repeat(RESUME_READ_BYTES))],
+            &vec![mark(
+                "/large".into(),
+                now(),
+                &"x".repeat(
+                    RESUME_READ_BYTES.max(store.read_capacity() * RESUME_READ_BYTES_PER_MARK),
+                ),
+            )],
         )
         .unwrap();
     let before = snapshot(&store);
@@ -1362,7 +1368,82 @@ fn conflicting_or_excessive_resumed_observations_leave_every_record_untouched() 
             .plan_fold(&last, &retired)
             .unwrap_err()
             .to_string()
-            .contains("4 MiB")
+            .contains("resumption budget")
     );
     assert_eq!(snapshot(&store), before);
+}
+
+/// A fold keeps to the read-set capacity in force, not to the default:
+/// each retained set and their union within it, and a byte budget that
+/// grows with it.
+#[test]
+fn resumed_observations_keep_to_the_configured_read_set_capacity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("state.db")).unwrap();
+    let (last, earlier, fresh) = (record("last"), record("earlier"), record("fresh"));
+    for record in [&last, &earlier, &fresh] {
+        store.upsert_agent(record).unwrap();
+    }
+    let retired = vec![fresh.id.clone(), earlier.id.clone()];
+    let marks = |prefix: &str, count: usize| -> Vec<ReadMark> {
+        (0..count)
+            .map(|i| ReadMark {
+                path: format!("/{prefix}-{i}").into(),
+                at: now(),
+                version: "v".into(),
+                head: None,
+            })
+            .collect()
+    };
+    store.set_read_capacity(100);
+    store
+        .put_document("reads", fresh.id.as_str(), &marks("fresh", 60))
+        .unwrap();
+    store
+        .put_document("reads", earlier.id.as_str(), &marks("earlier", 41))
+        .unwrap();
+    let before = snapshot(&store);
+    let refused = store.plan_fold(&last, &retired).unwrap_err().to_string();
+    assert!(refused.contains("read-set capacity of 100"), "{refused}");
+    assert_eq!(snapshot(&store), before, "a refused fold writes nothing");
+    store
+        .put_document("reads", earlier.id.as_str(), &marks("earlier", 40))
+        .unwrap();
+    let plan = store.plan_fold(&last, &retired).unwrap();
+    let joined = plan
+        .documents
+        .iter()
+        .find(|doc| doc.kind == "reads")
+        .map(|doc| doc.value.as_array().unwrap().len());
+    assert_eq!(joined, Some(100), "exactly the capacity joins");
+    store
+        .put_document("reads", earlier.id.as_str(), &marks("earlier", 101))
+        .unwrap();
+    let refused = store.plan_fold(&last, &retired).unwrap_err().to_string();
+    assert!(
+        refused.contains("a retained observation set exceeds the read-set capacity of 100"),
+        "{refused}"
+    );
+
+    // Past the default byte budget, but within four KiB a mark of a
+    // larger capacity: the budget grows with the capacity.
+    let large = vec![ReadMark {
+        path: "/large".into(),
+        at: now(),
+        version: "x".repeat(RESUME_READ_BYTES + 1),
+        head: None,
+    }];
+    store
+        .put_document("reads", earlier.id.as_str(), &large)
+        .unwrap();
+    store.set_read_capacity(1_000);
+    assert!(
+        store
+            .plan_fold(&last, &retired)
+            .unwrap_err()
+            .to_string()
+            .contains("resumption budget")
+    );
+    store.set_read_capacity(2_000);
+    assert!(store.plan_fold(&last, &retired).is_ok());
 }

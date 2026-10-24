@@ -14,8 +14,11 @@ const ARCHIVE_BYTES: usize = 16 * 1024 * 1024;
 /// the offline repair's admission capacity.
 const RESUME_QUEUE_MESSAGES: usize = 1000;
 const RESUME_QUEUE_BYTES: usize = 4 * 1024 * 1024;
-const RESUME_READS: usize = 1000;
+/// The stored observations one fold reads at most: this, or
+/// [`RESUME_READ_BYTES_PER_MARK`] for each observation of the read-set
+/// capacity when that is more. A stored observation is a few hundred bytes.
 const RESUME_READ_BYTES: usize = 4 * 1024 * 1024;
+const RESUME_READ_BYTES_PER_MARK: usize = 4 * 1024;
 
 #[cfg(test)]
 #[path = "reconcile_tests.rs"]
@@ -249,6 +252,7 @@ impl Store {
             fts: false,
             pending_from: std::cell::Cell::new(None),
             messages_fts: std::cell::Cell::new(false),
+            read_capacity: std::cell::Cell::new(agentdocker_core::config::READ_SET_CAPACITY),
         })
     }
 
@@ -404,7 +408,11 @@ impl Store {
                     reads.insert(mark.path.clone(), mark);
                 }
             }
-            anyhow::ensure!(reads.len() <= 1000, "combined read set exceeds capacity");
+            anyhow::ensure!(
+                reads.len() <= self.read_capacity(),
+                "combined read set exceeds the read-set capacity of {}",
+                self.read_capacity()
+            );
             moved.insert("reads".into(), reads.len());
             documents.push(Document {
                 kind: "reads".into(),
@@ -565,19 +573,22 @@ impl Store {
         let mut read_marks = Vec::new();
         let mut read_bytes = 0usize;
         let mut has_read_documents = false;
+        let capacity = self.read_capacity();
+        let read_budget =
+            RESUME_READ_BYTES.max(capacity.saturating_mul(RESUME_READ_BYTES_PER_MARK));
         for (kind, id, raw) in &raw_docs {
             if kind == "reads" && (id == kept.as_str() || retired.iter().any(|r| r.as_str() == id))
             {
                 has_read_documents = true;
                 read_bytes = read_bytes.saturating_add(raw.len());
                 anyhow::ensure!(
-                    read_bytes <= RESUME_READ_BYTES,
-                    "combined observations exceed the 4 MiB resumption budget"
+                    read_bytes <= read_budget,
+                    "combined observations exceed the {read_budget}-byte resumption budget"
                 );
                 let reads: Vec<ReadMark> = serde_json::from_str(raw)?;
                 anyhow::ensure!(
-                    reads.len() <= RESUME_READS,
-                    "a retained observation set exceeds capacity"
+                    reads.len() <= capacity,
+                    "a retained observation set exceeds the read-set capacity of {capacity}"
                 );
                 read_marks.extend(reads);
                 if id != kept.as_str() {
@@ -620,8 +631,8 @@ impl Store {
                 .map(|mark| (mark.path.clone(), mark))
                 .collect();
             anyhow::ensure!(
-                reads.len() <= RESUME_READS,
-                "combined observation set exceeds capacity"
+                reads.len() <= capacity,
+                "combined observation set exceeds the read-set capacity of {capacity}"
             );
             documents.push(Document {
                 kind: "reads".into(),

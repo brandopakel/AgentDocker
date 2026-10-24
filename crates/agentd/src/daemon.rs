@@ -476,6 +476,8 @@ struct State {
     /// journal-retention tick clears that one, and would otherwise re-warn
     /// here every minute for a problem that has not changed.
     agent_config_notice: Option<String>,
+    /// The read-set capacity notice, kept apart for the same reason.
+    read_set_notice: Option<String>,
     /// The topic-retention notice, said once while `[messages]` gives a
     /// topic value that cannot be read; the defaults hold meanwhile.
     topic_config_notice: Option<String>,
@@ -1645,6 +1647,7 @@ impl Daemon {
                 journal_rings: HashMap::new(),
                 config_notice: None,
                 agent_config_notice: None,
+                read_set_notice: None,
                 topic_config_notice: None,
                 last_head: HashMap::new(),
                 last_branch: HashMap::new(),

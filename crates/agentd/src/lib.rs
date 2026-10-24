@@ -297,6 +297,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     });
     startup_checkpoint("store_opened");
     daemon.reload_policies();
+    daemon.apply_read_set_capacity();
     // A successor is fenced here and takes no pins; it takes them right
     // after accepting, before the predecessor hears it serves.
     daemon.pin_controllers();
@@ -419,6 +420,8 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                 daemon.apply_message_retention();
                 daemon.apply_topic_retention();
                 daemon.apply_agent_retention();
+                daemon.prune_orphan_reads();
+                daemon.apply_read_set_capacity();
                 daemon.evict_journal_rings();
                 daemon.prune_logs();
                 daemon.trim_diagnostic_logs();
