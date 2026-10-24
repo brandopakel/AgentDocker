@@ -906,6 +906,25 @@ paths with both literal and physical alias dependencies. Unknown definitions,
 missing fragments, overrides, unknown environment settings and unavailable or
 conflicting cached data preserve whole stores.
 
+On a Mac only the visible launcher answers for the app's name in Launch
+Services (`open -a AgentDocker`, Spotlight, the Dock). Every stored bundle has
+the same identifier and version, and Launch Services registers a bundle
+wherever it sits once it runs — the launcher execs the active release inside
+its versioned bundle, which then checks in under that path — so retained
+releases cannot be hidden from it. Instead `desktop/launch_services.rs`
+settles the registrations at the end of every install, update and rollback,
+under the installation lock: `lsregister -u` for each release bundle in the
+version store and each extracted update payload under the root except the
+active release's own (which the launcher runs and which registers itself again
+when it starts), then `lsregister -f` for the launcher, last. Publishing a
+launcher forgets the replaced copy in its private staging directory; pruning
+forgets each build before removing it; uninstall forgets the removed launcher
+and then every retained build. Only the real home prefix registers anything,
+nothing outside the installation root and the launcher is named, each call is
+bounded (15 s, 60 s for one change), an inventory over 1,000 entries is left
+as it is, and the outcome is the report's `launch_services` field
+(`registered`, `unregistered`, `errors`), never a failure of the change.
+
 Windows maintenance recognizes only exact rendered actions around a content-verified same-store controller and daemon or receipt-checked stable bootstrap. It retains every explicitly referenced immutable version, including connector tunnel/project/feed paths, state/log paths and Task Scheduler working directories. Literal and resolved aliases both count. Unknown programs/options, relative or parent-traversing paths and unreadable inventory conservatively retain the store; no arbitrary script is executed to discover paths.
 
 Windows desktop activation uses a private JSON snapshot in

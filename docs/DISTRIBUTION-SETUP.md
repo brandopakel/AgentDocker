@@ -192,6 +192,17 @@ does not undo or fail a successful activation; `desktop prune --preview` can
 inspect what remains. `desktop prune --keep N` retains additional builds for
 that manual operation; a later activation again keeps only protected builds.
 
+On a Mac, the same change leaves Launch Services knowing only the app in
+Applications as AgentDocker, so `open -a AgentDocker`, Spotlight and the Dock
+open the installed release rather than a retained one. Each retained build and
+each downloaded update payload is unregistered (`lsregister -u`) and the
+visible app is registered last; the active build's own copy, which that app
+runs, stays known until another release is active. Pruning and uninstall
+unregister what they remove, and uninstall every retained build too. The
+install report's `launch_services` field lists what was registered and
+unregistered and any failure, which never undoes the change. A trial
+`--prefix` leaves Launch Services alone.
+
 ## Apple Developer ID and notification acceptance
 
 The app has its icon and native notification-routing implementation. A failed
