@@ -5757,9 +5757,10 @@ impl State {
         canonical.process_started_at = fresh.process_started_at;
         canonical.process_group = fresh.process_group;
         canonical.status = fresh.status.clone();
-        // The fresh process's run, under the record that stays: whatever
-        // stop the record's last run had is not this one's.
-        canonical.begin_run();
+        // The fresh process's run, under the record that stays, with its
+        // own stop evidence: whatever stop the record's last run had is
+        // not this one's.
+        canonical.stop_requested = fresh.stop_requested;
         canonical.started_at = fresh.started_at;
         canonical.finished_at = None;
         canonical.last_seen = now;

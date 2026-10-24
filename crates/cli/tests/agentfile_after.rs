@@ -576,6 +576,57 @@ after = "build exits 0"
     wait_file(&fixture, "test-ran");
 }
 
+/// What `up` prints for an entry whose dependency's earlier exit its
+/// record cannot show to be its own.
+const BEFORE_THIS_RUN: &str = "ended before this run; its exit cannot be shown to be its own";
+
+#[test]
+fn an_earlier_exit_0_of_an_entry_edited_since_does_not_meet_after() {
+    let agentfile = |mode: &str, workdir: &str| {
+        format!(
+            r#"
+[agents.build]
+command = ["sh", "-c", "test \"$MODE\" = good"]
+env = {{ MODE = "{mode}" }}
+workdir = "{workdir}"
+
+[agents.test]
+command = ["sh", "-c", "touch test-ran"]
+after = "build exits 0"
+"#
+        )
+    };
+    let fixture = Fixture::new(&agentfile("good", "."));
+    std::fs::create_dir(fixture.work.join("sub")).unwrap();
+    let rewrite = |text: String| std::fs::write(fixture.work.join("Agentfile.toml"), text).unwrap();
+    let (ok, stderr) = up_only(&fixture, &["build"]);
+    assert!(ok, "{stderr}");
+    wait_status(&fixture, "build", json!({"state":"exited","code":0}));
+
+    // Only its environment changed — the edited `build` would exit 1 — or
+    // only its working directory: the earlier success is not the entry's
+    // as the file now has it.
+    let refused = format!("{:<24} not started: build {BEFORE_THIS_RUN}", "test");
+    for (mode, workdir) in [("bad", "."), ("good", "sub")] {
+        rewrite(agentfile(mode, workdir));
+        let (ok, stderr) = up_only(&fixture, &["test"]);
+        assert!(!ok, "MODE={mode} in {workdir}: {stderr}");
+        assert_eq!(
+            said(&stderr, "test", "not started:"),
+            Some(refused.as_str()),
+            "MODE={mode} in {workdir}: {stderr}"
+        );
+        assert!(fixture.record("test").is_none(), "test was started");
+    }
+
+    // With the file as it was when `build` ran, the same exit is its own.
+    rewrite(agentfile("good", "."));
+    let (ok, stderr) = up_only(&fixture, &["test"]);
+    assert!(ok, "{stderr}");
+    assert!(said(&stderr, "test", "started").is_some(), "{stderr}");
+    wait_file(&fixture, "test-ran");
+}
+
 #[test]
 fn an_agentfile_whose_wait_could_never_end_starts_nothing() {
     let fixture = Fixture::new(
@@ -798,10 +849,16 @@ impl Scripted {
                         "run" => {
                             let spec: AgentSpec =
                                 serde_json::from_value(request["spec"].clone()).unwrap();
-                            runs.lock().unwrap().push(spec.name.clone());
+                            let name = spec.name.clone();
                             let mut record = AgentRecord::new(spec, true, chrono::Utc::now());
                             record.status = AgentStatus::Running;
+                            // The agent first, the run after it: a test that
+                            // sees the run (`wait_until(.. runs ..)`) and then
+                            // reads or changes the agent must find it there.
+                            // The other order lost that race on a busy runner,
+                            // panicking with the lock held and poisoning it.
                             *agent.lock().unwrap() = Some(record.clone());
+                            runs.lock().unwrap().push(name);
                             json!({"type":"agent","agent":record})
                         }
                         "inspect" => {

@@ -349,7 +349,10 @@ pub struct AgentRecord {
     /// record is retained. `Some(false)` when a run begins under this id
     /// ([`AgentRecord::begin_run`]: a new record, a restart by its policy,
     /// a restore, a relaunch, a process joining the record) and no stop
-    /// has been asked of it since. `None` on a record no daemon that keeps
+    /// has been asked of it since; where a fresh process's record is
+    /// folded into this one (a session resumed, input resumed), the fresh
+    /// process's own mark comes with its run. `None` on a record no daemon
+    /// that keeps
     /// this has written since its run began: unknown, and never taken as
     /// `false`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

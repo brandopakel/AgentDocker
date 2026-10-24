@@ -3613,6 +3613,86 @@ async fn a_restored_agent_does_not_inherit_the_shutdowns_stop() {
     assert_eq!(restored.stop_requested, Some(false), "not inherited");
 }
 
+/// A session that comes back as a new process takes up its ended record
+/// (`session_resumed`): a run of its own under that id. The stop asked of
+/// the record's last run, which it ended in, does not come with it, in
+/// memory or on disk.
+#[tokio::test]
+async fn a_session_that_comes_back_does_not_inherit_its_last_runs_stop() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let sleeper = || {
+        std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap()
+    };
+    let (mut first, mut second) = (sleeper(), sleeper());
+    let register = async |daemon: &Arc<Daemon>, pid: u32| {
+        let mut spec = spec_here("claude-ssss");
+        spec.runtime = "claude-code".to_owned();
+        spec.labels
+            .insert("session_id".to_owned(), "session-s".to_owned());
+        match daemon
+            .handle(Request::Register {
+                spec,
+                pid: Some(pid),
+                session: None,
+            })
+            .await
+        {
+            Response::Agent { agent } => agent,
+            other => panic!("{other:?}"),
+        }
+    };
+    let earlier = register(&daemon, first.id()).await;
+    let Response::Agent { agent: stopping } = daemon
+        .handle(Request::Stop {
+            agent: earlier.id.to_string(),
+            force: false,
+        })
+        .await
+    else {
+        panic!("the session could not be stopped");
+    };
+    assert!(stopping.stopped_on_request());
+    let _ = first.kill();
+    first.wait().unwrap();
+    daemon.check_liveness();
+    let ended = lock(&daemon.state)
+        .registry
+        .get(&earlier.id)
+        .cloned()
+        .unwrap();
+    assert!(!ended.status.is_live(), "{ended:?}");
+    assert!(
+        ended.stopped_on_request(),
+        "the ended run says it was stopped"
+    );
+
+    let back = register(&daemon, second.id()).await;
+    let (memory, stored) = {
+        let state = lock(&daemon.state);
+        (
+            state.registry.get(&earlier.id).cloned().unwrap(),
+            state
+                .store
+                .load_agents()
+                .unwrap()
+                .into_iter()
+                .find(|r| r.id == earlier.id)
+                .unwrap(),
+        )
+    };
+    let _ = second.kill();
+    let _ = second.wait();
+    assert_eq!(back.id, earlier.id, "the ended record, taken up");
+    assert!(memory.status.is_live());
+    assert_eq!(memory.pid, Some(second.id()));
+    assert_eq!(memory.stop_requested, Some(false), "not inherited");
+    assert_eq!(stored.stop_requested, Some(false), "nor on disk");
+}
+
 /// A refused claim says by whom: the holder's name, which is who the
 /// person can go and talk to, with its id and what it holds.
 #[tokio::test]

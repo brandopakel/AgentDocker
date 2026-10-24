@@ -540,9 +540,11 @@ impl fmt::Display for Ending {
 ///   read its exit status itself. A record that registered itself, was
 ///   adopted or is kept by contact ends with whatever it or a liveness
 ///   check said.
-/// - **The same launch.** Its runtime and command are the ones the file
-///   gives the entry now: a session relaunched under the record runs
-///   another command, and an entry edited since is not the one that ran.
+/// - **The same launch.** Everything about how it runs is what the file
+///   gives the entry now ([`launch_change`] finds nothing): a session
+///   relaunched under the record runs another command, and an entry edited
+///   since — its command, working directory or environment, say — is not
+///   the one that ran.
 /// - **Not a reused name.** It still has the name the launch gave it: the
 ///   same name, and the same `name` label as the launch, which a rename
 ///   (`chosen`) or the daemon giving the name up (`generated`) changes.
@@ -551,10 +553,50 @@ impl fmt::Display for Ending {
 pub fn own_run(record: &AgentRecord, launched: &AgentSpec) -> bool {
     record.stop_requested == Some(false)
         && record.managed
-        && record.spec.runtime == launched.runtime
-        && record.spec.command == launched.command
+        && launch_change(&record.spec, launched).is_none()
         && record.spec.name == launched.name
         && record.spec.labels.get(NAME_LABEL) == launched.labels.get(NAME_LABEL)
+}
+
+/// The first thing about how an agent runs on which its record's spec
+/// (`ran`) and the entry as the file gives it now (`launched`, as `up`
+/// would send it) disagree, by its field name; `None` when they agree.
+///
+/// Compared, because they decide what the process is: `runtime`,
+/// `provider`, `model`, `command`, `workdir`, `env`, `tty` and `in_pane`.
+/// Each is stored as `run` was given it, so an unchanged entry matches
+/// as it is: the working directory is the physical path on both sides
+/// (`up` resolves it, and the daemon resolves it again to the same), and
+/// the variables the daemon gives every child (`AGENTDOCKER_SOCKET`,
+/// `AGENTDOCKER_AGENT_ID`, …) are added when it is spawned, never stored
+/// in the spec, so nothing needs taking out.
+///
+/// `isolate` fails closed whichever side sets it: an isolated run works in
+/// a worktree made for it, which replaces `workdir` on the record, and the
+/// record does not keep the checkout it was made from, so it cannot be
+/// shown to be the one the file names.
+///
+/// Not compared, because they do not change what runs: `labels` (the
+/// process never sees them; `up` adds its own and roles are given later),
+/// `restart` and `restore` (what happens once it has ended or after a
+/// daemon restart; a stop clears both), `depends_on` (ordering only), and
+/// `name`, which [`own_run`] checks as the agent's identity.
+pub fn launch_change(ran: &AgentSpec, launched: &AgentSpec) -> Option<&'static str> {
+    if ran.isolate || launched.isolate {
+        return Some("isolate");
+    }
+    [
+        ("runtime", ran.runtime == launched.runtime),
+        ("provider", ran.provider == launched.provider),
+        ("model", ran.model == launched.model),
+        ("command", ran.command == launched.command),
+        ("workdir", ran.workdir == launched.workdir),
+        ("env", ran.env == launched.env),
+        ("tty", ran.tty == launched.tty),
+        ("in_pane", ran.in_pane == launched.in_pane),
+    ]
+    .into_iter()
+    .find_map(|(field, same)| (!same).then_some(field))
 }
 
 /// What is known of an entry while a file is being brought up.
@@ -1130,9 +1172,21 @@ mod tests {
         );
     }
 
+    /// An ended `build` that ran a command with a working directory and an
+    /// environment, as `up` launched it.
+    fn ran_with_a_launch() -> AgentRecord {
+        let mut done = record(AgentStatus::Exited { code: Some(0) }, RestartPolicy::No, 0);
+        done.spec.command = vec!["sh".into(), "-c".into(), "test \"$MODE\" = good".into()];
+        done.spec.workdir = Some("/work/app".into());
+        done.spec.env = BTreeMap::from([("MODE".to_owned(), "good".to_owned())]);
+        done.spec.labels =
+            BTreeMap::from([("agentfile".into(), "/work/app/Agentfile.toml".into())]);
+        done
+    }
+
     #[test]
     fn an_earlier_exit_0_the_record_cannot_vouch_for_fails_closed() {
-        let done = record(AgentStatus::Exited { code: Some(0) }, RestartPolicy::No, 0);
+        let done = ran_with_a_launch();
         let launched = done.spec.clone();
         assert!(own_run(&done, &launched));
         let unproven = Some(Ending::Unproven(Unseen::BeforeThisRun));
@@ -1189,6 +1243,64 @@ mod tests {
                         .into()
                 },
             }
+        );
+    }
+
+    #[test]
+    fn an_entry_edited_since_its_run_is_not_the_one_that_ran() {
+        let done = ran_with_a_launch();
+        let unproven = Some(Ending::Unproven(Unseen::BeforeThisRun));
+        type Edit = fn(&mut AgentSpec);
+        let edits: [(&str, Edit); 12] = [
+            // The environment alone: a value, a variable more, none left.
+            ("env", |s| {
+                s.env.insert("MODE".into(), "bad".into());
+            }),
+            ("env", |s| {
+                s.env.insert("EXTRA".into(), "1".into());
+            }),
+            ("env", |s| s.env.clear()),
+            // The working directory alone.
+            ("workdir", |s| s.workdir = Some("/work/other".into())),
+            ("workdir", |s| s.workdir = None),
+            ("command", |s| s.command.push("--again".into())),
+            ("runtime", |s| s.runtime = "codex".into()),
+            ("provider", |s| s.provider = Some("openai".into())),
+            ("model", |s| s.model = Some("m2".into())),
+            ("tty", |s| s.tty = true),
+            ("in_pane", |s| s.in_pane = true),
+            ("isolate", |s| s.isolate = true),
+        ];
+        for (field, edit) in edits {
+            let mut now = done.spec.clone();
+            edit(&mut now);
+            assert_eq!(launch_change(&done.spec, &now), Some(field));
+            assert!(!own_run(&done, &now), "{field}");
+            assert_eq!(Ending::before(&done, &now), unproven, "{field}");
+        }
+        // An isolated run fails closed even with the entry unchanged: its
+        // record keeps the worktree made for it, not the checkout named.
+        let mut isolated = done.clone();
+        isolated.spec.isolate = true;
+        assert_eq!(
+            launch_change(&isolated.spec, &isolated.spec),
+            Some("isolate")
+        );
+        assert_eq!(Ending::before(&isolated, &isolated.spec.clone()), unproven);
+
+        // What does not change what runs does not count against it.
+        let mut now = done.spec.clone();
+        now.labels.insert("team".into(), "t".into());
+        now.labels
+            .insert(crate::agent::ROLE_LABEL.into(), "tester".into());
+        now.restart = RestartPolicy::OnFailure { max: 3 };
+        now.restore = true;
+        now.depends_on = vec!["db".into()];
+        assert_eq!(launch_change(&done.spec, &now), None);
+        assert!(own_run(&done, &now));
+        assert_eq!(
+            Ending::before(&done, &now),
+            Some(Ending::Exited { code: Some(0) })
         );
     }
 
