@@ -9,11 +9,13 @@
 //! parents (the sender itself included) — its recorded process, its session
 //! owner, its input controller, or the companion launcher of a Codex
 //! terminal, which starts the terminal and the Codex server its tools run
-//! under side by side — or, for a Codex agent, the sender runs under Codex's
-//! shared app-server, whose conversations its process tree cannot tell
-//! apart. The person's: outside every agent's session, as the person check
-//! traces it (the app, their own terminal). The kernel says which process
-//! sent the request; the request cannot.
+//! under side by side — or, for a Codex agent, the sender runs under its
+//! profile's shared app-server, whose conversations its process tree cannot
+//! tell apart, proven by its kernel image in the profile's package cache and
+//! by serving the profile's control socket, never by its arguments. The
+//! person's: outside every agent's session, as the person check traces it
+//! (the app, their own terminal). The kernel says which process sent the
+//! request; the request cannot.
 //!
 //! So an agent's hooks, its MCP server, a shell its tools opened and every
 //! session those started act as it, and the person may act as any agent;
@@ -25,11 +27,14 @@
 
 use super::*;
 use agentdocker_core::HUMAN;
+use agentdocker_host::codex_control;
 use agentdocker_host::procinfo::{self, Unseen};
 use person::Peer;
 
 /// How far up a sender's parents are walked.
 const ANCESTRY: usize = 64;
+/// How long asking a Codex profile's control socket who serves it may take.
+const SERVER_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// One process, by its pid and its birth.
 type Process = (u32, DateTime<Utc>);
@@ -305,31 +310,77 @@ fn codex_launcher(
     .then_some((launcher, launched))
 }
 
-/// Whether Codex's shared app-server (`--managed-daemon`) stands among
-/// `chain`, each read by its own arguments while it is still the process
-/// walked (`born` reads a birth again).
-fn under_shared_codex(
+/// The processes among `chain` that may be `profile`'s shared Codex server
+/// (`profile` canonical): each one whose kernel image (`executable`, never
+/// its arguments, which any process may set) is a Codex binary in that
+/// profile's own package cache ([`codex_control::shared_server_profile`]),
+/// while it is still the process walked (`born` reads a birth again).
+/// Which of them, if any, really is the server is for the profile's control
+/// socket to say ([`codex_control::serving_process`]).
+fn shared_server_candidates(
     chain: &[Process],
-    arguments: impl Fn(u32) -> Option<Vec<String>>,
+    profile: &std::path::Path,
+    executable: impl Fn(u32) -> Option<std::path::PathBuf>,
+    born: impl Fn(u32) -> Option<DateTime<Utc>>,
+) -> Vec<Process> {
+    chain
+        .iter()
+        .copied()
+        .filter(|(pid, birth)| {
+            executable(*pid)
+                .and_then(|image| std::fs::canonicalize(image).ok())
+                .and_then(|image| codex_control::shared_server_profile(&image))
+                .and_then(|named| std::fs::canonicalize(named).ok())
+                .is_some_and(|named| named == profile)
+                && born(*pid) == Some(*birth)
+        })
+        .collect()
+}
+
+/// Whether the process serving the profile's control socket (`serving`, as
+/// the kernel names it) is one of the `candidates` among the sender's
+/// parents, still born when it was walked.
+fn served_by(
+    candidates: &[Process],
+    serving: Option<u32>,
     born: impl Fn(u32) -> Option<DateTime<Utc>>,
 ) -> bool {
-    chain.iter().any(|(pid, birth)| {
-        arguments(*pid).is_some_and(|argv| procinfo::detached_codex_app_server(&argv))
-            && born(*pid) == Some(*birth)
+    serving.is_some_and(|pid| {
+        candidates
+            .iter()
+            .any(|(candidate, birth)| *candidate == pid && born(pid) == Some(*birth))
     })
 }
 
-/// Whether the sender of a request acting as an agent whose own processes
-/// are `anchors` runs inside that agent's session: one of them stands
-/// among its parents; or, for a Codex agent (`codex`, with its terminal
-/// when it has one), the terminal's companion launcher does, or the sender
-/// runs under Codex's shared server.
-fn inside_session(
+/// Where a sender was found to run, before the person check's trace.
+enum Session {
+    /// Inside the agent's session.
+    Inside,
+    /// Not under any of the agent's own processes. For a Codex agent of a
+    /// known profile, the parents that may be that profile's shared server.
+    Outside { shared: Vec<Process> },
+}
+
+/// What is known of a Codex agent for finding its session: its terminal
+/// process, when it has one, and its provider profile, canonical, when its
+/// record names one.
+#[derive(Clone)]
+struct Codex {
+    terminal: Option<Process>,
+    profile: Option<std::path::PathBuf>,
+}
+
+/// Where the sender of a request acting as an agent whose own processes are
+/// `anchors` runs: inside that agent's session when one of them stands
+/// among its parents, or, for a Codex agent, when its terminal's companion
+/// launcher does. Otherwise, for a Codex agent of a known profile, which of
+/// its parents may be that profile's shared server.
+fn find_session(
     sender: u32,
     born: DateTime<Utc>,
     anchors: &[Process],
-    codex: Option<Option<Process>>,
-) -> bool {
+    codex: Option<&Codex>,
+) -> Session {
     let (chain, end) = lineage(
         sender,
         born,
@@ -338,12 +389,13 @@ fn inside_session(
         |process| anchors.contains(&process),
     );
     if end == End::Found {
-        return true;
+        return Session::Inside;
     }
-    let Some(terminal) = codex else {
-        return false;
+    let Some(codex) = codex else {
+        return Session::Outside { shared: Vec::new() };
     };
-    terminal
+    let launched = codex
+        .terminal
         .and_then(|terminal| {
             codex_launcher(
                 terminal,
@@ -356,8 +408,20 @@ fn inside_session(
                 },
             )
         })
-        .is_some_and(|launcher| chain.contains(&launcher))
-        || under_shared_codex(&chain, procinfo::arguments, procinfo::start_time)
+        .is_some_and(|launcher| chain.contains(&launcher));
+    if launched {
+        return Session::Inside;
+    }
+    Session::Outside {
+        shared: codex.profile.as_deref().map_or_else(Vec::new, |profile| {
+            shared_server_candidates(
+                &chain,
+                profile,
+                |pid| procinfo::executable_path_of(pid).ok(),
+                procinfo::start_time,
+            )
+        }),
+    }
 }
 
 /// What the request acts as, read under the lock.
@@ -368,9 +432,8 @@ struct Acting {
     /// controller (bound, or launched and not yet bound) and the provider
     /// process the binding names.
     anchors: Vec<Process>,
-    /// For a Codex agent, its own process when it has one: its launcher
-    /// and Codex's shared server are looked for too.
-    codex: Option<Option<Process>>,
+    /// For a Codex agent, what finds its launcher and its shared server.
+    codex: Option<Codex>,
 }
 
 fn refusal(acting: &Acting, why: &str) -> Response {
@@ -430,7 +493,14 @@ impl Daemon {
             }
             let acting = Acting {
                 name: record.spec.name.clone(),
-                codex: (record.spec.runtime == "codex").then_some(own),
+                codex: (record.spec.runtime == "codex").then(|| Codex {
+                    terminal: own,
+                    profile: record
+                        .spec
+                        .labels
+                        .get(agentdocker_core::agent::PROFILE_LABEL)
+                        .map(std::path::PathBuf::from),
+                }),
                 anchors,
                 id,
             };
@@ -438,13 +508,42 @@ impl Daemon {
             acting
         };
         if let Some((sender, Some(born))) = peer {
-            let (anchors, codex) = (acting.anchors.clone(), acting.codex);
-            let inside =
-                tokio::task::spawn_blocking(move || inside_session(sender, born, &anchors, codex))
-                    .await
-                    .unwrap_or(false);
-            if inside {
-                return None;
+            let anchors = acting.anchors.clone();
+            let codex = acting.codex.clone().map(|mut codex| {
+                codex.profile = codex
+                    .profile
+                    .and_then(|profile| std::fs::canonicalize(profile).ok());
+                codex
+            });
+            let profile = codex.as_ref().and_then(|codex| codex.profile.clone());
+            let found = tokio::task::spawn_blocking(move || {
+                find_session(sender, born, &anchors, codex.as_ref())
+            })
+            .await
+            .unwrap_or(Session::Outside { shared: Vec::new() });
+            match found {
+                Session::Inside => return None,
+                // A Codex terminal conversation's hooks and MCP servers run
+                // under its profile's shared server, whose conversations its
+                // process tree cannot tell apart: the server is proven by
+                // its image and by serving the profile's control socket,
+                // never by what its arguments say.
+                Session::Outside { shared } if !shared.is_empty() => {
+                    if let Some(profile) = profile {
+                        let serving = tokio::time::timeout(
+                            SERVER_CHECK,
+                            codex_control::serving_process(&profile),
+                        )
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .flatten();
+                        if served_by(&shared, serving, procinfo::start_time) {
+                            return None;
+                        }
+                    }
+                }
+                Session::Outside { .. } => {}
             }
         }
         // Not the agent's session: the person may act as any agent, and
@@ -596,32 +695,47 @@ mod tests {
         assert_eq!(lineage(2, at(-2), deep, unseen, |_| false).1, End::Unknown);
     }
 
-    /// Codex's shared app-server counts only by its own arguments and only
-    /// while it is still the process walked.
+    /// Codex's shared server is found by its kernel image in the agent's
+    /// own profile's package cache, never by its arguments, and only while
+    /// it is still the process walked; and it counts only when it is the
+    /// process serving that profile's control socket.
     #[test]
-    fn codex_s_shared_server_is_known_by_its_arguments_and_birth() {
-        let chain = [(40, at(40)), (30, at(30))];
-        let shared = |pid: u32| {
-            Some(match pid {
-                30 => vec![
-                    "codex".to_owned(),
-                    "app-server".to_owned(),
-                    "--managed-daemon".to_owned(),
-                ],
-                _ => vec!["agentdocker".to_owned(), "mcp".to_owned()],
-            })
+    fn codex_s_shared_server_is_proven_by_its_image_and_its_socket() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile = std::fs::canonicalize(tmp.path()).unwrap().join("profile");
+        let other = profile.with_file_name("other");
+        let image = |profile: &std::path::Path| {
+            let image = profile.join("packages/app-server-daemon/releases/0.162.0/bin/codex");
+            std::fs::create_dir_all(image.parent().unwrap()).unwrap();
+            std::fs::write(&image, "").unwrap();
+            image
+        };
+        let (ours, theirs) = (image(&profile), image(&other));
+        let python = tmp.path().join("python3");
+        std::fs::write(&python, "").unwrap();
+        // 40 is the sender; 30 runs Python with a shared server's arguments;
+        // 20 is this profile's server and 10 another profile's.
+        let chain = [(40, at(40)), (30, at(30)), (20, at(20)), (10, at(10))];
+        let executable = |pid: u32| match pid {
+            30 => Some(python.clone()),
+            20 => Some(ours.clone()),
+            10 => Some(theirs.clone()),
+            _ => None,
         };
         let born = |pid: u32| Some(at(i64::from(pid)));
-        assert!(under_shared_codex(&chain, shared, born));
-        assert!(
-            !under_shared_codex(&chain, shared, |_| Some(at(1))),
-            "reused"
+        assert_eq!(
+            shared_server_candidates(&chain, &profile, executable, born),
+            [(20, at(20))]
         );
-        assert!(!under_shared_codex(
-            &chain,
-            |_| Some(vec!["codex".to_owned(), "app-server".to_owned()]),
-            born
-        ));
+        assert!(
+            shared_server_candidates(&chain, &profile, executable, |_| Some(at(1))).is_empty(),
+            "another process has its pid now"
+        );
+        let found = [(20, at(20))];
+        assert!(served_by(&found, Some(20), born));
+        assert!(!served_by(&found, Some(30), born), "another serves it");
+        assert!(!served_by(&found, None, born), "nobody serves it");
+        assert!(!served_by(&found, Some(20), |_| Some(at(2))), "reused");
     }
 
     /// A Codex terminal's launcher counts only as the companion CLI's
@@ -902,6 +1016,190 @@ mod tests {
         assert!(held(&reply), "{reply:?}");
         let _ = x_shell.kill();
         let _ = x_shell.wait();
+        serving.abort();
+    }
+
+    /// The stand-in for Codex's shared server in
+    /// [`a_shared_codex_server_counts_only_by_its_image_and_its_socket`]:
+    /// this test binary, copied into a profile's package cache, run by name.
+    /// It serves the profile's control socket when told to, then starts the
+    /// client that sends the request, and prints its answer.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "run only as the shared server's stand-in"]
+    fn shared_server_stand_in() {
+        let Some(told) = std::env::var_os("AGENTDOCKER_TEST_STAND_IN") else {
+            return;
+        };
+        let told: serde_json::Value = serde_json::from_str(&told.to_string_lossy()).unwrap();
+        let _serving = told["socket"]
+            .as_str()
+            .map(|socket| std::os::unix::net::UnixListener::bind(socket).unwrap());
+        let output = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(told["client"].as_str().unwrap())
+            .arg(told["daemon"].as_str().unwrap())
+            .arg(told["request"].as_str().unwrap())
+            .output()
+            .unwrap();
+        println!("reply:{}", String::from_utf8_lossy(&output.stdout).trim());
+    }
+
+    /// Over the real socket: a request acting as a Codex agent from under
+    /// its profile's shared server is answered only when that server is
+    /// proven by its kernel image in the profile's package cache and by
+    /// serving the profile's control socket. A process that only says it
+    /// is one — another agent's child running Python as `codex app-server
+    /// --managed-daemon` — is refused, as is a Codex image in the cache that
+    /// serves nothing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_shared_codex_server_counts_only_by_its_image_and_its_socket() {
+        use std::io::Write as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::open(tmp.path().into(), tmp.path().join("host.sock")).unwrap();
+        daemon.person_check = false;
+        let daemon = Arc::new(daemon);
+        let listener = crate::server::bind(&daemon).await.unwrap();
+        let serving = tokio::spawn(crate::server::serve(daemon.clone(), listener));
+        // A socket path may have only 104 bytes on macOS.
+        let short = tempfile::Builder::new()
+            .prefix("ac-")
+            .tempdir_in(if cfg!(target_os = "macos") {
+                std::path::PathBuf::from("/tmp")
+            } else {
+                std::env::temp_dir()
+            })
+            .unwrap();
+        let profile = std::fs::canonicalize(short.path()).unwrap().join("p");
+        std::fs::create_dir_all(profile.join(codex_control::DIRECTORY)).unwrap();
+        let image = profile.join("packages/app-server-daemon/releases/0.162.0/bin/codex");
+        std::fs::create_dir_all(image.parent().unwrap()).unwrap();
+        std::fs::copy(std::env::current_exe().unwrap(), &image).unwrap();
+        let Response::Agent { agent: codex } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "codex-conversation".into(),
+                    runtime: "codex".into(),
+                    workdir: Some(tmp.path().to_owned()),
+                    labels: [(
+                        agentdocker_core::agent::PROFILE_LABEL.to_owned(),
+                        profile.display().to_string(),
+                    )]
+                    .into(),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("registers")
+        };
+        let client = "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.connect(sys.argv[-2])\ns.sendall(sys.argv[-1].encode()+b'\\n')\nprint(s.makefile().readline(),end='',flush=True)\n";
+        let claim = |resource: &str| {
+            serde_json::json!({
+                "op": "claim",
+                "agent": codex.id,
+                "resource": format!("path:{}/{resource}", tmp.path().display()),
+                "ttl_secs": 60,
+            })
+            .to_string()
+        };
+        let reply = |stdout: &[u8], prefix: &str| -> Response {
+            let text = String::from_utf8_lossy(stdout);
+            let line = text
+                .lines()
+                .find_map(|line| line.split_once(prefix).map(|(_, reply)| reply))
+                .unwrap_or_else(|| panic!("no reply in {text}"));
+            serde_json::from_str(line).unwrap()
+        };
+        let refused = |reply: &Response| {
+            matches!(
+                reply,
+                Response::Error {
+                    code: ErrorCode::IdentityMismatch,
+                    ..
+                }
+            )
+        };
+
+        // Another agent's child that runs Python as a shared server.
+        let spoof = "import subprocess,sys\nprint('reply:'+subprocess.run(['codex','-c',sys.argv[1],'app-server','--managed-daemon',sys.argv[2],sys.argv[3]],executable=sys.executable,capture_output=True,text=True).stdout,flush=True)\n";
+        let mut other = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("read request; python3 -c \"$0\" \"$1\" \"$2\" \"$request\"; exit $?")
+            .arg(spoof)
+            .arg(client)
+            .arg(&daemon.socket)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let Response::Agent { .. } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "another-agent".into(),
+                    workdir: Some(tmp.path().to_owned()),
+                    ..AgentSpec::default()
+                },
+                pid: Some(other.id()),
+                session: None,
+            })
+            .await
+        else {
+            panic!("registers")
+        };
+        writeln!(other.stdin.take().unwrap(), "{}", claim("spoofed")).unwrap();
+        let output = tokio::task::spawn_blocking(move || other.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        let answer = reply(&output.stdout, "reply:");
+        assert!(refused(&answer), "{answer:?}");
+
+        // The stand-in, a Codex image in the profile's cache: answered only
+        // while it serves the profile's control socket.
+        let stand_in = |socket: Option<&std::path::Path>, request: String| {
+            let told = serde_json::json!({
+                "socket": socket,
+                "client": client,
+                "daemon": daemon.socket,
+                "request": request,
+            });
+            let image = image.clone();
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    std::process::Command::new(&image)
+                        .args([
+                            "daemon::acting::tests::shared_server_stand_in",
+                            "--exact",
+                            "--ignored",
+                            "--nocapture",
+                            "--test-threads=1",
+                        ])
+                        .env("AGENTDOCKER_TEST_STAND_IN", told.to_string())
+                        .output()
+                        .unwrap()
+                })
+                .await
+                .unwrap()
+            }
+        };
+        let output = stand_in(None, claim("unserved")).await;
+        let answer = reply(&output.stdout, "reply:");
+        assert!(
+            refused(&answer),
+            "a Codex image that serves nothing: {answer:?}"
+        );
+        let socket = codex_control::socket_path(&profile);
+        let output = stand_in(Some(&socket), claim("served")).await;
+        let answer = reply(&output.stdout, "reply:");
+        assert!(
+            matches!(answer, Response::Lease { .. }),
+            "the profile's server: {answer:?}"
+        );
+        assert_eq!(lock(&daemon.state).leases.len(), 1);
         serving.abort();
     }
 }

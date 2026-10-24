@@ -245,6 +245,41 @@ impl App {
         }
     }
 
+    /// Open a card: a new opening of its editor, started from its words
+    /// as the board has them, and its full detail asked for.
+    pub(super) fn open_card(&mut self, task: TaskId) {
+        self.card = None;
+        let generation = self.shell.card_draft.generation + 1;
+        self.shell.card_draft = super::shell::CardDraft {
+            generation,
+            ..self.draft_of(&task)
+        };
+        self.send(Cmd::TaskDetail(task.clone()));
+        self.task_open = Some(task);
+    }
+
+    /// A card opened before its board was read (from To-do, or Back to
+    /// another project's board) has an editor with no words yet: it takes
+    /// the card's once the board brings them. The card is not on view
+    /// until then, so nothing typed is overwritten.
+    pub(super) fn fill_card_draft(&mut self) {
+        let Some(open) = self.task_open.clone() else {
+            return;
+        };
+        let generation = self.shell.card_draft.generation;
+        let empty = super::shell::CardDraft {
+            task: Some(open.clone()),
+            generation,
+            ..Default::default()
+        };
+        if self.shell.card_draft == empty {
+            self.shell.card_draft = super::shell::CardDraft {
+                generation,
+                ..self.draft_of(&open)
+            };
+        }
+    }
+
     /// What the person changed in the editor: the fields that differ from
     /// what the editor took (or last saved), never one they left alone,
     /// so a save does not put back what somebody else changed meanwhile.

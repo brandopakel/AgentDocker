@@ -1336,6 +1336,7 @@ impl App {
                             self.say(format!("The board could not be read: {error}"));
                         }
                     }
+                    self.fill_card_draft();
                 }
                 Msg::Usage(project, request, result) => {
                     // A later range/group selection supersedes the old read,

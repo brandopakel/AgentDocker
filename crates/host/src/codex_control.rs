@@ -302,6 +302,57 @@ pub fn not_loaded(error: &io::Error, thread: &str) -> bool {
 #[cfg(unix)]
 pub use unix::{Session, connect, connect_stream};
 
+/// The profile whose shared server runs from `executable`, a process's
+/// kernel image, canonical: Codex runs its managed daemon from its own copy
+/// in the profile's package cache,
+/// `<profile>/packages/app-server-daemon/releases/<version>/bin/codex`, so
+/// the image's path says whose server it is. `None` for any other path. It
+/// is not proof by itself: [`serving_process`] says which process serves
+/// the profile.
+pub fn shared_server_profile(executable: &Path) -> Option<PathBuf> {
+    if !executable.is_absolute() {
+        return None;
+    }
+    let parts: Vec<_> = executable.ancestors().take(6).collect();
+    let named = |part: usize, name: &str| parts[part].file_name().is_some_and(|v| v == name);
+    (parts.len() == 6
+        && matches!(
+            executable.file_name().and_then(|v| v.to_str()),
+            Some("codex" | "codex.exe")
+        )
+        && named(1, "bin")
+        && named(3, "releases")
+        && named(4, "app-server-daemon")
+        && named(5, "packages"))
+    .then(|| parts[5].parent().map(Path::to_owned))
+    .flatten()
+}
+
+/// The process serving `profile`'s shared server, by the kernel's
+/// credentials for the process on the other end of its control socket
+/// ([`locate`], [`connect_stream`]), on a connection closed at once with
+/// nothing sent: `Ok(None)` when the profile has no shared server (and on
+/// Windows, which has no such socket).
+pub async fn serving_process(profile: &Path) -> io::Result<Option<u32>> {
+    #[cfg(unix)]
+    {
+        let Some(socket) = locate(profile)? else {
+            return Ok(None);
+        };
+        let stream = connect_stream(&socket).await?;
+        Ok(stream
+            .peer_cred()?
+            .pid()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid != 0))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = profile;
+        Ok(None)
+    }
+}
+
 /// Windows has no shared server's socket: a session never opens there.
 #[cfg(not(unix))]
 pub struct Session {
@@ -690,6 +741,53 @@ mod tests {
     fn private(path: &Path) {
         std::fs::create_dir_all(path).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    /// A shared server's profile comes only from its image's place in that
+    /// profile's package cache.
+    #[test]
+    fn a_shared_server_s_profile_is_named_by_its_image_s_package_cache() {
+        let profile = PathBuf::from("/home/p/.codex");
+        for binary in ["codex", "codex.exe"] {
+            let image = profile
+                .join("packages/app-server-daemon/releases/0.162.0-target/bin")
+                .join(binary);
+            assert_eq!(shared_server_profile(&image), Some(profile.clone()));
+        }
+        for suffix in [
+            "bin/codex",
+            "packages/other-server/releases/version/bin/codex",
+            "packages/app-server-daemon/releases/version/other/codex",
+            "packages/app-server-daemon/releases/version/bin/python3",
+        ] {
+            assert_eq!(
+                shared_server_profile(&profile.join(suffix)),
+                None,
+                "{suffix}"
+            );
+        }
+        assert_eq!(
+            shared_server_profile(Path::new(
+                "relative/packages/app-server-daemon/releases/v/bin/codex"
+            )),
+            None
+        );
+    }
+
+    /// The process serving a profile's control socket is the one the kernel
+    /// names on the other end of a connection; a profile without the
+    /// socket has none.
+    #[tokio::test]
+    async fn the_process_serving_a_profile_s_socket_is_named_by_the_kernel() {
+        let root = root();
+        let profile = root.path().join("p");
+        private(&profile.join(DIRECTORY));
+        assert_eq!(serving_process(&profile).await.unwrap(), None);
+        let _listener = UnixListener::bind(socket_path(&profile)).unwrap();
+        assert_eq!(
+            serving_process(&profile).await.unwrap(),
+            Some(std::process::id())
+        );
     }
 
     #[test]

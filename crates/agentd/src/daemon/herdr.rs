@@ -86,7 +86,10 @@ impl State {
     /// Record what herdr says of `agent`, whose provider session `session`
     /// a pane on `socket` holds, while it is still an agent herdr is asked
     /// about there and the word is news: another activity, or the same one
-    /// due for renewal. Whether it was recorded.
+    /// due for renewal. While Codex's shared server has a current word on
+    /// the agent, herdr's is not recorded: the server says what the
+    /// conversation itself is doing, herdr what its terminal looks like.
+    /// Whether it was recorded.
     pub(super) fn report_from_herdr(
         &mut self,
         agent: &AgentId,
@@ -107,7 +110,7 @@ impl State {
             return false;
         };
         if let Some(previous) = &record.reported_activity {
-            if previous.observed_at >= now {
+            if previous.observed_at >= now || previous.keeps_off(&observation, now) {
                 return false;
             }
             if previous.source == Some(ActivitySource::Herdr)

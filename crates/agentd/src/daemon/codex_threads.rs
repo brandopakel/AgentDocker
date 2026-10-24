@@ -3,29 +3,38 @@
 //! A Codex terminal (0.162 and later) runs its conversations in one shared
 //! app-server per profile, reached at the profile's control socket. For a
 //! live Codex record keyed by that profile and a conversation the server has
-//! loaded, the daemon reads the conversation's status and reports it as the
-//! record's activity, the way an adapter would: an approval or a question it
-//! stopped for waits on the person, a running turn is working, a loaded quiet
-//! conversation is idle. Only reads: `thread/loaded/list`, `thread/read` and
-//! the server's own `thread/status/changed`. A profile without the socket is
-//! never contacted, and nothing changes for its records.
+//! loaded, the daemon reads the conversation's status and records it as the
+//! record's activity, as its own observation (`source: codex_server`), not
+//! the agent's: an approval or a question it stopped for waits on the
+//! person, a running turn is working, a loaded quiet conversation is idle.
+//! Like herdr's, such an observation is not contact, lasts five minutes
+//! whatever it says, is renewed while the server still says it, and while it
+//! lasts stands over contact and over herdr's reading of the terminal. Only
+//! reads: `thread/loaded/list`, `thread/read` and the server's own
+//! `thread/status/changed`. A profile without the socket is never contacted,
+//! and nothing changes for its records.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agentdocker_core::{ActivityObservation, AgentId, AgentRecord, ReportedActivity, Response};
+use agentdocker_core::{
+    ActivityObservation, ActivitySource, AgentId, AgentRecord, ReportedActivity, Response,
+    WaitReason,
+};
 use agentdocker_host::codex_control::{self, ThreadStatus};
 use chrono::{DateTime, Utc};
 use tracing::debug;
 
-use super::{Daemon, lock};
+use super::{Daemon, State, lock};
 
 /// How often each profile's conversations are read again.
 const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 /// An unchanged observation is renewed this long after it was made, inside
-/// the five minutes a working or idle observation lasts.
+/// the five minutes a server observation lasts whatever it says.
 const RENEW: chrono::Duration = chrono::Duration::minutes(4);
+/// Who these observations are by.
+const SOURCE: Option<ActivitySource> = Some(ActivitySource::CodexServer);
 
 /// The stops for the person this watch reported, by record, with when: the
 /// ones it clears again when the conversation is no longer loaded.
@@ -214,7 +223,7 @@ impl Daemon {
             .collect()
     }
 
-    /// Report `status` as the record's activity when it says something new,
+    /// Record `status` as the record's activity when it says something new,
     /// or renew it before it lapses. A conversation that is no longer loaded
     /// ends a stop for the person this watch reported.
     pub(super) fn observe_codex_thread(
@@ -225,14 +234,42 @@ impl Daemon {
         status: &ThreadStatus,
         waits: &mut Waits,
     ) {
+        lock(&self.state).observe_codex_thread(id, profile, thread, status, waits, Utc::now());
+    }
+
+    fn clear_codex_waits(&self, waits: &mut Waits) {
         let now = Utc::now();
         let mut state = lock(&self.state);
-        if state.fenced() {
-            return;
+        let ids: Vec<AgentId> = waits.keys().cloned().collect();
+        for id in ids {
+            state.clear_codex_wait(&id, waits, now);
         }
-        let Some(record) = state.registry.get(id) else {
+    }
+}
+
+impl State {
+    /// Record what Codex's shared server says of `id`'s conversation
+    /// `thread` in `profile` as the daemon's own observation, while the
+    /// record is still watched there and the word is news
+    /// ([`says_already`]). It is not the agent's contact, and while it is
+    /// current it stands over contact and keeps herdr's word off the record.
+    /// A status that says nothing (not loaded, failed) ends the stop for the
+    /// person this watch reported. Whether an observation was recorded.
+    pub(super) fn observe_codex_thread(
+        &mut self,
+        id: &AgentId,
+        profile: &Path,
+        thread: &str,
+        status: &ThreadStatus,
+        waits: &mut Waits,
+        now: DateTime<Utc>,
+    ) -> bool {
+        if self.fenced() {
+            return false;
+        }
+        let Some(record) = self.registry.get(id) else {
             waits.remove(id);
-            return;
+            return false;
         };
         if watched(record)
             .as_ref()
@@ -240,82 +277,100 @@ impl Daemon {
             != Some((profile, thread))
         {
             waits.remove(id);
-            return;
+            return false;
         }
         let Some((activity, reason)) = status.activity() else {
-            drop(state);
-            self.clear_codex_wait(id, waits);
-            return;
+            self.clear_codex_wait(id, waits, now);
+            return false;
         };
         if record.reported_activity.as_ref().is_some_and(|previous| {
-            previous.activity == activity
-                && previous.reason == reason
-                && now - previous.observed_at < RENEW
+            previous.observed_at >= now || says_already(previous, activity, reason, now)
         }) {
-            return;
+            return false;
         }
         let observation = ActivityObservation {
             activity,
             observed_at: now,
             reason,
             detail: None,
-            source: None,
+            source: SOURCE,
         };
-        if matches!(
-            state.report_activity(id.as_str(), observation, now),
-            Response::Ok
-        ) {
-            if activity == ReportedActivity::Waiting {
-                waits.insert(id.clone(), now);
-            } else {
-                waits.remove(id);
-            }
+        if !matches!(self.record_activity(id, observation, now), Response::Ok) {
+            return false;
         }
+        if activity == ReportedActivity::Waiting {
+            waits.insert(id.clone(), now);
+        } else {
+            waits.remove(id);
+        }
+        true
     }
 
-    /// End the stop for the person this watch reported for `id`, unless
-    /// something else has said what it is doing since.
-    fn clear_codex_wait(&self, id: &AgentId, waits: &mut Waits) {
+    /// End the stop for the person this watch reported for `id`, as the
+    /// server's idle, while the record still holds that very observation:
+    /// the server's wait, made when `waits` says. Once anything else has
+    /// said what the agent is doing — a wait its hooks or herdr reported
+    /// included — there is nothing of this watch's to end.
+    pub(super) fn clear_codex_wait(&mut self, id: &AgentId, waits: &mut Waits, now: DateTime<Utc>) {
         let Some(at) = waits.remove(id) else {
             return;
         };
-        let now = Utc::now();
-        let mut state = lock(&self.state);
-        if state.fenced() {
+        if self.fenced() {
             return;
         }
-        let ours = state.registry.get(id).is_some_and(|record| {
+        let ours = self.registry.get(id).is_some_and(|record| {
             record.status.is_live()
                 && record
                     .reported_activity
                     .as_ref()
                     .is_some_and(|observation| {
                         observation.activity == ReportedActivity::Waiting
+                            && observation.source == SOURCE
                             && observation.observed_at == at
                     })
         });
         if ours {
-            let _ = state.report_activity(
-                id.as_str(),
+            let after = now.max(at + chrono::Duration::milliseconds(1));
+            let _ = self.record_activity(
+                id,
                 ActivityObservation {
                     activity: ReportedActivity::Idle,
-                    observed_at: now.max(at + chrono::Duration::milliseconds(1)),
+                    observed_at: after,
                     reason: None,
                     detail: None,
-                    source: None,
+                    source: SOURCE,
                 },
-                now,
+                after,
             );
         }
     }
-
-    fn clear_codex_waits(&self, waits: &mut Waits) {
-        let ids: Vec<AgentId> = waits.keys().cloned().collect();
-        for id in ids {
-            self.clear_codex_wait(&id, waits);
-        }
-    }
 }
+
+/// Whether `previous` already says what the server says, so recording it
+/// again is no news: the same activity and reason, not yet due for renewal,
+/// and the server's own word — or a running turn the agent's own adapter
+/// reported, which contact reads the same way, so a Codex whose hooks report
+/// every tool run is not restated after each one. Anything else is recorded
+/// as the server's: herdr's reading, so the server's word outranks it, and
+/// the adapter's idle or wait, so contact no longer turns it into working.
+fn says_already(
+    previous: &ActivityObservation,
+    activity: ReportedActivity,
+    reason: Option<WaitReason>,
+    now: DateTime<Utc>,
+) -> bool {
+    previous.activity == activity
+        && previous.reason == reason
+        && now - previous.observed_at < RENEW
+        && match previous.source {
+            Some(ActivitySource::CodexServer) => true,
+            None => activity == ReportedActivity::Working,
+            Some(ActivitySource::Herdr | ActivitySource::Other) => false,
+        }
+}
+
+#[cfg(test)]
+mod sources;
 
 #[cfg(all(test, unix))]
 mod tests {

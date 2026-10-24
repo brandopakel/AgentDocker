@@ -499,8 +499,10 @@ three groups, each named by its mark: yours, your agents' (every card an
 agent holds, whoever started it), and those you filed that nobody holds; within a group, by project (named above its rows),
 then by due day and priority. A row is a **Done** button (a tick and the
 word) that moves the card to its board's Done, its key, title, its *High
-priority* and due chips, and its holder; pressed, it opens the card on its
-project's board.
+priority* and due chips, and its holder; pressed, it selects the card's
+project as a click on that project does and opens the card on its board,
+where it stays open; a project no longer on the list opens nothing and the
+status line says so.
 
 **More → Plans** is the project's plans, files and memory. The list is each plan's
 name with a chip for where it stands (*Draft*, *Active*, *Done*, *Archived*) and a
