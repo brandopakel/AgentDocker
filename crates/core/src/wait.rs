@@ -332,9 +332,25 @@ pub enum ActivitySource {
     /// session: herdr watches the terminal, so its word on whether the
     /// agent is working, waiting or idle outranks contact.
     Herdr,
+    /// The daemon, reading Codex's shared app-server, which hosts the
+    /// agent's conversation: the server says what the conversation itself
+    /// is doing, so its word outranks contact and, while it lasts, herdr's.
+    CodexServer,
     /// A source this build does not know, from a newer daemon.
     #[serde(other)]
     Other,
+}
+
+impl ActivitySource {
+    /// Whether this source's current word on an agent keeps `other`'s off
+    /// its record. Codex's shared server reports the conversation's own
+    /// state — a running turn, an approval or a question it stopped for —
+    /// where herdr infers it from what the terminal shows, so where both
+    /// speak for one agent the server wins. No other pair is ranked, and a
+    /// source this build does not know ranks with none.
+    pub fn outranks(self, other: ActivitySource) -> bool {
+        matches!((self, other), (Self::CodexServer, Self::Herdr))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -694,8 +710,9 @@ impl ActivityObservation {
     /// A wait for the person is silent by nature and may last as long as
     /// they are away, so it holds for twelve hours unless the next event
     /// replaces it. An observation a source renews while it still holds
-    /// (herdr's) lasts five minutes whatever it says, so a wait it stopped
-    /// renewing — the pane released, herdr gone — does not stand for hours.
+    /// (herdr's, Codex's shared server's) lasts five minutes whatever it
+    /// says, so a wait it stopped renewing — the pane released, herdr or
+    /// the server gone — does not stand for hours.
     pub fn current(&self, now: DateTime<Utc>) -> Option<Activity> {
         let age = now - self.observed_at;
         let lasts = match (self.activity, self.source) {
@@ -719,6 +736,21 @@ impl ActivityObservation {
                 detail: self.detail.clone(),
             },
         })
+    }
+
+    /// Whether this observation, standing on an agent's record, keeps
+    /// `next` off it at `now`: while it is current, a source that outranks
+    /// `next`'s ([`ActivitySource::outranks`]) keeps that source's word out.
+    /// Past its expiry it keeps nothing out. The agent's own report (no
+    /// source) is never kept off and keeps nothing off: between it and a
+    /// source's word, the newer stands.
+    pub fn keeps_off(&self, next: &ActivityObservation, now: DateTime<Utc>) -> bool {
+        match (self.source, next.source) {
+            (Some(standing), Some(coming)) => {
+                standing.outranks(coming) && self.current(now).is_some()
+            }
+            _ => false,
+        }
     }
 }
 
@@ -1140,6 +1172,86 @@ mod tests {
         let newer = serde_json::json!({"activity": "idle", "observed_at": now, "source": "zellij"});
         let read: ActivityObservation = serde_json::from_value(newer).unwrap();
         assert_eq!(read.source, Some(ActivitySource::Other));
+    }
+
+    /// What Codex's shared server said lasts five minutes whatever it says,
+    /// a wait included, like herdr's: the watch renews it while the server
+    /// still says it. It travels as `codex_server`, which a reader that
+    /// predates it takes for another source.
+    #[test]
+    fn a_codex_server_observation_lasts_five_minutes_whatever_it_says() {
+        let now = now();
+        for (activity, reason) in [
+            (ReportedActivity::Waiting, Some(WaitReason::Permission)),
+            (ReportedActivity::Waiting, Some(WaitReason::Question)),
+            (ReportedActivity::Working, None),
+            (ReportedActivity::Idle, None),
+        ] {
+            let observation = ActivityObservation {
+                activity,
+                observed_at: now,
+                reason,
+                detail: None,
+                source: Some(ActivitySource::CodexServer),
+            };
+            assert!(
+                observation
+                    .current(now + chrono::Duration::seconds(299))
+                    .is_some(),
+                "{activity:?} holds inside five minutes"
+            );
+            assert_eq!(
+                observation.current(now + chrono::Duration::minutes(5)),
+                None,
+                "{activity:?} lapses at five minutes"
+            );
+        }
+        let wire = serde_json::json!({
+            "activity": "waiting", "observed_at": now, "reason": "question", "source": "codex_server"
+        });
+        let read: ActivityObservation = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(read.source, Some(ActivitySource::CodexServer));
+        assert_eq!(serde_json::to_value(&read).unwrap(), wire);
+    }
+
+    /// Where Codex's shared server and herdr both speak for one agent, the
+    /// server's current word keeps herdr's off the record, never the other
+    /// way, and once it lapses herdr's counts again. The agent's own report
+    /// is never kept off and keeps nothing off, and no source ranks with
+    /// itself or with one this build does not know.
+    #[test]
+    fn a_current_codex_server_word_keeps_herdrs_off_and_nothing_else() {
+        let now = now();
+        let said =
+            |source: Option<ActivitySource>, activity: ReportedActivity| ActivityObservation {
+                activity,
+                observed_at: now,
+                reason: None,
+                detail: None,
+                source,
+            };
+        let server = said(Some(ActivitySource::CodexServer), ReportedActivity::Idle);
+        let herdr = said(Some(ActivitySource::Herdr), ReportedActivity::Working);
+        let own = said(None, ReportedActivity::Working);
+        let unknown = said(Some(ActivitySource::Other), ReportedActivity::Working);
+        let soon = now + chrono::Duration::seconds(30);
+        let lapsed = now + chrono::Duration::minutes(5);
+
+        assert!(ActivitySource::CodexServer.outranks(ActivitySource::Herdr));
+        assert!(!ActivitySource::Herdr.outranks(ActivitySource::CodexServer));
+        assert!(server.keeps_off(&herdr, soon), "the server's word wins");
+        assert!(
+            !server.keeps_off(&herdr, lapsed),
+            "past its expiry the server is no longer saying"
+        );
+        assert!(!herdr.keeps_off(&server, soon), "herdr never keeps it off");
+        assert!(!server.keeps_off(&own, soon), "the agent's own report");
+        assert!(!own.keeps_off(&herdr, soon));
+        assert!(!own.keeps_off(&server, soon));
+        assert!(!server.keeps_off(&server, soon), "a source's own renewal");
+        assert!(!herdr.keeps_off(&herdr, soon));
+        assert!(!server.keeps_off(&unknown, soon));
+        assert!(!unknown.keeps_off(&herdr, soon));
     }
 
     fn agent(name: &str) -> AgentId {

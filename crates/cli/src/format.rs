@@ -217,6 +217,7 @@ pub fn event_line(event: &Event) -> String {
         EventKind::AgentActivityReported { agent, observation } => {
             let by = match observation.source {
                 Some(agentdocker_core::ActivitySource::Herdr) => " (herdr)",
+                Some(agentdocker_core::ActivitySource::CodexServer) => " (Codex server)",
                 Some(agentdocker_core::ActivitySource::Other) => " (observed)",
                 None => "",
             };
@@ -1624,8 +1625,8 @@ mod tests {
         );
     }
 
-    /// What herdr said of an agent is shown as herdr's, not as the
-    /// agent's own report.
+    /// What herdr or Codex's shared server said of an agent is shown as
+    /// theirs, not as the agent's own report.
     #[test]
     fn an_activity_herdr_observed_says_so() {
         let line = |source| {
@@ -1645,6 +1646,10 @@ mod tests {
         };
         assert!(line(None).ends_with(" Waiting"));
         assert!(line(Some(agentdocker_core::ActivitySource::Herdr)).ends_with(" Waiting (herdr)"));
+        assert!(
+            line(Some(agentdocker_core::ActivitySource::CodexServer))
+                .ends_with(" Waiting (Codex server)")
+        );
     }
 
     #[test]

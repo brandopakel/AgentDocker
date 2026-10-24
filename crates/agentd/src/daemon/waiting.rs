@@ -333,7 +333,8 @@ impl State {
         now: DateTime<Utc>,
     ) -> Response {
         // A client reports what it saw itself; who else observed is the
-        // daemon's to say, and only the daemon reads herdr.
+        // daemon's to say, and only the daemon reads herdr and Codex's
+        // shared server.
         if observation.source.is_some() {
             return Response::error(
                 ErrorCode::Invalid,
@@ -354,7 +355,10 @@ impl State {
     }
 
     /// Record an observation of `id`'s activity — its adapter's, or one the
-    /// daemon made — and say so with `agent_activity_reported`.
+    /// daemon made — and say so with `agent_activity_reported`. One older
+    /// than the record's is ignored, and so is one that a current
+    /// observation from a source outranking its own keeps off
+    /// (`ActivityObservation::keeps_off`: Codex's shared server over herdr).
     pub(super) fn record_activity(
         &mut self,
         id: &AgentId,
@@ -378,11 +382,9 @@ impl State {
                 "cannot report activity for a finished agent",
             );
         }
-        if record
-            .reported_activity
-            .as_ref()
-            .is_some_and(|previous| previous.observed_at >= observation.observed_at)
-        {
+        if record.reported_activity.as_ref().is_some_and(|previous| {
+            previous.observed_at >= observation.observed_at || previous.keeps_off(&observation, now)
+        }) {
             return Response::Ok;
         }
         // A wait's detail is kept only as one bounded, printable line that
@@ -485,9 +487,10 @@ impl State {
         // them is its MCP server polling for messages, which is presence, not
         // work: counting it turned every idle report into "working" within
         // seconds, and a finished turn was never seen to finish. The same
-        // holds while herdr, watching its terminal, says what it is doing:
-        // that observation stands over contact until it expires, and past
-        // it contact counts again, since herdr is no longer saying.
+        // holds while herdr, watching its terminal, or Codex's shared
+        // server, hosting its conversation, says what it is doing: that
+        // observation stands over contact until it expires, and past it
+        // contact counts again, since the source is no longer saying.
         let reports_turns = reports_turns(record);
         if let Some(observation) = &record.reported_activity
             && (reports_turns
