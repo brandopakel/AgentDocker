@@ -44,7 +44,8 @@ CLI path on case-insensitive filesystems and send hooks or MCP into the GUI.
    from Launch Services after packaging and after installing, so
    `open -a AgentDocker`, Spotlight and the Dock open the installed app, never
    a package in the checkout. Packages made into the older `artifacts/local`
-   are unregistered and moved into `artifacts/local.noindex` first.
+   are unregistered and that folder is moved, whole, into its own folder under
+   `artifacts/local.noindex` first. No link is followed when unregistering.
 4. `agentdocker desktop install --from <payload> --local-preview`: the built
    CLI installs its own package for the next launch. Versions are retained;
    `make rollback` activates the previous one; `make status` shows both.

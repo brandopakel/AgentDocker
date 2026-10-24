@@ -46,14 +46,23 @@ class PackagedApp(unittest.TestCase):
             fake = tmp / "lsregister"
             fake.write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\n')
             fake.chmod(0o755)
+            # Somewhere else entirely, standing for the installed app.
+            outside = tmp / "Applications"
+            (outside / payload / "Contents").mkdir(parents=True)
             checkout = tmp / "checkout"
             legacy = checkout / "artifacts/local"
             for stamp in ["desktop-1", "desktop-2"]:
                 (legacy / stamp / payload / "Contents").mkdir(parents=True)
             (legacy / "smoke-1").mkdir()
             (legacy / "latest").symlink_to("desktop-2")
-            # A name already in the new folder is left where it is.
-            (checkout / "artifacts/local.noindex/desktop-2").mkdir(parents=True)
+            # A package folder that is a link, and an app that is a link:
+            # neither may make lsregister forget the app they point at.
+            (legacy / "desktop-link").symlink_to(outside)
+            (legacy / "desktop-3").mkdir()
+            (legacy / "desktop-3" / payload).symlink_to(outside / payload)
+            # A name the new folder already has.
+            noindex = checkout / "artifacts/local.noindex"
+            (noindex / "desktop-2").mkdir(parents=True)
 
             def migrate():
                 return subprocess.run(
@@ -62,25 +71,47 @@ class PackagedApp(unittest.TestCase):
                     cwd=checkout, check=True, capture_output=True, text=True,
                 ).stdout
 
-            self.assertIn("Left artifacts/local", migrate())
+            self.assertIn("Moved earlier packages", migrate())
             self.assertEqual(
                 sorted(calls.read_text().splitlines()),
                 [f"-u artifacts/local/desktop-1/{payload}", f"-u artifacts/local/desktop-2/{payload}"],
             )
-            moved = checkout / "artifacts/local.noindex"
-            self.assertTrue((moved / "desktop-1" / payload).is_dir())
-            self.assertTrue((moved / "smoke-1").is_dir())
-            self.assertFalse((moved / "desktop-2" / payload).exists())
-            self.assertEqual(sorted(os.listdir(legacy)), ["desktop-2"])
+            # Nothing of the old folder is left where Spotlight looks; all of
+            # it, the colliding name included, is kept under the new folder.
+            self.assertFalse(legacy.exists())
+            (moved,) = noindex.glob("from-local.*")
+            self.assertEqual(
+                sorted(os.listdir(moved / "local")),
+                ["desktop-1", "desktop-2", "desktop-3", "desktop-link", "latest", "smoke-1"],
+            )
+            self.assertTrue((moved / "local/desktop-2" / payload).is_dir())
+            self.assertTrue((noindex / "desktop-2").is_dir())
+            self.assertTrue((outside / payload).is_dir())
 
-            # Once the old folder is empty it goes, naming nothing to Launch
-            # Services, and a later run does nothing.
-            shutil.rmtree(legacy / "desktop-2")
             calls.unlink()
             migrate()
-            self.assertFalse(legacy.exists())
-            migrate()
+            self.assertFalse(calls.exists(), "a later run does nothing")
+
+    def test_a_linked_store_is_never_named(self):
+        payload = "AgentDocker.app" if platform.system() == "Darwin" else "agentdocker-desktop"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            calls = tmp / "calls"
+            fake = tmp / "lsregister"
+            fake.write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\n')
+            fake.chmod(0o755)
+            outside = tmp / "elsewhere"
+            (outside / "desktop-1" / payload).mkdir(parents=True)
+            checkout = tmp / "checkout"
+            (checkout / "artifacts").mkdir(parents=True)
+            (checkout / "artifacts/local.noindex").symlink_to(outside)
+            subprocess.run(
+                ["make", "-f", str(ROOT / "Makefile"), "--no-print-directory",
+                 "clean-artifacts", f"LSREGISTER={fake}"],
+                cwd=checkout, check=True, capture_output=True, text=True,
+            )
             self.assertFalse(calls.exists())
+            self.assertTrue((outside / "desktop-1" / payload).is_dir(), "a link is removed, not followed")
 
     def test_cleaning_forgets_and_removes_the_old_location_too(self):
         commands = recipe("clean-artifacts").splitlines()
