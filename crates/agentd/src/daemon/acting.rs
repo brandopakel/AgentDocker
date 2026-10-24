@@ -29,12 +29,14 @@
 //! becomes an agent's own, the anchor of its session here. So the sender
 //! must be able to name it ([`naming`]): itself or one of its parents (a
 //! hook names its provider, an MCP server its host), or a process it
-//! started (a launcher names its terminal); a process a live agent already
-//! holds only from inside that agent's session, as a request acting as it
-//! would be sent, which is what lets a Codex terminal's companion launcher's
-//! other children name it; and a Codex terminal resuming the conversation
-//! the spec names from under that profile's proven shared server, where a
-//! terminal conversation's hooks and MCP servers run. Otherwise only the
+//! started (a launcher names its terminal), or, when it is a Codex terminal
+//! nobody holds that resumes the conversation the spec names, from under
+//! that profile's proven shared server, where a terminal conversation's
+//! hooks and MCP servers run. A process a live agent already holds is named
+//! only from inside that agent's session, as a request acting as it would
+//! be sent: what a Codex terminal's companion launcher started may name the
+//! terminal, and a shared server only a terminal whose own record names its
+//! profile, never on the profile the registration names. Otherwise only the
 //! person may, and the registration is refused `identity_mismatch`. The
 //! same switch turns it off.
 
@@ -562,19 +564,19 @@ enum Naming {
 /// Whether the process a registration names (`named`, by pid and its birth
 /// now) is one its sender (`sender`) may name, as the kernel tells it. One
 /// that live agents hold as their own (`holders`, their sessions as
-/// [`Acting::of`] finds them) may be named from inside one of their
-/// sessions, as a request acting as that agent may be sent ([`find_session`],
-/// its Codex launcher and shared server included), and from nowhere else
-/// here: registering it is acting as that agent. One nobody holds may be
-/// named when it is the sender or one of its parents (the sender runs inside
-/// it: a hook naming its provider, an MCP server its host), or when the
-/// sender stands among its own parents (the sender started it: a launcher
-/// naming its terminal). Either way, a Codex terminal whose own arguments
-/// resume the thread `terminal` names may be named from under that profile's
-/// shared server, which runs a terminal conversation's hooks and MCP servers
-/// beside rather than under it, when every live agent that holds it is a
-/// Codex agent of no other profile; the server is for its control socket to
-/// prove ([`Naming::Served`]).
+/// [`Acting::of`] finds them) may be named only from inside one of their
+/// sessions, exactly as a request acting as that agent may be sent
+/// ([`find_session`]: its own processes, its Codex launcher, and the shared
+/// server of the profile its record names, never of one a request names):
+/// registering it is acting as that agent. One nobody holds may be named
+/// when it is the sender or one of its parents (the sender runs inside it: a
+/// hook naming its provider, an MCP server its host), when the sender stands
+/// among its own parents (the sender started it: a launcher naming its
+/// terminal), or, when it is a Codex terminal whose own arguments resume the
+/// thread `terminal` names, from under that profile's shared server, which
+/// runs a terminal conversation's hooks and MCP servers beside rather than
+/// under it. A shared server is for its control socket to prove
+/// ([`Naming::Served`]).
 fn naming(
     sender: Process,
     named: Process,
@@ -585,7 +587,7 @@ fn naming(
     let (pid, born) = sender;
     let mut served = Vec::new();
     if holders.is_empty() {
-        let (_, up) = lineage(pid, born, kernel.step, kernel.unseen, |p| p == named);
+        let (chain, up) = lineage(pid, born, kernel.step, kernel.unseen, |p| p == named);
         let started = || {
             let (named_pid, named_born) = named;
             lineage(named_pid, named_born, kernel.step, kernel.unseen, |p| {
@@ -595,6 +597,23 @@ fn naming(
         };
         if up == End::Found || started() {
             return Naming::Admitted;
+        }
+        if let Some(terminal) = terminal {
+            let (named_pid, named_born) = named;
+            let resumes = (kernel.born)(named_pid) == Some(named_born)
+                && (kernel.arguments)(named_pid)
+                    .is_some_and(|argv| procinfo::codex_resumes(&argv, &terminal.thread));
+            if resumes {
+                let shared = shared_server_candidates(
+                    &chain,
+                    &terminal.profile,
+                    kernel.executable,
+                    kernel.born,
+                );
+                if !shared.is_empty() {
+                    served.push((terminal.profile.clone(), shared));
+                }
+            }
         }
     }
     for holder in holders {
@@ -606,28 +625,6 @@ fn naming(
                 }
             }
             Session::Outside { .. } => {}
-        }
-    }
-    if let Some(terminal) = terminal {
-        let theirs = holders.iter().all(|holder| {
-            holder.codex.as_ref().is_some_and(|codex| {
-                codex
-                    .profile
-                    .as_ref()
-                    .is_none_or(|profile| *profile == terminal.profile)
-            })
-        });
-        let (named_pid, named_born) = named;
-        let resumes = (kernel.born)(named_pid) == Some(named_born)
-            && (kernel.arguments)(named_pid)
-                .is_some_and(|argv| procinfo::codex_resumes(&argv, &terminal.thread));
-        if theirs && resumes {
-            let (chain, _) = lineage(pid, born, kernel.step, kernel.unseen, |_| false);
-            let shared =
-                shared_server_candidates(&chain, &terminal.profile, kernel.executable, kernel.born);
-            if !shared.is_empty() {
-                served.push((terminal.profile.clone(), shared));
-            }
         }
     }
     if served.is_empty() {
@@ -1712,14 +1709,17 @@ mod tests {
         assert_eq!(table.naming(10, 42, &w, None), Naming::Unrelated);
     }
 
-    /// From under a profile's shared server, a Codex terminal whose own
-    /// arguments resume the conversation the spec names may be named as a
-    /// record of that profile, when the server among the sender's parents
-    /// is a Codex image in that profile's package cache, and then only if
-    /// it serves the profile's control socket ([`Naming::Served`]). Not a
-    /// terminal of another conversation, not from another profile's server,
-    /// not a process another profile's agent or another runtime's holds,
-    /// and not a terminal from an ordinary process.
+    /// From under a profile's shared server, a Codex terminal nobody holds
+    /// whose own arguments resume the conversation the spec names may be
+    /// named as a record of that profile, when the server among the
+    /// sender's parents is a Codex image in that profile's package cache,
+    /// and then only if it serves the profile's control socket
+    /// ([`Naming::Served`]). A terminal a live agent holds is named from
+    /// there only when that agent's own record names the same profile, as
+    /// the agent check allows: never on the profile the registration names,
+    /// so a record that names none, another profile's or another runtime's
+    /// is not taken over. Not a terminal of another conversation, not from
+    /// another profile's server, and not from an ordinary process.
     #[test]
     fn a_shared_server_names_the_terminal_that_resumes_its_conversation() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1731,13 +1731,11 @@ mod tests {
         let theirs = terminal(&p, THREAD);
         let served = Naming::Served(vec![(p.clone(), vec![(60, at(60))])]);
         assert_eq!(table.naming(61, 81, &[], Some(&theirs)), served);
-        // Held by a Codex record of the same profile, or of none.
-        for held in [holder("codex", 81, Some(&p)), holder("codex", 81, None)] {
-            assert!(matches!(
-                table.naming(61, 81, &[held], Some(&theirs)),
-                Naming::Served(_)
-            ));
-        }
+        // Held by a Codex record of the same profile: its own record proves
+        // it, whatever the spec says.
+        let ours = [holder("codex", 81, Some(&p))];
+        assert_eq!(table.naming(61, 81, &ours, Some(&theirs)), served);
+        assert_eq!(table.naming(61, 81, &ours, None), served);
         // Another conversation's terminal, or a spec naming another thread.
         assert_eq!(table.naming(61, 82, &[], Some(&theirs)), Naming::Unrelated);
         // From another profile's server, or naming this terminal for it.
@@ -1746,8 +1744,10 @@ mod tests {
             table.naming(61, 81, &[], Some(&terminal(&q, THREAD))),
             Naming::Unrelated
         );
-        // Held by another profile's agent, or another runtime's.
+        // Held by a Codex record that names no profile, another profile's
+        // agent, or another runtime's: the spec's profile proves nothing.
         for held in [
+            holder("codex", 81, None),
             holder("codex", 81, Some(&q)),
             holder("claude-code", 81, None),
         ] {
@@ -1976,148 +1976,273 @@ mod tests {
         serving.abort();
     }
 
-    /// Over the real socket, as the shared-server MCP registers a terminal:
-    /// a process under the stand-in for a profile's shared server names a
-    /// Codex terminal the test started (no parent of the sender's and no
-    /// child of it), whose own arguments resume the conversation the spec
-    /// names. Answered only while the stand-in serves the profile's control
-    /// socket, and never for a terminal of another conversation.
+    /// A daemon with the agent check on, beside the stand-in for a Codex
+    /// profile's shared server (this test binary copied into the profile's
+    /// package cache) and the Codex terminals a test starts: in the person's
+    /// own terminal as far as the stand-in is concerned, neither its parents
+    /// nor its children.
     #[cfg(unix)]
-    #[tokio::test]
-    async fn a_shared_codex_server_registers_the_terminal_of_its_conversation() {
-        use std::os::unix::process::CommandExt as _;
-        let tmp = tempfile::tempdir().unwrap();
-        let mut daemon = Daemon::open(tmp.path().into(), tmp.path().join("host.sock")).unwrap();
-        daemon.person_check = false;
-        daemon.agent_check = true;
-        let daemon = Arc::new(daemon);
-        let listener = crate::server::bind(&daemon).await.unwrap();
-        let serving = tokio::spawn(crate::server::serve(daemon.clone(), listener));
-        let short = tempfile::Builder::new()
-            .prefix("ac-")
-            .tempdir_in(if cfg!(target_os = "macos") {
-                std::path::PathBuf::from("/tmp")
-            } else {
-                std::env::temp_dir()
-            })
-            .unwrap();
-        let profile = std::fs::canonicalize(short.path()).unwrap().join("p");
-        std::fs::create_dir_all(profile.join(codex_control::DIRECTORY)).unwrap();
-        let image = profile.join("packages/app-server-daemon/releases/0.162.0/bin/codex");
-        std::fs::create_dir_all(image.parent().unwrap()).unwrap();
-        std::fs::copy(std::env::current_exe().unwrap(), &image).unwrap();
-        // Terminals in the person's own terminal, as far as the sender is
-        // concerned: started here, beside the server.
-        // A shell keeps the name it is given, where Python's macOS launcher
-        // takes its own; it waits on a read of its own, starting nothing.
-        let terminal = |thread: &str| {
-            std::process::Command::new("/bin/sh")
+    struct SharedServer {
+        daemon: Arc<Daemon>,
+        serving: tokio::task::JoinHandle<anyhow::Result<()>>,
+        workdir: std::path::PathBuf,
+        profile: std::path::PathBuf,
+        image: std::path::PathBuf,
+        terminals: Vec<std::process::Child>,
+        _dirs: (tempfile::TempDir, tempfile::TempDir),
+    }
+
+    #[cfg(unix)]
+    impl SharedServer {
+        async fn start() -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut daemon = Daemon::open(tmp.path().into(), tmp.path().join("host.sock")).unwrap();
+            daemon.person_check = false;
+            daemon.agent_check = true;
+            let daemon = Arc::new(daemon);
+            let listener = crate::server::bind(&daemon).await.unwrap();
+            let serving = tokio::spawn(crate::server::serve(daemon.clone(), listener));
+            // A socket path may have only 104 bytes on macOS.
+            let short = tempfile::Builder::new()
+                .prefix("ac-")
+                .tempdir_in(if cfg!(target_os = "macos") {
+                    std::path::PathBuf::from("/tmp")
+                } else {
+                    std::env::temp_dir()
+                })
+                .unwrap();
+            let profile = std::fs::canonicalize(short.path()).unwrap().join("p");
+            std::fs::create_dir_all(profile.join(codex_control::DIRECTORY)).unwrap();
+            let image = profile.join("packages/app-server-daemon/releases/0.162.0/bin/codex");
+            std::fs::create_dir_all(image.parent().unwrap()).unwrap();
+            std::fs::copy(std::env::current_exe().unwrap(), &image).unwrap();
+            Self {
+                daemon,
+                serving,
+                workdir: tmp.path().to_owned(),
+                profile,
+                image,
+                terminals: Vec::new(),
+                _dirs: (tmp, short),
+            }
+        }
+
+        /// A Codex terminal resuming `thread`, by its pid. A shell keeps
+        /// the name it is given, where Python's macOS launcher takes its
+        /// own; it waits on a read of its own, starting nothing.
+        fn terminal(&mut self, thread: &str) -> u32 {
+            use std::os::unix::process::CommandExt as _;
+            let child = std::process::Command::new("/bin/sh")
                 .arg0("codex")
                 .args(["-c", "read -r line; exit", "resume", thread])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
-                .unwrap()
-        };
-        /// The terminals, ended however the test ends.
-        struct Reaped(Vec<std::process::Child>);
-        impl Drop for Reaped {
-            fn drop(&mut self) {
-                for child in &mut self.0 {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-            }
+                .unwrap();
+            let pid = child.id();
+            self.terminals.push(child);
+            pid
         }
-        let terminals = Reaped(vec![
-            terminal(THREAD),
-            terminal("019a0000-0000-7000-8000-000000000002"),
-        ]);
-        let (ours, other) = (terminals.0[0].id(), terminals.0[1].id());
-        let request = |pid: u32| {
+
+        /// The shared server's registration of `pid` as the terminal of
+        /// `thread`, as `native_identity::bind_terminal` sends it.
+        fn register(&self, pid: u32, thread: &str) -> String {
             serde_json::json!({
                 "op": "register",
                 "spec": {
                     "name": format!("codex-{pid}"),
                     "runtime": "codex",
-                    "workdir": tmp.path(),
+                    "workdir": self.workdir,
                     "labels": {
-                        "session_id": THREAD,
-                        (agentdocker_core::agent::PROFILE_LABEL): profile,
+                        "session_id": thread,
+                        (agentdocker_core::agent::PROFILE_LABEL): self.profile,
                     },
                 },
                 "pid": pid,
             })
             .to_string()
-        };
-        let client = "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.connect(sys.argv[-2])\ns.sendall(sys.argv[-1].encode()+b'\\n')\nprint(s.makefile().readline(),end='',flush=True)\n";
-        let stand_in = |socket: Option<&std::path::Path>, request: String| {
+        }
+
+        /// `request`, sent by a process under the stand-in, serving the
+        /// profile's control socket (bound afresh) when `serve` says so.
+        async fn send(&self, serve: bool, request: String) -> Response {
+            let socket = codex_control::socket_path(&self.profile);
+            let _ = std::fs::remove_file(&socket);
             let told = serde_json::json!({
-                "socket": socket,
-                "client": client,
-                "daemon": daemon.socket,
+                "socket": serve.then_some(socket),
+                "client": "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.connect(sys.argv[-2])\ns.sendall(sys.argv[-1].encode()+b'\\n')\nprint(s.makefile().readline(),end='',flush=True)\n",
+                "daemon": self.daemon.socket,
                 "request": request,
             });
-            let image = image.clone();
-            async move {
-                let output = tokio::task::spawn_blocking(move || {
-                    std::process::Command::new(&image)
-                        .args([
-                            "daemon::acting::tests::shared_server_stand_in",
-                            "--exact",
-                            "--ignored",
-                            "--nocapture",
-                            "--test-threads=1",
-                        ])
-                        .env("AGENTDOCKER_TEST_STAND_IN", told.to_string())
-                        .output()
-                        .unwrap()
+            let image = self.image.clone();
+            let output = tokio::task::spawn_blocking(move || {
+                std::process::Command::new(&image)
+                    .args([
+                        "daemon::acting::tests::shared_server_stand_in",
+                        "--exact",
+                        "--ignored",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env("AGENTDOCKER_TEST_STAND_IN", told.to_string())
+                    .output()
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+            let text = String::from_utf8_lossy(&output.stdout).into_owned();
+            let line = text
+                .lines()
+                .find_map(|line| line.split_once("reply:").map(|(_, reply)| reply))
+                .unwrap_or_else(|| panic!("no reply in {text}"))
+                .to_owned();
+            serde_json::from_str::<Response>(&line).unwrap()
+        }
+
+        /// A live `codex` record of `pid`, registered by the daemon's own
+        /// hand with `labels`.
+        async fn record(
+            &self,
+            pid: u32,
+            labels: std::collections::BTreeMap<String, String>,
+        ) -> AgentRecord {
+            match self
+                .daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: format!("terminal-{pid}"),
+                        runtime: "codex".into(),
+                        workdir: Some(self.workdir.clone()),
+                        labels,
+                        ..AgentSpec::default()
+                    },
+                    pid: Some(pid),
+                    session: None,
                 })
                 .await
-                .unwrap();
-                let text = String::from_utf8_lossy(&output.stdout).into_owned();
-                let line = text
-                    .lines()
-                    .find_map(|line| line.split_once("reply:").map(|(_, reply)| reply))
-                    .unwrap_or_else(|| panic!("no reply in {text}"))
-                    .to_owned();
-                serde_json::from_str::<Response>(&line).unwrap()
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("{other:?}"),
             }
-        };
-        let refused = |reply: &Response| {
-            matches!(
-                reply,
-                Response::Error {
-                    code: ErrorCode::IdentityMismatch,
-                    ..
-                }
-            )
-        };
-        // Each stand-in binds the socket afresh.
-        let socket = codex_control::socket_path(&profile);
-        let served = |request: String| {
-            let _ = std::fs::remove_file(&socket);
-            stand_in(Some(&socket), request)
-        };
+        }
+    }
 
-        let reply = stand_in(None, request(ours)).await;
+    #[cfg(unix)]
+    impl Drop for SharedServer {
+        fn drop(&mut self) {
+            for child in &mut self.terminals {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            self.serving.abort();
+        }
+    }
+
+    #[cfg(unix)]
+    fn identity_mismatch(reply: &Response) -> bool {
+        matches!(
+            reply,
+            Response::Error {
+                code: ErrorCode::IdentityMismatch,
+                ..
+            }
+        )
+    }
+
+    /// Over the real socket, as the shared-server MCP registers a terminal:
+    /// a process under the stand-in names a Codex terminal nobody holds,
+    /// whose own arguments resume the conversation the spec names. Answered
+    /// only while the stand-in serves the profile's control socket, and
+    /// never for a terminal of another conversation.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_shared_codex_server_registers_the_terminal_of_its_conversation() {
+        let mut server = SharedServer::start().await;
+        let ours = server.terminal(THREAD);
+        let other = server.terminal("019a0000-0000-7000-8000-000000000002");
+
+        let reply = server.send(false, server.register(ours, THREAD)).await;
         assert!(
-            refused(&reply),
+            identity_mismatch(&reply),
             "a Codex image that serves nothing: {reply:?}"
         );
-        let reply = served(request(other)).await;
+        let reply = server.send(true, server.register(other, THREAD)).await;
         assert!(
-            refused(&reply),
+            identity_mismatch(&reply),
             "another conversation's terminal: {reply:?}"
         );
-        assert_eq!(lock(&daemon.state).registry.all().count(), 0);
-        let reply = served(request(ours)).await;
+        assert_eq!(lock(&server.daemon.state).registry.all().count(), 0);
+        let reply = server.send(true, server.register(ours, THREAD)).await;
         assert!(
             matches!(&reply, Response::Agent { agent } if agent.pid == Some(ours)),
             "the profile's server: {reply:?}"
         );
-        drop(terminals);
-        serving.abort();
+    }
+
+    /// Over the real socket: a Codex terminal whose live record names no
+    /// profile (an adopted or MCP-first record) is not the shared server's
+    /// to name, even when its own arguments resume the conversation the
+    /// registration names and the server is proven: the registration's own
+    /// profile and thread prove nothing about the record. It is refused
+    /// `identity_mismatch`, the record learns neither a session nor a
+    /// profile, and the server still cannot act as it. A terminal whose
+    /// own record names the profile is the server's to name, and learns its
+    /// conversation.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_shared_server_does_not_take_over_a_record_that_names_no_profile() {
+        let mut server = SharedServer::start().await;
+        let b = server.terminal(THREAD);
+        let unprofiled = server
+            .record(b, [("via".to_owned(), "mcp".to_owned())].into())
+            .await;
+        let before = lock(&server.daemon.state).registry.all().count();
+
+        let reply = server.send(true, server.register(b, THREAD)).await;
+        assert!(identity_mismatch(&reply), "{reply:?}");
+        assert!(
+            matches!(&reply, Response::Error { details: Some(details), .. }
+                if details["agent"] == unprofiled.id.as_str() && details["pid"] == b),
+            "{reply:?}"
+        );
+        {
+            let state = lock(&server.daemon.state);
+            assert_eq!(state.registry.all().count(), before, "nothing added");
+            let record = state.registry.get(&unprofiled.id).unwrap();
+            assert_eq!(record.spec.labels, unprofiled.spec.labels, "{record:?}");
+        }
+        // Nor may the server act as it.
+        let claim = serde_json::json!({
+            "op": "claim",
+            "agent": unprofiled.id,
+            "resource": format!("path:{}/b", server.workdir.display()),
+            "ttl_secs": 60,
+        })
+        .to_string();
+        let reply = server.send(true, claim).await;
+        assert!(identity_mismatch(&reply), "{reply:?}");
+        assert!(lock(&server.daemon.state).leases.is_empty());
+
+        // A terminal whose own record names this profile is the server's.
+        let thread = "019a0000-0000-7000-8000-000000000003";
+        let c = server.terminal(thread);
+        let profiled = server
+            .record(
+                c,
+                [(
+                    agentdocker_core::agent::PROFILE_LABEL.to_owned(),
+                    server.profile.display().to_string(),
+                )]
+                .into(),
+            )
+            .await;
+        let reply = server.send(true, server.register(c, thread)).await;
+        assert!(
+            matches!(&reply, Response::Agent { agent }
+                if agent.id == profiled.id
+                    && agent.spec.labels.get("session_id").map(String::as_str) == Some(thread)),
+            "{reply:?}"
+        );
     }
 }
