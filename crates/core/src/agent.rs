@@ -408,8 +408,9 @@ pub struct AgentRecord {
     /// The opt-in judge read its quiet screen as waiting on the person:
     /// what for, how sure, and which screen of which process. It raises
     /// the agent's activity while it stands and never lowers it; a change
-    /// of screen, a report from the agent's own adapter or another
-    /// process ends it (see [`crate::judgment`]).
+    /// of screen, a screen that can no longer be read, a report from the
+    /// agent's own adapter or another process ends it (see
+    /// [`crate::judgment`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judged: Option<crate::judgment::ScreenJudgment>,
 }

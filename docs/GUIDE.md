@@ -1011,7 +1011,12 @@ prompt, a question or an unsent draft is at least `threshold_percent` (75
 unless you set it, 50–99) and work is not read as running. It never moves an
 agent out of anything, and a wait its own hooks report always stands. The
 judged wait ends when the screen changes, when the agent's hooks report
-anything, or when you turn the judge off.
+anything, when its screen can no longer be read — a second agent claims its
+herdr session, or its pane moves while it is read, is replaced or closes —
+or when you turn the judge off. A pane that moves between reads is followed
+to where the session now is. A herdr or tmux that stops answering for a moment does not end
+it; one that stays silent for four passes in a row, about twenty seconds,
+does.
 
 ### Planned daemon replacement
 

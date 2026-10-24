@@ -538,6 +538,34 @@ pub mod tmux {
     /// The most a capture may take, unless the caller says otherwise.
     pub const CAPTURE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
+    /// Why a pane was not captured.
+    #[derive(Debug)]
+    pub enum Uncaptured {
+        /// tmux gave no answer: it could not be run, or ran past its
+        /// deadline and was killed, or answered past its output's bound.
+        /// This says nothing of the pane, only of the server or of tmux.
+        Unanswered(io::Error),
+        /// The pane is not the agent's to read: not named as a pane id at
+        /// an absolute socket, no such pane or no server on that socket
+        /// (tmux said so), a pane whose process is not the agent's, or one
+        /// that changed hands while it was read.
+        Refused(io::Error),
+    }
+
+    impl Uncaptured {
+        pub fn error(&self) -> &io::Error {
+            match self {
+                Self::Unanswered(error) | Self::Refused(error) => error,
+            }
+        }
+    }
+
+    impl std::fmt::Display for Uncaptured {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.error().fmt(f)
+        }
+    }
+
     /// What a pane shows now, as plain text — its visible screen, one line
     /// per row, without escapes (`capture-pane -p` without `-e`) — read
     /// only when the pane provably holds the agent it is read for.
@@ -551,50 +579,55 @@ pub mod tmux {
     /// server restarted in between is refused rather than read. Every tmux
     /// run is `program` (`tmux`, or a stand-in in tests) as a child of its
     /// own with a deadline of `deadline`, killed and reaped past it, its
-    /// output bounded.
+    /// output bounded. A tmux that gave no answer is told apart from one
+    /// that answered that the pane is not to be read ([`Uncaptured`]).
     pub fn capture_bound(
         program: &Path,
         socket: &Path,
         pane: &str,
         holds: impl Fn(u32) -> bool,
         deadline: std::time::Duration,
-    ) -> io::Result<String> {
+    ) -> Result<String, Uncaptured> {
+        let refused = |kind, words: &str| Uncaptured::Refused(io::Error::new(kind, words));
         let number = pane.strip_prefix('%').unwrap_or_default();
         if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(io::Error::new(
+            return Err(refused(
                 io::ErrorKind::InvalidInput,
                 "a pane is named by its id, `%` and a number",
             ));
         }
         if !socket.is_absolute() {
-            return Err(io::Error::new(
+            return Err(refused(
                 io::ErrorKind::InvalidInput,
                 "a tmux server is named by its socket's absolute path",
             ));
         }
-        let run = |args: &[&str]| -> io::Result<String> {
+        let run = |args: &[&str]| -> Result<String, Uncaptured> {
             let mut argv = vec![
                 program.display().to_string(),
                 "-S".to_owned(),
                 socket.display().to_string(),
             ];
             argv.extend(args.iter().map(|arg| (*arg).to_owned()));
-            let output = crate::command::run(Path::new("/"), &argv, deadline)?;
+            let output = crate::command::run(Path::new("/"), &argv, deadline)
+                .map_err(Uncaptured::Unanswered)?;
             if !output.success {
-                return Err(io::Error::other(format!(
+                return Err(Uncaptured::Refused(io::Error::other(format!(
                     "tmux could not reach pane {pane} at its server"
-                )));
+                ))));
             }
             Ok(output.stdout)
         };
-        let pid = |text: String| -> io::Result<u32> {
-            text.trim()
-                .parse()
-                .map_err(|_| io::Error::other("tmux reported a pane pid that is not a number"))
+        let pid = |text: String| -> Result<u32, Uncaptured> {
+            text.trim().parse().map_err(|_| {
+                Uncaptured::Refused(io::Error::other(
+                    "tmux reported a pane pid that is not a number",
+                ))
+            })
         };
         let before = pid(run(&["display-message", "-p", "-t", pane, "#{pane_pid}"])?)?;
         if !holds(before) {
-            return Err(io::Error::new(
+            return Err(refused(
                 io::ErrorKind::PermissionDenied,
                 "the pane does not hold the agent's process",
             ));
@@ -602,7 +635,7 @@ pub mod tmux {
         let text = run(&["capture-pane", "-p", "-t", pane])?;
         let after = pid(run(&["display-message", "-p", "-t", pane, "#{pane_pid}"])?)?;
         if after != before {
-            return Err(io::Error::new(
+            return Err(refused(
                 io::ErrorKind::PermissionDenied,
                 "the pane changed hands while it was read",
             ));
@@ -692,11 +725,13 @@ pub mod tmux {
             let socket = Path::new("/tmp/tmux-test/default");
             for target in ["", "%", "main", "main:1.0", "%3x", "-t", "%1 %2"] {
                 let err = capture_bound(tmux, socket, target, never, CAPTURE_DEADLINE).unwrap_err();
-                assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{target}");
+                assert!(matches!(err, Uncaptured::Refused(_)), "{target}");
+                assert_eq!(err.error().kind(), io::ErrorKind::InvalidInput, "{target}");
             }
             let err = capture_bound(tmux, Path::new("default"), "%0", never, CAPTURE_DEADLINE)
                 .unwrap_err();
-            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+            assert!(matches!(err, Uncaptured::Refused(_)));
+            assert_eq!(err.error().kind(), io::ErrorKind::InvalidInput);
         }
 
         /// A tmux that never answers is killed at the deadline and its
@@ -729,6 +764,10 @@ pub mod tmux {
             )
             .unwrap_err();
             assert!(err.to_string().contains("timed out"), "{err}");
+            assert!(
+                matches!(err, Uncaptured::Unanswered(_)),
+                "a tmux that gave no answer said nothing of the pane"
+            );
             assert!(started.elapsed() < std::time::Duration::from_secs(5));
             let hung: u32 = std::fs::read_to_string(&marker)
                 .unwrap()
@@ -749,8 +788,26 @@ pub mod tmux {
             );
             let err = capture_bound(&answering, &socket, "%0", |pid| pid == 1, CAPTURE_DEADLINE)
                 .unwrap_err();
-            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+            assert!(matches!(err, Uncaptured::Refused(_)));
+            assert_eq!(err.error().kind(), io::ErrorKind::PermissionDenied);
             assert!(!captured.exists(), "nothing was captured");
+
+            // A server that answers that the pane is not there.
+            let missing = stand_in("missing", "echo \"can't find pane: %0\" >&2; exit 1");
+            let err =
+                capture_bound(&missing, &socket, "%0", |_| true, CAPTURE_DEADLINE).unwrap_err();
+            assert!(matches!(err, Uncaptured::Refused(_)), "{err}");
+
+            // A tmux that cannot be run at all.
+            let err = capture_bound(
+                &dir.path().join("no-such-tmux"),
+                &socket,
+                "%0",
+                |_| true,
+                CAPTURE_DEADLINE,
+            )
+            .unwrap_err();
+            assert!(matches!(err, Uncaptured::Unanswered(_)), "{err}");
             let text = capture_bound(
                 &answering,
                 &socket,
