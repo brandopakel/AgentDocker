@@ -642,7 +642,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
 | `setup` | Wire us in: MCP registration, and hooks for Claude Code |
 | `ui` | Open the desktop app |
-| `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches |
+| `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches. Only the agent's own output is shown while attached; dropped output or a replaced daemon is said once you detach or it ends |
 | `daemon` | Install, start, stop, reload, inspect or `vacuum` `agentd` |
 | `desktop` | Install, inspect or roll back the native desktop for this user |
 | `identity-repair` | Preview a legacy identity repair; apply it only with daemon and sessions stopped |
@@ -1165,7 +1165,10 @@ Current behaviour that the sections above do not already state, by area.
 - **Your own terminal's Codex can be the reviewer.** `agentdocker codex`
   starts Codex in the terminal you are in, through AgentDocker's launcher:
   messages wake it even while it is idle, and you can give it a role, such
-  as reviewer, like any agent. Codex's own options go after `--`. A plain
+  as reviewer, like any agent. Codex's own options go after `--`. While
+  Codex has the terminal AgentDocker writes nothing into it: the INPUT
+  column of `agentdocker ps` and the app say when it can take messages, and
+  the launcher's own words go to its launch log. A plain
   `codex` still works, but reads its messages only at its next prompt.
 
 

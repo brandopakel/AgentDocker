@@ -45,8 +45,17 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
         input::Input::open(std_handle::input()).context("cannot read the console")?,
     );
     let mut retries = crate::client::StreamRetries::default();
+    let mut notices = Notices::default();
     let outcome = loop {
-        match pump(reader, write_half, &mut keys, tokio::io::stdout()).await {
+        match pump(
+            reader,
+            write_half,
+            &mut keys,
+            tokio::io::stdout(),
+            &mut notices,
+        )
+        .await
+        {
             Ok(Left::Lost { progressed }) if client.still_served().await => {
                 // The daemon was replaced underneath this attachment. The
                 // terminal itself never moved: its session owner outlives
@@ -58,7 +67,7 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
                 }
                 match open(client, agent).await {
                     Ok(reopened) => {
-                        eprint!("\r\n[the daemon was replaced; attached again to {agent}]\r\n");
+                        notices.reattached += 1;
                         (reader, write_half) = reopened;
                     }
                     Err(error) => {
@@ -86,10 +95,50 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
             Err(error) => break Err(error),
         }
     };
+    // The agent's program no longer has this screen, so what happened while
+    // it did can be said now.
+    for line in notices.lines(agent) {
+        eprint!("{line}\r\n");
+    }
     // The guard restores the terminal as it drops; say goodbye on a fresh
     // line either way.
     eprint!("\r\n");
     outcome
+}
+
+/// What happened to an attachment while the agent's program had the
+/// screen. It is said once the attachment ends, never over that screen: a
+/// line written there lands on whatever row the program is drawing, its
+/// input box as likely as not, and its next redraw eats part of it.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Notices {
+    /// Bytes of the agent's output the daemon could not keep for this
+    /// terminal.
+    dropped: u64,
+    /// Times the daemon was replaced and the attachment made again.
+    reattached: u32,
+}
+
+impl Notices {
+    fn lines(&self, agent: &str) -> Vec<String> {
+        let mut lines = Vec::new();
+        match self.reattached {
+            0 => {}
+            1 => lines.push(format!(
+                "[while attached, the daemon was replaced; attached again to {agent}]"
+            )),
+            times => lines.push(format!(
+                "[while attached, the daemon was replaced {times} times; attached again to {agent} each time]"
+            )),
+        }
+        if self.dropped > 0 {
+            lines.push(format!(
+                "[while attached, {} bytes of {agent}'s output were dropped; its screen may have been incomplete]",
+                self.dropped
+            ));
+        }
+        lines
+    }
 }
 
 type Attached = (
@@ -210,12 +259,14 @@ enum Left {
 }
 
 /// Keystrokes out, terminal bytes in, until the agent ends, the human
-/// detaches, or the daemon goes away.
+/// detaches, or the daemon goes away. Only the agent's own bytes reach
+/// `screen`; anything to say about the attachment goes into `notices`.
 async fn pump<R, W, K, S>(
     mut reader: BufReader<R>,
     mut write_half: W,
     mut keys: K,
     mut screen: S,
+    notices: &mut Notices,
 ) -> Result<Left>
 where
     R: AsyncRead + Unpin,
@@ -248,7 +299,7 @@ where
                         }
                     }
                     Response::Lagged { skipped } => {
-                        eprint!("\r\n[{skipped} bytes of output were dropped]\r\n");
+                        notices.dropped = notices.dropped.saturating_add(skipped);
                     }
                     Response::End => return Ok(Left::Ended),
                     error @ Response::Error { .. } => {
@@ -332,7 +383,15 @@ mod tests {
         // loop by reaching EOF; the far end of this pair stays open.
         let (_typing, keys) = tokio::io::duplex(64);
         let mut screen = Vec::new();
-        let left = pump(reader, write_half, keys, &mut screen).await.unwrap();
+        let left = pump(
+            reader,
+            write_half,
+            keys,
+            &mut screen,
+            &mut Notices::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(left, Left::Ended);
         assert_eq!(
             String::from_utf8_lossy(&screen),
@@ -359,11 +418,82 @@ mod tests {
         let (read_half, write_half) = tokio::io::split(client);
         let (_typing, keys) = tokio::io::duplex(64);
         let mut screen = Vec::new();
-        let left = pump(BufReader::new(read_half), write_half, keys, &mut screen)
-            .await
-            .unwrap();
+        let left = pump(
+            BufReader::new(read_half),
+            write_half,
+            keys,
+            &mut screen,
+            &mut Notices::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(left, Left::Lost { progressed: true });
         assert_eq!(String::from_utf8_lossy(&screen), "still here");
+    }
+
+    /// The agent's program has the screen while attached: a lag is noted
+    /// for after the attachment, and only the program's own bytes are
+    /// written while it lasts.
+    #[tokio::test]
+    async fn dropped_output_is_noted_for_later_and_never_written_over_the_screen() {
+        let frame = |response: Response| serde_json::to_string(&response).unwrap() + "\n";
+        let output = |text: &str| Response::Output {
+            data: protocol::encode_bytes(text.as_bytes()),
+        };
+        let (mut daemon, client) = tokio::io::duplex(4096);
+        let mut frames = frame(output("\x1b[Hbefore"));
+        frames += &frame(Response::Lagged { skipped: 700 });
+        frames += &frame(Response::Lagged { skipped: 34 });
+        frames += &frame(output(" after"));
+        frames += &frame(Response::End);
+        daemon.write_all(frames.as_bytes()).await.unwrap();
+        let (read_half, write_half) = tokio::io::split(client);
+        let (_typing, keys) = tokio::io::duplex(64);
+        let mut screen = Vec::new();
+        let mut notices = Notices::default();
+        let left = pump(
+            BufReader::new(read_half),
+            write_half,
+            keys,
+            &mut screen,
+            &mut notices,
+        )
+        .await
+        .unwrap();
+        assert_eq!(left, Left::Ended);
+        assert_eq!(String::from_utf8_lossy(&screen), "\x1b[Hbefore after");
+        assert_eq!(
+            notices,
+            Notices {
+                dropped: 734,
+                reattached: 0
+            }
+        );
+        assert_eq!(
+            notices.lines("fixture"),
+            [
+                "[while attached, 734 bytes of fixture's output were dropped; its screen may have been incomplete]"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_quiet_attachment_has_nothing_to_say_afterwards() {
+        assert!(Notices::default().lines("fixture").is_empty());
+        let replaced = Notices {
+            dropped: 0,
+            reattached: 1,
+        };
+        assert_eq!(
+            replaced.lines("fixture"),
+            ["[while attached, the daemon was replaced; attached again to fixture]"]
+        );
+        let twice = Notices {
+            dropped: 5,
+            reattached: 2,
+        };
+        assert_eq!(twice.lines("fixture").len(), 2);
+        assert!(twice.lines("fixture")[0].contains("replaced 2 times"));
     }
     /// Typing may win select after only part of a daemon frame was read.
     /// Wait for the actual partial read and echoed input request, not a timer,
@@ -428,9 +558,16 @@ mod tests {
             // Keep the input peer alive until pump consumes End.
             std::future::pending::<()>().await;
         };
+        let mut notices = Notices::default();
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             tokio::select! {
-                result = pump(BufReader::new(reader), write_half, keys, &mut screen) => result,
+                result = pump(
+                    BufReader::new(reader),
+                    write_half,
+                    keys,
+                    &mut screen,
+                    &mut notices,
+                ) => result,
                 () = driver => unreachable!(),
             }
         })

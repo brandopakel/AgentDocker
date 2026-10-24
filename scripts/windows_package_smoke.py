@@ -273,7 +273,9 @@ def validate_native_report(native, info, scenario):
         native.get("source_commit") != info["source_commit"]
         or native.get("scratch_removed") is not True
         or any(native.get(key) != [] for key in ("cleanup_errors", "reader_errors", "forced_processes"))
-        or len(native.get("steps", [])) != 22
+        # 22 lifecycle steps, and ten saying each launch kept its readiness
+        # off the terminal: when ready and over its whole output, five launches.
+        or len(native.get("steps", [])) != 32
         or not all(step.get("passed") is True for step in native["steps"])
     ):
         raise ValueError("automatic native Codex acceptance has incomplete source, lifecycle or cleanup evidence")
@@ -361,7 +363,9 @@ def validate_queue_recovery_report(native, info, mode):
             and not native.get("fixture_errors")
             and len(native.get("recovery_processes", [])) >= 4
             and native.get("recovery_remaining") == []
-            and len(native.get("steps", [])) == 9
+            # Nine recovery steps and the first launch keeping its readiness
+            # off the terminal.
+            and len(native.get("steps", [])) == 10
             and all(s.get("passed") is True for s in native["steps"])
             and all(native.get("receiver_binary_sha256", {}).get(n) == info["binary_sha256"][n]
                     for n in ("agentdocker.exe", "agentd.exe")))

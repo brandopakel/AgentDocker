@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from windows_native_launcher_smoke import (canonical_reopen, participants_alive, process_snapshot,
+from windows_native_launcher_smoke import (canonical_reopen, logged_readiness, participants_alive,
+                                           process_snapshot, terminal_carries_readiness,
                                            unique_process_generations)
 
 
@@ -147,6 +148,29 @@ class NativeReopen(unittest.TestCase):
                 d, g, l = copy.deepcopy((descriptor, generation, ledger))
                 mutate(d, g, l)
                 self.assertFalse(canonical_reopen(d, g, l, "canonical", "thread", receipts))
+
+
+class NativeReadiness(unittest.TestCase):
+    """Readiness is the launch's own log line, never a banner on the terminal."""
+
+    def test_readiness_is_the_new_launch_logs_line_for_its_agent(self):
+        self.assertIsNone(logged_readiness({}))
+        self.assertIsNone(logged_readiness({"launch/launcher.log": ""}))
+        logged = "2026-01-01T00:00:00Z native input ready: 0123abcd\n"
+        self.assertEqual(logged_readiness({"launch/launcher.log": logged}), "0123abcd")
+        self.assertEqual(logged_readiness({"launch/launcher.log": "\r\n".join(["earlier", logged])}),
+                         "0123abcd")
+        self.assertIsNone(logged_readiness({"launch/launcher.log": "native input ready: \n"}))
+        with self.assertRaises(AssertionError):
+            logged_readiness({"one/launcher.log": logged, "two/launcher.log": logged})
+
+    def test_any_trace_of_the_readiness_line_on_the_terminal_is_caught(self):
+        self.assertFalse(terminal_carries_readiness("\x1b[2J\x1b[H> Ask Codex anything"))
+        for shown in ["AgentDocker native input ready: 0123abcd",
+                      "\x1b[38;1HAgentDocker native input re\x1b[1Cdy: a e",
+                      "native input ready: 0123abcd"]:
+            with self.subTest(shown=shown):
+                self.assertTrue(terminal_carries_readiness(shown))
 
 
 if __name__ == "__main__":

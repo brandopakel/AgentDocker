@@ -8,7 +8,10 @@
 //! with `AGENTDOCKER_TEST_APP_SERVER_TRANSCRIPT` set, it speaks the subset of
 //! the Codex app-server protocol the bridge uses over stdio and writes every
 //! frame it receives to the transcript, so `harness = false` keeps the
-//! test runner's own output off that stream.
+//! test runner's own output off that stream. Launched by the native
+//! launcher with `AGENTDOCKER_TEST_NATIVE_CODEX` set, it is both of that
+//! launcher's Codex children instead: the dedicated WebSocket app-server and
+//! the full-screen terminal program.
 #[cfg(unix)]
 use serde_json::{Value, json};
 #[cfg(unix)]
@@ -19,8 +22,22 @@ use std::time::{Duration, Instant};
 const TRANSCRIPT: &str = "AGENTDOCKER_TEST_APP_SERVER_TRANSCRIPT";
 /// The version the mock claims in `initialize`; 0.160.0 unless set.
 const VERSION: &str = "AGENTDOCKER_TEST_APP_SERVER_VERSION";
+/// Set on a native launch: this binary is then that launch's Codex server
+/// or terminal program. Its value is the fixture's directory.
+#[cfg(unix)]
+const NATIVE: &str = "AGENTDOCKER_TEST_NATIVE_CODEX";
 
 fn main() {
+    #[cfg(unix)]
+    if std::env::var_os(NATIVE).is_some() {
+        let arguments: Vec<String> = std::env::args().skip(1).collect();
+        if arguments.iter().any(|argument| argument == "app-server") {
+            std::process::exit(native::serve(&arguments));
+        }
+        if arguments.iter().any(|argument| argument == "--remote") {
+            std::process::exit(native::terminal(&arguments));
+        }
+    }
     if std::env::args().nth(1).as_deref() == Some("app-server")
         && std::env::var_os(TRANSCRIPT).is_some()
     {
@@ -73,6 +90,10 @@ fn main() {
         (
             "the_shared_server_listing_never_starts_a_daemon",
             the_shared_server_listing_never_starts_a_daemon,
+        ),
+        (
+            "the_native_launcher_writes_nothing_over_the_codex_screen",
+            the_native_launcher_writes_nothing_over_the_codex_screen,
         ),
     ];
     // The libtest command line that `cargo test` and nextest speak:
@@ -1727,6 +1748,344 @@ fn the_shared_server_listing_never_starts_a_daemon() {
     runtime.shutdown_background();
 }
 
+/// The two children `agentdocker codex` starts, as this binary plays them.
+///
+/// The dedicated app-server answers what the launcher and its receiver read
+/// over the authenticated WebSocket: it is empty until the terminal program
+/// starts a thread, which it announces to every connection, the launcher's
+/// birth observer among them. The terminal program marks on the terminal
+/// where its screen begins and ends, starts that thread, and holds the
+/// screen until the fixture's `quit` file appears. Either one leaves when
+/// the launcher that started it is gone.
+#[cfg(unix)]
+mod native {
+    use super::NATIVE;
+    use futures_util::{SinkExt, StreamExt};
+    use serde_json::{Value, json};
+    use std::{
+        io::Write,
+        path::PathBuf,
+        sync::{Arc, Mutex},
+        time::{Duration, Instant},
+    };
+    use tokio::sync::mpsc::UnboundedSender;
+    use tokio_tungstenite::tungstenite::{
+        Message,
+        client::IntoClientRequest,
+        handshake::server::{ErrorResponse, Request, Response},
+        http::{HeaderValue, StatusCode},
+    };
+
+    /// What the terminal program writes when its screen begins and ends.
+    /// Everything between the two on the terminal is the program's.
+    pub const STARTED: &str = "[fake codex screen begins]";
+    pub const ENDED: &str = "[fake codex screen ends]";
+
+    fn option<'a>(arguments: &'a [String], name: &str) -> &'a str {
+        let at = arguments
+            .iter()
+            .position(|argument| argument == name)
+            .unwrap_or_else(|| panic!("{name} missing from {arguments:?}"));
+        &arguments[at + 1]
+    }
+
+    /// Leave when the launcher is gone, so a failed test leaves nothing.
+    fn orphan_watch() {
+        let launcher = std::os::unix::process::parent_id();
+        std::thread::spawn(move || {
+            loop {
+                if std::os::unix::process::parent_id() != launcher {
+                    std::process::exit(0);
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+    }
+
+    #[derive(Default)]
+    struct State {
+        thread: Option<Value>,
+        connections: Vec<UnboundedSender<Value>>,
+    }
+
+    impl State {
+        fn answer(&mut self, method: &str) -> Result<Value, String> {
+            Ok(match method {
+                "initialize" => json!({
+                    "userAgent": "codex_cli_rs/0.163.0 (Mock 1.0.0; test) native-app-server",
+                    "codexHome": std::env::var("CODEX_HOME").unwrap_or_default(),
+                    "platformFamily": "unix", "platformOs": "test"}),
+                "thread/loaded/list" => json!({
+                    "data": self.thread.iter().map(|thread| thread["id"].clone()).collect::<Vec<_>>(),
+                    "nextCursor": null}),
+                "thread/start" => {
+                    let now = chrono::Utc::now().timestamp();
+                    let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+                    let thread = json!({"id": "thread-native", "sessionId": "thread-native",
+                        "cwd": cwd, "createdAt": now, "updatedAt": now, "preview": "",
+                        "status": {"type": "idle"}, "threadSource": "user",
+                        "forkedFromId": null, "parentThreadId": null, "ephemeral": false,
+                        "turns": []});
+                    self.thread = Some(thread.clone());
+                    let started = json!({"method": "thread/started", "params": {"thread": thread}});
+                    self.connections
+                        .retain(|connection| connection.send(started.clone()).is_ok());
+                    json!({"thread": thread})
+                }
+                "thread/read" => match &self.thread {
+                    Some(thread) => json!({"thread": thread}),
+                    None => return Err("no thread".into()),
+                },
+                "thread/queue/list" => json!({"data": [], "nextCursor": null}),
+                other => return Err(format!("{other} is not served here")),
+            })
+        }
+    }
+
+    /// `codex app-server --listen ws://127.0.0.1:<port> --ws-auth
+    /// capability-token --ws-token-file <file>`.
+    pub fn serve(arguments: &[String]) -> i32 {
+        orphan_watch();
+        let address = option(arguments, "--listen")
+            .strip_prefix("ws://")
+            .unwrap()
+            .to_owned();
+        let token = std::fs::read_to_string(option(arguments, "--ws-token-file")).unwrap();
+        let expected = format!("Bearer {}", token.trim());
+        let state = Arc::new(Mutex::new(State::default()));
+        tokio::runtime::Runtime::new().unwrap().block_on(async move {
+            let listener = tokio::net::TcpListener::bind(&address).await.unwrap();
+            while let Ok((stream, _)) = listener.accept().await {
+                let (state, expected) = (state.clone(), expected.clone());
+                tokio::spawn(async move {
+                    // The handshake callback's shape is tungstenite's.
+                    #[allow(clippy::result_large_err)]
+                    let authorized = |request: &Request, response: Response| {
+                        let offered = request
+                            .headers()
+                            .get("authorization")
+                            .and_then(|value| value.to_str().ok());
+                        if offered == Some(expected.as_str()) {
+                            Ok(response)
+                        } else {
+                            let mut refused = ErrorResponse::new(None);
+                            *refused.status_mut() = StatusCode::UNAUTHORIZED;
+                            Err(refused)
+                        }
+                    };
+                    let Ok(mut socket) = tokio_tungstenite::accept_hdr_async(stream, authorized).await
+                    else {
+                        return;
+                    };
+                    let (outgoing, mut queued) = tokio::sync::mpsc::unbounded_channel();
+                    state.lock().unwrap().connections.push(outgoing.clone());
+                    loop {
+                        tokio::select! {
+                            incoming = socket.next() => {
+                                let Some(Ok(message)) = incoming else { return };
+                                let Message::Text(text) = message else {
+                                    if message.is_close() { return }
+                                    continue;
+                                };
+                                let request: Value = serde_json::from_str(&text).unwrap();
+                                let Some(id) = request.get("id").cloned() else { continue };
+                                let method = request["method"].as_str().unwrap_or_default().to_owned();
+                                // Answered after whatever the request announced,
+                                // on this connection as on every other.
+                                let reply = match state.lock().unwrap().answer(&method) {
+                                    Ok(result) => json!({"id": id, "result": result}),
+                                    Err(message) => json!({"id": id,
+                                        "error": {"code": -32601, "message": message}}),
+                                };
+                                let _ = outgoing.send(reply);
+                            }
+                            frame = queued.recv() => {
+                                let Some(frame) = frame else { return };
+                                if socket.send(Message::text(frame.to_string())).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        0
+    }
+
+    /// `codex --no-alt-screen --remote ws://127.0.0.1:<port>
+    /// --remote-auth-token-env <name>`: the full-screen program.
+    pub fn terminal(arguments: &[String]) -> i32 {
+        orphan_watch();
+        let fixture = PathBuf::from(std::env::var_os(NATIVE).unwrap());
+        let url = option(arguments, "--remote").to_owned();
+        let token = std::env::var(option(arguments, "--remote-auth-token-env")).unwrap();
+        let mut screen = std::io::stdout();
+        writeln!(screen, "{STARTED}").unwrap();
+        screen.flush().unwrap();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut request = url.as_str().into_client_request().unwrap();
+            request.headers_mut().insert(
+                "authorization",
+                HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+            );
+            let stream = tokio::net::TcpStream::connect(url.strip_prefix("ws://").unwrap())
+                .await
+                .unwrap();
+            let (mut socket, _) = tokio_tungstenite::client_async(request, stream)
+                .await
+                .unwrap();
+            for (id, method) in [(1, "initialize"), (2, "thread/start")] {
+                socket
+                    .send(Message::text(
+                        json!({"id": id, "method": method, "params": {}}).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                loop {
+                    let Some(Ok(Message::Text(text))) = socket.next().await else {
+                        panic!("the server closed before answering {method}");
+                    };
+                    if serde_json::from_str::<Value>(&text).unwrap()["id"] == id {
+                        break;
+                    }
+                }
+            }
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while !fixture.join("quit").exists() && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+        writeln!(screen, "{ENDED}").unwrap();
+        screen.flush().unwrap();
+        0
+    }
+}
+
+/// `agentdocker codex` as a person runs it, end to end against the fixture
+/// daemon, with this binary as both Codex children and a file as the
+/// terminal (standard output and error both, as a terminal would be). Once
+/// the Codex screen is up, nothing AgentDocker writes reaches the terminal:
+/// readiness shows on the agent's record and in the launch's own log, and
+/// the receiver's output is its own log's, never the screen's.
+#[cfg(unix)]
+fn the_native_launcher_writes_nothing_over_the_codex_screen() {
+    use std::process::{Command, Stdio};
+    let root = fixture::root();
+    let home = root.path().join("home");
+    let socket = root.path().join("agentd.sock");
+    let checkout = root.path().join("checkout");
+    let codex_home = root.path().join("codex-home");
+    std::fs::create_dir_all(&checkout).unwrap();
+    std::fs::create_dir_all(&codex_home).unwrap();
+    let checkout = checkout.canonicalize().unwrap();
+    let codex_home = codex_home.canonicalize().unwrap();
+    let daemon = fixture::RunningDaemon::start(&home, &socket);
+    let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+    let terminal = root.path().join("terminal");
+    let screen = std::fs::File::create(&terminal).unwrap();
+    let mut launch = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
+        .arg("--socket")
+        .arg(&socket)
+        .arg("codex-native")
+        .arg("--program")
+        .arg(&exe)
+        .arg("--profile")
+        .arg(&codex_home)
+        .arg("--cwd")
+        .arg(&checkout)
+        .arg("--name")
+        .arg("native")
+        .env("AGENTDOCKER_HOME", &home)
+        .env("AGENTDOCKER_SOCKET", &socket)
+        .env("AGENTDOCKER_NO_AUTOSTART", "1")
+        .env(NATIVE, root.path())
+        .env_remove("AGENTDOCKER_AGENT_ID")
+        .env_remove("AGENTDOCKER_AGENT_NAME")
+        .env_remove("AGENTDOCKER_TOKEN_FILE")
+        .env_remove("AGENTDOCKER_TRACE_NATIVE_STARTUP")
+        .env_remove(TRANSCRIPT)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(screen.try_clone().unwrap()))
+        .stderr(Stdio::from(screen))
+        .spawn()
+        .unwrap();
+    let shown = || std::fs::read_to_string(&terminal).unwrap_or_default();
+    // Ready as the daemon tells it: the receiver bound the agent's queue.
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let agent = loop {
+        let listed = fixture::rpc(&socket, json!({"op": "list"})).unwrap();
+        let bound = listed["agents"].as_array().and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent| {
+                    agent["spec"]["name"] == "native" && agent["input_binding"].is_object()
+                })
+                .cloned()
+        });
+        if let Some(agent) = bound {
+            break agent;
+        }
+        if Instant::now() >= deadline || launch.try_wait().unwrap().is_some() {
+            let _ = launch.kill();
+            let _ = launch.wait();
+            panic!(
+                "the native launch never became ready; terminal:\n{}\nagents: {listed}",
+                shown()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let id = agent["id"].as_str().unwrap().to_owned();
+    // Whatever the launcher would say once ready has had its chance.
+    std::thread::sleep(Duration::from_millis(500));
+    std::fs::write(root.path().join("quit"), "").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = launch.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = launch.kill();
+            let _ = launch.wait();
+            panic!(
+                "the native launch did not end with its terminal:\n{}",
+                shown()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let shown = shown();
+    let begins = shown
+        .find(native::STARTED)
+        .unwrap_or_else(|| panic!("the screen never began:\n{shown}"));
+    let ends = shown
+        .find(native::ENDED)
+        .unwrap_or_else(|| panic!("the screen never ended:\n{shown}"));
+    let under_the_screen = shown[begins + native::STARTED.len()..ends].trim_matches('\n');
+    assert_eq!(
+        under_the_screen, "",
+        "AgentDocker wrote over the Codex screen:\n{shown}"
+    );
+    assert!(status.success(), "{status:?}:\n{shown}");
+    // Where readiness went instead: the launch's own log.
+    let launches: Vec<_> = std::fs::read_dir(home.join("codex-native"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(launches.len(), 1, "{launches:?}");
+    let logged = std::fs::read_to_string(launches[0].join("launcher.log")).unwrap();
+    assert!(
+        logged.contains(&format!("native input ready: {id}")),
+        "{logged}"
+    );
+    assert!(launches[0].join("receiver.log").exists());
+    drop(daemon);
+}
+
+#[cfg(not(unix))]
+#[allow(dead_code)]
+fn the_native_launcher_writes_nothing_over_the_codex_screen() {}
 #[cfg(not(unix))]
 #[allow(dead_code)]
 fn the_shared_server_listing_never_starts_a_daemon() {}
