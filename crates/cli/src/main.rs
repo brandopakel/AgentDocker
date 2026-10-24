@@ -653,6 +653,12 @@ enum Command {
         json: String,
     },
     /// Stream messages without consuming them; acknowledge received IDs with inbox --ack.
+    ///
+    /// Topics keep their messages: watching as an agent first replays what
+    /// each matching topic kept since the last message the agent
+    /// acknowledged there (everything kept, the first time), then streams
+    /// live. Acknowledging a topic message's id with `inbox --ack` moves
+    /// that topic on past it.
     Watch {
         /// Receive messages addressed to this agent.
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -660,6 +666,11 @@ enum Command {
         /// Receive the messages addressed to you, the human.
         #[arg(long, conflicts_with = "agent")]
         me: bool,
+        /// Replay kept topic messages after this sequence (the `seq:` a
+        /// topic line shows) instead of from the agent's acknowledgements;
+        /// without an agent, topics are otherwise live only.
+        #[arg(long)]
+        after_seq: Option<u64>,
         /// Topic patterns, e.g. `repo/#` or `reviews/+/done`.
         topics: Vec<String>,
     },
@@ -4762,23 +4773,52 @@ async fn run() -> Result<()> {
                 }
             }
         }
-        Command::Watch { agent, me, topics } => {
+        Command::Watch {
+            agent,
+            me,
+            after_seq,
+            topics,
+        } => {
             let agent = if me { Some(HUMAN.to_owned()) } else { agent };
             if agent.is_none() && topics.is_empty() {
                 bail!("watch needs --as <agent>, --me, and/or topic patterns");
             }
-            let request = Request::Subscribe { agent, topics };
+            // A watcher that starts from a point, or that has no agent
+            // whose acknowledgements say where it was, picks its topics up
+            // again after the last topic message it showed.
+            let from_point = agent.is_none() || after_seq.is_some();
+            let last = std::cell::Cell::new(after_seq);
+            let request = Request::Subscribe {
+                agent: agent.clone(),
+                topics: topics.clone(),
+                after_seq,
+            };
             client
                 .stream_resuming(
                     &request,
                     || {
                         eprintln!(
-                            "agentdocker: the daemon was replaced; watching again (the live stream may have a gap; messages addressed to an agent stay in its inbox)"
+                            "agentdocker: the daemon was replaced; watching again (messages addressed to an agent stay in its inbox, and topics replay what they kept)"
                         );
+                        (from_point && !topics.is_empty()).then(|| Request::Subscribe {
+                            agent: agent.clone(),
+                            topics: topics.clone(),
+                            after_seq: last.get(),
+                        })
                     },
                     |response| {
-                        if let Response::Message { message } = response {
-                            println!("{}", format::message_line(&message));
+                        match response {
+                            Response::Message { message, seq } => {
+                                if let Some(seq) = seq {
+                                    last.set(Some(last.get().map_or(seq, |was| was.max(seq))));
+                                }
+                                println!("{}", format::message_line_at(&message, seq));
+                            }
+                            Response::Lagged { skipped } => eprintln!(
+                                "agentdocker: {skipped} message(s) were skipped; a topic replays at most its newest {} on one watch",
+                                agentdocker_core::topic::REPLAY_PER_TOPIC
+                            ),
+                            _ => {}
                         }
                         Ok(true)
                     },
@@ -4968,6 +5008,7 @@ async fn run() -> Result<()> {
                         eprintln!(
                             "agentdocker: the daemon was replaced; following its successor (use --resumable for a gapless stream)"
                         );
+                        None
                     },
                     |response| {
                         if let Response::Event { event } = response {

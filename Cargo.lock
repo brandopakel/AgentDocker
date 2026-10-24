@@ -138,6 +138,7 @@ dependencies = [
  "ignore",
  "nix 0.29.0",
  "notify",
+ "proptest",
  "rusqlite",
  "same-file",
  "serde",

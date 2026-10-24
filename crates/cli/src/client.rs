@@ -291,17 +291,19 @@ impl Client {
     /// saying so, and with a daemon still answering on the socket, is
     /// subscribed again: that is a daemon replaced underneath a live
     /// stream, not the end of what was being watched. `resumed` is told
-    /// each time, so the caller can say so; live messages between the two
-    /// subscriptions are not replayed, as the notice should say.
+    /// each time, so the caller can say so, and may hand back the request
+    /// to subscribe again with (a topic watcher's, after the last message
+    /// it showed); otherwise live messages between the two subscriptions
+    /// are not replayed, as the notice should say.
     pub async fn stream_resuming(
         &self,
         request: &Request,
-        mut resumed: impl FnMut(),
+        mut resumed: impl FnMut() -> Option<Request>,
         mut on_response: impl FnMut(Response) -> Result<bool>,
     ) -> Result<()> {
         // Whatever was replayed on the first subscription is not replayed
         // again on the successor: the stream carries on live from there.
-        let again = match request {
+        let mut again = match request {
             Request::Events { .. } => Request::Events {
                 replay: 0,
                 ready: false,
@@ -328,7 +330,9 @@ impl Client {
                 return Ok(());
             }
             retry?;
-            resumed();
+            if let Some(next) = resumed() {
+                again = next;
+            }
             current = &again;
         }
     }

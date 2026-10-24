@@ -152,14 +152,21 @@ pub fn conversation_line(c: &agentdocker_core::ConversationSummary) -> String {
 }
 
 pub fn message_line(message: &Envelope) -> String {
+    message_line_at(message, None)
+}
+
+/// A message line, with a kept topic message's sequence after its id: the
+/// point `watch --after-seq` picks up from.
+pub fn message_line_at(message: &Envelope, seq: Option<u64>) -> String {
     let from = short(&message.from);
     let reply = message
         .reply_to
         .as_ref()
         .map(|id| format!(" re:{id}"))
         .unwrap_or_default();
+    let seq = seq.map(|seq| format!("  seq:{seq}")).unwrap_or_default();
     format!(
-        "{}  {}  {from} → {}  [{}{reply}]  {}",
+        "{}  {}{seq}  {from} → {}  [{}{reply}]  {}",
         clock(message.sent_at),
         message.id,
         message.to,
@@ -724,6 +731,17 @@ pub fn event_line(event: &Event) -> String {
         EventKind::MessagesPruned { removed } => {
             format!("messages pruned  {removed} archived messages")
         }
+        EventKind::TopicMessagesPruned { removed } => {
+            format!("topics pruned    {removed} kept topic messages")
+        }
+        EventKind::TopicCursorsAdvanced { agent, cursors } => format!(
+            "{agent} read {}",
+            cursors
+                .iter()
+                .map(|cursor| format!("{} through seq:{}", cursor.topic, cursor.seq))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         EventKind::AgentsPruned { removed } => {
             format!("agents pruned    {removed} finished agents past retention")
         }

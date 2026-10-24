@@ -2834,7 +2834,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
     // A subscriber still on the record: refused until it goes.
     {
         let (subscription, _receiver) = daemon
-            .subscribe(Some(ended.id.as_str()), Vec::new())
+            .subscribe(Some(ended.id.as_str()), Vec::new(), None)
             .unwrap();
         assert!(matches!(
             daemon
@@ -3638,7 +3638,7 @@ async fn an_answer_that_races_the_question_still_lands() {
         let daemon = daemon.clone();
         tokio::spawn(async move {
             loop {
-                let Ok(envelope) = messages.recv().await else {
+                let Ok(Posted { envelope, .. }) = messages.recv().await else {
                     return None;
                 };
                 if envelope.kind == "question" {
@@ -7209,7 +7209,7 @@ async fn stream_reconnect_and_restart_replay_unacknowledged_human_and_peer_input
         send(&daemon, "user", "receiver").await,
         Response::Sent { .. }
     ));
-    let (mut stream, mut live) = daemon.subscribe(Some("receiver"), vec![]).unwrap();
+    let (mut stream, mut live) = daemon.subscribe(Some("receiver"), vec![], None).unwrap();
     let mut accepted = stream.take_backlog();
     assert_eq!(accepted.len(), 1);
     for from in ["peer", "user", "peer"] {
@@ -7217,17 +7217,17 @@ async fn stream_reconnect_and_restart_replay_unacknowledged_human_and_peer_input
             send(&daemon, from, "receiver").await,
             Response::Sent { .. }
         ));
-        accepted.push(live.try_recv().unwrap());
+        accepted.push(live.try_recv().unwrap().envelope);
     }
     assert_eq!(inbox(&daemon, "receiver", false).await, accepted);
     drop(stream);
     drop(live);
-    let (mut reconnected, _) = daemon.subscribe(Some("receiver"), vec![]).unwrap();
+    let (mut reconnected, _) = daemon.subscribe(Some("receiver"), vec![], None).unwrap();
     assert_eq!(reconnected.take_backlog(), accepted);
     drop(reconnected);
     drop(daemon);
     let daemon = open(&dir);
-    let (mut reconnected, _) = daemon.subscribe(Some("receiver"), vec![]).unwrap();
+    let (mut reconnected, _) = daemon.subscribe(Some("receiver"), vec![], None).unwrap();
     assert_eq!(reconnected.take_backlog(), accepted);
     assert_eq!(
         lock(&daemon.state).inbox_bytes[&receiver.id],
@@ -7268,7 +7268,7 @@ async fn subscription_does_not_write_an_acknowledgement() {
     let accepted = inbox(&daemon, "receiver", false).await;
     let mut events = daemon.subscribe_events();
     lock(&daemon.state).store.reject_writes_for_test();
-    let (mut stream, _) = daemon.subscribe(Some("receiver"), vec![]).unwrap();
+    let (mut stream, _) = daemon.subscribe(Some("receiver"), vec![], None).unwrap();
     assert_eq!(stream.take_backlog(), accepted);
     assert!(events.try_recv().is_err());
     assert!(lock(&daemon.state).storage_error.is_none());
@@ -7280,7 +7280,7 @@ async fn full_inbox_rejects_entire_broadcast_without_evicting_accepted_work() {
     let daemon = open(&dir);
     let full = register(&daemon, "full", None).await;
     let other = register(&daemon, "other", None).await;
-    let (stream, mut live) = daemon.subscribe(Some("other"), vec![]).unwrap();
+    let (stream, mut live) = daemon.subscribe(Some("other"), vec![], None).unwrap();
     for _ in 0..INBOX_CAPACITY {
         assert!(matches!(
             send(&daemon, "user", "full").await,
@@ -7522,7 +7522,11 @@ async fn codex_input_reserves_the_same_durable_human_and_peer_queue() {
             .await,
         Response::Messages { ref messages } if messages.len() == 3
     ));
-    assert!(daemon.subscribe(Some("receiver"), Vec::new()).is_err());
+    assert!(
+        daemon
+            .subscribe(Some("receiver"), Vec::new(), None)
+            .is_err()
+    );
     let read = || Request::ProviderInbox {
         agent: "receiver".into(),
         acknowledge: Vec::new(),
@@ -8772,9 +8776,9 @@ async fn project_messages_reach_everyone_in_the_project_but_the_sender() {
     ));
 
     // A live subscription filters by the subscriber's own project.
-    let (in_alpha, _rx) = daemon.subscribe(Some("two"), Vec::new()).unwrap();
-    let (in_beta, _rx) = daemon.subscribe(Some("three"), Vec::new()).unwrap();
-    let (sender, _rx) = daemon.subscribe(Some("one"), Vec::new()).unwrap();
+    let (in_alpha, _rx) = daemon.subscribe(Some("two"), Vec::new(), None).unwrap();
+    let (in_beta, _rx) = daemon.subscribe(Some("three"), Vec::new(), None).unwrap();
+    let (sender, _rx) = daemon.subscribe(Some("one"), Vec::new(), None).unwrap();
     let envelope = Envelope::new(
         one.id.as_str(),
         Destination::Project(project.clone()),
@@ -8783,6 +8787,7 @@ async fn project_messages_reach_everyone_in_the_project_but_the_sender() {
         None,
         Utc::now(),
     );
+    let envelope = Posted::from(envelope);
     assert!(in_alpha.wants(&envelope));
     assert!(!in_beta.wants(&envelope));
     assert!(!sender.wants(&envelope));
@@ -9760,7 +9765,7 @@ async fn failed_message_event_never_reaches_a_live_subscriber() {
     let daemon = open(&dir);
     register(&daemon, "sender", None).await;
     let recipient = register(&daemon, "recipient", None).await;
-    let (_subscription, mut messages) = daemon.subscribe(Some("recipient"), vec![]).unwrap();
+    let (_subscription, mut messages) = daemon.subscribe(Some("recipient"), vec![], None).unwrap();
     let mut events = daemon.subscribe_events();
     lock(&daemon.state).next_seq -= 1;
     let response = lock(&daemon.state).send(
