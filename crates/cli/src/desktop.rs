@@ -242,8 +242,10 @@ struct Layout {
     /// folder, a link stays here so absolute paths written into hook and
     /// MCP configuration by earlier releases keep resolving.
     legacy_application: Option<PathBuf>,
-    /// Who registers bundles with Launch Services; tests record instead.
+    /// Who registers bundles with Launch Services; tests answer instead.
     registrar: Registrar,
+    /// What this command has told Launch Services, and the time it took.
+    told: std::sync::Mutex<launch_services::Settlement>,
 }
 
 impl Layout {
@@ -270,6 +272,7 @@ impl Layout {
             application,
             legacy_application,
             registrar: Registrar::System,
+            told: Default::default(),
         })
     }
 
@@ -455,7 +458,7 @@ impl Layout {
     /// and only for the real home prefix: trial prefixes must not register
     /// throwaway bundles on the machine (see `launch_services`).
     fn register_launcher(&self) {
-        let _ = self.launch_services(Registration::Register, &self.application);
+        self.launch_services(Registration::Register, &self.application);
     }
 
     /// Copy the signed bundle without adding markers, changing Info.plist or
@@ -559,14 +562,14 @@ impl Layout {
             .symlink_metadata()
             .is_ok_and(|metadata| metadata.is_dir())
         {
-            let _ = self.launch_services(Registration::Unregister, &bundle);
+            self.launch_services(Registration::Unregister, &bundle);
         }
         self.register_launcher();
         Ok(())
     }
 
     fn unregister_launcher(&self, application: &Path) {
-        let _ = self.launch_services(Registration::Unregister, application);
+        self.launch_services(Registration::Unregister, application);
     }
 
     fn repair_legacy_launcher(&self) -> Result<()> {
@@ -1555,7 +1558,10 @@ fn perform(
     }
     // Last, still under the installation lock: only the launcher and the
     // active release may answer for the app's name, never a retained one.
-    if let Some(registration) = layout.settle_launch_services() {
+    // The report holds every call of the change, publication's and
+    // pruning's included.
+    layout.settle_launch_services();
+    if let Some(registration) = layout.launch_services_report() {
         report["launch_services"] = registration;
     }
     Ok(report)

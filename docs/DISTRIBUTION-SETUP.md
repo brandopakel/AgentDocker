@@ -199,9 +199,10 @@ each downloaded update payload is unregistered (`lsregister -u`) and the
 visible app is registered last; the active build's own copy, which that app
 runs, stays known until another release is active. Pruning and uninstall
 unregister what they remove, and uninstall every retained build too. The
-install report's `launch_services` field lists what was registered and
-unregistered and any failure, which never undoes the change. A trial
-`--prefix` leaves Launch Services alone.
+report's `launch_services` field lists what the whole command registered and
+unregistered and any failure, which never undoes the change; the calls share
+one minute, so a stalled Launch Services cannot hold the installation for
+longer. A trial `--prefix` leaves Launch Services alone.
 
 ## Apple Developer ID and notification acceptance
 

@@ -920,9 +920,14 @@ when it starts), then `lsregister -f` for the launcher, last. Publishing a
 launcher forgets the replaced copy in its private staging directory; pruning
 forgets each build before removing it; uninstall forgets the removed launcher
 and then every retained build. Only the real home prefix registers anything,
-nothing outside the installation root and the launcher is named, each call is
-bounded (15 s, 60 s for one change), an inventory over 1,000 entries is left
-as it is, and the outcome is the report's `launch_services` field
+and nothing is named but the launcher, its staging copy and stored bundles
+physically inside the root: `lsregister` resolves links, so the inventory
+follows none, and a stored bundle is named only while every component of its
+path below the root is a directory and not a link, rechecked just before its
+call. The calls of one change share 60 s, whoever makes them (publication,
+pruning, settlement), each call capped at 15 s and at what remains; requests
+past the budget are not made. An inventory over 1,000 entries is left as it
+is. The outcome of every call is the command's `launch_services` field
 (`registered`, `unregistered`, `errors`), never a failure of the change.
 
 Windows maintenance recognizes only exact rendered actions around a content-verified same-store controller and daemon or receipt-checked stable bootstrap. It retains every explicitly referenced immutable version, including connector tunnel/project/feed paths, state/log paths and Task Scheduler working directories. Literal and resolved aliases both count. Unknown programs/options, relative or parent-traversing paths and unreadable inventory conservatively retain the store; no arbitrary script is executed to discover paths.

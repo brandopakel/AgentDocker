@@ -11,8 +11,10 @@
 //! under the installation root and the launcher are ever named, only for the
 //! real home prefix, and a failure is reported, never fatal.
 use super::*;
-#[cfg(test)]
+use std::path::Component;
+#[cfg(all(test, target_os = "macos"))]
 use std::sync::{Arc, Mutex};
+use std::sync::{MutexGuard, PoisonError};
 use std::time::Instant;
 
 const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
@@ -48,53 +50,100 @@ pub(super) enum Outcome {
     Done,
     /// An unregistration of a path Launch Services did not know.
     Absent,
-    /// This installation does not register bundles.
-    Skipped,
 }
 
-/// Who answers the requests: the seam tests record through.
+/// An answer to one request, and how long it took.
+#[cfg(all(test, target_os = "macos"))]
+type Answer =
+    Box<dyn Fn(Registration, &Path, Duration) -> (Result<Outcome>, Duration) + Send + Sync>;
+
+/// The requests a recorder has seen, in order.
+#[cfg(all(test, target_os = "macos"))]
+pub(super) type Calls = Arc<Mutex<Vec<(Registration, PathBuf)>>>;
+
+/// Who answers the requests: the seam tests answer through.
 pub(super) enum Registrar {
     /// The system's `lsregister`, for the real home prefix on a Mac only:
     /// a trial prefix must not register throwaway bundles on the machine.
     System,
-    /// Every request recorded and none made.
-    #[cfg(test)]
-    Recorder(Arc<Mutex<Vec<(Registration, PathBuf)>>>),
+    /// Each request answered by the test, given the time it may take, and
+    /// none made; the tests that drive it are the Mac's, where bundles are
+    /// registered at all.
+    #[cfg(all(test, target_os = "macos"))]
+    Answering(Answer),
     /// The system's `lsregister` for any prefix: a test's own bundles.
     #[cfg(all(test, target_os = "macos"))]
     Unrestricted,
 }
 
-/// What a change told Launch Services, for the command's report.
+#[cfg(all(test, target_os = "macos"))]
+impl Registrar {
+    /// Every request recorded and answered at once as done.
+    pub(super) fn recorder() -> (Self, Calls) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let record = calls.clone();
+        let answer = move |request, bundle: &Path, _| {
+            record
+                .lock()
+                .expect("recorder lock")
+                .push((request, bundle.to_owned()));
+            (Ok(Outcome::Done), Duration::ZERO)
+        };
+        (Self::Answering(Box::new(answer)), calls)
+    }
+}
+
+/// What one command told Launch Services, for its report, and how much of
+/// the change's time its calls have taken: every call of the change counts,
+/// publication's and pruning's as well as the settlement's.
 #[derive(Default)]
 pub(super) struct Settlement {
     registered: Vec<PathBuf>,
     unregistered: Vec<PathBuf>,
     errors: Vec<String>,
+    spent: Duration,
+    /// Requests not made once the change's time was spent.
+    unmade: usize,
 }
 
 impl Settlement {
-    pub(super) fn record(
-        &mut self,
-        request: Registration,
-        bundle: &Path,
-        outcome: Result<Outcome>,
-    ) {
-        match (outcome, request) {
-            (Ok(Outcome::Done), Registration::Register) => self.registered.push(bundle.to_owned()),
-            (Ok(Outcome::Done), Registration::Unregister) => {
-                self.unregistered.push(bundle.to_owned())
+    fn record(&mut self, request: Registration, bundle: &Path, outcome: Result<Outcome>) {
+        // A path ends in one list: what Launch Services was last told of it.
+        let (into, from) = match request {
+            Registration::Register => (&mut self.registered, &mut self.unregistered),
+            Registration::Unregister => (&mut self.unregistered, &mut self.registered),
+        };
+        match outcome {
+            Ok(Outcome::Done) => {
+                from.retain(|path| path != bundle);
+                if !into.iter().any(|path| path == bundle) {
+                    into.push(bundle.to_owned());
+                }
             }
-            (Ok(Outcome::Absent | Outcome::Skipped), _) => (),
-            (Err(error), _) => self.errors.push(format!("{error:#}")),
+            Ok(Outcome::Absent) => (),
+            Err(error) => self.errors.push(format!("{error:#}")),
         }
     }
 
-    pub(super) fn report(self) -> serde_json::Value {
+    /// How long the next call may take: what remains of the change's time,
+    /// at most one call's bound; nothing once it is spent.
+    fn allowance(&self) -> Option<Duration> {
+        let remaining = BUDGET.saturating_sub(self.spent);
+        (!remaining.is_zero()).then(|| remaining.min(CALL_TIMEOUT))
+    }
+
+    fn report(&mut self) -> serde_json::Value {
+        let mut errors = std::mem::take(&mut self.errors);
+        if self.unmade > 0 {
+            errors.push(format!(
+                "Launch Services took longer than {BUDGET:?}; {} requests not made",
+                std::mem::take(&mut self.unmade)
+            ));
+        }
         json!({
-            "registered": self.registered,
-            "unregistered": self.unregistered,
-            "errors": self.errors,
+            "registered": std::mem::take(&mut self.registered),
+            "unregistered": std::mem::take(&mut self.unregistered),
+            "errors": errors,
         })
     }
 }
@@ -125,8 +174,8 @@ pub(super) fn plan(
         .collect()
 }
 
-/// Run `lsregister` on one bundle within its time bound.
-fn lsregister(request: Registration, bundle: &Path) -> Result<Outcome> {
+/// Run `lsregister` on one bundle within `timeout`.
+fn lsregister(request: Registration, bundle: &Path, timeout: Duration) -> Result<Outcome> {
     let output = command::run(
         Path::new("/"),
         &[
@@ -134,7 +183,7 @@ fn lsregister(request: Registration, bundle: &Path) -> Result<Outcome> {
             request.flag().to_owned(),
             bundle.to_string_lossy().into_owned(),
         ],
-        CALL_TIMEOUT,
+        timeout,
     )
     .with_context(|| format!("lsregister {} {}", request.flag(), bundle.display()))?;
     if output.success {
@@ -164,36 +213,78 @@ impl Layout {
                         == Some(self.prefix.as_path())
                     && Path::new(LSREGISTER).is_file()
             }
-            #[cfg(test)]
-            Registrar::Recorder(_) => true,
             #[cfg(all(test, target_os = "macos"))]
-            Registrar::Unrestricted => true,
+            Registrar::Answering(_) | Registrar::Unrestricted => true,
         }
     }
 
-    /// Ask Launch Services about one bundle this installation owns.
-    pub(super) fn launch_services(&self, request: Registration, bundle: &Path) -> Result<Outcome> {
+    fn settlement(&self) -> MutexGuard<'_, Settlement> {
+        self.told.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Ask Launch Services about one bundle this installation owns, within
+    /// what remains of the change's time, and record the outcome for the
+    /// command's report. Nothing for a prefix that does not register.
+    pub(super) fn launch_services(&self, request: Registration, bundle: &Path) {
         if !self.registers_bundles() {
-            return Ok(Outcome::Skipped);
+            return;
         }
-        match &self.registrar {
-            Registrar::System => lsregister(request, bundle),
-            #[cfg(test)]
-            Registrar::Recorder(calls) => {
-                calls
-                    .lock()
-                    .expect("recorder lock")
-                    .push((request, bundle.to_owned()));
-                Ok(Outcome::Done)
-            }
+        let allowance = self.settlement().allowance();
+        let Some(allowance) = allowance else {
+            self.settlement().unmade += 1;
+            return;
+        };
+        let started = Instant::now();
+        let (outcome, took) = match &self.registrar {
+            Registrar::System => (lsregister(request, bundle, allowance), started.elapsed()),
             #[cfg(all(test, target_os = "macos"))]
-            Registrar::Unrestricted => lsregister(request, bundle),
+            Registrar::Answering(answer) => answer(request, bundle, allowance),
+            #[cfg(all(test, target_os = "macos"))]
+            Registrar::Unrestricted => (lsregister(request, bundle, allowance), started.elapsed()),
+        };
+        let mut settlement = self.settlement();
+        settlement.spent += took;
+        settlement.record(request, bundle, outcome);
+    }
+
+    /// Forget a bundle the store keeps, but only while it is still
+    /// physically inside the installation: `lsregister` resolves links, and
+    /// through one it would forget a bundle somewhere else.
+    pub(super) fn forget_stored(&self, bundle: &Path) {
+        if !self.registers_bundles() {
+            return;
         }
+        if self.owns(bundle) {
+            self.launch_services(Registration::Unregister, bundle);
+        } else {
+            self.settlement().errors.push(format!(
+                "{} left registered: not a directory inside the installation",
+                bundle.display()
+            ));
+        }
+    }
+
+    /// Whether every component of `bundle` below the installation root is a
+    /// directory and none is a link.
+    fn owns(&self, bundle: &Path) -> bool {
+        let Ok(within) = bundle.strip_prefix(&self.root) else {
+            return false;
+        };
+        let mut path = self.root.clone();
+        let mut components = within.components().peekable();
+        components.peek().is_some()
+            && components.all(|component| {
+                matches!(component, Component::Normal(_)) && {
+                    path.push(component);
+                    path.symlink_metadata()
+                        .is_ok_and(|metadata| metadata.is_dir())
+                }
+            })
     }
 
     /// The application bundles this store keeps: each release in the version
     /// store, and each update payload extracted for installation, whatever
-    /// its state. Symlinks are never followed out of the root.
+    /// its state. No link is followed, at any component below the root.
     pub(super) fn stored_bundles(&self) -> Result<Vec<PathBuf>> {
         let payload = Path::new("AgentDocker.app");
         let mut bundles = Vec::new();
@@ -201,27 +292,29 @@ impl Layout {
             (self.root.join("versions"), Path::new("")),
             (self.root.join("downloads"), Path::new("payload")),
         ] {
-            let entries = match std::fs::read_dir(&directory) {
-                Ok(entries) => entries
-                    .take(MAX_ENTRIES + 1)
-                    .collect::<std::io::Result<Vec<_>>>()?,
+            match directory.symlink_metadata() {
+                Ok(metadata) => ensure!(
+                    metadata.is_dir(),
+                    "{} is not a directory",
+                    directory.display()
+                ),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.into()),
-            };
+            }
+            let entries = std::fs::read_dir(&directory)?
+                .take(MAX_ENTRIES + 1)
+                .collect::<std::io::Result<Vec<_>>>()?;
             ensure!(
                 entries.len() <= MAX_ENTRIES,
                 "{} holds more than {MAX_ENTRIES} entries",
                 directory.display()
             );
-            for entry in entries {
-                let bundle = entry.path().join(within).join(payload);
-                if bundle
-                    .symlink_metadata()
-                    .is_ok_and(|metadata| metadata.is_dir())
-                {
-                    bundles.push(bundle);
-                }
-            }
+            bundles.extend(
+                entries
+                    .iter()
+                    .map(|entry| entry.path().join(within).join(payload))
+                    .filter(|bundle| self.owns(bundle)),
+            );
         }
         bundles.sort();
         Ok(bundles)
@@ -231,15 +324,9 @@ impl Layout {
     /// under the installation lock: after an install, update, rollback or
     /// uninstall. Nothing on a system that has no Launch Services, or for a
     /// prefix that does not register bundles.
-    pub(super) fn settle_launch_services(&self) -> Option<serde_json::Value> {
-        self.settle_into(Settlement::default())
-    }
-
-    /// [`Self::settle_launch_services`], reported together with what the
-    /// change itself already told Launch Services.
-    pub(super) fn settle_into(&self, mut settlement: Settlement) -> Option<serde_json::Value> {
+    pub(super) fn settle_launch_services(&self) {
         if !cfg!(target_os = "macos") || !self.registers_bundles() {
-            return None;
+            return;
         }
         // Which release is active decides which bundle stays; without that
         // answer nothing is forgotten, and the launcher is still registered.
@@ -252,7 +339,7 @@ impl Layout {
         let (stored, active) = match stored {
             Ok(found) => found,
             Err(error) => {
-                settlement
+                self.settlement()
                     .errors
                     .push(format!("retained bundles left registered: {error:#}"));
                 (Vec::new(), None)
@@ -263,21 +350,19 @@ impl Layout {
             .symlink_metadata()
             .is_ok_and(|metadata| metadata.is_dir())
             .then(|| self.application.clone());
-        let started = Instant::now();
-        let requests = plan(&stored, active.as_deref(), launcher.as_deref());
-        let total = requests.len();
-        for (made, (request, bundle)) in requests.into_iter().enumerate() {
-            if started.elapsed() >= BUDGET {
-                settlement.errors.push(format!(
-                    "Launch Services took longer than {BUDGET:?}; {} requests not made",
-                    total - made
-                ));
-                break;
+        for (request, bundle) in plan(&stored, active.as_deref(), launcher.as_deref()) {
+            match request {
+                // The plan forgets stored bundles only.
+                Registration::Unregister => self.forget_stored(&bundle),
+                Registration::Register => self.launch_services(request, &bundle),
             }
-            let outcome = self.launch_services(request, &bundle);
-            settlement.record(request, &bundle, outcome);
         }
-        Some(settlement.report())
+    }
+
+    /// Everything this command told Launch Services, for its report: the
+    /// `launch_services` field. Nothing where no bundle is registered.
+    pub(super) fn launch_services_report(&self) -> Option<serde_json::Value> {
+        (cfg!(target_os = "macos") && self.registers_bundles()).then(|| self.settlement().report())
     }
 }
 
@@ -350,13 +435,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let layout = Layout::new(tmp.path().to_owned()).unwrap();
         assert!(!layout.registers_bundles());
-        assert_eq!(
-            layout
-                .launch_services(Registration::Register, &layout.application)
-                .unwrap(),
-            Outcome::Skipped
-        );
-        assert!(layout.settle_launch_services().is_none());
+        layout.launch_services(Registration::Register, &layout.application);
+        layout.settle_launch_services();
+        assert!(layout.launch_services_report().is_none());
+        assert_eq!(layout.settlement().spent, Duration::ZERO);
     }
 
     #[test]
@@ -374,9 +456,23 @@ mod tests {
             Path::new("/d"),
             Err(anyhow::anyhow!("hung")),
         );
+        // Forgotten and then registered again, as a published launcher is:
+        // it is reported once, as registered.
+        settlement.record(Registration::Unregister, Path::new("/c"), Ok(Outcome::Done));
+        settlement.record(Registration::Register, Path::new("/c"), Ok(Outcome::Done));
+        settlement.unmade = 2;
         assert_eq!(
             settlement.report(),
-            json!({"registered": ["/c"], "unregistered": ["/a"], "errors": ["hung"]})
+            json!({
+                "registered": ["/c"],
+                "unregistered": ["/a"],
+                "errors": ["hung", "Launch Services took longer than 60s; 2 requests not made"],
+            })
+        );
+        // A report takes what it lists.
+        assert_eq!(
+            settlement.report(),
+            json!({"registered": [], "unregistered": [], "errors": []})
         );
     }
 
@@ -385,9 +481,9 @@ mod tests {
         use super::super::super::tests::release;
         use super::*;
 
-        fn recording(layout: &mut Layout) -> Arc<Mutex<Vec<(Registration, PathBuf)>>> {
-            let calls = Arc::new(Mutex::new(Vec::new()));
-            layout.registrar = Registrar::Recorder(calls.clone());
+        fn recording(layout: &mut Layout) -> Calls {
+            let (registrar, calls) = Registrar::recorder();
+            layout.registrar = registrar;
             calls
         }
 
@@ -426,7 +522,8 @@ mod tests {
                 ("rollback", second.clone(), Some(third.clone())),
             ] {
                 layout.activate(current.clone(), previous).unwrap();
-                let report = layout.settle_launch_services().unwrap();
+                layout.settle_launch_services();
+                let report = layout.launch_services_report().unwrap();
                 let made = take(&calls);
                 // The launcher is registered last, after every forgetting.
                 assert_eq!(
@@ -455,7 +552,7 @@ mod tests {
             // Reinstalling the active release changes nothing and keeps it so.
             let launcher = layout.prepare_launcher_bundle(&second).unwrap();
             layout.publish_launcher_bundle(launcher).unwrap();
-            layout.settle_launch_services().unwrap();
+            layout.settle_launch_services();
             let made = take(&calls);
             registered = registered_after(registered.union(&ever).cloned(), &made);
             assert_eq!(
@@ -496,6 +593,154 @@ mod tests {
                 made[2],
                 (Registration::Register, layout.application.clone())
             );
+        }
+
+        /// A link anywhere below the root, not only at the bundle itself,
+        /// keeps its target out of the inventory and out of every request.
+        #[test]
+        fn no_link_below_the_root_reaches_launch_services() {
+            use std::os::unix::fs::symlink;
+            let tmp = tempfile::tempdir().unwrap();
+            let mut layout = Layout::new(tmp.path().to_owned()).unwrap();
+            layout.ensure_root().unwrap();
+            let calls = recording(&mut layout);
+            let outside = tempfile::tempdir().unwrap();
+            let outside = outside.path();
+            std::fs::create_dir_all(outside.join("payload/AgentDocker.app")).unwrap();
+            std::fs::create_dir_all(outside.join("AgentDocker.app")).unwrap();
+            let root = layout.root.clone();
+            let real = root.join("versions/real/AgentDocker.app");
+            let download = root.join("downloads/9.9.9/payload/AgentDocker.app");
+            std::fs::create_dir_all(&real).unwrap();
+            std::fs::create_dir_all(&download).unwrap();
+            // An entry of each store, an update's payload directory and a
+            // bundle itself, each a link out of the root.
+            symlink(outside, root.join("versions/entry")).unwrap();
+            symlink(outside, root.join("downloads/entry")).unwrap();
+            std::fs::create_dir_all(root.join("downloads/inner")).unwrap();
+            symlink(
+                outside.join("payload"),
+                root.join("downloads/inner/payload"),
+            )
+            .unwrap();
+            std::fs::create_dir_all(root.join("versions/bundle")).unwrap();
+            symlink(
+                outside.join("AgentDocker.app"),
+                root.join("versions/bundle/AgentDocker.app"),
+            )
+            .unwrap();
+            assert_eq!(
+                layout.stored_bundles().unwrap(),
+                [download.clone(), real.clone()]
+            );
+            layout.settle_launch_services();
+            let made = take(&calls);
+            assert_eq!(
+                made,
+                [
+                    (Registration::Unregister, download.clone()),
+                    (Registration::Unregister, real.clone()),
+                ]
+            );
+
+            // Pruning names a bundle directly, and is refused the same way.
+            layout.forget_stored(&root.join("downloads/entry/payload/AgentDocker.app"));
+            assert!(take(&calls).is_empty());
+            let report = layout.launch_services_report().unwrap();
+            assert_eq!(report["errors"].as_array().unwrap().len(), 1, "{report}");
+
+            // A store that is itself a link is not read at all: nothing is
+            // forgotten, and the inventory's refusal is reported.
+            std::fs::remove_dir_all(root.join("downloads")).unwrap();
+            symlink(outside, root.join("downloads")).unwrap();
+            assert!(layout.stored_bundles().is_err());
+            layout.settle_launch_services();
+            assert!(take(&calls).is_empty());
+            let report = layout.launch_services_report().unwrap();
+            assert!(
+                report["errors"][0]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("retained bundles left registered"),
+                "{report}"
+            );
+        }
+
+        /// The calls of one change share one budget, each capped at what
+        /// remains of it, whoever makes them: a stalled `lsregister` holds
+        /// the installation lock for the budget at most, and the requests
+        /// past it are reported as not made.
+        #[test]
+        fn the_calls_of_one_change_share_one_budget() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut layout = Layout::new(tmp.path().to_owned()).unwrap();
+            layout.ensure_root().unwrap();
+            for id in 0..10 {
+                std::fs::create_dir_all(
+                    layout
+                        .root
+                        .join(format!("versions/{id:02}/AgentDocker.app")),
+                )
+                .unwrap();
+            }
+            let given = Arc::new(Mutex::new(Vec::new()));
+            let seen = given.clone();
+            layout.registrar = Registrar::Answering(Box::new(move |_, _, allowance| {
+                let mut seen = seen.lock().unwrap();
+                seen.push(allowance);
+                if seen.len() == 1 {
+                    return (Ok(Outcome::Done), Duration::from_secs(10));
+                }
+                // Stalled, and ended at its allowance.
+                (Err(anyhow::anyhow!("timed out")), allowance)
+            }));
+            // A pruned build is forgotten first, in the same change.
+            layout.forget_stored(&layout.root.join("versions/00/AgentDocker.app"));
+            layout.settle_launch_services();
+            let given = given.lock().unwrap().clone();
+            let secs = Duration::from_secs;
+            assert_eq!(given, [secs(15), secs(15), secs(15), secs(15), secs(5)]);
+            assert_eq!(layout.settlement().spent, BUDGET);
+            let report = layout.launch_services_report().unwrap();
+            let errors = report["errors"].as_array().unwrap();
+            assert_eq!(errors.len(), 5, "{report}");
+            assert_eq!(
+                errors[4],
+                json!("Launch Services took longer than 60s; 6 requests not made")
+            );
+            assert_eq!(report["unregistered"].as_array().unwrap().len(), 1);
+        }
+
+        /// What publishing tells Launch Services joins the change's report,
+        /// a failure to forget the replaced staging copy included, while the
+        /// install itself succeeds.
+        #[test]
+        fn a_failure_while_publishing_is_reported_with_the_settlement() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut layout = Layout::new(tmp.path().to_owned()).unwrap();
+            layout.ensure_root().unwrap();
+            let application = layout.application.clone();
+            layout.registrar = Registrar::Answering(Box::new(move |request, bundle, _| {
+                let staged = request == Registration::Unregister && bundle != application;
+                let staged = staged && !bundle.to_string_lossy().contains("/versions/");
+                if staged {
+                    return (Err(anyhow::anyhow!("staging copy refused")), Duration::ZERO);
+                }
+                (Ok(Outcome::Done), Duration::ZERO)
+            }));
+            let first = release(&layout, "first");
+            let second = release(&layout, "second");
+            layout.activate(first.clone(), None).unwrap();
+            layout.activate(second, Some(first.clone())).unwrap();
+            layout.settle_launch_services();
+            let report = layout.launch_services_report().unwrap();
+            assert_eq!(
+                report["errors"],
+                json!(["staging copy refused"]),
+                "{report}"
+            );
+            assert_eq!(report["registered"], json!([layout.application]));
+            assert_eq!(report["unregistered"], json!([layout.payload(&first)]));
         }
     }
 
@@ -545,7 +790,7 @@ mod tests {
         impl Drop for Forget {
             fn drop(&mut self) {
                 for bundle in &self.0 {
-                    let _ = lsregister(Registration::Unregister, bundle);
+                    let _ = lsregister(Registration::Unregister, bundle, CALL_TIMEOUT);
                 }
             }
         }
@@ -576,7 +821,7 @@ mod tests {
         // ever ran.
         for bundle in &every {
             assert_eq!(
-                lsregister(Registration::Register, bundle).unwrap(),
+                lsregister(Registration::Register, bundle, CALL_TIMEOUT).unwrap(),
                 Outcome::Done
             );
         }
@@ -590,12 +835,10 @@ mod tests {
         layout.registrar = Registrar::Unrestricted;
         let apply = |requests: Vec<(Registration, PathBuf)>| {
             for (request, bundle) in requests {
-                let outcome = layout.launch_services(request, &bundle).unwrap();
-                assert!(
-                    matches!(outcome, Outcome::Done | Outcome::Absent),
-                    "{bundle:?}"
-                );
+                layout.launch_services(request, &bundle);
             }
+            let report = layout.launch_services_report().unwrap();
+            assert_eq!(report["errors"], json!([]), "{report}");
         };
 
         // Installed `c`, retaining `a` and `b`: the launcher answers, with
@@ -614,7 +857,7 @@ mod tests {
         // `b` runs, and its launch registers it, as any launch does; the
         // next update forgets it once it is no longer active.
         assert_eq!(
-            lsregister(Registration::Register, &versions[1]).unwrap(),
+            lsregister(Registration::Register, &versions[1], CALL_TIMEOUT).unwrap(),
             Outcome::Done
         );
         apply(plan(&versions, Some(&versions[2]), Some(&launcher)));

@@ -2,7 +2,6 @@
 // The installer, updates and retained versions run on macOS and Linux;
 // on Windows only the refusal in `run` is live, and the rest waits its slice.
 #![cfg_attr(windows, allow(dead_code))]
-use super::launch_services::Settlement;
 use super::*;
 use agentdocker_host::{installation, lock};
 
@@ -198,12 +197,11 @@ fn plan<T: Into<services::References>>(
     Ok((plan, pins))
 }
 
-/// Carry out a reviewed plan. Returns what Launch Services was told, on a
-/// Mac that registers bundles: each removed bundle is forgotten as it goes,
-/// and after an uninstall every retained build too, since none is active.
-fn apply(layout: &Layout, plan: &Plan) -> Result<Option<serde_json::Value>> {
+/// Carry out a reviewed plan. On a Mac that registers bundles, each removed
+/// bundle is forgotten as it goes, and after an uninstall every retained
+/// build too, since none is active; the command reports what was told.
+fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
     layout.preflight()?;
-    let mut settlement = Settlement::default();
     if plan.operation == "uninstall" {
         for path in &plan.remove {
             // preflight verifies every owned link and the exact Linux launcher.
@@ -211,26 +209,20 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<Option<serde_json::Value>> {
             layout.preflight()?;
             if path.symlink_metadata()?.is_dir() {
                 // Only our own launcher bundle reaches here (preflight).
-                if cfg!(target_os = "macos") {
-                    let outcome = layout.launch_services(Registration::Unregister, path);
-                    settlement.record(Registration::Unregister, path, outcome);
-                }
+                layout.launch_services(Registration::Unregister, path);
                 std::fs::remove_dir_all(path)?;
             } else {
                 std::fs::remove_file(path)?;
             }
             std::fs::File::open(path.parent().context("launcher has no parent")?)?.sync_all()?;
         }
-        return Ok(layout.settle_into(settlement));
+        layout.settle_launch_services();
     } else {
         dirs::secure_state_dir(&layout.root.join("retired"))?;
         for path in &plan.remove {
             checked_version(layout, path)?;
-            if cfg!(target_os = "macos") {
-                let bundle = path.join("AgentDocker.app");
-                let outcome = layout.launch_services(Registration::Unregister, &bundle);
-                settlement.record(Registration::Unregister, &bundle, outcome);
-            }
+            // A no-op wherever bundles are not registered.
+            layout.forget_stored(&path.join("AgentDocker.app"));
             // Keep the staging directory on any verification/cleanup failure.
             // Never let a TempDir destructor erase an unexpectedly changed tree.
             let stage = tempfile::tempdir_in(layout.root.join("retired"))?.keep();
@@ -243,7 +235,7 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<Option<serde_json::Value>> {
             std::fs::remove_dir(&stage)?;
         }
     }
-    Ok((cfg!(target_os = "macos") && layout.registers_bundles()).then(|| settlement.report()))
+    Ok(())
 }
 
 fn service_installed(layout: &Layout) -> Result<services::References> {
@@ -256,20 +248,14 @@ fn service_installed(layout: &Layout) -> Result<services::References> {
 pub(super) fn after_activation(layout: &Layout, _install_lock: &lock::Lock) -> serde_json::Value {
     let result = (|| {
         let _services = installation::service_inventory_guard(&layout.root, true)?;
-        prune_activated_reporting(layout, || service_installed(layout))
+        prune_activated(layout, || service_installed(layout))
     })();
     match result {
-        Ok(((removed, retained), registration)) => {
-            let mut report = json!({
-                "completed": true,
-                "removed_versions": removed,
-                "retained_versions": retained,
-            });
-            if let Some(registration) = registration {
-                report["launch_services"] = registration;
-            }
-            report
-        }
+        Ok((removed, retained)) => json!({
+            "completed": true,
+            "removed_versions": removed,
+            "retained_versions": retained,
+        }),
         Err(error) => json!({
             "completed": false,
             "error": format!("{error:#}"),
@@ -278,26 +264,15 @@ pub(super) fn after_activation(layout: &Layout, _install_lock: &lock::Lock) -> s
     }
 }
 
-#[cfg(test)]
 fn prune_activated<T: Into<services::References>>(
     layout: &Layout,
     service: impl FnOnce() -> Result<T>,
 ) -> Result<(usize, usize)> {
-    Ok(prune_activated_reporting(layout, service)?.0)
-}
-
-/// Removed and retained counts, and what Launch Services was told.
-fn prune_activated_reporting<T: Into<services::References>>(
-    layout: &Layout,
-    service: impl FnOnce() -> Result<T>,
-) -> Result<((usize, usize), Option<serde_json::Value>)> {
     let (plan, _pins) = plan(layout, Some(0), true, service)?;
-    let registration = if plan.remove.is_empty() {
-        None
-    } else {
-        apply(layout, &plan)?
-    };
-    Ok(((plan.remove.len(), plan.retained.len()), registration))
+    if !plan.remove.is_empty() {
+        apply(layout, &plan)?;
+    }
+    Ok((plan.remove.len(), plan.retained.len()))
 }
 
 pub(super) fn run(
@@ -339,18 +314,17 @@ fn run_with<T: Into<services::References>>(
     if let Some(expected) = expected {
         ensure!(id == expected, "maintenance plan changed; review again");
     }
-    let registration = if !preview && !plan.remove.is_empty() {
-        apply(layout, &plan)?
-    } else {
-        None
-    };
+    let applied = !preview && !plan.remove.is_empty();
+    if applied {
+        apply(layout, &plan)?;
+    }
     let mut report = json!({
         "maintenance":plan, "plan_id":id, "preview":preview,
         "sessions":"running sessions continue; versions with lifetime pins are retained",
         "settings":"daemon state, provider configuration and service registration are preserved",
         "provider_configuration":"tools keep AgentDocker's MCP entries and hooks; `agentdocker setup --remove` takes them out (and `setup --undo` puts them back)",
     });
-    if let Some(registration) = registration {
+    if let Some(registration) = layout.launch_services_report().filter(|_| applied) {
         report["launch_services"] = registration;
     }
     println!("{}", serde_json::to_string_pretty(&report)?);
@@ -697,10 +671,9 @@ mod tests {
     #[test]
     fn pruning_and_uninstalling_forget_the_bundles_they_remove() {
         use super::super::launch_services::Registrar;
-        use std::sync::{Arc, Mutex};
         let (_temp, mut layout) = fixture();
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        layout.registrar = Registrar::Recorder(calls.clone());
+        let (registrar, calls) = Registrar::recorder();
+        layout.registrar = registrar;
         let take = || std::mem::take(&mut *calls.lock().unwrap());
         let old = retained(&layout, "old", 1);
         let previous = retained(&layout, "previous", 1);
