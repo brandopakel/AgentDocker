@@ -182,10 +182,10 @@ pub fn current(memories: &[Memory], now: DateTime<Utc>) -> Vec<&Memory> {
 }
 
 /// The words of a text as search reads them: lower case, split at
-/// anything but a letter or a digit, so `task_id` is the words `task` and
-/// `id`, and `latest` holds no `test`.
+/// anything but a letter, a digit or `_`, so an identifier such as
+/// `task_id` is one word, and `latest` holds no `test`.
 fn words(text: &str) -> std::collections::HashSet<String> {
-    text.split(|c: char| !c.is_alphanumeric())
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
         .filter(|w| !w.is_empty())
         .map(str::to_lowercase)
         .collect()
@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn a_word_is_cut_at_every_mark_and_never_inside_one() {
+    fn a_word_is_cut_at_marks_but_an_identifier_stays_whole() {
         let all = vec![
             memory("field", "the task_id field names the card", 0, None),
             memory("cargo", "hold task:local-cargo-campaign first", 1, None),
@@ -540,13 +540,14 @@ mod tests {
                 .map(|m| m.id.clone())
                 .collect()
         };
-        assert_eq!(ids("task"), ["cargo", "field"], "`_`, `:` and `-` cut");
-        assert_eq!(ids("id"), ["field"]);
+        assert_eq!(ids("task"), ["cargo"], "`:` and `-` cut, `_` does not");
+        assert_eq!(ids("id"), Vec::<String>::new(), "not inside `task_id`");
+        assert_eq!(ids("task_id"), ["field"], "an identifier is one word");
+        assert_eq!(ids("TASK_ID"), ["field"]);
         assert_eq!(ids("campaign"), ["cargo"]);
         assert_eq!(ids("test"), Vec::<String>::new(), "not inside `testing`");
         assert_eq!(ids("ask"), Vec::<String>::new(), "not inside `task`");
         assert_eq!(ids("été"), ["accent"], "case folds beyond ASCII");
-        assert_eq!(ids("task_id"), ["field", "cargo"], "both words outrank one");
     }
 
     #[test]

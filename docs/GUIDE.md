@@ -1462,10 +1462,10 @@ Current behaviour that the sections above do not already state, by area.
   first and then the newest, as context for the model, never typed into
   its terminal (Codex runs its start hook at a conversation's first turn,
   and again after `/clear` or a compaction). Search finds whole words, the
-  rarer ones counting for more and the newer memory first on a tie; `_`,
-  `-` and `:` separate words, so `task` finds `task_id`. A memory that is
-  no longer true is replaced
-  (`--supersedes`) or forgotten. It stays on this machine; anything that
+  rarer ones counting for more and the newer memory first on a tie; an
+  identifier such as `task_id` is one word, so `task` does not find it,
+  while `-` and `:` separate words. A memory that is no longer true is
+  replaced (`--supersedes`) or forgotten. It stays on this machine; anything that
   looks like a secret is refused. To keep a copy in Supermemory as well,
   name the projects and a key file under `[memory.supermemory]` in
   `agentd.toml` (off unless you turn it on; the hosted service is
