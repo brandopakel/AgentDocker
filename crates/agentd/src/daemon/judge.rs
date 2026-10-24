@@ -32,7 +32,7 @@
 //! The key leaves the process only in the `Authorization` header; it is
 //! never logged, and no status or event names it or the address.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::Ordering;
 use std::time::{Duration as StdDuration, Instant};
 
@@ -436,11 +436,16 @@ struct Due {
 }
 
 /// What one pass reads screens with: the managed terminals as they were
-/// when it began, and each process's parent, when a tmux pane is to be
-/// read.
+/// when it began, each process's parent, when a tmux pane is to be read,
+/// and the herdr sockets that did not answer `pane.list` in this pass.
 struct Pass {
     terminals: HashMap<AgentId, supervisor::Session>,
     parents: Option<Arc<HashMap<u32, u32>>>,
+    /// Asked no more this pass, so a herdr gone silent costs a pass one
+    /// timeout however many agents it holds. Only a `pane.list` herdr did
+    /// not answer puts a socket here: a refusal, a reply out of shape, a
+    /// failed `pane.read` or a session no pane holds is that pane's alone.
+    silent: HashSet<PathBuf>,
 }
 
 impl Daemon {
@@ -619,8 +624,8 @@ impl Daemon {
         let Some(setup) = self.judge_setup().await else {
             return;
         };
-        let (pass, due) = self.read_screens(&setup).await;
-        self.ask_judge(&setup, &pass, due).await;
+        let (mut pass, due) = self.read_screens(&setup).await;
+        self.ask_judge(&setup, &mut pass, due).await;
     }
 
     /// One screen, as it is now: the terminal drawn; the tmux pane
@@ -632,7 +637,7 @@ impl Daemon {
     /// says nothing more: it is not the judge's failure.
     async fn read_source(
         &self,
-        pass: &Pass,
+        pass: &mut Pass,
         agent: &AgentId,
         source: &Source,
         pid: Option<u32>,
@@ -667,6 +672,9 @@ impl Daemon {
                 .ok()??
             }
             Source::Herdr { socket, session } => {
+                if pass.silent.contains(socket) {
+                    return None;
+                }
                 let (socket_of, timeout) = {
                     let judge = lock(&self.judge);
                     (judge.herdr_socket_of.clone(), judge.herdr_timeout)
@@ -683,7 +691,11 @@ impl Daemon {
                 }
                 let text = match super::herdr::read_screen(socket, session, timeout).await {
                     Ok(text) => text,
-                    Err(reason) => {
+                    Err(unread) => {
+                        if matches!(unread, super::herdr::Unread::Silent(_)) {
+                            pass.silent.insert(socket.clone());
+                        }
+                        let reason = unread.reason();
                         debug!(agent = %agent.short(), %reason, "herdr pane not read");
                         return None;
                     }
@@ -758,7 +770,11 @@ impl Daemon {
         } else {
             None
         };
-        let pass = Pass { terminals, parents };
+        let mut pass = Pass {
+            terminals,
+            parents,
+            silent: HashSet::new(),
+        };
         lock(&self.judge)
             .screens
             .retain(|agent, _| candidates.iter().any(|c| &c.agent == agent));
@@ -769,7 +785,7 @@ impl Daemon {
             }
             let Some(lines) = self
                 .read_source(
-                    &pass,
+                    &mut pass,
                     &candidate.agent,
                     &candidate.source,
                     candidate.pid,
@@ -822,7 +838,7 @@ impl Daemon {
 
     /// Whether the screen is still the one that went quiet. One that
     /// moved on starts its quiet period over, and is not sent or applied.
-    async fn unchanged(&self, pass: &Pass, screen: &Due) -> bool {
+    async fn unchanged(&self, pass: &mut Pass, screen: &Due) -> bool {
         let now = self
             .read_source(
                 pass,
@@ -852,7 +868,7 @@ impl Daemon {
 
     /// Ask about each due screen, one call at a time, within the budget,
     /// while the setup it was read under is in force.
-    async fn ask_judge(self: &Arc<Self>, setup: &Setup, pass: &Pass, due: Vec<Due>) {
+    async fn ask_judge(self: &Arc<Self>, setup: &Setup, pass: &mut Pass, due: Vec<Due>) {
         let config = &setup.config;
         let thresholds = Thresholds::percent(config.threshold_percent);
         for screen in due {
@@ -2083,12 +2099,19 @@ mod tests {
     ) -> super::super::herdr::fake::Fake {
         let herdr_dir = dir.path().join("herdr");
         let fake = super::super::herdr::fake::Fake::start(&herdr_dir.join("herdr.sock"), panes);
+        look_for_herdr_in(daemon, herdr_dir, StdDuration::from_millis(500));
+        fake
+    }
+
+    /// Have the judge find herdr's sockets under `herdr_dir`, giving each
+    /// herdr request `timeout`.
+    #[cfg(unix)]
+    fn look_for_herdr_in(daemon: &Daemon, herdr_dir: PathBuf, timeout: StdDuration) {
         let mut judge = lock(&daemon.judge);
         judge.herdr_socket_of = Arc::new(move |name: Option<&str>| {
             agentdocker_host::multiplexer::herdr_socket_in(&herdr_dir, name)
         });
-        judge.herdr_timeout = StdDuration::from_millis(500);
-        fake
+        judge.herdr_timeout = timeout;
     }
 
     /// An agent AgentDocker holds no terminal for, recorded in a herdr
@@ -2493,6 +2516,96 @@ mod tests {
             );
         }
         stop(&daemon, &managed).await;
+    }
+
+    /// A herdr that takes connections and never answers `pane.list` costs
+    /// a pass one timeout, not one per agent in it: the socket is asked no
+    /// more that pass, a managed terminal is judged all the same, and the
+    /// next pass asks again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_silent_herdr_costs_a_pass_one_timeout() {
+        use std::sync::atomic::AtomicUsize;
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.96, 0.31, 0.02, 0.01]);
+        configure(&dir, &url, "");
+        let daemon = open(&dir);
+        let herdr_dir = dir.path().join("herdr");
+        std::fs::create_dir_all(&herdr_dir).unwrap();
+        let listener = tokio::net::UnixListener::bind(herdr_dir.join("herdr.sock")).unwrap();
+        let asked = Arc::new(AtomicUsize::new(0));
+        {
+            let asked = asked.clone();
+            tokio::spawn(async move {
+                // Every connection is taken and held open; nothing is
+                // ever answered.
+                let mut open = Vec::new();
+                while let Ok((stream, _)) = listener.accept().await {
+                    asked.fetch_add(1, Ordering::SeqCst);
+                    open.push(stream);
+                }
+            });
+        }
+        let timeout = StdDuration::from_secs(1);
+        look_for_herdr_in(&daemon, herdr_dir, timeout);
+        let first = in_herdr_pane(&daemon, &dir, "first", "thread-1").await;
+        let second = in_herdr_pane(&daemon, &dir, "second", "thread-2").await;
+        let managed = showing(&daemon, &dir, "managed", DIALOG).await;
+
+        let started = Instant::now();
+        daemon.judge_once().await;
+        let took = started.elapsed();
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "asked once this pass");
+        assert!(
+            took < 2 * timeout,
+            "one timeout, not one per agent: {took:?}"
+        );
+        assert!(
+            record(&daemon, &managed).judged.is_some(),
+            "the terminal was judged"
+        );
+        assert_eq!(calls(&fake), 1);
+        assert!(record(&daemon, &first).judged.is_none());
+        assert!(record(&daemon, &second).judged.is_none());
+
+        daemon.judge_once().await;
+        assert_eq!(asked.load(Ordering::SeqCst), 2, "asked again the next pass");
+        stop(&daemon, &managed).await;
+    }
+
+    /// What herdr answered — a refused read, or a session no pane holds —
+    /// is that pane's alone: every other session on the socket is still
+    /// looked for and read in the same pass.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_herdr_read_does_not_silence_the_socket() {
+        use super::super::herdr::fake::{Reads, pane};
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.96, 0.31, 0.02, 0.01]);
+        configure(&dir, &url, "");
+        let daemon = open(&dir);
+        let herdr = herdr_fake(
+            &daemon,
+            &dir,
+            json!([
+                pane("w1:p1", "blocked", Some("thread-1")),
+                pane("w1:p2", "blocked", Some("thread-2")),
+            ]),
+        );
+        herdr.reads(Reads::Refuse);
+        in_herdr_pane(&daemon, &dir, "one", "thread-1").await;
+        in_herdr_pane(&daemon, &dir, "two", "thread-2").await;
+        in_herdr_pane(&daemon, &dir, "nowhere", "thread-9").await;
+        daemon.judge_once().await;
+        let mut read = herdr.panes_read();
+        read.sort();
+        assert_eq!(read, ["w1:p1", "w1:p2"], "each held pane was read");
+        assert_eq!(
+            herdr.methods().iter().filter(|m| *m == "pane.list").count(),
+            3,
+            "every session was looked for"
+        );
+        assert_eq!(calls(&fake), 0);
     }
 
     /// A key file anyone else can read is refused, as is a relative path

@@ -534,22 +534,60 @@ async fn ask(
         .map_err(|_| "herdr did not answer in time".to_owned())?
 }
 
-/// Every pane, by `pane.list` on a connection of its own.
+/// Why a herdr pane gave the judge no screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Unread {
+    /// herdr did not answer `pane.list` on this socket: not there, not
+    /// taking connections, or silent past the timeout. Nothing else on the
+    /// socket is worth asking for a while.
+    Silent(String),
+    /// Something of this one pane or session: herdr refused or garbled its
+    /// reply, no one pane holds the session or it moved, or the read
+    /// itself failed. Other sessions on the socket may still be read.
+    Pane(String),
+}
+
+impl Unread {
+    pub(crate) fn reason(self) -> String {
+        match self {
+            Self::Silent(reason) | Self::Pane(reason) => reason,
+        }
+    }
+}
+
+/// Every pane, by `pane.list` on a connection of its own, telling herdr
+/// not answering apart from what it answered.
 #[cfg(unix)]
-async fn list(socket: &Path, timeout: std::time::Duration) -> Result<Vec<herdr::Pane>, String> {
-    herdr::panes(&ask(socket, &herdr::list_request(), LIST_BYTES, timeout).await?)
+async fn panes(socket: &Path, timeout: std::time::Duration) -> Result<Vec<herdr::Pane>, Unread> {
+    let reply = ask(socket, &herdr::list_request(), LIST_BYTES, timeout)
+        .await
+        .map_err(Unread::Silent)?;
+    herdr::panes(&reply).map_err(Unread::Pane)
 }
 
 /// Which of `sessions` exactly one pane on `socket` holds, and where, as
 /// `pane.list` says now: the one pane-identity check, made by the status
 /// bridge for every reading and by the screen judge around every read.
 #[cfg(unix)]
+async fn check_holding<'a>(
+    socket: &Path,
+    sessions: impl IntoIterator<Item = &'a str>,
+    timeout: std::time::Duration,
+) -> Result<BTreeMap<String, Held>, Unread> {
+    Ok(herdr::holding(&panes(socket, timeout).await?, sessions))
+}
+
+/// [`check_holding`], for the status bridge, which retries a socket whatever
+/// went wrong.
+#[cfg(unix)]
 pub(crate) async fn held<'a>(
     socket: &Path,
     sessions: impl IntoIterator<Item = &'a str>,
     timeout: std::time::Duration,
 ) -> Result<BTreeMap<String, Held>, String> {
-    Ok(herdr::holding(&list(socket, timeout).await?, sessions))
+    check_holding(socket, sessions, timeout)
+        .await
+        .map_err(Unread::reason)
 }
 
 /// The pane holding `session` on `socket`, when exactly one does.
@@ -558,12 +596,12 @@ async fn pane_holding(
     socket: &Path,
     session: &str,
     timeout: std::time::Duration,
-) -> Result<String, String> {
-    held(socket, [session], timeout)
+) -> Result<String, Unread> {
+    check_holding(socket, [session], timeout)
         .await?
         .remove(session)
         .map(|held| held.pane)
-        .ok_or_else(|| "no one pane holds the agent's session".to_owned())
+        .ok_or_else(|| Unread::Pane("no one pane holds the agent's session".to_owned()))
 }
 
 /// What the pane holding `session` on `socket` shows, by `pane.read`, only
@@ -571,18 +609,23 @@ async fn pane_holding(
 /// before the read, the reply is that pane's screen, and the same pane
 /// alone still holds it just after. A pane moved (herdr gives it a new
 /// id), replaced, released or claimed twice is never read, or its screen
-/// is dropped. Each request is bounded by `timeout`, as the bridge's are.
+/// is dropped. Each request is bounded by `timeout`, as the bridge's are;
+/// only a `pane.list` herdr did not answer is [`Unread::Silent`].
 #[cfg(unix)]
 pub(crate) async fn read_screen(
     socket: &Path,
     session: &str,
     timeout: std::time::Duration,
-) -> Result<String, String> {
+) -> Result<String, Unread> {
     let pane = pane_holding(socket, session, timeout).await?;
-    let reply = ask(socket, &herdr::read_request(&pane), READ_BYTES, timeout).await?;
-    let text = herdr::screen(&reply, &pane)?;
+    let reply = ask(socket, &herdr::read_request(&pane), READ_BYTES, timeout)
+        .await
+        .map_err(Unread::Pane)?;
+    let text = herdr::screen(&reply, &pane).map_err(Unread::Pane)?;
     if pane_holding(socket, session, timeout).await? != pane {
-        return Err("the agent's session moved to another pane while it was read".to_owned());
+        return Err(Unread::Pane(
+            "the agent's session moved to another pane while it was read".to_owned(),
+        ));
     }
     Ok(text)
 }
@@ -593,8 +636,10 @@ pub(crate) async fn read_screen(
     _socket: &Path,
     _session: &str,
     _timeout: std::time::Duration,
-) -> Result<String, String> {
-    Err("herdr is not followed on this platform".to_owned())
+) -> Result<String, Unread> {
+    Err(Unread::Silent(
+        "herdr is not followed on this platform".to_owned(),
+    ))
 }
 
 /// A subscription to agents appearing anywhere and to the status of each
