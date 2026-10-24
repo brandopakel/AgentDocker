@@ -578,7 +578,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `claim` | Claim a lease on `path:`, `branch:`, `task:`, or anything |
 | `renew` / `release` | Extend or give up a lease you hold |
 | `leases` | Every lease held right now |
-| `waiting` | Claims waiting for a resource, oldest first |
+| `waiting` | Claims waiting for a resource, in the order they will be served: higher priority first, then oldest |
 | `task` | The board of work. `task create "Fix login" --acceptance "SSO works" --lane ready --priority high --size m --due YYYY-MM-DD --tag auth --blocked-by AD-7 --link pr:#<n>` files a card and prints its key (`AD-12`); `--parent`, `--description` and `--blocker "waiting on legal"` say more, and `--board` files it on another board. `task create-many cards.json` files up to 50 at once, all or none, each able to name another of the batch by its `ref` as its parent or in `--blocked-by`. `task pull --as <agent>` takes the next ready card (the first in the board's pull source, free and waiting on nothing; it says how many are held or waiting when there is none), `task pull AD-12 --as <agent>` that card; either holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`). `task move AD-12 review --comment "ready for eyes"` moves it to a lane by slug, name or category (`--after`/`--before` another card places it; an agent moves only a card it holds; back to Ready or to Done ends the hold). `task show AD-12` is the card in full: fields, comments, history, what it waits on. `task update AD-12 --assignee bob --priority low --tag ui` edits it (`--size ""`, `--due ""`, `--parent ""`, `--no-tags`, `--no-blocked-by`, `--no-links` clear). `task comment AD-12 "…" [--reply-to <comment>]`, `task comment-edit <comment> "…"`, `task comment-delete <comment>`. `task archive AD-12`, `task unarchive AD-12`, `task archive-lane done`. `task boards`, `task board-create Sprint --template agents` (classic, agents or simple), `task board-update sprint --lanes lanes.json --pull-source approved`. `task search "logn page"` finds cards by words, slips forgiven, a key exactly. `task start AD-12 --runtime codex` starts an agent on a card nobody holds that waits on nothing, and hands it the card. `task rules`, `task rule-add "Stale review" --idle review --days 14 --comment "Still waiting?"` (or `--enter LANE`; `--move LANE`, `--archive`, `--start RUNTIME [--max N]`), `task rule-off\|rule-on\|rule-rm <id>`. `task tags`, `task tag ui --color teal [--rename frontend]`, `task tag-rm ui`; `--plan` on `create` and `update` names the plan a card carries out. `task list [--board B] [--lane L] [--assignee me --as <agent>\|mine\|none] [--open] [--query words] [--tag T] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts); `--assignee mine` is your cards together with those held by your agents — launched with `run` or `up` from your own terminal, the app's launch, or `task start` and start rules, or a Claude Code or Codex session you started yourself in a terminal app or IDE (root's install, or one whose signature verifies), or over SSH, with no agent's session anywhere above it (their records carry `launched_by=user`, so `ps --label launched_by=user` lists them; a session inside a multiplexer server such as tmux cannot be told apart from an agent's and is not counted) — and, with `--as <agent>`, that agent's own |
 | `plan` | A project's plans, specs in Markdown that cards carry out: `plan list [--all]`, `plan show <id>`, `plan new "Auth rewrite" --body spec.md` (or `-` for stdin), `plan edit <id> [--title …] [--body FILE] [--status draft\|active\|done\|archived]` |
 | `file` | A project's files, kept beside the work: `file list [--task AD-12]`, `file put notes.md [--task AD-12] [--name …]` (at most 4 MiB; the same name again is a new version), `file get <id> [--out PATH]`, `file link <id> AD-12 [--unlink]`, `file rm <id>` |
@@ -815,6 +815,16 @@ than editing underneath the first. `agentdocker waiting` shows the queue;
 `agentdocker leases` shows who holds what. When they turn out to be
 changing the same files anyway, a channel opens by itself and both are in
 it — `agentdocker channels`.
+
+`--wait 120` waits up to two minutes for a held resource instead of failing
+at once, and `--priority N` (from -9 to 9, 0 by default) says where that wait
+stands: higher is served first, the oldest first among equals. A high
+priority can keep a low one waiting for as long as higher ones keep coming;
+every wait still ends at its `--wait` or when the lease it waits for expires.
+When waits form a ring, each holding what the next wants, the lowest
+priority's wait is ended with a deadlock error naming the ring (with equal
+priorities, the claim that closed it); give up something you hold and claim
+again. The MCP `claim` tool takes the same `wait_secs` and `priority`.
 
 ### Let an agent work in its own checkout
 

@@ -13,7 +13,7 @@
 //! to infer.
 
 use super::*;
-use agentdocker_core::wait::{self, Ticket};
+use agentdocker_core::wait::{self, Priority, Ticket};
 use agentdocker_core::{Activity, AgentActivity, Blocked, WaitOutcome};
 
 /// How recently an agent must have acted through the daemon to count as
@@ -63,8 +63,8 @@ impl<'a> Waiting<'a> {
     /// this join have to happen without letting go of it: the daemon
     /// serves each connection on its own task, so two claims that both
     /// looked before either joined would each see no cycle and both wait
-    /// out their deadlines instead of one being refused.
-    pub(super) fn join_locked(&mut self, state: &mut State, mode: LeaseMode) {
+    /// out their deadlines instead of the ring being broken at one.
+    pub(super) fn join_locked(&mut self, state: &mut State, mode: LeaseMode, priority: Priority) {
         if self.ticket.is_some() {
             return;
         }
@@ -72,6 +72,7 @@ impl<'a> Waiting<'a> {
             self.requester.clone(),
             self.resource.clone(),
             mode,
+            priority,
             Utc::now(),
         );
         self.ticket = Some(ticket);
@@ -95,13 +96,17 @@ impl<'a> Waiting<'a> {
     }
 
     /// Give the place up. Idempotent, so the explicit call on every exit
-    /// path and the one in `drop` cannot both count.
+    /// path and the one in `drop` cannot both count. A wait another claim
+    /// already ended to break a ring was said to end then, and is not said
+    /// again.
     pub(super) fn end(&mut self, outcome: WaitOutcome) {
         let Some(ticket) = self.ticket.take() else {
             return;
         };
         let mut state = lock(&self.daemon.state);
-        state.waiting.leave(ticket);
+        if state.waiting.leave(ticket).is_none() {
+            return;
+        }
         // Whoever is now at the head of this queue is asleep until
         // something says otherwise, and this is that something.
         state.emit(EventKind::LeaseWaitEnded {
@@ -109,6 +114,18 @@ impl<'a> Waiting<'a> {
             requester: self.requester.clone(),
             outcome,
         });
+    }
+
+    /// The ring this wait was ended to break, when another claim chose it
+    /// as the ring's victim. Its place is already gone and its
+    /// `lease_wait_ended` already said; this forgets the ticket, so the
+    /// claim answers `deadlock` and nothing is said twice.
+    pub(super) fn deadlocked(&mut self, state: &mut State) -> Option<Vec<Blocked>> {
+        let ticket = self.ticket?;
+        let cycle = state.waiting.deadlocked(ticket)?.to_vec();
+        state.waiting.leave(ticket);
+        self.ticket = None;
+        Some(cycle)
     }
 }
 
@@ -443,6 +460,52 @@ impl State {
             .map(|w| (w.agent.clone(), w.resource.clone()))
             .collect();
         wait::deadlock(requester, resource, &holders, &waits)
+    }
+
+    /// Before a claim agrees to wait: break every ring its wait would
+    /// close, each at the wait `wait::victim` picks — the lowest priority,
+    /// the youngest among equals, this claim counting as the youngest of
+    /// all. An older wait it picks is ended here (`lease_deadlock` naming
+    /// it, then its `lease_wait_ended {outcome: deadlock}`), and its claim
+    /// answers `deadlock` when it wakes; then this claim looks again, since
+    /// another ring may remain. Each pass ends one queued wait, so it
+    /// stops. The ring is returned when this claim is the victim; nothing
+    /// for it is said yet but `lease_deadlock`.
+    ///
+    /// Called under the same hold of the state lock as the join that
+    /// follows it, so a ring is broken exactly once.
+    pub(super) fn break_rings(
+        &mut self,
+        requester: &AgentId,
+        resource: &ResourceKey,
+        priority: Priority,
+    ) -> Option<Vec<Blocked>> {
+        while let Some(cycle) = self.deadlock(requester, resource) {
+            let victim = wait::victim(&cycle, priority, self.waiting.all());
+            let ended = victim
+                .ticket
+                .and_then(|ticket| self.waiting.break_ring(ticket, cycle.clone()));
+            let step = if ended.is_some() { victim.step } else { 0 };
+            self.emit(EventKind::LeaseDeadlock {
+                cycle: cycle.clone(),
+                victim: cycle.get(step).cloned(),
+            });
+            let Some(waiter) = ended else {
+                return Some(cycle);
+            };
+            warn!(
+                agent = %waiter.agent.short(),
+                resource = %waiter.resource,
+                by = %requester.short(),
+                "wait ended to break a deadlock"
+            );
+            self.emit(EventKind::LeaseWaitEnded {
+                resource: waiter.resource,
+                requester: waiter.agent,
+                outcome: WaitOutcome::Deadlock,
+            });
+        }
+        None
     }
 
     /// What one agent is doing, from what the daemon recorded — and,

@@ -2057,6 +2057,11 @@ struct ClaimArgs {
     /// Seconds to wait for the resource to free up instead of failing at once.
     #[arg(long, default_value_t = 0)]
     wait: u64,
+    /// Your place in the wait queue, from -9 to 9: higher is served first,
+    /// the oldest first among equals. A ring of waits is broken at the
+    /// lowest, so a high priority can keep a low one waiting.
+    #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
+    priority: i8,
     /// How much of a `quota:` resource to take. A quota is spent rather
     /// than occupied, so several agents hold one at once and what
     /// decides is whether the sum fits its capacity.
@@ -4721,11 +4726,15 @@ async fn run() -> Result<()> {
                                 named(&names, &w.agent),
                                 format::resource(&w.resource),
                                 w.mode.to_string(),
+                                w.priority.to_string(),
                                 format::ago(w.since),
                             ]
                         })
                         .collect();
-                    format::table(&["#", "AGENT", "RESOURCE", "MODE", "WAITING"], &rows);
+                    format::table(
+                        &["#", "AGENT", "RESOURCE", "MODE", "PRIORITY", "WAITING"],
+                        &rows,
+                    );
                 }
             }
         }
@@ -4840,6 +4849,7 @@ async fn run() -> Result<()> {
                 ttl_secs: args.ttl,
                 note: args.note,
                 wait_secs: args.wait,
+                priority: args.priority,
                 automatic: false,
             };
             if let Response::Lease { lease } = client.call(&request).await? {

@@ -15,6 +15,7 @@
 //! Pure: no clock of its own, no I/O. The daemon passes `now` and keeps
 //! the queue under its one state lock.
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
@@ -27,6 +28,22 @@ use crate::{AgentId, LeaseMode, ResourceKey};
 /// own. Handed out by [`WaitQueue::join`] and given back to leave.
 pub type Ticket = u64;
 
+/// How far ahead of arrival order a waiter asks to be served: higher
+/// first, 0 when it does not say. From [`MIN_PRIORITY`] to
+/// [`MAX_PRIORITY`]; the daemon refuses anything else.
+pub type Priority = i8;
+
+/// The lowest priority a claim may ask for.
+pub const MIN_PRIORITY: Priority = -9;
+
+/// The highest priority a claim may ask for.
+pub const MAX_PRIORITY: Priority = 9;
+
+/// Whether a claim may ask for this priority.
+pub fn valid_priority(priority: Priority) -> bool {
+    (MIN_PRIORITY..=MAX_PRIORITY).contains(&priority)
+}
+
 /// One request waiting for a resource.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Waiter {
@@ -35,12 +52,37 @@ pub struct Waiter {
     pub resource: ResourceKey,
     pub mode: LeaseMode,
     pub since: DateTime<Utc>,
+    /// Where the claim asked to stand: higher is served first, arrival
+    /// decides among equals. 0 from a daemon predating it.
+    #[serde(default)]
+    pub priority: Priority,
 }
 
-/// Waiters in arrival order, oldest first.
+impl Waiter {
+    /// The one order the queue serves in: higher priority first, then
+    /// arrival. Tickets are unique, so no two waiters share a key and the
+    /// order is total.
+    fn order(&self) -> (Reverse<Priority>, Ticket) {
+        (Reverse(self.priority), self.ticket)
+    }
+
+    /// Whether this waiter is served before `other`.
+    pub fn ahead_of(&self, other: &Waiter) -> bool {
+        self.order() < other.order()
+    }
+}
+
+/// Waiters in the order they will be served: higher priority first, then
+/// arrival, oldest first.
 #[derive(Debug, Default)]
 pub struct WaitQueue {
+    /// Kept in [`Waiter::ahead_of`] order, so [`Self::all`] reads as the
+    /// queue is served.
     waiters: Vec<Waiter>,
+    /// Waits ended to break a ring of waits, by ticket, with the ring:
+    /// kept until the claim that was waiting reads it or leaves, so it
+    /// can say why its wait ended.
+    broken: HashMap<Ticket, Vec<Blocked>>,
     next_ticket: Ticket,
 }
 
@@ -49,81 +91,96 @@ impl WaitQueue {
         Self::default()
     }
 
-    /// Take a place in the queue. The ticket identifies this waiter for
-    /// as long as it waits; the caller gives it back to [`Self::leave`].
+    /// Take a place in the queue: behind every waiter of the same or a
+    /// higher priority, ahead of every lower one. The ticket identifies
+    /// this waiter for as long as it waits; the caller gives it back to
+    /// [`Self::leave`].
     pub fn join(
         &mut self,
         agent: AgentId,
         resource: ResourceKey,
         mode: LeaseMode,
+        priority: Priority,
         now: DateTime<Utc>,
     ) -> Ticket {
         let ticket = self.next_ticket;
         self.next_ticket += 1;
-        self.waiters.push(Waiter {
+        let waiter = Waiter {
             ticket,
             agent,
             resource,
             mode,
             since: now,
-        });
+            priority,
+        };
+        let at = self.waiters.partition_point(|w| w.ahead_of(&waiter));
+        self.waiters.insert(at, waiter);
         ticket
     }
 
     /// Give up a place, whether the wait ended in a lease, a timeout, or
-    /// a client that went away.
+    /// a client that went away. `None` when the ticket was not waiting —
+    /// it left already, or its wait was ended to break a ring
+    /// ([`Self::break_ring`]), which this forgets.
     pub fn leave(&mut self, ticket: Ticket) -> Option<Waiter> {
+        self.broken.remove(&ticket);
         let at = self.waiters.iter().position(|w| w.ticket == ticket)?;
         Some(self.waiters.remove(at))
     }
 
-    /// Whether it is this waiter's turn: no older waiter wants something
-    /// that overlaps and would exclude it.
+    /// End a wait to break a ring of waits it is in: it leaves the queue,
+    /// and [`Self::deadlocked`] says so with the ring until the claim that
+    /// was waiting leaves. `None` when the ticket was not waiting.
+    pub fn break_ring(&mut self, ticket: Ticket, cycle: Vec<Blocked>) -> Option<Waiter> {
+        let at = self.waiters.iter().position(|w| w.ticket == ticket)?;
+        self.broken.insert(ticket, cycle);
+        Some(self.waiters.remove(at))
+    }
+
+    /// The ring this ticket's wait was ended to break, if it was.
+    pub fn deadlocked(&self, ticket: Ticket) -> Option<&[Blocked]> {
+        self.broken.get(&ticket).map(Vec::as_slice)
+    }
+
+    /// Whether it is this waiter's turn: no waiter served before it
+    /// ([`Waiter::ahead_of`]) wants something that overlaps and would
+    /// exclude it.
     ///
     /// Two shared waiters do not block each other, so a queue of readers
     /// is not serialised by its own fairness rule. An unknown ticket is
     /// not next — it is nobody.
     pub fn is_next(&self, ticket: Ticket) -> bool {
-        let Some(mine) = self.waiters.iter().find(|w| w.ticket == ticket) else {
-            return false;
-        };
-        !self
-            .waiters
-            .iter()
-            .any(|other| other.ticket < mine.ticket && self.blocks(other, mine))
+        self.position(ticket) == Some(0)
     }
 
     /// How many waiters are ahead of this one *and in its way*. Zero
     /// means it is next; `None` means it is not queued.
     ///
-    /// The same exclusion rule as [`Self::is_next`], and it has to be:
-    /// this number is published as `lease_waiting.position` and shown as
-    /// a queue place, so a shared waiter that may proceed at once must
-    /// not be told it is second.
+    /// [`Self::is_next`] is this being zero, and it has to be: this
+    /// number is published as `lease_waiting.position` and shown as a
+    /// queue place, so a shared waiter that may proceed at once must not
+    /// be told it is second.
     pub fn position(&self, ticket: Ticket) -> Option<usize> {
         let mine = self.waiters.iter().find(|w| w.ticket == ticket)?;
         Some(
             self.waiters
                 .iter()
-                .filter(|other| other.ticket < mine.ticket && self.blocks(other, mine))
+                .filter(|other| other.ahead_of(mine) && blocks(other, mine))
                 .count(),
         )
-    }
-
-    /// Whether `other` stands in `mine`'s way: it wants something that
-    /// overlaps, and at least one of them wants it exclusively.
-    fn blocks(&self, other: &Waiter, mine: &Waiter) -> bool {
-        other.resource.overlaps(&mine.resource)
-            && (other.mode == LeaseMode::Exclusive || mine.mode == LeaseMode::Exclusive)
     }
 
     /// What this agent is waiting for, if anything. An agent waits for
     /// one thing at a time — a claim holds its connection — so the
     /// oldest is the answer.
     pub fn waiting_for(&self, agent: &AgentId) -> Option<&Waiter> {
-        self.waiters.iter().find(|w| w.agent == *agent)
+        self.waiters
+            .iter()
+            .filter(|w| w.agent == *agent)
+            .min_by_key(|w| w.ticket)
     }
 
+    /// Every waiter, in the order they will be served.
     pub fn all(&self) -> &[Waiter] {
         &self.waiters
     }
@@ -131,6 +188,13 @@ impl WaitQueue {
     pub fn is_empty(&self) -> bool {
         self.waiters.is_empty()
     }
+}
+
+/// Whether `other` stands in `mine`'s way: it wants something that
+/// overlaps, and at least one of them wants it exclusively.
+fn blocks(other: &Waiter, mine: &Waiter) -> bool {
+    other.resource.overlaps(&mine.resource)
+        && (other.mode == LeaseMode::Exclusive || mine.mode == LeaseMode::Exclusive)
 }
 
 /// One step of a deadlock: an agent, what it is waiting for, and who
@@ -212,6 +276,49 @@ fn walk(
         path.pop();
     }
     false
+}
+
+/// The wait a ring is broken at, as [`victim`] chooses it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Victim {
+    /// Its step in the cycle: what it waits for and who holds that.
+    pub step: usize,
+    /// The queued wait to end; `None` for the claim that found the ring,
+    /// which has not joined the queue and is refused instead.
+    pub ticket: Option<Ticket>,
+}
+
+/// Which wait in a ring to end so the rest can go on.
+///
+/// `cycle` is what [`deadlock`] found: its first step is the claim that
+/// would close the ring by waiting (the newcomer, asking at `priority`),
+/// every later step a wait already in `waiters`. The rule: the lowest
+/// priority; among equals the youngest, by latest arrival, the newcomer
+/// counting as the youngest of all. So where every priority is equal the
+/// newcomer is the victim, as it always was before priorities.
+///
+/// A later step's wait is the waiter with that step's agent and resource;
+/// should an agent wait twice for one resource, each wait is a candidate
+/// and the rule picks between them. A step no waiter matches has nothing
+/// to end and is passed over.
+pub fn victim(cycle: &[Blocked], priority: Priority, waiters: &[Waiter]) -> Victim {
+    let queued = cycle
+        .iter()
+        .enumerate()
+        .skip(1)
+        .flat_map(|(step, blocked)| {
+            waiters
+                .iter()
+                .filter(move |w| w.agent == blocked.agent && w.resource == blocked.resource)
+                .map(move |w| (step, w.priority, Some(w.ticket)))
+        });
+    // The largest key is the lowest priority, then the newcomer, then
+    // the latest ticket; no two candidates share one.
+    let (step, _, ticket) = queued
+        .chain(std::iter::once((0, priority, None)))
+        .max_by_key(|&(_, priority, ticket)| (Reverse(priority), ticket.is_none(), ticket))
+        .expect("the newcomer is always a candidate");
+    Victim { step, ticket }
 }
 
 /// What an agent is actually doing, as far as the working set can say.
@@ -1269,8 +1376,8 @@ mod tests {
     #[test]
     fn the_oldest_waiter_on_an_overlapping_resource_goes_first() {
         let mut queue = WaitQueue::new();
-        let first = queue.join(agent("a"), key("task:x"), LeaseMode::Exclusive, now());
-        let second = queue.join(agent("b"), key("task:x"), LeaseMode::Exclusive, now());
+        let first = queue.join(agent("a"), key("task:x"), LeaseMode::Exclusive, 0, now());
+        let second = queue.join(agent("b"), key("task:x"), LeaseMode::Exclusive, 0, now());
         assert!(queue.is_next(first));
         assert!(!queue.is_next(second), "a newcomer cannot jump the queue");
         assert_eq!(queue.position(first), Some(0));
@@ -1286,8 +1393,8 @@ mod tests {
     #[test]
     fn an_unrelated_resource_is_not_in_the_way() {
         let mut queue = WaitQueue::new();
-        queue.join(agent("a"), key("task:x"), LeaseMode::Exclusive, now());
-        let other = queue.join(agent("b"), key("task:y"), LeaseMode::Exclusive, now());
+        queue.join(agent("a"), key("task:x"), LeaseMode::Exclusive, 0, now());
+        let other = queue.join(agent("b"), key("task:y"), LeaseMode::Exclusive, 0, now());
         assert!(queue.is_next(other));
         assert_eq!(queue.position(other), Some(0));
     }
@@ -1299,12 +1406,14 @@ mod tests {
             agent("a"),
             key("path:/repo/src"),
             LeaseMode::Exclusive,
+            0,
             now(),
         );
         let file = queue.join(
             agent("b"),
             key("path:/repo/src/lib.rs"),
             LeaseMode::Exclusive,
+            0,
             now(),
         );
         assert!(queue.is_next(dir));
@@ -1314,8 +1423,8 @@ mod tests {
     #[test]
     fn readers_do_not_queue_behind_each_other() {
         let mut queue = WaitQueue::new();
-        queue.join(agent("a"), key("task:x"), LeaseMode::Shared, now());
-        let second = queue.join(agent("b"), key("task:x"), LeaseMode::Shared, now());
+        queue.join(agent("a"), key("task:x"), LeaseMode::Shared, 0, now());
+        let second = queue.join(agent("b"), key("task:x"), LeaseMode::Shared, 0, now());
         assert!(
             queue.is_next(second),
             "two shared waiters can be satisfied together"
@@ -1324,7 +1433,7 @@ mod tests {
         // waiter that may proceed at once must not be shown as second.
         assert_eq!(queue.position(second), Some(0));
         // A writer behind them still waits, behind both of them.
-        let writer = queue.join(agent("c"), key("task:x"), LeaseMode::Exclusive, now());
+        let writer = queue.join(agent("c"), key("task:x"), LeaseMode::Exclusive, 0, now());
         assert!(!queue.is_next(writer));
         assert_eq!(queue.position(writer), Some(2));
     }
@@ -1332,7 +1441,7 @@ mod tests {
     #[test]
     fn a_ticket_that_left_is_nobody() {
         let mut queue = WaitQueue::new();
-        let ticket = queue.join(agent("a"), key("task:x"), LeaseMode::Exclusive, now());
+        let ticket = queue.join(agent("a"), key("task:x"), LeaseMode::Exclusive, 0, now());
         assert_eq!(queue.leave(ticket).map(|w| w.agent), Some(agent("a")));
         assert!(queue.leave(ticket).is_none(), "and only leaves once");
         assert!(!queue.is_next(ticket));
@@ -1343,7 +1452,7 @@ mod tests {
     #[test]
     fn waiting_for_names_the_one_thing_an_agent_waits_on() {
         let mut queue = WaitQueue::new();
-        queue.join(agent("a"), key("task:x"), LeaseMode::Exclusive, now());
+        queue.join(agent("a"), key("task:x"), LeaseMode::Exclusive, 0, now());
         assert_eq!(
             queue.waiting_for(&agent("a")).map(|w| w.resource.clone()),
             Some(key("task:x"))
@@ -1428,5 +1537,199 @@ mod tests {
             .map(|i| (agent(&format!("a{i}")), key(&format!("task:{}", i + 1))))
             .collect();
         assert!(deadlock(&agent("newcomer"), &key("task:0"), &holders, &waits).is_none());
+    }
+
+    #[test]
+    fn a_higher_priority_is_served_before_an_earlier_arrival() {
+        let mut queue = WaitQueue::new();
+        let early = queue.join(agent("a"), key("task:x"), LeaseMode::Exclusive, 0, now());
+        let urgent = queue.join(agent("b"), key("task:x"), LeaseMode::Exclusive, 5, now());
+        let late = queue.join(agent("c"), key("task:x"), LeaseMode::Exclusive, 0, now());
+        let low = queue.join(agent("d"), key("task:x"), LeaseMode::Exclusive, -3, now());
+        assert!(queue.is_next(urgent), "priority orders ahead of arrival");
+        assert!(!queue.is_next(early));
+        assert_eq!(queue.position(urgent), Some(0));
+        assert_eq!(queue.position(early), Some(1));
+        assert_eq!(queue.position(late), Some(2), "arrival among equals");
+        assert_eq!(queue.position(low), Some(3));
+        let served: Vec<Ticket> = queue.all().iter().map(|w| w.ticket).collect();
+        assert_eq!(served, vec![urgent, early, late, low], "listed as served");
+
+        // The head leaving makes the oldest of the next priority next.
+        queue.leave(urgent);
+        assert!(queue.is_next(early));
+        assert_eq!(queue.position(late), Some(1));
+    }
+
+    #[test]
+    fn readers_of_any_priority_still_do_not_queue_behind_each_other() {
+        let mut queue = WaitQueue::new();
+        let low = queue.join(agent("a"), key("task:x"), LeaseMode::Shared, -2, now());
+        let high = queue.join(agent("b"), key("task:x"), LeaseMode::Shared, 7, now());
+        assert!(
+            queue.is_next(low),
+            "a shared waiter ahead does not block it"
+        );
+        assert!(queue.is_next(high));
+        assert_eq!(queue.position(low), Some(0));
+        assert_eq!(queue.position(high), Some(0));
+        // A writer between them in priority waits behind the higher reader
+        // only; the lower reader now waits behind the writer.
+        let writer = queue.join(agent("c"), key("task:x"), LeaseMode::Exclusive, 1, now());
+        assert_eq!(queue.position(writer), Some(1));
+        assert!(!queue.is_next(writer));
+        assert_eq!(queue.position(low), Some(1));
+        assert!(!queue.is_next(low));
+        assert_eq!(queue.position(high), Some(0));
+    }
+
+    #[test]
+    fn position_and_is_next_agree_for_every_waiter() {
+        let mut queue = WaitQueue::new();
+        let tickets: Vec<Ticket> = [
+            ("a", "task:x", LeaseMode::Exclusive, 0),
+            ("b", "task:x", LeaseMode::Shared, 2),
+            ("c", "path:/repo", LeaseMode::Exclusive, -1),
+            ("d", "path:/repo/src", LeaseMode::Shared, 3),
+            ("e", "task:x", LeaseMode::Shared, 2),
+            ("f", "task:y", LeaseMode::Exclusive, -9),
+        ]
+        .into_iter()
+        .map(|(a, k, mode, priority)| queue.join(agent(a), key(k), mode, priority, now()))
+        .collect();
+        for ticket in tickets {
+            assert_eq!(
+                queue.is_next(ticket),
+                queue.position(ticket) == Some(0),
+                "ticket {ticket}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wait_ended_to_break_a_ring_leaves_the_queue_and_says_why() {
+        let mut queue = WaitQueue::new();
+        let victim = queue.join(agent("a"), key("task:y"), LeaseMode::Exclusive, 0, now());
+        let behind = queue.join(agent("b"), key("task:y"), LeaseMode::Exclusive, 0, now());
+        let ring = vec![Blocked {
+            agent: agent("a"),
+            resource: key("task:y"),
+            held_by: agent("c"),
+        }];
+        assert_eq!(
+            queue.break_ring(victim, ring.clone()).map(|w| w.agent),
+            Some(agent("a"))
+        );
+        assert!(queue.is_next(behind), "it is out of everybody's way");
+        assert_eq!(queue.deadlocked(victim), Some(ring.as_slice()));
+        assert_eq!(queue.deadlocked(behind), None);
+        // Leaving afterwards forgets the ring and is not a second leaving.
+        assert!(queue.leave(victim).is_none());
+        assert_eq!(queue.deadlocked(victim), None);
+        assert!(queue.break_ring(victim, ring).is_none(), "nobody to end");
+    }
+
+    /// A two-agent ring as `deadlock` reports it: `b` would wait for `x`,
+    /// held by `a`, which waits for `y`, held by `b`.
+    fn ring() -> Vec<Blocked> {
+        vec![
+            Blocked {
+                agent: agent("b"),
+                resource: key("task:x"),
+                held_by: agent("a"),
+            },
+            Blocked {
+                agent: agent("a"),
+                resource: key("task:y"),
+                held_by: agent("b"),
+            },
+        ]
+    }
+
+    #[test]
+    fn with_equal_priorities_the_newcomer_is_the_victim() {
+        let mut queue = WaitQueue::new();
+        queue.join(agent("a"), key("task:y"), LeaseMode::Exclusive, 0, now());
+        assert_eq!(
+            victim(&ring(), 0, queue.all()),
+            Victim {
+                step: 0,
+                ticket: None
+            }
+        );
+        let mut queue = WaitQueue::new();
+        queue.join(agent("a"), key("task:y"), LeaseMode::Exclusive, 4, now());
+        assert_eq!(victim(&ring(), 4, queue.all()).ticket, None);
+    }
+
+    #[test]
+    fn an_older_lower_priority_wait_is_ended_for_a_higher_newcomer() {
+        let mut queue = WaitQueue::new();
+        let older = queue.join(agent("a"), key("task:y"), LeaseMode::Exclusive, -1, now());
+        assert_eq!(
+            victim(&ring(), 3, queue.all()),
+            Victim {
+                step: 1,
+                ticket: Some(older)
+            }
+        );
+        // And a lower newcomer is still refused itself.
+        assert_eq!(victim(&ring(), -2, queue.all()).ticket, None);
+    }
+
+    #[test]
+    fn among_equal_priorities_the_youngest_wait_is_the_victim() {
+        // c would wait for x (held by a); a waits for y (held by b); b
+        // waits for z (held by c). a arrived before b.
+        let cycle = vec![
+            Blocked {
+                agent: agent("c"),
+                resource: key("task:x"),
+                held_by: agent("a"),
+            },
+            Blocked {
+                agent: agent("a"),
+                resource: key("task:y"),
+                held_by: agent("b"),
+            },
+            Blocked {
+                agent: agent("b"),
+                resource: key("task:z"),
+                held_by: agent("c"),
+            },
+        ];
+        let mut queue = WaitQueue::new();
+        queue.join(agent("a"), key("task:y"), LeaseMode::Exclusive, 1, now());
+        let b = queue.join(agent("b"), key("task:z"), LeaseMode::Exclusive, 1, now());
+        // An unrelated waiter of the lowest priority is not in the ring.
+        queue.join(agent("d"), key("task:w"), LeaseMode::Exclusive, -9, now());
+        assert_eq!(
+            victim(&cycle, 5, queue.all()),
+            Victim {
+                step: 2,
+                ticket: Some(b)
+            },
+            "the younger of the two equal, lower waits"
+        );
+        // With the newcomer as low as they are, it is the youngest of all.
+        assert_eq!(victim(&cycle, 1, queue.all()).ticket, None);
+        // A lower priority outweighs arrival.
+        let mut queue = WaitQueue::new();
+        let a2 = queue.join(agent("a"), key("task:y"), LeaseMode::Exclusive, 0, now());
+        queue.join(agent("b"), key("task:z"), LeaseMode::Exclusive, 1, now());
+        assert_eq!(victim(&cycle, 1, queue.all()).ticket, Some(a2));
+    }
+
+    /// A queue written by a daemon predating priorities reads as all 0.
+    #[test]
+    fn a_waiter_without_a_priority_reads_as_zero() {
+        let wire = serde_json::json!({
+            "ticket": 3, "agent": "a", "resource": "task:x", "mode": "exclusive",
+            "since": now(),
+        });
+        let waiter: Waiter = serde_json::from_value(wire).unwrap();
+        assert_eq!(waiter.priority, 0);
+        assert!(valid_priority(MIN_PRIORITY) && valid_priority(MAX_PRIORITY));
+        assert!(!valid_priority(MIN_PRIORITY - 1) && !valid_priority(MAX_PRIORITY + 1));
     }
 }

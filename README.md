@@ -149,7 +149,7 @@ agentdocker discover              # agent processes running outside AgentDocker;
 # 3. Coordinate on a resource. The second claim is refused, and says by whom.
 agentdocker claim --as writer   src/ --note "refactoring the parser"
 agentdocker claim --as reviewer src/parser.rs        # -> conflict: held by writer
-agentdocker claim --as reviewer src/parser.rs --wait 60   # queue for it, in arrival order
+agentdocker claim --as reviewer src/parser.rs --wait 60   # queue for it, by --priority then arrival
 agentdocker leases
 agentdocker waiting     # who is queued for what
 agentdocker activity    # observed working/idle, unknown, or blocked with its holders
@@ -307,7 +307,7 @@ agentdocker down              # stops them
 
 ### Waiting instead of failing
 
-`agentdocker claim --wait 120 src/parser.rs` blocks until the holder releases (or the lease expires), then takes it — or reports the conflict after two minutes. The MCP `claim` tool has the same `wait_secs`.
+`agentdocker claim --wait 120 src/parser.rs` blocks until the holder releases (or the lease expires), then takes it — or reports the conflict after two minutes. Waits are served oldest first; `--priority N` (-9 to 9) puts a wait ahead of lower ones, and when waits form a ring the lowest priority's is ended with a deadlock error. The MCP `claim` tool has the same `wait_secs` and `priority`.
 
 ## The working set
 

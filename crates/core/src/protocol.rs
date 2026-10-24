@@ -1288,6 +1288,12 @@ pub enum Request {
         /// up; 0 reports the conflict immediately.
         #[serde(default)]
         wait_secs: u64,
+        /// Where a wait stands in the queue: higher is served first,
+        /// arrival decides among equals, and a ring of waits is broken at
+        /// the lowest. From -9 to 9; anything else is refused (`invalid`).
+        /// Only a claim that waits has a place for it to order.
+        #[serde(default)]
+        priority: crate::wait::Priority,
         /// Taken by an adapter on the agent's behalf for the edit in hand
         /// — the hooks adapter's per-file lease — rather than asked for.
         /// A turn's end releases these and only these; a lease the agent
@@ -2381,11 +2387,24 @@ mod tests {
                 ttl_secs: DEFAULT_LEASE_TTL_SECS,
                 note: None,
                 wait_secs: 0,
+                priority: 0,
                 automatic: false,
             }
         );
         let back = serde_json::to_string(&req).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&back).unwrap(), req);
+        let urgent: Request = serde_json::from_str(
+            r#"{"op":"claim","agent":"a","resource":"task:x","wait_secs":30,"priority":-4}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            urgent,
+            Request::Claim {
+                wait_secs: 30,
+                priority: -4,
+                ..
+            }
+        ));
     }
 
     #[test]

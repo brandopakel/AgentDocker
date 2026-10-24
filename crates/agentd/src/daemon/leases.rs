@@ -1,4 +1,6 @@
 use super::*;
+use agentdocker_core::Blocked;
+use agentdocker_core::wait::{self, Priority};
 
 impl Daemon {
     #[allow(clippy::too_many_arguments)]
@@ -11,8 +13,19 @@ impl Daemon {
         ttl_secs: u64,
         note: Option<String>,
         wait_secs: u64,
+        priority: Priority,
         automatic: bool,
     ) -> Response {
+        if !wait::valid_priority(priority) {
+            return Response::error(
+                ErrorCode::Invalid,
+                format!(
+                    "priority must be from {} to {}, not {priority}",
+                    wait::MIN_PRIORITY,
+                    wait::MAX_PRIORITY
+                ),
+            );
+        }
         let mut holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
@@ -56,6 +69,11 @@ impl Daemon {
         loop {
             let (message, held_by) = {
                 let mut state = lock(&self.state);
+                // Another claim may have ended this wait to break a ring
+                // since it last looked.
+                if let Some(cycle) = waiting.deadlocked(&mut state) {
+                    return ended_by_deadlock(&state, &resource, &cycle);
+                }
                 if !state
                     .registry
                     .get(&holder)
@@ -232,15 +250,14 @@ impl Daemon {
                     warn!(agent = %holder.short(), %resource, waiting = wait_secs > 0, "lease conflict");
                 }
                 // Before agreeing to wait: would waiting close a cycle?
-                // If it would, nobody in it could ever proceed, and the
-                // newcomer is always the victim — deterministic, and it
-                // needs no priorities.
+                // If it would, nobody in it could ever proceed, so it is
+                // broken at its victim: the lowest priority, the youngest
+                // among equals, this claim counting as the youngest of
+                // all. An older wait chosen is ended and this claim waits;
+                // chosen itself, it is refused.
                 if wait_secs > 0 && waiting.ticket().is_none() {
-                    if let Some(cycle) = state.deadlock(&holder, &resource) {
+                    if let Some(cycle) = state.break_rings(&holder, &resource, priority) {
                         warn!(agent = %holder.short(), %resource, "claim would deadlock");
-                        state.emit(EventKind::LeaseDeadlock {
-                            cycle: cycle.clone(),
-                        });
                         // A wait that never began still ended, and its
                         // outcome is one subscribers are told to expect.
                         waiting.never_started(&mut state, agentdocker_core::WaitOutcome::Deadlock);
@@ -256,7 +273,7 @@ impl Daemon {
                     // Joined under the same lock the check ran under.
                     // Letting go in between would let two claims each
                     // see no cycle and then both create one.
-                    waiting.join_locked(&mut state, mode);
+                    waiting.join_locked(&mut state, mode, priority);
                 }
                 (message, held_by)
             };
@@ -270,7 +287,16 @@ impl Daemon {
             // The conflict is recorded; from here this request only waits,
             // and an offer must not wait with it.
             self.done_writing();
-            if !wait_for_release(&mut events, &resource, deadline).await {
+            let woke = wait_for_release(&mut events, &resource, deadline).await;
+            // A wait ended to break a ring is over, whatever else woke it
+            // or the deadline says: the claim answers why.
+            {
+                let mut state = lock(&self.state);
+                if let Some(cycle) = waiting.deadlocked(&mut state) {
+                    return ended_by_deadlock(&state, &resource, &cycle);
+                }
+            }
+            if !woke {
                 waiting.end(agentdocker_core::WaitOutcome::Timeout);
                 return Response::Error {
                     code: ErrorCode::Conflict,
@@ -363,6 +389,26 @@ impl Daemon {
             )));
         }
         Ok(ResourceKey::new(format!("path:{}", path.display())))
+    }
+}
+
+/// The answer to a claim whose wait another claim ended to break a ring:
+/// `deadlock`, with the ring, as a claim refused before it waited is told
+/// it, and who holds what it wanted.
+fn ended_by_deadlock(state: &State, resource: &ResourceKey, cycle: &[Blocked]) -> Response {
+    let held_by: Vec<Lease> = state
+        .leases
+        .holders_of(resource)
+        .into_iter()
+        .cloned()
+        .collect();
+    Response::Error {
+        code: ErrorCode::Deadlock,
+        message: format!(
+            "the wait for {resource} was ended to break a deadlock: {}",
+            describe(cycle)
+        ),
+        details: Some(json!({ "cycle": cycle, "held_by": held_by })),
     }
 }
 

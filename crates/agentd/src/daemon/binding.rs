@@ -2165,6 +2165,7 @@ mod tests {
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 0,
+                priority: 0,
                 automatic: false,
             })
             .await

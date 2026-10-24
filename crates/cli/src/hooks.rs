@@ -1037,6 +1037,7 @@ pub async fn claude_code<B: Backend>(
                             me.spec.name
                         )),
                         wait_secs: 0,
+                        priority: 0,
                         // Taken for this edit, not asked for: the turn's end
                         // gives it back. What the agent claimed itself stays.
                         automatic: true,

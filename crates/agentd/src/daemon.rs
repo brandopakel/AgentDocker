@@ -2833,10 +2833,11 @@ impl Daemon {
                 ttl_secs,
                 note,
                 wait_secs,
+                priority,
                 automatic,
             } => {
                 self.claim(
-                    &agent, resource, mode, amount, ttl_secs, note, wait_secs, automatic,
+                    &agent, resource, mode, amount, ttl_secs, note, wait_secs, priority, automatic,
                 )
                 .await
             }

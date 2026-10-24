@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a19209933f2e3efa3779f2487eb96c4f7a920f50ad50c240fa9ad0e3ea05fe5b # shrinks to steps = [Join { agent: 0, key: 0, shared: false, priority: 0 }, Join { agent: 0, key: 0, shared: false, priority: 0 }, Join { agent: 0, key: 0, shared: false, priority: 1 }]
