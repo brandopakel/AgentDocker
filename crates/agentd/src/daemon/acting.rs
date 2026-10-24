@@ -812,8 +812,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut daemon = Daemon::open(tmp.path().into(), tmp.path().join("host.sock")).unwrap();
         // The person's own word is the person check's, which this test,
-        // perhaps run inside an agent's session, leaves aside.
+        // perhaps run inside an agent's session, leaves aside. The agent
+        // check is on whatever the environment says, since its refusals are
+        // what is tested.
         daemon.person_check = false;
+        daemon.agent_check = true;
         let daemon = Arc::new(daemon);
         let listener = crate::server::bind(&daemon).await.unwrap();
         let serving = tokio::spawn(crate::server::serve(daemon.clone(), listener));
@@ -1064,6 +1067,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut daemon = Daemon::open(tmp.path().into(), tmp.path().join("host.sock")).unwrap();
         daemon.person_check = false;
+        daemon.agent_check = true;
         let daemon = Arc::new(daemon);
         let listener = crate::server::bind(&daemon).await.unwrap();
         let serving = tokio::spawn(crate::server::serve(daemon.clone(), listener));

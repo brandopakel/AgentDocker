@@ -469,7 +469,7 @@ text; the words and any details still go to stderr as `Error: … (Code)`.
 | 2 | a usage error, the argument parser's own; also an invalid request | `invalid` |
 | 3 | nothing by that name, or too many | `not_found`, `ambiguous` |
 | 4 | held or taken by somebody else | `conflict`, `name_taken`, `deadlock` |
-| 5 | refused: not the caller's to do, the project is paused, or it acts as an agent from outside that agent's session | `forbidden`, `paused`, `identity_mismatch` |
+| 5 | refused: not the caller's to do, the project is paused, or it acts as an agent from inside another agent's session or from a sender that cannot be traced | `forbidden`, `paused`, `identity_mismatch` |
 | 6 | not now: the daemon, its storage, an engine or a build is unavailable, busy, handing over, timed out or cancelled | `storage_unavailable`, `unavailable`, `engine_unavailable`, `build_failed`, `backpressure`, `timeout`, `cancelled`, `transferring`, `event_history_lost` |
 
 The class holds wherever the answer was read — a `daemon reload` refusal, an

@@ -1758,9 +1758,11 @@ pub enum ErrorCode {
     /// new lease is refused until they lift it. `details.reason` is the
     /// person's words.
     Paused,
-    /// The request acts as an agent, and the process that sent it does
-    /// not run inside that agent's own session: an agent acts only as
-    /// itself. `details` names the agent (`agent`, `name`).
+    /// The request acts as an agent, and the process that sent it runs
+    /// inside another agent's session, or cannot be traced: an agent acts
+    /// only as itself. A sender outside every agent's session (the app,
+    /// the person's own terminal) acts as the person and is let through.
+    /// `details` names the agent (`agent`, `name`).
     IdentityMismatch,
 }
 
