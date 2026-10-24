@@ -303,7 +303,7 @@ agentdocker up reviewer       # just one
 agentdocker down              # stops them
 ```
 
-`after` takes one condition or a list (`after = ["build exits 0", "lint exits 0"]`). While an entry waits, `up` stays and says so; if what it waits on exits otherwise, is stopped or fails to start, the entry is never started — nor is anything waiting on it — and `up` says why (`summary  not started: writer exited 1`) and exits unsuccessfully.
+`after` takes one condition or a list (`after = ["build exits 0", "lint exits 0"]`). While an entry waits, `up` stays and says so; if what it waits on exits otherwise, is stopped or fails to start, the entry is never started — nor is anything waiting on it — and `up` says why (`summary  not started: writer exited 1`) and exits unsuccessfully. Only an exit `up` watched counts: `up summary` alone does not take an earlier exit of `writer` as success, because its record cannot show the exit was not the end of a stop.
 
 ### Waiting instead of failing
 

@@ -91,7 +91,9 @@ const POLL: Duration = Duration::from_secs(1);
 impl Bringup<'_> {
     /// What is known before anything starts: an entry already live is
     /// left running and watched; one left out by `only` is what its latest
-    /// record from this file says, or has not run.
+    /// record from this file says, or has not run. An exit 0 on record
+    /// does not count as success: nothing watched it end, and a stop
+    /// leaves no mark on the record once the agent has exited.
     async fn seed(&mut self, path: &Path, only: &[String]) -> Result<()> {
         let live = live_agents(self.client).await?;
         let recorded = if only.is_empty() {
@@ -115,7 +117,11 @@ impl Bringup<'_> {
                     .filter(|a| a.spec.name == name)
                     .max_by_key(|a| a.created_at)
                 {
-                    Some(agent) => self.track(&name, agent),
+                    Some(agent) => match Ending::before(agent) {
+                        Some(ending) => self.end(&name, ending),
+                        // Live, or about to be restarted: watched from here.
+                        None => self.track(&name, agent),
+                    },
                     None => self.end(&name, Ending::NeverRan),
                 }
             }

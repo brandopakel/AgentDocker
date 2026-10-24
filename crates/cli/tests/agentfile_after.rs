@@ -157,6 +157,30 @@ impl Fixture {
     }
 }
 
+/// `up` for just these entries, run to the end.
+fn up_only(fixture: &Fixture, names: &[&str]) -> (bool, String) {
+    let mut command = fixture.up();
+    command.args(names);
+    let output = finish(command.spawn().unwrap(), Duration::from_secs(30));
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// Wait until the daemon has `name` on record with this status.
+fn wait_status(fixture: &Fixture, name: &str, status: Value) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while fixture.record(name).map(|agent| agent["status"].clone()) != Some(status.clone()) {
+        assert!(
+            Instant::now() < deadline,
+            "{name} never reached {status}: {:?}",
+            fixture.record(name)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Wait for a child with a deadline, so a regression that hangs `up` fails
 /// the test instead of the run.
 fn finish(mut child: Child, within: Duration) -> Output {
@@ -352,6 +376,86 @@ after = "serve exits 0"
     );
     assert!(fixture.record("report").is_none());
     assert!(!fixture.work.join("report-ran").exists());
+}
+
+/// What `up` prints for an entry whose dependency ended before it ran.
+const BEFORE_THIS_RUN: &str = "ended before this run; its exit cannot be shown to be its own";
+
+#[test]
+fn a_dependency_stopped_before_this_run_does_not_let_what_waits_start() {
+    let fixture = Fixture::new(
+        r#"
+[agents.serve]
+command = ["sh", "-c", "trap 'exit 0' TERM; touch serving; while :; do sleep 0.05; done"]
+
+[agents.report]
+command = ["sh", "-c", "touch report-ran"]
+after = "serve exits 0"
+"#,
+    );
+    let (ok, stderr) = up_only(&fixture, &["serve"]);
+    assert!(ok, "{stderr}");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !fixture.work.join("serving").exists() {
+        assert!(Instant::now() < deadline, "serve never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let stopped = rpc(
+        &fixture.socket,
+        json!({"op":"stop","agent":"serve","force":false}),
+    )
+    .unwrap();
+    assert_eq!(stopped["type"], "agent", "{stopped}");
+    // It traps the stop and exits 0, so its record reads like success.
+    wait_status(&fixture, "serve", json!({"state":"exited","code":0}));
+
+    let (ok, stderr) = up_only(&fixture, &["report"]);
+    assert!(!ok, "{stderr}");
+    assert_eq!(
+        said(&stderr, "report", "not started:"),
+        Some(format!("{:<24} not started: serve {BEFORE_THIS_RUN}", "report").as_str()),
+        "{stderr}"
+    );
+    assert!(fixture.record("report").is_none(), "report was started");
+    assert!(!fixture.work.join("report-ran").exists());
+}
+
+#[test]
+fn an_earlier_exit_0_on_record_cannot_be_told_from_a_stop_so_it_fails_closed() {
+    let fixture = Fixture::new(
+        r#"
+[agents.build]
+command = ["true"]
+
+[agents.test]
+command = ["sh", "-c", "touch test-ran"]
+after = "build exits 0"
+"#,
+    );
+    let (ok, stderr) = up_only(&fixture, &["build"]);
+    assert!(ok, "{stderr}");
+    wait_status(&fixture, "build", json!({"state":"exited","code":0}));
+
+    // `build` exited 0 by itself, but its record would read the same had
+    // it been stopped and exited 0, so `up test` cannot take it as success.
+    let (ok, stderr) = up_only(&fixture, &["test"]);
+    assert!(!ok, "{stderr}");
+    assert_eq!(
+        said(&stderr, "test", "not started:"),
+        Some(format!("{:<24} not started: build {BEFORE_THIS_RUN}", "test").as_str()),
+        "{stderr}"
+    );
+    assert!(fixture.record("test").is_none(), "test was started");
+
+    // Brought up together, the exit is watched, and `test` runs.
+    let (ok, stderr) = up_only(&fixture, &[]);
+    assert!(ok, "{stderr}");
+    assert!(said(&stderr, "test", "started").is_some(), "{stderr}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !fixture.work.join("test-ran").exists() {
+        assert!(Instant::now() < deadline, "test never ran: {stderr}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]

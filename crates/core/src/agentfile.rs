@@ -325,6 +325,11 @@ pub enum Ending {
     NotStarted { cause: String },
     /// Left out of this run and not on record as ever having run.
     NeverRan,
+    /// It had exited 0 before anything here watched it, and the record
+    /// cannot show that the exit was its own rather than the end of a stop:
+    /// once a stopped agent has exited, its record no longer says it was
+    /// stopped. Not success — an `after` fails closed on it.
+    Unproven,
 }
 
 impl Ending {
@@ -361,6 +366,19 @@ impl Ending {
         })
     }
 
+    /// The ending of an agent that had already ended before anything here
+    /// watched it, from its record alone: what [`Ending::of`] says, except
+    /// that an exit 0 is [`Ending::Unproven`]. No stop was seen, and the
+    /// record cannot say there was none, so a success cannot be shown;
+    /// any other ending is a failure whatever caused it. `None` while the
+    /// agent may still run, as for [`Ending::of`].
+    pub fn before(record: &AgentRecord) -> Option<Self> {
+        match Self::of(record, false)? {
+            ending if ending.succeeded() => Some(Self::Unproven),
+            ending => Some(ending),
+        }
+    }
+
     /// Exited with status zero: the one ending an `after` is met by.
     pub fn succeeded(&self) -> bool {
         matches!(self, Self::Exited { code: Some(0) })
@@ -387,6 +405,9 @@ impl fmt::Display for Ending {
             Self::FailedToStart { reason } => write!(f, "failed to start: {reason}"),
             Self::NotStarted { cause } => write!(f, "was not started: {cause}"),
             Self::NeverRan => f.write_str("has not run"),
+            Self::Unproven => {
+                f.write_str("ended before this run; its exit cannot be shown to be its own")
+            }
         }
     }
 }
@@ -663,6 +684,10 @@ mod tests {
                 "build failed: spawn",
             ),
             (Ending::NeverRan, "build has not run"),
+            (
+                Ending::Unproven,
+                "build ended before this run; its exit cannot be shown to be its own",
+            ),
         ] {
             assert_eq!(
                 readiness(&test, &progress(&[("build", Progress::Ended(ending))])),
@@ -897,6 +922,47 @@ mod tests {
             Some(Ending::Failed {
                 reason: "spawn".into()
             })
+        );
+    }
+
+    #[test]
+    fn an_earlier_exit_0_is_not_taken_as_success_but_an_earlier_failure_is_a_failure() {
+        let no = RestartPolicy::No;
+        // A stop leaves no mark on the record once the agent has exited,
+        // so an exit 0 found on record may be the end of one.
+        let earlier = Ending::before(&record(AgentStatus::Exited { code: Some(0) }, no, 0));
+        assert_eq!(earlier, Some(Ending::Unproven));
+        assert!(!Ending::Unproven.succeeded());
+        assert_eq!(
+            Ending::before(&record(AgentStatus::Exited { code: Some(1) }, no, 0)),
+            Some(Ending::Exited { code: Some(1) })
+        );
+        assert_eq!(
+            Ending::before(&record(AgentStatus::Exited { code: None }, no, 0)),
+            Some(Ending::Exited { code: None })
+        );
+        // Still running, or about to be restarted: nothing to judge yet.
+        assert_eq!(Ending::before(&record(AgentStatus::Running, no, 0)), None);
+        let retry = RestartPolicy::OnFailure { max: 2 };
+        assert_eq!(
+            Ending::before(&record(AgentStatus::Exited { code: Some(1) }, retry, 0)),
+            None
+        );
+        // What waits on it is not started, and says why.
+        let report = entry("report", &[], &["serve"]);
+        assert_eq!(
+            readiness(
+                &report,
+                &progress(&[("serve", Progress::Ended(Ending::Unproven))])
+            ),
+            Readiness::Blocked {
+                reason: "serve ended before this run; its exit cannot be shown to be its own"
+                    .into(),
+                ending: Ending::NotStarted {
+                    cause: "serve ended before this run; its exit cannot be shown to be its own"
+                        .into()
+                },
+            }
         );
     }
 
