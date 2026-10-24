@@ -339,11 +339,16 @@ impl Daemon {
         }
     }
 
+    /// Register an external process. `authorized` is what the socket's
+    /// check let its `pid` through on, held to under the lock that commits
+    /// it ([`acting::Authorized::recheck`]); `None` for a registration the
+    /// check did not look at.
     pub(super) async fn register(
         &self,
         spec: AgentSpec,
         pid: Option<u32>,
         reported: Option<agentdocker_core::multiplexer::Session>,
+        authorized: Option<acting::Authorized>,
     ) -> Response {
         if pid.is_some_and(|pid| signal_pid(pid).is_none()) {
             return Response::error(
@@ -460,12 +465,29 @@ impl Daemon {
         // And the application around that terminal, which is what a
         // person brings to the front to reach it.
         record.terminal = pid.and_then(agentdocker_host::terminal::of_process);
+        #[cfg(test)]
+        {
+            let hold = lock(&self.register_hold).take();
+            if let Some(hold) = hold {
+                hold.wait().await;
+                hold.wait().await;
+            }
+        }
         // A Codex process proven to run a conversation known by its key
         // alone joins that record rather than becoming a second one. The
         // check and the insert share this one lock, so an attach racing
-        // this registration cannot slip a second record between them.
+        // this registration cannot slip a second record between them; and
+        // so does what let its pid through, held to against the agents that
+        // hold the process now, so one that came to hold it after the check
+        // is neither joined nor taught a session on a word given without it.
         let response = {
             let mut state = lock(&self.state);
+            if let Some(refusal) = authorized
+                .as_ref()
+                .and_then(|authorized| authorized.recheck(&state, record.process_started_at))
+            {
+                return refusal;
+            }
             let proven = match record.pid {
                 Some(pid)
                     if record.spec.runtime == "codex"
@@ -480,13 +502,14 @@ impl Daemon {
                         record.process_started_at,
                         (record.session.clone(), record.terminal.clone()),
                         Utc::now(),
+                        authorized.as_ref(),
                     )
                 }
                 _ => None,
             };
             match proven {
                 Some(response) => response,
-                None => state.insert_record(record),
+                None => state.insert_record_authorized(record, authorized.as_ref()),
             }
         };
         // The reply is what a session waits for before its first edit, so

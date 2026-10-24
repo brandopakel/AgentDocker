@@ -85,7 +85,7 @@ impl Daemon {
         // the whole expression, and one arm awaits.
         // Not announced yet: tmux has not been asked for the process, so
         // there is nothing to say started. The event goes out below, once.
-        let inserted = lock(&self.state).insert_record_announcing(record.clone(), false);
+        let inserted = lock(&self.state).insert_record_announcing(record.clone(), false, None);
         let record = match inserted {
             Response::Agent { agent } => agent,
             other => {
@@ -276,7 +276,7 @@ mod tests {
                 Utc::now(),
             );
             assert!(matches!(
-                state.insert_record_announcing(before.clone(), false),
+                state.insert_record_announcing(before.clone(), false, None),
                 Response::Agent { .. }
             ));
             if fenced {

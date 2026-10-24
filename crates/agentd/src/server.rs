@@ -201,6 +201,13 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
             write(&mut writer, &refusal).await?;
             continue;
         }
+        let authorized = match daemon.authorize_registration(peer, &request).await {
+            Ok(authorized) => authorized,
+            Err(refusal) => {
+                write(&mut writer, &refusal).await?;
+                continue;
+            }
+        };
         daemon.mark_launcher(peer, &mut request).await;
         if let Some(refusal) = daemon.authenticate_verdict(peer, &mut request).await {
             write(&mut writer, &refusal).await?;
@@ -260,7 +267,7 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
                         response = daemon.handle(unary) => response,
                     }
                 } else {
-                    daemon.handle(unary).await
+                    daemon.handle_authorized(unary, authorized).await
                 };
                 let response =
                     agentdocker_core::protocol::handover_response(response, frame.handover_retry);

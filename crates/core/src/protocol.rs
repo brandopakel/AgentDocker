@@ -1778,7 +1778,12 @@ pub enum ErrorCode {
     /// inside another agent's session, or cannot be traced: an agent acts
     /// only as itself. A sender outside every agent's session (the app,
     /// the person's own terminal) acts as the person and is let through.
-    /// `details` names the agent (`agent`, `name`).
+    /// `details` names the agent (`agent`, `name`). A `register` is refused
+    /// it too when its `pid` names a process its sender may not name —
+    /// neither the sender, one of its parents nor a process it started, or
+    /// a process another agent holds — and the sender is not the person's;
+    /// `details` then carries the `pid`, and the `agent` and `name` holding
+    /// it when one does.
     IdentityMismatch,
 }
 

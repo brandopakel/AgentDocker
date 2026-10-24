@@ -341,6 +341,10 @@ pub struct Daemon {
     /// across an await.
     #[cfg(test)]
     relaunch_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// A test's pause in a registration, after its check and before the
+    /// lock that commits it, met twice. Never held across an await.
+    #[cfg(test)]
+    register_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     /// A test's hold on one agent's claim at one point of its wait
     /// (`waiting::ClaimPoint`), so another claim can act in between. Taken
     /// once; never held across an await.
@@ -1688,6 +1692,8 @@ impl Daemon {
             #[cfg(test)]
             relaunch_hold: Mutex::new(None),
             #[cfg(test)]
+            register_hold: Mutex::new(None),
+            #[cfg(test)]
             claim_hold: Mutex::new(None),
             peers: Mutex::new(person::Peers::default()),
             person_check: std::env::var_os("AGENTDOCKER_PERSON_CHECK").is_none_or(|v| v != "off"),
@@ -1878,6 +1884,19 @@ impl Daemon {
 
     /// Handle every non-streaming request.
     pub async fn handle(self: &Arc<Self>, request: Request) -> Response {
+        self.handle_authorized(request, None).await
+    }
+
+    /// [`Daemon::handle`], with what the socket's registration check let a
+    /// `register` through on ([`Daemon::authorize_registration`]), which
+    /// the registration holds to when it commits. `None` for anything the
+    /// check did not look at: the daemon's own callers, a request that
+    /// names no process, or the check switched off.
+    pub(crate) async fn handle_authorized(
+        self: &Arc<Self>,
+        request: Request,
+        authorized: Option<acting::Authorized>,
+    ) -> Response {
         // A failed write makes the in-memory projection unsafe to serve. Keep
         // the daemon unavailable until restart reloads durable state; never
         // acknowledge a mutation or grant new protection from that projection.
@@ -1916,7 +1935,7 @@ impl Daemon {
         let response = ADMISSION
             .scope(
                 std::cell::RefCell::new(in_flight),
-                Box::pin(self.handle_healthy(request)),
+                Box::pin(self.handle_healthy(request, authorized)),
             )
             .await;
         if control {
@@ -1966,7 +1985,11 @@ impl Daemon {
         let _ = ADMISSION.try_with(|slot| *slot.borrow_mut() = Some(place));
     }
 
-    async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
+    async fn handle_healthy(
+        self: &Arc<Self>,
+        request: Request,
+        authorized: Option<acting::Authorized>,
+    ) -> Response {
         match request {
             Request::RecordEmission { agent, emission } => self.record_emission(&agent, emission),
             Request::BuildImage { spec } => self.build_image(spec).await,
@@ -2139,7 +2162,7 @@ impl Daemon {
             }
             Request::RestartContainer { agent } => self.restart_container(&agent).await,
             Request::Register { spec, pid, session } => {
-                let registered = self.register(spec, pid, session).await;
+                let registered = self.register(spec, pid, session, authorized).await;
                 self.trace_starter(&registered);
                 registered
             }
@@ -2161,7 +2184,7 @@ impl Daemon {
             Request::Discover => self.discover().await,
             Request::Runtimes => self.runtimes().await,
             Request::Adopt { pid, name, runtime } => {
-                let adopted = self.adopt(pid, name, runtime).await;
+                let adopted = self.adopt(pid, name, runtime, authorized).await;
                 self.trace_starter(&adopted);
                 adopted
             }
@@ -4459,6 +4482,7 @@ impl State {
             Option<agentdocker_core::terminal::Host>,
         ),
         now: DateTime<Utc>,
+        authorized: Option<&acting::Authorized>,
     ) -> Option<Response> {
         let session = spec.labels.get("session_id").filter(|s| !s.is_empty())?;
         let profile = spec.labels.get(agentdocker_core::agent::PROFILE_LABEL)?;
@@ -4477,6 +4501,11 @@ impl State {
             .collect();
         keyed.sort_by_key(|a| (a.status.is_live(), a.last_seen));
         let mut record = keyed.pop()?;
+        // The labels chose the record; taking it is acting as it, which
+        // what let the registration through must allow on its own.
+        if let Some(refusal) = authorized.and_then(|authorized| authorized.join_refusal(&record)) {
+            return Some(refusal);
+        }
         if record.spec.workdir != spec.workdir {
             return Some(Response::error(
                 ErrorCode::Conflict,
@@ -5342,7 +5371,18 @@ impl State {
     }
 
     fn insert_record(&mut self, record: AgentRecord) -> Response {
-        self.insert_record_announcing(record, true)
+        self.insert_record_announcing(record, true, None)
+    }
+
+    /// [`State::insert_record`] for a registration the socket's check let
+    /// through on `authorized`, which a session's resumption into an ended
+    /// record must satisfy ([`acting::Authorized::fold_refusal`]).
+    fn insert_record_authorized(
+        &mut self,
+        record: AgentRecord,
+        authorized: Option<&acting::Authorized>,
+    ) -> Response {
+        self.insert_record_announcing(record, true, authorized)
     }
 
     /// `announce_start` is false where the record exists before its
@@ -5354,6 +5394,7 @@ impl State {
         &mut self,
         mut record: AgentRecord,
         announce_start: bool,
+        authorized: Option<&acting::Authorized>,
     ) -> Response {
         if let Some(error) = self.write_failure() {
             return error;
@@ -5496,6 +5537,33 @@ impl State {
             if adopted {
                 return Response::error(ErrorCode::Invalid, "pid is already registered");
             }
+            // Joined, it may resume an ended record of the session it is
+            // shown: which the registration must be allowed, before anything
+            // is written.
+            let mut resume = true;
+            if let Some(authorized) = authorized {
+                let mut joined = self.registry.get(&id).cloned().expect("just found");
+                let learns = joined
+                    .spec
+                    .labels
+                    .get("session_id")
+                    .is_none_or(|session| session.is_empty())
+                    && session.is_some();
+                if learns && let Some(session) = session.cloned() {
+                    joined.spec.labels.insert("session_id".to_owned(), session);
+                }
+                let ended = self.fold_targets(&joined);
+                if let Some(refusal) = authorized.fold_refusal(self, &ended) {
+                    // Taught the session now, the record would become its
+                    // ended lives on the registration's word alone. One that
+                    // already named it is answered as it is, and its ended
+                    // lives are left as they are.
+                    if learns {
+                        return refusal;
+                    }
+                    resume = false;
+                }
+            }
             // The record takes on the session it has just been shown,
             // and this is not bookkeeping — without it the rule is not
             // transitive and two sessions collapse into one.
@@ -5573,8 +5641,20 @@ impl State {
             }
             let agent = self.registry.get(&id).cloned().expect("just found");
             return Response::Agent {
-                agent: self.resume_session(agent),
+                agent: if resume {
+                    self.resume_session(agent)
+                } else {
+                    agent
+                },
             };
+        }
+        // A fresh record that would resume an ended one: the registration
+        // must be allowed that, before the record is made.
+        if let Some(authorized) = authorized {
+            let ended = self.fold_targets(&record);
+            if let Some(refusal) = authorized.fold_refusal(self, &ended) {
+                return refusal;
+            }
         }
         if let Err(err) = self.registry.insert(record.clone()) {
             return registry_error(err);
@@ -5742,32 +5822,39 @@ impl State {
     /// it, has a live subscriber, has ambiguous observations, or a
     /// store that cannot say or refuses the rewrite — leaves the fresh
     /// record as it is.
-    fn resume_session(&mut self, fresh: AgentRecord) -> AgentRecord {
+    /// The ended records `fresh` would resume, the one that stays first
+    /// ([`agentdocker_core::identity::resumed_session`]): none for a record
+    /// whose receiver may already have offered its queue head, that names no
+    /// session or has no process. Whether each record's process is gone, and
+    /// what it holds, [`State::resume_session`] decides next.
+    fn fold_targets(&self, fresh: &AgentRecord) -> Vec<AgentRecord> {
         // An initialized receiver may already have offered its queue head.
         // Folding older backlog ahead of that offer would reorder delivery.
         // Before initialization, channel ownership is also locked by provider
         // process generation so changing an agent ID cannot admit a second MCP.
-        if fresh.input_delivery.is_some() {
-            return fresh;
+        if fresh.input_delivery.is_some()
+            || fresh.pid.is_none()
+            || fresh
+                .spec
+                .labels
+                .get("session_id")
+                .is_none_or(|id| id.is_empty())
+        {
+            return Vec::new();
         }
-        let Some(session) = fresh
-            .spec
-            .labels
-            .get("session_id")
-            .filter(|id| !id.is_empty())
+        agentdocker_core::identity::resumed_session(self.registry.all(), fresh)
+            .into_iter()
             .cloned()
-        else {
-            return fresh;
-        };
-        let ended: Vec<AgentRecord> =
-            agentdocker_core::identity::resumed_session(self.registry.all(), &fresh)
-                .into_iter()
-                .cloned()
-                .collect();
+            .collect()
+    }
+
+    fn resume_session(&mut self, fresh: AgentRecord) -> AgentRecord {
+        let ended = self.fold_targets(&fresh);
         let Some((prior, earlier)) = ended.split_first() else {
             return fresh;
         };
-        let Some(pid) = fresh.pid else {
+        let (Some(pid), Some(session)) = (fresh.pid, fresh.spec.labels.get("session_id").cloned())
+        else {
             return fresh;
         };
         // Ended on a record is not enough: the process it named must be

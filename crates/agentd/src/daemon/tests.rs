@@ -9839,6 +9839,7 @@ async fn a_scan_started_before_registration_cannot_restore_an_adopted_process() 
             },
             Some(child.id()),
             None,
+            None,
         )
         .await;
     assert!(matches!(response, Response::Agent { .. }), "{response:?}");

@@ -378,7 +378,7 @@ impl Daemon {
             };
             // No pid: a person is not a process, so liveness has nothing
             // to check and the record is never expired.
-            let registered = self.register(spec, None, None).await;
+            let registered = self.register(spec, None, None, None).await;
             // Registering is not atomic with the look-up above — it does
             // project discovery in between — so two `me` calls can both
             // find nobody and both try. The second is refused for the

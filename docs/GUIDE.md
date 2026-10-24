@@ -474,7 +474,7 @@ text; the words and any details still go to stderr as `Error: … (Code)`.
 | 2 | a usage error, the argument parser's own; also an invalid request | `invalid` |
 | 3 | nothing by that name, or too many | `not_found`, `ambiguous` |
 | 4 | held or taken by somebody else | `conflict`, `name_taken`, `deadlock` |
-| 5 | refused: not the caller's to do, the project is paused, or it acts as an agent from inside another agent's session or from a sender that cannot be traced | `forbidden`, `paused`, `identity_mismatch` |
+| 5 | refused: not the caller's to do, the project is paused, or it acts as an agent, or registers a process, from inside another agent's session or from a sender that cannot be traced | `forbidden`, `paused`, `identity_mismatch` |
 | 6 | not now: the daemon, its storage, an engine or a build is unavailable, busy, handing over, timed out or cancelled | `storage_unavailable`, `unavailable`, `engine_unavailable`, `build_failed`, `backpressure`, `timeout`, `cancelled`, `transferring`, `event_history_lost` |
 
 The class holds wherever the answer was read — a `daemon reload` refusal, an
@@ -503,9 +503,9 @@ each one by pid.
 |---|---|
 | `run <command>` | Launch a command as a supervised agent |
 | `codex [--name <name>] [-- <codex options>]` | Start Codex in this terminal so AgentDocker can reach it: the same Codex and conversation, run through AgentDocker's launcher, so a message wakes it even while it is idle, and it can hold a role (`role --as <name> reviewer`, or the app's Roles menu) like an agent the app launched. The binary behind the `codex` on `PATH` is used; experimental |
-| `register` | Announce an already-running process as an agent |
+| `register` | Announce an already-running process as an agent. `--pid` names its process: this command's own shell (`--pid $$`) or another of its parents. From inside an agent's session any other is refused `identity_mismatch` (exit 5), and a process an agent already holds is registered only from inside that agent's own session; from your own terminal, any process may be named |
 | `discover` | Agent processes nobody registered |
-| `adopt <pid>` | Register one of them; `--all` for all |
+| `adopt <pid>` | Register one of them; `--all` for all. Its pid is checked as `register --pid`'s is: from inside an agent's session only a process that session may name, else refused `identity_mismatch` (exit 5); from your own terminal or the app, any |
 | `stop <agent>` | Signal an agent to stop. Its record says so from then on (`"stop_requested": true` in `inspect`), even if it exits 0, until it next starts under the same id |
 | `restart <agent>` | Replace a managed container after confirming it exited |
 | `deregister` / `rm` | Mark an external agent finished / forget a finished one |

@@ -236,11 +236,14 @@ impl Daemon {
     /// unless given, working directory from the process, so it lands in
     /// its project. Adopted agents run no hooks, so they hold no leases
     /// and report nothing, but they are visible, messageable, and counted.
+    /// `authorized` is what the socket's check let the pid through on, as
+    /// for a registration ([`acting::Authorized::recheck`]).
     pub(super) async fn adopt(
         &self,
         pid: u32,
         name: Option<String>,
         runtime: Option<String>,
+        authorized: Option<acting::Authorized>,
     ) -> Response {
         let already = lock(&self.state)
             .registry
@@ -293,7 +296,7 @@ impl Daemon {
             },
             ..AgentSpec::default()
         };
-        let response = self.register(spec, Some(pid), None).await;
+        let response = self.register(spec, Some(pid), None, authorized).await;
         if matches!(response, Response::Agent { .. }) {
             let mut state = lock(&self.state);
             if let Some(index) = state.discovered.processes.iter().position(|p| p.pid == pid) {

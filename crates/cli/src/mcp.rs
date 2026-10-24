@@ -76,6 +76,8 @@ pub struct McpArgs {
     #[arg(long)]
     pub model: Option<String>,
     /// Pid to register for liveness checks (default: our parent, the MCP host).
+    /// The daemon takes this server's host or another of its parents; any
+    /// other only from outside every agent's session.
     #[arg(long)]
     pub pid: Option<u32>,
     /// Offer durable inbox messages through an explicitly enabled Claude channel.
