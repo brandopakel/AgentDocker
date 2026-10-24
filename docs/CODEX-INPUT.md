@@ -419,28 +419,72 @@ connection stay, so the receiver asks `thread/loaded/list` again immediately
 before each new offer: while the conversation is not loaded nothing is prepared
 or added, delivery reads as paused (*The shared Codex server has not loaded this
 conversation; new messages wait until it is open again.*), and it resumes, with
-each message added once, when it is loaded again. An input already offered keeps
-its reconciliation. Everything else is the receiver above, unchanged: the
-same daemon binding and token, the private ledger that records each input before
-offering it, one outstanding `thread/queue/add` carrying the AgentDocker message
-id as `clientUserMessageId`, acknowledgement only on the exact provider receipt
-(the turn's own `userMessage` item for the exact input, read from
+each message offered once, when it is loaded again. An input already offered keeps
+its reconciliation. Everything else is the receiver above: the same daemon
+binding and token, the private ledger that records each input before offering
+it, one outstanding offer carrying the AgentDocker message id as
+`clientUserMessageId`, acknowledgement only on the exact provider receipt (the
+turn's own `userMessage` item for the exact input, read from
 `thread/items/list`), and reconciliation after a lost connection that reads the
-queue and history and never adds the input again. A queue add the server
-answered is an offer, not a receipt: the message is acknowledged when a turn
-carries it. The launch descriptor keeps `--control`, so a receiver the daemon
-restarts reaches the same shared server. Until the receiver binds, and without
-the socket, the conversation's hooks deliver at its next prompt as before. The
+queue and history and never offers the input again. An offer the server
+answered is not a receipt: the message is acknowledged when a turn carries it.
+The launch descriptor keeps `--control`, so a receiver the daemon restarts
+reaches the same shared server. Until the receiver binds, and without the
+socket, the conversation's hooks deliver at its next prompt as before. The
 receiver's private hook endpoint does not serve these hooks (they do not descend
-from the terminal), so messages arriving during a turn wait for the native queue
-at idle. The binding records `control` in the receiver's ledger; a ledger written
-without it reads back unchanged, and a receiver that does not know it refuses a
-ledger that has it.
+from the terminal). The binding records `control` in the receiver's ledger; a
+ledger written without it reads back unchanged, and a receiver that does not
+know it refuses a ledger that has it.
+
+**During a turn.** After the loaded check, immediately before each new offer,
+the receiver reads the conversation itself: its newest turn (`thread/turns/list`,
+one turn, newest first, without items), then its status (`thread/read`), the
+status last. The offer then goes one of three ways:
+
+- *A turn in progress, the status `active` without `waitingOnApproval` or
+  `waitingOnUserInput`:* the message at the head of the queue is steered into
+  that turn. The ledger records the input and the turn first; then one
+  `turn/steer` goes with `threadId`, the input, `expectedTurnId` naming that turn
+  and the AgentDocker message id as `clientUserMessageId`. The server checks the
+  turn itself, so a turn that ended or changed in between is refused, never
+  steered into. The answer (`turnId`, the same turn) is an offer: Codex takes
+  steered input at the turn's next step, and the receipt is that turn's own
+  `userMessage` item for the exact input, in that turn and no other (Codex also
+  carries the message id on the item as `clientId`). Until the steered turn
+  ends a missing item proves nothing, so the receiver keeps reading; once the
+  turn has ended, thirty seconds without the item pauses delivery with the
+  input retained, never sent again.
+- *A turn waiting on the person (an approval or a question):* nothing is offered.
+  The message is looked at again every two seconds and goes once the turn runs
+  on (steered) or has ended (queued).
+- *Anything else* (idle, no turn in progress, a status this build does not know,
+  a read the server refuses): `thread/queue/add`, which the conversation takes at
+  idle, as before.
+
+The server's own word that a steer submitted nothing (`no active turn to steer`,
+`expected active turn id … but found …`, the structured `activeTurnNotSteerable`,
+or method-not-found) drops the prepared input, and that message goes by the
+native queue instead and is not steered again; a server that does not serve
+`turn/steer` is not asked again on that connection. Any other error, a timeout or
+a lost connection leaves the input retained for reconciliation, which reads
+history for the receipt and never steers or queues it again. The turn that
+carried the last received input may take the next one by steering, never by
+another native queue entry: while that turn runs, a message that cannot be
+steered waits for it to end. One offer is outstanding at a time, so messages keep
+their order. A steered input records its turn in the receiver's ledger; a ledger
+written without that reads back unchanged, and a receiver that does not know it
+refuses a ledger that has it.
+
+**The person's typing.** The control path cannot see the person's keystrokes:
+the composer is the Codex terminal's own, and nothing in the app-server protocol
+reports a draft. So nothing here is held for typing
+([contract](ARCHITECTURE.md#holding-input-while-the-person-types)), the
+person's messages and peers' alike, as with the native queue. A steer goes into
+the running turn's transcript, not into the composer, so the person's unfinished
+line stays theirs.
 
 A conversation started as plain `codex` has no terminal process to bind, so it
 still takes messages at its next prompt; its status is read as above.
-`turn/steer` (with the `expectedTurnId` read from the server) is not used on this
-path.
 
 `agentdocker codex-threads [--profile <dir>] [--json]` lists what the shared
 server has loaded, through the same kind of read-only connection: each
@@ -834,12 +878,16 @@ Ambiguous failures retain the durable attempt for receipt reconciliation; they d
 not authorize another submission.
 
 The [documented active-turn steering API](https://learn.chatgpt.com/docs/app-server#steer-an-active-turn)
-requires an active turn on the target thread and a matching `expectedTurnId`. The
-bridge's separate connection to an independently running terminal cannot steer
-that terminal's active turn; this is a local compatibility limit, not an
-additional ownership requirement in the API contract. The native TUI queue alone
-waits for idle; the separate bounded [hook route](#active-input-in-an-existing-terminal)
-supplies active-turn input for the existing-session receiver.
+requires an active turn on the target thread and a matching `expectedTurnId`. A
+receiver's private app-server, a separate process from an independently running
+terminal, cannot steer that terminal's active turn; this is a local compatibility
+limit, not an additional ownership requirement in the API contract. There the
+native TUI queue alone waits for idle, and the separate bounded
+[hook route](#active-input-in-an-existing-terminal) supplies active-turn input.
+Where the terminal's conversation runs in Codex's shared app-server, the turn
+runs in the server the receiver reaches, which steers it from its own
+connection by the rules above
+([shared app-server](#terminals-in-codexs-shared-app-server)).
 
 The managed bridge records an accepted conversation as the existing managed
 agent's `session_id` after Codex accepts its first turn, and confirms that same

@@ -234,6 +234,7 @@ mod tests {
             receipt: None,
             hook: None,
             start: None,
+            steer: None,
         };
         let value = json!({"data":[{"id":"entry","clientUserMessageId":"message",
             "input":[{"type":"text","text":"original","text_elements":[]}]}]});

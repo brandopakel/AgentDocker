@@ -1145,9 +1145,11 @@ Current behaviour that the sections above do not already state, by area.
   keeps saying it, the agent's own tools calling in do not make a quiet or
   waiting Codex read as working, and where herdr also follows its pane, the
   server's word wins. `agentdocker events` marks these `(Codex server)`.
-  A terminal resumed with `codex resume <thread>` is also fed at
-  idle through that server's own queue, with the same exact receipts as any
-  Codex receiver. Without the socket nothing changes. `agentdocker
+  A terminal resumed with `codex resume <thread>` is also fed through that
+  server, with the same exact receipts as any Codex receiver: a message that
+  arrives while it works goes into the running turn, one that arrives while
+  it waits for you waits too, and otherwise it goes at idle through that
+  server's own queue. Without the socket nothing changes. `agentdocker
   codex-threads` lists what that server has loaded, read-only
   ([Codex input](CODEX-INPUT.md#terminals-in-codexs-shared-app-server)).
 
