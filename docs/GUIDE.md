@@ -820,7 +820,8 @@ it — `agentdocker channels`.
 at once, and `--priority N` (from -9 to 9, 0 by default) says where that wait
 stands: higher is served first, the oldest first among equals. A high
 priority can keep a low one waiting for as long as higher ones keep coming;
-every wait still ends at its `--wait` or when the lease it waits for expires.
+every wait still ends by its `--wait` deadline at the latest. A lease that
+expires lets the next waiter in line try again, not every waiter at once.
 When waits form a ring, each holding what the next wants, the lowest
 priority's wait is ended with a deadlock error naming the ring (with equal
 priorities, the claim that closed it); give up something you hold and claim
