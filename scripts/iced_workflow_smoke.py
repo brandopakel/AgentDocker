@@ -24,6 +24,7 @@ from desktop_smoke import bounded_output, stop, wait_window
 # The daemons this starts are its own: they let it act as the person from
 # wherever it runs, an agent's session included.
 os.environ.setdefault("AGENTDOCKER_PERSON_CHECK", "off")
+os.environ.setdefault("AGENTDOCKER_AGENT_CHECK", "off")
 
 
 def finish_smoke(window, daemon, endpoint, report, output, started, primary_error):

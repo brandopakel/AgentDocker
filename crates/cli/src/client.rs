@@ -723,7 +723,7 @@ pub fn exit_code(code: &agentdocker_core::ErrorCode) -> i32 {
         Invalid => EXIT_USAGE,
         NotFound | Ambiguous => EXIT_NOT_FOUND,
         Conflict | NameTaken | Deadlock => EXIT_HELD,
-        Forbidden | Paused => EXIT_REFUSED,
+        Forbidden | Paused | IdentityMismatch => EXIT_REFUSED,
         StorageUnavailable | Unavailable | EngineUnavailable | BuildFailed | Backpressure
         | Timeout | Cancelled | Transferring | EventHistoryLost => EXIT_UNAVAILABLE,
         Internal => EXIT_UNEXPECTED,
@@ -756,6 +756,7 @@ mod exit_tests {
             (ErrorCode::Deadlock, EXIT_HELD),
             (ErrorCode::Forbidden, EXIT_REFUSED),
             (ErrorCode::Paused, EXIT_REFUSED),
+            (ErrorCode::IdentityMismatch, EXIT_REFUSED),
             (ErrorCode::StorageUnavailable, EXIT_UNAVAILABLE),
             (ErrorCode::Unavailable, EXIT_UNAVAILABLE),
             (ErrorCode::EngineUnavailable, EXIT_UNAVAILABLE),

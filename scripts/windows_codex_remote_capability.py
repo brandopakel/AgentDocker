@@ -34,6 +34,7 @@ from windows_native_codex_smoke import current_user_objects, remove_fixture, res
 # The daemons this starts are its own: they let it act as the person from
 # wherever it runs, an agent's session included.
 os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+os.environ.setdefault('AGENTDOCKER_AGENT_CHECK', 'off')
 
 
 class ProviderRefusal(Exception):
@@ -208,6 +209,7 @@ def main():
             env.update(CODEX_HOME=str(profile), AGENTDOCKER_FIXTURE_KEY='fixture-only',
                        TERM='xterm-256color', AD_PRIVATE_WS_TOKEN=token)
             env['AGENTDOCKER_PERSON_CHECK'] = 'off'  # its own daemon: act as the person from anywhere
+            env['AGENTDOCKER_AGENT_CHECK'] = 'off'  # and as any of its agents
             if args.binary_dir is not None:
                 from windows_remote_receiver_fixture import Receiver
                 helper = Path(__file__).with_name('windows_remote_receiver_fixture.py')

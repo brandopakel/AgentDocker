@@ -31,6 +31,7 @@ import traceback
 # The daemons this starts are its own: they let it act as the person from
 # wherever it runs, an agent's session included.
 os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+os.environ.setdefault('AGENTDOCKER_AGENT_CHECK', 'off')
 
 
 def terminal_chunks(terminal, closing):
@@ -290,6 +291,7 @@ def main():
                    CODEX_HOME=str(profile), AGENTDOCKER_HOME=str(root/'state'), AGENTDOCKER_NO_AUTOSTART='1',
                    AGENTDOCKER_NO_NOTIFICATIONS='1', AGENTDOCKER_FIXTURE_KEY='fixture-only', AGENTDOCKER_EXPERIMENTAL_SECRET_INPUT='1')
         env['AGENTDOCKER_PERSON_CHECK'] = 'off'  # its own daemon: act as the person from anywhere
+        env['AGENTDOCKER_AGENT_CHECK'] = 'off'  # and as any of its agents
         receiver = Receiver(binary, root, project, profile, internal, env, report); receiver.start_daemon(); capture()
         human = rpc({'op': 'me', 'workdir': str(project)})['agent']['id']
         cli = binary/'agentdocker.exe'

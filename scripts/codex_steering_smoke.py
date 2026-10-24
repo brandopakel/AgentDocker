@@ -23,6 +23,7 @@ from sustained_use import FixtureProcesses, stop_daemon
 # The daemons this starts are its own: they let it act as the person from
 # wherever it runs, an agent's session included.
 os.environ.setdefault('AGENTDOCKER_PERSON_CHECK', 'off')
+os.environ.setdefault('AGENTDOCKER_AGENT_CHECK', 'off')
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--binary-dir', type=Path, required=True)

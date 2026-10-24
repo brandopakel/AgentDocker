@@ -13,6 +13,7 @@ from pathlib import Path
 # The daemons this starts are its own: they let it act as the person from
 # wherever it runs, an agent's session included.
 os.environ.setdefault("AGENTDOCKER_PERSON_CHECK", "off")
+os.environ.setdefault("AGENTDOCKER_AGENT_CHECK", "off")
 
 
 def run(binary, manifest, output):
@@ -33,6 +34,7 @@ def run(binary, manifest, output):
             scratch = Path(directory).resolve()
             env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_")}
             env["AGENTDOCKER_PERSON_CHECK"] = "off"  # its own daemon: act as the person from anywhere
+            env["AGENTDOCKER_AGENT_CHECK"] = "off"  # and as any of its agents
             env.update(AGENTDOCKER_HOME=str(scratch / "state"),
                        AGENTDOCKER_SOCKET=str(scratch / "absent.sock"),
                        AGENTDOCKER_NO_AUTOSTART="1")

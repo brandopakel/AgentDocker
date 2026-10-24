@@ -21,25 +21,8 @@ fn profile_from_executable(executable: &Path) -> Result<PathBuf> {
         executable.is_absolute(),
         "Codex MCP host image is not absolute"
     );
-    let parts: Vec<_> = executable.ancestors().take(6).collect();
-    ensure!(
-        parts.len() == 6
-            && matches!(
-                executable.file_name().and_then(|v| v.to_str()),
-                Some("codex" | "codex.exe")
-            )
-            && parts[1].file_name().is_some_and(|v| v == "bin")
-            && parts[3].file_name().is_some_and(|v| v == "releases")
-            && parts[4]
-                .file_name()
-                .is_some_and(|v| v == "app-server-daemon")
-            && parts[5].file_name().is_some_and(|v| v == "packages"),
-        "detached Codex MCP host image is outside a provider package cache"
-    );
-    Ok(parts[5]
-        .parent()
-        .context("detached Codex MCP host cache has no provider profile")?
-        .to_owned())
+    agentdocker_host::codex_control::shared_server_profile(executable)
+        .context("detached Codex MCP host image is outside a provider package cache")
 }
 
 /// Mark only backend I/O failures; identity checks keep their original causes.

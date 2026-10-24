@@ -108,6 +108,41 @@ pub fn start_time(pid: u32) -> Option<DateTime<Utc>> {
     imp::start_time(pid)
 }
 
+/// When the process with this pid started, whoever's it is: [`start_time`],
+/// and on macOS, where that cannot describe another user's process (root's
+/// `login` above every terminal), the kernel's process table entry, which
+/// can. A process that has exited and waits to be reaped has no birth here.
+/// For walking a process's parents, where a parent that cannot be read
+/// would otherwise end what can be known.
+pub fn start_time_of_any(pid: u32) -> Option<DateTime<Utc>> {
+    #[cfg(target_os = "macos")]
+    {
+        start_time(pid).or_else(|| imp::kernel_start_time(pid))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        start_time(pid)
+    }
+}
+
+/// The parent's pid and this process's own birth, as the kernel keeps them
+/// for `pid`: one record read, where the platform has one (macOS, Linux),
+/// so a walk up a process's parents costs a read a step rather than a whole
+/// process table. On Windows the parent comes from the process table's row
+/// for this pid alone, which only this user's readable processes have.
+/// `None` when it cannot be read: it has ended, or is not readable.
+pub fn parent_and_birth(pid: u32) -> Option<(u32, DateTime<Utc>)> {
+    #[cfg(windows)]
+    {
+        let ppid = inspect(pid)?.ppid;
+        Some((ppid, start_time(pid)?))
+    }
+    #[cfg(not(windows))]
+    {
+        imp::parent_and_birth(pid)
+    }
+}
+
 /// Whether a process with this pid exists at all.
 ///
 /// Only that. It says nothing about *which* process — a recycled pid
@@ -757,6 +792,15 @@ mod imp {
     }
 
     pub fn start_time(pid: u32) -> Option<DateTime<Utc>> {
+        birth(&bsdinfo(pid)?)
+    }
+
+    pub fn parent_and_birth(pid: u32) -> Option<(u32, DateTime<Utc>)> {
+        let info = bsdinfo(pid)?;
+        Some((info.pbi_ppid, birth(&info)?))
+    }
+
+    fn bsdinfo(pid: u32) -> Option<libc::proc_bsdinfo> {
         let pid = i32::try_from(pid).ok()?;
         // SAFETY: proc_bsdinfo is plain old data, so all-zero is a valid value.
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
@@ -772,14 +816,55 @@ mod imp {
                 size,
             )
         };
-        if written != size {
-            return None;
-        }
+        (written == size).then_some(info)
+    }
+
+    fn birth(info: &libc::proc_bsdinfo) -> Option<DateTime<Utc>> {
         let secs = i64::try_from(info.pbi_start_tvsec).ok()?;
         let nanos = u32::try_from(info.pbi_start_tvusec)
             .ok()?
             .checked_mul(1000)?;
         DateTime::from_timestamp(secs, nanos)
+    }
+
+    /// `struct kinfo_proc` on 64-bit macOS, as `KERN_PROC_PID` fills it.
+    const KINFO_PROC: usize = 648;
+    /// `kp_proc.p_un.__p_starttime`: a `timeval`, first in the record.
+    const START_SECONDS: usize = 0;
+    const START_MICROS: usize = 8;
+    /// `kp_proc.p_stat`, and the state of a process that has exited and
+    /// waits to be reaped.
+    const STATE: usize = 36;
+    const ZOMBIE: u8 = 5;
+
+    /// The start time the kernel's process table keeps for `pid`, which,
+    /// unlike `proc_pidinfo`, it gives for another user's process too.
+    pub fn kernel_start_time(pid: u32) -> Option<DateTime<Utc>> {
+        let pid = libc::c_int::try_from(pid).ok()?;
+        let mut name = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+        let mut record = [0u8; KINFO_PROC];
+        let mut size: libc::size_t = KINFO_PROC;
+        // SAFETY: the buffer is KINFO_PROC bytes and `size` says so; the
+        // kernel writes at most that and reports how much it wrote.
+        let asked = unsafe {
+            libc::sysctl(
+                name.as_mut_ptr(),
+                4,
+                record.as_mut_ptr().cast::<libc::c_void>(),
+                &raw mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if asked != 0 || size != KINFO_PROC || record[STATE] == ZOMBIE {
+            return None;
+        }
+        let secs = i64::from_ne_bytes(record[START_SECONDS..START_SECONDS + 8].try_into().ok()?);
+        let micros = i32::from_ne_bytes(record[START_MICROS..START_MICROS + 4].try_into().ok()?);
+        if secs <= 0 {
+            return None;
+        }
+        DateTime::from_timestamp(secs, u32::try_from(micros).ok()?.checked_mul(1000)?)
     }
 }
 
@@ -804,18 +889,24 @@ mod imp {
     }
 
     pub fn start_time(pid: u32) -> Option<DateTime<Utc>> {
+        parent_and_birth(pid).map(|(_, birth)| birth)
+    }
+
+    pub fn parent_and_birth(pid: u32) -> Option<(u32, DateTime<Utc>)> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        // Everything after the parenthesised command name; `starttime` is
-        // field 22 overall, so the 20th after the closing parenthesis.
-        let after_comm = stat.rsplit_once(')')?.1;
-        let ticks: i64 = after_comm.split_whitespace().nth(19)?.parse().ok()?;
+        // Everything after the parenthesised command name: `ppid` is field
+        // 4 overall, the second after the closing parenthesis, and
+        // `starttime` field 22, the 20th.
+        let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+        let ppid: u32 = fields.get(1)?.parse().ok()?;
+        let ticks: i64 = fields.get(19)?.parse().ok()?;
         // SAFETY: sysconf has no preconditions.
         let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
         if hz <= 0 {
             return None;
         }
         let since_boot = Duration::milliseconds(ticks.checked_mul(1000)? / hz);
-        Some(boot_time()? + since_boot)
+        Some((ppid, boot_time()? + since_boot))
     }
 
     fn boot_time() -> Option<DateTime<Utc>> {
@@ -845,6 +936,10 @@ mod imp {
     }
 
     pub fn start_time(_pid: u32) -> Option<DateTime<Utc>> {
+        None
+    }
+
+    pub fn parent_and_birth(_pid: u32) -> Option<(u32, DateTime<Utc>)> {
         None
     }
 }
@@ -1131,6 +1226,46 @@ mod tests {
             age.num_hours() < 24 * 365,
             "implausible start time: {started}"
         );
+    }
+
+    /// The kernel's table gives the birth `proc_pidinfo` gives, and gives
+    /// one for another user's process (the first process, root's), but
+    /// none for a process that has ended, reaped or not.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn any_process_s_birth_is_read_from_the_kernel_s_table() {
+        let me = std::process::id();
+        assert_eq!(imp::kernel_start_time(me), start_time(me));
+        assert!(start_time(1).is_none(), "proc_pidinfo cannot read root's");
+        assert!(start_time_of_any(1).is_some(), "the table can");
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        // Exited and not yet reaped: a zombie.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while start_time(pid).is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(start_time_of_any(pid), None, "a zombie");
+        child.wait().unwrap();
+        assert_eq!(start_time_of_any(pid), None, "reaped");
+    }
+
+    /// One read gives a process's parent and its birth, the same birth
+    /// [`start_time`] reads: a child's parent is this process.
+    #[cfg(unix)]
+    #[test]
+    fn a_process_s_parent_and_birth_are_read_together() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let read = parent_and_birth(child.id());
+        let born = start_time(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(read.map(|(ppid, _)| ppid), Some(std::process::id()));
+        assert_eq!(read.map(|(_, birth)| birth), born);
+        assert!(parent_and_birth(child.id()).is_none(), "it has ended");
     }
 
     #[test]

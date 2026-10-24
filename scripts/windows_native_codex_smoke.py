@@ -27,6 +27,7 @@ from pathlib import Path
 # The daemons this starts are its own: they let it act as the person from
 # wherever it runs, an agent's session included.
 os.environ.setdefault("AGENTDOCKER_PERSON_CHECK", "off")
+os.environ.setdefault("AGENTDOCKER_AGENT_CHECK", "off")
 
 
 def wait(predicate, seconds=30):
@@ -217,6 +218,7 @@ def main():
                AGENTDOCKER_NO_AUTOSTART="1", AGENTDOCKER_NO_NOTIFICATIONS="1",
                AGENTDOCKER_FIXTURE_KEY="fixture-only", TERM="xterm-256color")
     env["AGENTDOCKER_PERSON_CHECK"] = "off"  # its own daemon: act as the person from anywhere
+    env["AGENTDOCKER_AGENT_CHECK"] = "off"  # and as any of its agents
 
     def rpc(value, timeout=5):
         channel = WindowsSmokePipe(sock, timeout=min(3, timeout), read_timeout=timeout,

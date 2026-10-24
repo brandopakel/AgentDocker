@@ -100,7 +100,7 @@ enum Walk {
 }
 
 /// Where the process on a connection was found to run.
-enum Traced {
+pub(super) enum Traced {
     /// The person's: outside every agent's session, or the daemon's own.
     Person,
     /// Inside an agent's session, as found.
@@ -806,7 +806,7 @@ impl Daemon {
     /// agent's session, or somewhere that cannot be told. The process must
     /// still be the one that connected; what was found is remembered by
     /// its pid and birth ([`Peers`]).
-    async fn trace(self: &Arc<Self>, peer: Option<Peer>, request: &Request) -> Traced {
+    pub(super) async fn trace(self: &Arc<Self>, peer: Option<Peer>, request: &Request) -> Traced {
         // The daemon's own callers, in this process.
         if peer.is_some_and(|(pid, _)| pid == std::process::id()) {
             return Traced::Person;
@@ -847,8 +847,15 @@ impl Daemon {
                     Ok(Ok(table)) => table,
                     _ => return unknown("a process whose ancestry could not be read"),
                 };
-                let found = match walk(pid, &table, &agents, procinfo::start_time, procinfo::unseen)
-                {
+                // Another user's parent (root's `login` above a terminal) is
+                // read too, so the walk goes on past it to the top.
+                let found = match walk(
+                    pid,
+                    &table,
+                    &agents,
+                    procinfo::start_time_of_any,
+                    procinfo::unseen,
+                ) {
                     Ok(Walk::Inside(reason)) => Found::Inside(reason),
                     Ok(Walk::Outside(chain)) => Found::Outside(Instant::now(), chain),
                     Err(reason) => return Traced::Unknown(reason),

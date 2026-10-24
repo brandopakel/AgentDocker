@@ -53,6 +53,7 @@ def smoke(binary_dir, output):
         endpoint = root / 'd.sock'
         env = {k: v for k, v in os.environ.items() if not k.startswith('AGENTDOCKER_')}
         env['AGENTDOCKER_PERSON_CHECK'] = 'off'  # its own daemon: act as the person from anywhere
+        env['AGENTDOCKER_AGENT_CHECK'] = 'off'  # and as any of its agents
         env.update(AGENTDOCKER_HOME=str(root / 'daemon'), AGENTDOCKER_SOCKET=str(endpoint), AGENTDOCKER_NO_AUTOSTART='1', AGENTDOCKER_NO_NOTIFICATIONS='1', CLAUDE_CONFIG_DIR=str(profile), PATH=str(tools) + ':' + env.get('PATH', ''))
         (tools / 'claude').write_text('#!/bin/sh\necho "Claude Code fixture"\n')
         (tools / 'claude').chmod(448)
