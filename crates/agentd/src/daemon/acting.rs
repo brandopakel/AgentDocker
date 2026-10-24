@@ -633,13 +633,6 @@ pub(crate) struct Named {
     /// The profile, as the spec spells it, when the named process is a Codex
     /// terminal whose own arguments resume the conversation the spec names.
     terminal: Option<String>,
-    /// Whether the named process's own command line resumes the very
-    /// session the spec names: Claude Code's `--resume <id>`, or a Codex
-    /// terminal's `resume <thread>`. Read from the kernel, not from the
-    /// spec, it is what lets a registration that joins the process's record
-    /// resume that session's ended records into it
-    /// ([`Authorized::fold_refusal`]).
-    resumed: bool,
     /// Profiles, as spelled, whose shared server stands in `chain` and serves
     /// the profile's control socket.
     served: Vec<String>,
@@ -759,7 +752,6 @@ fn gather(
     named: Process,
     live: &[Acting],
     terminal: Option<&Terminal>,
-    session: Option<&str>,
     kernel: &Kernel,
 ) -> (Named, Vec<Server>) {
     let (pid, born) = sender;
@@ -801,16 +793,6 @@ fn gather(
             && (kernel.arguments)(named_pid)
                 .is_some_and(|argv| procinfo::codex_resumes(&argv, &terminal.thread))
     });
-    let resumed = resumes.is_some()
-        || session.is_some_and(|session| {
-            (kernel.born)(named_pid) == Some(named_born)
-                && (kernel.arguments)(named_pid).is_some_and(|argv| {
-                    procinfo::resume_request(&argv)
-                        .and_then(|request| request.session)
-                        .as_deref()
-                        == Some(session)
-                })
-        });
     let mut profiles: Vec<(String, std::path::PathBuf)> = live
         .iter()
         .filter_map(|holder| {
@@ -860,7 +842,6 @@ fn gather(
             evaluated,
             launcher_in_chain,
             terminal: resumes.map(|t| t.label.clone()),
-            resumed,
             served: Vec::new(),
             profiles: looked,
             server_in_chain,
@@ -943,35 +924,24 @@ impl Authorized {
 
     /// Under the lock that commits the registration, which would resume the
     /// ended records `ended` (the session its `session_id` names) into the
-    /// record `folding`, the registration's own, already live when it joins
-    /// one: a refusal, with nothing done, when the sender runs inside another
-    /// live agent's session ([`Named::inside`]). A sender inside agent A's
+    /// registration's own record: a refusal, with nothing done, when the
+    /// sender runs inside another live agent's session ([`Named::inside`]). A sender inside agent A's
     /// session acts as A, and must never become ended agent B. Let through
     /// from outside every other agent's session (the person's terminal, where
     /// a resumed session's own hooks run under its new process), when the
     /// sender may act as every ended record as the agent check finds it (the
     /// proven shared server of the profile they name), or from the person.
-    /// The record it joins counts as another agent's too, unless the joined
-    /// process's own command line resumes that very session
-    /// ([`Named::resumed`]): a hook joining the record its session's MCP
-    /// server made first. Neither record's labels are evidence that it may
-    /// become the ended one.
-    pub(super) fn fold_refusal(
-        &self,
-        state: &State,
-        folding: Option<&AgentId>,
-        ended: &[AgentRecord],
-    ) -> Option<Response> {
+    /// A live record it joins counts as another agent's too: neither its
+    /// labels, the registration's, nor its process's command line, which
+    /// whoever runs in it can choose, are evidence that it may become the
+    /// ended one.
+    pub(super) fn fold_refusal(&self, state: &State, ended: &[AgentRecord]) -> Option<Response> {
         let Authorized::Named(named) = self else {
             return None;
         };
         let prior = ended.first()?;
         let ended: Vec<Acting> = ended.iter().map(Acting::of).collect();
-        let others = state
-            .registry
-            .live()
-            .filter(|agent| !(named.resumed && Some(&agent.id) == folding))
-            .map(Acting::of);
+        let others = state.registry.live().map(Acting::of);
         let blocker = named.fold_blocker(&ended, others)?;
         let pid = named.process.0;
         let (why, inside) = match &blocker {
@@ -1160,10 +1130,6 @@ impl Daemon {
                     named,
                     &live,
                     Terminal::of(&spec).as_ref(),
-                    spec.labels
-                        .get("session_id")
-                        .map(String::as_str)
-                        .filter(|session| !session.is_empty()),
                     &Kernel::host(),
                 )
             });
@@ -1924,26 +1890,6 @@ mod tests {
             terminal: Option<&Terminal>,
             serving: Option<u32>,
         ) -> Named {
-            self.naming(
-                sender,
-                named,
-                holders,
-                terminal,
-                terminal.map(|t| t.thread.as_str()),
-                serving,
-            )
-        }
-
-        /// [`Table::named`], the spec naming `session`.
-        fn naming(
-            &self,
-            sender: u32,
-            named: (u32, DateTime<Utc>),
-            holders: &[Acting],
-            terminal: Option<&Terminal>,
-            session: Option<&str>,
-            serving: Option<u32>,
-        ) -> Named {
             let step = |pid: u32| {
                 self.parents
                     .get(&pid)
@@ -1981,7 +1927,6 @@ mod tests {
                 named,
                 holders,
                 terminal,
-                session,
                 &kernel,
             );
             for server in servers {
@@ -2355,77 +2300,6 @@ mod tests {
             server.fold_blocker(&ended, []),
             Some(Blocker::Unknown)
         ));
-    }
-
-    /// A registration joining a process's record may resume an ended session
-    /// into it only when the process's own command line resumes that very
-    /// session ([`Named::resumed`]): `claude --resume <id>`, or a Codex
-    /// terminal's `resume <thread>`. Not another session, not `--continue`
-    /// or the picker, which name none, not a process that is not Claude
-    /// Code's, and not a pid reused since; and never on the spec alone.
-    #[test]
-    fn a_joined_process_resumes_only_the_session_its_own_command_line_names() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (codex, p, _) = table(&std::fs::canonicalize(tmp.path()).unwrap());
-        let table = Table {
-            parents: HashMap::from([
-                (100, 1),
-                (101, 100),
-                (110, 1),
-                (111, 110),
-                (120, 1),
-                (121, 120),
-                (130, 1),
-                (131, 130),
-            ]),
-            argv: HashMap::from([
-                (100, argv(&["claude", "--resume", "session-c"])),
-                (110, argv(&["claude", "--continue"])),
-                (120, argv(&["sh", "--resume", "session-c"])),
-                (130, argv(&["claude", "-r"])),
-            ]),
-            images: HashMap::new(),
-            unreadable: Vec::new(),
-            kernel_only: HashMap::new(),
-        };
-        let resumed = |sender: u32, named: u32, session: Option<&str>| {
-            table
-                .naming(
-                    sender,
-                    (named, at(i64::from(named))),
-                    &[],
-                    None,
-                    session,
-                    None,
-                )
-                .resumed
-        };
-        assert!(resumed(101, 100, Some("session-c")), "the session it names");
-        assert!(!resumed(101, 100, Some("session-d")), "another session");
-        assert!(!resumed(101, 100, None), "a spec naming none");
-        assert!(
-            !resumed(111, 110, Some("session-c")),
-            "--continue names none"
-        );
-        assert!(!resumed(131, 130, Some("session-c")), "nor does the picker");
-        assert!(!resumed(121, 120, Some("session-c")), "not Claude Code's");
-        assert!(
-            !table
-                .naming(101, (100, at(7)), &[], None, Some("session-c"), None)
-                .resumed,
-            "a pid reused since"
-        );
-        let thread = Terminal {
-            label: p.display().to_string(),
-            profile: p.clone(),
-            thread: THREAD.to_owned(),
-        };
-        assert!(
-            codex
-                .named(81, (81, at(81)), &[], Some(&thread), None)
-                .resumed,
-            "a Codex terminal resuming its thread"
-        );
     }
 
     /// A client for the registration tests: registers `spec` naming the
@@ -3220,10 +3094,10 @@ mod tests {
     /// no record is made under B's session, and C still may not act as B. A
     /// process outside every agent's session, as the person's own `claude
     /// --resume` is, resumes B under B's id; and the person, registering a
-    /// process that is not their own, resumes another ended session. A hook
-    /// joining the record its session's MCP server made first resumes the
-    /// session that session's own command line resumes, and no other; one
-    /// that already names its session is answered as it is.
+    /// process that is not their own, resumes another ended session. A
+    /// record that already names its session is answered as it is, folding
+    /// nothing; and a hook joining the record its session's MCP server made
+    /// first is refused, whatever its process's command line says.
     #[cfg(unix)]
     #[tokio::test]
     async fn an_ended_session_resumes_only_from_outside_every_other_agent_s_session() {
@@ -3491,65 +3365,64 @@ mod tests {
         );
         assert_eq!(lock(&daemon.state).registry.get(&e.id).unwrap(), &e);
 
-        // `claude --resume session-c`, staged as an interpreter-run Claude
-        // Code so its command line is its own: its MCP server registers it
-        // first, naming no session; its hook then joins that record, naming
-        // session D and then session C.
+        // A command line is whatever its process was started with, so it is
+        // no evidence either: a process staged as `claude --resume session-c`
+        // (any script under a path naming Claude Code) has a record its MCP
+        // server made first, naming no session, and its hook joining that
+        // record under session C is refused like any other from inside it.
         if !std::process::Command::new("node")
             .arg("--version")
             .output()
             .is_ok_and(|output| output.status.success())
         {
-            eprintln!("node is not installed here; skipping the joined resumption");
+            eprintln!("node is not installed here; skipping the staged resumption");
             serving.abort();
             return;
         }
         let c = ended("session-c").await;
-        let d = ended("session-d").await;
         let cli = workdir.join("node_modules/@anthropic-ai/claude-code/cli.js");
         std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
         std::fs::write(
             &cli,
-            "const {execFileSync}=require('child_process');\nrequire('fs').readSync(0,Buffer.alloc(1));\nconst [socket,script,...specs]=process.argv.slice(4);\nfor(const spec of specs){process.stdout.write('reply:'+execFileSync('python3',['-c',script,socket,spec,String(process.pid)]));}\n",
+            "const {execFileSync}=require('child_process');\nrequire('fs').readSync(0,Buffer.alloc(1));\nconst [socket,script,spec]=process.argv.slice(4);\nprocess.stdout.write(execFileSync('python3',['-c',script,socket,spec,String(process.pid)]));\n",
         )
         .unwrap();
-        let mut session = std::process::Command::new("node")
+        let mut staged = std::process::Command::new("node")
             .arg(&cli)
             .args(["--resume", "session-c"])
             .arg(&daemon.socket)
             .arg(register_self)
-            .arg(spec("hook", "session-d"))
             .arg(spec("hook", "session-c"))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        let first = register("mcp-first".into(), session.id(), BTreeMap::new()).await;
-        assert_ne!(first.id, c.id);
-        writeln!(session.stdin.take().unwrap(), "go").unwrap();
-        let output = tokio::task::spawn_blocking(move || session.wait_with_output())
+        let first = register("mcp-first".into(), staged.id(), BTreeMap::new()).await;
+        writeln!(staged.stdin.take().unwrap(), "go").unwrap();
+        let output = tokio::task::spawn_blocking(move || staged.wait_with_output())
             .await
             .unwrap()
             .unwrap();
-        let replies: Vec<Response> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| line.strip_prefix("reply:"))
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        assert_eq!(replies.len(), 2, "{replies:?}");
+        let reply: Response = serde_json::from_slice(&output.stdout).unwrap();
         assert!(
-            matches!(&replies[0], Response::Error { code: ErrorCode::IdentityMismatch, details: Some(details), .. }
-                if details["agent"] == d.id.as_str() && details["inside"] == first.id.as_str()),
-            "a session its command line does not resume: {:?}",
-            replies[0]
+            matches!(&reply, Response::Error { code: ErrorCode::IdentityMismatch, details: Some(details), .. }
+                if details["agent"] == c.id.as_str() && details["inside"] == first.id.as_str()),
+            "a staged command line resumes C: {reply:?}"
         );
-        assert!(
-            matches!(&replies[1], Response::Agent { agent }
-                if agent.id == c.id && agent.pid == first.pid),
-            "the session it resumes: {:?}",
-            replies[1]
-        );
-        assert_eq!(lock(&daemon.state).registry.get(&d.id).unwrap(), &d);
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(state.registry.get(&c.id).unwrap(), &c, "C is as it was");
+            assert!(
+                !state
+                    .registry
+                    .get(&first.id)
+                    .unwrap()
+                    .spec
+                    .labels
+                    .contains_key("session_id"),
+                "and the record learns no session"
+            );
+        }
         serving.abort();
     }
 

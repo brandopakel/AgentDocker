@@ -5550,7 +5550,7 @@ impl State {
                     joined.spec.labels.insert("session_id".to_owned(), session);
                 }
                 let ended = self.fold_targets(&joined);
-                if let Some(refusal) = authorized.fold_refusal(self, Some(&id), &ended) {
+                if let Some(refusal) = authorized.fold_refusal(self, &ended) {
                     // Taught the session now, the record would become its
                     // ended lives on the registration's word alone. One that
                     // already named it is answered as it is, and its ended
@@ -5649,7 +5649,7 @@ impl State {
         // must be allowed that, before the record is made.
         if let Some(authorized) = authorized {
             let ended = self.fold_targets(&record);
-            if let Some(refusal) = authorized.fold_refusal(self, None, &ended) {
+            if let Some(refusal) = authorized.fold_refusal(self, &ended) {
                 return refusal;
             }
         }
