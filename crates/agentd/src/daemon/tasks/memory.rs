@@ -2,7 +2,7 @@
 //! this machine. Any agent of the project or the person adds one; its
 //! author or the person forgets it.
 use super::*;
-use agentdocker_core::memory::{self, MEMORIES_PER_PROJECT, Memory};
+use agentdocker_core::memory::{self, MEMORIES_PER_PROJECT, Memory, Reader};
 
 pub(in crate::daemon) const MEMORY: &str = "memory";
 
@@ -10,7 +10,54 @@ fn memory_doc(memory: &Memory) -> Doc {
     doc(MEMORY, memory.id.clone(), memory)
 }
 
+/// Who reads a project's memory, by a request's `from`: the person, or an
+/// agent with the roles it holds. A request that names nobody reads what
+/// is for everyone, so a memory said to some roles never reaches a client
+/// that did not say who it is (the `from` it names is checked against its
+/// sender before this).
+enum Reading {
+    Person,
+    Holding(Vec<String>),
+}
+
+impl Reading {
+    fn reader(&self) -> Reader<'_> {
+        match self {
+            Reading::Person => Reader::Person,
+            Reading::Holding(roles) => Reader::Holding(roles),
+        }
+    }
+}
+
 impl State {
+    /// How `from` reads `project`'s memory. Roles are a project's own, so
+    /// an agent of another project holds none of them here and reads what
+    /// is for everyone.
+    fn reading(
+        &mut self,
+        from: Option<&str>,
+        project: &ProjectId,
+    ) -> Result<Reading, Box<Response>> {
+        let Some(from) = from else {
+            return Ok(Reading::Holding(Vec::new()));
+        };
+        let actor = self.actor(from)?;
+        if actor.human {
+            return Ok(Reading::Person);
+        }
+        if actor.project.as_ref() != Some(project) {
+            return Ok(Reading::Holding(Vec::new()));
+        }
+        let roles = self
+            .registry
+            .resolve(&actor.id)
+            .ok()
+            .and_then(|id| self.registry.get(&id))
+            .map(|record| record.roles().into_iter().map(str::to_owned).collect())
+            .unwrap_or_default();
+        Ok(Reading::Holding(roles))
+    }
+
     /// Every memory of a project, superseded ones included.
     pub(in crate::daemon) fn project_memories(
         &mut self,
@@ -93,6 +140,7 @@ impl Daemon {
         supersedes: Option<String>,
         standing: bool,
         forget_after: Option<chrono::DateTime<Utc>>,
+        roles: Vec<String>,
     ) -> Response {
         let project = match self.memory_project(Some(from), project).await {
             Ok(project) => project,
@@ -116,9 +164,41 @@ impl Daemon {
                 "a project keeps at most 1000 memories; forget some first",
             );
         }
-        // What it replaces is one of this project's, by its full id.
+        // The roles it is said to are the project's own.
+        if !roles.is_empty() {
+            let catalog = match state.project_roles(&project) {
+                Ok(catalog) => catalog,
+                Err(response) => return *response,
+            };
+            let unknown: Vec<&str> = roles
+                .iter()
+                .filter(|r| !catalog.iter().any(|c| &c.role == *r))
+                .map(String::as_str)
+                .collect();
+            if !unknown.is_empty() {
+                let names: Vec<&str> = catalog.iter().map(|r| r.role.as_str()).collect();
+                return Response::Error {
+                    code: ErrorCode::Invalid,
+                    message: format!(
+                        "the project has no role called {}; its roles are {}",
+                        unknown.join(", "),
+                        names.join(", ")
+                    ),
+                    details: Some(serde_json::json!({ "roles": names })),
+                };
+            }
+        }
+        let reading = match state.reading(Some(from), &project) {
+            Ok(reading) => reading,
+            Err(response) => return *response,
+        };
+        // What it replaces is one of this project's, by its full id, and
+        // one its author may read.
         let supersedes = match supersedes {
             Some(words) => match state.resolve_memory(&words, Some(&project)) {
+                Ok(old) if old.project == project && !old.seen_by(reading.reader()) => {
+                    return Response::error(ErrorCode::NotFound, format!("no memory is {words}"));
+                }
                 Ok(old) if old.project == project => Some(old.id),
                 Ok(_) => {
                     return Response::error(
@@ -139,6 +219,7 @@ impl Daemon {
             Utc::now(),
         )
         .and_then(|memory| memory.standing(standing).forget_after(forget_after))
+        .and_then(|memory| memory.roles(roles))
         {
             Ok(memory) => memory,
             Err(reason) => return Response::error(ErrorCode::Invalid, reason),
@@ -165,15 +246,23 @@ impl Daemon {
             Ok(project) => project,
             Err(response) => return *response,
         };
-        let memories = match lock(&self.state).project_memories(&project) {
-            Ok(memories) => memories,
-            Err(response) => return *response,
+        let (memories, reading) = {
+            let mut state = lock(&self.state);
+            let reading = match state.reading(from.as_deref(), &project) {
+                Ok(reading) => reading,
+                Err(response) => return *response,
+            };
+            match state.project_memories(&project) {
+                Ok(memories) => (memories, reading),
+                Err(response) => return *response,
+            }
         };
         Response::Memories {
             memories: memory::search(
                 &memories,
                 query,
                 limit.unwrap_or(20).clamp(1, 100),
+                reading.reader(),
                 Utc::now(),
             )
             .into_iter()
@@ -192,14 +281,22 @@ impl Daemon {
             Ok(project) => project,
             Err(response) => return *response,
         };
-        let memories = match lock(&self.state).project_memories(&project) {
-            Ok(memories) => memories,
-            Err(response) => return *response,
+        let (memories, reading) = {
+            let mut state = lock(&self.state);
+            let reading = match state.reading(from.as_deref(), &project) {
+                Ok(reading) => reading,
+                Err(response) => return *response,
+            };
+            match state.project_memories(&project) {
+                Ok(memories) => (memories, reading),
+                Err(response) => return *response,
+            }
         };
         Response::Memories {
             memories: memory::profile(
                 &memories,
                 max_chars.unwrap_or(4000).clamp(1, 64_000),
+                reading.reader(),
                 Utc::now(),
             )
             .into_iter()
