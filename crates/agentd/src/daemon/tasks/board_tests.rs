@@ -1393,6 +1393,7 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
                 from: Some(stranger.id.to_string()),
                 project: Some(f.work.clone()),
                 max_chars: None,
+                as_of: None,
             })
             .await
         ),
@@ -1408,6 +1409,7 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
             standing: false,
             forget_after: None,
             roles: vec![],
+            valid_from: None,
         })
         .await,
         Response::Error {
