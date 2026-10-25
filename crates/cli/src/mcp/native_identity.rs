@@ -465,9 +465,22 @@ async fn bind_terminal<B: super::Backend>(
             .get("session_id")
             .filter(|s| !s.is_empty())
         {
-            Some(session) if session == thread => return Ok(agent),
-            Some(_) => bail!("Codex terminal is bound to another conversation"),
-            None => {
+            Some(session) if session != thread => {
+                bail!("Codex terminal is bound to another conversation")
+            }
+            // Bound already, with nothing left to learn. One that lacks the
+            // profile registers again, so the daemon can teach it that.
+            Some(_)
+                if profile.is_none()
+                    || agent
+                        .spec
+                        .labels
+                        .get(agentdocker_core::agent::PROFILE_LABEL)
+                        .is_some_and(|p| !p.is_empty()) =>
+            {
+                return Ok(agent);
+            }
+            _ => {
                 let mut spec = agent.spec.clone();
                 spec.labels.insert("session_id".into(), thread.to_owned());
                 if let Some(profile) = profile {
@@ -961,6 +974,37 @@ mod tests {
             Some("root-thread"),
         )])]);
         bind_terminal(&backend, &terminal, "root-thread", checkout, None)
+            .await
+            .unwrap();
+        assert_eq!(backend.requests().len(), 1);
+
+        // Bound already but without the verified profile: registered again
+        // with it, so the daemon teaches the record its profile.
+        let profile = Path::new("/profile");
+        let mut taught = record("codex-sample", Some("root-thread"));
+        taught.spec.labels.insert(
+            agentdocker_core::agent::PROFILE_LABEL.into(),
+            profile.display().to_string(),
+        );
+        let backend = Mock::with(vec![
+            listed(vec![record("codex-sample", Some("root-thread"))]),
+            Response::Agent {
+                agent: taught.clone(),
+            },
+        ]);
+        bind_terminal(&backend, &terminal, "root-thread", checkout, Some(profile))
+            .await
+            .unwrap();
+        assert!(matches!(
+            &backend.requests()[1],
+            Request::Register { spec, pid: Some(4243), .. }
+                if spec.labels.get(agentdocker_core::agent::PROFILE_LABEL).map(String::as_str)
+                    == Some("/profile")
+                    && spec.labels.get("session_id").map(String::as_str) == Some("root-thread")
+        ));
+        // Bound with its profile: nothing is registered.
+        let backend = Mock::with(vec![listed(vec![taught])]);
+        bind_terminal(&backend, &terminal, "root-thread", checkout, Some(profile))
             .await
             .unwrap();
         assert_eq!(backend.requests().len(), 1);

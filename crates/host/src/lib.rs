@@ -47,6 +47,7 @@ pub mod handoff;
 pub mod models;
 pub mod multiplexer;
 pub mod notify;
+pub mod peers;
 #[cfg_attr(windows, path = "pty/windows.rs")]
 pub mod pty;
 pub mod terminal;

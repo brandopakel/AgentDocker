@@ -136,6 +136,7 @@ dependencies = [
  "futures-util",
  "hmac",
  "ignore",
+ "libc",
  "nix 0.29.0",
  "notify",
  "proptest",

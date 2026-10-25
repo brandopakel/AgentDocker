@@ -38,3 +38,5 @@ tokio-tungstenite.workspace = true
 futures-util.workspace = true
 # Sequences of topic sends, acknowledgements, retention and restarts.
 proptest.workspace = true
+# A staged terminal inherits one end of its connection to a stand-in server.
+libc.workspace = true
