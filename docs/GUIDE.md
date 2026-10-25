@@ -508,6 +508,8 @@ each one by pid.
 | `adopt <pid>` | Register one of them; `--all` for all. Its pid is checked as `register --pid`'s is: from inside an agent's session only a process that session may name, else refused `identity_mismatch` (exit 5); from your own terminal or the app, any |
 | `stop <agent>` | Signal an agent to stop. Its record says so from then on (`"stop_requested": true` in `inspect`), even if it exits 0, until it next starts under the same id |
 | `restart <agent>` | Replace a managed container after confirming it exited |
+| `reconnect <session> [--claude <path>]` | Bring an ended Claude Code session back under its own record, with its conversation and live messages, as a process the daemon runs; `--claude` names the executable when it is not on PATH. Refuses, with the reason, while its process still runs, in another checkout, or with somebody attached |
+| `provider report <agent> --kind <kind>` / `resume <agent>` / `retry <agent>` | What an adapter says about a session's provider: `report` a limit or interruption (`usage`, `rate`, `budget`, `billing`, `concurrency`, `context`, `authentication`, `transport` or `unknown`; `--reset-at`, `--quota-group` and `--model` only when the provider said so), `resume` queued delivery after checking the limit (received input is not replayed), `retry` the session's bound input receiver after the daemon gave up restarting it |
 | `deregister` / `rm` | Mark an external agent finished / forget a finished one |
 | `role <name>…` | Give an agent (`--as`) roles from its project's palette (`roles`) — `role --as codex-1 reviewer tester` — in place of what it held; `--add reviewer` and `--remove tester` change one at a time, `--clear` takes them all away. Roles are yours to give: run from an agent's own shell it is refused. A command that names no sender speaks as you only from a terminal outside every agent: where a provider's own variables are set (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`) it asks for `--as` instead, even when the provider's process cannot be found. An agent's `send --to role:reviewer` reaches every reviewer in the project, in the role's room (one thread, where the sender hears the answers); `handoff role:reviewer` needs the role's one holder |
 | `roles` | A project's roles, each with its colour: the five every project offers (lead, implementer, reviewer, explorer, tester) and your own. `roles add "Security reviewer" --color red --description "…"` makes one, `roles set reviewer --name "Code review" --color pink` changes one (its address stays), `roles rm tester` takes one out. `roles set reviewer --tools review_verdict,review_gate,get_task` offers its holders only those MCP tools and the few every agent keeps (`--tools` works on `roles add` too), `roles set reviewer --all-tools` offers every tool again; the list shows a limited role's tools. Only you change them, and nothing holds a role until you give it; run from an agent's shell, including a Codex conversation's shared server, they are refused. `--project` names another project |
@@ -646,6 +648,7 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
 | `setup` | Wire us in: MCP registration, and hooks for Claude Code |
+| `skill` | Print the portable coordination `SKILL.md`, the one `setup` installs for the providers that take one, without connecting to a daemon |
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches. Only the agent's own output is shown while attached; dropped output or a replaced daemon is said once you detach or it ends |
 | `daemon` | Install, start, stop, reload, inspect or `vacuum` `agentd` |
@@ -703,10 +706,11 @@ be set.
 takes an MCP server. An agent then has these without knowing anything
 about us:
 
-`whoami` · `ping` · `list_agents` · `inspect_agent` · `activity` · `usage`
+`whoami` · `list_agents` · `inspect_agent` · `activity` · `usage`
 
 `send_message` · `read_inbox` · `wait_for_messages` · `acknowledge_messages` ·
-`ask_human` · `open_questions` · `answer_question` · `report_activity`
+`ask_human` · `open_questions` · `answer_question` · `report_activity` ·
+`report_provider_status`
 
 `claim` · `renew` · `release` · `list_leases`
 
@@ -1593,7 +1597,7 @@ Current behaviour that the sections above do not already state, by area.
 
 - `agentdocker --help` lists the commands a person types. The ones only an
   adapter or an administrator runs (`heartbeat`, `report-activity`,
-  `report-adapter`, `report-input`, `identity-repair`, `secret-review`,
+  `report-adapter`, `report-input`, `report-commit`, `identity-repair`, `secret-review`,
   `usage-storage`, `usage-scan`, the `codex-*` controllers) are hidden from
   the list and still work by name; the guide's reference still names them.
 
