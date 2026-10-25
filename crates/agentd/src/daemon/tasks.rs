@@ -963,6 +963,9 @@ impl Daemon {
         if let Some(error) = state.write_failure() {
             return error;
         }
+        // A card named is taken from wherever it sits, when nobody holds
+        // it; one looked for comes only from the pull source.
+        let named = task.is_some();
         let mut task = match task {
             Some(reference) => match state.resolve_task(reference) {
                 Ok(task) => task,
@@ -1074,7 +1077,7 @@ impl Daemon {
                         };
                     }
                 }
-                if let Err(error) = task.pull(&agent, &board, now) {
+                if let Err(error) = task.pull(&agent, &board, named, now) {
                     return refused_with(error, lapsed.as_ref());
                 }
                 None
@@ -2246,6 +2249,106 @@ mod tests {
         }
     }
 
+    /// A card nobody holds is taken by an agent that names it, wherever it
+    /// sits: from Backlog into the pull target, then closed by its taker;
+    /// from Review, where it stays. One held by another live agent, and one
+    /// already done, are refused by name too.
+    #[tokio::test]
+    async fn a_card_nobody_holds_is_taken_by_name_from_any_open_lane() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let alice = register(&daemon, "alice", &work).await;
+        let bob = register(&daemon, "bob", &work).await;
+        let create = |column: Option<Column>| {
+            let daemon = daemon.clone();
+            let work = work.clone();
+            async move {
+                match daemon
+                    .handle(Request::TaskCreate {
+                        from: HUMAN.to_owned(),
+                        project: Some(work.display().to_string()),
+                        title: "Merged already".to_owned(),
+                        acceptance: "it works".to_owned(),
+                        column,
+                        links: Vec::new(),
+                        board: None,
+                        lane: None,
+                        description: String::new(),
+                        priority: None,
+                        size: None,
+                        due: None,
+                        external_blocker: String::new(),
+                        parent: None,
+                        blocked_by: Vec::new(),
+                        tags: Vec::new(),
+                        plan: None,
+                    })
+                    .await
+                {
+                    Response::Task { task } => task,
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        let pull = |agent: &str, task: &Task| {
+            let daemon = daemon.clone();
+            let request = Request::TaskPull {
+                agent: agent.to_owned(),
+                task: Some(task.id.to_string()),
+                take_over_from: None,
+                project: None,
+                board: None,
+            };
+            async move { as_card(daemon.handle(request).await) }
+        };
+        let backlog = create(None).await;
+        let Response::Task { task: taken } = pull("bob", &backlog).await else {
+            panic!("a Backlog card nobody holds, by name")
+        };
+        assert_eq!(
+            (taken.assignee.as_ref(), taken.column),
+            (Some(&bob.id), Column::InProgress)
+        );
+        let Response::Task { task: closed } = daemon
+            .handle(Request::TaskMove {
+                agent: "bob".to_owned(),
+                task: backlog.id.to_string(),
+                column: Some(Column::Done),
+                to: None,
+                after: None,
+                before: None,
+                comment: Some("merged".to_owned()),
+            })
+            .await
+        else {
+            panic!("its taker closes it")
+        };
+        assert_eq!(closed.column, Column::Done);
+
+        let review = create(Some(Column::Review)).await;
+        let Response::Task { task: taken } = pull("alice", &review).await else {
+            panic!("a Review card nobody holds, by name")
+        };
+        assert_eq!(
+            (taken.assignee.as_ref(), taken.column),
+            (Some(&alice.id), Column::Review)
+        );
+        for (card, why) in [(&review, "held by alice"), (&backlog, "done")] {
+            assert!(
+                matches!(
+                    pull("bob", card).await,
+                    Response::Error {
+                        code: ErrorCode::Conflict,
+                        ..
+                    }
+                ),
+                "{why}"
+            );
+        }
+    }
+
     /// The person files a card; two agents pull it and only the first
     /// gets it, the second told who holds it; the holder moves it on and
     /// nobody else can; the person can reassign, move back (releasing
@@ -2562,23 +2665,18 @@ mod tests {
             } => assert_eq!(details.unwrap()["assignee"], alice.id.as_str()),
             other => panic!("{other:?}"),
         }
-        // Not ready: Backlog is the person's.
+        // Looked for, a Backlog card is not taken: Backlog is the person's.
         assert!(matches!(
-            as_card(
-                daemon
-                    .handle(Request::TaskPull {
-                        agent: "bob".to_owned(),
-                        task: Some(second.id.to_string()),
-                        take_over_from: None,
-                        project: None,
-                        board: None,
-                    })
-                    .await
-            ),
-            Response::Error {
-                code: ErrorCode::Conflict,
-                ..
-            }
+            daemon
+                .handle(Request::TaskPull {
+                    agent: "bob".to_owned(),
+                    task: None,
+                    take_over_from: None,
+                    project: None,
+                    board: None,
+                })
+                .await,
+            Response::NothingReady { .. }
         ));
         // The person does not pull; they assign.
         assert!(matches!(
