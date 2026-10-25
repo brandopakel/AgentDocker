@@ -114,10 +114,26 @@ impl Memory {
 }
 
 /// Whether `text` holds what looks like a credential: a private key, a
-/// well-known token shape, or a long run of mixed letters and digits.
-/// A guard, not a guarantee: it catches the common shapes only.
+/// well-known token shape, a bearer token or a JWT, a value given to a
+/// name that says it is secret, or a long run of mixed letters and
+/// digits. A guard, not a guarantee: it catches the common shapes only.
+///
+/// The token shapes beyond the first few follow the redaction list of
+/// past.dev's MIT-licensed agent plugins (Copyright (c) Past Corp), which
+/// redact where this refuses.
 pub fn secret_like(text: &str) -> bool {
     if text.contains("-----BEGIN") && text.contains("PRIVATE KEY") {
+        return true;
+    }
+    if bearer_token(text) || secret_assignment(text) {
+        return true;
+    }
+    // A JWT keeps its dots, so it is cut out only at what a JWT never
+    // holds: from `session=…`, a URL's query or a sentence's last word.
+    if text
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')))
+        .any(|word| jwt(word.trim_matches('.')))
+    {
         return true;
     }
     // Words as written, so a base64 key with `+ / =` is one; and the same
@@ -139,19 +155,122 @@ pub fn secret_like(text: &str) -> bool {
         };
         token("sk-", 20)
             || token("sk_live_", 16)
-            || token("ghp_", 30)
-            || token("gho_", 30)
-            || token("github_pat_", 30)
-            || token("xoxb-", 20)
-            || token("xoxp-", 20)
-            || token("glpat-", 20)
+            || ["ghp_", "gho_", "ghu_", "ghs_", "github_pat_"]
+                .iter()
+                .any(|prefix| token(prefix, 30))
+            || ["xoxb-", "xoxp-", "xoxa-", "xoxr-", "xoxs-", "glpat-"]
+                .iter()
+                .any(|prefix| token(prefix, 20))
             || (word.len() == 20
-                && word.starts_with("AKIA")
+                && (word.starts_with("AKIA") || word.starts_with("ASIA"))
                 && word
                     .chars()
                     .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+            || jwt(word)
             || high_entropy(word)
     })
+}
+
+/// A JSON web token: three base64url parts, the first a JSON header
+/// (`eyJ…`).
+fn jwt(word: &str) -> bool {
+    word.starts_with("eyJ")
+        && word.len() >= 30
+        && word.matches('.').count() == 2
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+/// `Bearer <token>`, as an authorization header carries one.
+fn bearer_token(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    words.windows(2).any(|pair| {
+        let token = pair[1].trim_matches(|c| matches!(c, '"' | '\'' | '`' | ',' | ';'));
+        pair[0]
+            .trim_start_matches(|c: char| !c.is_ascii_alphabetic())
+            .eq_ignore_ascii_case("bearer")
+            && token.len() >= 20
+            && token.chars().all(|c| {
+                c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '~' | '+' | '/' | '=')
+            })
+    })
+}
+
+/// A value given to a name that says it is secret (`DB_PASSWORD=…`,
+/// `api_key: …`), when the value looks like one: a placeholder or a word
+/// of prose after the name ("TOKEN: see the docs") is not.
+fn secret_assignment(text: &str) -> bool {
+    const SECRET_NAMES: [&str; 7] = [
+        "SECRET",
+        "PASSWORD",
+        "TOKEN",
+        "API_KEY",
+        "APIKEY",
+        "PRIVATE_KEY",
+        "CREDENTIAL",
+    ];
+    let bytes = text.as_bytes();
+    bytes.iter().enumerate().any(|(at, b)| {
+        if !matches!(b, b'=' | b':') {
+            return false;
+        }
+        // The name: the identifier right before, spaces allowed between.
+        let before = text[..at].trim_end();
+        let name: String = before
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let upper = name.to_ascii_uppercase();
+        if name.is_empty() || !SECRET_NAMES.iter().any(|secret| upper.contains(secret)) {
+            return false;
+        }
+        // The value: the next word, without its quotes.
+        let value = text[at + 1..]
+            .trim_start()
+            .split(|c: char| c.is_whitespace() || matches!(c, ',' | ';'))
+            .next()
+            .unwrap_or("")
+            .trim_matches(|c| matches!(c, '"' | '\'' | '`'));
+        token_like(value)
+    })
+}
+
+/// A value as a generated secret or a password is written: at least eight
+/// characters of no space or bracket, holding a digit, or upper and lower
+/// case letters together, or a symbol. A plain word, a `<placeholder>` or
+/// a `${VARIABLE}` is not.
+fn token_like(value: &str) -> bool {
+    value.chars().count() >= 8
+        && value.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(
+                    c,
+                    '_' | '-'
+                        | '+'
+                        | '/'
+                        | '='
+                        | '.'
+                        | '!'
+                        | '@'
+                        | '#'
+                        | '%'
+                        | '^'
+                        | '&'
+                        | '*'
+                        | '~'
+                )
+        })
+        && (value.chars().any(|c| c.is_ascii_digit())
+            || (value.chars().any(|c| c.is_ascii_uppercase())
+                && value.chars().any(|c| c.is_ascii_lowercase()))
+            || value
+                .chars()
+                .any(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '-'))
 }
 
 /// A run of 32 or more letters and digits that mixes upper case, lower
@@ -349,6 +468,45 @@ mod tests {
         assert!(!secret_like(
             "the build cache lives in target/debug and is 4 GiB"
         ));
+    }
+
+    /// The shapes past.dev's plugins redact are refused too, each in a
+    /// sentence; prose that names a secret without holding one is kept.
+    #[test]
+    fn more_credential_shapes_are_refused_and_prose_about_them_is_kept() {
+        for secret in [
+            "auth with Bearer abcdefghijklmnopqrstuv0123",
+            "the header is \"authorization: bearer abc.def-ghi_jkl.mno123456\"",
+            "session eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghij_klm",
+            "session=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghij_klm",
+            "see https://example.invalid/cb?jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghij_klm&next=1",
+            "the token was eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghij_klm.",
+            "ASIAABCDEFGHIJKLMNOP is a session key",
+            "ghu_abcdefghijklmnopqrstuvwxyz0123456789 for the app",
+            "ghs_abcdefghijklmnopqrstuvwxyz0123456789",
+            "xoxa-1234567890-abcdefghij and xoxr-1234567890-abcdefghij",
+            "xoxs-1234567890-abcdefghij",
+            "sk-ant-api03-abcdefghijklmnopqrstu",
+            "glpat-abcdefghijklmnopqrst",
+            "DB_PASSWORD=hunter2hunter2",
+            "set api_key: \"Zx81-pq77-Lm00\" in the env",
+            "GITHUB_TOKEN = ghx9Ab7Cd5Ef3Gh1",
+            "CREDENTIALS=p@ssw0rd!",
+        ] {
+            assert!(secret_like(secret), "{secret}");
+        }
+        for prose in [
+            "TOKEN: see the docs for how to make one",
+            "the PASSWORD= field is left empty on purpose",
+            "API_KEY=<your key> goes in the env file",
+            "API_KEY=${API_KEY} is read from the shell",
+            "SECRET: changeme is the default, never ship it",
+            "bearer tokens expire after an hour",
+            "a JWT starts with eyJ and has three parts",
+            "the token budget is 4000 characters: token: limit",
+        ] {
+            assert!(!secret_like(prose), "{prose}");
+        }
     }
 
     #[test]
