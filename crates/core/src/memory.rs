@@ -128,6 +128,14 @@ pub fn secret_like(text: &str) -> bool {
     if bearer_token(text) || secret_assignment(text) {
         return true;
     }
+    // A JWT keeps its dots, so it is cut out only at what a JWT never
+    // holds: from `session=…`, a URL's query or a sentence's last word.
+    if text
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')))
+        .any(|word| jwt(word.trim_matches('.')))
+    {
+        return true;
+    }
     // Words as written, so a base64 key with `+ / =` is one; and the same
     // text cut at every character a token never holds, so one inside
     // `token=…`, a URL or a path is a word of its own.
@@ -470,6 +478,9 @@ mod tests {
             "auth with Bearer abcdefghijklmnopqrstuv0123",
             "the header is \"authorization: bearer abc.def-ghi_jkl.mno123456\"",
             "session eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghij_klm",
+            "session=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghij_klm",
+            "see https://example.invalid/cb?jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghij_klm&next=1",
+            "the token was eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghij_klm.",
             "ASIAABCDEFGHIJKLMNOP is a session key",
             "ghu_abcdefghijklmnopqrstuvwxyz0123456789 for the app",
             "ghs_abcdefghijklmnopqrstuvwxyz0123456789",
