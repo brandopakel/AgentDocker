@@ -809,6 +809,7 @@ mod tests {
             browser_dirs: vec![],
             shell: None,
             versions: false,
+            hook_stamps: None,
         };
         assert_eq!(
             agentdocker_host::runtimes::mcp_wiring(spec, &roots, "agentdocker"),

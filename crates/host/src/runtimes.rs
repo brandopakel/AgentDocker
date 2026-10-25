@@ -38,6 +38,29 @@ pub struct Roots {
     pub shell: Option<String>,
     /// Ask each CLI for its version; off in tests that only lay out files.
     pub versions: bool,
+    /// Where each runtime's hooks leave word that they ran
+    /// ([`hook_ran`]); `None` says nothing about whether they did.
+    pub hook_stamps: Option<PathBuf>,
+}
+
+/// The file a runtime's hooks touch each time one runs: where `setup
+/// --check` reads whether the provider has ever run them, which for Codex
+/// says whether the person has trusted them.
+pub fn hook_stamp(stamps: &Path, runtime: &str) -> PathBuf {
+    stamps.join(format!("{runtime}.ran"))
+}
+
+/// Where hooks leave word that they ran, beneath AgentDocker's home.
+pub fn hook_stamps() -> PathBuf {
+    crate::dirs::home().join("hooks")
+}
+
+/// Leave word that one of `runtime`'s hooks ran, now. Best effort: a
+/// hook never fails for it.
+pub fn hook_ran(runtime: &str) {
+    let stamps = hook_stamps();
+    let _ = std::fs::create_dir_all(&stamps)
+        .and_then(|()| std::fs::write(hook_stamp(&stamps, runtime), b""));
 }
 
 impl Roots {
@@ -84,6 +107,7 @@ impl Roots {
             path,
             app_dirs,
             versions: true,
+            hook_stamps: Some(hook_stamps()),
         }
     }
 }
@@ -780,6 +804,7 @@ mod tests {
             browser_dirs: vec![],
             shell: None,
             versions: false,
+            hook_stamps: None,
         };
         (tmp, roots)
     }

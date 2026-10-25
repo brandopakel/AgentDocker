@@ -775,7 +775,7 @@ when its conversation ends, giving back its leases — and `SubagentStart` and
 `SubagentStop`, which keep the conversation working while its subagents run.
 Hooks an earlier version installed are *outdated*: `agentdocker runtimes` shows
 `outdated (…)` with the events they lack, the Tools card says *Hooks outdated*,
-and `agentdocker setup claude-code` (or `codex`) adds them. They are what let the daemon see an agent's session
+and `agentdocker setup claude-code` (or `codex`) adds them. Codex runs a hook only once you trust it in its `/hooks`, and trust ends when the hook's definition changes: setup leaves AgentDocker's Codex hooks exactly as they are once they are current, says so when it must change one you may have trusted, and `agentdocker setup --health` says *Never run: trust them in Codex's /hooks* (or *Not run since they last changed*) until Codex runs them. They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
 should be told before it starts — the journal since it last looked, the
 project's memory, and anything it read that has gone stale. Codex's
