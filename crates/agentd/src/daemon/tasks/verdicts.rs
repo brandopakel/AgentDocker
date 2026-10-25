@@ -373,7 +373,8 @@ pub(in crate::daemon) enum Author {
 /// The dedicated Codex server `agentdocker codex` starts beside a
 /// conversation's terminal: a Codex app-server listening on loopback, a
 /// child of the same launcher as the reviewer's terminal, born after it,
-/// where the launcher is the companion CLI's `codex` or `codex-native`.
+/// where the launcher is AgentDocker's own CLI's `codex` or `codex-native`
+/// (this version's, or a retained one's that launched it before an update).
 fn dedicated_server(
     reviewer: &AgentRecord,
     server: &agentdocker_host::procinfo::Process,
@@ -397,8 +398,8 @@ fn dedicated_server(
             .argv
             .windows(2)
             .any(|w| w[0] == "--listen" && w[1].starts_with("ws://127.0.0.1:"));
-    // The launcher is this daemon's own companion CLI, by the file the
-    // kernel says it runs; and the terminal speaks to this server, on the
+    // The launcher is AgentDocker's own CLI, by the file the kernel says it
+    // runs; and the terminal speaks to this server, on the
     // loopback port the server listens on.
     let ours = matches!(
         launcher.argv.get(1).map(String::as_str),
@@ -554,11 +555,9 @@ impl Daemon {
             agentdocker_host::procinfo::start_time,
             |pid| agentdocker_host::procinfo::executable_path_of(pid).ok(),
             // By the file, not its name: the companion CLI is the daemon's
-            // own file, which macOS may name by either of its names.
-            |exe| {
-                crate::daemon::person::companion_cli()
-                    .is_some_and(|cli| agentdocker_host::program::same_file(&cli, exe))
-            },
+            // own file, which macOS may name by either of its names; or a
+            // retained version's, which launched a session before an update.
+            crate::daemon::person::own_cli,
         ) {
             Author::Reviewer => None,
             Author::Other(why) => refuse(why),
