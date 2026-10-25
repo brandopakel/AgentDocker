@@ -252,16 +252,36 @@ impl State {
         );
     }
 
+    /// A room's live members: who hears it, who a send reports readiness
+    /// for, and the members clients are shown. A record that ended stays
+    /// in the stored membership — a session that comes back takes up its
+    /// record, room and all — but is nobody's recipient while it is gone.
+    pub(super) fn live_members(&self, channel: &Channel) -> Vec<AgentId> {
+        self.room_members(channel)
+            .into_iter()
+            .filter(|member| self.is_live(member))
+            .collect()
+    }
+
     /// Members of a channel, for message routing.
     pub(super) fn channel_members(&self, id: &ChannelId) -> Vec<AgentId> {
         self.channels
             .get(id)
             .filter(|c| c.is_open())
-            .map(|c| self.room_members(c))
+            .map(|c| self.live_members(c))
             .unwrap_or_default()
     }
 
+    /// A channel as clients see it: its members the live ones.
+    pub(super) fn served_channel(&self, channel: &Channel) -> Channel {
+        let mut served = channel.clone();
+        served.members = self.live_members(channel);
+        served
+    }
+
     /// Stage channel closure alongside the exiting agent's transaction.
+    /// The agent stays in the stored membership of a room others are
+    /// still live in: its session may come back to the same record.
     pub(super) fn closing_channels(&self, agent: &AgentId, now: DateTime<Utc>) -> Vec<Channel> {
         let live: HashSet<AgentId> = self.registry.live().map(|a| a.id.clone()).collect();
         self.channels
@@ -284,6 +304,70 @@ impl State {
                 channel
             })
             .collect()
+    }
+
+    /// Take forgotten records out of the open rooms still listing them.
+    /// An ended record stays a member, since its session can come back;
+    /// one the daemon no longer has (`rm`, agent retention) cannot, and
+    /// would otherwise sit in the room for its whole life as a recipient
+    /// nobody can reach. One commit per channel, `channel_left` for each
+    /// member taken out; a room left with nobody closes as "everyone
+    /// left".
+    pub(super) fn sweep_channel_ghosts(&mut self) {
+        let now = Utc::now();
+        let stale: Vec<(Channel, Vec<AgentId>)> = self
+            .channels
+            .values()
+            .filter(|channel| channel.is_open() && !channel.is_role_room())
+            .filter_map(|channel| {
+                let gone: Vec<AgentId> = channel
+                    .members
+                    .iter()
+                    .filter(|member| self.registry.get(member).is_none())
+                    .cloned()
+                    .collect();
+                (!gone.is_empty()).then(|| (channel.clone(), gone))
+            })
+            .collect();
+        for (mut channel, gone) in stale {
+            let mut kinds = Vec::with_capacity(gone.len() + 1);
+            for agent in &gone {
+                channel.dismiss(agent);
+                kinds.push(EventKind::ChannelLeft {
+                    channel: channel.id.clone(),
+                    agent: agent.clone(),
+                });
+            }
+            if channel.members.is_empty() {
+                channel.closed_at = Some(now);
+                channel.resolution = Some("everyone left".to_owned());
+                kinds.push(EventKind::ChannelClosed {
+                    channel: channel.id.clone(),
+                    resolution: channel.resolution.clone(),
+                });
+            }
+            let Ok(json) = serde_json::to_string(&channel) else {
+                continue;
+            };
+            let documents = [("channel", channel.id.as_str().to_owned(), json)];
+            let events: Vec<Event> = kinds
+                .into_iter()
+                .map(|kind| Event::new(kind, now))
+                .collect();
+            let committed = self.commit(
+                "channel membership",
+                events,
+                |store, events| store.documents_with_events(&documents, events),
+                |state, _, ()| {
+                    state.channels.insert(channel.id.clone(), channel.clone());
+                },
+            );
+            if committed != Persisted::Committed {
+                // A write that failed or was fenced: nothing more lands
+                // this tick either.
+                return;
+            }
+        }
     }
 
     fn find_channel(&self, reference: &str) -> Option<&Channel> {
@@ -362,7 +446,7 @@ impl Daemon {
             .filter(|c| c.project == project)
             .filter(|c| all || c.is_open())
             .filter(|c| member.as_ref().is_none_or(|id| c.has(id)))
-            .cloned()
+            .map(|c| state.served_channel(c))
             .collect();
         channels.sort_by(|a, b| a.opened_at.cmp(&b.opened_at).then_with(|| a.id.cmp(&b.id)));
         Response::Channels { channels }

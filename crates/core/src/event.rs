@@ -847,6 +847,12 @@ pub enum EventKind {
         channel: crate::ChannelId,
         agent: AgentId,
     },
+    /// A member's record was forgotten while the channel stayed open: it
+    /// is out of the room, and what it said there stays.
+    ChannelLeft {
+        channel: crate::ChannelId,
+        agent: AgentId,
+    },
     /// The work is final, or everybody left: the channel is done and can
     /// be pruned.
     ChannelClosed {

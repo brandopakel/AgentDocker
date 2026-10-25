@@ -4045,7 +4045,7 @@ impl State {
             .unwrap_or(Response::Agent { agent: record })
     }
 
-    pub fn is_live(&mut self, id: &AgentId) -> bool {
+    pub fn is_live(&self, id: &AgentId) -> bool {
         self.registry.get(id).is_some_and(|a| a.status.is_live())
     }
 
