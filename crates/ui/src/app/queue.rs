@@ -24,6 +24,12 @@ fn bytes(command: &Cmd) -> usize {
             .capacity()
             .saturating_add(cwd.as_ref().map_or(0, |p| p.capacity())),
         Cmd::Answer(_, text) => text.capacity(),
+        Cmd::AnswerChoices(_, choices, note) => choices
+            .iter()
+            .fold(choices.capacity(), |total, choice| {
+                total.saturating_add(choice.capacity())
+            })
+            .saturating_add(note.as_ref().map_or(0, String::capacity)),
         Cmd::SecretAnswer(id, answers) => id.capacity().saturating_add(answers.allocated_bytes()),
         Cmd::SecretCancel(id) => id.capacity(),
         Cmd::DismissMessages(ids) => ids.iter().fold(

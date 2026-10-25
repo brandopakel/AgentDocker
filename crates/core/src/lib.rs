@@ -64,8 +64,9 @@ pub use lease::{Claimed, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, Reso
 pub use link::{Link, LinkKind};
 pub use message::{
     ALLOW_FOR_SESSION, AnswerRoute, Destination, Envelope, HUMAN, HUMAN_RUNTIME, MessageId,
-    Question, QuestionFileChange, QuestionFileChangeKind, QuestionOption, QuestionPresentation,
-    mcp_url_authority, topic_matches,
+    Question, QuestionAnswer, QuestionFileChange, QuestionFileChangeKind, QuestionForm,
+    QuestionKind, QuestionOption, QuestionPresentation, StaleAction, mcp_url_authority,
+    topic_matches,
 };
 pub use notification::NotificationTarget;
 pub use permissions::{

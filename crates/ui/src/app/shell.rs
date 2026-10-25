@@ -423,6 +423,9 @@ pub(super) struct State {
     /// its card can show the choice as the receipt. Only answers still in
     /// flight are kept. Window-local, display only.
     pub chosen_answers: BTreeMap<MessageId, String>,
+    /// The options picked so far on each multi-select question, in the
+    /// order they were picked, until they are sent. Window-local.
+    pub picked: BTreeMap<MessageId, Vec<String>>,
     /// The places behind and ahead, for Back and Forward.
     pub history: super::navigation::History,
 }
@@ -1200,6 +1203,11 @@ pub enum Message {
     SecretSubmit(String),
     SecretCancel(String),
     AnswerChoice(MessageId, String),
+    /// Pick or unpick one option of a multi-select question.
+    ToggleChoice(MessageId, String),
+    /// Send the picked options of a multi-select question, with the
+    /// written words as a note.
+    AnswerChoices(MessageId),
     CopyQuestionUrl(MessageId),
     FormEdit(MessageId, String, String),
     FormInclude(MessageId, String, bool),
@@ -1639,6 +1647,7 @@ impl App {
                 | Message::OpenQuestion(_)
                 | Message::Answer(_)
                 | Message::AnswerChoice(..)
+                | Message::AnswerChoices(_)
                 | Message::ReviewFiles(_)
                 | Message::QuestionDetails(_)
                 | Message::Notification(_)
@@ -3460,9 +3469,7 @@ impl App {
                                 Some(agentdocker_core::QuestionPresentation::CodexFiles { .. })
                             ) || !grants(&value)
                                 || self.shell.file_review.as_ref() == Some(&id))
-                            && q.presentation
-                                .as_ref()
-                                .is_some_and(|p| p.valid_for(&q.text) && p.permits_choice(&value))
+                            && q.permits_choice(&value)
                     })
                 {
                     // A choice is an explicit submission, not a draft edit.
@@ -3477,6 +3484,57 @@ impl App {
                         .retain(|id, _| sending.contains(id));
                     self.shell.chosen_answers.insert(id.clone(), value.clone());
                     self.send(Cmd::Answer(id, value));
+                }
+            }
+            Message::ToggleChoice(id, label) => {
+                if !self.sending.contains(&id)
+                    && self.questions.iter().any(|q| {
+                        q.id == id
+                            && q.form.multi_select
+                            && !q.expired(Utc::now())
+                            && q.form.options.iter().any(|o| o.label == label)
+                    })
+                {
+                    let picked = self.shell.picked.entry(id).or_default();
+                    match picked.iter().position(|p| *p == label) {
+                        Some(at) => {
+                            picked.remove(at);
+                        }
+                        None => picked.push(label),
+                    }
+                }
+            }
+            Message::AnswerChoices(id) => {
+                if self.connected.is_ok()
+                    && !self.sending.contains(&id)
+                    && self
+                        .questions
+                        .iter()
+                        .any(|q| q.id == id && q.form.multi_select && !q.expired(Utc::now()))
+                    && let Some(picked) = self
+                        .shell
+                        .picked
+                        .get(&id)
+                        .filter(|p| !p.is_empty())
+                        .cloned()
+                {
+                    let note = self
+                        .shell
+                        .answers
+                        .get(&id)
+                        .map(|note| note.trim().to_owned())
+                        .filter(|note| !note.is_empty());
+                    self.shell.answer_errors.remove(&id);
+                    self.sending.insert(id.clone());
+                    self.shell.pending_answer_reveal = Some(id.clone());
+                    let sending = &self.sending;
+                    self.shell
+                        .chosen_answers
+                        .retain(|id, _| sending.contains(id));
+                    self.shell
+                        .chosen_answers
+                        .insert(id.clone(), picked.join(", "));
+                    self.send(Cmd::AnswerChoices(id, picked, note));
                 }
             }
             Message::SecretEdit(id, field, value) => {
@@ -7156,6 +7214,8 @@ mod tests {
                 presentation: Some(presentation),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             });
             app.shell
                 .answers
@@ -7206,6 +7266,8 @@ mod tests {
             presentation: Some(presentation),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         };
         app.questions.push(question.clone());
         app.shell.answers.insert(id.clone(), "earlier draft".into());
@@ -7255,6 +7317,8 @@ mod tests {
                 presentation: Some(presentation),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             });
             let _ = app.update(Message::Draft(
                 id.clone(),
@@ -7305,6 +7369,8 @@ mod tests {
                 presentation: Some(presentation),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             });
             let _ = app.update(Message::Draft(
                 id.clone(),
@@ -7423,6 +7489,8 @@ mod tests {
             presentation: Some(presentation),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         });
         let _ = app.update(Message::SessionDraft(
             "asker".into(),
@@ -7491,6 +7559,8 @@ mod tests {
             presentation: Some(presentation),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         });
         let _ = app.update(Message::Draft(id.clone(), "Not the cache".into()));
         let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
@@ -7543,6 +7613,8 @@ mod tests {
             presentation: None,
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(minutes),
+            form: Default::default(),
+            stale_since: None,
         };
         app.questions.push(question("live", 5));
         app.questions.push(question("expired", -1));
@@ -8028,6 +8100,8 @@ mod tests {
                 text: "which option?".into(),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             });
             app.shell.catalog.selected = Some(previous.clone());
             app.shell.checked_project = Some(previous.clone());
@@ -8092,6 +8166,8 @@ mod tests {
             presentation: Some(presentation),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         });
         let _ = app.update(Message::Draft(id.clone(), "private input".into()));
         assert!(!app.shell.answers.contains_key(&id));
@@ -8160,6 +8236,8 @@ mod tests {
                 presentation: Some(presentation),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             });
             let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
             assert!(matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),
@@ -8241,6 +8319,8 @@ mod tests {
             text: "Continue?".into(),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         };
         app.questions = vec![
             question.clone(),
@@ -8897,6 +8977,8 @@ mod tests {
             text: "Continue?".into(),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         };
         app.questions = vec![
             question.clone(),
@@ -8948,6 +9030,8 @@ mod tests {
                 text: "Continue?".into(),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             };
             app.questions = vec![
                 question.clone(),
@@ -9021,6 +9105,8 @@ mod tests {
             text: "which option?".into(),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         };
         app.shell
             .answers
@@ -9443,6 +9529,8 @@ mod tests {
                 text: "question".into(),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             }]))
             .unwrap();
         app.shell
@@ -10068,6 +10156,8 @@ mod tests {
             text: "Review this exact question".into(),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         });
         app.shell.answers.insert(id.clone(), "target draft".into());
         app.shell

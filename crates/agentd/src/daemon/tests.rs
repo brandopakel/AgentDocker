@@ -699,6 +699,7 @@ async fn a_session_that_comes_back_takes_up_its_ended_record() {
             question: "still there?".to_owned(),
             presentation: None,
             timeout_secs: 600,
+            form: Default::default(),
         })
         .await
     else {
@@ -2417,6 +2418,8 @@ async fn ask_returns_the_answer_that_names_it() {
                     from: None,
                     message: id,
                     text: "yes".to_owned(),
+                    choices: Vec::new(),
+                    note: None,
                 })
                 .await
         })
@@ -2428,6 +2431,7 @@ async fn ask_returns_the_answer_that_names_it() {
             to: "user".to_owned(),
             question: "ship it?".to_owned(),
             timeout_secs: 10,
+            form: Default::default(),
         })
         .await;
     let Response::Answer { from, text, .. } = response else {
@@ -2464,6 +2468,7 @@ async fn ask_times_out_rather_than_waiting_forever() {
             to: "user".to_owned(),
             question: "anyone there?".to_owned(),
             timeout_secs: 1,
+            form: Default::default(),
         })
         .await;
     assert!(
@@ -2501,6 +2506,7 @@ async fn an_empty_question_is_refused_and_an_unknown_one_is_not_found() {
             to: "user".to_owned(),
             question: "   ".to_owned(),
             timeout_secs: 1,
+            form: Default::default(),
         })
         .await;
     assert!(
@@ -2519,6 +2525,8 @@ async fn an_empty_question_is_refused_and_an_unknown_one_is_not_found() {
             from: None,
             message: MessageId::from("nosuchquestion".to_owned()),
             text: "hello?".to_owned(),
+            choices: Vec::new(),
+            note: None,
         })
         .await;
     assert!(
@@ -2553,6 +2561,7 @@ async fn questions_are_listed_only_for_whoever_was_asked() {
                     to: "user".to_owned(),
                     question: "for the human".to_owned(),
                     timeout_secs: 30,
+                    form: Default::default(),
                 })
                 .await
         })
@@ -2568,6 +2577,7 @@ async fn questions_are_listed_only_for_whoever_was_asked() {
                     to: beta,
                     question: "for beta".to_owned(),
                     timeout_secs: 30,
+                    form: Default::default(),
                 })
                 .await
         })
@@ -2712,6 +2722,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
             question: "still there?".to_owned(),
             presentation: None,
             timeout_secs: 600,
+            form: Default::default(),
         })
         .await
     else {
@@ -3812,6 +3823,7 @@ async fn a_question_has_to_reach_somebody_who_can_answer_it() {
             to: "topic:reviews".into(),
             question: "anyone?".into(),
             timeout_secs: 1,
+            form: Default::default(),
         })
         .await;
     assert!(
@@ -3858,6 +3870,8 @@ async fn an_answer_that_races_the_question_still_lands() {
                                 from: Some(human.id.to_string()),
                                 message: envelope.id,
                                 text: "at once".to_owned(),
+                                choices: Vec::new(),
+                                note: None,
                             })
                             .await,
                     );
@@ -3872,6 +3886,7 @@ async fn an_answer_that_races_the_question_still_lands() {
             to: "user".into(),
             question: "now?".into(),
             timeout_secs: 10,
+            form: Default::default(),
         })
         .await;
     let answered = racing.await.unwrap().expect("the question was published");
@@ -9548,6 +9563,7 @@ async fn an_agent_reaches_only_its_own_project_and_the_person() {
                 to: "far".into(),
                 question: "?".into(),
                 timeout_secs: 1,
+                form: Default::default(),
             })
             .await,
     );

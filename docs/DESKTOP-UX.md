@@ -210,7 +210,10 @@ palette has one **Open in** row per editor for the selected project.
 only what waits on you: questions, each row the asker, the ask, the
 time-left chip (*4m left*, *Expired*) and **Answer** (a question from a
 session that has since ended carries a *Session ended* chip, and its spoken
-line says it was asked before the session ended), and sessions stopped at a
+line says it was asked before the session ended; a permission or access
+request carries its kind as a chip, **Permission** or **Access**, a plain
+question none; one whose stale window passed unanswered carries **Stale**,
+with what that means in the chip's detail), and sessions stopped at a
 permission prompt or question in their own terminal, each the agent's name
 with a chip for the errand — **Wants permission**, **Has a question**, or
 **Waiting for you** when its hooks did not say which — read aloud as *Claude
@@ -849,7 +852,16 @@ with its mark, the latest line and how many items wait; **Everyone** shows all
 of them. The conversation on the right starts with that agent's open questions
 as cards, because they carry Answer, Allow, Deny and review controls, followed
 by its messages as bubbles, newest last; long messages fold after eight lines
-behind **Show more**. Under an open conversation the composer sends to that
+behind **Show more**. A question card leads with a tile for its kind and the
+question as its title; a permission or access request adds its kind chip
+(**Permission**, **Access**) and a stale one **Stale**, beside the time left.
+Options an agent offered are full-width rows, the label on the left and what
+choosing it means on the right, a refusal in red; pressing one is the answer,
+and the chosen row stands in for the rows as the receipt while it goes. A
+multi-select question's rows pick and unpick (a picked row stays washed) and
+**Send choices** sends them together, the words in the box beside them going
+as a note. Writing is the *Other*: the box is there when the question takes
+words of your own, and absent when it takes only its options. Under an open conversation the composer sends to that
 agent (**Send**) or to every agent in its project (**Send to everyone**); a
 failed send shows *Not sent* and why under the box, as does the delivery
 notice when recipients need attention, and drafts survive navigation, a failed

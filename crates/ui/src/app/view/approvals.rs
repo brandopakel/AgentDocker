@@ -20,7 +20,7 @@ use super::super::chip::{Chip, Tone};
 use super::*;
 use crate::accessibility::Semantic;
 use crate::controls::Control;
-use agentdocker_core::{QuestionOption, QuestionPresentation};
+use agentdocker_core::{QuestionKind, QuestionOption, QuestionPresentation};
 use iced::widget::{Space, column, container, row, scrollable, text};
 use iced::{Center, Element, Fill, Font};
 
@@ -144,6 +144,7 @@ fn choice<'a>(
     label: String,
     detail: &str,
     message: Option<Message>,
+    selected: bool,
     c: Colors,
 ) -> Element<'a, Message> {
     let danger = destructive(&label);
@@ -193,6 +194,9 @@ fn choice<'a>(
             let background = match status {
                 Status::Hovered => Some(alpha(ink, if danger { 0.10 } else { 0.05 })),
                 Status::Pressed => Some(alpha(ink, if danger { 0.15 } else { 0.08 })),
+                // A picked option of a multi-select stays washed until it
+                // is sent or unpicked.
+                Status::Active | Status::Disabled if selected => Some(alpha(ink, 0.08)),
                 Status::Active | Status::Disabled => None,
             };
             let disabled = status == Status::Disabled;
@@ -213,7 +217,13 @@ fn choice<'a>(
             }
         });
     let mut semantic = Semantic::button(id, label, message);
-    if !detail.is_empty() {
+    if selected {
+        semantic.value = Some(if detail.is_empty() {
+            "selected".to_owned()
+        } else {
+            format!("selected; {detail}")
+        });
+    } else if !detail.is_empty() {
         semantic.value = Some(detail);
     }
     Control {
@@ -222,6 +232,49 @@ fn choice<'a>(
         button: true,
     }
     .into()
+}
+
+/// The glyph a question's kind is drawn with.
+fn kind_glyph(kind: QuestionKind) -> Icon {
+    match kind {
+        QuestionKind::Question => Icon::Question,
+        QuestionKind::Permission => Icon::Shield,
+        QuestionKind::Access => Icon::Connections,
+    }
+}
+
+/// A question's kind as a chip (*Permission*, *Access*): the icon and its
+/// word. A plain question carries none; its tile already says so.
+fn kind_chip<'a>(question: &Question, c: Colors) -> Option<Element<'a, Message>> {
+    let kind = question.kind();
+    (kind != QuestionKind::Question).then(|| {
+        super::super::chip::chip(
+            format!("question-kind-{}", question.id),
+            Some(kind_glyph(kind)),
+            kind.label(),
+            Tone::Attention,
+            c,
+        )
+    })
+}
+
+/// *Stale*: the question's stale window passed with no answer and its
+/// asker chose to keep waiting. Still open; its detail says what it means.
+fn stale_chip<'a>(
+    question: &Question,
+    now: chrono::DateTime<Utc>,
+    c: Colors,
+) -> Option<Element<'a, Message>> {
+    question.stale(now).then(|| {
+        Chip::new(
+            format!("question-stale-{}", question.id),
+            Some(Icon::Hourglass),
+            "Stale",
+            Tone::Attention,
+        )
+        .detail("Nobody answered in the time the asker allowed; it still waits for your answer")
+        .view(c)
+    })
 }
 
 /// The chosen option standing in for all of them: filled, with a tick.
@@ -537,25 +590,37 @@ impl App {
                     Kind::Secondary,
                 ),
             };
+            // The kind, staleness and an ended session are chips after
+            // the name, each a word with its icon.
+            let mut marks: Vec<Element<'_, Message>> = Vec::new();
+            if let Some(kind) = kind_chip(question, c) {
+                marks.push(kind);
+            }
+            if let Some(stale) = stale_chip(question, now, c) {
+                marks.push(stale);
+            }
+            if !live {
+                marks.push(super::super::chip::chip(
+                    format!("needs-you-ended-{}", question.id),
+                    Some(Icon::Leave),
+                    "Session ended",
+                    Tone::Neutral,
+                    c,
+                ));
+            }
+            let marks: Option<Element<'_, Message>> = (!marks.is_empty()).then(|| {
+                marks
+                    .into_iter()
+                    .fold(row![].spacing(6).align_y(Center), |row, mark| {
+                        row.push(mark)
+                    })
+                    .into()
+            });
             rows.push(waiting_row(
                 spoken(
                     format!("needs-you-line-{}", question.id),
                     sentence,
-                    waiting_words(
-                        name,
-                        (!live).then(|| {
-                            super::super::chip::chip(
-                                format!("needs-you-ended-{}", question.id),
-                                Some(Icon::Leave),
-                                "Session ended",
-                                Tone::Neutral,
-                                c,
-                            )
-                        }),
-                        Some(what),
-                        narrow,
-                        c,
-                    ),
+                    waiting_words(name, marks, Some(what), narrow, c),
                 ),
                 Some(time_left(question, now, c)),
                 actions,
@@ -870,6 +935,7 @@ impl App {
                                 label.into(),
                                 "",
                                 enabled.then(|| Message::AnswerChoice(id.clone(), label.into())),
+                                false,
                                 c,
                             ),
                             means,
@@ -941,7 +1007,17 @@ impl App {
                 question: prompt,
                 options,
             }) => self.ask_card(question, Some(prompt), options, enabled, chosen, now, c),
-            None => self.ask_card(question, None, &[], enabled, None, now, c),
+            // An agent's own options render as a choice does: the same
+            // rows, the same receipt.
+            None => self.ask_card(
+                question,
+                None,
+                &question.form.options,
+                enabled,
+                chosen,
+                now,
+                c,
+            ),
         };
         container(card)
             .id(format!("notification-question-{id}"))
@@ -1145,60 +1221,105 @@ impl App {
         } else {
             self.answer_window(question, c)
         };
+        // The kind and staleness are chips beside the time left, the
+        // same words the Needs-you row shows.
+        let mut marks = row![].spacing(6).align_y(Center);
+        if let Some(kind) = kind_chip(question, c) {
+            marks = marks.push(kind);
+        }
+        if let Some(stale) = stale_chip(question, now, c) {
+            marks = marks.push(stale);
+        }
         let mut body = column![
-            row![ask_tile(Icon::Question, !expired, c), words, state]
-                .spacing(12)
-                .align_y(iced::Alignment::Start)
+            row![
+                ask_tile(kind_glyph(question.kind()), !expired, c),
+                words,
+                marks,
+                state
+            ]
+            .spacing(12)
+            .align_y(iced::Alignment::Start)
         ]
         .spacing(14);
-        let resolved = chosen.and_then(|value| options.iter().find(|o| o.label == value));
-        if let Some(option) = resolved {
-            body = body.push(receipt(
-                option.label.clone(),
-                Some(option.description.clone()),
-                c,
-            ));
+        let multi = question.form.multi_select && !question.form.options.is_empty();
+        let picked: &[String] = self
+            .shell
+            .picked
+            .get(&id)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if let Some(chosen) = chosen {
+            let detail = options
+                .iter()
+                .find(|o| o.label == chosen)
+                .map(|o| o.description.clone());
+            body = body.push(receipt(chosen, detail, c));
         } else {
             if !options.is_empty() {
                 let mut list = column![].spacing(6).width(Fill);
                 for (index, option) in options.iter().enumerate() {
+                    let label = option.label.clone();
+                    // One of several is picked and sent together; one of
+                    // one is the answer as it is pressed.
+                    let press = if multi {
+                        Message::ToggleChoice(id.clone(), label.clone())
+                    } else {
+                        Message::AnswerChoice(id.clone(), label.clone())
+                    };
                     list = list.push(choice(
                         format!("answer-choice-{id}-{index}"),
-                        option.label.clone(),
+                        label,
                         &option.description,
-                        enabled.then(|| Message::AnswerChoice(id.clone(), option.label.clone())),
+                        enabled.then_some(press),
+                        multi && picked.contains(&option.label),
                         c,
                     ));
                 }
                 body = body.push(list);
             }
             let answer = self.shell.answers.get(&id).cloned().unwrap_or_default();
-            let send =
-                (enabled && !answer.trim().is_empty()).then_some(Message::Answer(id.clone()));
-            let label = if busy { "Sending…" } else { "Send answer" };
+            let (send, label, placeholder) = if multi {
+                (
+                    (enabled && !picked.is_empty()).then_some(Message::AnswerChoices(id.clone())),
+                    if busy { "Sending…" } else { "Send choices" },
+                    "A note beside your choices",
+                )
+            } else {
+                (
+                    (enabled && !answer.trim().is_empty()).then_some(Message::Answer(id.clone())),
+                    if busy { "Sending…" } else { "Send answer" },
+                    "Your answer",
+                )
+            };
             // With options to choose from, writing is the second way to
-            // answer and its button steps down to an outline.
-            let send_button = if options.is_empty() {
+            // answer and its button steps down to an outline; the choices
+            // of a multi-select go with their button, the words a note.
+            let send_button = if options.is_empty() || multi {
                 primary(format!("send-answer-{id}"), label, send.clone())
             } else {
                 action(format!("send-answer-{id}"), label, send.clone(), false)
             };
-            body = body.push(
-                row![
-                    composer(
-                        format!("answer-{id}"),
-                        id.to_string(),
-                        "Your answer",
-                        &answer,
-                        move |text| Message::Draft(draft_id.clone(), text),
-                        enabled,
-                        send,
-                    ),
-                    send_button
-                ]
-                .spacing(8)
-                .align_y(Center),
-            );
+            // Writing is the Other; a question that takes no other answer
+            // has no box to write one in.
+            let writes = options.is_empty() || question.form.allow_other || multi;
+            let mut line = row![].spacing(8).align_y(Center);
+            if writes {
+                line = line.push(composer(
+                    format!("answer-{id}"),
+                    id.to_string(),
+                    placeholder,
+                    &answer,
+                    move |text| Message::Draft(draft_id.clone(), text),
+                    enabled,
+                    send,
+                ));
+            }
+            if writes || multi {
+                line = line.push(send_button);
+            }
+            if writes || multi {
+                body = body.push(line);
+            }
         }
         if let Some(error) = self.shell.answer_errors.get(&id) {
             body = body.push(super::error_line(
@@ -1855,6 +1976,8 @@ mod tests {
             presentation: Some(presentation),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(10),
+            form: Default::default(),
+            stale_since: None,
         };
         app.questions.push(question.clone());
         question
@@ -2251,6 +2374,144 @@ mod tests {
         );
     }
 
+    fn typed(app: &mut App, id: &str, form: agentdocker_core::QuestionForm) -> Question {
+        let question = Question {
+            id: agentdocker_core::MessageId::from(id.to_owned()),
+            from: "asker".into(),
+            to: agentdocker_core::Destination::Agent("human".into()),
+            text: "Which theme?".into(),
+            presentation: None,
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(10),
+            form,
+            stale_since: None,
+        };
+        app.questions.push(question.clone());
+        question
+    }
+
+    fn colours() -> Vec<QuestionOption> {
+        vec![
+            QuestionOption {
+                label: "Blue".into(),
+                description: "the current theme".into(),
+            },
+            QuestionOption {
+                label: "Green".into(),
+                description: String::new(),
+            },
+        ]
+    }
+
+    /// An agent's own options are the rows a Codex choice draws, under the
+    /// kind's chip; pressing one is the answer, a label outside them is
+    /// not, and a question that takes only its options has no box.
+    #[test]
+    fn agent_options_render_as_rows_under_the_kind_chip_and_answer_on_press() {
+        let (mut app, _commands) = app();
+        let question = typed(
+            &mut app,
+            "typed",
+            agentdocker_core::QuestionForm {
+                kind: QuestionKind::Permission,
+                options: colours(),
+                allow_other: false,
+                ..Default::default()
+            },
+        );
+        let card = seen(app.question_card(&question, Colors::new(false)));
+        assert!(
+            card.control("question-kind-typed").is_some(),
+            "the kind chip"
+        );
+        assert!(card.control("question-stale-typed").is_none());
+        assert_eq!(
+            card.control("answer-choice-typed-0").map(|c| c.1.clone()),
+            Some("Blue".to_owned())
+        );
+        assert!(card.control("answer-choice-typed-1").is_some());
+        assert!(
+            card.control("answer-typed").is_none(),
+            "no box when only the options are taken"
+        );
+        let _ = app.update(Message::AnswerChoice(question.id.clone(), "Red".into()));
+        assert!(
+            !app.sending.contains(&question.id),
+            "not one of the options"
+        );
+        let _ = app.update(Message::AnswerChoice(question.id.clone(), "Green".into()));
+        assert!(app.sending.contains(&question.id));
+        assert_eq!(
+            app.shell
+                .chosen_answers
+                .get(&question.id)
+                .map(String::as_str),
+            Some("Green")
+        );
+        let during = seen(app.question_card(&question, Colors::new(false)));
+        assert!(
+            during.control("answer-choice-typed-0").is_none(),
+            "the receipt stands in"
+        );
+        let mut stale = question.clone();
+        stale.stale_since = Some(Utc::now());
+        let card = seen(app.question_card(&stale, Colors::new(false)));
+        assert!(
+            card.control("question-stale-typed").is_some(),
+            "the stale chip"
+        );
+    }
+
+    /// A multi-select picks and unpicks, then sends the picked labels
+    /// together with the written words as a note.
+    #[test]
+    fn a_multi_select_picks_then_sends_its_choices_with_a_note() {
+        let (mut app, commands) = app();
+        let question = typed(
+            &mut app,
+            "multi",
+            agentdocker_core::QuestionForm {
+                options: colours(),
+                multi_select: true,
+                ..Default::default()
+            },
+        );
+        let id = question.id.clone();
+        let _ = app.update(Message::AnswerChoices(id.clone()));
+        assert!(!app.sending.contains(&id), "nothing picked yet");
+        let _ = app.update(Message::ToggleChoice(id.clone(), "Blue".into()));
+        let _ = app.update(Message::ToggleChoice(id.clone(), "Green".into()));
+        let _ = app.update(Message::ToggleChoice(id.clone(), "Blue".into()));
+        let _ = app.update(Message::ToggleChoice(id.clone(), "Red".into()));
+        assert_eq!(app.shell.picked.get(&id), Some(&vec!["Green".to_owned()]));
+        let card = seen(app.question_card(&question, Colors::new(false)));
+        assert_eq!(
+            card.control("answer-choice-multi-1")
+                .and_then(|c| c.2.clone()),
+            Some("selected".to_owned()),
+            "a picked row says so"
+        );
+        assert!(card.control("send-answer-multi").is_some());
+        app.shell
+            .answers
+            .insert(id.clone(), " the mock-ups won ".into());
+        let _ = app.update(Message::AnswerChoices(id.clone()));
+        assert!(app.sending.contains(&id));
+        assert_eq!(
+            app.shell.chosen_answers.get(&id).map(String::as_str),
+            Some("Green")
+        );
+        let sent: Vec<_> = commands.try_iter().collect();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [Cmd::AnswerChoices(sent_id, choices, Some(note))]
+                    if *sent_id == id && choices == &["Green".to_owned()] && note == "the mock-ups won"
+            ),
+            "{sent:?}"
+        );
+    }
+
     /// Needs you holds questions only, each naming its project while every
     /// project is on view; a session that ended with messages queued says
     /// so on its own row, not here.
@@ -2298,6 +2559,8 @@ mod tests {
             presentation: None,
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(10),
+            form: Default::default(),
+            stale_since: None,
         });
         let view = seen(
             app.needs_you(Colors::new(true))
@@ -2348,6 +2611,8 @@ mod tests {
                 presentation: Some(presentation),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(10),
+                form: Default::default(),
+                stale_since: None,
             });
         }
         // A narrow window keeps the strip to Deny and Allow once; the card
@@ -2521,6 +2786,8 @@ mod tests {
             presentation: Some(presentation),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(10),
+            form: Default::default(),
+            stale_since: None,
         });
         let view = seen(
             app.needs_you(Colors::new(true))
@@ -2596,6 +2863,8 @@ mod tests {
             presentation: None,
             asked_at: now - chrono::Duration::seconds(asked),
             expires_at: now + chrono::Duration::seconds(expires),
+            form: Default::default(),
+            stale_since: None,
         };
         let early = time_left_chip("t", &question(60, 240), now);
         assert_eq!(
