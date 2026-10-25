@@ -2991,6 +2991,38 @@ mod tests {
             2,
             "no record added"
         );
+
+        // A client whose record knows its thread already but not the
+        // profile learns the profile, and the server may then act as it.
+        let thread = "019a0000-0000-7000-8000-000000000004";
+        let bound = server.connected_terminal(thread, true);
+        let half = server
+            .record(
+                bound,
+                [
+                    ("via".to_owned(), "hook".to_owned()),
+                    ("session_id".to_owned(), thread.to_owned()),
+                ]
+                .into(),
+            )
+            .await;
+        let reply = server.send(true, server.register(bound, thread)).await;
+        assert!(
+            matches!(&reply, Response::Agent { agent }
+                if agent.id == half.id
+                    && agent.spec.labels.get(agentdocker_core::agent::PROFILE_LABEL)
+                        == Some(&profile)),
+            "a client bound to its thread: {reply:?}"
+        );
+        let claim = serde_json::json!({
+            "op": "claim",
+            "agent": half.id,
+            "resource": format!("path:{}/c", server.workdir.display()),
+            "ttl_secs": 60,
+        })
+        .to_string();
+        let reply = server.send(true, claim).await;
+        assert!(matches!(reply, Response::Lease { .. }), "{reply:?}");
     }
 
     /// Over the real socket, between the check and the commit: the shared

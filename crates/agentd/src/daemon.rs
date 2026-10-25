@@ -5585,14 +5585,30 @@ impl State {
             // An empty label is an absent one. A record carrying
             // `session_id: ""` would otherwise count as already knowing
             // whose it is and never learn, leaving the wildcard open.
-            let bound = learned.filter(|_| {
-                self.registry.get(&id).is_some_and(|a| {
-                    a.spec
-                        .labels
-                        .get("session_id")
-                        .is_none_or(|existing| existing.is_empty())
-                })
+            let (named, unprofiled) = self.registry.get(&id).map_or((None, false), |a| {
+                let label = |key: &str| a.spec.labels.get(key).filter(|v| !v.is_empty()).cloned();
+                (
+                    label("session_id"),
+                    label(agentdocker_core::agent::PROFILE_LABEL).is_none(),
+                )
             });
+            // The verified profile its registration carries, where the
+            // record has none. One already bound to this very session
+            // learns it as well: left half-keyed, it stays a record that
+            // the server running its conversation may not act as.
+            let profile = record
+                .spec
+                .labels
+                .get(agentdocker_core::agent::PROFILE_LABEL)
+                .filter(|profile| unprofiled && !profile.is_empty())
+                .cloned();
+            let bound = match (learned, named) {
+                (Some(session), None) => Some(session),
+                (Some(session), Some(named)) if session == named && profile.is_some() => {
+                    Some(session)
+                }
+                _ => None,
+            };
             if let Some(session) = bound {
                 // One commit, then memory. The row and the event that
                 // announces it go into a single transaction — written
@@ -5607,18 +5623,13 @@ impl State {
                     .spec
                     .labels
                     .insert("session_id".to_owned(), session.clone());
-                // With the verified profile its registration carries, so
-                // the conversation's key is whole on the record.
-                if let Some(profile) = record
-                    .spec
-                    .labels
-                    .get(agentdocker_core::agent::PROFILE_LABEL)
-                {
+                // With the profile, so the conversation's key is whole on
+                // the record.
+                if let Some(profile) = profile {
                     updated
                         .spec
                         .labels
-                        .entry(agentdocker_core::agent::PROFILE_LABEL.to_owned())
-                        .or_insert_with(|| profile.clone());
+                        .insert(agentdocker_core::agent::PROFILE_LABEL.to_owned(), profile);
                 }
                 let event = Event::new(
                     EventKind::AgentSessionBound {
