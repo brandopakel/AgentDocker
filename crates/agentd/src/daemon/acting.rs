@@ -78,7 +78,8 @@ struct Kernel<'a> {
     executable: &'a dyn Fn(u32) -> Option<std::path::PathBuf>,
     /// A process's birth.
     born: &'a dyn Fn(u32) -> Option<DateTime<Utc>>,
-    /// Whether an executable is this daemon's companion CLI.
+    /// Whether an executable is AgentDocker's own CLI: this daemon's
+    /// companion, or a retained version's ([`person::own_cli`]).
     companion: &'a dyn Fn(&std::path::Path) -> bool,
 }
 
@@ -96,8 +97,7 @@ fn executable_of(pid: u32) -> Option<std::path::PathBuf> {
 }
 
 fn is_companion(executable: &std::path::Path) -> bool {
-    person::companion_cli()
-        .is_some_and(|cli| agentdocker_host::program::same_file(&cli, executable))
+    person::own_cli(executable)
 }
 
 impl Kernel<'static> {
