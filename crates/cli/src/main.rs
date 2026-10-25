@@ -16,6 +16,8 @@ mod desktop;
 mod emission;
 mod format;
 mod gate;
+#[cfg(test)]
+mod guide_lists;
 mod hooks;
 mod input_status;
 mod mcp;
