@@ -217,7 +217,7 @@ pub struct WebhookConfig {
     /// A private file (a regular file of this user, mode 0600) whose
     /// trimmed content is the HMAC secret.
     pub secret_file: std::path::PathBuf,
-    /// Event kinds to post, by their wire names (`question_asked`,
+    /// Event kinds to post, by their wire names (`question_opened`,
     /// `agent_exited`, `lease_deadlock`…). Empty posts nothing.
     #[serde(default)]
     pub events: Vec<String>,
@@ -897,7 +897,7 @@ mod tests {
             name: "team-slack".into(),
             url: url.into(),
             secret_file: secret.clone(),
-            events: vec!["question_asked".into(), "lease_deadlock".into()],
+            events: vec!["question_opened".into(), "lease_deadlock".into()],
             project: None,
             format: WebhookFormat::Slack,
         };

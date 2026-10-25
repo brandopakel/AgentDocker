@@ -26,6 +26,8 @@ use std::process::Command;
 #[cfg(unix)]
 use std::process::Stdio;
 use std::sync::Arc;
+
+use crate::sync::lock;
 use std::time::Duration;
 
 use agentdocker_core::AgentId;
@@ -227,12 +229,6 @@ struct Shared {
 const MAX_COMMAND_BYTES: usize = 512 * 1024;
 /// How long one write to a controller may block before it counts as gone.
 const WRITE_WITHIN: Duration = Duration::from_secs(5);
-
-fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 /// Run an owner to completion. Returns the process exit code.
 pub fn main(launch: Launch) -> anyhow::Result<i32> {

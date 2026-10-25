@@ -514,6 +514,7 @@ each one by pid.
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not. A finished record that holds nothing is forgotten by itself thirty days on, or after `[agents] retention` in `~/.agentdocker/agentd.toml` (`"off"` keeps every record) |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml`. An entry with `after = "build exits 0"` starts once `build` has exited 0; `up` stays while it waits (`waiting: build exits 0`), and if `build` exits otherwise, is stopped or fails to start, it and everything waiting on it are not started (`not started: build exited 1`) and `up` exits unsuccessfully. `up test` alone takes an earlier exit 0 of `build`, from another `up`, as success when it was `build`'s own: its record says no stop was asked of that run, and it is still the run of the entry as this file gives it now (the same command, runtime, working directory, environment and the rest of how it runs; not renamed). Edit `build` in any of those ways, or give it `isolate = true`, and bring it up again before `test`. An earlier `build` that was stopped does not count, whatever it exited with (`not started: build was stopped`), and neither does one whose record cannot show this (`not started: build ended before this run; …`); the record is kept, and the answer with it, across a daemon restart and until retention forgets it. For an agent `up` is watching, only an exit 0 whose event it received counts, so an exit 0 seen after `up` has said its event stream ended does not |
+| `reconnect <agent>` | Bring an ended Claude Code session back under its own record, with its conversation and live messages, as a process the daemon runs |
 | `heartbeat` | Report that an agent is alive |
 
 ### Talk
@@ -627,11 +628,11 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one |
+| `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one; `channel prune --before <seconds>` forgets channels closed longer ago than that (two weeks by default) |
 | `review-request` / `review` | Ask for and give verdicts; requested changes block |
 | `verdict <branch> --head <commit> --approve\|--changes\|--comment [--from <commit>] [--findings P1,P2,P3] [note]` | Give your verdict on a branch at the commit you read; it counts for the roles you hold, and only for that commit |
 | `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: approved at its head as it is now (exit 0), else changes asked, stale (commits since the approval) or unreviewed (exit 1). `--publish` sets the `agentdocker/review` commit status on GitHub |
-| `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first |
+| `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first; `contest close <id> [--winner <agent>]` declares the answer, by the ranking when the metric separated the entries |
 
 ### Containers
 
@@ -646,6 +647,8 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
 | `setup` | Wire us in: MCP registration, and hooks for Claude Code |
+| `skill` | Print the portable coordination SKILL.md, without connecting to a daemon |
+| `provider` | Report a provider's availability (a limit, a sign-in), or resume delivery after checking one |
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches. Only the agent's own output is shown while attached; dropped output or a replaced daemon is said once you detach or it ends |
 | `daemon` | Install, start, stop, reload, inspect or `vacuum` `agentd` |
@@ -703,10 +706,11 @@ be set.
 takes an MCP server. An agent then has these without knowing anything
 about us:
 
-`whoami` · `ping` · `list_agents` · `inspect_agent` · `activity` · `usage`
+`whoami` · `list_agents` · `inspect_agent` · `activity` · `usage`
 
 `send_message` · `read_inbox` · `wait_for_messages` · `acknowledge_messages` ·
-`ask_human` · `open_questions` · `answer_question` · `report_activity`
+`ask_human` · `open_questions` · `answer_question` · `report_activity` ·
+`report_provider_status`
 
 `claim` · `renew` · `release` · `list_leases`
 
@@ -1018,7 +1022,7 @@ to where the session now is. A herdr or tmux that stops answering for a moment d
 it; one that stays silent for four passes in a row, about twenty seconds,
 does.
 
-### Planned daemon replacement
+### Daemon replacement
 
 `agentdocker daemon reload` requires `[experimental] reload = true` in the running
 daemon's `agentd.toml` (or `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` in its environment);
@@ -1028,7 +1032,7 @@ while session owners retain managed processes and I/O. The gate is experimental.
 Ordinary daemon stop/start is a separate operation: stopping terminates managed
 agents.
 
-### Temporary review administration
+### Secret review administration
 
 The local `agentdocker secret-review list` command lists pending temporary review
 metadata for the person. `secret-review cancel <id>` closes a route; it cannot
@@ -1593,9 +1597,9 @@ Current behaviour that the sections above do not already state, by area.
 
 - `agentdocker --help` lists the commands a person types. The ones only an
   adapter or an administrator runs (`heartbeat`, `report-activity`,
-  `report-adapter`, `report-input`, `identity-repair`, `secret-review`,
-  `usage-storage`, `usage-scan`, the `codex-*` controllers) are hidden from
-  the list and still work by name; the guide's reference still names them.
+  `report-adapter`, `report-input`, `report-commit`, `identity-repair`,
+  `secret-review`, `usage-storage`, `usage-scan`, the `codex-*` controllers)
+  are hidden from the list and still work by name; `--help` on each describes it.
 
 - The ledger entries for one batch of file changes are written in one
   transaction, so a branch switch does not stall claims and releases.
