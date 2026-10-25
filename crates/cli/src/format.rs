@@ -1,5 +1,7 @@
 //! Terminal output helpers.
 
+use agentdocker_core::journal;
+pub use agentdocker_core::short;
 use agentdocker_core::{Activity, Envelope, Event, EventKind, Question, ResourceKey};
 use chrono::{DateTime, Local, Utc};
 use serde_json::Value;
@@ -54,10 +56,10 @@ pub fn table_dimming(headers: &[&str], rows: &[Vec<String>], dim: impl Fn(usize)
     }
 }
 
-/// "5s ago", "3m ago", "2h ago", "4d ago".
+/// "5s ago", "3m ago", "2h ago", "4d ago": core's rendering, against the
+/// clock, which the CLI may read.
 pub fn ago(at: DateTime<Utc>) -> String {
-    let secs = (Utc::now() - at).num_seconds().max(0);
-    format!("{} ago", span(secs))
+    journal::ago(Utc::now(), at)
 }
 
 /// "in 4m", or "expired".
@@ -66,27 +68,12 @@ pub fn until(at: DateTime<Utc>) -> String {
     if secs <= 0 {
         "expired".to_owned()
     } else {
-        format!("in {}", span(secs))
+        format!("in {}", journal::span(secs))
     }
 }
 
 pub fn span_secs(secs: u64) -> String {
-    span(i64::try_from(secs).unwrap_or(i64::MAX))
-}
-
-fn span(secs: i64) -> String {
-    match secs {
-        s if s < 60 => format!("{s}s"),
-        s if s < 3600 => format!("{}m", s / 60),
-        s if s < 86_400 => format!("{}h", s / 3600),
-        s => format!("{}d", s / 86_400),
-    }
-}
-
-/// First 12 characters of an id-like string, without splitting a char.
-pub fn short(s: &str) -> &str {
-    let end = s.char_indices().nth(12).map_or(s.len(), |(i, _)| i);
-    &s[..end]
+    journal::span(i64::try_from(secs).unwrap_or(i64::MAX))
 }
 
 /// `file:` keys carry a full project id; show twelve characters of it.

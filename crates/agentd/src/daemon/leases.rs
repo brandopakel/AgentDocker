@@ -419,10 +419,14 @@ impl Daemon {
         } else {
             return Ok(key);
         };
-        let path = tokio::task::spawn_blocking(move || project::try_canonical(&path))
-            .await
-            .map_err(|err| Box::new(Response::error(ErrorCode::Internal, err.to_string())))?
-            .map_err(|err| Box::new(Response::error(ErrorCode::Invalid, err.to_string())))?;
+        let path = physical(path).await.map_err(|err| {
+            // A runtime failure is the daemon's; an unresolvable path is the caller's.
+            Box::new(if err.is::<tokio::task::JoinError>() {
+                Response::internal(err)
+            } else {
+                Response::invalid(err)
+            })
+        })?;
         if !path.is_absolute() {
             return Err(Box::new(Response::error(
                 ErrorCode::Invalid,

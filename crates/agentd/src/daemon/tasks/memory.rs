@@ -48,7 +48,9 @@ impl State {
             return Ok(found);
         }
         let Some(project) = project else {
-            return Err(not_found(format!("no memory is {words}")));
+            return Err(Box::new(Response::not_found(format!(
+                "no memory is {words}"
+            ))));
         };
         let memories = self.project_memories(project)?;
         let matches: Vec<&Memory> = memories
@@ -57,7 +59,9 @@ impl State {
             .collect();
         match matches.as_slice() {
             [one] => Ok((*one).clone()),
-            [] => Err(not_found(format!("no memory is {words}"))),
+            [] => Err(Box::new(Response::not_found(format!(
+                "no memory is {words}"
+            )))),
             _ => Err(Box::new(Response::error(
                 ErrorCode::Ambiguous,
                 format!("more than one memory starts {words}; give more of its id"),

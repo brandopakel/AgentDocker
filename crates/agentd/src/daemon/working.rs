@@ -503,13 +503,11 @@ const STALE_LEDGER_SCAN: usize = 500;
 /// bound on the host work of one request, which snapshots every path.
 const OBSERVE_PATHS: usize = 1000;
 
+/// The physical path `raw` names inside the checkout at `root`: an absolute
+/// path as given, a relative one under the root (`join` keeps an absolute
+/// argument whole), and either refused when it leaves the checkout.
 pub(super) fn checkout_path(root: &Path, raw: &str) -> anyhow::Result<PathBuf> {
-    let raw = Path::new(raw);
-    let path = project::canonical(&if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        root.join(raw)
-    });
+    let path = project::canonical(&root.join(raw));
     anyhow::ensure!(
         path.starts_with(root),
         "observation is outside the agent's physical checkout"

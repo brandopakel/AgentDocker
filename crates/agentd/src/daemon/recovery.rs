@@ -20,7 +20,7 @@ impl Daemon {
             .documents::<Checkpoint>("checkpoint", agent.as_ref())
         {
             Ok(checkpoints) => Response::Checkpoints { checkpoints },
-            Err(e) => internal(e),
+            Err(e) => Response::internal(e),
         }
     }
 
@@ -46,14 +46,14 @@ impl Daemon {
             .documents::<Checkpoint>("checkpoint", agent.as_ref())
         {
             Ok(checkpoints) => checkpoints,
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let handoffs = match state
             .store
             .documents::<agentdocker_core::HandoffBundle>("handoff", None)
         {
             Ok(handoffs) => handoffs,
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let addressed: HashMap<&str, &AgentId> = handoffs
             .iter()
@@ -153,14 +153,14 @@ impl Daemon {
                     return checkpoint_retry(checkpoint, release, &task, &assumptions, &next_steps);
                 }
                 Ok(None) => {}
-                Err(e) => return internal(e),
+                Err(e) => return Response::internal(e),
             }
         }
         let root = checkout.clone();
         let version = match tokio::task::spawn_blocking(move || content::fingerprint(&root)).await {
             Ok(Ok(v)) => v,
-            Ok(Err(e)) => return internal(e),
-            Err(e) => return internal(e),
+            Ok(Err(e)) => return Response::internal(e),
+            Err(e) => return Response::internal(e),
         };
         let mut state = lock(&self.state);
         if !state
@@ -177,14 +177,14 @@ impl Daemon {
                 return checkpoint_retry(checkpoint, release, &task, &assumptions, &next_steps);
             }
             Ok(None) => {}
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         }
         let reads = match state
             .store
             .document::<Vec<ReadMark>>("reads", agent.as_str())
         {
             Ok(reads) => reads.unwrap_or_default(),
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let checkpoint = Checkpoint {
             id: id.clone(),
@@ -242,7 +242,7 @@ impl Daemon {
         {
             Ok(Some(c)) => c,
             Ok(None) => return Response::error(ErrorCode::NotFound, "checkpoint not found"),
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         if checkpoint.checkout != checkout {
             return Response::error(
@@ -259,7 +259,7 @@ impl Daemon {
         .await;
         let (stale, checkout_matches) = match checked {
             Ok(v) => v,
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let mut state = lock(&self.state);
         if !state
@@ -275,7 +275,7 @@ impl Daemon {
         let mut checkpoint = match state.store.document::<Checkpoint>("checkpoint", id) {
             Ok(Some(c)) => c,
             Ok(None) => return Response::error(ErrorCode::NotFound, "checkpoint disappeared"),
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let environment = state
             .registry
@@ -291,7 +291,7 @@ impl Daemon {
             .document::<agentdocker_core::HandoffBundle>("handoff", id)
         {
             Ok(bundle) => bundle,
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         if acknowledge
             && bundle
@@ -324,7 +324,7 @@ impl Daemon {
                     .document::<Vec<ReadMark>>("reads", agent.as_str())
                 {
                     Ok(v) => v.unwrap_or_default(),
-                    Err(e) => return internal(e),
+                    Err(e) => return Response::internal(e),
                 };
                 let mut reads: BTreeMap<_, _> = checkpoint
                     .reads
@@ -447,7 +447,7 @@ impl Daemon {
                         && ContainerEnvironment::matches(&v.environment, &environment)
                 })
                 .collect(),
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         Response::Recovery {
             recovery: Recovery {
@@ -471,7 +471,7 @@ impl Daemon {
             .documents::<Validation>("validation", Some(&agent))
         {
             Ok(validations) => Response::Validations { validations },
-            Err(e) => internal(e),
+            Err(e) => Response::internal(e),
         }
     }
 
@@ -513,13 +513,13 @@ impl Daemon {
         .await
         {
             Ok(Ok(v)) => v,
-            Ok(Err(e)) => return internal(e),
-            Err(e) => return internal(e),
+            Ok(Err(e)) => return Response::internal(e),
+            Err(e) => return Response::internal(e),
         };
         let id = MessageId::generate().to_string();
         let log = self.home.join("logs").join(format!("validation-{id}.log"));
         if let Err(e) = std::fs::create_dir_all(self.home.join("logs")) {
-            return internal(e);
+            return Response::internal(e);
         }
         let output = match std::fs::OpenOptions::new()
             .write(true)
@@ -527,11 +527,11 @@ impl Daemon {
             .open(&log)
         {
             Ok(f) => f,
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let error = match output.try_clone() {
             Ok(f) => f,
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let mut validation = Validation {
             id: id.clone(),
@@ -603,7 +603,7 @@ impl Daemon {
             cmd.as_std_mut().process_group(0);
             let mut child = match cmd.spawn() {
                 Ok(child) => child,
-                Err(e) => return internal(e),
+                Err(e) => return Response::internal(e),
             };
             // On Unix the command leads its own process group, ended as a
             // whole on a timeout and checked for survivors afterwards. On
@@ -621,7 +621,7 @@ impl Daemon {
                 .await
                 {
                     Ok(Ok(status)) => validation.exit_code = status.code(),
-                    Ok(Err(e)) => return internal(e),
+                    Ok(Err(e)) => return Response::internal(e),
                     Err(_) => {
                         validation.timed_out = true;
                         let _ = kill(group.0.unwrap(), Signal::SIGKILL);
@@ -643,7 +643,7 @@ impl Daemon {
                 .await
                 {
                     Ok(Ok(status)) => validation.exit_code = status.code(),
-                    Ok(Err(e)) => return internal(e),
+                    Ok(Err(e)) => return Response::internal(e),
                     Err(_) => {
                         validation.timed_out = true;
                         let _ = child.kill().await;
@@ -710,9 +710,6 @@ impl Drop for ValidationGroup {
             let _ = kill(group, Signal::SIGKILL);
         }
     }
-}
-pub(super) fn internal(error: impl std::fmt::Display) -> Response {
-    Response::error(ErrorCode::Internal, error.to_string())
 }
 
 #[cfg(test)]

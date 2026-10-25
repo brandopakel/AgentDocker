@@ -8804,9 +8804,9 @@ async fn recycled_pid_is_not_mistaken_for_the_agent() {
 
 #[test]
 fn invalid_pids_are_never_alive() {
-    assert!(!process_exists(0));
-    assert!(!process_exists(u32::MAX));
-    assert!(process_exists(std::process::id()));
+    assert!(!procinfo::alive(0));
+    assert!(!procinfo::alive(u32::MAX));
+    assert!(procinfo::alive(std::process::id()));
 }
 
 #[tokio::test]
@@ -10010,7 +10010,7 @@ async fn discover_finds_known_runtimes_and_adopt_registers_them() {
         adopted.project.as_ref().map(|p| p.root.clone()),
         Some(project.canonicalize().unwrap())
     );
-    assert!(process_exists(pid));
+    assert!(procinfo::alive(pid));
 
     // Registered pids disappear from discovery, and cannot be adopted twice.
     let found = match daemon.handle(Request::Discover).await {
@@ -10139,7 +10139,7 @@ async fn a_runtime_helper_is_not_discovered_and_cannot_be_adopted() {
     };
     assert!(agents.iter().all(|a| a.pid != Some(pid)));
     drop(child);
-    assert!(!process_exists(pid), "the guard reaps the fake");
+    assert!(!procinfo::alive(pid), "the guard reaps the fake");
 }
 
 fn drain_vcs(events: &mut broadcast::Receiver<Event>) -> Vec<Option<String>> {

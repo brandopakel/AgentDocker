@@ -49,7 +49,7 @@ impl Daemon {
             Some(agent) => lock(&self.state).actor(agent)?.project,
             None => None,
         };
-        own.ok_or_else(|| invalid("name a project"))
+        own.ok_or_else(|| Box::new(Response::invalid("name a project")))
     }
 
     #[allow(clippy::too_many_arguments)]

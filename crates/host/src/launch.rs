@@ -287,11 +287,14 @@ mod tests {
         let pending = prepare(command).unwrap();
         let child = pending.activate().unwrap();
         let pid = child.disown().expect("ownership transferred");
-        assert!(alive(pid), "still running the moment we let go");
+        assert!(
+            crate::procinfo::alive(pid),
+            "still running the moment we let go"
+        );
         // Nothing holds it now. A `Drop` that killed would have killed
         // it above, so this is about the absence of that.
         std::thread::sleep(Duration::from_millis(200));
-        assert!(alive(pid), "and after the handle is gone");
+        assert!(crate::procinfo::alive(pid), "and after the handle is gone");
         // And the reaping really is ours now: `wait_gone` would spin on
         // a zombie, because a killed child nobody waits on stays in the
         // table. That is the contract `disown` hands over, so the test
@@ -302,7 +305,7 @@ mod tests {
             let mut status = 0;
             libc::waitpid(pid as i32, &mut status, 0);
         }
-        assert!(!alive(pid), "reaped, not merely signalled");
+        assert!(!crate::procinfo::alive(pid), "reaped, not merely signalled");
     }
 
     /// The other half: without `disown`, dropping still kills. If this
@@ -315,14 +318,9 @@ mod tests {
         let pending = prepare(command).unwrap();
         let child = pending.activate().unwrap();
         let pid = child.id();
-        assert!(alive(pid));
+        assert!(crate::procinfo::alive(pid));
         drop(child);
         wait_gone(pid);
-    }
-
-    fn alive(pid: u32) -> bool {
-        // SAFETY: signal zero probes only this recorded fixture PID.
-        unsafe { libc::kill(pid as i32, 0) == 0 }
     }
 
     fn fixture(path: &std::path::Path) -> Command {
@@ -335,8 +333,7 @@ mod tests {
     fn wait_gone(pid: u32) {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            // SAFETY: signal zero probes only this recorded fixture PID.
-            if unsafe { libc::kill(pid as i32, 0) } != 0 {
+            if !crate::procinfo::alive(pid) {
                 break;
             }
             assert!(Instant::now() < deadline, "gated child was not reaped");

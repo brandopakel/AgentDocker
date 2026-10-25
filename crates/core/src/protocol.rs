@@ -2291,6 +2291,26 @@ impl Response {
             details: None,
         }
     }
+
+    /// An [`ErrorCode::Invalid`] refusal: the request itself is wrong.
+    pub fn invalid(message: impl std::fmt::Display) -> Self {
+        Self::error(ErrorCode::Invalid, message.to_string())
+    }
+
+    /// An [`ErrorCode::NotFound`] refusal: nothing is what the request names.
+    pub fn not_found(message: impl std::fmt::Display) -> Self {
+        Self::error(ErrorCode::NotFound, message.to_string())
+    }
+
+    /// An [`ErrorCode::Internal`] failure: the daemon's own side went wrong.
+    pub fn internal(message: impl std::fmt::Display) -> Self {
+        Self::error(ErrorCode::Internal, message.to_string())
+    }
+
+    /// An [`ErrorCode::Unavailable`] refusal: not now, for the reason given.
+    pub fn unavailable(message: impl std::fmt::Display) -> Self {
+        Self::error(ErrorCode::Unavailable, message.to_string())
+    }
 }
 
 fn validation_timeout() -> u64 {
