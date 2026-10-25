@@ -1206,13 +1206,12 @@ mod tests {
         assert_eq!(serde_json::to_value(kind).unwrap(), omitted);
     }
 
-    /// `WIRE_NAMES` is the enum, by name: every variant's snake_case tag
-    /// is listed, nothing else is, and nothing twice. The enum's source
-    /// is the authority, so the test reads it rather than keeping a
-    /// second list.
-    #[test]
-    fn wire_names_are_the_enum_in_snake_case() {
-        let source = include_str!("event.rs");
+    /// The wire names the enum's source declares: each variant of
+    /// `EventKind`, in order, in serde's snake_case, without the
+    /// catch-all. Line endings are normalised first, since a checkout on
+    /// Windows may carry `\r\n` and the markers are matched by line.
+    fn wire_names_in(source: &str) -> Vec<String> {
+        let source = source.replace("\r\n", "\n");
         let body = source
             .split_once("pub enum EventKind {\n")
             .expect("the enum")
@@ -1220,8 +1219,7 @@ mod tests {
             .split_once("\n}\n")
             .expect("its end")
             .0;
-        let from_source: Vec<String> = body
-            .lines()
+        body.lines()
             .filter_map(|line| {
                 let rest = line.strip_prefix("    ")?;
                 if rest.starts_with(' ') || !rest.starts_with(|c: char| c.is_ascii_uppercase()) {
@@ -1241,7 +1239,29 @@ mod tests {
                 Some(snake)
             })
             .filter(|name| name != "unknown")
-            .collect();
+            .collect()
+    }
+
+    /// The failure seen on a Windows runner: Git checked the source out
+    /// with `\r\n`, the enum's markers were not found, and the test that
+    /// guards the list could not run. The scan reads either ending alike.
+    #[test]
+    fn the_enum_scan_reads_a_crlf_checkout_the_same() {
+        let source = include_str!("event.rs");
+        let unix = wire_names_in(source);
+        let crlf = source.replace("\r\n", "\n").replace('\n', "\r\n");
+        assert!(crlf.contains("\r\n"));
+        assert_eq!(wire_names_in(&crlf), unix);
+        assert_eq!(unix, EventKind::WIRE_NAMES);
+    }
+
+    /// `WIRE_NAMES` is the enum, by name: every variant's snake_case tag
+    /// is listed, nothing else is, and nothing twice. The enum's source
+    /// is the authority, so the test reads it rather than keeping a
+    /// second list.
+    #[test]
+    fn wire_names_are_the_enum_in_snake_case() {
+        let from_source = wire_names_in(include_str!("event.rs"));
         assert!(
             from_source.len() > 100,
             "the enum was found: {}",
