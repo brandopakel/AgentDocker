@@ -130,10 +130,7 @@ impl Client {
             if reader.read_line(&mut response).await? == 0 {
                 bail!("agentd closed the connection without answering");
             }
-            if !matches!(
-                into_result(serde_json::from_str::<Response>(&response)?)?,
-                Response::Ok
-            ) {
+            if !matches!(into_result(decode(&response)?)?, Response::Ok) {
                 bail!("restricted endpoint authentication failed");
             }
         }
@@ -246,7 +243,7 @@ impl Client {
             )
             .into());
         }
-        Ok(serde_json::from_str(&line)?)
+        decode(&line)
     }
 
     /// After a stream ended without the daemon saying so: is a daemon
@@ -371,10 +368,7 @@ impl Client {
             if reader.read_line(&mut line).await? == 0 {
                 bail!("agentd closed the connection before subscription readiness");
             }
-            if !matches!(
-                into_result(serde_json::from_str(&line)?)?,
-                Response::EventsReady
-            ) {
+            if !matches!(into_result(decode(&line)?)?, Response::EventsReady) {
                 bail!("agentd did not acknowledge event subscription readiness; update the daemon");
             }
         }
@@ -385,7 +379,7 @@ impl Client {
             if reader.read_line(&mut line).await? == 0 {
                 return Ok(Ended::Silently);
             }
-            match into_result(serde_json::from_str(&line)?)? {
+            match into_result(decode(&line)?)? {
                 Response::End => return Ok(Ended::ByDaemon),
                 // A replay's bound is the caller's to explain; only a
                 // live lag is handled here.
@@ -710,6 +704,49 @@ impl std::fmt::Display for RemoteError {
 
 impl std::error::Error for RemoteError {}
 
+/// The daemon refused with a code this client is older than: the code as
+/// it was sent, and its words. Kept apart from a failure to reach or read
+/// the daemon, so a newer daemon's refusal is never reported as either.
+#[derive(Clone, Debug)]
+pub struct UnknownCode {
+    pub code: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for UnknownCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} ({}, a code this client is too old to know)",
+            self.message, self.code
+        )
+    }
+}
+
+impl std::error::Error for UnknownCode {}
+
+/// One line the daemon answered: its response, or [`UnknownCode`] for an
+/// error whose code this client does not know.
+pub fn decode(line: &str) -> Result<Response> {
+    let error = match serde_json::from_str::<Response>(line) {
+        Ok(response) => return Ok(response),
+        Err(error) => error,
+    };
+    let unknown = serde_json::from_str::<serde_json::Value>(line)
+        .ok()
+        .filter(|value| value["type"] == "error")
+        .and_then(|value| {
+            let code = value["code"].as_str()?;
+            serde_json::from_value::<agentdocker_core::ErrorCode>(value["code"].clone())
+                .is_err()
+                .then(|| UnknownCode {
+                    code: code.to_owned(),
+                    message: value["message"].as_str().unwrap_or_default().to_owned(),
+                })
+        });
+    Err(unknown.map_or_else(|| error.into(), Into::into))
+}
+
 /// The exit status a command ends with, by the class of what went wrong,
 /// so an agent driving the command line can branch without parsing
 /// text: 0 done; 1 something unexpected (an internal error, or a failure
@@ -751,6 +788,43 @@ pub fn exit_code_for(error: &anyhow::Error) -> i32 {
 mod exit_tests {
     use super::*;
     use agentdocker_core::ErrorCode;
+
+    /// A refusal by a code this client does not know is told as that
+    /// refusal, its code and words kept, not as a line that could not be
+    /// read; anything else that does not read stays a decoding failure.
+    #[test]
+    fn an_error_code_newer_than_the_client_is_reported_as_itself() {
+        let error = decode(
+            r#"{"type":"error","code":"newer_refusal","message":"not from inside that session"}"#,
+        )
+        .unwrap_err();
+        let unknown = error
+            .downcast_ref::<UnknownCode>()
+            .expect("an unknown code");
+        assert_eq!(unknown.code, "newer_refusal");
+        assert_eq!(unknown.message, "not from inside that session");
+        assert!(error.to_string().contains("newer_refusal"), "{error}");
+
+        let known = decode(r#"{"type":"error","code":"forbidden","message":"no"}"#).unwrap();
+        assert!(matches!(
+            known,
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                ..
+            }
+        ));
+        for unreadable in [
+            r#"{"type":"nonsense"}"#,
+            "not json",
+            r#"{"type":"error","code":7}"#,
+        ] {
+            let error = decode(unreadable).unwrap_err();
+            assert!(
+                error.downcast_ref::<UnknownCode>().is_none(),
+                "{unreadable}"
+            );
+        }
+    }
 
     /// Every answer the daemon can give lands in one class, and only the
     /// daemon's answers are classed — anything else is unexpected.
