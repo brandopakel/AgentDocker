@@ -2607,20 +2607,20 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "review_verdict",
-            "description": "Give your verdict on a branch at the exact commit you read: `approve` (no P1 findings), `changes`, or `comment`. It counts at the review gate for the roles the person gave you, and only for that commit: any later commit, a merge included, needs your word again. Name the earlier commit in `from` when you read only what came after it. Say what you checked in the note.",
+            "description": "Give your verdict on a branch at the exact commit you read: `pass` (no important finding), `changes`, or `none` (you read it and give no verdict). Count what you found as important (must be fixed before it lands), nit (worth fixing, not blocking) and pre_existing (not caused by this change); counts you leave out are zero. It counts at the review gate for the roles the person gave you, and only for that commit: any later commit, a merge included, needs your word again. Refused on a branch you hold, are checked out on, or committed to: the author does not pass its own change. Name the earlier commit in `from` when you read only what came after it. Say what you checked in the note.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "branch": { "type": "string" },
                     "head": { "type": "string", "description": "Full id of the commit you read (40 or 64 hex digits)." },
                     "from": { "type": "string", "description": "Full id of the commit an earlier review read." },
-                    "verdict": { "type": "string", "enum": ["approve", "changes", "comment"] },
+                    "verdict": { "type": "string", "enum": ["pass", "changes", "none"] },
                     "findings": {
                         "type": "object",
                         "properties": {
-                            "p1": { "type": "integer", "minimum": 0 },
-                            "p2": { "type": "integer", "minimum": 0 },
-                            "p3": { "type": "integer", "minimum": 0 }
+                            "important": { "type": "integer", "minimum": 0 },
+                            "nit": { "type": "integer", "minimum": 0 },
+                            "pre_existing": { "type": "integer", "minimum": 0 }
                         },
                         "additionalProperties": false
                     },
@@ -2633,7 +2633,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "review_gate",
-            "description": "Whether a branch may land at a commit: approved at exactly that commit by a holder of `role` (default `reviewer`) or the person, with nobody asking for changes. `stale` means the approval read an earlier commit.",
+            "description": "Whether a branch may land at a commit: `approved` when a holder of `role` (default `reviewer`) or the person passed exactly that commit and nobody asks for changes; `changes`, `stale` (the pass read an earlier commit) or `missing` otherwise. The verdict it stands on carries the reviewer's finding counts and runtime.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

@@ -865,13 +865,20 @@ pub enum EventKind {
         of: AgentId,
         verdict: crate::Verdict,
     },
-    /// A reviewer gave its word on a branch at the commit it read.
+    /// A reviewer gave its word on a branch at the commit it read:
+    /// `pass`, `changes` or `none`, with its findings by severity and the
+    /// runtime the reviewer ran in (empty on one recorded before it was
+    /// kept).
     CodeVerdictGiven {
         project: ProjectId,
         branch: String,
         head: String,
         by: AgentId,
-        verdict: crate::Verdict,
+        verdict: crate::gate::Word,
+        #[serde(default)]
+        findings: crate::gate::Findings,
+        #[serde(default)]
+        runtime: String,
     },
     /// A journal entry was appended to a project.
     JournalAppended {
