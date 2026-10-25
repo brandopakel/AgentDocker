@@ -310,8 +310,28 @@ fn hooks(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
     if spec.name == "codex" {
         checks.push(Check::new("hooks", Some(&path), Status::Unverified,
             "Activity configuration only; Codex version, enabled hooks, exact hook trust and live delivery require a provider trial. Open /hooks in Codex to review definitions."));
+        if let Some(stamps) = &roots.hook_stamps
+            && let Some(unrun) = unrun(&path, &super::hook_stamp(stamps, spec.name))
+        {
+            checks.push(Check::new("hooks", Some(&path), Status::Unverified, unrun));
+        }
     }
     checks
+}
+
+/// Whether Codex has run AgentDocker's hooks since they were written:
+/// Codex runs a hook only once the person has trusted it, and trust is
+/// lost when its definition changes, so hooks that never ran, or have not
+/// run since `hooks.json` last changed, are said to want trust.
+fn unrun(hooks: &Path, stamp: &Path) -> Option<&'static str> {
+    let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    match (modified(hooks), modified(stamp)) {
+        (_, None) => Some("Never run: trust them in Codex's /hooks"),
+        (Some(changed), Some(ran)) if ran < changed => {
+            Some("Not run since they last changed: trust them again in Codex's /hooks")
+        }
+        _ => None,
+    }
 }
 
 fn executable(
@@ -384,6 +404,7 @@ mod tests {
             browser_dirs: vec![],
             shell: None,
             versions: false,
+            hook_stamps: None,
         };
         std::fs::create_dir_all(home.join("bin")).unwrap();
         (temporary, roots)
@@ -586,6 +607,38 @@ mod tests {
                 .detail
                 .contains("environment may differ")
         );
+    }
+
+    /// Codex's hooks that never ran, or have not run since they changed,
+    /// are said to want trust; ones that ran since are not.
+    #[test]
+    fn codex_hooks_that_never_ran_are_said_to_want_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let hooks = dir.path().join("hooks.json");
+        let stamp = dir.path().join("codex.ran");
+        std::fs::write(&hooks, "{}").unwrap();
+        assert_eq!(
+            unrun(&hooks, &stamp),
+            Some("Never run: trust them in Codex's /hooks")
+        );
+        let at = |path: &Path, when: std::time::SystemTime| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(when)
+                .unwrap();
+        };
+        let now = std::time::SystemTime::now();
+        std::fs::write(&stamp, "").unwrap();
+        at(&stamp, now - std::time::Duration::from_secs(60));
+        at(&hooks, now);
+        assert_eq!(
+            unrun(&hooks, &stamp),
+            Some("Not run since they last changed: trust them again in Codex's /hooks")
+        );
+        at(&stamp, now + std::time::Duration::from_secs(1));
+        assert_eq!(unrun(&hooks, &stamp), None);
     }
 
     #[test]

@@ -275,6 +275,9 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
     match args.command {
         HookCommand::ClaudeReceipt(args) => channel_receipt::deferred::run(client, args).await,
         HookCommand::Codex => {
+            // Word that Codex runs these hooks, which it does only once the
+            // person has trusted them: `setup --check` reads it.
+            agentdocker_host::runtimes::hook_ran("codex");
             if let Err(error) = codex::run(&client).await {
                 eprintln!("agentdocker hook codex: {error:#}");
             }
