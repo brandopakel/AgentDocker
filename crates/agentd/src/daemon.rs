@@ -186,6 +186,13 @@ enum Persisted {
 
 /// One admitted mutation in progress; dropping it, however the request
 /// ends, releases its place.
+///
+/// Dropping it takes the state lock, so it must never be dropped by a
+/// holder of a state guard. It holds: the place lives in the `ADMISSION`
+/// scope and goes with the handler's future, after every guard the
+/// handler took; `done_writing` takes it outside any hold; and
+/// `readmit_locked` hands a place out of the hold that made it, never
+/// dropping one inside it.
 pub(crate) struct InFlight(Arc<Daemon>);
 
 impl Drop for InFlight {

@@ -6,6 +6,11 @@ use agentdocker_core::{
 };
 use agentdocker_host::containers::{ContainerBackend, ContainerError, ContainerState, Inspection};
 
+/// Marks one agent's container as being driven for as long as it lives.
+/// Dropping it takes the state lock, so it must never be dropped by a
+/// holder of a state guard: it is made after the hold that marked the
+/// agent busy ends and lives to the end of `drive_container`, where no
+/// guard is.
 struct Busy {
     daemon: Arc<Daemon>,
     id: AgentId,
